@@ -4,36 +4,19 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Domain.Entities;
 
 // MIGRATION: legacy type DotNetNuke.Security.Permissions.PermissionInfo becomes this entity. The
-//   mismatch between the legacy file name and the legacy type name is intentional and is resolved
-//   here rather than reproduced: Library/Components/Security/Permissions/Permission.vb line 28
-//   declares "Public Class PermissionInfo" inside a #Region of the same name, so the file was
-//   already named after the table while the class carried an "...Info" suffix. That suffix existed
-//   only to separate a data carrier from its static "...Controller" companion - here
-//   Library/Components/Security/Permissions/PermissionController.vb - and the target draws that
-//   distinction with the layer boundary instead. Dropping it makes the file and the type agree, and
-//   downstream code that goes looking for a "PermissionInfo" will not find one by design.
-//
-// MIGRATION: the legacy XML-serialisation decoration is deliberately not carried across.
-//   Permission.vb decorates PermissionID (line 42), PermissionCode (line 51) and PermissionKey
-//   (line 69) with <XmlElement("permissionid")>, <XmlElement("permissioncode")> and
-//   <XmlElement("permissionkey")>, and hides ModuleDefID (line 60) and PermissionName (line 78)
-//   behind <XmlIgnore()>, because that one class doubled as its own wire format. In the target the
-//   wire contract belongs to the DTOs at the API boundary and the storage contract belongs to the
-//   Fluent configuration in the Infrastructure layer, so this entity carries no attribute of any
-//   kind - no serialisation attribute and no data annotation. Two consequences are worth stating:
-//   the lower-case element names disappear with the attributes that carried them, and ModuleDefID
+//   legacy "...Info" suffix existed only to separate a data carrier from its static "...Controller"
+//   companion, a distinction the target draws with the layer boundary instead, so the file and the
+//   type now agree and code that goes looking for a "PermissionInfo" will not find one by design.
+//   The legacy class also doubled as its own XML wire format; in the target the wire contract belongs
+//   to the DTOs at the API boundary and the storage contract to the Fluent configuration in
+//   Infrastructure, so this entity carries no attribute of any kind - which also means ModuleDefID
 //   and PermissionName are no longer concealed from callers that legitimately need them.
 //
-// MIGRATION: the five VB Property Get/Set blocks over the five private fields declared at lines 31
-//   to 35 become five auto-properties, and the empty "Public Sub New()" at line 38 disappears with
-//   them. Rule T8: nothing else about the legacy class survives - there is no reflection hydrator,
-//   no sentinel translation and no pre-generics collection wrapper anywhere in this file.
-//
-// MIGRATION: PermissionKey stops being free text and becomes the closed DnnMigration.Domain.Enums
-//   .PermissionKey enumeration. The legacy property is a String (Permission.vb line 69) that the
-//   legacy code compared against bare upper-case literals, so a misspelling was a silent
-//   no-match; the enumeration makes it a compile error instead. The COLUMN is still text, and the
-//   obligations that places on the Infrastructure layer are set out per property below.
+// MIGRATION: PermissionKey stops being free text and becomes the closed
+//   DnnMigration.Domain.Enums.PermissionKey enumeration. The legacy property is a String
+//   (Permission.vb line 69) that the legacy code compared against bare upper-case literals, so a
+//   misspelling was a silent no-match; the enumeration makes it a compile error instead. The COLUMN
+//   is still text, and the obligations that places on Infrastructure are set out on that property.
 
 /// <summary>
 /// One entry in the permission catalogue: a single named action, scoped by a permission code and
@@ -51,13 +34,11 @@ namespace DnnMigration.Domain.Entities;
 /// <b>Mapping brief for the Infrastructure layer.</b> The entity binds to the singular table
 /// <c>dbo.Permission</c>, created by
 /// <c>Website/Providers/DataProviders/SqlDataProvider/02.02.00.SqlDataProvider</c> at lines 684 to
-/// 690 with its primary key <c>PK_Permission</c> over <c>PermissionID</c> added at lines 723 to 728.
-/// A sweep of all eighty-eight upgrade scripts, case-insensitively and across all four naming forms
-/// the chain uses - bare, <c>dbo.</c>-qualified, <c>[dbo].[…]</c>-bracketed and
-/// <c>{databaseOwner}{objectQualifier}</c>-templated - finds exactly two later structural statements
-/// against this table, and both are recorded on the properties they affect. Per AAP Rule T4 the
-/// TERMINAL state of that chain is what the Fluent configuration must reproduce; the baseline
-/// declaration alone is not the schema.
+/// 690 with its primary key <c>PK_Permission</c> over <c>PermissionID</c> at lines 723 to 728. A
+/// case-insensitive sweep of all eighty-eight scripts across the four naming forms the chain uses
+/// finds exactly two later structural statements against this table, and both are recorded on the
+/// properties they affect. Per AAP Rule T4 the TERMINAL state of that chain is what the Fluent
+/// configuration must reproduce; the baseline declaration alone is not the schema.
 /// </para>
 /// <para>
 /// <b>Every text column is ANSI, not Unicode.</b> <c>PermissionCode</c>, <c>PermissionKey</c> and
@@ -74,10 +55,10 @@ namespace DnnMigration.Domain.Entities;
 /// rejected by the database rather than by any check in this layer.
 /// </para>
 /// <para>
-/// <b>No behaviour lives here.</b> Rule T6: this type performs no I/O, holds no service, reads no
-/// clock and validates nothing. Rule T7: it uses honest CLR types and represents no value with a
-/// sentinel. Rule T1: it references nothing outside <c>DnnMigration.Domain</c>, which is what keeps
-/// the persistence and serialisation decisions described above in the layers that own them.
+/// <b>No behaviour lives here.</b> This type performs no I/O, holds no service, reads no clock and
+/// validates nothing (Rule T6); it uses honest CLR types and no sentinel (Rule T7); and it
+/// references nothing outside <c>DnnMigration.Domain</c> (Rule T1), which is what keeps the
+/// persistence and serialisation decisions described above in the layers that own them.
 /// </para>
 /// </remarks>
 public sealed class Permission : Entity<int>
@@ -94,9 +75,8 @@ public sealed class Permission : Entity<int>
     /// MIGRATION: this table is one of the few whose identity seed is 1 rather than 0 or -1, so zero
     /// happens never to identify a real row here. That is emphatically NOT a licence to read zero as
     /// "not saved yet": <see cref="Entity{TId}"/> declares persisted state rather than deducing it,
-    /// precisely because the sibling tables seed at 0 and -1, and this entity adds no member that
-    /// would deduce it for the one table where the trick would have worked. A local convenience of
-    /// that kind is how an inconsistency spreads.
+    /// precisely because the sibling tables seed at 0 and -1, and no member is added here that would
+    /// deduce it for the one table where the trick would have worked.
     /// </remarks>
     public int PermissionId { get; set; }
 
@@ -151,14 +131,13 @@ public sealed class Permission : Entity<int>
     /// MIGRATION: required, and a foreign key in intent only - which is why NO relationship is modelled
     /// over it. The upgrade chain declares no <c>FOREIGN KEY</c> on this column anywhere; the only
     /// constraints naming this table point the other way, from the grant tables to
-    /// <c>Permission.PermissionID</c> (<c>02.02.00.SqlDataProvider</c> lines 744, 768 and 777, rebuilt
-    /// with cascade delete by <c>03.00.09.SqlDataProvider</c> lines 482, 488 and 492). A system-level
-    /// entry - one whose <see cref="PermissionCode"/> is <c>SYSTEM_TAB</c>,
-    /// <c>SYSTEM_MODULE_DEFINITION</c> or <c>SYSTEM_FOLDER</c>, and which therefore belongs to no
-    /// particular definition - carries the value -1 here and has no principal row at all. Because the
-    /// column is <c>NOT NULL</c>, any relationship the object-relational mapper could express over it
-    /// would be a REQUIRED one, asserting a principal those rows do not have; the omission is explained
-    /// in full below the display-name property and mirrored in <c>PermissionConfiguration</c>.
+    /// <c>Permission.PermissionID</c> (rebuilt with cascade delete by
+    /// <c>03.00.09.SqlDataProvider</c> lines 482, 488 and 492). A system-level entry - one whose
+    /// <see cref="PermissionCode"/> is <c>SYSTEM_TAB</c>, <c>SYSTEM_MODULE_DEFINITION</c> or
+    /// <c>SYSTEM_FOLDER</c> - carries the value -1 here and has no principal row at all, and because
+    /// the column is <c>NOT NULL</c> any relationship the mapper could express over it would be a
+    /// REQUIRED one, asserting a principal those rows do not have. The omission is set out below the
+    /// display-name property and mirrored in <c>PermissionConfiguration</c>.
     /// </para>
     /// <para>
     /// MIGRATION: that -1 is <b>real data, not the legacy <c>Null.NullInteger</c> sentinel</b>. Rule T7
@@ -215,13 +194,11 @@ public sealed class Permission : Entity<int>
     /// <c>hasPermission</c> directive compares against the same upper-case strings. A member may
     /// consequently never be renamed and never be case-normalised at any boundary; matching an
     /// inbound or stored spelling case-insensitively is fine, but the value written must be the
-    /// canonical identifier. An unrecognised stored value must fail loudly rather than resolve to a
-    /// member: silently degrading an unknown key to the zero member would turn it into a VIEW grant,
-    /// which is the one failure mode a security vocabulary must not have. The framework's own string
-    /// conversion behaves that way already - it resolves a stored spelling by name, case-insensitively,
-    /// and refuses anything else with "Cannot convert string value … to any value in the mapped
-    /// 'PermissionKey' enum" rather than substituting a member - so the correct mapping needs no
-    /// defensive fallback, and adding one would be a regression rather than a safeguard.
+    /// canonical identifier. An unrecognised stored value must fail LOUDLY rather than resolve to a
+    /// member, because silently degrading an unknown key to the zero member would turn it into a VIEW
+    /// grant - the one failure mode a security vocabulary must not have. The framework's own string
+    /// conversion already refuses an unmapped spelling outright, so the correct mapping needs no
+    /// defensive fallback and adding one would be a regression rather than a safeguard.
     /// </para>
     /// <para>
     /// MIGRATION: <b>a key is not a bit-mask.</b> The enumeration declares no <c>[Flags]</c>
@@ -251,26 +228,23 @@ public sealed class Permission : Entity<int>
     public string PermissionName { get; set; } = string.Empty;
 
     // MIGRATION: THERE IS DELIBERATELY NO ModuleDefinition NAVIGATION ON THIS ENTITY, and adding one
-    //   would be a defect rather than a convenience. Three facts force the omission and they compound.
-    //   First, no physical foreign key from dbo.Permission to dbo.ModuleDefinitions exists anywhere in
-    //   the eighty-eight-script chain - PermissionConfiguration records the exhaustive proof of that
-    //   absence. Second, the system-level catalogue rows the legacy installer creates carry
-    //   ModuleDefID = -1, which matches no ModuleDefinitions row: the value is REAL DATA identifying a
-    //   product-wide permission, not an absent reference, and it is exactly why the database never
-    //   enforced the reference. Third, and decisively, ModuleDefID is int NOT NULL, so any relationship
-    //   Entity Framework Core could express over it is a REQUIRED one - an optional relationship over a
-    //   non-nullable foreign key is rejected at model validation, and a nullable navigation cannot
-    //   change that. A required relationship asserts every row has a principal, which for the -1 rows is
-    //   false; it also makes the navigation permanently unloadable for them and invites an Include that
-    //   can never succeed.
+    //   would be a defect rather than a convenience. Three facts compound. No physical foreign key from
+    //   dbo.Permission to dbo.ModuleDefinitions exists anywhere in the eighty-eight-script chain -
+    //   PermissionConfiguration records the exhaustive proof. The system-level rows the legacy installer
+    //   creates carry ModuleDefID = -1, which matches no ModuleDefinitions row, because the value is
+    //   REAL DATA identifying a product-wide permission rather than an absent reference - which is
+    //   exactly why the database never enforced the reference. And decisively, ModuleDefID is int NOT
+    //   NULL, so any relationship EF Core could express over it is a REQUIRED one (an optional
+    //   relationship over a non-nullable foreign key is rejected at model validation, and a nullable
+    //   navigation cannot change that), asserting a principal the -1 rows do not have and inviting an
+    //   Include that can never succeed.
     //
-    // MIGRATION: the scalar <see cref="ModuleDefinitionId"/> above is the whole of the association and
-    //   is mapped to the real ModuleDefID column, so nothing about the persisted shape changes. A caller
-    //   that needs the definition behind a real identifier resolves it explicitly through
-    //   IModuleDefinitionRepository, which forces the -1 case to be handled deliberately instead of
-    //   being hidden behind a navigation that silently yields nothing. ModuleDefinition carries no
-    //   inverse collection for the same reason: leaving one in place would let the relationship-discovery
-    //   convention rebuild exactly the required relationship this omission exists to prevent.
+    // MIGRATION: the scalar ModuleDefinitionId above is the whole of the association and is mapped to
+    //   the real ModuleDefID column, so nothing about the persisted shape changes. A caller needing the
+    //   definition behind a real identifier resolves it through IModuleDefinitionRepository, which
+    //   forces the -1 case to be handled deliberately. ModuleDefinition carries no inverse collection
+    //   for the same reason: leaving one in place would let relationship discovery rebuild exactly the
+    //   required relationship this omission exists to prevent.
 
     /// <summary>
     /// Gets the module-level grants that refer to this catalogue entry.
@@ -281,15 +255,13 @@ public sealed class Permission : Entity<int>
     /// </value>
     /// <remarks>
     /// MIGRATION: <see cref="ModulePermission"/> REFERENCES this entity by
-    /// <see cref="ModulePermission.PermissionId"/>; it does not and must not derive from it. The
-    /// legacy model had <c>ModulePermissionInfo</c> inherit <c>PermissionInfo</c> and flatten the
-    /// joined catalogue columns onto the grant, which made a grant indistinguishable from the action
-    /// it grants and duplicated <c>PermissionCode</c>, <c>PermissionKey</c> and <c>PermissionName</c>
-    /// onto every row. The tables were always separate, related by a foreign key with cascade delete
-    /// (<c>03.00.09.SqlDataProvider</c> line 492), and the target models them that way: joined
-    /// columns are reassembled by an Application-layer projection when a caller needs them, and
-    /// nowhere else. The collection is exposed get-only so that the instance the mapper populates can
-    /// never be swapped out from under it.
+    /// <see cref="ModulePermission.PermissionId"/>; it does not and must not derive from it. The legacy
+    /// model had <c>ModulePermissionInfo</c> inherit <c>PermissionInfo</c> and flatten the joined
+    /// catalogue columns onto the grant, making a grant indistinguishable from the action it grants.
+    /// The tables were always separate, related by a foreign key with cascade delete
+    /// (<c>03.00.09.SqlDataProvider</c> line 492), and the target models them that way: joined columns
+    /// are reassembled by an Application-layer projection when a caller needs them, and nowhere else.
+    /// The collection is get-only so the instance the mapper populates cannot be swapped out.
     /// </remarks>
     public ICollection<ModulePermission> ModulePermissions { get; } = new List<ModulePermission>();
 

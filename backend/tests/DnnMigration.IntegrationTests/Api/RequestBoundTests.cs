@@ -53,14 +53,14 @@ public sealed class RequestBoundTests
     [InlineData("""{"moduleSettings":null,"tabModuleSettings":null}""")]
     public async Task ModuleSettings_WithAnExplicitlyNullMap_AreRefusedRatherThanFaulting(string body)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         int moduleId = await SeededModuleIdAsync();
 
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         using HttpResponseMessage response = await client.PutAsync(
             new Uri(
                 FormattableString.Invariant(
-                    $"/api/v1/portals/{_fixture.Seed.PortalId}/modules/{moduleId}/settings"),
+                    $"/api/v1/modules/{moduleId}/settings"),
                 UriKind.Relative),
             content);
 
@@ -81,7 +81,7 @@ public sealed class RequestBoundTests
     [Fact]
     public async Task ModuleSettings_CarryingMoreEntriesThanPermitted_AreRefused()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         int moduleId = await SeededModuleIdAsync();
 
         var moduleSettings = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -93,7 +93,7 @@ public sealed class RequestBoundTests
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             new Uri(
                 FormattableString.Invariant(
-                    $"/api/v1/portals/{_fixture.Seed.PortalId}/modules/{moduleId}/settings"),
+                    $"/api/v1/modules/{moduleId}/settings"),
                 UriKind.Relative),
             new { moduleSettings, tabModuleSettings = new Dictionary<string, string>() });
 
@@ -116,7 +116,7 @@ public sealed class RequestBoundTests
     [InlineData("   ")]
     public async Task PageUpdate_WithABlankName_IsRefused(string tabName)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             new Uri(
@@ -144,7 +144,7 @@ public sealed class RequestBoundTests
     [Fact]
     public async Task PageUpdate_WithADateOutsideTheStoredCalendar_IsRefused()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             new Uri(
@@ -173,12 +173,11 @@ public sealed class RequestBoundTests
     [Fact]
     public async Task Listing_WithAnUnrepresentablePageOffset_IsRefused()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri(
-                FormattableString.Invariant(
-                    $"/api/v1/portals/{_fixture.Seed.PortalId}/users?pageIndex=300000000&pageSize=100"),
+                "/api/v1/users?pageIndex=300000000&pageSize=100",
                 UriKind.Relative));
 
         response.StatusCode.Should().Be(
@@ -194,12 +193,11 @@ public sealed class RequestBoundTests
     [Fact]
     public async Task Listing_WithARepresentableDeepOffset_IsServed()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri(
-                FormattableString.Invariant(
-                    $"/api/v1/portals/{_fixture.Seed.PortalId}/users?pageIndex=1000&pageSize=100"),
+                "/api/v1/users?pageIndex=1000&pageSize=100",
                 UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -212,11 +210,11 @@ public sealed class RequestBoundTests
     [Fact]
     public async Task RoleCreate_WithAFeePastTheCurrencyCeiling_IsRefused()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             new Uri(
-                FormattableString.Invariant($"/api/v1/portals/{_fixture.Seed.PortalId}/roles"),
+                "/api/v1/roles",
                 UriKind.Relative),
             new
             {

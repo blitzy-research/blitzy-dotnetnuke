@@ -3,7 +3,7 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// One row of the module listing returned by <c>GET /api/v1/portals/{portalId}/modules</c>: a single module instance as
+/// One row of the module listing returned by <c>GET /api/v1/modules</c>: a single module instance as
 /// it is placed on a page, reduced to the facts an administration grid displays. Carries no paging
 /// metadata of its own - it is one row and nothing more - and no navigation property, tracked state
 /// or behaviour, so no domain entity is exposed through it in either direction.
@@ -24,16 +24,12 @@ namespace DnnMigration.Application.Dtos.Module;
 /// </para>
 /// <para>
 /// THE PLACEMENT SPLIT IS DESTRUCTIVE IN THE SCHEMA, NOT A MODELLING PREFERENCE. Script 03.00.01
-/// adds <c>PortalID</c> to <c>Modules</c> (line 11), drops the foreign key that had tied
-/// <c>Modules</c> to <c>Tabs</c> (lines 13-14), drops ten columns from <c>Modules</c> in one
-/// statement including <c>ModuleOrder</c> (lines 197-198) and drops <c>TabID</c> itself (lines
-/// 204-205); the replacement <c>TabModules</c> table is created at line 19 of the same script with
-/// <c>TabModuleID int NOT NULL IDENTITY (1, 1)</c>, <c>TabID</c>, <c>ModuleID</c>, <c>PaneName</c>,
-/// <c>ModuleOrder</c> and, at line 31, <c>Visibility int NOT NULL</c>. <c>DisplayTitle</c> joins it
-/// at 03.00.08 line 156. On the module side, <c>AllTabs</c> arrives at 01.00.04 line 85 with a
-/// default of 0, <c>IsDeleted</c> at 02.00.00 line 6568 with a default of 0, and <c>StartDate</c>
-/// and <c>EndDate</c> at 02.02.00 lines 324-325. Only the cumulative terminal state is meaningful:
-/// the 01.00.00 baseline <c>Modules</c> table (line 220) declares none of these six columns.
+/// adds <c>PortalID</c> to <c>Modules</c>, drops the foreign key that had tied <c>Modules</c> to
+/// <c>Tabs</c>, drops ten columns from <c>Modules</c> including <c>ModuleOrder</c>, and drops
+/// <c>TabID</c> itself; the replacement <c>TabModules</c> table is created in the same script with
+/// <c>TabModuleID int NOT NULL IDENTITY (1, 1)</c>. Only the cumulative terminal state is
+/// meaningful: the 01.00.00 baseline <c>Modules</c> table declares none of the six columns this
+/// contract reads from the module side.
 /// </para>
 /// <para>
 /// SENTINELS ARE PRESERVED, NOT NORMALISED, AND SEVERAL COLLIDE WITH REAL DATA. The legacy layer
@@ -62,21 +58,16 @@ namespace DnnMigration.Application.Dtos.Module;
 /// and never be accepted on a request.
 /// </para>
 /// <para>
-/// ALSO DELIBERATELY ABSENT, several of them real terminal columns: the portal identifier, because
-/// the request is already portal-scoped by the per-request
-/// portal context (and <c>Modules.PortalID</c> is itself nullable, 03.00.01 line 11); pane-layout,
-/// rendering, container and skinning members, whose purpose was server-side markup generation;
-/// permission collections, since permission evaluation belongs to the infrastructure security layer
-/// and a separate read-only catalogue - note that <c>AuthorizedEditRoles</c> and
-/// <c>AuthorizedViewRoles</c> were themselves dropped from <c>Modules</c> at 03.00.01 lines
-/// 1401-1405, which is why the legacy reader re-read them inside a swallowing Try/Catch;
+/// ALSO DELIBERATELY ABSENT: the portal identifier, because the request is already portal-scoped by
+/// the per-request portal context; pane-layout, rendering, container and skinning members, whose
+/// purpose was server-side markup generation; permission collections, since permission evaluation
+/// belongs to the infrastructure security layer and a separate read-only catalogue;
 /// <c>IsDefaultModule</c> and <c>AllModules</c>, which are intent flags belonging on an update
 /// request rather than module state; <c>CacheTime</c>, <c>IconFile</c>, <c>Header</c> and
 /// <c>Footer</c>, which are settings-screen concerns; definition, desktop-module and control
-/// metadata, reachable through <see cref="ModuleDefinitionDto"/>; audit members, of which this
-/// schema declares none on either table; and any nested page shape, pages being consumed as a
-/// lookup exactly as the legacy picker did. This type also carries no validation attribute: a list
-/// row is never submitted.
+/// metadata, reachable through <see cref="ModuleDefinitionDto"/>; and audit members, of which this
+/// schema declares none on either table. This type carries no validation attribute: a list row is
+/// never submitted.
 /// </para>
 /// </remarks>
 public sealed class ModuleListItemDto

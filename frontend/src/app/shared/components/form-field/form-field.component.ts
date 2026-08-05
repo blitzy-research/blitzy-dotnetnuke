@@ -82,9 +82,12 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   Input,
   computed,
+  inject,
   signal,
+  type AfterContentChecked,
   type Signal,
 } from '@angular/core';
 
@@ -154,6 +157,35 @@ const TRAILING_COLON = /\s*:$/;
 const ID_PREFIX = 'app-form-field';
 
 /**
+ * Native and ARIA controls that can be projected into the field.
+ *
+ * The query is deliberately scoped to the projection wrapper before it is used,
+ * so it never reaches the help disclosure button that this component owns.
+ */
+const PROJECTED_CONTROL_SELECTOR = [
+  'a[href]',
+  'button',
+  'input:not([type="hidden"])',
+  'select',
+  'textarea',
+  '[contenteditable="true"]',
+  '[role="button"]',
+  '[role="checkbox"]',
+  '[role="combobox"]',
+  '[role="listbox"]',
+  '[role="radio"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="switch"]',
+  '[role="textbox"]',
+].join(',');
+
+/** A labelable element's browser-provided list of associated labels. */
+type LabelableElement = HTMLElement & {
+  readonly labels?: NodeListOf<HTMLLabelElement> | null;
+};
+
+/**
  * Instances created so far, used only to make an identifier unique.
  *
  * Module-scoped and monotonic. A component cannot derive a unique identifier from
@@ -169,6 +201,72 @@ function nextFormFieldId(): string {
   instanceCount += 1;
 
   return `${ID_PREFIX}-${instanceCount}`;
+}
+
+/** Whether the supplied text contains an accessible-name token. */
+function hasText(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Whether a projected control already owns an accessible name.
+ *
+ * Explicit ARIA naming and native `<label>` association take precedence over the
+ * field-level fallback. Buttons, links and custom role-based controls may also be
+ * named by their own visible text; inputs whose accessible name comes from a
+ * value or alternative text are handled explicitly.
+ */
+function hasOwnAccessibleName(control: HTMLElement): boolean {
+  if (
+    hasText(control.getAttribute('aria-label')) ||
+    hasText(control.getAttribute('aria-labelledby')) ||
+    hasText(control.getAttribute('title'))
+  ) {
+    return true;
+  }
+
+  const labels = (control as LabelableElement).labels;
+
+  if (
+    labels !== undefined &&
+    labels !== null &&
+    Array.from(labels).some((label) => hasText(label.textContent))
+  ) {
+    return true;
+  }
+
+  if (control instanceof HTMLInputElement) {
+    const inputType = control.type.toLowerCase();
+
+    if (inputType === 'image') {
+      return hasText(control.alt);
+    }
+
+    if (inputType === 'button' || inputType === 'reset' || inputType === 'submit') {
+      return hasText(control.value);
+    }
+
+    return false;
+  }
+
+  if (
+    control instanceof HTMLSelectElement ||
+    control instanceof HTMLTextAreaElement ||
+    control.isContentEditable
+  ) {
+    return false;
+  }
+
+  const role = control.getAttribute('role');
+  const canNameFromContents =
+    control instanceof HTMLAnchorElement ||
+    control instanceof HTMLButtonElement ||
+    role === 'button' ||
+    role === 'checkbox' ||
+    role === 'radio' ||
+    role === 'switch';
+
+  return canNameFromContents && hasText(control.textContent);
 }
 
 /**
@@ -271,12 +369,11 @@ function normaliseMessages(
  * 24, Modules 25, Tabs 34 - so every decision here is multiplied 186 times, which
  * is why each one below is measured rather than assumed.
  *
- * WHAT THE CALLER OWNS. The control is projected, so this component cannot reach
- * it: it can neither read nor write an attribute on it. The caller therefore
- * keeps three responsibilities that cannot be delegated. It puts the same `id` on
- * the control that it passes to {@link for}. It sets the control's own `required`
- * or `aria-required`, because {@link required} here is a presentational marker
- * and cannot make a field required. And it decides WHEN a message exists: every
+ * WHAT THE CALLER OWNS. The caller keeps three responsibilities that cannot be
+ * delegated. It puts the same `id` on the primary control that it passes to
+ * {@link for}. It sets each control's own `required` or `aria-required`, because
+ * {@link required} here is a presentational marker and cannot make a field
+ * required. And it decides WHEN a message exists: every
  * validator in scope declares `Display="Dynamic"` - 35 occurrences, and not one
  * declaring anything else - which means a legacy message appeared only once the
  * field had been submitted and found invalid. The equivalent lives in the
@@ -296,10 +393,13 @@ function normaliseMessages(
  *
  * MIGRATION: the second control of such a field was UNLABELLED in the legacy
  * markup, because `ControlName` names exactly one control and the label's `for`
- * can only point at one element. The projection wrapper therefore carries
- * `role="group"` named by {@link groupLabelledBy}, so every control in the field
- * inherits the field's name. This is invisible: it changes no layout, no colour
- * and no spacing.
+ * can only point at one element. A named `role="group"` provides useful composite
+ * context but does NOT give its descendants accessible names. After projected
+ * content is checked, this component therefore places the visible label's id
+ * directly in `aria-labelledby` on every otherwise unnamed projected control.
+ * A caller-supplied native label, `aria-label` or `aria-labelledby` always wins,
+ * so composite fields may provide more specific names such as "Frequency". The
+ * fallback is invisible: it changes no layout, no colour and no spacing.
  *
  * MIGRATION: the legacy layout hacks are not reproduced. The `<br />` on
  * `labelcontrol.ascx:L8` and the 70 literal `&nbsp;` sequences in the in-scope
@@ -343,7 +443,7 @@ function normaliseMessages(
   styleUrl: './form-field.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class FormFieldComponent {
+export class FormFieldComponent implements AfterContentChecked {
   // -------------------------------------------------------------------------
   // STATE
   // -------------------------------------------------------------------------
@@ -366,6 +466,19 @@ export class FormFieldComponent {
 
   /** The normalised messages. Normalisation happens once, in the setter. */
   private readonly messages = signal<readonly string[]>(EMPTY_MESSAGES);
+
+  /** The component host, used only to wire accessible names onto projected controls. */
+  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  /**
+   * Controls whose `aria-labelledby` value this component owns.
+   *
+   * A weak map neither retains controls removed by conditional projection nor
+   * exposes an implementation marker in the DOM. The stored value lets the
+   * component distinguish its own fallback from a consumer that subsequently
+   * supplies a more specific name.
+   */
+  private readonly automaticallyLabelledControls = new WeakMap<HTMLElement, string>();
 
   /**
    * Whether the help disclosure is open.
@@ -426,9 +539,10 @@ export class FormFieldComponent {
    * MAY BE EMPTY, and that is a measured requirement rather than a courtesy: 5 of
    * the 186 legacy labels declare no `controlname` at all. An empty value renders
    * NO `for` attribute, because `for=""` is a dangling reference that names
-   * nothing and reports as an error to any auditing tool. When it is empty the
-   * projection wrapper's `role="group"` naming is the field's only association
-   * mechanism, and it is sufficient.
+   * nothing and reports as an error to any auditing tool. When it is empty,
+   * unnamed projected controls are still associated directly through the
+   * field-label fallback applied by {@link ensureProjectedControlsAreNamed}, while
+   * callers remain free to provide a more specific accessible name.
    *
    * Trimmed on the way in, because a value with surrounding whitespace cannot
    * match an element's `id` and would produce exactly the dangling reference this
@@ -665,12 +779,10 @@ export class FormFieldComponent {
    * The label reference that names the projection group, or null when there is no
    * label to name it with.
    *
-   * MIGRATION: this is how the second control of a multi-control field gets a
-   * name. The legacy `ControlName` reached exactly one control, so the drop-down
-   * beside `txtBillingPeriod` and the buttons beside `cboRoleGroups` were
-   * announced with no field name at all. Naming the group names every control
-   * inside it, and it does so with the label text that is already on screen rather
-   * than with wording invented here.
+   * This names the composite group only. ARIA naming is not inherited by
+   * descendants, so {@link ensureProjectedControlsAreNamed} separately gives each
+   * otherwise unnamed projected control a direct reference to the same visible
+   * label.
    */
   protected readonly groupLabelledBy: Signal<string | null> = computed(() =>
     this.hasLabel() ? this.labelId() : null,
@@ -739,6 +851,75 @@ export class FormFieldComponent {
   // -------------------------------------------------------------------------
   // BEHAVIOUR
   // -------------------------------------------------------------------------
+
+  /**
+   * Reconciles direct accessible-name references after projected content changes.
+   *
+   * Content may be added or removed by built-in control flow, and the field's
+   * `for` input may change after initial rendering. Running after each content
+   * check keeps those cases correct while remaining idempotent: a control that
+   * already has its own name is untouched, and an owned fallback is written only
+   * when its target changes.
+   */
+  public ngAfterContentChecked(): void {
+    this.ensureProjectedControlsAreNamed();
+  }
+
+  /**
+   * Gives each otherwise unnamed projected control a direct accessible name.
+   *
+   * A group label supplies context for the composite but cannot name a child
+   * control. The fallback therefore writes `aria-labelledby` on the child itself.
+   * Consumer-owned naming is never replaced, and a fallback is removed when the
+   * field no longer has visible label text so it cannot become a dangling
+   * reference.
+   */
+  private ensureProjectedControlsAreNamed(): void {
+    const projection = this.hostElement.nativeElement.querySelector<HTMLElement>(
+      '.form-field__control',
+    );
+
+    if (projection === null) {
+      return;
+    }
+
+    const labelReference = this.groupLabelledBy();
+    const controls = Array.from(
+      projection.querySelectorAll<HTMLElement>(PROJECTED_CONTROL_SELECTOR),
+    );
+
+    for (const control of controls) {
+      const ownedReference = this.automaticallyLabelledControls.get(control);
+
+      if (ownedReference !== undefined) {
+        const currentReference = control.getAttribute('aria-labelledby');
+
+        if (currentReference !== ownedReference) {
+          // The consumer changed the attribute after projection. Its explicit
+          // decision owns the control from this point unless the name is removed.
+          this.automaticallyLabelledControls.delete(control);
+        } else if (labelReference === null) {
+          control.removeAttribute('aria-labelledby');
+          this.automaticallyLabelledControls.delete(control);
+          continue;
+        } else {
+          if (ownedReference !== labelReference) {
+            control.setAttribute('aria-labelledby', labelReference);
+            this.automaticallyLabelledControls.set(control, labelReference);
+          }
+
+          continue;
+        }
+      }
+
+      if (hasOwnAccessibleName(control) || labelReference === null) {
+        continue;
+      }
+
+      control.setAttribute('aria-labelledby', labelReference);
+      this.automaticallyLabelledControls.set(control, labelReference);
+    }
+  }
 
   /**
    * Opens the help disclosure when it is closed and closes it when it is open.

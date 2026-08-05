@@ -102,7 +102,12 @@ namespace DnnMigration.Api.Authorization;
 /// component.
 /// </para>
 /// </remarks>
-public sealed class PermissionAuthorizationHandler : AuthorizationHandler<PermissionRequirement>
+// Internal, like every other authorisation component in this namespace. It was public only because nothing
+// forced the question; the container activates it by interface and no consumer outside this assembly names
+// it. Narrowing it is what lets it take the internal tenant-binding evaluator as a dependency - see the
+// remarks below - and it removes a type from the assembly's public surface that was never meant to be part of
+// it.
+internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<PermissionRequirement>
 {
     /// <summary>
     /// The route value naming the module instance a module-scoped decision is about.
@@ -131,6 +136,7 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
     private readonly IPermissionService _permissions;
     private readonly ICurrentUser _currentUser;
     private readonly IPortalContextHolder _portalContext;
+    private readonly PortalAdministrationEvaluator _tenantBinding;
 
     /// <summary>
     /// Records why a requirement could not be evaluated, or why an evaluated requirement was not met.
@@ -157,6 +163,11 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
     /// The tenant context, resolved on demand from the requested host when neither the route nor the
     /// caller names a tenant. Registered scoped.
     /// </param>
+    /// <param name="tenantBinding">
+    /// Reconciles the three tenant identities a request can carry - arrival, route and token - and answers the
+    /// host-account question from stored state. Shared with the membership policies so that no two
+    /// authorisation components can reconcile them differently. Registered scoped.
+    /// </param>
     /// <param name="logger">
     /// Records why a requirement could not be evaluated, and why an evaluated requirement was refused.
     /// Diagnostic only: nothing it receives influences the decision.
@@ -170,16 +181,19 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         IPermissionService permissions,
         ICurrentUser currentUser,
         IPortalContextHolder portalContext,
+        PortalAdministrationEvaluator tenantBinding,
         ILogger<PermissionAuthorizationHandler> logger)
     {
         ArgumentNullException.ThrowIfNull(permissions);
         ArgumentNullException.ThrowIfNull(currentUser);
         ArgumentNullException.ThrowIfNull(portalContext);
+        ArgumentNullException.ThrowIfNull(tenantBinding);
         ArgumentNullException.ThrowIfNull(logger);
 
         _permissions = permissions;
         _currentUser = currentUser;
         _portalContext = portalContext;
+        _tenantBinding = tenantBinding;
         _logger = logger;
     }
 
@@ -220,6 +234,28 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
             _logger.LogWarning(
                 "A {Scope} permission requirement was declared on a route that names no tenant, and the "
                 + "caller's token carries none either, so the requirement cannot be evaluated.",
+                requirement.Scope);
+            return;
+        }
+
+        // SEC: THE TOKEN'S TENANT MUST BE THE TENANT BEING EVALUATED, and this test has to come before any
+        // grant is read. ResolvePortalIdAsync prefers the ROUTE's portal, which is correct - the route names
+        // the resource, and a grant must be evaluated against the resource's tenant - but on its own it means
+        // a caller can name any tenant it likes in the route and have its grants looked up there. An account
+        // may belong to several portals, and module and page grants are per portal, so a caller holding real
+        // grants in portal B could present a token minted in portal A and exercise B's grants through it for
+        // the whole life of that token.
+        //
+        // The reconciliation is delegated rather than repeated: the same member the membership policies use
+        // answers it, so the two families of policy cannot disagree about which tenant a request is about. A
+        // host account is exempt and is confirmed against stored state inside it, never from the token's
+        // super-user claim.
+        if (!await _tenantBinding.IsTenantBoundAsync(context.User, httpContext.RequestAborted)
+            .ConfigureAwait(false))
+        {
+            _logger.LogWarning(
+                "A {Scope} permission requirement was refused because the caller's token was issued for a "
+                + "different tenant than the one the request acts on.",
                 requirement.Scope);
             return;
         }
@@ -288,11 +324,12 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         };
 
         // Success is tested before the value is read, and in that order only: reading the value of an
-        // unsuccessful outcome throws. An unsuccessful evaluation is a denial and stays silent - its
-        // reason is not surfaced to the caller, because a permission probe must not become a channel
-        // for describing the permission model, and it is not logged here either, since the request
-        // logging middleware already records the outcome against the correlation identifier without
-        // putting principal data into a log line.
+        // unsuccessful outcome throws. An unsuccessful evaluation is a denial, and the reason for it is
+        // not surfaced to the CALLER - a permission probe must not become a channel for describing the
+        // permission model - but it IS recorded, immediately below, because an operator diagnosing a
+        // refusal has nothing else to go on. What that record carries is bounded: the requirement's
+        // scope and permission, the scope identifier, the portal, and the failure code. No principal
+        // name, no claim value and no credential of any kind.
         //
         // MIGRATION: the legacy pages refused by sending the browser to an access-denied page. Here a
         // refusal is simply the absence of a grant, which the framework renders as a challenge or a
@@ -305,8 +342,10 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         }
 
         // Refused, and the reason is recorded because the caller is told nothing beyond the status. A
-        // failed evaluation and an honest refusal are separated by the failure code, which is the only
-        // thing that distinguishes them once the response has left.
+        // failed evaluation and an honest refusal are separated by the failure code alone - "not_permitted"
+        // where the grant was simply absent - which is the only thing that distinguishes them once the
+        // response has left. Information level rather than warning: a refusal is the normal operation of
+        // an authorisation policy, not a fault.
         _logger.LogInformation(
             "A {Scope} {Permission} requirement was not met for scope {ScopeId} in portal {PortalId}: "
             + "{FailureCode}.",

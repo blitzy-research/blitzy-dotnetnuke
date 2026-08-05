@@ -96,10 +96,11 @@ public class AuthServiceTests
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The authentication contract offers exactly four operations with the measured shapes.
+    /// The authentication contract offers the four public authentication operations plus the
+    /// authoritative remediation-state read used by the API authorization gate.
     /// </summary>
     [Fact]
-    public void AuthenticationContract_OffersExactlyFourOperations()
+    public void AuthenticationContract_OffersExactlyFiveOperations()
     {
         typeof(IAuthService).GetMethods().Select(member => member.Name).Should().BeEquivalentTo(
             new[]
@@ -107,6 +108,7 @@ public class AuthServiceTests
                 nameof(IAuthService.LoginAsync),
                 nameof(IAuthService.RefreshAsync),
                 nameof(IAuthService.LogoutAsync),
+                nameof(IAuthService.EvaluateRemediationAsync),
                 nameof(IAuthService.GetCurrentUserAsync),
             });
 
@@ -404,6 +406,33 @@ public class AuthServiceTests
     }
 
     /// <summary>
+    /// A pending registration whose stored address violates the portal's configured expression is not
+    /// approved, even when the predictable legacy verification code is supplied correctly.
+    /// </summary>
+    [Fact]
+    public async Task SignIn_DoesNotApproveAnAddressRejectedByThePortalRule()
+    {
+        Harness harness = Harness.Ready();
+        harness.IsApproved = false;
+        harness.Accounts
+            .Setup(accounts => accounts.IsEmailValidAsync(
+                PortalId,
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(false));
+
+        Result<LoginResponse> result = await harness.LoginAsync(verificationCode: "-1-7");
+
+        result.IsFailure.Should().BeTrue();
+        harness.Users.Verify(
+            users => users.SetApprovalAsync(
+                It.IsAny<int>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
     /// The verification code is built from the tenant being signed in to and the account resolved.
     /// </summary>
     [Fact]
@@ -538,7 +567,8 @@ public class AuthServiceTests
         harness.IsApproved = false;
         harness.IsLockedOut = true;
         harness.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
-        harness.CurrentUser.SetupGet(caller => caller.IsSuperUser).Returns(true);
+        harness.CurrentUser.SetupGet(caller => caller.UserId).Returns(UserId);
+        harness.InstallationWideAccount = HostAccount();
 
         Result<LoginResponse> result = await harness.LoginAsync(verificationCode: "-1-7");
 
@@ -704,10 +734,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
     }
@@ -752,6 +778,126 @@ public class AuthServiceTests
         DateTime recorded = harness.RecordedLoginInstant!.Value;
 
         harness.RehashInstant.Should().Be(recorded);
+    }
+
+    /// <summary>
+    /// A legacy credential accepted during the compatibility window is replaced with BCrypt before the
+    /// session is issued and the migration is audited without credential material.
+    /// </summary>
+    [Fact]
+    public async Task SignIn_MigratesAnAcceptedLegacyCredentialOnItsFirstLogin()
+    {
+        const string legacyValue = "legacy-encrypted-value";
+        const string legacySalt = "legacy-salt";
+        const string replacement = "$2a$12$replacement-value";
+        Harness harness = Harness.Ready();
+        harness.StoredCredential = legacyValue;
+        harness.CredentialFormat = PasswordFormat.Encrypted;
+        harness.CredentialSalt = legacySalt;
+        harness.CredentialMatches = false;
+        harness.LegacyCredentialMatches = true;
+        harness.PasswordHasher.Setup(hasher => hasher.Hash(RawPassword)).Returns(replacement);
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        harness.PasswordHasher.Verify(
+            hasher => hasher.Verify(RawPassword, DecoyHash),
+            Times.Once(),
+            "a legacy row still pays the same current-cost comparison as every other attempt");
+        harness.LegacyCredentials.Verify(
+            verifier => verifier.Verify(
+                RawPassword,
+                legacyValue,
+                PasswordFormat.Encrypted,
+                legacySalt),
+            Times.Once());
+        harness.PasswordHasher.Verify(
+            hasher => hasher.NeedsRehash(It.IsAny<string>()),
+            Times.Never(),
+            "legacy classification belongs to the compatibility verifier, not the BCrypt cost check");
+        harness.Users.Verify(
+            users => users.SetPasswordHashAsync(
+                UserId,
+                replacement,
+                Now,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+
+        AuditEvent migration = harness.AuditRecords
+            .Should().ContainSingle(record => record.EventName == AuditEventNames.LegacyCredentialMigrated)
+            .Subject;
+
+        migration.PortalId.Should().Be(PortalId);
+        migration.ActorUserId.Should().Be(UserId);
+        migration.SubjectUserId.Should().Be(UserId);
+        migration.Properties.Should().ContainSingle()
+            .Which.Should().Be(
+                new KeyValuePair<string, string?>("PreviousFormat", nameof(PasswordFormat.Encrypted)));
+
+        IEnumerable<string?> recordedValues = migration.Properties.Values;
+        recordedValues.Should().NotContain(value =>
+            value != null
+            && (value.Contains(RawPassword, StringComparison.Ordinal)
+                || value.Contains(legacyValue, StringComparison.Ordinal)
+                || value.Contains(legacySalt, StringComparison.Ordinal)
+                || value.Contains(replacement, StringComparison.Ordinal)));
+    }
+
+    /// <summary>A legacy representation that the bounded verifier refuses is neither replaced nor audited.</summary>
+    [Fact]
+    public async Task SignIn_WhenLegacyVerificationRefuses_WritesNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.StoredCredential = "legacy-encrypted-value";
+        harness.CredentialFormat = PasswordFormat.Encrypted;
+        harness.CredentialSalt = "legacy-salt";
+        harness.CredentialMatches = false;
+        harness.LegacyCredentialMatches = false;
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsFailure.Should().BeTrue();
+        harness.Users.Verify(
+            users => users.SetPasswordHashAsync(
+                It.IsAny<int>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.AuditRecords.Should().NotContain(
+            record => record.EventName == AuditEventNames.LegacyCredentialMigrated);
+    }
+
+    /// <summary>
+    /// A proven legacy credential still signs in if its immediate replacement store refuses the write, while
+    /// the distinct deadline-sensitive anomaly is recorded.
+    /// </summary>
+    [Fact]
+    public async Task SignIn_WhenLegacyReplacementFails_RecordsTheMigrationFailureAndStillSucceeds()
+    {
+        Harness harness = Harness.Ready();
+        harness.StoredCredential = "legacy-encrypted-value";
+        harness.CredentialFormat = PasswordFormat.Encrypted;
+        harness.CredentialSalt = "legacy-salt";
+        harness.CredentialMatches = false;
+        harness.LegacyCredentialMatches = true;
+        harness.CredentialUpgradeAccepted = false;
+        harness.PasswordHasher.Setup(hasher => hasher.Hash(RawPassword)).Returns("$2a$12$replacement-value");
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsSuccess.Should().BeTrue(
+            "a transient replacement failure must not turn a credential already proved correct into a refusal");
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.LegacyCredentialMigrationFailed,
+                PortalId,
+                UserId,
+                It.IsAny<string?>()),
+            Times.Once());
+        harness.AuditRecords.Should().NotContain(
+            record => record.EventName == AuditEventNames.LegacyCredentialMigrated);
     }
 
     /// <summary>
@@ -835,11 +981,9 @@ public class AuthServiceTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The order is what makes the upgrade path safe, and this is the assertion that pins it. Staleness
-    /// answers "replace it" for any stored value the hasher cannot parse -- which is every value carried
-    /// over from the legacy reversible store -- so a caller that consulted staleness BEFORE checking the
-    /// credential, and read the answer as licence to mint a replacement, would have converted the entire
-    /// legacy membership into accounts openable with any credential at all.
+    /// The order is what makes the upgrade path safe, and this is the assertion that pins it. Staleness is
+    /// consulted only after current-scheme verification has succeeded; legacy classification belongs to the
+    /// separate bounded verifier and likewise cannot reach replacement until it has accepted the credential.
     /// </para>
     /// <para>
     /// That the refusal writes nothing is asserted separately by
@@ -902,7 +1046,9 @@ public class AuthServiceTests
         record.Outcome.Should().Be(AuditOutcome.Failed, "which the sink raises to warning level");
         record.SubjectUserId.Should().Be(UserId);
         record.FailureCode.Should().Be(nameof(TimeoutException));
-        record.Properties.Should().BeEmpty("no password, no hash, and no exception message");
+        record.Properties.Should().ContainSingle()
+            .Which.Should().Be(
+                new KeyValuePair<string, string?>("ReplacementKind", "WorkFactorUpgrade"));
     }
 
     /// <summary>
@@ -950,10 +1096,9 @@ public class AuthServiceTests
         record.Outcome.Should().Be(AuditOutcome.Succeeded);
         record.PortalId.Should().Be(PortalId);
         record.ActorUserId.Should().Be(UserId);
-        record.ActorUserName.Should().Be(AccountName);
         record.SubjectUserId.Should().Be(UserId);
         record.FailureCode.Should().BeNull();
-        record.Properties.Should().ContainKey("Username").WhoseValue.Should().Be(AccountName);
+        record.Properties.Should().NotContainKey("Username", "stable account identifiers replace retained names");
         record.Properties.Should().NotContainKey("Password");
     }
 
@@ -1119,10 +1264,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 UserId,
                 PortalId,
-                AccountName,
-                false,
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Once());
     }
@@ -1222,13 +1363,13 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// An ordinary sign-in raises no advisory, and says so explicitly rather than by omission.
+    /// An ordinary sign-in raises no remediation requirement or expiry advisory, and says so explicitly
+    /// rather than by omission.
     /// </summary>
     /// <remarks>
-    /// Both advisories are plain booleans, so "no advisory" is a written <see langword="false"/> rather
+    /// All three flags are plain booleans, so "not required" is a written <see langword="false"/> rather
     /// than an absent field. The legacy null test treated a false boolean as absent, which is precisely the
-    /// ambiguity a nullable form would have reintroduced here. The legacy profile-completeness advisory has
-    /// no counterpart on the contract at all, for the reason recorded on LoginResponse.
+    /// ambiguity a nullable form would have reintroduced here.
     /// </remarks>
     [Fact]
     public async Task SignIn_WithNothingOutstanding_RaisesNoAdvisory()
@@ -1254,9 +1395,9 @@ public class AuthServiceTests
     /// exactly what the legacy wrote as its log type key: <c>loginStatus.ToString</c> (L80).
     /// </para>
     /// <para>
-    /// The tenant, the submitted account name and the resolved account are asserted with it, because an
-    /// entry that records only that something was refused answers none of the questions a trail is read
-    /// for.
+    /// The tenant and resolved account identifier are asserted with it. Submitted names are deliberately
+    /// excluded: unresolved probes remain anonymous rather than acquiring a second retention lifecycle in
+    /// the audit store.
     /// </para>
     /// </remarks>
     [Fact]
@@ -1268,8 +1409,6 @@ public class AuthServiceTests
         accepted.AuditRecords.Should().ContainSingle().Which.Should().Match<AuditEvent>(entry =>
             entry.EventName == AuditEventNames.LoginSuccess
             && entry.PortalId == PortalId
-            && entry.Properties["PortalName"] == "Measured Portal"
-            && entry.Properties["Username"] == AccountName
             && entry.ActorUserId == UserId);
 
         Harness locked = Harness.Ready();
@@ -1315,7 +1454,7 @@ public class AuthServiceTests
 
         harness.AuditRecords.Should().ContainSingle().Which.Should().Match<AuditEvent>(entry =>
             entry.EventName == AuditEventNames.LoginFailure
-            && entry.Properties["Username"] == "no-such-account"
+            && !entry.Properties.ContainsKey("Username")
             && entry.ActorUserId == null);
     }
 
@@ -1376,8 +1515,8 @@ public class AuthServiceTests
         typeof(AuditEvent).GetProperties().Select(property => property.Name).Should().BeEquivalentTo(
             new[]
             {
-                "EventName", "Outcome", "PortalId", "ActorUserId", "ActorUserName", "SubjectUserId",
-                "ResourceType", "ResourceId", "FailureCode", "Properties",
+                "EventName", "Outcome", "PortalId", "ActorUserId", "SubjectUserId", "ResourceType",
+                "ResourceId", "FailureCode", "Properties",
             },
             "the payload is closed, so a member added to it is a decision that has to be made here too");
     }
@@ -1421,7 +1560,8 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// C-03: an account whose profile is incomplete is admitted with the blocking profile advisory raised.
+    /// C-03: an account whose profile is incomplete is admitted only to the remediation-limited session,
+    /// with the blocking profile requirement raised.
     /// </summary>
     /// <remarks>
     /// The legacy gate is <c>UserController.vb</c> L1189-L1193 and its outcome was BLOCKING - the legacy flow
@@ -1447,7 +1587,8 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// C-03: the profile advisory is raised alongside a credential advisory rather than being suppressed by it.
+    /// C-03: the profile requirement is raised alongside a credential requirement rather than being
+    /// suppressed by it.
     /// </summary>
     /// <remarks>
     /// The legacy status enumeration was single-valued and tested the profile arm LAST, only while no other
@@ -1499,14 +1640,16 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// C-03: a profile question that cannot be answered admits the caller rather than refusing the sign-in.
+    /// A profile requirement that cannot be evaluated refuses the sign-in rather than issuing unrestricted
+    /// credentials on missing evidence.
     /// </summary>
     /// <remarks>
-    /// The gate reports a fact and declares no failure code, so a failure can only be unexpected. Turning an
-    /// advisory into an outage would be the wrong trade: the credential has already been verified.
+    /// MIGRATION: this deliberately tightens the earlier advisory-only implementation. The profile state is
+    /// now a blocking authorization input, so treating a store failure as "profile complete" would let an
+    /// account bypass the gate precisely when its required state cannot be established.
     /// </remarks>
     [Fact]
-    public async Task SignIn_TreatsAnUnanswerableProfileQuestionAsNoAdvisory()
+    public async Task SignIn_WhenProfileRemediationCannotBeEvaluated_FailsClosed()
     {
         Harness harness = Harness.Ready();
         harness.Accounts
@@ -1518,8 +1661,65 @@ public class AuthServiceTests
 
         Result<LoginResponse> result = await harness.LoginAsync();
 
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be("auth.remediation.store_unavailable");
+        harness.Tokens.Verify(
+            tokens => tokens.IssueTokensAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// The authorization-facing remediation read combines the durable credential flag with the current
+    /// profile requirement instead of trusting claims from the presented token.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateRemediationAsync_ReReadsBothBlockingRequirements()
+    {
+        Harness harness = Harness.Ready();
+        harness.ScopedAccount!.UpdatePassword = true;
+        harness.ProfileIncomplete = true;
+
+        Result<AuthenticationRemediationState> result = await harness.Service.EvaluateRemediationAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
         result.IsSuccess.Should().BeTrue();
-        result.Value.MustUpdateProfile.Should().BeFalse();
+        result.Value.MustChangePassword.Should().BeTrue();
+        result.Value.MustUpdateProfile.Should().BeTrue();
+        result.Value.IsRequired.Should().BeTrue();
+        harness.Accounts.Verify(
+            accounts => accounts.RequiresProfileCompletionAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// The authorization-facing remediation read fails closed when required profile state is unavailable.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateRemediationAsync_WhenProfileStateIsUnavailable_FailsClosed()
+    {
+        Harness harness = Harness.Ready();
+        harness.Accounts
+            .Setup(accounts => accounts.RequiresProfileCompletionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Failure("user.profile.unavailable", "unavailable"));
+
+        Result<AuthenticationRemediationState> result = await harness.Service.EvaluateRemediationAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be("auth.remediation.store_unavailable");
     }
 
     /// <summary>
@@ -1686,7 +1886,7 @@ public class AuthServiceTests
         recorded.EventName.Should().Be("LOGIN_SUCCESS");
         recorded.Properties["PortalId"].Should().Be(PortalId.ToString(CultureInfo.InvariantCulture));
         recorded.Properties["UserId"].Should().Be(UserId.ToString(CultureInfo.InvariantCulture));
-        recorded.Properties["Username"].Should().Be(AccountName);
+        recorded.Properties.Should().NotContainKey("Username");
         recorded.Properties["MustUpdateProfile"].Should().Be("true");
         recorded.Properties.Values.Should().NotContain(
             RawPassword,
@@ -1734,7 +1934,7 @@ public class AuthServiceTests
 
         recorded.EventName.Should().Be("LOGIN_FAILURE");
         recorded.Properties["UserId"].Should().Be(UserId.ToString(CultureInfo.InvariantCulture));
-        recorded.Properties["Username"].Should().Be(AccountName);
+        recorded.Properties.Should().NotContainKey("Username");
     }
 
     /// <summary>
@@ -1755,7 +1955,9 @@ public class AuthServiceTests
 
         recorded.EventName.Should().Be("LOGIN_FAILURE");
         recorded.Properties["UserId"].Should().BeNull("no account resolved, so none is recorded");
-        recorded.Properties["Username"].Should().Be("nobody");
+        recorded.Properties.Should().NotContainKey(
+            "Username",
+            "an unresolved submitted name remains anonymous in the independently retained trail");
     }
 
     /// <summary>
@@ -1797,7 +1999,9 @@ public class AuthServiceTests
             new Mock<IPermissionService>().Object,
             new Mock<IUserService>().Object,
             new Mock<ITokenService>().Object,
+            new Mock<IRefreshTokenStore>().Object,
             new Mock<IPasswordHasher>().Object,
+            new Mock<ILegacyCredentialVerifier>().Object,
             new Mock<IClock>().Object,
             new Mock<IHostSettingsService>().Object,
             new Mock<IUnitOfWork>().Object,
@@ -1883,10 +2087,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
     }
@@ -2207,7 +2407,13 @@ public class AuthServiceTests
                     .Setup(users => users.GetCredentialStateAsync(
                         It.IsAny<int>(),
                         It.IsAny<CancellationToken>()))
-                    .ReturnsAsync((false, (string?)null, false, false));
+                    .ReturnsAsync((
+                        false,
+                        (string?)null,
+                        (PasswordFormat?)null,
+                        (string?)null,
+                        false,
+                        false));
                 expectedComparand = DecoyHash;
                 break;
 
@@ -2318,10 +2524,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never(),
             "no token may be minted while the lock-out control is known to be down");
@@ -2448,54 +2650,45 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A permission resolution that fails yields a caller snapshot with no keys, and the failure is recorded
-    /// with its code rather than substituted silently.
+    /// Sign-in does not resolve mutable authority for either the access token or its response projection.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The empty set is still the right answer - these keys tell a client which affordances to render and never
-    /// stand in for the server-side policy, which re-evaluates on every request, so refusing a sign-in whose
-    /// credential was accepted would be worse. What is not acceptable is that an empty set is indistinguishable
-    /// from a caller who genuinely holds nothing: substituting one silently turns a dependency failure into a
-    /// plausible-looking result, and a caller whose console renders as though they hold no permissions with
-    /// nothing anywhere saying why is a support incident with no evidence.
+    /// Roles and permission keys change independently of a token's lifetime. They are loaded through
+    /// <c>/auth/me</c> and re-evaluated by server-side authorization, so the login path must not read or copy
+    /// them into long-lived bearer material.
     /// </remarks>
     [Fact]
-    public async Task SignIn_WhenPermissionResolutionFails_RecordsTheReasonAndIssuesNoKeys()
+    public async Task SignIn_DoesNotResolveMutableAuthorityForTheTokenResponse()
     {
-        const string PermissionFailureCode = "permission.portal_not_found";
-
         Harness harness = Harness.Ready();
-        harness.Permissions
-            .Setup(permissions => permissions.GetEffectivePermissionKeysAsync(
-                It.IsAny<int>(),
-                It.IsAny<int?>(),
-                It.IsAny<int?>(),
-                It.IsAny<int?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result<IReadOnlyList<string>>.Failure(PermissionFailureCode, "not found"));
 
         Result<LoginResponse> result = await harness.LoginAsync();
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.User.Roles.Should().BeEmpty();
+        result.Value.User.Permissions.Should().BeEmpty();
 
-        harness.Diagnostics.Verify(
-            diagnostics => diagnostics.Record(
-                SecurityDiagnosticEvent.EffectivePermissionResolutionFailed,
-                PortalId,
-                UserId,
-                PermissionFailureCode),
-            Times.Once(),
-            "only the stable code travels, never the message");
+        harness.Permissions.Verify(
+            permissions => permissions.GetEffectivePermissionKeysAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<int?>(),
+                It.IsAny<int?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Users.Verify(
+            users => users.ListRoleNamesAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
 
         harness.Tokens.Verify(
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.Is<IReadOnlyList<string>>(keys => keys.Count == 0),
                 It.IsAny<CancellationToken>()),
             Times.Once());
     }
@@ -2520,6 +2713,8 @@ public class AuthServiceTests
     /// </summary>
     private sealed class Harness
     {
+        private const string ClientBinding = "client-binding-placeholder";
+
         private Harness()
         {
             Portal = new Portal
@@ -2548,7 +2743,9 @@ public class AuthServiceTests
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Accounts = new Mock<IUserService>(MockBehavior.Loose);
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
+            RefreshTokens = new Mock<IRefreshTokenStore>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
+            LegacyCredentials = new Mock<ILegacyCredentialVerifier>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
@@ -2568,6 +2765,12 @@ public class AuthServiceTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => Result<bool>.Success(ProfileIncomplete));
+            Accounts
+                .Setup(a => a.IsEmailValidAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(true));
 
             Diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Loose);
 
@@ -2577,7 +2780,9 @@ public class AuthServiceTests
                 Permissions.Object,
                 Accounts.Object,
                 Tokens.Object,
+                RefreshTokens.Object,
                 PasswordHasher.Object,
+                LegacyCredentials.Object,
                 Clock.Object,
                 HostSettings.Object,
                 UnitOfWork.Object,
@@ -2640,6 +2845,18 @@ public class AuthServiceTests
         /// </remarks>
         public bool CredentialOnFile { get; set; } = true;
 
+        /// <summary>The stored representation returned by the membership store.</summary>
+        public string? StoredCredential { get; set; } = StoredHash;
+
+        /// <summary>The persisted format accompanying <see cref="StoredCredential"/>.</summary>
+        public PasswordFormat? CredentialFormat { get; set; } = PasswordFormat.Hashed;
+
+        /// <summary>The persisted legacy salt, empty for a current BCrypt representation.</summary>
+        public string? CredentialSalt { get; set; } = string.Empty;
+
+        /// <summary>Whether the bounded compatibility verifier accepts the submitted credential.</summary>
+        public bool LegacyCredentialMatches { get; set; }
+
         /// <summary>
         /// What the store reports when a failed attempt is recorded. Defaults to the ordinary outcome - counted,
         /// and the account is still usable.
@@ -2692,7 +2909,11 @@ public class AuthServiceTests
 
         public Mock<ITokenService> Tokens { get; }
 
+        public Mock<IRefreshTokenStore> RefreshTokens { get; }
+
         public Mock<IPasswordHasher> PasswordHasher { get; }
+
+        public Mock<ILegacyCredentialVerifier> LegacyCredentials { get; }
 
         public Mock<IClock> Clock { get; }
 
@@ -2750,7 +2971,9 @@ public class AuthServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => (
                     harness.CredentialOnFile,
-                    (string?)StoredHash,
+                    harness.CredentialOnFile ? harness.StoredCredential : null,
+                    harness.CredentialOnFile ? harness.CredentialFormat : null,
+                    harness.CredentialOnFile ? harness.CredentialSalt : null,
                     harness.IsApproved,
                     harness.IsLockedOut));
 
@@ -2827,6 +3050,25 @@ public class AuthServiceTests
                 .Setup(hasher => hasher.NeedsRehash(It.IsAny<string>()))
                 .Returns(false);
 
+            // MIGRATION: THE STUB ANSWERS FROM THE HARNESS RATHER THAN WITH A CONSTANT, WHICH IS WHAT MAKES
+            // THE LEGACY FACTS OPERATIVE. Two revisions each introduced a compatibility verifier, one
+            // answering a boolean and one answering a two-part outcome that separates "this row is legacy"
+            // from "this credential matched". The two-part contract survived, so the stub is driven by the
+            // same harness members the withdrawn one used: a stored representation that is BCrypt is
+            // reported as CURRENT, so the sign-in path hands it to the hasher; anything else is reported as
+            // LEGACY, matching or not according to the harness. A constant would have left every fact that
+            // sets LegacyCredentialMatches silently inert.
+            harness.LegacyCredentials
+                .Setup(verifier => verifier.Verify(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<PasswordFormat>(),
+                    It.IsAny<string?>()))
+                .Returns(() => harness.CredentialFormat == PasswordFormat.Hashed
+                    && harness.StoredCredential?.StartsWith("$2", StringComparison.Ordinal) != false
+                        ? LegacyCredentialVerification.Current
+                        : LegacyCredentialVerification.Legacy(harness.LegacyCredentialMatches));
+
             // Resolution by identifier, which the refresh path uses where the sign-in path resolves by name.
             // The tenant-scoped lookup answers first and the installation-wide lookup answers only for a host
             // account, exactly as the two GetByUsernameAsync setups above mirror for the sign-in path.
@@ -2847,8 +3089,18 @@ public class AuthServiceTests
             // Rotation succeeds by default and answers with the identity recorded against the presented value,
             // which is where the refresh path reads the tenant and account from. Nothing the caller supplies
             // reaches it.
+            harness.RefreshTokens
+                .Setup(store => store.InspectAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => RefreshTokenInspection.Succeeded(
+                    new RefreshTokenSubject(UserId, PortalId),
+                    Now.AddDays(1)));
+
             harness.Tokens
                 .Setup(tokens => tokens.RefreshAsync(
+                    It.IsAny<string>(),
                     It.IsAny<string>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RotationOutcome ?? Result<LoginResponse>.Success(new LoginResponse
@@ -2875,10 +3127,6 @@ public class AuthServiceTests
                 .Setup(tokens => tokens.IssueTokensAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
-                    It.IsAny<string>(),
-                    It.IsAny<bool>(),
-                    It.IsAny<IReadOnlyList<string>>(),
-                    It.IsAny<IReadOnlyList<string>>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => Result<LoginResponse>.Success(new LoginResponse
                 {
@@ -2920,7 +3168,11 @@ public class AuthServiceTests
         /// <returns>The outcome.</returns>
         public Task<Result<LoginResponse>> RefreshAsync(string refreshToken = "presented-refresh-token")
             => Service.RefreshAsync(
-                new RefreshTokenRequest { RefreshToken = refreshToken },
+                new RefreshTokenRequest
+                {
+                    RefreshToken = refreshToken,
+                    ClientBinding = ClientBinding,
+                },
                 CancellationToken.None);
     }
 }

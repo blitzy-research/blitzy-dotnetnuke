@@ -30,10 +30,10 @@
  * optional value below is therefore typed `T | null` and none is declared with
  * `?`. The difference is not cosmetic: a member the body omits reads back as
  * `undefined` while a member the body carries as null reads back as `null`, and a
- * consumer testing `=== null` takes the wrong branch for the first. Measured
- * against a live response, a role with no group publishes
- * `"roleGroupId": null, "rsvpCode": null, "iconFile": null`, and a membership with
- * no date bounds publishes `"effectiveDate": null, "expiryDate": null`.
+ * consumer testing `=== null` takes the wrong branch for the first. A role with no
+ * group therefore publishes `"roleGroupId": null, "rsvpCode": null,
+ * "iconFile": null`, and a membership with no date bounds publishes
+ * `"effectiveDate": null, "expiryDate": null`.
  *
  * Read absence explicitly, with `=== null` or `== null`. Never infer it from
  * truthiness or from the sign of a number, for the reason set out next.
@@ -53,10 +53,10 @@
  *
  * ## How a collection of these types arrives
  *
- * The role listing is paged: `GET /api/v1/portals/{portalId}/roles` publishes
+ * The role listing is paged: `GET /api/v1/roles` publishes
  * `RoleListItem` rows inside the shared paged envelope, as does the membership
- * listing `GET /api/v1/portals/{portalId}/roles/{roleId}/users` for `UserRole`.
- * Role groups are NOT paged — `GET /api/v1/portals/{portalId}/role-groups`
+ * listing `GET /api/v1/roles/{roleId}/users` for `UserRole`.
+ * Role groups are NOT paged — `GET /api/v1/role-groups`
  * publishes a plain array inside the success envelope. Neither envelope is
  * redeclared here. There is exactly one declaration of each, in
  * `./paged-result.model`, and the service layer composes them over the item types
@@ -196,7 +196,7 @@ export type RoleStatus = 'Pending' | 'Active' | 'Expired';
  * One row of the role listing.
  *
  * Mirrors `RoleListItemDto`, which is the payload of
- * `GET /api/v1/portals/{portalId}/roles`. It is a deliberate SUBSET of
+ * `GET /api/v1/roles`. It is a deliberate SUBSET of
  * {@link Role} and carries eleven members: the grid's columns and the paid-membership
  * terms it displays, and nothing more. Three of the detail contract's members are
  * absent by design and a consumer must not reach for them here — `roleGroupId`,
@@ -262,7 +262,7 @@ export interface RoleListItem {
  * A single role in full.
  *
  * Mirrors `RoleDetailDto`, the payload of
- * `GET /api/v1/portals/{portalId}/roles/{roleId}` and the body echoed back by the
+ * `GET /api/v1/roles/{roleId}` and the body echoed back by the
  * create and update verbs. Fourteen members: the eleven of {@link RoleListItem}
  * plus `roleGroupId`, `rsvpCode` and `iconFile`.
  *
@@ -299,9 +299,8 @@ export interface Role {
    * carries a foreign key referencing it, so `-1` could never have been a stored
    * value; the legacy reader turned database `NULL` into `-1` on the way out and the
    * provider turned `-1` back into `NULL` on the way in. For this column, `-1`,
-   * "Global Roles" and SQL `NULL` are one value, and `null` is its honest form.
-   * Measured against a live response, an ungrouped role publishes
-   * `"roleGroupId": null`.
+   * "Global Roles" and SQL `NULL` are one value, `null` is its honest form, and an
+   * ungrouped role publishes `"roleGroupId": null`.
    *
    * Three consequences, each a real defect if ignored:
    *
@@ -370,7 +369,7 @@ export interface Role {
  * A grouping of roles.
  *
  * Mirrors `RoleGroupDto`, the payload of the role-group endpoints under
- * `/api/v1/portals/{portalId}/role-groups`. Exactly four members, matching the four
+ * `/api/v1/role-groups`. Exactly four members, matching the four
  * of the legacy entity (`Library/Components/Security/Roles/RoleGroupInfo.vb` L53,
  * L68, L83 and L98).
  *
@@ -406,7 +405,7 @@ export interface RoleGroup {
  * One account's assignment to one role.
  *
  * Mirrors `RoleMembershipDto`, the row type of
- * `GET /api/v1/portals/{portalId}/roles/{roleId}/users`, and carries the columns the
+ * `GET /api/v1/roles/{roleId}/users`, and carries the columns the
  * legacy assignment grid displayed.
  *
  * MIGRATION: the legacy class INHERITED its role facts rather than referencing
@@ -495,7 +494,7 @@ export interface UserRole {
 }
 
 /**
- * Body of `POST /api/v1/portals/{portalId}/roles`.
+ * Body of `POST /api/v1/roles`.
  *
  * Mirrors `CreateRoleRequest`. Thirteen members: the fourteen of {@link Role} less
  * `roleId`, which the server assigns. The tenant is not carried either — it is in
@@ -514,16 +513,16 @@ export interface UserRole {
  */
 export interface CreateRoleRequest {
   /** The role's name, at most 50 characters. Required. */
-  roleName: string;
+  readonly roleName: string;
 
   /** The role's description, at most 1000 characters, or `null`. */
-  description: string | null;
+  readonly description: string | null;
 
   /** The recurring fee, or `null` for none. Zero or greater. */
-  serviceFee: number | null;
+  readonly serviceFee: number | null;
 
   /** How many {@link CreateRoleRequest.billingFrequency} units a cycle spans, or `null`. */
-  billingPeriod: number | null;
+  readonly billingPeriod: number | null;
 
   /**
    * The billing cycle's unit, or `null`.
@@ -532,13 +531,13 @@ export interface CreateRoleRequest {
    * refused with HTTP 400 by the converter that owns this member, which was verified
    * against a running API; `"Month"` is not a value the vocabulary contains either.
    */
-  billingFrequency: BillingFrequency | null;
+  readonly billingFrequency: BillingFrequency | null;
 
   /** The trial fee, or `null` for none. Zero or greater. */
-  trialFee: number | null;
+  readonly trialFee: number | null;
 
   /** How many {@link CreateRoleRequest.trialFrequency} units the trial spans, or `null`. */
-  trialPeriod: number | null;
+  readonly trialPeriod: number | null;
 
   /**
    * The trial period's unit, or `null`.
@@ -546,13 +545,13 @@ export interface CreateRoleRequest {
    * The same six-character vocabulary as the billing unit, by design. Sending `N`
    * declares that the role offers no trial and that the billing terms govern expiry.
    */
-  trialFrequency: BillingFrequency | null;
+  readonly trialFrequency: BillingFrequency | null;
 
   /** Whether accounts may subscribe to the role themselves. */
-  isPublic: boolean;
+  readonly isPublic: boolean;
 
   /** Whether new accounts are enrolled in the role automatically. */
-  autoAssignment: boolean;
+  readonly autoAssignment: boolean;
 
   /**
    * The grouping to file the role under, or `null` for none.
@@ -560,17 +559,17 @@ export interface CreateRoleRequest {
    * Send `null` for "no group", never `-1`; and never `-2`, which is a listing
    * filter's value and has no meaning on a write. `0` is a valid group identifier.
    */
-  roleGroupId: number | null;
+  readonly roleGroupId: number | null;
 
   /** The invitation code, or `null`. */
-  rsvpCode: string | null;
+  readonly rsvpCode: string | null;
 
   /** Relative path of the role's icon image, or `null`. */
-  iconFile: string | null;
+  readonly iconFile: string | null;
 }
 
 /**
- * Body of `PUT /api/v1/portals/{portalId}/roles/{roleId}`.
+ * Body of `PUT /api/v1/roles/{roleId}`.
  *
  * Mirrors `UpdateRoleRequest`. The same thirteen members as
  * {@link CreateRoleRequest} — the role being written is identified by the route, so
@@ -585,53 +584,53 @@ export interface CreateRoleRequest {
  */
 export interface UpdateRoleRequest {
   /** The role's name, at most 50 characters. Required. */
-  roleName: string;
+  readonly roleName: string;
 
   /** The role's description, at most 1000 characters, or `null`. */
-  description: string | null;
+  readonly description: string | null;
 
   /** The grouping to file the role under, or `null` for none. Never `-1`, never `-2`. */
-  roleGroupId: number | null;
+  readonly roleGroupId: number | null;
 
   /** Whether accounts may subscribe to the role themselves. */
-  isPublic: boolean;
+  readonly isPublic: boolean;
 
   /** Whether new accounts are enrolled in the role automatically. */
-  autoAssignment: boolean;
+  readonly autoAssignment: boolean;
 
   /** The recurring fee, or `null` for none. Zero or greater. */
-  serviceFee: number | null;
+  readonly serviceFee: number | null;
 
   /** How many {@link UpdateRoleRequest.billingFrequency} units a cycle spans, or `null`. */
-  billingPeriod: number | null;
+  readonly billingPeriod: number | null;
 
   /** The billing cycle's unit as its single character, or `null`. */
-  billingFrequency: BillingFrequency | null;
+  readonly billingFrequency: BillingFrequency | null;
 
   /** The trial fee, or `null` for none. Zero or greater. */
-  trialFee: number | null;
+  readonly trialFee: number | null;
 
   /** How many {@link UpdateRoleRequest.trialFrequency} units the trial spans, or `null`. */
-  trialPeriod: number | null;
+  readonly trialPeriod: number | null;
 
   /** The trial period's unit as its single character, or `null`. */
-  trialFrequency: BillingFrequency | null;
+  readonly trialFrequency: BillingFrequency | null;
 
   /** The invitation code, or `null`. */
-  rsvpCode: string | null;
+  readonly rsvpCode: string | null;
 
   /** Relative path of the role's icon image, or `null`. */
-  iconFile: string | null;
+  readonly iconFile: string | null;
 }
 
 /**
- * Body of `POST /api/v1/portals/{portalId}/roles/{roleId}/users`, which enrols one
+ * Body of `POST /api/v1/roles/{roleId}/users`, which enrols one
  * account in one role.
  *
  * Mirrors `RoleAssignmentRequest`. The role is in the route, so the body names only
  * the account and the terms of the assignment. A successful call answers 204 with no
  * payload; read the membership back from
- * `GET /api/v1/portals/{portalId}/roles/{roleId}/users` if the screen needs the
+ * `GET /api/v1/roles/{roleId}/users` if the screen needs the
  * stored row.
  *
  * MIGRATION: this replaces a seven-argument positional call. Two of those arguments
@@ -649,7 +648,7 @@ export interface UpdateRoleRequest {
  */
 export interface RoleAssignmentRequest {
   /** The account to enrol. Seeded `IDENTITY(1, 1)`, so never zero in practice. */
-  userId: number;
+  readonly userId: number;
 
   /**
    * When the assignment takes effect as an ISO 8601 instant, or `null` for
@@ -658,7 +657,7 @@ export interface RoleAssignmentRequest {
    * Send `null` for "no start bound". Never send a minimum-value instant to mean it:
    * that was the legacy in-memory spelling and the column cannot hold it.
    */
-  effectiveDate: string | null;
+  readonly effectiveDate: string | null;
 
   /**
    * When the assignment ceases as an ISO 8601 instant, or `null` to let the server
@@ -667,7 +666,7 @@ export interface RoleAssignmentRequest {
    * The legacy screen validated this as strictly later than the effective bound, and
    * the same rule applies here.
    */
-  expiryDate: string | null;
+  readonly expiryDate: string | null;
 
   /**
    * Whether the operator asked for the account to be notified.
@@ -678,11 +677,11 @@ export interface RoleAssignmentRequest {
    * implying one was. A deliberate functional reduction, recorded rather than
    * absorbed.
    */
-  notifyUser: boolean;
+  readonly notifyUser: boolean;
 }
 
 /**
- * Body of `POST /api/v1/portals/{portalId}/role-groups`.
+ * Body of `POST /api/v1/role-groups`.
  *
  * Mirrors `CreateRoleGroupRequest`. Two members only: the group's own two editable
  * facts. Its identifier is assigned by the server and its tenant comes from the
@@ -691,14 +690,14 @@ export interface RoleAssignmentRequest {
  */
 export interface CreateRoleGroupRequest {
   /** The group's name, at most 50 characters. Required. */
-  roleGroupName: string;
+  readonly roleGroupName: string;
 
   /** The group's description, at most 1000 characters, or `null`. */
-  description: string | null;
+  readonly description: string | null;
 }
 
 /**
- * Body of `PUT /api/v1/portals/{portalId}/role-groups/{roleGroupId}`.
+ * Body of `PUT /api/v1/role-groups/{roleGroupId}`.
  *
  * Mirrors `UpdateRoleGroupRequest`. The same two members as
  * {@link CreateRoleGroupRequest}, and declared separately for the same reason: the
@@ -707,8 +706,8 @@ export interface CreateRoleGroupRequest {
  */
 export interface UpdateRoleGroupRequest {
   /** The group's name, at most 50 characters. Required. */
-  roleGroupName: string;
+  readonly roleGroupName: string;
 
   /** The group's description, at most 1000 characters, or `null`. */
-  description: string | null;
+  readonly description: string | null;
 }

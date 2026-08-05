@@ -9,10 +9,9 @@
 // -----------------------------------------------------------------------------
 //  1. Box sizing
 // -----------------------------------------------------------------------------
-//  Set the model once on the root and let every element and pseudo-element
-//  inherit it. Inheritance rather than a blanket assignment means a component
-//  that genuinely needs the content-box model can opt its own subtree out
-//  without fighting a universal selector.
+//  Set once on the root and inherited, rather than assigned by a universal
+//  selector, so a component that genuinely needs the content-box model can opt
+//  its own subtree out without fighting a blanket rule.
 
 html {
   box-sizing: border-box;
@@ -31,14 +30,11 @@ html {
 // -----------------------------------------------------------------------------
 //  2. Document baseline
 // -----------------------------------------------------------------------------
-//  Family, size, colour and line height are stated once here so the ramp below
-//  inherits them instead of repeating the same four declarations per selector.
-//
-//  Only the body margin is normalised. The user-agent flow margins on headings,
-//  paragraphs and lists are left in place on purpose: they are proportional to
-//  each element's own font size, so setting the sizes below reproduces the
-//  intended rhythm without authoring a single margin. List indentation is left
-//  to the browser for the same reason.
+//  Stated once so the ramp below inherits it. Only the body margin is
+//  normalised: the user-agent flow margins on headings, paragraphs and lists are
+//  left in place on purpose, because they are proportional to each element's own
+//  font size, so setting the sizes below reproduces the intended rhythm without
+//  authoring a single margin. List indentation is left to the browser likewise.
 
 body {
   margin: 0;
@@ -66,11 +62,10 @@ video {
 // -----------------------------------------------------------------------------
 //  4. Native form controls — inheritance only
 // -----------------------------------------------------------------------------
-//  Controls do not inherit typography from their ancestors by default, which is
-//  why an unstyled control renders in the browser's own face and size. Only that
-//  inheritance is corrected here; every visual aspect of a control — borders,
-//  padding, sizing, invalid and disabled appearance — belongs to the forms
-//  partial.
+//  Controls do not inherit typography by default, which is why an unstyled
+//  control renders in the browser's own face and size. Only that inheritance is
+//  corrected here; borders, padding, sizing and invalid or disabled appearance
+//  belong to the forms partial.
 
 button,
 input,
@@ -101,15 +96,13 @@ table {
 //  element rather than from its rendered size.
 
 //  MIGRATION: the two top heading levels take the brand colour, where the legacy
-//  module-title rule measured a near-black grey. The colour vocabulary is closed
-//  at nine members and that grey is not one of them, so the choice was between
-//  widening a closed vocabulary for two selectors or resolving to a member of it.
-//  The brand colour is the member that already paints h3 and h4 immediately
-//  below, and the legacy subheading rule used it too, so this makes the whole
-//  heading ramp one colour instead of two. The substitution is measured, not
-//  approximate: 12.61 to 1 against the page background versus 12.63 to 1 for the
-//  grey it replaces, a difference no observer can perceive. The visible change is
-//  a grey-to-navy shift on h1 and h2 only.
+//  module-title rule used a near-black grey. The colour vocabulary is closed at
+//  nine members and that grey is not one of them, so the choice was between
+//  widening a closed vocabulary for two selectors or resolving to a member of it;
+//  the brand colour already paints h3 and h4 below and the legacy subheading rule
+//  used it too, so the whole heading ramp becomes one colour instead of two. The
+//  contrast against the page background is indistinguishable from the grey it
+//  replaces, so the only visible change is a grey-to-navy shift on h1 and h2.
 
 h1,
 h2 {
@@ -158,11 +151,13 @@ th {
 //  Visited is grouped with unvisited because the two share a treatment rather
 //  than being distinguished.
 //
-//  The hover colour resolves through `--color-danger`, which is the hue this
-//  ramp uses for a link hover as well as for error text. Retuning that token for
-//  error messaging would therefore also move every link hover — a coupling worth
-//  knowing before changing it. The underline is carried alongside the colour
-//  shift, so hover is never signalled by colour alone.
+//  The hover colour resolves through `--color-primary-hover`, not through the
+//  danger token: the MIGRATION note below the unvisited rule records why the
+//  measured legacy hover red was not reproduced, and the rule itself is the
+//  authority. There is therefore NO coupling between error messaging and link
+//  hover — retuning either danger token moves nothing here. The underline is
+//  carried alongside the colour shift, so hover is never signalled by colour
+//  alone.
 
 a:link,
 a:visited {
@@ -170,21 +165,17 @@ a:visited {
   text-decoration: none;
 }
 
-//  MIGRATION: the hover ink is the darker brand tint, where the legacy sheet
-//  measured pure red. This is a corrected accessibility defect, not a preference.
-//  Red measures 3.998 to 1 against the page background and 3.446 to 1 against the
-//  secondary surface, both below the 4.5-to-1 minimum that governs normal text,
-//  and body copy here is well under the size at which the relaxed large-text
-//  ratio would apply. Reproducing the measured value would therefore have made
-//  every hovered link in the application unreadable for a low-vision operator —
-//  and it is the single highest-reach instance of the defect in the workspace,
-//  since this selector governs every anchor on every screen.
-//
-//  The substitute is the token the vocabulary already designates as the hover and
-//  active companion to the brand colour, and it measures 7.30 to 1 on the page
-//  background and 6.29 to 1 on the secondary surface. The underline the legacy
-//  hover state carried is retained unchanged, so the state is still signalled
-//  without any dependence on colour at all.
+//  MIGRATION: the hover ink is the darker brand tint, where the legacy sheet used
+//  pure red. This is a corrected accessibility defect rather than a preference:
+//  red falls below the 4.5-to-1 minimum that governs normal text against both the
+//  page background and the secondary surface, and body copy here is well under
+//  the size at which the relaxed large-text ratio would apply, so reproducing it
+//  would have made every hovered link unreadable for a low-vision operator - and
+//  this selector governs every anchor on every screen. The substitute is the token
+//  the vocabulary already designates as the hover and active companion to the
+//  brand colour, and it clears the minimum on both surfaces. The underline the
+//  legacy hover state carried is retained, so the state never depends on colour
+//  alone.
 
 a:hover {
   color: var(--color-primary-hover);
@@ -263,11 +254,11 @@ hr {
 // -----------------------------------------------------------------------------
 //  11. Focus visibility
 // -----------------------------------------------------------------------------
-//  The shared mixin scopes its ring to `:focus-visible`, so the indicator
-//  appears for keyboard and other non-pointer interaction and never decorates a
-//  mouse click. No rule in this file removes an outline, so there is no point at
-//  which focus is invisible. Elements carrying an explicitly negative tab index
-//  are excluded because they are deliberately outside the tab order.
+//  The shared mixin scopes its ring to `:focus-visible`, so the indicator appears
+//  for keyboard and other non-pointer interaction and never decorates a mouse
+//  click. No rule in this file removes an outline, so focus is never invisible.
+//  Elements carrying an explicitly negative tab index are excluded because they
+//  are deliberately outside the tab order.
 
 a,
 button,

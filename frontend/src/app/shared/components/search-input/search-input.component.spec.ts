@@ -44,17 +44,13 @@ const FIELD_ID_PATTERN = /^app-search-input-\d+$/;
 
 /**
  * The term bound the component documents on its own `MAX_TERM_LENGTH` constant.
- *
- * Mirrored here rather than imported, because the component keeps the constant
- * module-private and exposes only the `maxTermLength` member the template needs.
- * Restating the figure means a deliberate change has to be made in both places,
- * and an accidental one fails these expectations loudly.
+ * Mirrored rather than imported, because the component keeps it module-private, so an
+ * accidental change to either fails these expectations loudly.
  *
  * The figure is the width of the widest column a search predicate compares against,
- * the terminal `Email` column at `nvarchar(256)`. It is not a shared width -
- * `Username` is `nvarchar(100)` - and it is not behaviour-preserving: the general
- * free-text filter is a SUBSTRING match, so truncating a longer term can change which
- * rows match. It is a policy ceiling on request size.
+ * the terminal `Email` column at `nvarchar(256)`. It is a policy ceiling on request
+ * size, not a behaviour-preserving bound: the free-text filter is a SUBSTRING match,
+ * so truncating a longer term can change which rows match.
  */
 const MAX_TERM_LENGTH = 256;
 
@@ -73,21 +69,13 @@ const AT_BOUND_TERM = 'a'.repeat(MAX_TERM_LENGTH);
 const TAB_CHARACTER = '\u0009';
 
 /**
- * The four code points that sit exactly on the edges of the two ranges the
- * production policy removes: `\u0000`-`\u001F` (C0) and `\u007F`-`\u009F` (DEL
- * plus C1).
+ * The four code points on the edges of the two ranges the production policy removes:
+ * `\u0000`-`\u001F` (C0) and `\u007F`-`\u009F` (DEL plus C1).
  *
- * Boundaries rather than samples, and that distinction is the whole point. A
- * regression that narrowed the pattern to the single tab character already
- * covered above — or that clipped either range by one code point at either end —
- * would leave every other expectation in this file passing. Each entry is
- * labelled with its code point so a failure names the character that escaped,
- * and each is written as an escape so this file stays pure ASCII and the
- * character is unmistakable to a reader rather than an invisible byte.
- *
- * `U+0000` is the low edge of C0 and would arrive from a truncated byte stream;
- * `U+001F` is its high edge; `U+007F` is DELETE, the low edge of the second
- * range; and `U+009F` is its high edge, the last code point removed.
+ * Boundaries rather than samples, because a regression that clipped either range by
+ * one code point at either end would leave every other expectation here passing. Each
+ * entry is labelled with its code point so a failure names the character that escaped,
+ * and each is written as an escape so this file stays pure ASCII.
  */
 const CONTROL_CHARACTER_BOUNDARIES: readonly (readonly [string, string])[] = [
   ['U+0000', '\u0000'],
@@ -127,11 +115,9 @@ const ASTRAL_CHARACTER = '\u{1F600}';
 /**
  * Resolves a required element, narrowing away the null the DOM query returns.
  *
- * Strict TypeScript is in force in specifications exactly as it is in production
- * code, so a query result cannot simply be asserted non-null. Throwing here is
- * strictly better than a non-null assertion: the value is genuinely narrowed, and
- * a missing element produces a named failure that says which selector was not
- * found instead of an opaque error about a property of null.
+ * Throwing is better than a non-null assertion: the value is genuinely narrowed, and
+ * a missing element produces a named failure naming the selector rather than an opaque
+ * error about a property of null.
  *
  * @param root Node to search within.
  * @param selector CSS selector that must match exactly one required element.
@@ -154,15 +140,10 @@ function textOf(element: Element): string {
  * Lists an element's authored class tokens, with the reactive-forms state classes
  * filtered out.
  *
- * Returned as an exact list rather than probed one token at a time, so an added
- * stray class fails the expectation instead of slipping past a `contains` check.
- * The design-system rule this supports is AAP 0.3: the class vocabulary is fixed
- * and closed, so widening it is a regression and not a detail.
- *
- * The `ng-`-prefixed tokens are excluded because the forms directive owns them.
- * It writes `ng-untouched`, `ng-pristine` and `ng-valid` onto the form-bound field
- * and rewrites them as the control's state changes, so asserting the raw class
- * attribute would couple this expectation to validation state it is not about.
+ * Returned as an exact list rather than probed token by token, so a stray class fails
+ * instead of slipping past a `contains` check - the class vocabulary is fixed and
+ * closed per AAP 0.3. The `ng-`-prefixed tokens are excluded because the forms
+ * directive owns and rewrites them as the control's state changes.
  *
  * @param element The rendered element to inspect.
  * @returns The authored class tokens, in document order.
@@ -198,15 +179,12 @@ function pressEnter(field: HTMLInputElement): void {
 }
 
 /**
- * Presses Enter with a CANCELABLE event and reports whether the default action
- * was prevented.
+ * Presses Enter with a CANCELABLE event and reports whether the default action was
+ * prevented.
  *
- * Cancelability is the whole point and is not incidental: `preventDefault()` on a
- * non-cancelable event is a silent no-op, so the plain `pressEnter` above could
- * never observe whether the handler cancelled anything. Real browser keydown
- * events are cancelable, so this is the faithful shape for that expectation, and
- * `pressEnter` is left alone because every other expectation only cares that the
- * key reached the handler.
+ * `preventDefault()` on a non-cancelable event is a silent no-op, so the plain
+ * `pressEnter` above cannot observe whether the handler cancelled anything. Real
+ * browser keydown events are cancelable, so this is the faithful shape.
  *
  * @param field The rendered search field.
  * @returns Whether the handler called `preventDefault()`.
@@ -927,19 +905,14 @@ describe('SearchInputComponent', () => {
       // expectations green. Testing the four edges is what closes that: each of
       // them is the first character a narrowing would let through.
       //
-      // These arrive through `setValue` rather than through the field, and
-      // deliberately so. A single-line control performs its own value
-      // sanitisation, and what it does with a raw NUL or a C1 code point is
-      // engine-dependent, so routing through the field would make this expectation
-      // a measurement of the browser rather than of the component. The component,
-      // not the attribute, is the documented enforcement point, and `setValue` is
-      // the path the production documentation names as the one neither the field's
-      // `maxlength` nor the browser's sanitisation covers.
+      // These arrive through `setValue` rather than through the field: a single-line
+      // control's own value sanitisation of a raw NUL or a C1 code point is
+      // engine-dependent, so routing through the field would measure the browser
+      // rather than the component, which is the documented enforcement point.
       //
       // Each term carries its own code-point label so the bounded results are all
-      // distinct. Without that they would every one reduce to the same string and
-      // the duplicate guard — correctly — would swallow every emission after the
-      // first, leaving three of the four edges unmeasured.
+      // distinct; without that the duplicate guard would - correctly - swallow every
+      // emission after the first, leaving three of the four edges unmeasured.
       for (const [codePointLabel, character] of CONTROL_CHARACTER_BOUNDARIES) {
         const marker = codePointLabel.slice('U+'.length);
 

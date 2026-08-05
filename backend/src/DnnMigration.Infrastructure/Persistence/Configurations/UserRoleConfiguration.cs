@@ -60,13 +60,17 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 // back to it, so "unbounded" reached the legacy object as a magic value rather than as absence.
 // The two properties are DateTime? and NO value conversion is installed in either direction: a
 // null stays a null and is never read from Date.MinValue. Where the marker is DISCARDED on the way
-// out is RoleRepository.AddUserRoleAsync and UpdateUserRoleAsync, whose shared
-// NormalizeLegacyDateMarker reproduces Null.GetNull at the same boundary the legacy DAL applied it
-// (membership DataProvider/SqlDataProvider.vb:L280-L286). It is deliberately NOT expressed as a
-// converter here: EF Core does not invoke a value converter for a null model value and a converter
-// cannot introduce one, so "this value becomes SQL NULL" is not something a converter can say
-// without the null-converting construct EF Core documents as unsupported for most uses. The two
-// files are cross-referenced so neither can drift into believing the other holds the rule.
+// out is RoleService.NormalizeLegacyDateMarker, reached from DeriveAssignmentDates before either
+// assignment write is staged, which reproduces Null.GetNull for the same reason the legacy DAL
+// applied it (membership DataProvider/SqlDataProvider.vb:L280-L286). It sits in the Application
+// layer rather than in RoleRepository because reading a submitted bound as "no bound" is a
+// subscription rule, and Rule T2 gives those one owner - an earlier revision had the repository
+// applying the same rule as well, which is two implementations of one rule in two layers. It is
+// deliberately NOT expressed as a converter here either: EF Core does not invoke a value converter
+// for a null model value and a converter cannot introduce one, so "this value becomes SQL NULL" is
+// not something a converter can say without the null-converting construct EF Core documents as
+// unsupported for most uses. What this configuration guarantees is only that nothing between the
+// entity and the column reinterprets either value.
 // Two consequences of the identity seeds have to be stated rather than assumed. dbo.Roles.RoleID is declared
 // IDENTITY(0, 1) at 01.00.00:L115, so zero is the FIRST REAL ROLE and never means "no role";
 // dbo.Users.UserID is IDENTITY(1, 1) at 01.00.00:L98, so zero is never a real account. Neither

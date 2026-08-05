@@ -55,11 +55,10 @@ namespace DnnMigration.Application.Dtos.Role;
 /// caller must not read one into them.
 /// </para>
 /// <para>
-/// The type is an inert data carrier, and NO FluentValidation validator exists for it. The API's
-/// validation filter resolves a validator per action-argument type and finds none registered for this
-/// one, so a body reaching <c>POST portals/{portalId}/roles/{roleId}/users</c> is forwarded to the
-/// service exactly as bound. Every rule is therefore enforced in
-/// <c>Application/Services/RoleService.cs</c>: an unknown user or role answers
+/// The type is an inert data carrier validated at the boundary by
+/// <c>RoleAssignmentRequestValidator</c>. A body reaching
+/// <c>POST roles/{roleId}/users</c> is refused there when its date interval is malformed; stored-state
+/// rules remain enforced in <c>Application/Services/RoleService.cs</c>: an unknown user or role answers
 /// <c>user.not_found</c> or <c>role.not_found</c>, a protected assignment answers
 /// <c>role_assignment.protected</c>, and a malformed value raises <see cref="DnnMigration.Domain.Common.DomainException"/>,
 /// which the API translates to a 400. What that costs is worth stating plainly: there is no
@@ -75,10 +74,10 @@ namespace DnnMigration.Application.Dtos.Role;
 // MIGRATION: AAP 0.5.1.4 describes one contract serving both POST and DELETE on the role-members
 //            endpoint. The implemented surface diverges, and the divergence is recorded here rather
 //            than papered over: Api/Controllers/RolesController.cs line 257 binds this type from the
-//            body of POST portals/{portalId}/roles/{roleId}/users, while line 281 exposes removal as
-//            DELETE portals/{portalId}/roles/{roleId}/users/{userId}, which carries every identifier
-//            in the route and therefore takes no body at all. The endpoints are also portal-nested
-//            rather than flat. This type is consequently exercised by the assigning path; the shape
+//            body of POST roles/{roleId}/users, while line 281 exposes removal as
+//            DELETE roles/{roleId}/users/{userId}, which carries every identifier
+//            in the route and therefore takes no body at all. This type is consequently exercised by
+//            the assigning path; the shape
 //            is unchanged either way, because the removal path needs no member this type declares.
 public sealed class RoleAssignmentRequest
 {

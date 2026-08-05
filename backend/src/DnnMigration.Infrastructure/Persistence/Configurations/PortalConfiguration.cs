@@ -236,9 +236,10 @@ internal sealed class PortalConfiguration : IEntityTypeConfiguration<Portal>
             .HasColumnName("ProcessorUserId")
             .HasMaxLength(50);
 
-        // Stored in clear text by the legacy schema. This mapping is write-through storage and
-        // nothing more; no logging, projection or diagnostic behaviour is attached to it here.
-        builder.Property(p => p.ProcessorPassword)
+        // MIGRATION: the immutable legacy column name remains ProcessorPassword, but the CLR property and
+        // all new writes carry only a managed-secret reference. The 50-character width cannot safely hold
+        // envelope ciphertext, so no plaintext credential or reversible encryption is stored here.
+        builder.Property(p => p.ProcessorCredentialReference)
             .HasColumnName("ProcessorPassword")
             .HasMaxLength(50);
 

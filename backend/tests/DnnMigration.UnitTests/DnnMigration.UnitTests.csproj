@@ -22,32 +22,35 @@
   <!--
     TEST-ONLY project references, and they are the whole of this project's graph.
 
-    DnnMigration.Application brings Domain with it, so the service, validator, mapper
-    and domain suites placed here by AAP 0.4.1.1 compile against everything they need.
+    DnnMigration.Application brings Domain with it, so the service, validator, mapper and domain
+    suites placed here by AAP 0.4.1.1 compile against everything they need.
 
-    DnnMigration.Infrastructure is referenced for the Security suites, and that
-    reference is required rather than convenient. AAP 0.5.1.5 names
-    Infrastructure/Security/*.cs as the source of
-    Security/{BcryptPasswordHasher,JwtTokenService,PermissionEvaluator}Tests.cs -
-    "Hash round-trip, token claims, permission resolution" - and AAP 0.2.1.1 places
-    the permission-evaluator tests here. BcryptPasswordHasher and PermissionEvaluator
-    are internal sealed, so the owning project grants this assembly - and only this
-    assembly - internals visibility; the justification and its bounds are written out
-    next to that item in DnnMigration.Infrastructure.csproj. An earlier revision of
-    this comment forbade the reference on layering grounds. THAT REASONING WAS WRONG
-    and is replaced rather than softened: the layering guarantee is a property of what
-    the four PRODUCTION project files reference, and it still holds exactly as before -
-    Domain declares zero project references, Application cannot see Infrastructure,
-    and either violation remains a compile error. A test project is the outermost
-    consumer of the graph, not a layer within it, so nothing about the direction of
-    production dependencies changes here. What the old reading did cost was real: the
-    two components that hash credentials and decide access were covered only by
-    stand-ins, and a review found that the concrete implementations could regress
-    while the suite stayed green.
+    DnnMigration.Infrastructure is referenced for the Security and Infrastructure suites, and the
+    reference is a reconciled decision rather than a convenience. AAP 0.5.2.2 draws the unit
+    project with a single edge to Application; AAP 0.5.1.5 places
+    Security/{BcryptPasswordHasher,JwtTokenService,PermissionEvaluator}Tests.cs here and names
+    Infrastructure/Security/*.cs as their subject. Those two statements cannot both be honoured,
+    and the resolution is to keep the edge, because the alternative deletes coverage rather than
+    relocating it: LoggingAuditSink, LegacyCredentialVerifier, JwtTokenService and
+    DatabaseHealthCheck are internal sealed types whose behaviour is asserted here with
+    substituted collaborators and no host at all.
 
-    Do not add DnnMigration.Api. The Api layer is the integration project's subject,
-    it is where the hosted pipeline and the authorisation policies live, and a unit
-    test that started a host would stop being one.
+    The layering guarantee is unaffected. It is a property of what the four PRODUCTION project
+    files reference - Domain declares zero project references, Application cannot see
+    Infrastructure, and either violation is a compile error - and a test project is the outermost
+    consumer of that graph, not a layer within it.
+
+    WHAT THIS EDGE DOES NOT LICENCE. A unit test must not reimplement a component and then assert
+    that its own double behaves as specified; that is a tautology which stays green while the
+    shipped type breaks. Suites that need the real thing END TO END resolve it from the composed
+    container in DnnMigration.IntegrationTests/Security/ - the password hasher, the token service,
+    the permission evaluator and the refresh-token store are all proven there, through
+    AddInfrastructure, which asserts the registration as well as the behaviour. Coverage in the
+    two projects is complementary and neither is a substitute for the other.
+
+    Do not add DnnMigration.Api. The Api layer is the integration project's subject, it is where
+    the hosted pipeline and the authorisation policies live, and a unit test that started a host
+    would stop being one.
   -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\DnnMigration.Application\DnnMigration.Application.csproj" />

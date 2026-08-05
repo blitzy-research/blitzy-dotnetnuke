@@ -370,10 +370,19 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// The acting user is always the value the caller supplied and is never taken from ambient state,
     /// which is what allows a restore to be attributed correctly when it runs outside a request. No
     /// cache is refreshed here: the legacy queued path cleared the module cache immediately afterwards,
     /// and that orchestration now belongs to the module service and the cache abstraction.
+    /// </para>
+    /// <para>
+    /// SUCCESS ON THIS MEMBER MEANS CONTENT ARRIVED, and nothing weaker. That is a stronger promise than
+    /// the sibling read members make, and it is deliberate: this is the only member whose caller commits a
+    /// unit of work and writes an audit record on the strength of the answer, so an outcome that says
+    /// "succeeded, but nothing happened" is one a caller can act on wrongly without doing anything wrong.
+    /// Every state in which the controller could not be asked is therefore a failure carrying its own code.
+    /// </para>
     /// </remarks>
     public async Task<Result> ImportModuleContentAsync(
         string? businessControllerClass,
@@ -389,28 +398,41 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
         {
             object? controller = Resolve(businessControllerClass);
 
-            // Controller absence is screened before the content guard, preserving the order the two
-            // answers were originally reported in: a module that declares no controller, or names one
-            // this installation does not carry, is told that first even when its content is also blank.
+            // ALL THREE OF THESE ARE REFUSALS, NOT SUCCESSFUL NO-OPS, AND THAT IS THE WHOLE POINT OF THIS
+            // MEMBER'S SHAPE. Each one means the same thing to every caller: the module's content did not
+            // change. They were previously successes carrying an advisory, and the module service - which
+            // is the only caller - reads a successful outcome as licence to commit its unit of work, evict
+            // the placement caches and write an Operation=Import audit record. An installation whose closed
+            // controller set does not cover the stored key therefore answered the caller 200 and told the
+            // audit trail content had been imported when nothing had been. Refusing here is what makes that
+            // unreachable, rather than relying on the caller to inspect an advisory it is not obliged to read.
+            //
+            // The three keep DISTINCT codes rather than collapsing into one, because an operator acts
+            // differently on each: an unregistered key is an installation that needs code, an unsupported
+            // contract is a module that cannot do this at all, and an empty payload is a caller problem.
+            //
+            // Controller absence is screened before the content guard, preserving the order the two answers
+            // were originally reported in: a module that declares no controller, or names one this
+            // installation does not carry, is told that first even when its content is also blank.
             if (controller is null)
             {
-                return Result.Success(AbsenceReason(businessControllerClass));
+                return Result.Failure(AbsenceReason(businessControllerClass));
             }
 
             if (string.IsNullOrWhiteSpace(content))
             {
-                return Result.Success(new ResultReason(
+                return Result.Failure(
                     ContentNotSuppliedCode,
-                    "No content was supplied, so nothing was restored."));
+                    "No content was supplied, so nothing was restored.");
             }
 
             IModuleContentPortability? portable = controller as IModuleContentPortability;
 
             if (portable is null)
             {
-                return Result.Success(new ResultReason(
+                return Result.Failure(
                     ContractNotSupportedCode,
-                    "The registered business controller cannot restore content."));
+                    "The registered business controller cannot restore content.");
             }
 
             await portable

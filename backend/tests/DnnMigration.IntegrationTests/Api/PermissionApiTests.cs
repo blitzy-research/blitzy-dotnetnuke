@@ -2,34 +2,26 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Portal;
 using FluentAssertions;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
 
 /// <summary>
-/// Covers the permission CATALOGUE read surface end to end: the filtered key listing and the three
-/// identifying definition reads.
+/// Covers the permission CATALOGUE read surface end to end: the filtered key listing and the by-identifier
+/// definition read.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The subject here is the catalogue of permission DEFINITIONS - the rows of the <c>Permission</c> table that
 /// say which permissions exist and in which scope - and never the grants that award them to a role or an
-/// account. That boundary is worth stating because the legacy member names invite the opposite reading: the
-/// procedure behind the module-scoped read takes a MODULE identifier yet selects from the catalogue table, and
-/// the legacy controller hydrates <c>PermissionInfo</c>, the catalogue type. Both terminal bodies were
-/// measured directly rather than inferred from those names.
-/// </para>
-/// <para>
-/// Two legacy quirks are pinned deliberately rather than corrected, because reproducing them is the parity
-/// requirement and a later "tidy-up" would silently change results. The module-scoped read is a UNION - the
-/// module's own definition's entries together with every entry carrying the product-wide scope code - so it is
-/// wider than a definition-scoped read rather than equal to it. And the page-scoped read never references its
-/// page argument at all, so every page in the installation receives the identical catalogue.
+/// account. The legacy module- and page-keyed catalogue helpers remain application-layer capabilities, but
+/// the frozen API does not publish child resources for them.
 /// </para>
 /// <para>
 /// The catalogue carries no portal column: it is installation-wide reference data seeded by the upgrade
-/// scripts. So these addresses take no tenant segment and no tenant query value, and the administrator gate is
+/// scripts. These addresses take no tenant segment and no tenant query value, and the administrator gate is
 /// still evaluated against the tenant the request host resolves to - which is what keeps a member of a tenant
 /// from browsing it.
 /// </para>
@@ -52,7 +44,7 @@ public sealed class PermissionApiTests
     [Fact]
     public async Task ListPermissionKeys_ReturnsOkWithTheCatalogueKeys()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/permissions", UriKind.Relative));
@@ -76,7 +68,7 @@ public sealed class PermissionApiTests
     [Fact]
     public async Task ListPermissionKeys_WithAKeyFilter_NarrowsToThatKey()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/permissions?permissionKey=EDIT", UriKind.Relative));
@@ -96,7 +88,7 @@ public sealed class PermissionApiTests
     [Fact]
     public async Task ListPermissionKeys_WithAnUnrecognisedKey_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/permissions?permissionKey=NOT_A_KEY", UriKind.Relative));
@@ -113,7 +105,7 @@ public sealed class PermissionApiTests
     [Fact]
     public async Task GetPermission_ByIdentifier_ReturnsOkWithTheDefinition()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             "/api/v1/permissions/"
@@ -137,7 +129,7 @@ public sealed class PermissionApiTests
     [Fact]
     public async Task GetPermission_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             "/api/v1/permissions/" + UnknownPermissionId.ToString(CultureInfo.InvariantCulture),
@@ -146,85 +138,82 @@ public sealed class PermissionApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>
-    /// The page-scoped read answers with the page scope's definitions, and answers identically for two
-    /// different pages.
-    /// </summary>
+    /// <summary>The legacy module- and page-keyed catalogue child routes are not public API resources.</summary>
+    /// <param name="path">The withdrawn address to probe.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Two different pages are asked precisely so that the EQUALITY of the two answers is recorded as intended
-    /// behaviour rather than as a coincidence: the terminal procedure body never references its page argument.
-    /// If a later change made that argument meaningful, this test would fail and demand a decision instead of
-    /// passing silently.
-    /// </remarks>
-    [Fact]
-    public async Task GetTabPermissionDefinitions_AnswerWithThePageScopeForEveryPageAlike()
+    [Theory]
+    [InlineData("/api/v1/permissions/modules/1")]
+    [InlineData("/api/v1/permissions/tabs/1")]
+    public async Task PermissionCatalogue_LegacyScopedChildRoutesAreNotPublished(string path)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        using HttpResponseMessage root = await client.GetAsync(new Uri(
-            "/api/v1/permissions/tabs/" + _fixture.Seed.RootTabId.ToString(CultureInfo.InvariantCulture),
-            UriKind.Relative));
+        using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
-        using HttpResponseMessage child = await client.GetAsync(new Uri(
-            "/api/v1/permissions/tabs/" + _fixture.Seed.ChildTabId.ToString(CultureInfo.InvariantCulture),
-            UriKind.Relative));
-
-        root.StatusCode.Should().Be(HttpStatusCode.OK);
-        child.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        CollectionEnvelope<PermissionDto>? rootEnvelope = await root.Content
-            .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
-        CollectionEnvelope<PermissionDto>? childEnvelope = await child.Content
-            .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
-
-        rootEnvelope.Should().NotBeNull();
-        childEnvelope.Should().NotBeNull();
-        rootEnvelope!.Data.Should().NotBeNull();
-        childEnvelope!.Data.Should().NotBeNull();
-
-        rootEnvelope.Data!.Should().OnlyContain(
-            item => item.PermissionCode == IntegrationSeed.TabPermissionCode);
-        rootEnvelope.Data!.Select(item => item.PermissionId).Should()
-            .Contain(_fixture.Seed.TabViewPermissionId);
-
-        childEnvelope.Data!.Select(item => item.PermissionId).Should().Equal(
-            rootEnvelope.Data!.Select(item => item.PermissionId),
-            "the terminal statement never references the page argument, so every page shares one catalogue");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
-    /// The module-scoped read includes the product-wide module scope, which is the second arm of the union the
-    /// terminal statement takes.
+    /// Unknown module and page identifiers return no catalogue metadata.
+    /// </summary>
+    /// <param name="path">The resource-scoped catalogue address.</param>
+    /// <returns>A task representing the test.</returns>
+    [Theory]
+    [InlineData("/api/v1/permissions/modules/987654")]
+    [InlineData("/api/v1/permissions/tabs/987654")]
+    public async Task ResourceScopedPermissionDefinitions_WhenTheResourceIsUnknown_ReturnNotFound(string path)
+    {
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// A portal administrator cannot use another tenant's module or page identifier to read catalogue metadata.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// An identifier that names no module is used on purpose. The first arm of the union then contributes
-    /// nothing while the second still answers, so this isolates the arm that a naive port would have dropped -
-    /// and proves the read is not silently narrowed for every module in the installation. It also pins that an
-    /// unknown module is not an error here, exactly as the legacy statement behaved.
+    /// <para>
+    /// SEC-033, and the guarantee is now STRUCTURAL rather than conditional. An earlier revision published
+    /// these two child addresses and added the tenant-bound existence checks that made a foreign identifier
+    /// indistinguishable from an unknown one. The frozen API publishes neither address at all, so there is no
+    /// route on which a resource identifier - foreign, unknown or genuine - can be exchanged for catalogue
+    /// metadata. Asserting it with a REAL foreign module and a REAL foreign page is what keeps the fact
+    /// meaningful: it proves the absence holds for identifiers that do exist and are owned elsewhere, which is
+    /// the case an unknown-identifier probe cannot reach.
+    /// </para>
+    /// <para>
+    /// The response body is asserted to carry no catalogue member, because the refusal must disclose nothing
+    /// about the resource named in the address - not its existence, and not the permission model's shape.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task GetModulePermissionDefinitions_IncludeTheProductWideModuleScope()
+    public async Task ResourceScopedPermissionDefinitions_RefuseResourcesOwnedByAnotherTenant()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto foreignPortal = await CreateForeignPortalAsync(host);
+        int foreignModuleId = await InsertModuleAsync(foreignPortal.PortalId);
+        foreignPortal.HomeTabId.Should().NotBeNull("portal creation provisions its home page");
 
-        using HttpResponseMessage response = await client.GetAsync(
-            new Uri("/api/v1/permissions/modules/987654", UriKind.Relative));
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        using HttpResponseMessage module = await administrator.GetAsync(new Uri(
+            "/api/v1/permissions/modules/" + foreignModuleId.ToString(CultureInfo.InvariantCulture),
+            UriKind.Relative));
+        using HttpResponseMessage tab = await administrator.GetAsync(new Uri(
+            "/api/v1/permissions/tabs/" + foreignPortal.HomeTabId!.Value.ToString(CultureInfo.InvariantCulture),
+            UriKind.Relative));
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        module.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        tab.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
-        CollectionEnvelope<PermissionDto>? envelope = await response.Content
-            .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
-
-        envelope.Should().NotBeNull();
-        envelope!.Data.Should().NotBeNull();
-        envelope.Data!.Select(item => item.PermissionId).Should()
-            .Contain(_fixture.Seed.ModuleViewPermissionId)
-            .And.Contain(_fixture.Seed.ModuleEditPermissionId);
-        envelope.Data!.Should().OnlyContain(
-            item => item.PermissionCode == IntegrationSeed.ModulePermissionCode,
-            "the page scope belongs to neither arm of this union");
+        string moduleBody = await module.Content.ReadAsStringAsync();
+        string tabBody = await tab.Content.ReadAsStringAsync();
+        moduleBody.Should().NotContain(
+            "permissionCode",
+            "no catalogue member may be served from an address the contract does not publish");
+        tabBody.Should().NotContain("permissionCode");
     }
 
     /// <summary>Every read on this resource requires a bearer token.</summary>
@@ -233,8 +222,6 @@ public sealed class PermissionApiTests
     [Theory]
     [InlineData("/api/v1/permissions")]
     [InlineData("/api/v1/permissions/1")]
-    [InlineData("/api/v1/permissions/modules/1")]
-    [InlineData("/api/v1/permissions/tabs/1")]
     public async Task PermissionReads_WithoutCredentials_ReturnUnauthorized(string path)
     {
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -258,16 +245,9 @@ public sealed class PermissionApiTests
     [Theory]
     [InlineData("/api/v1/permissions")]
     [InlineData("/api/v1/permissions/1")]
-    [InlineData("/api/v1/permissions/modules/1")]
-    [InlineData("/api/v1/permissions/tabs/1")]
     public async Task PermissionReads_AsMemberWithoutAdministratorRole_ReturnForbidden(string path)
     {
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
@@ -295,11 +275,74 @@ public sealed class PermissionApiTests
     [InlineData("DELETE", "/api/v1/permissions/1")]
     public async Task PermissionCatalogue_DeclaresNoMutator(string method, string path)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpRequestMessage request = new(new HttpMethod(method), new Uri(path, UriKind.Relative));
         using HttpResponseMessage response = await client.SendAsync(request);
 
         response.StatusCode.Should().BeOneOf(HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed);
+    }
+
+    /// <summary>Creates a second portal whose resources can be used as foreign identifiers.</summary>
+    /// <param name="host">The installation host account.</param>
+    /// <returns>The created portal.</returns>
+    private async Task<PortalDetailDto> CreateForeignPortalAsync(HttpClient host)
+    {
+        string suffix = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];
+
+        using HttpResponseMessage response = await host.PostAsJsonAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            new
+            {
+                portalName = "Permission Isolation " + suffix,
+                portalAlias = "permission-" + suffix + ".local",
+                homeDirectory = string.Empty,
+                templateFile = "admin.template",
+                isChildPortal = false,
+                administratorFirstName = "Permission",
+                administratorLastName = "Administrator",
+                administratorUsername = "permission_admin_" + suffix,
+                administratorPassword = ApiTestFixture.KnownPassword,
+                administratorEmail = "permission." + suffix + "@example.com",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        PortalDetailDto? portal = await response.Content.ReadEnvelopeAsync<PortalDetailDto>();
+        portal.Should().NotBeNull();
+        return portal!;
+    }
+
+    /// <summary>Inserts one module owned by the supplied portal.</summary>
+    /// <param name="portalId">The owning portal.</param>
+    /// <returns>The module identifier.</returns>
+    private async Task<int> InsertModuleAsync(int portalId)
+    {
+        string suffix = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];
+        int moduleDefinitionId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[ModuleDefinitions] ([FriendlyName], [DesktopModuleID], [DefaultCacheTime])
+            VALUES (@friendlyName, @desktopModuleId, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["friendlyName"] = "Permission Definition " + suffix,
+                ["desktopModuleId"] = _fixture.Seed.DesktopModuleId,
+            });
+
+        return await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted], [InheritViewPermissions])
+            VALUES (@moduleDefinitionId, @portalId, N'Foreign permission module', 0, 0, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleDefinitionId"] = moduleDefinitionId,
+                ["portalId"] = portalId,
+            });
     }
 }

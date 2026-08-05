@@ -16,11 +16,17 @@ import type { AuthSession, CurrentUser } from '../models/auth.model';
  * not session storage, not a cookie, not IndexedDB. The reasoning is specific to
  * what each tier exposes:
  *
- * - Web storage is readable by any script executing on the origin, so a single
- *   successful cross-site scripting injection anywhere in the application — or in
- *   any dependency it loads — exfiltrates a long-lived refresh token. A token in
- *   a closure is reachable only by code that already holds a reference to this
- *   service.
+ * - Web storage is readable by any script executing on the origin and it PERSISTS,
+ *   so a single successful cross-site scripting injection anywhere in the
+ *   application — or in any dependency it loads — exfiltrates whatever refresh
+ *   token is sitting there, including one issued in an earlier session. Holding
+ *   the session here removes that persistence and the reload window with it.
+ *   IT DOES NOT DEFEAT ACTIVE CROSS-SITE SCRIPTING, and it must not be read as
+ *   though it did: script running on this origin shares the application's own
+ *   heap, so it can reach this service through the injector, patch `fetch` or the
+ *   HTTP client, or simply wait and intercept the next token the server issues.
+ *   The benefit is narrower than "tokens are inaccessible" — it is a smaller
+ *   window and no credential left behind after the tab closes.
  * - A cookie would be sent automatically on every same-origin request, which
  *   reintroduces the cross-site request forgery surface that bearer tokens exist
  *   to avoid, and the API authenticates from the `Authorization` header rather
@@ -64,10 +70,12 @@ import type { AuthSession, CurrentUser } from '../models/auth.model';
  * to encrypt rather than hash (`Website/release.config:L245`,
  * `passwordFormat="Encrypted"`) with retrieval enabled (L239), under a symmetric
  * key committed to the repository in plain sight (L89-L93) — and
- * `Website/development.config:L90` commits the identical key. Every stored password
- * was therefore recoverable by anyone who could read the repository. Two rules
- * follow and are held to absolutely: never commit a secret, and never log a
- * credential. No member below writes to a log or raises an error carrying a token,
+ * `Website/development.config:L90` commits the identical key. Recovery needed both
+ * halves — the committed key material AND the encrypted credential rows in the
+ * database — so anyone holding both could turn every stored password back into
+ * plaintext, and committing the key is what made one of the two halves free.
+ * Two rules follow and are held to absolutely: never commit a secret, and never
+ * log a credential. No member below writes to a log or raises an error carrying a token,
  * and there is deliberately no `toString`, no `toJSON` and no debug accessor
  * through which one could reach either.
  *
@@ -175,6 +183,22 @@ export class TokenStorageService {
    */
   readonly permissions: Signal<readonly string[]> = computed(
     () => this._session()?.user.permissions ?? EMPTY_PERMISSIONS,
+  );
+
+  /**
+   * Whether the signed-in account must complete its profile before continuing.
+   *
+   * Projected as its own signal because it is a BLOCKING advisory: something has to
+   * be able to gate navigation on it, and a gate reads one value rather than
+   * destructuring a session. The two other advisories are informational and stay
+   * reachable through {@link session}, which is the whole stored shape.
+   *
+   * `false` when nobody is signed in, which is the same answer as "no advisory" and
+   * is the correct one for a gate: an unauthenticated caller is stopped by the
+   * authentication check rather than by this one.
+   */
+  readonly mustUpdateProfile: Signal<boolean> = computed(
+    () => this._session()?.mustUpdateProfile ?? false,
   );
 
   /**

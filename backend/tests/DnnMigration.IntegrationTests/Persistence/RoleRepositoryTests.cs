@@ -3,6 +3,7 @@ using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -720,37 +721,44 @@ public sealed class RoleRepositoryTests
     }
 
     /// <summary>
-    /// The legacy absent-date marker is replaced by SQL <c>NULL</c> on the way to the store, on both
-    /// bounds and on both write members.
+    /// The two assignment write members stage both validity bounds exactly as they are handed them: a null
+    /// stays a null, a real instant is stored verbatim, and the legacy absent-date marker is refused by the
+    /// store rather than quietly reinterpreted.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: this is <c>Null.GetNull</c>, asserted against a real SQL Server rather than against a
-    /// mock. The legacy write path converted the marker on every write - both members that wrote these
-    /// columns wrapped both values, at membership <c>DataProvider/SqlDataProvider.vb</c> L280-L286 - and
-    /// the repository members that stand in for them do the same, which is what keeps the stored shape
-    /// identical under Rule T5 and keeps the sentinel out of the Domain under Rule T7.
+    /// WHAT THIS ORACLE CHANGED AND WHY. An earlier revision asserted that the REPOSITORY reproduced
+    /// <c>Null.GetNull</c> - that it read a submitted <c>DateTime.MinValue</c> as absence before staging.
+    /// That translation is a subscription rule and <c>RoleService.NormalizeLegacyDateMarker</c> already
+    /// owned it, so the persistence layer held a second implementation of one rule: two copies that agree
+    /// until one is amended, and then disagree on exactly the case that prompted the amendment. Rule T2
+    /// gives interpretation to the Application layer, so the repository copy was removed and this test now
+    /// pins the contract that replaced it - a write member decides nothing.
     /// </para>
     /// <para>
-    /// The test would fail LOUDLY without the normalisation rather than subtly: both columns are
-    /// <c>datetime</c>, whose range begins at 1753-01-01, so the server refuses 0001-01-01 outright and
-    /// the save would throw a range error. That is precisely why the legacy layer converted the value,
-    /// and it is why this belongs in an integration test - an in-memory or mocked store would accept the
-    /// marker happily and prove nothing.
+    /// THE THIRD ASSERTION IS THE LOAD-BEARING ONE. Both columns are <c>datetime</c>, whose range begins at
+    /// 1753-01-01, so 0001-01-01 is not merely absent from them but UNSTORABLE. Proving that the store
+    /// refuses it is what makes the Application-layer translation demonstrably necessary rather than
+    /// merely tidy, and it proves that nothing between the entity and the column silently hides the marker
+    /// - which is precisely the guarantee <c>UserRoleConfiguration</c> claims by installing no value
+    /// conversion. It also has to be an INTEGRATION assertion: an in-memory store accepts 0001-01-01
+    /// happily and would prove nothing at all.
     /// </para>
     /// <para>
     /// The marker carries a time component, because the legacy emptiness test compared DATE PARTS ONLY
     /// (<c>Null.vb</c> L183-L186, "this avoids subtle time differences") and a value copied out of a
-    /// legacy object may well have one attached. An exact-equality test would let it through.
+    /// legacy object may well have one attached. The Application-layer rule matches that comparison; here
+    /// the value serves only to prove the column rejects it.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task Assignment_NormalisesTheLegacyAbsentDateMarkerToNull()
+    public async Task Assignment_StagesBothBoundsExactlyAsSupplied()
     {
         int portalId = await CreatePortalAsync();
         int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Marker {Suffix()}"));
         DateTime marker = DateTime.MinValue.AddHours(5);
+        DateTime realExpiry = new(2027, 6, 1, 0, 0, 0, DateTimeKind.Utc);
 
         try
         {
@@ -759,12 +767,14 @@ public sealed class RoleRepositoryTests
                 IRoleRepository roles = adding.ServiceProvider.GetRequiredService<IRoleRepository>();
                 IUnitOfWork unitOfWork = adding.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
+                // "No bound" is a null and nothing else - which is what every production caller supplies,
+                // because RoleService has already read a submitted marker as absence by this point.
                 await roles.AddUserRoleAsync(new UserRole
                 {
                     UserId = _fixture.Seed.MemberUserId,
                     RoleId = roleId,
-                    EffectiveDate = marker,
-                    ExpiryDate = marker,
+                    EffectiveDate = null,
+                    ExpiryDate = null,
                 });
 
                 await unitOfWork.SaveChangesAsync();
@@ -772,7 +782,7 @@ public sealed class RoleRepositoryTests
 
             (await CountNullBoundsAsync(roleId)).Should().Be(
                 1,
-                "an added assignment whose bounds carry the marker is stored with both columns null");
+                "an assignment staged with two null bounds is stored with both columns null");
 
             using (IServiceScope amending = _fixture.Services.CreateScope())
             {
@@ -782,14 +792,27 @@ public sealed class RoleRepositoryTests
                 UserRole? assignment = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
                 assignment.Should().NotBeNull();
 
-                // A real bound first, so the update genuinely has something to overwrite and the null
-                // that follows cannot be mistaken for the value simply never having changed.
-                assignment!.ExpiryDate = new DateTime(2027, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+                // A real bound, so the null that follows cannot be mistaken for the value simply never
+                // having changed. It is stated in the PAST deliberately: the repository must persist it
+                // unchanged rather than advancing it to the present instant, because that is what keeps the
+                // expire-rather-than-delete cancellation - which back-dates an expiry by one day - reachable
+                // at all.
+                assignment!.ExpiryDate = realExpiry;
                 await roles.UpdateUserRoleAsync(assignment);
                 await unitOfWork.SaveChangesAsync();
             }
 
             (await CountNullBoundsAsync(roleId)).Should().Be(0, "the expiry now holds a real instant");
+
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                UserRole? stored = await reader.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+                stored.Should().NotBeNull();
+                stored!.ExpiryDate.Should().Be(realExpiry, "the stated bound is persisted verbatim");
+                stored.EffectiveDate.Should().BeNull("and the bound that was never set is still absent");
+            }
 
             using (IServiceScope clearing = _fixture.Services.CreateScope())
             {
@@ -799,26 +822,44 @@ public sealed class RoleRepositoryTests
                 UserRole? assignment = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
                 assignment.Should().NotBeNull();
 
-                assignment!.ExpiryDate = marker;
+                assignment!.ExpiryDate = null;
                 await roles.UpdateUserRoleAsync(assignment);
                 await unitOfWork.SaveChangesAsync();
             }
 
             (await CountNullBoundsAsync(roleId)).Should().Be(
                 1,
-                "and an amendment back to the marker clears the column, exactly as the legacy "
-                + "UpdateUserRole did by wrapping the same value in GetNull");
+                "and an amendment back to a null clears the column");
 
-            using IServiceScope reading = _fixture.Services.CreateScope();
-            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+            using (IServiceScope refusing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = refusing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = refusing.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-            UserRole? stored = await reader.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
-            stored.Should().NotBeNull();
-            stored!.EffectiveDate.Should().BeNull("what comes back is absence, not the marker");
-            stored.ExpiryDate.Should().BeNull();
-            stored.GetStatus(DateTime.UtcNow).Should().Be(
+                UserRole? assignment = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+                assignment.Should().NotBeNull();
+
+                assignment!.ExpiryDate = marker;
+                await roles.UpdateUserRoleAsync(assignment);
+
+                // Refused by the STORE, loudly, rather than reinterpreted anywhere on the way to it. This is
+                // the assertion that makes the Application-layer translation necessary.
+                Func<Task> save = () => unitOfWork.SaveChangesAsync();
+                await save.Should().ThrowAsync<DbUpdateException>(
+                    "the datetime column cannot hold 0001-01-01 and nothing between the entity and the "
+                    + "column translates it");
+            }
+
+            using IServiceScope after = _fixture.Services.CreateScope();
+            IRoleRepository unchanged = after.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            UserRole? survivor = await unchanged.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+            survivor.Should().NotBeNull();
+            survivor!.EffectiveDate.Should().BeNull("the refused save changed nothing");
+            survivor.ExpiryDate.Should().BeNull();
+            survivor.GetStatus(DateTime.UtcNow).Should().Be(
                 RoleStatus.Active,
-                "so the Domain classifies it as in force without needing to recognise a sentinel");
+                "so the Domain classifies an unbounded membership as in force without recognising a sentinel");
         }
         finally
         {

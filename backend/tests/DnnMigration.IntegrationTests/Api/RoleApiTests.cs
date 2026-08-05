@@ -131,10 +131,10 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_ReturnsOkContainingSeededRoles()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles?pageIndex=0&pageSize=100",
+            "/api/v1/roles?pageIndex=0&pageSize=100",
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -164,7 +164,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_AsPlainMember_ReturnsForbidden()
     {
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(RolesRoute(_fixture.Seed.PortalId));
 
@@ -172,9 +172,8 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// The membership write path is validated at the BOUNDARY, and identically at both of its addresses.
+    /// The membership write path is validated at the BOUNDARY on its single canonical address.
     /// </summary>
-    /// <param name="useFlatAddress">Whether the request is sent to the flat address or the nested one.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
@@ -185,22 +184,18 @@ public sealed class RoleApiTests
     /// validator is ATTACHED, by the globally registered filter, to this action.
     /// </para>
     /// <para>
-    /// Both addresses are exercised because the resource is reachable at two and the filter resolves a
-    /// validator from the bound argument's type rather than from a route. The legacy wording is asserted in
-    /// the body, because the message is the part of the contract a caller actually reads.
+    /// The filter resolves a validator from the bound argument's type rather than from route metadata. The
+    /// legacy wording is asserted in the body, because the message is the part of the contract a caller
+    /// actually reads.
     /// </para>
     /// </remarks>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Assignment_WithAnExpiryBeforeItsEffectiveDate_ReturnsBadRequest(bool useFlatAddress)
+    [Fact]
+    public async Task Assignment_WithAnExpiryBeforeItsEffectiveDate_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
-        Uri route = useFlatAddress
-            ? new Uri($"/api/v1/roles/{Route(role.RoleId)}/users", UriKind.Relative)
-            : RoleUsersRoute(_fixture.Seed.PortalId, role.RoleId);
+        Uri route = RoleUsersRoute(_fixture.Seed.PortalId, role.RoleId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             route,
@@ -223,27 +218,23 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// The specified FLAT address serves the whole role action set, acting on the tenant the request
-    /// resolved to.
+    /// The canonical address serves the whole role action set, acting on the tenant the request resolves.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
     /// <c>/api/v1/roles</c> is the address the contract froze, and every action is reachable through it:
-    /// read the collection, create, read the member, update it and remove it. The nested form is used once,
-    /// at the end, to establish the fact that matters most about the flat form - that it acted on the
-    /// RESOLVED tenant rather than on some default - by finding the created role through the seeded
-    /// portal's own address and confirming the two forms name the same row.
+    /// read the collection, create, read the member, update it and remove it. The returned data and database
+    /// assertions establish that the action used the RESOLVED tenant rather than a default.
     /// </para>
     /// <para>
-    /// The created role is removed at the end so the flat and nested facts do not accumulate rows for one
-    /// another to trip over.
+    /// The created role is removed at the end so this fact does not accumulate rows for later facts.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task FlatRoleAddress_ServesTheResolvedTenantAcrossItsActionSet()
+    public async Task CanonicalRoleAddress_ServesTheResolvedTenantAcrossItsActionSet()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         var collection = new Uri("/api/v1/roles", UriKind.Relative);
 
@@ -292,13 +283,6 @@ public sealed class RoleApiTests
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
         (await ReadDetailAsync(updated)).Description.Should().Be("Amended through the flat address.");
 
-        // The decisive check: the row the flat address created is the seeded portal's row, which is what
-        // "acts on the resolved tenant" means in terms a caller can observe.
-        using HttpResponseMessage throughNested = await client.GetAsync(
-            RoleRoute(_fixture.Seed.PortalId, role.RoleId));
-
-        throughNested.StatusCode.Should().Be(HttpStatusCode.OK);
-
         using HttpResponseMessage removed = await client.DeleteAsync(itemRoute);
         removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
@@ -317,7 +301,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task FlatRoleMembershipAddress_GrantsReadsAndRemovesAMembership()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
         var membersRoute = new Uri($"/api/v1/roles/{Route(role.RoleId)}/users", UriKind.Relative);
@@ -379,7 +363,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task FlatRoleGroupAddress_ServesTheResolvedTenantAcrossItsActionSet()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         var collection = new Uri("/api/v1/role-groups", UriKind.Relative);
 
@@ -420,9 +404,18 @@ public sealed class RoleApiTests
         all!.Data.Should().NotBeNull();
         all.Data!.Select(item => item.RoleGroupId).Should().Contain(group.RoleGroupId);
 
-        group.Description = "Amended through the flat address.";
-
-        using HttpResponseMessage updated = await client.PutAsJsonAsync(itemRoute, group, ApiTestFixture.Json);
+        // The UPDATE CONTRACT is submitted, not the response projection that was just read back. The two are
+        // deliberately different shapes - the projection carries the group key and the owning portal, neither
+        // of which dbo.UpdateRoleGroup writes - and the API now refuses a body carrying a member no contract
+        // declares rather than discarding it silently, so echoing the projection back is a 400.
+        using HttpResponseMessage updated = await client.PutAsJsonAsync(
+            itemRoute,
+            new UpdateRoleGroupRequest
+            {
+                RoleGroupName = group.RoleGroupName!,
+                Description = "Amended through the flat address.",
+            },
+            ApiTestFixture.Json);
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
 
         using HttpResponseMessage read = await client.GetAsync(itemRoute);
@@ -445,9 +438,9 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ListRoles_AsAdministratorOfTheRoutedTenant_ReturnsOk()
+    public async Task ListRoles_AsAdministratorOfTheResolvedTenant_ReturnsOk()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(RolesRoute(_fixture.Seed.PortalId));
 
@@ -455,26 +448,25 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A portal administrator naming a tenant other than its own is refused, rather than being served that
+    /// A portal administrator addressing another tenant's host is refused, rather than being served that
     /// tenant's roles.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The tenant a request runs under is resolved from its host header, not from its route, so a route that
-    /// names a different portal has to be reconciled against the resolved one before any service is reached.
-    /// The legacy screen reconciled it by SUBSTITUTING the ambient tenant unless the caller was a super user
-    /// (<c>Website/admin/Portal/SiteSettings.ascx.vb:L235</c>); a REST route cannot substitute, because the
-    /// identifier is the resource, so the request is refused instead.
+    /// The tenant a request runs under is resolved from its host header. The flat role family therefore has no
+    /// portal segment a caller can use to override that context; a token for one portal sent to another
+    /// portal's host is refused before the service is reached.
     /// </remarks>
     [Fact]
     public async Task ListRoles_AsAdministratorOfAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
-        int otherPortalId = (await CreateIsolatedPortalAsync(host)).PortalId;
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedTenant other = await CreateIsolatedPortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+        client.BaseAddress = new Uri($"http://{other.Alias}", UriKind.Absolute);
 
-        using HttpResponseMessage response = await client.GetAsync(RolesRoute(otherPortalId));
+        using HttpResponseMessage response = await client.GetAsync(RolesRoute(other.PortalId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -487,12 +479,13 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoleGroups_AsAdministratorOfAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
-        int otherPortalId = (await CreateIsolatedPortalAsync(host)).PortalId;
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedTenant other = await CreateIsolatedPortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+        client.BaseAddress = new Uri($"http://{other.Alias}", UriKind.Absolute);
 
-        using HttpResponseMessage response = await client.GetAsync(RoleGroupsRoute(otherPortalId));
+        using HttpResponseMessage response = await client.GetAsync(RoleGroupsRoute(other.PortalId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -510,24 +503,23 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// An administrator of one portal is refused on another portal's role collection, which proves the
-    /// class-level tenant-administration policy is anchored to the portal named in the ROUTE and not to the
-    /// portal the request's host name resolved to. An unknown tenant is refused identically.
+    /// An administrator of one portal is refused on another portal's host, which proves the class-level
+    /// tenant-administration policy is anchored to the resolved request tenant. An unclaimed host is refused
+    /// identically.
     /// </summary>
     /// <remarks>
-    /// Both controllers here declare that policy once at class level and every route carries a <c>portalId</c>
-    /// segment, so this single fact governs all eleven routes: none of them can be reached for a tenant the
-    /// caller does not administer. Before the policy was anchored to the route, an administrator of any portal
-    /// could read and rewrite every other tenant's roles, role groups and role memberships - which, because a
-    /// role name in a token is what the permission gates resolve against, was a path to arbitrary privilege in
-    /// a tenant the caller had nothing to do with.
+    /// Both controllers declare the policy once at class level and every route is flat, so the host-resolved
+    /// tenant is the only tenant identity available to the operation. Before the policy enforced that binding,
+    /// an administrator of any portal could read and rewrite another tenant's roles, role groups and role
+    /// memberships - a path to arbitrary privilege in a tenant the caller had nothing to do with.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListRoles_ByAnAdministratorOfADifferentPortal_ReturnsForbidden()
     {
-        // A genuine, fully provisioned administrator - of the SEEDED portal. The route names a different one.
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        // A genuine, fully provisioned administrator of the seeded portal, sent from an unclaimed host.
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+        client.BaseAddress = new Uri("http://unclaimed-" + Suffix() + ".invalid", UriKind.Absolute);
 
         using HttpResponseMessage response = await client.GetAsync(RolesRoute(UnknownPortalId));
 
@@ -537,33 +529,34 @@ public sealed class RoleApiTests
             + "unauthorised caller cannot tell an existing portal from an absent one");
     }
 
-    /// <summary>An unknown tenant answers <c>404 Not Found</c>.</summary>
+    /// <summary>A different resolved tenant and an unclaimed host are both refused.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This test previously expected <c>404 Not Found</c> for the unknown tenant, which meant the route's
-    /// tenant reached the service without ever being checked against the tenant the caller administers. The
-    /// refusal now happens in authorisation, and it is deliberately the SAME refusal for a tenant that exists
-    /// and one that does not: a caller with no reach into a tenant must not be able to use the difference
-    /// between 403 and 404 to enumerate which tenants exist.
+    /// The refusal happens in authorisation, and it is deliberately the SAME refusal for a host bound to
+    /// another tenant and a host bound to none: a caller with no reach into a tenant must not be able to use
+    /// the difference between 403 and 404 to enumerate which tenants exist.
     /// </remarks>
     [Fact]
     public async Task ListRoles_ForATenantOtherThanTheResolvedOne_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         IsolatedTenant other = await CreateIsolatedPortalAsync(host);
 
-        // Addressed at the seeded tenant, as its own administrator.
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient existingTenant = await _fixture.CreateAdministratorClientAsync();
+        existingTenant.BaseAddress = new Uri($"http://{other.Alias}", UriKind.Absolute);
 
-        using HttpResponseMessage existing = await client.GetAsync(RolesRoute(other.PortalId));
+        using HttpResponseMessage existing = await existingTenant.GetAsync(RolesRoute(other.PortalId));
         existing.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
-        using HttpResponseMessage absent = await client.GetAsync(RolesRoute(UnknownPortalId));
+        using HttpClient absentTenant = await _fixture.CreateAdministratorClientAsync();
+        absentTenant.BaseAddress = new Uri("http://unclaimed-" + Suffix() + ".invalid", UriKind.Absolute);
+
+        using HttpResponseMessage absent = await absentTenant.GetAsync(RolesRoute(UnknownPortalId));
         absent.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
         // The tenant's own administrator reaches it, which proves the refusal above is the binding and not a
         // blanket denial of every tenant but the seed.
-        using HttpClient owner = TenantClient(other);
+        using HttpClient owner = await TenantClientAsync(other);
 
         using HttpResponseMessage reached = await owner.GetAsync(RolesRoute(other.PortalId));
         reached.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -574,10 +567,10 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_WithPageSizeAboveTheCeiling_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles?pageIndex=0&pageSize=5000",
+            "/api/v1/roles?pageIndex=0&pageSize=5000",
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -588,10 +581,10 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_ForUnknownRoleGroup_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles?roleGroupId={Route(UnknownRoleId)}",
+            $"/api/v1/roles?roleGroupId={Route(UnknownRoleId)}",
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -610,7 +603,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task GetRole_ReturnsOkWithTheStoredRole()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             RoleRoute(_fixture.Seed.PortalId, _fixture.Seed.AdministratorRoleId));
@@ -627,7 +620,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task GetRole_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             RoleRoute(_fixture.Seed.PortalId, UnknownRoleId));
@@ -643,7 +636,7 @@ public sealed class RoleApiTests
     /// <remarks>
     /// The other tenant is addressed as its OWN administrator, which is what makes this test about service-level
     /// tenant scoping rather than about authorisation. A caller that legitimately administers the other tenant
-    /// still cannot see the seeded tenant's role through it, because the read is anchored to the route's portal.
+    /// still cannot see the seeded tenant's role through it, because the read is anchored to the resolved host.
     /// The authorisation half - a caller reaching across into a tenant it does not administer - is asserted
     /// separately by <see cref="ListRoles_ForATenantOtherThanTheResolvedOne_ReturnsForbidden"/>; keeping the two
     /// apart matters, because a 403 from authorisation would satisfy neither assertion on its own.
@@ -651,10 +644,10 @@ public sealed class RoleApiTests
     [Fact]
     public async Task GetRole_WhenRoleBelongsToAnotherTenant_ReturnsNotFound()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         IsolatedTenant other = await CreateIsolatedPortalAsync(host);
 
-        using HttpClient client = TenantClient(other);
+        using HttpClient client = await TenantClientAsync(other);
 
         using HttpResponseMessage response = await client.GetAsync(
             RoleRoute(other.PortalId, _fixture.Seed.AdministratorRoleId));
@@ -667,7 +660,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_ReturnsCreatedAndPersists()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.Description = "Created by the integration suite.";
@@ -693,7 +686,7 @@ public sealed class RoleApiTests
 
         response.Headers.Location.Should().NotBeNull();
         response.Headers.Location!.OriginalString.Should().Be(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles/{Route(created.RoleId)}");
+            $"/api/v1/roles/{Route(created.RoleId)}");
 
         using HttpResponseMessage followed = await client.GetAsync(
             new Uri(response.Headers.Location.OriginalString, UriKind.Relative));
@@ -720,7 +713,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithAutomaticAssignment_EnrolsExistingAccounts()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.AutoAssignment = true;
@@ -740,7 +733,7 @@ public sealed class RoleApiTests
         (await CountAssignmentsAsync(created.RoleId)).Should().BeGreaterThanOrEqualTo(2);
 
         using HttpResponseMessage members = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles/{Route(created.RoleId)}/users"
+            $"/api/v1/roles/{Route(created.RoleId)}/users"
                 + "?pageIndex=0&pageSize=100",
             UriKind.Relative));
 
@@ -760,7 +753,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithDuplicateName_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest duplicate = NewRoleRequest();
         duplicate.RoleName = IntegrationSeed.SubscribersRoleName;
@@ -794,7 +787,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithANameUsedByAnotherTenant_ReturnsCreated()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         RoleDetailDto held = await CreateRoleAsync(client);
         IsolatedTenant other = await CreateIsolatedPortalAsync(client);
@@ -803,7 +796,7 @@ public sealed class RoleApiTests
         // incidental to this test: the whole claim being made is that the same NAME is free in one tenant and
         // taken in another, and a single caller able to write to both tenants would be the very cross-tenant
         // reach the review flagged.
-        using HttpClient owner = TenantClient(other);
+        using HttpClient owner = await TenantClientAsync(other);
 
         CreateRoleRequest inTheSameTenant = NewRoleRequest();
         inTheSameTenant.RoleName = held.RoleName;
@@ -829,10 +822,10 @@ public sealed class RoleApiTests
         accepted.RoleName.Should().Be(held.RoleName);
         accepted.RoleId.Should().NotBe(held.RoleId);
 
-        // Which tenant now owns the accepted role is proved by ROUTE rather than by a self-reported
-        // identifier in the payload: it is readable through the other portal and unreachable through the
-        // seeded one. That is the stronger of the two checks, and it is why the detail contract does not
-        // echo the owning portal back.
+        // Which tenant now owns the accepted role is proved by the request HOST rather than by a
+        // self-reported identifier in the payload: it is readable through the other tenant's host and
+        // unreachable through the seeded host. That is the stronger of the two checks, and it is why the
+        // detail contract does not echo the owning portal back.
         using HttpResponseMessage throughOwner = await owner.GetAsync(
             RoleRoute(other.PortalId, accepted.RoleId));
         throughOwner.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -847,7 +840,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithUnknownRoleGroup_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.RoleGroupId = UnknownRoleId;
@@ -865,7 +858,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithoutName_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.RoleName = string.Empty;
@@ -891,7 +884,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithNegativeServiceFee_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.ServiceFee = -1m;
@@ -912,7 +905,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithZeroBillingPeriod_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.BillingPeriod = 0;
@@ -937,7 +930,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task UpdateRole_ReturnsOkAndPersists()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         // The role's own name is resubmitted, which is what a caller amending other fields sends on a
@@ -1013,7 +1006,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task GetRole_SpellsTheBillingFrequencyWithItsLegacyCode()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         var request = new UpdateRoleRequest
@@ -1084,7 +1077,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task GetRole_WithAnUnrecognisedStoredFrequency_IsStillReadable()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         // Planted with a direct statement because the API cannot express it - the request contract accepts
@@ -1124,7 +1117,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task UpdateRole_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             RoleRoute(_fixture.Seed.PortalId, UnknownRoleId),
@@ -1155,7 +1148,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task UpdateRole_RenamesTheRoleAndPersistsTheNewName()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         string renamed = "Renamed" + Suffix();
@@ -1203,7 +1196,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task UpdateRole_RenamingOntoAnExistingName_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -1236,7 +1229,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task UpdateRole_ResubmittingItsOwnName_IsNotAConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -1263,7 +1256,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task DeleteRole_ReturnsNoContentAndRemovesItsAssignments()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage assigned = await client.PostAsJsonAsync(
@@ -1299,7 +1292,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task DeleteRole_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             RoleRoute(_fixture.Seed.PortalId, UnknownRoleId));
@@ -1315,7 +1308,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_RoundTripsThroughBothProjections()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage assigned = await client.PostAsJsonAsync(
@@ -1368,7 +1361,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_WhenRepeated_AmendsRatherThanDuplicates()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         for (int attempt = 0; attempt < 2; attempt++)
@@ -1397,7 +1390,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_ForAFreeRole_DiscardsASubmittedExpiryDate()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage assigned = await client.PostAsJsonAsync(
@@ -1434,7 +1427,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_ForAPaidRole_DerivesAnExpiryDateFromTheBillingPeriod()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         request.ServiceFee = 5m;
@@ -1480,7 +1473,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_ForUnknownAccount_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1496,7 +1489,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_ForUnknownRole_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RoleUsersRoute(_fixture.Seed.PortalId, UnknownRoleId),
@@ -1511,7 +1504,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RemoveAssignment_WhenNotHeld_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.DeleteAsync(
@@ -1528,7 +1521,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RemoveAssignment_ForTheDesignatedAdministrator_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(RoleUserRoute(
             _fixture.Seed.PortalId,
@@ -1572,7 +1565,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RemoveAssignment_FromTheRegisteredUsersRole_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(RoleUserRoute(
             _fixture.Seed.PortalId,
@@ -1590,7 +1583,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListUserRoles_WhenAccountIsUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             UserRolesRoute(_fixture.Seed.PortalId, UnknownUserId));
@@ -1603,7 +1596,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoleUsers_WhenRoleIsUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             RoleUsersRoute(_fixture.Seed.PortalId, UnknownRoleId));
@@ -1617,8 +1610,8 @@ public sealed class RoleApiTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// M-11: this is the case that a controller-only selection would get wrong, which is why it is
-    /// asserted separately. <c>RolesController</c> serves both the role listing and the role-membership
+    /// A controller-only selection would get this case wrong, which is why it is asserted separately.
+    /// <c>RolesController</c> serves both the role listing and the role-membership
     /// listing, and the two project different things: a membership carries the assignment dates, a role
     /// carries the paid-membership columns, and neither can be ordered by the other's fields. Binding the
     /// vocabulary to the controller alone would give both listings whichever set was chosen for the pair.
@@ -1642,7 +1635,7 @@ public sealed class RoleApiTests
     [Trait("Category", "Integration")]
     public async Task RoleCollections_BindTheirSortVocabularyPerActionNotPerController()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // The membership listing orders by an account field, which the role listing has no column for.
         using HttpResponseMessage membershipOwnField = await client.GetAsync(
@@ -1712,7 +1705,7 @@ public sealed class RoleApiTests
     [Trait("Category", "Integration")]
     public async Task RoleMembers_AreOrderableByTheAccountFieldsTheAccountListingCannotOrder(string sortBy)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage membership = await client.GetAsync(
             new Uri(
@@ -1738,7 +1731,7 @@ public sealed class RoleApiTests
         // rather than an accident of two validators drifting apart.
         using HttpResponseMessage accounts = await client.GetAsync(
             new Uri(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=50&sortBy={sortBy}",
+                $"/api/v1/users?pageIndex=0&pageSize=50&sortBy={sortBy}",
                 UriKind.Relative));
 
         accounts.StatusCode.Should().Be(
@@ -1752,7 +1745,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleGroups_SupportCreateReadUpdateAndDelete()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         RoleGroupDto created = await CreateRoleGroupAsync(client);
         created.PortalId.Should().Be(_fixture.Seed.PortalId);
@@ -1812,7 +1805,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRoleGroup_WithDuplicateName_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleGroupDto first = await CreateRoleGroupAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1843,7 +1836,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task DeleteRoleGroup_WhileItStillClassifiesARole_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleGroupDto group = await CreateRoleGroupAsync(client);
 
         CreateRoleRequest request = NewRoleRequest();
@@ -1889,7 +1882,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleGroup_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage read = await client.GetAsync(
             RoleGroupRoute(_fixture.Seed.PortalId, UnknownRoleId));
@@ -1907,7 +1900,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleGroups_AsPlainMember_ReturnsForbidden()
     {
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(RoleGroupsRoute(_fixture.Seed.PortalId));
 
@@ -1921,9 +1914,9 @@ public sealed class RoleApiTests
     /// <remarks>
     /// <para>
     /// The two dates are the whole subject of the legacy membership screen
-    /// (<c>securityroles.ascx:L77-L86</c>), and until this checkpoint they were settable but not readable - a
-    /// caller could set a bound it could never afterwards see. This asserts the round trip end to end,
-    /// through the store, so the fix cannot regress to a write-only field.
+    /// (<c>securityroles.ascx:L77-L86</c>), so a caller must be able to read back a bound it set. This
+    /// asserts the round trip end to end, through the store, so neither date can regress to a write-only
+    /// field.
     /// </para>
     /// <para>
     /// The effective date must be in the FUTURE for it to survive, and the expiry of an unpaid role is
@@ -1938,7 +1931,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleMembership_CarriesAFutureEffectiveDateAndLeavesAnUnpaidExpiryAbsent()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
         DateTime effective = DateTime.UtcNow.AddDays(30);
@@ -1975,7 +1968,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleMembership_ForAPaidRoleCarriesTheComputedExpiry()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage createdRole = await client.PostAsJsonAsync(
             RolesRoute(_fixture.Seed.PortalId),
@@ -2039,7 +2032,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleMembership_ReportsAnOpenEndedMembershipWithoutASentinelDate()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
         using HttpResponseMessage assigned = await client.PostAsJsonAsync(
@@ -2080,14 +2073,14 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is the third of the three legacy grouping intents, and the one that had no expression on this API
-    /// at all before this checkpoint. It is asserted end to end because the distinction it rests on is a
-    /// stored one: an ungrouped role holds SQL null in <c>Roles.RoleGroupID</c>, which is a nullable column.
+    /// This is the third of the three legacy grouping intents, and the one that no group identifier can
+    /// express. It is asserted end to end because the distinction it rests on is a stored one: an ungrouped
+    /// role holds SQL null in <c>Roles.RoleGroupID</c>, which is a nullable column.
     /// </remarks>
     [Fact]
     public async Task ListRoles_WithTheUngroupedScope_ExcludesAGroupedRole()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         RoleGroupDto group = await CreateRoleGroupAsync(client);
         RoleDetailDto ungrouped = await CreateRoleAsync(client);
@@ -2138,7 +2131,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_WithBothAGroupAndTheUngroupedScope_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleGroupDto group = await CreateRoleGroupAsync(client);
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
@@ -2160,7 +2153,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_WithAnUnrecognisedScope_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             "/api/v1/roles?scope=NotAScope",
@@ -2212,7 +2205,7 @@ public sealed class RoleApiTests
     [InlineData(false)]
     public async Task CreateRole_WithAFeeOfZero_IsCreatedCarryingThatFee(bool onServiceFee)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         if (onServiceFee)
@@ -2270,7 +2263,7 @@ public sealed class RoleApiTests
     [InlineData(false)]
     public async Task CreateRole_WithAFeeBelowZero_NamesTheMemberAndStoresNothing(bool onServiceFee)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         if (onServiceFee)
@@ -2324,7 +2317,7 @@ public sealed class RoleApiTests
     [InlineData(false, -1)]
     public async Task CreateRole_WithAPeriodThatIsNotPositive_NamesTheMember(bool onBillingPeriod, int period)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         if (onBillingPeriod)
@@ -2369,7 +2362,7 @@ public sealed class RoleApiTests
     [InlineData(false)]
     public async Task CreateRole_WithAPeriodOfOne_IsCreatedCarryingThatPeriod(bool onBillingPeriod)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest request = NewRoleRequest();
         if (onBillingPeriod)
@@ -2440,7 +2433,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_WithAFeeAboveTheBaselineColumnLimit_IsCreatedAndStoredExactly()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         const decimal baselineCeiling = 999.99m;
         const decimal wellAboveIt = 1_000_000.99m;
@@ -2504,7 +2497,7 @@ public sealed class RoleApiTests
     [InlineData(false)]
     public async Task CreateRole_WithAFeeTheColumnCannotHold_NamesTheMember(bool onServiceFee)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         decimal unrepresentable = SqlServerRange.MaximumMoney + 1m;
 
@@ -2564,7 +2557,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task GetRole_ForTheIdentitySeededRole_ResolvesIdentifierZero()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         int lowest = await _fixture.Database.ScalarAsync<int>(
             "SELECT MIN([RoleID]) FROM [dbo].[Roles];",
@@ -2639,7 +2632,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleDetail_KeepsAnAbsentGroupExplicitAndRefusesTheLegacyMarker()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         RoleDetailDto ungrouped = await CreateRoleAsync(client);
         ungrouped.RoleGroupId.Should().BeNull("no group was nominated, so the role belongs to none");
@@ -2696,7 +2689,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task CreateRole_InARoleGroup_CarriesTheGroupIdentifierWhateverItsMagnitude()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleGroupDto group = await CreateRoleGroupAsync(client);
 
         group.RoleGroupId.Should().BeGreaterThanOrEqualTo(
@@ -2745,13 +2738,13 @@ public sealed class RoleApiTests
     [Fact]
     public async Task ListRoles_CarriesThePagingCompanionWithARealTotal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         const int pageIndex = 0;
         const int pageSize = 2;
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles"
+            "/api/v1/roles"
             + $"?pageIndex={Route(pageIndex)}&pageSize={Route(pageSize)}",
             UriKind.Relative));
 
@@ -2794,24 +2787,20 @@ public sealed class RoleApiTests
     /// an empty result must report zero rather than the absent-integer marker.
     /// </para>
     /// <para>
-    /// MIGRATION - MEASURED BEHAVIOUR, AND IT DISAGREES WITH THE PROSE THAT DESCRIBES IT. The role
-    /// listing matches a fragment ANYWHERE in the name: <c>Application/Services/RoleService.cs</c> L436
-    /// to L440 applies <c>RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase)</c>. The account
-    /// listing genuinely is a prefix match - <c>Infrastructure/Repositories/UserRepository.cs</c> L234
-    /// applies <c>StartsWith</c> - and the role controller's own summary claims the same of this
-    /// endpoint, so the description and the behaviour do not agree. The behaviour is what a client
-    /// experiences, so the behaviour is what is pinned here, and the mid-string case is asserted
-    /// explicitly so that a later change of semantics is a failing test rather than a silent change of
-    /// contract. Nothing is repaired: the legacy role screen declared NO search control at all
-    /// (<c>Website/admin/Security/roles.ascx</c> contains no filter input), so there is no legacy
-    /// behaviour that either reading would violate, and altering a net-new search from a test is not this
-    /// file's business.
+    /// THE MATCH IS A SUBSTRING MATCH, NOT A PREFIX MATCH, and the mid-string case is asserted explicitly
+    /// so that a later change of semantics fails here rather than silently changing the contract. The role
+    /// listing matches a fragment ANYWHERE in the name - <c>Application/Services/RoleService.cs</c> applies
+    /// <c>RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase)</c> - which differs from the
+    /// account listing, where <c>Infrastructure/Repositories/UserRepository.cs</c> applies
+    /// <c>StartsWith</c>. Neither semantics violates a legacy behaviour, because the legacy role screen
+    /// declared no search control at all (<c>Website/admin/Security/roles.ascx</c> contains no filter
+    /// input); the search is net-new, and this test pins the semantics it actually has.
     /// </para>
     /// </remarks>
     [Fact]
     public async Task ListRoles_FiltersByNameAndNarrowsTheReportedTotal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         PagedEnvelope<RoleListItemDto> exact = await ListRolesAsync(client, created.RoleName);
@@ -2872,7 +2861,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RoleRequests_RoundTripTheCorrelationIdentifierIncludingOnFailure()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string supplied = "role-suite-" + Suffix();
 
@@ -2974,7 +2963,7 @@ public sealed class RoleApiTests
     [InlineData("/api/v1/users/1/services")]
     public async Task RoleResource_PublishesNoAddressForTheOperationsItDoesNotOwn(string path)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
@@ -3015,7 +3004,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task RemoveAssignment_ForAPaidMembershipWithAUsedTrial_ExpiresItRatherThanDeletingIt()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest paid = NewRoleRequest();
         paid.ServiceFee = 25m;
@@ -3109,7 +3098,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task Assignment_ForAOneTimeTerm_DerivesThePerpetualExpiry()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateRoleRequest oneTime = NewRoleRequest();
         oneTime.ServiceFee = 10m;
@@ -3173,7 +3162,7 @@ public sealed class RoleApiTests
     [Fact]
     public async Task UpdateRole_WithAnUnrecognisedStoredFrequency_IsStillWritable()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
 
         await _fixture.Database.ExecuteAsync(
@@ -3323,10 +3312,9 @@ public sealed class RoleApiTests
     /// <summary>Builds a client that resolves to an isolated tenant, as that tenant's own administrator.</summary>
     /// <param name="tenant">The tenant to address.</param>
     /// <returns>An authenticated client addressed at the tenant.</returns>
-    private HttpClient TenantClient(IsolatedTenant tenant) => _fixture.CreateTenantClient(
+    private Task<HttpClient> TenantClientAsync(IsolatedTenant tenant) => _fixture.CreateTenantClientAsync(
         tenant.Alias,
         tenant.PortalId,
-        tenant.AdministratorId,
         tenant.AdministratorUserName);
 
     /// <summary>A tenant created by this suite, and everything needed to address it.</summary>
@@ -3347,14 +3335,9 @@ public sealed class RoleApiTests
         "SELECT COUNT(*) FROM [dbo].[UserRoles] WHERE [RoleID] = @roleId;",
         new Dictionary<string, object?> { ["roleId"] = roleId });
 
-    /// <summary>Builds a client for the seeded account that holds no administrative role.</summary>
+    /// <summary>Signs in as the seeded account that holds no administrative role.</summary>
     /// <returns>An authenticated client without the administrators role.</returns>
-    private HttpClient MemberClient() => _fixture.CreateClientFor(
-        _fixture.Seed.MemberUserId,
-        IntegrationSeed.MemberUserName,
-        _fixture.Seed.PortalId,
-        isSuperUser: false,
-        roles: [IntegrationSeed.RegisteredUsersRoleName]);
+    private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
 
     /// <summary>Builds a free-role create request whose name carries a random suffix.</summary>
     /// <returns>A well formed create request.</returns>
@@ -3389,7 +3372,7 @@ public sealed class RoleApiTests
     private async Task<PagedEnvelope<RoleListItemDto>> ListRolesAsync(HttpClient client, string query)
     {
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles"
+            "/api/v1/roles"
             + $"?pageIndex=0&pageSize=100&query={Uri.EscapeDataString(query)}",
             UriKind.Relative));
 
@@ -3529,54 +3512,52 @@ public sealed class RoleApiTests
             "the failure code is what lets a client tell one refusal from another that shares its status");
     }
 
-    /// <summary>Builds the collection route for a tenant's roles.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the canonical role collection route for the resolved tenant.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RolesRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/roles", UriKind.Relative);
+    private static Uri RolesRoute(int _) => new("/api/v1/roles", UriKind.Relative);
 
     /// <summary>Builds the item route for one role.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="roleId">The role identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RoleRoute(int portalId, int roleId) =>
-        new($"/api/v1/portals/{Route(portalId)}/roles/{Route(roleId)}", UriKind.Relative);
+    private static Uri RoleRoute(int _, int roleId) =>
+        new($"/api/v1/roles/{Route(roleId)}", UriKind.Relative);
 
     /// <summary>Builds the accounts sub-resource route for one role.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="roleId">The role identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RoleUsersRoute(int portalId, int roleId) =>
-        new($"/api/v1/portals/{Route(portalId)}/roles/{Route(roleId)}/users", UriKind.Relative);
+    private static Uri RoleUsersRoute(int _, int roleId) =>
+        new($"/api/v1/roles/{Route(roleId)}/users", UriKind.Relative);
 
     /// <summary>Builds the route for one account's membership of one role.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="roleId">The role identifier.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RoleUserRoute(int portalId, int roleId, int userId) => new(
-        $"/api/v1/portals/{Route(portalId)}/roles/{Route(roleId)}/users/{Route(userId)}",
+    private static Uri RoleUserRoute(int _, int roleId, int userId) => new(
+        $"/api/v1/roles/{Route(roleId)}/users/{Route(userId)}",
         UriKind.Relative);
 
     /// <summary>Builds the roles-of-an-account projection route.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri UserRolesRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/roles", UriKind.Relative);
+    private static Uri UserRolesRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/roles", UriKind.Relative);
 
-    /// <summary>Builds the collection route for a tenant's role groups.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the canonical role-group collection route for the resolved tenant.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RoleGroupsRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/role-groups", UriKind.Relative);
+    private static Uri RoleGroupsRoute(int _) => new("/api/v1/role-groups", UriKind.Relative);
 
     /// <summary>Builds the item route for one role group.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="roleGroupId">The group identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RoleGroupRoute(int portalId, int roleGroupId) =>
-        new($"/api/v1/portals/{Route(portalId)}/role-groups/{Route(roleGroupId)}", UriKind.Relative);
+    private static Uri RoleGroupRoute(int _, int roleGroupId) =>
+        new($"/api/v1/role-groups/{Route(roleGroupId)}", UriKind.Relative);
 
     /// <summary>Formats an identifier for a route without picking up the ambient culture.</summary>
     /// <param name="value">The identifier.</param>

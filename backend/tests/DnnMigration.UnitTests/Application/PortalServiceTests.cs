@@ -49,7 +49,7 @@ namespace DnnMigration.UnitTests.Application;
 /// token explicitly rather than relying on the parameter's default.
 /// </para>
 /// </remarks>
-public class PortalServiceTests
+public class PortalServiceApplicationTests
 {
     /// <summary>
     /// The tenant these assertions address, which is deliberately the identity seed.
@@ -66,6 +66,16 @@ public class PortalServiceTests
     /// The shipped default tenant, which occupies the value immediately after the seed.
     /// </summary>
     private const int DefaultPortalId = 0;
+
+    /// <summary>
+    /// The installation-wide host account used by write-path tests.
+    /// </summary>
+    /// <remarks>
+    /// SEC-011: host authority is re-read from the account store. This identifier is deliberately distinct
+    /// from every portal administrator used by the fixture so a host-only exemption cannot be satisfied by
+    /// an unrelated tenant-scoped account lookup.
+    /// </remarks>
+    private const int HostCallerUserId = 9_901;
 
     /// <summary>
     /// The legacy cache key shape, <c>String.Format(DataCache.PortalCacheKey, PortalId)</c> at
@@ -123,7 +133,7 @@ public class PortalServiceTests
         "UserQuota",
         "PaymentProcessor",
         "ProcessorUserId",
-        "ProcessorPassword",
+        "ProcessorCredentialReference",
         "Description",
         "KeyWords",
         "BackgroundFile",
@@ -176,7 +186,7 @@ public class PortalServiceTests
     {
         { "HostFee", "HostSpace" },
         { "PageQuota", "UserQuota" },
-        { "ProcessorUserId", "ProcessorPassword" },
+        { "ProcessorUserId", "ProcessorCredentialReference" },
         { "Description", "KeyWords" },
         { "SplashTabId", "HomeTabId" },
         { "HomeTabId", "LoginTabId" },
@@ -207,6 +217,7 @@ public class PortalServiceTests
                 UnitOfWork.Object,
                 HostSettings.Object,
                 PasswordHasher.Object,
+                Tokens.Object,
                 Clock.Object,
                 Cache.Object,
                 CurrentUser.Object,
@@ -250,6 +261,9 @@ public class PortalServiceTests
 
         /// <summary>Gets the password hasher mock.</summary>
         public Mock<IPasswordHasher> PasswordHasher { get; } = new();
+
+        /// <summary>Gets the token service mock.</summary>
+        public Mock<ITokenService> Tokens { get; } = new();
 
         /// <summary>Gets the clock mock, so no assertion ever reads the real time of day.</summary>
         public Mock<IClock> Clock { get; } = new();
@@ -313,7 +327,8 @@ public class PortalServiceTests
                 .Returns(new DateTime(2030, 1, 2, 3, 4, 5, DateTimeKind.Utc));
 
             subject.CurrentUser.SetupGet(caller => caller.IsSuperUser).Returns(true);
-            subject.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(false);
+            subject.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+            subject.CurrentUser.SetupGet(caller => caller.UserId).Returns(HostCallerUserId);
 
             subject.PasswordHasher.Setup(hasher => hasher.Hash(It.IsAny<string>())).Returns(FakePasswordHash);
 
@@ -342,6 +357,12 @@ public class PortalServiceTests
             subject.Portals
                 .Setup(portals => portals.GetRoleNamesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new Dictionary<int, string>());
+            subject.Portals
+                .Setup(portals => portals.TabBelongsToPortalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
             subject.Portals
                 .Setup(portals => portals.CountUsersForPortalsAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -395,6 +416,27 @@ public class PortalServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(false);
             subject.Users
+                .Setup(users => users.GetAsync(
+                    It.Is<int?>(portalId => portalId == null),
+                    HostCallerUserId,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new User
+                {
+                    UserId = HostCallerUserId,
+                    Username = "host-caller",
+                    IsSuperUser = true,
+                });
+            subject.Users
+                .Setup(users => users.GetMembershipAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, int userId, CancellationToken _) => new UserPortal
+                {
+                    PortalId = portalId,
+                    UserId = userId,
+                });
+            subject.Users
                 .Setup(users => users.CreateCredentialAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
@@ -403,8 +445,19 @@ public class PortalServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(true);
             subject.Users
+                .Setup(users => users.ListPortalMembersForRemovalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Array.Empty<User>());
+            subject.Users
                 .Setup(users => users.Add(It.IsAny<User>()))
                 .Callback<User>(_ => subject.CallLog.Add("stage:user"));
+
+            subject.Tokens
+                .Setup(tokens => tokens.RevokeAllRefreshTokensAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result.Success());
 
             subject.Permissions
                 .Setup(permissions => permissions.GetByTabIdAsync(
@@ -493,7 +546,7 @@ public class PortalServiceTests
         UserQuota = 13,
         PaymentProcessor = "argument-14-payment-processor",
         ProcessorUserId = "argument-15-processor-user-id",
-        ProcessorPassword = "argument-16-processor-password",
+        ProcessorCredentialReference = "secret://processor/argument-16",
         Description = "argument-17-description",
         KeyWords = "argument-18-keywords",
         BackgroundFile = "argument-19-background-file",
@@ -620,7 +673,7 @@ public class PortalServiceTests
         stored.UserQuota.Should().Be(13);
         stored.PaymentProcessor.Should().Be("argument-14-payment-processor");
         stored.ProcessorUserId.Should().Be("argument-15-processor-user-id");
-        stored.ProcessorPassword.Should().Be("argument-16-processor-password");
+        stored.ProcessorCredentialReference.Should().Be("secret://processor/argument-16");
         stored.Description.Should().Be("argument-17-description");
         stored.KeyWords.Should().Be("argument-18-keywords");
         stored.BackgroundFile.Should().Be("argument-19-background-file");
@@ -692,8 +745,7 @@ public class PortalServiceTests
     /// <remarks>
     /// The counterpart to the commit assertion above, and the reason both belong in one file: a guard that
     /// throws after the row has already been altered in memory is only safe while nothing commits behind it.
-    /// The refusal is raised as a domain exception rather than returned as an outcome because a request that
-    /// clears a mandatory column is malformed rather than merely unlucky.
+    /// The refusal is an expected request failure with a stable code, so the API can return a bounded 400.
     /// </remarks>
     [Fact]
     public async Task UpdatePortal_CommitsNothingWhenItRefusesToClearTheAdministrator()
@@ -702,16 +754,137 @@ public class PortalServiceTests
         UpdatePortalRequest request = SentinelUpdateRequest();
         request.AdministratorId = null;
 
-        await Assert.ThrowsAsync<DomainException>(() => subject.Service.UpdatePortalAsync(
+        Result<PortalDetailDto?> outcome = await subject.Service.UpdatePortalAsync(
             SeedPortalId,
             request,
-            CancellationToken.None));
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.administrator_invalid");
 
         subject.UnitOfWork.Verify(
             work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never);
         subject.DiscardedPortals.Should().BeEmpty(
             "a refused write must not discard a cache entry that still describes the stored row");
+    }
+
+    /// <summary>A designated administrator must be a member of the addressed portal.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortal_RefusesAnAdministratorFromAnotherPortal()
+    {
+        Subject subject = Subject.Ready();
+        UpdatePortalRequest request = SentinelUpdateRequest();
+        request.AdministratorId = 9_999;
+        subject.Users
+            .Setup(users => users.GetMembershipAsync(
+                SeedPortalId,
+                9_999,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((UserPortal?)null);
+
+        Result<PortalDetailDto?> outcome = await subject.Service.UpdatePortalAsync(
+            SeedPortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.administrator_invalid");
+        subject.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>Each submitted page reference must belong to the addressed portal.</summary>
+    /// <param name="field">The reference to make foreign.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData(nameof(UpdatePortalRequest.SplashTabId))]
+    [InlineData(nameof(UpdatePortalRequest.HomeTabId))]
+    [InlineData(nameof(UpdatePortalRequest.LoginTabId))]
+    [InlineData(nameof(UpdatePortalRequest.UserTabId))]
+    public async Task UpdatePortal_RefusesAPageFromAnotherPortal(string field)
+    {
+        Subject subject = Subject.Ready();
+        UpdatePortalRequest request = SentinelUpdateRequest();
+        typeof(UpdatePortalRequest).GetProperty(field)!.SetValue(request, 9_999);
+        subject.Portals
+            .Setup(portals => portals.TabBelongsToPortalAsync(
+                SeedPortalId,
+                9_999,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        Result<PortalDetailDto?> outcome = await subject.Service.UpdatePortalAsync(
+            SeedPortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.tab_reference_invalid");
+        subject.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A legacy plaintext processor credential cannot be retained silently; the caller must clear it or
+    /// replace it with a managed-secret reference.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortal_RequiresLegacyProcessorPlaintextToBeRemediated()
+    {
+        Subject refusing = Subject.Ready();
+        refusing.StoredPortal!.ProcessorCredentialReference = "legacy-plaintext-password";
+        UpdatePortalRequest keep = SentinelUpdateRequest();
+        keep.ProcessorCredentialReference = null;
+
+        Result<PortalDetailDto?> refused = await refusing.Service.UpdatePortalAsync(
+            SeedPortalId,
+            keep,
+            CancellationToken.None);
+
+        refused.IsFailure.Should().BeTrue();
+        refused.Error!.Code.Should().Be("portal.processor_reference_invalid");
+        refusing.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        Subject clearing = Subject.Ready();
+        clearing.StoredPortal!.ProcessorCredentialReference = "legacy-plaintext-password";
+        UpdatePortalRequest clear = SentinelUpdateRequest();
+        clear.ProcessorCredentialReference = string.Empty;
+
+        Result<PortalDetailDto?> cleared = await clearing.Service.UpdatePortalAsync(
+            SeedPortalId,
+            clear,
+            CancellationToken.None);
+
+        cleared.IsSuccess.Should().BeTrue();
+        clearing.StoredPortal.ProcessorCredentialReference.Should().BeNull();
+    }
+
+    /// <summary>Service callers cannot bypass the managed-secret reference syntax enforced at the API edge.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortal_RefusesAPlaintextProcessorCredentialFromDirectCallers()
+    {
+        Subject subject = Subject.Ready();
+        UpdatePortalRequest request = SentinelUpdateRequest();
+        request.ProcessorCredentialReference = "plaintext-password";
+
+        Result<PortalDetailDto?> outcome = await subject.Service.UpdatePortalAsync(
+            SeedPortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.processor_reference_invalid");
+        subject.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -1496,10 +1669,25 @@ public class PortalServiceTests
 
         await subject.Service.CreatePortalAsync(SentinelCreateRequest(), CancellationToken.None);
 
-        AuditEvent recorded = subject.AuditEvents.Should().ContainSingle().Which;
-        recorded.EventName.Should().Be(AuditEventNames.PortalCreated);
+        // TWO records for one installation, deliberately. The enumeration's accurate member and the coarser
+        // type the legacy installation actually raised (PortalController.vb:L1140-L1141) are both emitted, so
+        // neither an operator's existing HOST_ALERT alert nor a reader looking for the tenant itself is
+        // silently dropped. They are built from the same facts, so they cannot describe different events.
+        subject.AuditEvents.Select(candidate => candidate.EventName)
+            .Should()
+            .BeEquivalentTo([AuditEventNames.PortalCreated, AuditEventNames.HostAlert]);
+
+        AuditEvent recorded = subject.AuditEvents
+            .Should()
+            .ContainSingle(candidate => candidate.EventName == AuditEventNames.PortalCreated)
+            .Which;
         recorded.Outcome.Should().Be(AuditOutcome.Succeeded);
         recorded.PortalId.Should().Be(subject.StagedPortals.Single().PortalId);
+
+        subject.AuditEvents
+            .Should()
+            .ContainSingle(candidate => candidate.EventName == AuditEventNames.HostAlert)
+            .Which.PortalId.Should().Be(recorded.PortalId);
 
         subject.Transaction.Verify(
             transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),

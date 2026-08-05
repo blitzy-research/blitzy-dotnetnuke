@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Application.Validation;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -98,10 +99,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_ReturnsOkWithTenantAccountsAndWithoutTheHostAccount()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=100", UriKind.Relative));
+            new Uri("/api/v1/users?pageIndex=0&pageSize=100", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -124,10 +125,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_FilteredByLoginName_ReturnsOnlyMatchingAccounts()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users"
+            "/api/v1/users"
                 + $"?pageIndex=0&pageSize=100&userName={IntegrationSeed.MemberUserName}",
             UriKind.Relative));
 
@@ -152,11 +153,11 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_FilteredByApproval_ReturnsOnlyApprovedAccounts()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto unapproved = await CreateUserAsync(client, authorize: false);
 
         using HttpResponseMessage approvedOnly = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=100&isApproved=true",
+            "/api/v1/users?pageIndex=0&pageSize=100&isApproved=true",
             UriKind.Relative));
 
         approvedOnly.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -169,7 +170,7 @@ public sealed class UserApiTests
         approved.Items.Select(item => item.Username).Should().Contain(IntegrationSeed.AdminUserName);
 
         using HttpResponseMessage pendingOnly = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=100&isApproved=false",
+            "/api/v1/users?pageIndex=0&pageSize=100&isApproved=false",
             UriKind.Relative));
 
         pendingOnly.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -186,10 +187,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_WithProfilePropertyNameButNoValue_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users"
+            "/api/v1/users"
                 + "?pageIndex=0&pageSize=10&profilePropertyName=City",
             UriKind.Relative));
 
@@ -204,7 +205,7 @@ public sealed class UserApiTests
         using HttpClient client = _fixture.CreateAnonymousClient();
 
         using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users", UriKind.Relative));
+            new Uri("/api/v1/users", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
@@ -214,7 +215,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task GetUser_ReturnsOkWithDetailAndRoles()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             UserRoute(_fixture.Seed.PortalId, _fixture.Seed.AdminUserId));
@@ -231,12 +232,48 @@ public sealed class UserApiTests
         detail.Roles.Should().Contain(IntegrationSeed.AdministratorsRoleName);
     }
 
+    /// <summary>
+    /// Being the account owner in portal A does not authorise the same account identifier when the request
+    /// arrives on portal B's host.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// SEC-004: the subject identifier matches deliberately, so the owner branch is the only tempting path.
+    /// The token names portal A while the arrival host resolves to an existing portal B; the policy must
+    /// refuse before the user service can turn the mismatch into an ordinary not-found response.
+    /// <para>
+    /// The account resource is addressed by its canonical flat route, so the tenant is selected by the
+    /// arrival host rather than by a path segment. That is what makes the host the thing this fact varies:
+    /// on this surface the cross-tenant attempt cannot be expressed any other way.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetUser_AsTheSameSubjectArrivingOnAnotherTenantsHost_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(host);
+
+        using HttpClient owner = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        owner.BaseAddress = new Uri($"http://{otherPortal.Alias}", UriKind.Absolute);
+
+        using HttpResponseMessage response = await owner.GetAsync(
+            UserRoute(otherPortal.PortalId, _fixture.Seed.MemberUserId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     /// <summary>An unknown account answers <c>404 Not Found</c>.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetUser_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             UserRoute(_fixture.Seed.PortalId, UnknownUserId));
@@ -252,10 +289,12 @@ public sealed class UserApiTests
     [Fact]
     public async Task GetUser_WhenAccountIsNotAMemberOfThePortal_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedPortal other = await CreateIsolatedPortalAsync(host);
+        using HttpClient client = await _fixture.CreateHostClientAsync(other.Alias);
 
         using HttpResponseMessage response = await client.GetAsync(
-            UserRoute(UnknownPortalId, _fixture.Seed.AdminUserId));
+            UserRoute(other.PortalId, _fixture.Seed.AdminUserId));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
@@ -268,7 +307,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_ReturnsCreatedWithCredentialAndMembership()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
 
@@ -295,7 +334,7 @@ public sealed class UserApiTests
 
         response.Headers.Location.Should().NotBeNull();
         response.Headers.Location!.OriginalString.Should().Be(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users/{Route(created.UserId)}");
+            $"/api/v1/users/{Route(created.UserId)}");
 
         using HttpResponseMessage followed = await client.GetAsync(
             new Uri(response.Headers.Location.OriginalString, UriKind.Relative));
@@ -334,7 +373,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WhenAlreadyRegisteredInThePortal_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         request.Username = IntegrationSeed.MemberUserName;
@@ -355,7 +394,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithShortCredential_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         request.Password = "abc12";
@@ -374,7 +413,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithMismatchedConfirmation_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         request.ConfirmPassword = ReplacementPassword;
@@ -392,7 +431,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithMalformedEmail_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         request.Email = "not-an-address";
@@ -413,7 +452,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithoutFamilyName_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         request.LastName = string.Empty;
@@ -431,7 +470,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task UpdateUser_ReturnsOkAndPersists()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         string suffix = Suffix();
@@ -471,7 +510,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task UpdateUser_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             UserRoute(_fixture.Seed.PortalId, UnknownUserId),
@@ -495,7 +534,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task DeleteUser_ReturnsNoContentAndRemovesTheCredential()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         (await CountCredentialsAsync(created.Username)).Should().Be(1);
@@ -527,7 +566,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task DeleteUser_WhenAccountIsAHostAccount_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             UserRoute(_fixture.Seed.PortalId, _fixture.Seed.HostUserId));
@@ -549,7 +588,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task DeleteUser_WhenAccountIsTheDesignatedAdministrator_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             UserRoute(_fixture.Seed.PortalId, _fixture.Seed.AdminUserId));
@@ -568,7 +607,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task DeleteUser_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             UserRoute(_fixture.Seed.PortalId, UnknownUserId));
@@ -591,22 +630,17 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_ReturnsNoContentAndReplacesTheCredential()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
-        using HttpClient client = ClientForAccount(created);
+        // The CHANGE operation is self-service, so it is driven AS THE ACCOUNT ITSELF, signed in with the
+        // credential the create supplied. An earlier revision of this test drove it as the host account, which
+        // the service now refuses: presenting the current credential is proof of possession rather than of
+        // authority, so a caller acting on somebody else's account uses the RESET operation, which is audited
+        // as an administrative act. The reset path has its own test immediately below.
+        using HttpClient owner = await ClientForAccountAsync(created);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
-
-        // The CHANGE operation is self-service, so it is driven as the account itself. An earlier revision of
-        // this test drove it as the host account, which the service now refuses: presenting the current
-        // credential is proof of possession rather than of authority, so a caller acting on somebody else's
-        // account uses the RESET operation, which is audited as an administrative act. The reset path has its
-        // own test immediately below.
-        using HttpClient owner = _fixture.CreateClientFor(
-            created.UserId,
-            created.Username,
-            _fixture.Seed.PortalId);
 
         using HttpResponseMessage response = await owner.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -651,7 +685,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ResetPassword_AsAdministrator_ReturnsNoContent()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -680,17 +714,12 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WithResetOperation_AsPlainMember_ReturnsForbidden()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
 
-        using HttpClient member = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await member.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -712,17 +741,12 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WithWrongCurrentCredential_ReturnsBadRequest()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
-
-        using HttpClient client = ClientForAccount(created);
 
         // Driven as the account itself, because the change operation is self-service; see the note on the
         // successful-change test above.
-        using HttpClient owner = _fixture.CreateClientFor(
-            created.UserId,
-            created.Username,
-            _fixture.Seed.PortalId);
+        using HttpClient owner = await ClientForAccountAsync(created);
 
         using HttpResponseMessage response = await owner.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -756,10 +780,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WhenSelfServiceResubmitsTheSameCredential_ReturnsBadRequest()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
-        using HttpClient client = ClientForAccount(created);
+        using HttpClient client = await ClientForAccountAsync(created);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -790,7 +814,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ResetPassword_WhenItSubmitsTheStoredCredential_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -813,10 +837,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WithUnrecognisedOperation_ReturnsBadRequest()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
-        using HttpClient client = ClientForAccount(created);
+        using HttpClient client = await ClientForAccountAsync(created);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -840,10 +864,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_NamingTheResetOperation_IsRefusedAndChangesNothing()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
-        using HttpClient client = ClientForAccount(created);
+        using HttpClient client = await ClientForAccountAsync(created);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
 
@@ -870,17 +894,12 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_ByAnAccountOtherThanTheHolder_ReturnsForbidden()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
 
-        using HttpClient other = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient other = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await other.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -908,12 +927,12 @@ public sealed class UserApiTests
     [Fact]
     public async Task ResetPassword_ByTheAccountItself_ReturnsForbidden()
     {
-        using HttpClient administrator = _fixture.CreateHostClient();
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
 
-        using HttpClient client = ClientForAccount(created);
+        using HttpClient client = await ClientForAccountAsync(created);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             PasswordResetRoute(_fixture.Seed.PortalId, created.UserId),
@@ -938,7 +957,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ResetPassword_NamingTheChangeOperation_IsRefused()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -965,7 +984,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task SetApproval_TogglesApprovalAndBlocksSignIn()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage withdrawn = await client.PutAsync(
@@ -1018,7 +1037,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task SetApproval_WhenAlreadyInThatState_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PutAsync(
@@ -1029,6 +1048,48 @@ public sealed class UserApiTests
     }
 
     /// <summary>
+    /// Omitting the approval state is refused with a validation problem rather than being read as "withdraw
+    /// approval".
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// THE DESTRUCTIVE READING WAS THE QUIET ONE. Bound as a non-nullable boolean the query parameter was
+    /// OPTIONAL, so a caller addressing this route with no query string bound <see langword="false"/>: the
+    /// account's approval was withdrawn and its live sessions were revoked, with nothing about the request
+    /// malformed enough for the model binder to object. The 400 this endpoint advertises was therefore
+    /// unreachable. This test is the evidence path the review asked for, and it asserts the account is left
+    /// APPROVED afterwards - the refusal has to be a refusal, not a refusal reported after the write.
+    /// </remarks>
+    [Fact]
+    public async Task SetApproval_WhenTheStateIsOmitted_ReturnsBadRequestAndChangesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(client);
+
+        using HttpResponseMessage response = await client.PutAsync(
+            new Uri(
+                $"/api/v1/users/{Route(created.UserId)}/approval",
+                UriKind.Relative),
+            content: null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        // The problem document names the parameter, so a caller learns which value to supply.
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("isApproved");
+
+        // And the account is untouched: it is still approved, which is what a subsequent request to set the
+        // state it already holds reports as a conflict.
+        using HttpResponseMessage unchanged = await client.PutAsync(
+            ApprovalRoute(_fixture.Seed.PortalId, created.UserId, isApproved: true),
+            content: null);
+
+        unchanged.StatusCode.Should().Be(
+            HttpStatusCode.Conflict,
+            "the refused request must not have withdrawn the approval it never asked to withdraw");
+    }
+
+    /// <summary>
     /// An account may not set its own approval. Permitting it would let a pending account approve itself and
     /// bypass the gate entirely.
     /// </summary>
@@ -1036,7 +1097,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task SetApproval_WhenActingOnSelf_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsync(
             ApprovalRoute(_fixture.Seed.PortalId, _fixture.Seed.HostUserId, isApproved: false),
@@ -1050,7 +1111,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task Unlock_WhenAccountIsNotLocked_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PostAsync(
@@ -1075,7 +1136,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task Unlock_WhenAccountIsLocked_ReturnsNoContentAndRestoresSignIn()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         await _fixture.Database.ExecuteAsync(
@@ -1129,7 +1190,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task Unlock_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsync(
             UnlockRoute(_fixture.Seed.PortalId, UnknownUserId),
@@ -1146,7 +1207,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task RequirePasswordChange_ReturnsNoContentAndIsRefusedWhenAlreadyRequired()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
 
         created.MustChangePassword.Should().BeFalse();
@@ -1169,12 +1230,208 @@ public sealed class UserApiTests
         again.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
 
+    /// <summary>
+    /// A caller owing a mandatory credential change is confined to the remediation surface until the stored
+    /// flag is cleared by a successful change.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiredPasswordChange_RestrictsTheSessionUntilRemediated()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        UserDetailDto account = await CreateUserAsync(host);
+
+        using HttpResponseMessage required = await host.PostAsync(
+            RequirePasswordChangeRoute(_fixture.Seed.PortalId, account.UserId),
+            content: null);
+        required.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpClient caller = await ClientForAccountAsync(account);
+
+        using HttpResponseMessage blocked = await caller.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, account.UserId));
+        blocked.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await blocked.Content.ReadAsStringAsync()).Should().Contain("remediation");
+
+        // MIGRATION: THE PROFILE ROUTE IS CLOSED TOO, because the outstanding requirement is a CREDENTIAL one
+        // and reading a profile cannot clear it. Each remediation allowance is admitted only while the
+        // requirement it remedies is the one outstanding: the profile routes open when a profile must be
+        // completed, the credential route opens when a credential must be changed, and the authentication
+        // lifecycle stays open throughout. Admitting every owner-scoped remediation route whenever ANY
+        // requirement was outstanding would widen the restricted session well past the one route that can end
+        // it, which is precisely what the sibling fact
+        // AuthApiTests.RequiredPasswordChange_AllowsOnlyAuthenticationAndOwnPasswordRemediation names.
+        using HttpResponseMessage profile = await caller.GetAsync(
+            ProfileRoute(_fixture.Seed.PortalId, account.UserId));
+        profile.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "the profile routes remedy an incomplete profile, not an outstanding credential change");
+
+        using HttpResponseMessage changed = await caller.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, account.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = ReplacementPassword,
+                ConfirmPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+        changed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage admitted = await caller.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, account.UserId));
+        admitted.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// Verified registration cannot approve a pending account whose stored address violates the portal's
+    /// current <c>Security_EmailValidation</c> expression.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task VerificationCode_DoesNotApproveAnEmailRejectedByThePortalRule()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        await EnsureUserAccountsModuleAsync();
+
+        int moduleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT TOP (1) m.[ModuleID]
+            FROM [dbo].[Modules] m
+            INNER JOIN [dbo].[ModuleDefinitions] d ON d.[ModuleDefID] = m.[ModuleDefID]
+            WHERE m.[PortalID] = @portalId AND d.[FriendlyName] = @definitionName AND m.[IsDeleted] = 0;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["definitionName"] = MembershipSettingsDto.UserAccountsModuleDefinitionName,
+            });
+
+        int originalRegistration = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [UserRegistration] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = _fixture.Seed.PortalId });
+        int originalExpressionCount = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[ModuleSettings]
+            WHERE [ModuleID] = @moduleId AND [SettingName] = N'Security_EmailValidation';
+            """,
+            new Dictionary<string, object?> { ["moduleId"] = moduleId });
+        string? originalExpression = originalExpressionCount == 0
+            ? null
+            : await _fixture.Database.ScalarAsync<string>(
+                """
+                SELECT [SettingValue]
+                FROM [dbo].[ModuleSettings]
+                WHERE [ModuleID] = @moduleId AND [SettingName] = N'Security_EmailValidation';
+                """,
+                new Dictionary<string, object?> { ["moduleId"] = moduleId });
+
+        try
+        {
+            await _fixture.Database.ExecuteAsync(
+                """
+                UPDATE [dbo].[Portals]
+                SET [UserRegistration] = 3
+                WHERE [PortalID] = @portalId;
+
+                MERGE [dbo].[ModuleSettings] AS target
+                USING (SELECT @moduleId AS [ModuleID], N'Security_EmailValidation' AS [SettingName]) AS source
+                ON target.[ModuleID] = source.[ModuleID] AND target.[SettingName] = source.[SettingName]
+                WHEN MATCHED THEN
+                    UPDATE SET [SettingValue] = N'^[^@]+@example\.com$'
+                WHEN NOT MATCHED THEN
+                    INSERT ([ModuleID], [SettingName], [SettingValue])
+                    VALUES (source.[ModuleID], source.[SettingName], N'^[^@]+@example\.com$');
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["portalId"] = _fixture.Seed.PortalId,
+                    ["moduleId"] = moduleId,
+                });
+
+            CreateUserRequest request = NewUserRequest();
+            request.Authorize = false;
+            request.Email = "pending@example.com";
+
+            using HttpResponseMessage createdResponse = await host.PostAsJsonAsync(
+                UsersRoute(_fixture.Seed.PortalId),
+                request,
+                ApiTestFixture.Json);
+            createdResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+            UserDetailDto created = await ReadDetailAsync(createdResponse);
+
+            await _fixture.Database.ExecuteAsync(
+                "UPDATE [dbo].[Users] SET [Email] = N'pending@invalid.test' WHERE [UserID] = @userId;",
+                new Dictionary<string, object?> { ["userId"] = created.UserId });
+
+            using HttpClient anonymous = _fixture.CreateAnonymousClient();
+            using HttpResponseMessage login = await anonymous.PostAsJsonAsync(
+                LoginRoute(_fixture.Seed.PortalId),
+                new
+                {
+                    username = created.Username,
+                    password = ApiTestFixture.KnownPassword,
+                    verificationCode = FormattableString.Invariant(
+                        $"{_fixture.Seed.PortalId}-{created.UserId}"),
+                },
+                ApiTestFixture.Json);
+
+            login.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+            int approved = await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT CAST(am.[IsApproved] AS int)
+                FROM [dbo].[aspnet_Membership] am
+                INNER JOIN [dbo].[aspnet_Users] au ON au.[UserId] = am.[UserId]
+                WHERE au.[LoweredUserName] = LOWER(@userName);
+                """,
+                new Dictionary<string, object?> { ["userName"] = created.Username });
+            approved.Should().Be(0);
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                "UPDATE [dbo].[Portals] SET [UserRegistration] = @registration WHERE [PortalID] = @portalId;",
+                new Dictionary<string, object?>
+                {
+                    ["registration"] = originalRegistration,
+                    ["portalId"] = _fixture.Seed.PortalId,
+                });
+
+            if (originalExpression is null)
+            {
+                await _fixture.Database.ExecuteAsync(
+                    """
+                    DELETE FROM [dbo].[ModuleSettings]
+                    WHERE [ModuleID] = @moduleId AND [SettingName] = N'Security_EmailValidation';
+                    """,
+                    new Dictionary<string, object?> { ["moduleId"] = moduleId });
+            }
+            else
+            {
+                await _fixture.Database.ExecuteAsync(
+                    """
+                    UPDATE [dbo].[ModuleSettings]
+                    SET [SettingValue] = @expression
+                    WHERE [ModuleID] = @moduleId AND [SettingName] = N'Security_EmailValidation';
+                    """,
+                    new Dictionary<string, object?>
+                    {
+                        ["moduleId"] = moduleId,
+                        ["expression"] = originalExpression,
+                    });
+            }
+        }
+    }
+
     /// <summary>The profile projection answers <c>200 OK</c> for an account that exists.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetProfile_ReturnsOk()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ProfileRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId));
@@ -1194,7 +1451,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task GetProfile_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ProfileRoute(_fixture.Seed.PortalId, UnknownUserId));
@@ -1210,7 +1467,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task Profile_RoundTripsAValueAgainstACreatedDefinition()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto account = await CreateUserAsync(client);
 
         ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
@@ -1252,6 +1509,178 @@ public sealed class UserApiTests
         value.PropertyValue.Should().Be("Amsterdam");
     }
 
+    /// <summary>
+    /// Malformed profile collections are rejected at the API boundary before any definition lookup or write.
+    /// </summary>
+    [Fact]
+    public async Task UpdateProfile_WithDuplicateOrInvalidEntries_ReturnsBadRequest()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        UserDetailDto account = await CreateUserAsync(host);
+        ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(host, required: false);
+        Uri route = ProfileRoute(_fixture.Seed.PortalId, account.UserId);
+
+        using HttpResponseMessage duplicate = await host.PutAsJsonAsync(
+            route,
+            new UserProfileDto
+            {
+                UserId = account.UserId,
+                Properties =
+                [
+                    new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = definition.PropertyDefinitionId,
+                        PropertyValue = "one",
+                        Visibility = 0,
+                    },
+                    new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = definition.PropertyDefinitionId,
+                        PropertyValue = "two",
+                        Visibility = 0,
+                    },
+                ],
+            },
+            ApiTestFixture.Json);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using HttpResponseMessage visibility = await host.PutAsJsonAsync(
+            route,
+            new UserProfileDto
+            {
+                UserId = account.UserId,
+                Properties =
+                [
+                    new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = definition.PropertyDefinitionId,
+                        PropertyValue = "value",
+                        Visibility = 3,
+                    },
+                ],
+            },
+            ApiTestFixture.Json);
+        visibility.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using HttpResponseMessage excessive = await host.PutAsJsonAsync(
+            route,
+            new UserProfileDto
+            {
+                UserId = account.UserId,
+                Properties = Enumerable.Range(1, 65)
+                    .Select(identifier => new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = identifier,
+                        PropertyValue = "value",
+                        Visibility = 0,
+                    })
+                    .ToList(),
+            },
+            ApiTestFixture.Json);
+        excessive.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// Updating a profile in one tenant neither returns nor clears values owned by another tenant's
+    /// definitions.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateProfile_PreservesValuesOwnedByAnotherPortal()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(host);
+        int otherPortalId = otherPortal.PortalId;
+        // Addressed at the OTHER portal's own alias, which is what makes the declaration foreign. A host
+        // account is exempt from tenant binding, so the same persona can reach either tenant; what decides the
+        // owning portal is the host name the request arrives at.
+        using HttpClient foreignTenantHost = await _fixture.CreateHostClientAsync(otherPortal.Alias);
+        ProfilePropertyDefinitionDto foreignDefinition =
+            await CreateProfileDefinitionAsync(foreignTenantHost, required: false);
+
+        await InsertProfileValueAsync(
+            _fixture.Seed.MemberUserId,
+            foreignDefinition.PropertyDefinitionId,
+            "foreign-value");
+
+        using HttpResponseMessage response = await host.PutAsJsonAsync(
+            ProfileRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId),
+            new UserProfileDto
+            {
+                UserId = _fixture.Seed.MemberUserId,
+                Properties = Array.Empty<UserProfileValueDto>(),
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        string retained = await _fixture.Database.ScalarAsync<string>(
+            """
+            SELECT COALESCE([PropertyValue], CONVERT(nvarchar(max), [PropertyText]))
+            FROM [dbo].[UserProfile]
+            WHERE [UserID] = @userId AND [PropertyDefinitionID] = @definitionId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = _fixture.Seed.MemberUserId,
+                ["definitionId"] = foreignDefinition.PropertyDefinitionId,
+            });
+
+        retained.Should().Be("foreign-value");
+    }
+
+    /// <summary>
+    /// Removing an account from one portal deletes that portal's profile values in the same operation while
+    /// retaining values and the installation account needed by another portal membership.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeleteUser_RemovesOnlyTheAddressedPortalsProfileValues()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        UserDetailDto account = await CreateUserAsync(host);
+        IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(host);
+        int otherPortalId = otherPortal.PortalId;
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[UserPortals] ([UserId], [PortalId], [CreatedDate], [Authorised])
+            VALUES (@userId, @portalId, SYSUTCDATETIME(), 1);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = account.UserId,
+                ["portalId"] = otherPortalId,
+            });
+
+        ProfilePropertyDefinitionDto localDefinition =
+            await CreateProfileDefinitionAsync(host, required: false);
+
+        // Addressed at the OTHER portal's own alias; see the note on the helper. Creating both declarations
+        // through the seeded-portal client would put both in the seeded portal and assert nothing.
+        using HttpClient foreignTenantHost = await _fixture.CreateHostClientAsync(otherPortal.Alias);
+        ProfilePropertyDefinitionDto foreignDefinition =
+            await CreateProfileDefinitionAsync(foreignTenantHost, required: false);
+
+        await InsertProfileValueAsync(account.UserId, localDefinition.PropertyDefinitionId, "local-value");
+        await InsertProfileValueAsync(account.UserId, foreignDefinition.PropertyDefinitionId, "foreign-value");
+
+        using HttpResponseMessage removed = await host.DeleteAsync(
+            UserRoute(_fixture.Seed.PortalId, account.UserId));
+
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        int localValues = await CountProfileValuesAsync(account.UserId, localDefinition.PropertyDefinitionId);
+        int foreignValues = await CountProfileValuesAsync(account.UserId, foreignDefinition.PropertyDefinitionId);
+        int accountRows = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Users] WHERE [UserID] = @userId;",
+            new Dictionary<string, object?> { ["userId"] = account.UserId });
+
+        localValues.Should().Be(0);
+        foreignValues.Should().Be(1);
+        accountRows.Should().Be(1, "another portal still owns a membership for the installation account");
+    }
+
     /// <summary>A profile value naming a definition the tenant does not hold is refused.</summary>
     /// <remarks>
     /// The answer is <c>404 Not Found</c> rather than <c>400 Bad Request</c>, and that is the deliberate
@@ -1264,7 +1693,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task UpdateProfile_WithUnknownDefinition_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ProfileRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId),
@@ -1293,7 +1722,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task UpdateProfile_WithOverlongValue_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto account = await CreateUserAsync(client);
 
         ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
@@ -1322,7 +1751,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ProfileDefinitions_SupportCreateReadUpdateAndDelete()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         ProfilePropertyDefinitionDto created = await CreateProfileDefinitionAsync(client, required: false);
         created.PropertyDefinitionId.Should().BeGreaterThan(0);
@@ -1340,7 +1769,7 @@ public sealed class UserApiTests
         fetched!.PropertyName.Should().Be(created.PropertyName);
 
         using HttpResponseMessage listed = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative));
+            new Uri("/api/v1/profile-definitions", UriKind.Relative));
 
         listed.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -1381,15 +1810,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateProfileDefinition_AsPlainMember_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative),
+            new Uri("/api/v1/profile-definitions", UriKind.Relative),
             NewProfileDefinition(required: false),
             ApiTestFixture.Json);
 
@@ -1397,9 +1821,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The definition write path is validated at the BOUNDARY, and identically at both of its addresses.
+    /// The definition write path is validated at the BOUNDARY on its single canonical address.
     /// </summary>
-    /// <param name="useFlatAddress">Whether the request is sent to the flat address or the nested one.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
@@ -1410,27 +1833,19 @@ public sealed class UserApiTests
     /// proved there: that the validator is ATTACHED, by the globally registered filter, to this action.
     /// </para>
     /// <para>
-    /// Both addresses are exercised because the resource is reachable at two and the filter resolves a
-    /// validator from the bound argument's type rather than from a route. A rule attached to one address and
-    /// not the other would be a hole shaped exactly like the address a client happened not to use.
+    /// The filter resolves a validator from the bound argument's type rather than from route metadata, and
+    /// the assertion proves that filter is attached to the canonical action.
     /// </para>
     /// </remarks>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task CreateProfileDefinition_WithANameTheLegacyPatternRefused_ReturnsBadRequest(
-        bool useFlatAddress)
+    [Fact]
+    public async Task CreateProfileDefinition_WithANameTheLegacyPatternRefused_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateProfilePropertyDefinitionRequest definition = NewProfileDefinition(required: false);
         definition.PropertyName = "Home City";
 
-        Uri route = useFlatAddress
-            ? new Uri("/api/v1/profile-definitions", UriKind.Relative)
-            : new Uri(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions",
-                UriKind.Relative);
+        var route = new Uri("/api/v1/profile-definitions", UriKind.Relative);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             route,
@@ -1453,17 +1868,44 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The specified FLAT definition address serves the whole action set against the tenant the request
-    /// resolved to.
+    /// Tenant-authored validation expressions are length-bounded and must compile before they are persisted.
+    /// </summary>
+    [Fact]
+    public async Task CreateProfileDefinition_WithUnsafeValidationExpression_ReturnsBadRequest()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        Uri route = new(
+            "/api/v1/profile-definitions",
+            UriKind.Relative);
+
+        CreateProfilePropertyDefinitionRequest malformed = NewProfileDefinition(required: false);
+        malformed.ValidationExpression = "([";
+
+        using HttpResponseMessage malformedResponse = await host.PostAsJsonAsync(
+            route,
+            malformed,
+            ApiTestFixture.Json);
+        malformedResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        CreateProfilePropertyDefinitionRequest excessive = NewProfileDefinition(required: false);
+        excessive.ValidationExpression = new string('x', 513);
+
+        using HttpResponseMessage excessiveResponse = await host.PostAsJsonAsync(
+            route,
+            excessive,
+            ApiTestFixture.Json);
+        excessiveResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// The canonical definition address serves the whole action set against the tenant the request resolves.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
     /// <c>/api/v1/profile-definitions</c> is the address the contract froze, and every action is reachable
-    /// through it: create, read the member, read the collection, update and remove. The nested form appears
-    /// once, to establish the fact that matters most about the flat form - that it acted on the RESOLVED
-    /// tenant rather than on a default - by finding the created definition through the seeded portal's own
-    /// address.
+    /// through it: create, read the member, read the collection, update and remove. The returned portal
+    /// identifier establishes that the operation acted on the RESOLVED tenant rather than on a default.
     /// </para>
     /// <para>
     /// The definition is removed at the end. Definitions are portal schema, so leaving one behind would
@@ -1471,9 +1913,9 @@ public sealed class UserApiTests
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task FlatProfileDefinitionAddress_ServesTheResolvedTenantAcrossItsActionSet()
+    public async Task CanonicalProfileDefinitionAddress_ServesTheResolvedTenantAcrossItsActionSet()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         var collection = new Uri("/api/v1/profile-definitions", UriKind.Relative);
 
@@ -1533,11 +1975,11 @@ public sealed class UserApiTests
         afterUpdate.Should().NotBeNull();
         afterUpdate!.PropertyCategory.Should().Be("Contact");
 
-        // The decisive check: the row the flat address created is the seeded portal's row.
-        using HttpResponseMessage throughNested = await client.GetAsync(
+        // The canonical item address resolves the same row the collection action created.
+        using HttpResponseMessage throughCanonical = await client.GetAsync(
             ProfileDefinitionRoute(_fixture.Seed.PortalId, definition.PropertyDefinitionId));
 
-        throughNested.StatusCode.Should().Be(HttpStatusCode.OK);
+        throughCanonical.StatusCode.Should().Be(HttpStatusCode.OK);
 
         using HttpResponseMessage removed = await client.DeleteAsync(itemRoute);
         removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
@@ -1547,33 +1989,34 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The definition collection of another tenant is refused a portal administrator, while its own is
-    /// served. The pair is what makes the refusal attributable to the routed tenant rather than to the
+    /// The definition collection on another tenant's host is refused a portal administrator, while its own
+    /// host is served. The pair makes the refusal attributable to the resolved tenant rather than to the
     /// caller's standing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The tenant a request runs under is resolved from its host header rather than from its route, so a
-    /// route naming a different portal must be reconciled against the resolved tenant before the service is
-    /// reached. The legacy screen reconciled it by substituting the ambient tenant unless the caller was a
-    /// super user (<c>Website/admin/Portal/SiteSettings.ascx.vb:L235</c>); a REST route cannot substitute,
-    /// because the identifier is the resource, so the request is refused.
+    /// The tenant a request runs under is resolved from its host header. The flat definition family carries no
+    /// competing portal identity, so a token for the seeded portal sent to another portal's host is refused
+    /// before the service is reached.
     /// </remarks>
     [Fact]
     public async Task ListProfileDefinitions_AsAdministratorOfAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
-        int otherPortalId = await CreateIsolatedPortalAsync(host);
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedPortal other = await CreateIsolatedPortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient ownClient = await _fixture.CreateAdministratorClientAsync();
 
-        using HttpResponseMessage own = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative));
+        using HttpResponseMessage own = await ownClient.GetAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative));
 
         own.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(otherPortalId)}/profile-definitions", UriKind.Relative));
+        using HttpClient foreignClient = await _fixture.CreateAdministratorClientAsync();
+        foreignClient.BaseAddress = new Uri($"http://{other.Alias}", UriKind.Absolute);
+
+        using HttpResponseMessage response = await foreignClient.GetAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -1583,7 +2026,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateProfileDefinition_WithDuplicateName_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         ProfilePropertyDefinitionDto first = await CreateProfileDefinitionAsync(client, required: false);
 
@@ -1591,7 +2034,7 @@ public sealed class UserApiTests
         duplicate.PropertyName = first.PropertyName;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative),
+            new Uri("/api/v1/profile-definitions", UriKind.Relative),
             duplicate,
             ApiTestFixture.Json);
 
@@ -1606,17 +2049,18 @@ public sealed class UserApiTests
     [Fact]
     public async Task MembershipSettings_WithoutAUserAccountsModule_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // A tenant of its own, so the assertion cannot be disturbed by another test installing the module
         // instance into the shared seeded tenant.
-        int isolatedPortalId = await CreateIsolatedPortalAsync(client);
+        IsolatedPortal isolated = await CreateIsolatedPortalAsync(client);
+        using HttpClient isolatedClient = await _fixture.CreateHostClientAsync(isolated.Alias);
 
-        using HttpResponseMessage read = await client.GetAsync(MembershipSettingsRoute(isolatedPortalId));
+        using HttpResponseMessage read = await isolatedClient.GetAsync(MembershipSettingsRoute(isolated.PortalId));
         read.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
-        using HttpResponseMessage written = await client.PutAsJsonAsync(
-            MembershipSettingsRoute(isolatedPortalId),
+        using HttpResponseMessage written = await isolatedClient.PutAsJsonAsync(
+            MembershipSettingsRoute(isolated.PortalId),
             new MembershipSettingsDto(),
             ApiTestFixture.Json);
 
@@ -1634,8 +2078,8 @@ public sealed class UserApiTests
     [Fact]
     public async Task MembershipSettings_RoundTripAgainstAUserAccountsModule()
     {
-        using HttpClient client = _fixture.CreateHostClient();
-        await EnsureUserAccountsModuleAsync(client);
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        await EnsureUserAccountsModuleAsync();
 
         Uri route = MembershipSettingsRoute(_fixture.Seed.PortalId);
 
@@ -1652,12 +2096,17 @@ public sealed class UserApiTests
         defaults.ColumnDisplayName.Should().BeTrue();
         defaults.ColumnFirstName.Should().BeFalse();
 
-        MembershipSettingsDto desired = defaults;
-        desired.RecordsPerPage = 25;
-        desired.ColumnFirstName = true;
-        desired.ColumnDisplayName = false;
-        desired.DisplayMode = 1;
-        desired.ProfileDefaultVisibility = 1;
+        // THE WRITE BODY IS ITS OWN CONTRACT. The read answers with the projection; the write states the
+        // whole set explicitly, which is why the two are separate types and why the values below are set on a
+        // request rather than on the object that was just read back.
+        var desired = new UpdateMembershipSettingsRequest
+        {
+            RecordsPerPage = 25,
+            ColumnFirstName = true,
+            ColumnDisplayName = false,
+            DisplayMode = 1,
+            ProfileDefaultVisibility = 1,
+        };
 
         using HttpResponseMessage written = await client.PutAsJsonAsync(route, desired, ApiTestFixture.Json);
         written.StatusCode.Should().Be(HttpStatusCode.NoContent);
@@ -1674,6 +2123,99 @@ public sealed class UserApiTests
         persisted.ColumnDisplayName.Should().BeFalse();
         persisted.DisplayMode.Should().Be(1);
         persisted.ProfileDefaultVisibility.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Membership settings reject unsupported discriminators, null policy text and redirect pages owned by a
+    /// different portal.
+    /// </summary>
+    [Fact]
+    public async Task MembershipSettings_RejectMalformedValuesAndForeignRedirects()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        await EnsureUserAccountsModuleAsync();
+        Uri route = MembershipSettingsRoute(_fixture.Seed.PortalId);
+
+        using HttpResponseMessage malformed = await host.PutAsJsonAsync(
+            route,
+            new MembershipSettingsDto
+            {
+                DisplayMode = 3,
+                RecordsPerPage = 0,
+                ProfileDefaultVisibility = -1,
+                SecurityUsersControl = 2,
+                SecurityEmailValidation = null!,
+                SecurityDisplayNameFormat = null!,
+            },
+            ApiTestFixture.Json);
+        malformed.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(host);
+        int otherPortalId = otherPortal.PortalId;
+        int foreignHomeTabId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [HomeTabId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = otherPortalId });
+
+        using HttpResponseMessage foreignRedirect = await host.PutAsJsonAsync(
+            route,
+            new MembershipSettingsDto { RedirectAfterLogin = foreignHomeTabId },
+            ApiTestFixture.Json);
+        foreignRedirect.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await foreignRedirect.Content.ReadAsStringAsync()).Should().Contain("does not belong");
+    }
+
+    /// <summary>
+    /// The refusal is a FIELD-LEVEL problem document naming every offending member, which is what proves a
+    /// validator resolved for the concrete body type at all.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: KEPT ALONGSIDE THE FACT ABOVE RATHER THAN FOLDED INTO IT, BECAUSE THE TWO ASSERT
+    /// DIFFERENT FAILURES. The fact above asserts the STATUS - that a malformed body and a foreign redirect
+    /// are both refused - and would still pass if the refusal came from the service with a single opaque
+    /// message. This one asserts the SHAPE: one entry per offending member, which can only happen if the
+    /// pipeline resolved a validator for the type the action binds. An endpoint that advertises a
+    /// field-error response and has no registered validator fails this and nothing else.
+    /// <para>
+    /// The bound it exercises is named on the validator of the WRITE shape. It was written against a
+    /// validator declared on the read projection, which no endpoint binds and which is therefore withdrawn;
+    /// the bound itself is unchanged.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task MembershipSettings_WithAnInvalidShape_NamesEveryOffendingField()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        await EnsureUserAccountsModuleAsync();
+
+        var invalid = new MembershipSettingsDto
+        {
+            DisplayMode = 3,
+            RecordsPerPage = 0,
+            ProfileDefaultVisibility = 3,
+            SecurityUsersControl = 2,
+            SecurityDisplayNameFormat =
+                new string('x', UpdateMembershipSettingsRequestValidator.MaximumSettingValueLength + 1),
+            SecurityEmailValidation = "[",
+        };
+
+        using HttpResponseMessage response = await host.PutAsJsonAsync(
+            MembershipSettingsRoute(_fixture.Seed.PortalId),
+            invalid,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.DisplayMode));
+        problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.RecordsPerPage));
+        problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.ProfileDefaultVisibility));
+        problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.SecurityUsersControl));
+        problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.SecurityDisplayNameFormat));
+        problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.SecurityEmailValidation));
     }
 
     /// <summary>Creates an account through the API and returns its representation.</summary>
@@ -1718,7 +2260,7 @@ public sealed class UserApiTests
         string query = filter.Length == 0 ? string.Empty : "&" + filter;
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=100" + query,
+            "/api/v1/users?pageIndex=0&pageSize=100" + query,
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1730,34 +2272,204 @@ public sealed class UserApiTests
         return page!;
     }
 
+    /// <summary>
+    /// The account-owner policy admits the account holder only WITHIN THE TENANT ITS TOKEN NAMES: the same
+    /// account key addressed under another tenant's route is refused on the account detail, the profile read,
+    /// the profile write and the credential change alike.
+    /// </summary>
+    /// <param name="method">The verb under test.</param>
+    /// <param name="routeSuffix">The suffix appended to the account route, empty for the account detail.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE DEFECT THIS PINS. An account key is installation-wide - <c>dbo.Users</c> carries no portal column
+    /// and membership is a row in <c>dbo.UserPortals</c> - while every route in this family names a portal.
+    /// The owner arm of the policy compared only the SUBJECT claim against the route's account, so a token
+    /// minted in one tenant satisfied it against any tenant's route for the same account, and the
+    /// administrator arm could not refuse what the owner arm had already granted. The responses are
+    /// portal-scoped projections, so that is a cross-tenant read and write rather than a theoretical one.
+    /// </para>
+    /// <para>
+    /// THE ANSWER MUST BE 403, NOT 404, AND THE DIFFERENCE IS THE WHOLE ASSERTION. Before the tenant
+    /// comparison existed these requests passed the policy and were refused further down by the service,
+    /// which reads the account WITH its membership and so answered not-found for an account that is not a
+    /// member of the addressed tenant. That is a refusal by accident: it depends on the account not being a
+    /// member of the second tenant, and a real DotNetNuke installation is full of accounts that belong to
+    /// several. A forbidden answer proves the request never reached the service at all.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("GET", "")]
+    [InlineData("GET", "/profile")]
+    [InlineData("PUT", "/profile")]
+    [InlineData("POST", "/password")]
+    public async Task AccountRoutes_AsTheHolderButUnderAnotherTenant_ReturnForbidden(
+        string method,
+        string routeSuffix)
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        // A second tenant, which the account is NOT a member of and whose administrator it is not.
+        IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(administrator);
+
+        // The account's own token, minted for the tenant it actually belongs to.
+        using HttpClient holder = await ClientForAccountAsync(created);
+
+        // Its own account key, addressed under the OTHER tenant. The account family is addressed by its
+        // canonical flat route, so the tenant is selected by the ARRIVAL HOST rather than by a path
+        // segment - which makes the alias the thing this fact varies, and is the only way the cross-tenant
+        // attempt can be expressed on this surface.
+        holder.BaseAddress = new Uri($"http://{otherPortal.Alias}", UriKind.Absolute);
+
+        var route = new Uri(
+            $"/api/v1/users/{Route(created.UserId)}{routeSuffix}",
+            UriKind.Relative);
+
+        using var request = new HttpRequestMessage(new HttpMethod(method), route);
+
+        // The bodies below are well formed and would be accepted on the account's own tenant, which is what
+        // makes the refusal attributable to the policy rather than to a malformed request. Authorisation runs
+        // before model binding matters, so nothing here needs to be more than deserialisable.
+        if (routeSuffix.Equals("/profile", StringComparison.Ordinal))
+        {
+            // Deliberately carries no portal identifier: the profile contract has none, because the portal
+            // scope lives on the property definition and the route is what names the tenant here.
+            request.Content = JsonContent.Create(
+                new UserProfileDto
+                {
+                    UserId = created.UserId,
+                    Properties = Array.Empty<UserProfileValueDto>(),
+                },
+                options: ApiTestFixture.Json);
+        }
+        else if (routeSuffix.Equals("/password", StringComparison.Ordinal))
+        {
+            // The credential route is the one member of this family whose requirement forbids the
+            // administrator fallback, so the owner arm is the ONLY arm that can grant it. Before the tenant
+            // comparison existed, a token minted in one tenant could therefore overwrite its own credential
+            // through another tenant's route - and the credential store is installation-wide, so that write
+            // was not even portal-scoped.
+            request.Content = JsonContent.Create(
+                new ChangePasswordRequest
+                {
+                    Operation = ChangePasswordRequest.OperationChange,
+                    CurrentPassword = ApiTestFixture.KnownPassword,
+                    NewPassword = ReplacementPassword,
+                    ConfirmPassword = ReplacementPassword,
+                },
+                options: ApiTestFixture.Json);
+        }
+
+        using HttpResponseMessage response = await holder.SendAsync(request);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "the owner arm admits the holder only within the tenant its token names");
+    }
+
+    /// <summary>
+    /// The same three routes ARE served for the account holder within its own tenant, which is what proves
+    /// the tenant comparison closes the cross-tenant path without closing self-service.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task AccountRoutes_AsTheHolderWithinItsOwnTenant_AreServed()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient holder = await ClientForAccountAsync(created);
+
+        using HttpResponseMessage detail = await holder.GetAsync(new Uri(
+            $"/api/v1/users/{Route(created.UserId)}",
+            UriKind.Relative));
+
+        detail.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage profile = await holder.GetAsync(new Uri(
+            $"/api/v1/users/{Route(created.UserId)}/profile",
+            UriKind.Relative));
+
+        profile.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserProfileDto? read = await profile.Content.ReadEnvelopeAsync<UserProfileDto>();
+        read.Should().NotBeNull();
+
+        using HttpResponseMessage written = await holder.PutAsJsonAsync(
+            new Uri(
+                $"/api/v1/users/{Route(created.UserId)}/profile",
+                UriKind.Relative),
+            read!,
+            ApiTestFixture.Json);
+
+        // The profile replacement answers 204 rather than 200: it returns no body, which is what the
+        // endpoint's own response declaration states.
+        written.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        // The credential route is the strict member of this family - its requirement forbids the
+        // administrator fallback - so proving it is served for the holder within its own tenant is what
+        // establishes that the tenant comparison closed the cross-tenant path without closing self-service on
+        // the one route that has no other way in.
+        using HttpResponseMessage credential = await holder.PostAsJsonAsync(
+            new Uri(
+                $"/api/v1/users/{Route(created.UserId)}/password",
+                UriKind.Relative),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = ReplacementPassword,
+                ConfirmPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        credential.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
     /// <summary>Mints a client authenticated as one account, for the self-service paths.</summary>
     /// <param name="account">The account to act as.</param>
-    /// <returns>A client whose subject claim names that account.</returns>
+    /// <returns>A client presenting the token the API issued to that account.</returns>
     /// <remarks>
-    /// Carries the registered-users role only. The self-service credential and profile endpoints are gated on
-    /// SUBJECT-versus-ROUTE equality rather than on a role, so no role would admit this caller and no role is
-    /// needed to.
+    /// <para>
+    /// The account is one this suite created, and the credential is the one it supplied while creating it, so
+    /// the sign-in additionally proves the create path stored a credential the login path can verify - which
+    /// is the half of the create contract no response body can show.
+    /// </para>
+    /// <para>
+    /// No role is asserted, because none would help: the self-service credential and profile endpoints are
+    /// gated on SUBJECT-versus-ROUTE equality rather than on a role, so no role would admit this caller and
+    /// none is needed to.
+    /// </para>
     /// </remarks>
-    private HttpClient ClientForAccount(UserDetailDto account)
+    private Task<HttpClient> ClientForAccountAsync(UserDetailDto account)
     {
         ArgumentNullException.ThrowIfNull(account);
 
-        return _fixture.CreateClientFor(
-            account.UserId,
+        return _fixture.CreateClientForAsync(
             account.Username ?? string.Empty,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+            ApiTestFixture.KnownPassword);
     }
 
-    /// <summary>Creates a profile property definition through the API.</summary>
-    /// <param name="client">A client holding the administrators role.</param>
+    /// <summary>Creates a profile property definition through the API, in the client's OWN tenant.</summary>
+    /// <param name="client">A client holding the administrators role, addressed at the owning tenant.</param>
     /// <param name="required">Whether the property must be supplied.</param>
     /// <returns>The created definition.</returns>
-    private async Task<ProfilePropertyDefinitionDto> CreateProfileDefinitionAsync(HttpClient client, bool required)
+    /// <remarks>
+    /// MIGRATION: THE OWNING TENANT IS THE CLIENT'S ADDRESS, NOT AN ARGUMENT. The declaration route is flat -
+    /// <c>api/v1/profile-definitions</c> names no portal - so the endpoint takes the tenant from the host the
+    /// request arrived at. This helper used to accept a portalId and DISCARD it, which quietly made every
+    /// call create a declaration in the caller's own tenant: two facts about cross-tenant isolation set
+    /// themselves up by asking for a declaration in another portal, received one in the seeded portal, and
+    /// then asserted isolation against a declaration that was never foreign. Both now pass a client addressed
+    /// at the tenant they mean, and the parameter that could lie is gone.
+    /// </remarks>
+    private async Task<ProfilePropertyDefinitionDto> CreateProfileDefinitionAsync(
+        HttpClient client,
+        bool required)
     {
         using HttpResponseMessage response = await client.PostAsJsonAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative),
+            new Uri("/api/v1/profile-definitions", UriKind.Relative),
             NewProfileDefinition(required),
             ApiTestFixture.Json);
 
@@ -1770,19 +2482,46 @@ public sealed class UserApiTests
         return created!;
     }
 
+    /// <summary>Inserts one profile value for test setup.</summary>
+    private Task InsertProfileValueAsync(int userId, int propertyDefinitionId, string value) =>
+        _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[UserProfile]
+                ([UserID], [PropertyDefinitionID], [PropertyValue], [PropertyText], [Visibility], [LastUpdatedDate])
+            VALUES (@userId, @definitionId, @value, NULL, 0, SYSUTCDATETIME());
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = userId,
+                ["definitionId"] = propertyDefinitionId,
+                ["value"] = value,
+            });
+
+    /// <summary>Counts one account/definition profile-value pair.</summary>
+    private Task<int> CountProfileValuesAsync(int userId, int propertyDefinitionId) =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[UserProfile]
+            WHERE [UserID] = @userId AND [PropertyDefinitionID] = @definitionId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = userId,
+                ["definitionId"] = propertyDefinitionId,
+            });
+
     /// <summary>
     /// Makes sure the seeded tenant holds a "User Accounts" module instance, which is where the membership
     /// settings projection is stored.
     /// </summary>
     /// <remarks>
-    /// The definition is written directly and idempotently. Its friendly name carries a unique index, so it can
-    /// exist only once installation-wide, and the API exposes no route for installing a definition - packages
-    /// are installed, not posted. Only the module INSTANCE is created through the API, because that is the part
-    /// under test.
+    /// SEC-007: both the definition and its module instance are written directly and idempotently. The package
+    /// is administrative and therefore MUST NOT be placeable through the ordinary module-creation catalogue;
+    /// direct setup models host installation without weakening the API boundary this test is meant to preserve.
     /// </remarks>
-    /// <param name="client">A client entitled to create modules.</param>
     /// <returns>A task representing the setup.</returns>
-    private async Task EnsureUserAccountsModuleAsync(HttpClient client)
+    private async Task EnsureUserAccountsModuleAsync()
     {
         int definitionId = await _fixture.Database.ScalarAsync<int>(
             """
@@ -1844,34 +2583,39 @@ public sealed class UserApiTests
             return;
         }
 
-        using HttpResponseMessage response = await client.PostAsJsonAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules", UriKind.Relative),
-            new
+        // SEC-007: the instance is written directly rather than posted to /api/v1/modules. The package is
+        // administrative, so it must not be placeable through the ordinary module-creation catalogue, and a
+        // setup step that used the catalogue would weaken exactly the boundary these tests assert. No pane,
+        // alignment, colour or border value is written either: those columns are appearance concerns that
+        // AAP 0.2.2.1 and 0.2.2.4 place out of scope, and no request contract declares them.
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted],
+                 [InheritViewPermissions])
+            VALUES (@definitionId, @portalId, N'User Accounts', 0, 0, 0);
+            """,
+            new Dictionary<string, object?>
             {
-                moduleDefId = definitionId,
-                tabId = _fixture.Seed.RootTabId,
-                moduleTitle = "User Accounts",
-                paneName = "ContentPane",
-                moduleOrder = 4,
-            },
-            ApiTestFixture.Json);
-
-        response.StatusCode.Should().Be(HttpStatusCode.Created);
+                ["definitionId"] = definitionId,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
     }
 
     /// <summary>Creates a tenant of this test's own, so a tenant-wide assertion cannot be disturbed.</summary>
     /// <param name="client">A client carrying host credentials.</param>
     /// <returns>The new tenant's identifier.</returns>
-    private async Task<int> CreateIsolatedPortalAsync(HttpClient client)
+    private async Task<IsolatedPortal> CreateIsolatedPortalAsync(HttpClient client)
     {
         string suffix = Suffix();
+        string alias = "users-" + suffix + ".local";
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             new Uri("/api/v1/portals", UriKind.Relative),
             new
             {
                 portalName = "User Suite Portal " + suffix,
-                portalAlias = "users-" + suffix + ".local",
+                portalAlias = alias,
                 homeDirectory = string.Empty,
                 templateFile = "admin.template",
                 isChildPortal = false,
@@ -1891,11 +2635,18 @@ public sealed class UserApiTests
         // The created representation travels inside the shared success envelope, so the identifier is one
         // level down under "data". Read as raw JSON rather than through a typed envelope because only the
         // one member is wanted, and naming it here proves the envelope member name as a side effect.
-        return document.RootElement
+        int portalId = document.RootElement
             .GetProperty("data")
             .GetProperty("portalId")
             .GetInt32();
+
+        return new IsolatedPortal(portalId, alias);
     }
+
+    /// <summary>A tenant created by this suite and the host name that resolves it.</summary>
+    /// <param name="PortalId">The tenant identifier.</param>
+    /// <param name="Alias">The exact portal alias used as the request host.</param>
+    private sealed record IsolatedPortal(int PortalId, string Alias);
 
     /// <summary>Counts the credential rows held for one login name in the external store.</summary>
     /// <param name="userName">The login name.</param>
@@ -1998,28 +2749,27 @@ public sealed class UserApiTests
         return detail!;
     }
 
-    /// <summary>Builds the collection route for a tenant's accounts.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the canonical account collection route for the resolved tenant.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri UsersRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users", UriKind.Relative);
+    private static Uri UsersRoute(int _) => new("/api/v1/users", UriKind.Relative);
 
     /// <summary>Builds the item route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri UserRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}", UriKind.Relative);
+    private static Uri UserRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}", UriKind.Relative);
 
     /// <summary>Builds the credential route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri PasswordRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/password", UriKind.Relative);
+    private static Uri PasswordRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/password", UriKind.Relative);
 
     /// <summary>Builds the ADMINISTRATIVE credential-reset route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
     /// <remarks>
@@ -2027,54 +2777,54 @@ public sealed class UserApiTests
     /// authorisation policy. The two used to share one address and were told apart by a discriminator in the
     /// request body, which let the caller choose whether the current credential had to be proved.
     /// </remarks>
-    private static Uri PasswordResetRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/password-reset", UriKind.Relative);
+    private static Uri PasswordResetRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/password-reset", UriKind.Relative);
 
     /// <summary>Builds the unlock route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri UnlockRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/unlock", UriKind.Relative);
+    private static Uri UnlockRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/unlock", UriKind.Relative);
 
     /// <summary>Builds the approval route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <param name="isApproved">The approval state being requested.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ApprovalRoute(int portalId, int userId, bool isApproved) => new(
-        $"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/approval"
+    private static Uri ApprovalRoute(int _, int userId, bool isApproved) => new(
+        $"/api/v1/users/{Route(userId)}/approval"
             + $"?isApproved={(isApproved ? "true" : "false")}",
         UriKind.Relative);
 
     /// <summary>Builds the forced-credential-change route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri RequirePasswordChangeRoute(int portalId, int userId) => new(
-        $"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/require-password-change",
+    private static Uri RequirePasswordChangeRoute(int _, int userId) => new(
+        $"/api/v1/users/{Route(userId)}/require-password-change",
         UriKind.Relative);
 
     /// <summary>Builds the profile route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ProfileRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/profile", UriKind.Relative);
+    private static Uri ProfileRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/profile", UriKind.Relative);
 
     /// <summary>Builds the item route for one profile property definition.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="propertyDefinitionId">The definition identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ProfileDefinitionRoute(int portalId, int propertyDefinitionId) => new(
-        $"/api/v1/portals/{Route(portalId)}/profile-definitions/{Route(propertyDefinitionId)}",
+    private static Uri ProfileDefinitionRoute(int _, int propertyDefinitionId) => new(
+        $"/api/v1/profile-definitions/{Route(propertyDefinitionId)}",
         UriKind.Relative);
 
-    /// <summary>Builds the membership-settings route for a tenant.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the membership-settings route for the resolved tenant.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri MembershipSettingsRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/membership-settings", UriKind.Relative);
+    private static Uri MembershipSettingsRoute(int _) =>
+        new("/api/v1/users/settings", UriKind.Relative);
 
     /// <summary>Builds the sign-in route for a tenant.</summary>
     /// <param name="portalId">The tenant identifier.</param>
@@ -2106,13 +2856,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task AdministrativeUserRoutes_AreRefusedToAnOrdinaryMember()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         UserDetailDto victim = await CreateUserAsync(host);
 
-        using HttpClient member = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId);
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
 
         int portalId = _fixture.Seed.PortalId;
 
@@ -2160,13 +2907,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task SelfServiceUserRoutes_AreConfinedToTheCallersOwnAccountAndOperation()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         UserDetailDto victim = await CreateUserAsync(host);
 
-        using HttpClient member = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId);
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
 
         int portalId = _fixture.Seed.PortalId;
 
@@ -2266,7 +3010,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_FilteredByEmailAddress_MatchesAPrefixAndNotAMidStringFragment()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         string localPart = request.Email.Split('@')[0];
@@ -2277,16 +3021,19 @@ public sealed class UserApiTests
             ApiTestFixture.Json);
 
         created.StatusCode.Should().Be(HttpStatusCode.Created);
+        UserDetailDto createdUser = await ReadDetailAsync(created);
 
         PagedEnvelope<UserListItemDto> byPrefix = await ListAsync(
             client,
             $"email={Uri.EscapeDataString(localPart)}");
 
         byPrefix.TotalCount.Should().BeGreaterThan(0);
-        byPrefix.Items.Should().OnlyContain(item => item.Email.StartsWith(
-            localPart,
-            StringComparison.OrdinalIgnoreCase));
-        byPrefix.Items.Select(item => item.Email).Should().Contain(request.Email);
+        UserListItemDto matched = byPrefix.Items
+            .Should().ContainSingle(item => item.UserId == createdUser.UserId)
+            .Subject;
+        matched.Username.Should().Be(request.Username);
+        matched.Email.Should().BeEmpty(
+            "the filter may use the stored address without disclosing a column the tenant hides");
 
         // A fragment lifted from the middle of the very address that was just matched by prefix. The account
         // demonstrably exists and demonstrably holds the fragment, so an empty page here can only be the
@@ -2316,7 +3063,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_FilteredByLoginName_MatchesAPrefixAndNotAMidStringFragment()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string held = IntegrationSeed.MemberUserName;
         string prefix = held[..(held.Length - 4)];
@@ -2362,7 +3109,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_FilteredByProfileProperty_ReturnsOnlyTheAccountsHoldingThatValue()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
         UserDetailDto holder = await CreateUserAsync(client);
@@ -2436,7 +3183,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_AcrossEveryQueryShape_NeverReportsTheLegacySentinelTotal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
         string definedProperty = Uri.EscapeDataString(definition.PropertyName);
@@ -2490,10 +3237,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ListUsers_WithTheLegacyUnpagedSentinel_IsRefusedAndNamesTheOffendingField()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage bothSentinels = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=-1&pageSize=-1",
+            "/api/v1/users?pageIndex=-1&pageSize=-1",
             UriKind.Relative));
 
         bothSentinels.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -2514,7 +3261,7 @@ public sealed class UserApiTests
         // named the SIZE. Sending only the index proves the index alone is enough to be refused, so neither
         // parameter can pass by relying on the other to fail.
         using HttpResponseMessage indexOnly = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=-1&pageSize=10",
+            "/api/v1/users?pageIndex=-1&pageSize=10",
             UriKind.Relative));
 
         indexOnly.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -2561,7 +3308,7 @@ public sealed class UserApiTests
     [InlineData(-1)]
     public async Task GetUser_AddressedByAnIdentifierTheIdentitySeedExcludes_ReturnsNotFound(int userId)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             UserRoute(_fixture.Seed.PortalId, userId));
@@ -2587,9 +3334,8 @@ public sealed class UserApiTests
     /// <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c>
     /// (<c>01.00.00.SqlDataProvider:L77</c>), so the installation's first tenant is <c>-1</c> and its second is
     /// <c>0</c>. Both values are indistinguishable from the legacy <c>NullInteger</c> marker, and both are
-    /// legitimate. The seeded tenant demonstrates the negative case and a tenant created here demonstrates
-    /// that the route segment is not being validated as "greater than zero" anywhere along the path - which
-    /// would be the natural mistake to make after reading the account rule above.
+    /// legitimate. The seeded tenant demonstrates the negative case through the host-resolved context; the
+    /// flat route must not reject that resolved identifier merely because it is not positive.
     /// </para>
     /// <para>
     /// The assertion on the seeded identifier is an inequality rather than an equality: what matters is that a
@@ -2597,9 +3343,9 @@ public sealed class UserApiTests
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListUsers_ForATenantWhoseIdentifierIsNotPositive_ReturnsOk()
+    public async Task ListUsers_ForAResolvedTenantWhoseIdentifierIsNotPositive_ReturnsOk()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         _fixture.Seed.PortalId.Should().BeLessThanOrEqualTo(
             0,
@@ -2607,20 +3353,7 @@ public sealed class UserApiTests
 
         PagedEnvelope<UserListItemDto> seededTenant = await ListAsync(client, string.Empty);
         seededTenant.TotalCount.Should().BeGreaterThan(0);
-
-        int created = await CreateIsolatedPortalAsync(client);
-
-        using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(created)}/users?pageIndex=0&pageSize=10",
-            UriKind.Relative));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        PagedEnvelope<UserListItemDto>? page = await response.Content
-            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
-
-        page.Should().NotBeNull();
-        page!.TotalCount.Should().NotBe(LegacySentinelTotal);
+        seededTenant.TotalCount.Should().NotBe(LegacySentinelTotal);
     }
 
     /// <summary>
@@ -2647,7 +3380,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithAnEmailAddressAnotherAccountHolds_ReturnsCreated()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest first = NewUserRequest();
 
@@ -2685,6 +3418,138 @@ public sealed class UserApiTests
     }
 
     /// <summary>
+    /// A credential-store failure rolls the EF account and all dependent rows back instead of relying on a
+    /// compensating delete after the account has committed.
+    /// </summary>
+    [Fact]
+    public async Task CreateUser_WhenCredentialInsertFails_LeavesNoPartialAccount()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        CreateUserRequest request = NewUserRequest();
+        string triggerName = "TRG_BlockMembership_" + Suffix();
+        string loweredUserName = request.Username.ToLowerInvariant();
+
+        await _fixture.Database.ExecuteAsync(
+            $"""
+            CREATE TRIGGER [dbo].[{triggerName}]
+            ON [dbo].[aspnet_Membership]
+            AFTER INSERT
+            AS
+            BEGIN
+                SET NOCOUNT ON;
+                IF EXISTS
+                (
+                    SELECT 1
+                    FROM inserted i
+                    INNER JOIN [dbo].[aspnet_Users] u ON u.[UserId] = i.[UserId]
+                    WHERE u.[LoweredUserName] = N'{loweredUserName}'
+                )
+                BEGIN
+                    THROW 51000, 'Integration credential failure', 1;
+                END
+            END;
+            """);
+
+        try
+        {
+            using HttpResponseMessage response = await host.PostAsJsonAsync(
+                UsersRoute(_fixture.Seed.PortalId),
+                request,
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().NotBe(HttpStatusCode.Created);
+
+            int users = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Users] WHERE [Username] = @userName;",
+                new Dictionary<string, object?> { ["userName"] = request.Username });
+
+            users.Should().Be(0);
+            (await CountCredentialsAsync(request.Username)).Should().Be(0);
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync($"DROP TRIGGER IF EXISTS [dbo].[{triggerName}];");
+        }
+    }
+
+    /// <summary>
+    /// A failure at the final account-row delete rolls credentials, grants, profile values, role assignments
+    /// and portal membership back together.
+    /// </summary>
+    [Fact]
+    public async Task DeleteUser_WhenFinalDeleteFails_RollsBackTheWholeCascade()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        UserDetailDto account = await CreateUserAsync(host);
+        ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(host, required: false);
+        await InsertProfileValueAsync(account.UserId, definition.PropertyDefinitionId, "retained");
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabPermission] ([TabID], [PermissionID], [UserID], [AllowAccess])
+            VALUES (@tabId, @permissionId, @userId, 1);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = _fixture.Seed.RootTabId,
+                ["permissionId"] = _fixture.Seed.TabViewPermissionId,
+                ["userId"] = account.UserId,
+            });
+
+        string triggerName = "TRG_BlockUserDelete_" + Suffix();
+        await _fixture.Database.ExecuteAsync(
+            $"""
+            CREATE TRIGGER [dbo].[{triggerName}]
+            ON [dbo].[Users]
+            AFTER DELETE
+            AS
+            BEGIN
+                SET NOCOUNT ON;
+                IF EXISTS (SELECT 1 FROM deleted WHERE [UserID] = {account.UserId})
+                BEGIN
+                    THROW 51001, 'Integration account-delete failure', 1;
+                END
+            END;
+            """);
+
+        try
+        {
+            using HttpResponseMessage response = await host.DeleteAsync(
+                UserRoute(_fixture.Seed.PortalId, account.UserId));
+
+            response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+
+            int users = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Users] WHERE [UserID] = @userId;",
+                new Dictionary<string, object?> { ["userId"] = account.UserId });
+            int memberships = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[UserPortals] WHERE [UserID] = @userId AND [PortalID] = @portalId;",
+                new Dictionary<string, object?>
+                {
+                    ["userId"] = account.UserId,
+                    ["portalId"] = _fixture.Seed.PortalId,
+                });
+            int permissions = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[TabPermission] WHERE [UserID] = @userId AND [TabID] = @tabId;",
+                new Dictionary<string, object?>
+                {
+                    ["userId"] = account.UserId,
+                    ["tabId"] = _fixture.Seed.RootTabId,
+                });
+
+            users.Should().Be(1);
+            memberships.Should().Be(1);
+            permissions.Should().Be(1);
+            (await CountCredentialsAsync(account.Username)).Should().Be(1);
+            (await CountProfileValuesAsync(account.UserId, definition.PropertyDefinitionId)).Should().Be(1);
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync($"DROP TRIGGER IF EXISTS [dbo].[{triggerName}];");
+        }
+    }
+
+    /// <summary>
     /// A credential sitting exactly on the configured floor is accepted, punctuation and all absent.
     /// </summary>
     /// <returns>A task representing the test.</returns>
@@ -2711,7 +3576,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithACredentialOnThePolicyFloor_ReturnsCreatedAndCanSignIn()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         PolicyFloorPassword.Length.Should().Be(7, "the legacy floor was seven characters");
         PolicyFloorPassword.Should().MatchRegex(
@@ -2771,7 +3636,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_WithSeveralUnusableValues_NamesEveryOffendingField()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateUserRequest request = NewUserRequest();
         request.Username = string.Empty;
@@ -2836,10 +3701,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WithAnUnusableNewCredential_NamesTheOffendingField()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         UserDetailDto account = await CreateUserAsync(host);
 
-        using HttpClient client = ClientForAccount(account);
+        using HttpClient client = await ClientForAccountAsync(account);
 
         using HttpResponseMessage tooShort = await client.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, account.UserId),
@@ -2920,7 +3785,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task UserRepresentations_NeverCarryCredentialMaterial()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto account = await CreateUserAsync(client);
 
         IReadOnlyList<Uri> representations =
@@ -3006,7 +3871,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task RefusedUserRequest_CarriesACorrelationIdentifierOnItsProblemDocument()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string supplied = "user-suite-" + Suffix();
         Uri absent = UserRoute(_fixture.Seed.PortalId, UnknownUserId);
@@ -3070,7 +3935,7 @@ public sealed class UserApiTests
     /// unauthorised account at once, bulk electronic mail, and the users-online view, whose supporting
     /// subsystem is out of scope. Others exist but belong elsewhere, and the distinction is the point.
     /// Signing in is the authentication resource's operation, not an account sub-resource. Role ASSIGNMENT is
-    /// the role resource's operation - <c>POST portals/{portalId}/roles/{roleId}/users</c> - so posting to the
+    /// the role resource's operation - <c>POST roles/{roleId}/users</c> - so posting to the
     /// account's role collection must not be a second way to do it, even though READING that collection is
     /// legitimately published and is asserted elsewhere. Reordering a profile property is a PROPERTY of the
     /// definition, written through its <c>viewOrder</c> member on the update verb, and never an action address.
@@ -3084,26 +3949,24 @@ public sealed class UserApiTests
     [Fact]
     public async Task WithdrawnAndForeignAccountOperations_AreNotPublishedOnThisResource()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto account = await CreateUserAsync(client);
 
         ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
 
-        int portalId = _fixture.Seed.PortalId;
-        string tenant = Route(portalId);
         string subject = Route(account.UserId);
         string property = Route(definition.PropertyDefinitionId);
 
         IReadOnlyList<(HttpMethod Method, string Address)> withdrawn =
         [
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/bulk-delete"),
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/delete-unauthorized"),
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/bulk-email"),
-            (HttpMethod.Get, $"/api/v1/portals/{tenant}/users/online"),
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/login"),
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/{subject}/roles"),
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/profile-definitions/{property}/move-up"),
-            (HttpMethod.Post, $"/api/v1/portals/{tenant}/profile-definitions/{property}/move-down"),
+            (HttpMethod.Post, "/api/v1/users/bulk-delete"),
+            (HttpMethod.Post, "/api/v1/users/delete-unauthorized"),
+            (HttpMethod.Post, "/api/v1/users/bulk-email"),
+            (HttpMethod.Get, "/api/v1/users/online"),
+            (HttpMethod.Post, "/api/v1/users/login"),
+            (HttpMethod.Post, $"/api/v1/users/{subject}/roles"),
+            (HttpMethod.Post, $"/api/v1/profile-definitions/{property}/move-up"),
+            (HttpMethod.Post, $"/api/v1/profile-definitions/{property}/move-down"),
         ];
 
         foreach ((HttpMethod method, string address) in withdrawn)
@@ -3122,7 +3985,7 @@ public sealed class UserApiTests
         amendment.ViewOrder = definition.ViewOrder + 5;
 
         using HttpResponseMessage reordered = await client.PutAsJsonAsync(
-            ProfileDefinitionRoute(portalId, definition.PropertyDefinitionId),
+            ProfileDefinitionRoute(_fixture.Seed.PortalId, definition.PropertyDefinitionId),
             amendment,
             ApiTestFixture.Json);
 
@@ -3165,7 +4028,7 @@ public sealed class UserApiTests
     [Fact]
     public async Task CreateUser_UnderAZeroMemberQuota_IsNotRefused()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         int quota = await _fixture.Database.ScalarAsync<int>(
             "SELECT COALESCE(MAX([UserQuota]), 0) FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",

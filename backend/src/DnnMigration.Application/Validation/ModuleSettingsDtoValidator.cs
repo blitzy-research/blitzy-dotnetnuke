@@ -26,7 +26,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Declares the field rules for <see cref="ModuleSettingsDto"/>, the payload submitted to
-/// <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c> to replace a module's settings.
+/// <c>PUT /api/v1/modules/{moduleId}/settings</c> to replace a module's settings.
 /// </summary>
 /// <remarks>
 /// <para>

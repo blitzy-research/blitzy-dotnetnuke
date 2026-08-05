@@ -78,7 +78,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task CreateRoleGroup_WithoutAName_NamesTheOffendingMember()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RoleGroupsRoute(),
@@ -99,7 +99,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task UpdateRoleGroup_WithAnOverlongName_NamesTheOffendingMember()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
         RoleGroupDto created = await CreateRoleGroupAsync(client);
 
         // MIGRATION: the body no longer echoes the group key or the owning portal. Both verbs used to bind
@@ -130,7 +130,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task UpdateRole_WithAnEscapingIconPath_IsRefusedAndStoresNothing()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -164,7 +164,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task UpdateRole_WithANegativeServiceFee_NamesTheOffendingMember()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -186,7 +186,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task AssignRole_WithoutAUser_NamesTheOffendingMember()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -210,7 +210,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task AssignRole_WithAnExpiryEqualToItsEffectiveDate_IsRefusedAndWritesNothing()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
         RoleDetailDto role = await CreateRoleAsync(client);
         DateTime instant = new(2008, 6, 1, 0, 0, 0, DateTimeKind.Utc);
 
@@ -255,7 +255,7 @@ public sealed class RequestValidationContractTests
     [InlineData("Na/me")]
     public async Task CreateProfileDefinition_WithAnInvalidName_NamesTheOffendingMember(string propertyName)
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         CreateProfilePropertyDefinitionRequest definition = NewDefinition();
         definition.PropertyName = propertyName;
@@ -285,7 +285,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task UpdateProfileDefinition_WithARefusedPropertyName_NamesTheOffendingMember()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
         ProfilePropertyDefinitionDto created = await CreateDefinitionAsync(client);
 
         UpdateProfilePropertyDefinitionRequest amendment = NewDefinitionUpdate();
@@ -298,6 +298,78 @@ public sealed class RequestValidationContractTests
             ApiTestFixture.Json);
 
         await ShouldNameAsync(response, nameof(UpdateProfilePropertyDefinitionRequest.PropertyName));
+    }
+
+    /// <summary>
+    /// BOTH profile-definition write verbs really do resolve their own request validator, proven by a
+    /// refusal only that validator can produce and by the exact wording it produces it with.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The two facts above name the offending member, which a refusal from model binding or from a column
+    /// constraint could also do. This one cannot be satisfied by anything except the resolved validator: an
+    /// over-long property CATEGORY breaks no binding rule, no route constraint and no column constraint that
+    /// answers a field-error document - the column is <c>nvarchar(50)</c>, so a body that reached the store
+    /// would be refused there as a server fault rather than as a named field - and the message asserted is
+    /// the legacy wording declared on the shared rules type. Both together are the proof: the filter looked
+    /// up an <c>IValidator&lt;T&gt;</c> for the DECLARED parameter type of each action and ran it.
+    /// </para>
+    /// <para>
+    /// It is asserted on the create verb AND the update verb because they bind DIFFERENT contracts with
+    /// DIFFERENT validators, and the filter resolves per parameter type. A validator registered for one and
+    /// missing for the other would leave one verb silently unvalidated, which is exactly the gap a suite
+    /// aimed at the wrong type would not see.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this fact replaces a unit suite that exercised the validator declared for the RESPONSE
+    /// projection, <c>ProfilePropertyDefinitionDto</c>. No action binds that type, so no request path ever
+    /// invoked it - assembly scanning registered it, which made it resolvable but not reachable - and its
+    /// twenty-five tests reported confidence in rules the write path did not apply. Its genuinely
+    /// legacy-derived assertions live on the two real request validators in
+    /// backend/tests/DnnMigration.UnitTests/Validation/ProfileDefinitionWriteContractValidatorTests.cs, in
+    /// the stronger both-verbs form, and the three it carried that had no legacy counterpart concerned
+    /// members the write contracts do not publish at all. This test is the standing proof that the rules
+    /// really are applied where the requests really arrive.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ProfileDefinitionWrites_AreValidatedByTheValidatorResolvedForEachVerb()
+    {
+        const string CategoryTooLongMessage = "Property Category must be 50 characters or fewer";
+
+        string overlongCategory = new('C', 51);
+
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+
+        CreateProfilePropertyDefinitionRequest definition = NewDefinition();
+        definition.PropertyCategory = overlongCategory;
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            ProfileDefinitionsRoute(),
+            definition,
+            ApiTestFixture.Json);
+
+        await ShouldReportAsync(
+            created,
+            nameof(CreateProfilePropertyDefinitionRequest.PropertyCategory),
+            CategoryTooLongMessage);
+
+        ProfilePropertyDefinitionDto existing = await CreateDefinitionAsync(client);
+
+        UpdateProfilePropertyDefinitionRequest amendment = NewDefinitionUpdate();
+        amendment.PropertyName = existing.PropertyName;
+        amendment.PropertyCategory = overlongCategory;
+
+        using HttpResponseMessage updated = await client.PutAsJsonAsync(
+            ProfileDefinitionRoute(existing.PropertyDefinitionId),
+            amendment,
+            ApiTestFixture.Json);
+
+        await ShouldReportAsync(
+            updated,
+            nameof(UpdateProfilePropertyDefinitionRequest.PropertyCategory),
+            CategoryTooLongMessage);
     }
 
     /// <summary>
@@ -314,7 +386,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task CreateProfileDefinition_NamingTheAppendOrder_IsAccepted()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         CreateProfilePropertyDefinitionRequest definition = NewDefinition();
         definition.ViewOrder = -1;
@@ -345,7 +417,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task CreateRoleGroup_WithNoBodyAtAll_StillAnswersBadRequest()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using StringContent empty = new("null", Encoding.UTF8, "application/json");
         using HttpResponseMessage response = await client.PostAsync(RoleGroupsRoute(), empty);
@@ -373,7 +445,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task ListRoles_AppliesTheRequestedOrdering()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         IReadOnlyList<int> ascending = await ReadRoleIdsAsync(client, "RoleId", "Ascending");
         IReadOnlyList<int> descending = await ReadRoleIdsAsync(client, "RoleId", "Descending");
@@ -396,7 +468,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task ListRoles_OrdersByNameDescendingWhenAsked()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         IReadOnlyList<string> names = await ReadRoleNamesAsync(client, "RoleName", "Descending");
 
@@ -412,7 +484,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task ListUsers_AppliesTheRequestedOrdering()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         IReadOnlyList<int> ascending = await ReadUserIdsAsync(client, "UserId", "Ascending");
         IReadOnlyList<int> descending = await ReadUserIdsAsync(client, "UserId", "Descending");
@@ -438,7 +510,7 @@ public sealed class RequestValidationContractTests
     [Fact]
     public async Task ListUsers_OrdersBeforeItPages()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         IReadOnlyList<int> everyone = await ReadUserIdsAsync(client, "UserId", "Descending");
         IReadOnlyList<int> firstOfOne = await ReadUserIdsAsync(client, "UserId", "Descending", pageSize: 1);
@@ -461,7 +533,7 @@ public sealed class RequestValidationContractTests
     [InlineData("HostSpace")]
     public async Task ListPortals_AcceptsTheHostingFieldsItAdvertises(string sortBy)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             "/api/v1/portals?pageIndex=0&pageSize=50&sortBy=" + sortBy,
@@ -497,14 +569,14 @@ public sealed class RequestValidationContractTests
     public async Task EachListing_RefusesAnotherCollectionsSortField(string route, string sortBy)
     {
         using HttpClient client = route == "portals"
-            ? _fixture.CreateHostClient()
-            : _fixture.CreateAdministratorClient();
+            ? await _fixture.CreateHostClientAsync()
+            : await _fixture.CreateAdministratorClientAsync();
 
         Uri address = route == "portals"
             ? new Uri("/api/v1/portals?pageIndex=0&pageSize=10&sortBy=" + sortBy, UriKind.Relative)
             : new Uri(
                 FormattableString.Invariant(
-                    $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/{route}?pageIndex=0&pageSize=10&sortBy={sortBy}"),
+                    $"/api/v1/{route}?pageIndex=0&pageSize=10&sortBy={sortBy}"),
                 UriKind.Relative);
 
         using HttpResponseMessage response = await client.GetAsync(address);
@@ -530,11 +602,11 @@ public sealed class RequestValidationContractTests
     [InlineData("IsApproved")]
     public async Task ListUsers_RefusesTheFieldsItCannotOrderInTheDatabase(string sortBy)
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             FormattableString.Invariant(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=10&sortBy={sortBy}"),
+                $"/api/v1/users?pageIndex=0&pageSize=10&sortBy={sortBy}"),
             UriKind.Relative));
 
         await ShouldNameAsync(response, nameof(PagedRequest.SortBy));
@@ -586,7 +658,7 @@ public sealed class RequestValidationContractTests
     {
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             FormattableString.Invariant(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles?pageIndex=0&pageSize=100&sortBy={sortBy}&sortDir={sortDir}"),
+                $"/api/v1/roles?pageIndex=0&pageSize=100&sortBy={sortBy}&sortDir={sortDir}"),
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -612,7 +684,7 @@ public sealed class RequestValidationContractTests
     {
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             FormattableString.Invariant(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize={Route(pageSize)}&sortBy={sortBy}&sortDir={sortDir}"),
+                $"/api/v1/users?pageIndex=0&pageSize={Route(pageSize)}&sortBy={sortBy}&sortDir={sortDir}"),
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -630,7 +702,7 @@ public sealed class RequestValidationContractTests
     private async Task<RoleDetailDto> CreateRoleAsync(HttpClient client)
     {
         using HttpResponseMessage response = await client.PostAsJsonAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles", UriKind.Relative),
+            new Uri("/api/v1/roles", UriKind.Relative),
             new CreateRoleRequest
             {
                 RoleName = "VTest Role " + Suffix(),
@@ -785,33 +857,33 @@ public sealed class RequestValidationContractTests
     /// <summary>Builds the role-group collection route for the seeded tenant.</summary>
     /// <returns>A relative route.</returns>
     private Uri RoleGroupsRoute() =>
-        new($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/role-groups", UriKind.Relative);
+        new("/api/v1/role-groups", UriKind.Relative);
 
     /// <summary>Builds the item route for one role group of the seeded tenant.</summary>
     /// <param name="roleGroupId">The group identifier.</param>
     /// <returns>A relative route.</returns>
     private Uri RoleGroupRoute(int roleGroupId) => new(
-        $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/role-groups/{Route(roleGroupId)}",
+        $"/api/v1/role-groups/{Route(roleGroupId)}",
         UriKind.Relative);
 
     /// <summary>Builds the item route for one role of the seeded tenant.</summary>
     /// <param name="roleId">The role identifier.</param>
     /// <returns>A relative route.</returns>
     private Uri RoleRoute(int roleId) => new(
-        $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles/{Route(roleId)}",
+        $"/api/v1/roles/{Route(roleId)}",
         UriKind.Relative);
 
     /// <summary>Builds the accounts sub-resource route for one role of the seeded tenant.</summary>
     /// <param name="roleId">The role identifier.</param>
     /// <returns>A relative route.</returns>
     private Uri RoleUsersRoute(int roleId) => new(
-        $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles/{Route(roleId)}/users",
+        $"/api/v1/roles/{Route(roleId)}/users",
         UriKind.Relative);
 
     /// <summary>Builds the profile-definition collection route for the seeded tenant.</summary>
     /// <returns>A relative route.</returns>
     private Uri ProfileDefinitionsRoute() => new(
-        $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions",
+        "/api/v1/profile-definitions",
         UriKind.Relative);
 
     /// <summary>Builds the item route for one profile definition of the seeded tenant.</summary>
@@ -819,7 +891,7 @@ public sealed class RequestValidationContractTests
     /// <returns>A relative route.</returns>
     private Uri ProfileDefinitionRoute(int propertyDefinitionId) => new(
         FormattableString.Invariant(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions/{Route(propertyDefinitionId)}"),
+            $"/api/v1/profile-definitions/{Route(propertyDefinitionId)}"),
         UriKind.Relative);
 
     /// <summary>Renders an identifier for a route segment without culture sensitivity.</summary>

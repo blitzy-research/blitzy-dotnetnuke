@@ -401,15 +401,24 @@ public static class TabMappings
         tab.ParentId = request.ParentId;
 
         tab.IsVisible = request.IsVisible;
+
+        // MIGRATION: copied here because a mapper has no portal context. TabService applies the legacy
+        // five-special-page rule after it has loaded the owning Portal and forces this value back to false
+        // for the administration, splash, home, login and user pages.
         tab.DisableLink = request.DisableLink;
         tab.IconFile = request.IconFile;
 
-        // MIGRATION: written, not skipped. These are real columns the terminal update statement
-        // persists, and leaving them untouched because skinning is out of scope would make an
-        // administrator's stored choice uneditable.
-        tab.SkinSrc = request.SkinSrc;
-        tab.ContainerSrc = request.ContainerSrc;
-
+        // MIGRATION: THE SKIN SOURCE AND THE CONTAINER SOURCE ARE DELIBERATELY LEFT ALONE, and the
+        // update contract no longer carries either. An earlier revision assigned both from the request,
+        // reasoning that leaving a real column untouched would make an administrator's stored choice
+        // uneditable. That reversed the priority: skinning and containers are an explicit exclusion of
+        // this migration, so making them settable through the page-edit endpoint re-admitted the
+        // excluded subsystem through the write surface - and it carried a worse consequence than the one
+        // it avoided, because the projection is a WHOLE-ROW replacement. A caller that simply omitted
+        // the member from its JSON deserialised to null and therefore BLANKED a stored skin on every
+        // ordinary edit. Not assigning them preserves both columns exactly as stored, which is what an
+        // exclusion should mean; both remain readable on TabDetailDto, so a stored choice is still
+        // observable even though it is no longer settable here.
         tab.Url = request.Url;
 
         // MIGRATION: both dates are stored exactly as submitted. Nothing here compares them to each

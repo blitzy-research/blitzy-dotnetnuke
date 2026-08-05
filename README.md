@@ -79,9 +79,27 @@ ConnectionStrings__Default='Server=localhost,1433;Database=DotNetNuke;User Id=�
   dotnet run --project src/DnnMigration.Api
 ```
 
-`GET /health` is anonymous and reports the database. `/swagger` serves the
-generated OpenAPI document in the Development environment. Every other endpoint
-lives under `/api/v1/` and requires a bearer token.
+Three anonymous health views answer three different questions:
+
+| Endpoint | Question | Probes run |
+|---|---|---|
+| `GET /health` | **Liveness** — can this process answer at all? | every probe not tagged `ready`, which today means the audit-delivery probe |
+| `GET /health/live` | **Process liveness only** | none at all |
+| `GET /health/ready` | **Readiness** — can it serve a request end to end? | every probe tagged `ready`, which today means the single database probe |
+
+All three answer plain HTTP with no credential and emit the same document. The split
+is deliberate: `docker/api.Dockerfile` and `docker/docker-compose.yml` both probe
+`/health`, and the compose topology declares no database service — the store is
+external and may legitimately be unreachable while the API starts. A liveness view
+that ran a database probe would report the container unhealthy for a reason
+unrelated to whether it can answer, and would hold the front-end service back
+behind `condition: service_healthy` indefinitely. Point an orchestrator's readiness
+probe at `/health/ready`, its restart-or-not probe at `/health/live`, and leave the
+container health check on `/health`. Each probe carries a two-second timeout,
+comfortably inside the container check's five.
+
+`/swagger` serves the generated OpenAPI document in the Development environment.
+Every other endpoint lives under `/api/v1/` and requires a bearer token.
 
 ### Database
 
@@ -123,21 +141,26 @@ install. The reasoning is recorded in `MIGRATION_NOTES.md`.
 cp docker/.env.example docker/.env      # then fill in the values
 docker compose -f docker/docker-compose.yml --env-file docker/.env build
 docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
-curl -f http://localhost:8080/health
-curl -f http://localhost:4200
+docker compose -f docker/docker-compose.yml --env-file docker/.env exec -T api \
+  wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health
+curl -f http://localhost:4200                  # 200, the SPA document
+curl -f http://localhost:8080/health           # 200, the anonymous liveness view
 docker compose -f docker/docker-compose.yml --env-file docker/.env down
 ```
 
 The API image runs as a non-root user and exposes port 8080; the front-end image
 serves the built bundle from nginx on port 80, published as 4200. The front-end
-service will not start until the API reports healthy.
+service will not start until the API reports healthy — which is why the probe above
+is the liveness view. Add `curl -f http://localhost:8080/health/ready` when you want
+to confirm the external database is reachable as well; a 503 there is a dependency
+report rather than a container fault.
 
-> **Before deploying, read the deployment entry in `MIGRATION_NOTES.md`.** The
-> mandated Alpine runtime base image runs in globalisation-invariant mode, and the
-> SQL Server client library refuses to open a connection in that mode. The remedy is
-> two lines in the runtime stage of `docker/api.Dockerfile`; the container artefacts
-> are delivered verbatim as specified, so the change is documented rather than
-> pre-applied.
+The API image installs ICU and turns globalisation-invariant mode off, because the
+mandated Alpine runtime base sets that mode and the SQL Server client library
+refuses to open a connection while it is on. That two-line addition to the runtime
+stage of `docker/api.Dockerfile` is the one documented deviation from the preserved
+container example, and it is applied rather than merely described so the composed
+topology works as delivered. The reasoning is recorded in `MIGRATION_NOTES.md`.
 
 ## Contributing to the migration
 

@@ -203,8 +203,8 @@ public static class RoleMappings
     // MIGRATION: this projection deliberately carries NEITHER the owning portal identifier NOR any
     // join denormalisation, matching the fourteen members RoleDetailDto actually declares.
     //   * The portal identifier is omitted because the legacy editor never posted it either -
-    //     EditRoles.ascx.vb L232 assigned it from ambient page state - and the migrated route
-    //     /api/v1/portals/{portalId}/roles/{roleId} already carries it. The list projection above
+    //     EditRoles.ascx.vb L232 assigned it from ambient page state - and the migrated request
+    //     resolves it from the host before /api/v1/roles/{roleId} runs. The list projection above
     //     omits it for the same reason, so the two role contracts stay consistent.
     //   * The group's NAME and a member TALLY are both deliberately absent, and neither may be
     //     added as an argument - neither is a column on dbo.Roles. Their

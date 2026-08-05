@@ -1,8 +1,8 @@
 namespace DnnMigration.Application.Dtos.Common;
 
 /// <summary>
-/// The declared, not-yet-adopted success envelope for an API response that carries a payload,
-/// pairing that payload with the optional <see cref="ApiMeta"/> companion.
+/// The success envelope for an API response that carries a payload, pairing that payload with the
+/// optional <see cref="ApiMeta"/> companion.
 /// </summary>
 /// <typeparam name="T">
 /// The transported payload type. Always a data transfer contract from <c>Application/Dtos/</c> and
@@ -13,28 +13,17 @@ namespace DnnMigration.Application.Dtos.Common;
 /// </typeparam>
 /// <remarks>
 /// <para>
-/// WHERE THIS ENVELOPE IS AND IS NOT USED. An earlier revision of this remark claimed that every
-/// controller returns this shape on success. It did not, and the claim is corrected here rather than left
-/// standing, because a doc comment asserting a convention the code does not follow is worse than no
-/// comment: it invites a later change to impose the convention on forty endpoints on the strength of a
-/// sentence.
+/// WHERE THIS ENVELOPE IS USED. Every single-resource success in the API is this shape: the payload
+/// under <c>data</c>, and <c>meta</c> present only when there is a window to describe. The API edge
+/// applies it in one place - the shared result helpers under <c>Api/ErrorHandling/</c> wrap a
+/// successful <c>Result&lt;T&gt;</c> for both <c>200 OK</c> and <c>201 Created</c> - so no controller
+/// constructs the envelope itself and no endpoint can drift into returning a bare contract.
 /// </para>
 /// <para>
-/// A PAGED endpoint returns <see cref="PagedResponse{T}"/>, which pairs an <c>items</c> array with the same
-/// <see cref="ApiMeta"/> companion this type declares. That is the envelope the API contract specifies for a
-/// page, it is what the client paging model mirrors, and it is applied at the API edge by one shared
-/// translator so that the domain paging type never crosses the boundary. A page is therefore NOT wrapped in
-/// this type as well - doing so would nest two envelopes and put the row array one level deeper than the
-/// contract states.
-/// </para>
-/// <para>
-/// A SINGLE-RESOURCE endpoint returns its data transfer contract directly, and that is a deliberate
-/// decision rather than an omission. A single resource has no metadata to carry - a total, a page index and
-/// a page size all describe a window over a collection and mean nothing for one record - so the envelope
-/// would add a constant wrapper member conveying no information, on every read, write and creation in the
-/// API. This type remains part of the response contract surface for an endpoint that genuinely needs to
-/// return a payload ALONGSIDE metadata without paging it, which is the case the two-argument
-/// <see cref="Success(T, ApiMeta)"/> factory exists for.
+/// A PAGED endpoint returns <see cref="PagedResponse{T}"/> instead, which pairs an <c>items</c> array
+/// with the same <see cref="ApiMeta"/> companion this type declares. A page is deliberately NOT
+/// wrapped in this type as well - doing so would nest two envelopes and put the row array one level
+/// deeper than the contract states.
 /// </para>
 /// <para>
 /// The envelope describes success and nothing else. An expected failure is carried inside the
@@ -111,8 +100,8 @@ public sealed class ApiResponse<T>
     public ApiMeta? Meta { get; init; }
 
     /// <summary>
-    /// Creates a success envelope carrying <paramref name="data"/> and no metadata: the form a
-    /// single-item endpoint would use once this envelope is adopted.
+    /// Creates a success envelope carrying <paramref name="data"/> and no metadata: the form every
+    /// single-resource endpoint uses.
     /// </summary>
     /// <param name="data">The payload to transport.</param>
     /// <returns>An envelope whose <see cref="Meta"/> is <see langword="null"/>.</returns>
@@ -125,7 +114,7 @@ public sealed class ApiResponse<T>
 
     /// <summary>
     /// Creates a success envelope carrying <paramref name="data"/> together with the metadata that
-    /// describes it: the form a collection endpoint would use once this envelope is adopted.
+    /// describes it: the form for a payload that has a window to report without being paged.
     /// </summary>
     /// <param name="data">The payload to transport.</param>
     /// <param name="meta">The metadata describing the payload.</param>
@@ -134,8 +123,8 @@ public sealed class ApiResponse<T>
 }
 
 /// <summary>
-/// The declared, not-yet-adopted success envelope for an API response that carries no payload, such
-/// as a deletion that reports only that it happened.
+/// The declared success envelope for an API response that carries no payload. No endpoint returns it;
+/// the reason is below.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -149,35 +138,8 @@ public sealed class ApiResponse<T>
 /// object; keeping them separate makes that mistake unexpressible.
 /// </para>
 /// <para>
-/// Everything said of the generic form applies here unchanged, including its adoption status: no
-/// controller returns this type today. Success only, so no outcome flag, failure member, per-field
-/// validation map, transport-level code or correlation identifier.
-/// </para>
-/// <para>
-/// <strong>No endpoint in this API returns this arity, and none can.</strong> That is recorded here
-/// because the absence is a decision rather than an omission waiting to be filled. A command in this
-/// API that produces nothing answers <c>204 No Content</c>, HTTP forbids a body on a <c>204</c>, and
-/// the acceptance criteria pin deletion to <c>204</c> for portals, modules and users. Attaching this
-/// envelope to those responses would mean demoting them to <c>200</c> so that a declared type acquires
-/// a caller - trading a stated criterion for the tidiness of an unused declaration, which is the wrong
-/// exchange in both directions. The type is kept for the reason the paragraph above gives: the two
-/// arities of one contract are read together, and a reader who finds only the generic form has to
-/// guess what a payload-free success looks like instead of finding the answer written down. A
-/// contract test over the generated OpenAPI document asserts that this type appears nowhere in it, so
-/// a future revision that does make the exchange fails rather than drifts.
-/// </para>
-/// <para>
-/// <strong>No endpoint in this API returns this arity, and none can.</strong> That is recorded here
-/// because the absence is a decision rather than an omission waiting to be filled. A command in this
-/// API that produces nothing answers <c>204 No Content</c>, HTTP forbids a body on a <c>204</c>, and
-/// the acceptance criteria pin deletion to <c>204</c> for portals, modules and users. Attaching this
-/// envelope to those responses would mean demoting them to <c>200</c> so that a declared type acquires
-/// a caller - trading a stated criterion for the tidiness of an unused declaration, which is the wrong
-/// exchange in both directions. The type is kept for the reason the paragraph above gives: the two
-/// arities of one contract are read together, and a reader who finds only the generic form has to
-/// guess what a payload-free success looks like instead of finding the answer written down. A
-/// contract test over the generated OpenAPI document asserts that this type appears nowhere in it, so
-/// a future revision that does make the exchange fails rather than drifts.
+/// Everything said of the generic form applies here unchanged. Success only, so no outcome flag,
+/// failure member, per-field validation map, transport-level code or correlation identifier.
 /// </para>
 /// <para>
 /// <strong>No endpoint in this API returns this arity, and none can.</strong> That is recorded here

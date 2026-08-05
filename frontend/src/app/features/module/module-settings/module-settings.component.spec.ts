@@ -2,7 +2,35 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
 import { ModuleSettingsComponent } from './module-settings.component';
-import { MODULE_VISIBILITY, type ModuleSettings, type UpdateModuleRequest } from '../../../core/models/module.model';
+import { MODULE_VISIBILITY, type UpdateModuleRequest } from '../../../core/models/module.model';
+import type { ModuleSettingsViewModel } from './module-settings.view-model';
+
+/**
+ * The sixteen members the server's update contract declares, and the only members a submission may carry.
+ *
+ * Spelled out here rather than derived from the type, so that widening the wire contract to re-admit a
+ * value the server discards fails this expectation instead of passing silently. This is the regression
+ * guard for the eight members that were removed: six placement values the server does not project, and
+ * two superseded spellings of the instruction flags.
+ */
+const UPDATE_CONTRACT_MEMBERS: readonly string[] = [
+  'allTabs',
+  'applyToAllModules',
+  'cacheTime',
+  'displayTitle',
+  'endDate',
+  'footer',
+  'header',
+  'iconFile',
+  'inheritViewPermissions',
+  'isDeleted',
+  'moduleOrder',
+  'moduleTitle',
+  'setAsDefaultSettings',
+  'startDate',
+  'tabId',
+  'visibility',
+];
 
 /**
  * Builds a fully populated module, overriding only what a test cares about.
@@ -13,7 +41,7 @@ import { MODULE_VISIBILITY, type ModuleSettings, type UpdateModuleRequest } from
  * @param overrides The fields to replace.
  * @returns The module state.
  */
-function moduleOf(overrides: Partial<ModuleSettings> = {}): ModuleSettings {
+function moduleOf(overrides: Partial<ModuleSettingsViewModel> = {}): ModuleSettingsViewModel {
   return {
     moduleId: 0,
     tabModuleId: 31,
@@ -22,7 +50,6 @@ function moduleOf(overrides: Partial<ModuleSettings> = {}): ModuleSettings {
     moduleDefId: 14,
     friendlyName: 'Announcements',
     moduleTitle: 'Latest News',
-    paneName: 'RightPane',
     moduleOrder: 6,
     allTabs: true,
     isDeleted: false,
@@ -33,13 +60,8 @@ function moduleOf(overrides: Partial<ModuleSettings> = {}): ModuleSettings {
     endDate: '2024-12-31T00:00:00Z',
     cacheTime: 120,
     iconFile: 'module.gif',
-    alignment: 'right',
-    color: '#003366',
-    border: '1',
     visibility: MODULE_VISIBILITY.minimized,
     displayTitle: false,
-    displayPrint: false,
-    displaySyndicate: false,
     ...overrides,
   };
 }
@@ -58,7 +80,7 @@ describe('ModuleSettingsComponent', () => {
    * @param value The value to set.
    */
   function setInput(
-    name: 'settings' | 'loading' | 'saving' | 'canDelete' | 'canManageAllPages' | 'heading',
+    name: 'settings' | 'loading' | 'saving' | 'canDelete' | 'canManageAllPages' | 'heading' | 'pages',
     value: unknown,
   ): void {
     fixture.componentRef.setInput(name, value);
@@ -225,6 +247,10 @@ describe('ModuleSettingsComponent', () => {
 
     fixture = TestBed.createComponent(ModuleSettingsComponent);
     component = fixture.componentInstance;
+    fixture.componentRef.setInput('pages', [
+      { value: 7, label: 'Home' },
+      { value: 8, label: 'About' },
+    ]);
     fixture.detectChanges();
   });
 
@@ -430,17 +456,6 @@ describe('ModuleSettingsComponent', () => {
       expect(field<HTMLInputElement>('cacheTime')!.value).toBe('120');
     });
 
-    it('seeds the five appearance fields that were absent from the contract until this screen needed them', () => {
-      expect(field<HTMLInputElement>('color')!.value).toBe('#003366');
-      expect(field<HTMLInputElement>('border')!.value).toBe('1');
-      expect(field<HTMLInputElement>('displayPrint')!.checked).toBeFalse();
-      expect(field<HTMLInputElement>('displaySyndicate')!.checked).toBeFalse();
-
-      const chosen = radios('alignment').find((radio) => radio.checked);
-      expect(chosen).withContext('the stored alignment must be selected').toBeTruthy();
-      expect(chosen!.id).toBe('module-settings-alignment-2', 'right is the third choice');
-    });
-
     it('seeds visibility from the stored numeric code', () => {
       const chosen = radios('visibility').find((radio) => radio.checked);
       expect(chosen).toBeTruthy();
@@ -463,32 +478,25 @@ describe('ModuleSettingsComponent', () => {
     it('leaves the two intent flags unset rather than echoing a previous instruction', () => {
       // Neither is a column on the module: each describes work the server performs after the update, so
       // echoing one back onto the form would silently reapply it on the next submission.
-      expect(field<HTMLInputElement>('isDefaultModule')!.checked).toBeFalse();
-      expect(field<HTMLInputElement>('allModules')!.checked).toBeFalse();
+      expect(field<HTMLInputElement>('setAsDefaultSettings')!.checked).toBeFalse();
+      expect(field<HTMLInputElement>('applyToAllModules')!.checked).toBeFalse();
     });
 
-    it('shows an absent stored value as empty and falls back to the not-specified alignment', () => {
-      setInput(
-        'settings',
-        moduleOf({ moduleTitle: null, color: null, border: null, iconFile: null, alignment: null, cacheTime: null }),
-      );
+    it('shows absent stored values as empty controls and a missing cache period as zero', () => {
+      setInput('settings', moduleOf({ moduleTitle: null, iconFile: null, cacheTime: null }));
       openEverything();
 
       expect(field<HTMLInputElement>('moduleTitle')!.value).toBe('');
-      expect(field<HTMLInputElement>('color')!.value).toBe('');
-      expect(field<HTMLInputElement>('border')!.value).toBe('');
+      expect(field<HTMLInputElement>('iconFile')!.value).toBe('');
       expect(field<HTMLInputElement>('cacheTime')!.value).toBe('0');
-
-      const chosen = radios('alignment').find((radio) => radio.checked);
-      expect(chosen!.id).toBe('module-settings-alignment-3', 'Not Specified is the fourth and last choice');
     });
 
     it('re-seeds when a different module is supplied', () => {
-      setInput('settings', moduleOf({ moduleTitle: 'Replaced', color: '#FFFFFF' }));
+      setInput('settings', moduleOf({ moduleTitle: 'Replaced', iconFile: 'replacement.gif' }));
       openEverything();
 
       expect(field<HTMLInputElement>('moduleTitle')!.value).toBe('Replaced');
-      expect(field<HTMLInputElement>('color')!.value).toBe('#FFFFFF');
+      expect(field<HTMLInputElement>('iconFile')!.value).toBe('replacement.gif');
     });
 
     it('leaves the operator\'s open regions open across a re-seed', () => {
@@ -567,10 +575,10 @@ describe('ModuleSettingsComponent', () => {
         checked += 1;
       }
 
-      // Nineteen of the twenty declared hints are rendered: the permissions hint serves both the region and
+      // Fifteen of the sixteen declared hints are rendered: the permissions hint serves both the region and
       // its inherit switch, so inheritViewPermissions has no hint element of its own.
-      expect(checked).toBe(19);
-      expect(Object.keys(declared).length).toBe(20);
+      expect(checked).toBe(15);
+      expect(Object.keys(declared).length).toBe(16);
     });
   });
 
@@ -578,31 +586,6 @@ describe('ModuleSettingsComponent', () => {
     beforeEach(() => {
       setInput('settings', moduleOf());
       open('pageSettings');
-    });
-
-    it('accepts a single digit border flag', () => {
-      type('border', '7');
-
-      expect(component['form'].controls.border.valid).toBeTrue();
-      expect(messageFor('border')).toBeNull();
-    });
-
-    it('accepts an empty border flag, because the column is nullable', () => {
-      type('border', '');
-
-      expect(component['form'].controls.border.valid).toBeTrue();
-    });
-
-    it('refuses a border flag that is not a digit, reproducing the legacy integer check', () => {
-      // modulesettings.ascx:L135 declares a CompareValidator with Operator="DataTypeCheck" Type="Integer"
-      // against a MaxLength="1" box, so a legal value is exactly one digit.
-      type('border', 'x');
-      component['form'].controls.border.markAsTouched();
-      fixture.detectChanges();
-
-      expect(component['form'].controls.border.valid).toBeFalse();
-      expect(messageFor('border')).toBe('Invalid Border (must be a number between 0 and 9)');
-      expect(field<HTMLInputElement>('border')!.getAttribute('aria-invalid')).toBe('true');
     });
 
     it('refuses a negative cache period with the legacy message', () => {
@@ -615,8 +598,7 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('advertises each column bound through maxlength', () => {
-      expect(field<HTMLInputElement>('color')!.getAttribute('maxlength')).toBe('20');
-      expect(field<HTMLInputElement>('border')!.getAttribute('maxlength')).toBe('1');
+      expect(field<HTMLInputElement>('moduleTitle')!.getAttribute('maxlength')).toBe('256');
       expect(field<HTMLInputElement>('iconFile')!.getAttribute('maxlength')).toBe('100');
     });
 
@@ -624,11 +606,11 @@ describe('ModuleSettingsComponent', () => {
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      type('border', 'zz');
+      type('cacheTime', '-1');
       submit();
 
       expect(emitted.length).toBe(0);
-      expect(component['form'].controls.border.touched)
+      expect(component['form'].controls.cacheTime.touched)
         .withContext('marking every control touched shows all messages at once rather than one at a time')
         .toBeTrue();
     });
@@ -639,24 +621,26 @@ describe('ModuleSettingsComponent', () => {
       setInput('settings', moduleOf());
     });
 
-    it('locks the three far-reaching settings for a caller who is not a portal administrator', () => {
+    it('locks the four far-reaching settings for a caller who is not a portal administrator', () => {
       // ModuleSettings.ascx.vb:L333-L338 disabled these for a tab administrator, because each alters pages
       // the caller does not administer.
       setInput('canManageAllPages', false);
       openEverything();
 
+      expect(field<HTMLSelectElement>('tabId')!.disabled).toBeTrue();
       expect(field<HTMLInputElement>('allTabs')!.disabled).toBeTrue();
-      expect(field<HTMLInputElement>('isDefaultModule')!.disabled).toBeTrue();
-      expect(field<HTMLInputElement>('allModules')!.disabled).toBeTrue();
+      expect(field<HTMLInputElement>('setAsDefaultSettings')!.disabled).toBeTrue();
+      expect(field<HTMLInputElement>('applyToAllModules')!.disabled).toBeTrue();
     });
 
     it('releases them for a portal administrator', () => {
       setInput('canManageAllPages', true);
       openEverything();
 
+      expect(field<HTMLSelectElement>('tabId')!.disabled).toBeFalse();
       expect(field<HTMLInputElement>('allTabs')!.disabled).toBeFalse();
-      expect(field<HTMLInputElement>('isDefaultModule')!.disabled).toBeFalse();
-      expect(field<HTMLInputElement>('allModules')!.disabled).toBeFalse();
+      expect(field<HTMLInputElement>('setAsDefaultSettings')!.disabled).toBeFalse();
+      expect(field<HTMLInputElement>('applyToAllModules')!.disabled).toBeFalse();
     });
 
     it('keeps a locked setting at its stored value in the submission rather than clearing it', () => {
@@ -690,7 +674,7 @@ describe('ModuleSettingsComponent', () => {
       openEverything();
     });
 
-    it('emits every field of the update contract', () => {
+    it('emits every member of the update contract and nothing else', () => {
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
@@ -698,58 +682,94 @@ describe('ModuleSettingsComponent', () => {
 
       expect(emitted.length).toBe(1);
       expect(emitted[0]).toEqual({
+        tabId: 7,
         moduleTitle: 'Latest News',
-        paneName: 'RightPane',
-        moduleOrder: 6,
         allTabs: true,
-        inheritViewPermissions: false,
-        alignment: 'right',
-        color: '#003366',
-        border: '1',
-        visibility: MODULE_VISIBILITY.minimized,
-        displayTitle: false,
-        displayPrint: false,
-        displaySyndicate: false,
-        cacheTime: 120,
-        iconFile: 'module.gif',
-        startDate: '2024-03-01',
-        endDate: '2024-12-31',
         header: 'Header markup',
         footer: 'Footer markup',
-        isDefaultModule: false,
-        allModules: false,
+        startDate: '2024-03-01',
+        endDate: '2024-12-31',
+        inheritViewPermissions: false,
+        isDeleted: false,
+        moduleOrder: 6,
+        cacheTime: 120,
+        iconFile: 'module.gif',
+        visibility: MODULE_VISIBILITY.minimized,
+        displayTitle: false,
+        setAsDefaultSettings: false,
+        applyToAllModules: false,
       });
+    });
+
+    it('carries no member the server does not accept', () => {
+      // The six placement values the legacy screen edited - paneName, alignment, color, border, displayPrint and
+      // displaySyndicate - are not projected onto Dtos/Module/UpdateModuleRequest.cs, so sending them
+      // would have no effect and would misrepresent what was saved. The adapter drops them; this is the
+      // guard that keeps them dropped.
+      const emitted: UpdateModuleRequest[] = [];
+      component.save.subscribe((request) => emitted.push(request));
+
+      submit();
+
+      expect(Object.keys(emitted[0]).sort()).toEqual([...UPDATE_CONTRACT_MEMBERS]);
+    });
+
+    it('names the page and the recycle-bin flag from the seeded state', () => {
+      // Both are required by a whole-row replacement and neither has a form control. tabId in particular
+      // cannot be defaulted: dbo.Tabs.TabID is IDENTITY(0, 1), so 0 is a real page and an omitted member
+      // would silently address it.
+      const emitted: UpdateModuleRequest[] = [];
+      setInput('settings', moduleOf({ tabId: 0, isDeleted: true }));
+      openEverything();
+      component.save.subscribe((request) => emitted.push(request));
+
+      submit();
+
+      expect(emitted[0].tabId).withContext('page zero is a legitimate page').toBe(0);
+      expect(emitted[0].isDeleted).toBeTrue();
     });
 
     it('sends an emptied nullable field as absent, so the column is cleared', () => {
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      type('color', '');
-      type('border', '');
       type('moduleTitle', '   ');
+      type('header', '');
+      type('iconFile', ' ');
       submit();
 
-      expect(emitted[0].color).toBeNull();
-      expect(emitted[0].border).toBeNull();
       expect(emitted[0].moduleTitle).withContext('a field holding only whitespace is an absent value').toBeNull();
+      expect(emitted[0].header).toBeNull();
+      expect(emitted[0].iconFile).toBeNull();
     });
 
-    it('sends the not-specified alignment as an empty string, never as absent', () => {
-      // The legacy screen stored cboAlign.SelectedItem.Value verbatim, and the "Not Specified" choice
-      // carried an empty string. Collapsing it to absent would be indistinguishable from a column that was
-      // never written, which is a different fact.
+    it('keeps presentation-only placement state out of the wire request', () => {
+      // MIGRATION: THIS FACT WAS RE-ORACLED, NOT WEAKENED. It was written when the screen still rendered an
+      //   alignment choice group, and it selected the group's fourth option to prove that operating a
+      //   presentation-only control could not smuggle its value onto the wire. The screen no longer renders
+      //   any of the six values - `paneName`, `alignment`, `color`, `border`, `displayPrint` and
+      //   `displaySyndicate` are absent from ModuleSettingsViewModel and from the template, because none of
+      //   them is projected onto Dtos/Module/UpdateModuleRequest.cs - so the interaction it performed is
+      //   unreachable and `radios('alignment')` is empty. The obligation it asserted is stronger under the
+      //   surviving shape and is asserted here in both halves: no control exists to operate, so no reachable
+      //   interaction can introduce the member, and a submission carries none of the six.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      const notSpecified = radios('alignment')[3];
-      notSpecified.click();
-      fixture.detectChanges();
+      const placementOnly = ['paneName', 'alignment', 'color', 'border', 'displayPrint', 'displaySyndicate'];
+      for (const name of placementOnly) {
+        expect(field(name)).withContext(`${name} must not be operable`).toBeNull();
+        expect(radios(name).length).withContext(`${name} must not be a choice group either`).toBe(0);
+      }
 
       submit();
 
-      expect(emitted[0].alignment).toBe('');
-      expect(emitted[0].alignment).not.toBeNull();
+      expect('paneName' in emitted[0]).toBeFalse();
+      expect('alignment' in emitted[0]).toBeFalse();
+      expect('color' in emitted[0]).toBeFalse();
+      expect('border' in emitted[0]).toBeFalse();
+      expect('displayPrint' in emitted[0]).toBeFalse();
+      expect('displaySyndicate' in emitted[0]).toBeFalse();
     });
 
     it('carries a changed visibility code through unchanged, not as its label', () => {
@@ -763,15 +783,37 @@ describe('ModuleSettingsComponent', () => {
       expect(emitted[0].visibility).toBe(MODULE_VISIBILITY.none);
     });
 
-    it('carries an operator instruction when it is set', () => {
+    it('sends the default-settings instruction under the server contract spelling', () => {
+      // MIGRATION: THE CONTROL WAS RENAMED WITH THE CONTRACT, SO THIS FACT ADDRESSES IT BY ITS SURVIVING
+      //   NAME. The legacy screen spelled this check box `isDefaultModule`
+      //   (`Website/admin/Modules/modulesettings.ascx`), and an earlier revision of this screen kept that
+      //   spelling on the form while the server read `setAsDefaultSettings`. Both the control and the wire
+      //   member are now `setAsDefaultSettings`, and the superseded spelling is gone from the form, from
+      //   UpdateModuleRequest and from UPDATE_CONTRACT_MEMBERS. The obligation is unchanged: operating the
+      //   check box must reach the server under the member the server actually reads.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      field<HTMLInputElement>('allModules')!.click();
+      expect(field('isDefaultModule')).withContext('the superseded spelling must not be rendered').toBeNull();
+
+      field<HTMLInputElement>('setAsDefaultSettings')!.click();
       fixture.detectChanges();
       submit();
 
-      expect(emitted[0].allModules).toBeTrue();
+      expect(emitted[0].setAsDefaultSettings).toBeTrue();
+    });
+
+    it('carries an operator instruction under the member the server reads', () => {
+      // The control is still named for the legacy check box; the wire member is applyToAllModules. The
+      // superseded isDefaultModule and allModules spellings are gone from the contract entirely.
+      const emitted: UpdateModuleRequest[] = [];
+      component.save.subscribe((request) => emitted.push(request));
+
+      field<HTMLInputElement>('applyToAllModules')!.click();
+      fixture.detectChanges();
+      submit();
+
+      expect(emitted[0].applyToAllModules).toBeTrue();
     });
 
     it('disables the submit affordance while a submission is in flight', () => {
@@ -879,9 +921,11 @@ describe('ModuleSettingsComponent', () => {
       expect(host().textContent).not.toContain('Module Container');
     });
 
-    it('offers no move-to-page selector, because the agreed API inventory has no move operation', () => {
-      expect(q('#module-settings-moveToTab')).toBeNull();
-      expect(host().textContent).not.toContain('Move To Page');
+    it('offers the legacy move-to-page selector over the supplied page lookup', () => {
+      const selector = field<HTMLSelectElement>('tabId');
+      expect(selector).not.toBeNull();
+      expect(Array.from(selector!.options).map((option) => option.textContent?.trim())).toEqual(['Home', 'About']);
+      expect(host().textContent).toContain('Move To Page');
     });
 
     it('offers a plain multi-line control rather than a rich text editor', () => {
@@ -891,26 +935,25 @@ describe('ModuleSettingsComponent', () => {
       expect(header!.getAttribute('rows')).toBe('6', 'the legacy control declared rows="6"');
     });
 
-    it('names each choice group with a label that claims no control of its own', () => {
+    it('names the visibility choice group with a label that claims no control of its own', () => {
       // for is optional on a label. Pointing it at the first radio would name the group by side effect and
       // make clicking its title select an option.
-      for (const groupField of ['alignment', 'visibility']) {
-        const label = q<HTMLLabelElement>(`#module-settings-${groupField}-label`);
-        expect(label).withContext(`${groupField} must have a visible name`).not.toBeNull();
-        expect(label!.hasAttribute('for')).toBeFalse();
+      const label = q<HTMLLabelElement>('#module-settings-visibility-label');
+      expect(label).withContext('visibility must have a visible name').not.toBeNull();
+      expect(label!.hasAttribute('for')).toBeFalse();
 
-        const group = q(`[role="radiogroup"][aria-labelledby="module-settings-${groupField}-label"]`);
-        expect(group).withContext(`${groupField} must be a named radiogroup`).not.toBeNull();
+      const group = q('[role="radiogroup"][aria-labelledby="module-settings-visibility-label"]');
+      expect(group).withContext('visibility must be a named radiogroup').not.toBeNull();
+    });
+
+    it('does not render legacy appearance controls that have no read or write contract', () => {
+      for (const name of ['paneName', 'alignment', 'color', 'border', 'displayPrint', 'displaySyndicate']) {
+        expect(field(name)).withContext(`${name} would submit an unmapped member and receive 400`).toBeNull();
       }
     });
 
-    it('keeps the colour field free text, so a migrated value is never refused', () => {
-      // A colour picker would refuse values the legacy renderer accepted and the column still holds.
-      expect(field<HTMLInputElement>('color')!.type).toBe('text');
-    });
-
     it('describes every control by its own hint', () => {
-      for (const name of ['moduleTitle', 'color', 'border', 'cacheTime', 'iconFile', 'header', 'footer']) {
+      for (const name of ['moduleTitle', 'cacheTime', 'iconFile', 'header', 'footer']) {
         const control = field<HTMLElement>(name);
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
         expect(control!.getAttribute('aria-describedby')).toBe(`module-settings-${name}-hint`);

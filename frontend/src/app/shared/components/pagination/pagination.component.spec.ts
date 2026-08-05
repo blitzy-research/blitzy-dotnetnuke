@@ -57,11 +57,56 @@ describe('PaginationComponent', () => {
       expect(fixture.debugElement.query(By.css('.pagination'))).not.toBeNull();
     });
 
-    it('renders nothing when the page size requests every match', () => {
-      // A page size of zero is a deliberate request for every match in one page.
-      bind(0, 0, 5000);
+    it('renders nothing when every match already fits on one page', () => {
+      // Navigation between one page and itself is not an affordance. This is the
+      // legitimate way a pager disappears — a real page size with nothing to page
+      // through — as distinct from the refused zero below.
+      bind(0, 10, 10);
 
       expect(fixture.debugElement.query(By.css('.pagination'))).toBeNull();
+    });
+  });
+
+  describe('an unusable page size', () => {
+    // A page size of zero was previously read as "every match on one page", which
+    // invented a mode the API does not have and did it silently: a screen whose page
+    // size failed to resolve rendered a plausible single page instead of reporting the
+    // fault. The paging request contract rejects zero and negative sizes outright, so
+    // no response envelope carries one and the only possible source is a consumer
+    // defect. Each case below must be reported rather than absorbed.
+
+    it('refuses a page size of zero rather than treating it as unpaged', () => {
+      expect(() => bind(0, 0, 5000)).toThrowError(
+        /`pageSize` must be a whole number of at least 1, but was 0/,
+      );
+    });
+
+    it('refuses a negative page size', () => {
+      expect(() => bind(0, -10, 5000)).toThrowError(
+        /`pageSize` must be a whole number of at least 1, but was -10/,
+      );
+    });
+
+    it('refuses a fractional page size, which would render a fractional page count', () => {
+      expect(() => bind(0, 2.5, 10)).toThrowError(/must be a whole number of at least 1/);
+    });
+
+    it('refuses a page size that is not a number at all, keeping NaN out of the arithmetic', () => {
+      expect(() => bind(0, Number.NaN, 10)).toThrowError(
+        /must be a whole number of at least 1/,
+      );
+    });
+
+    it('refuses an infinite page size', () => {
+      expect(() => bind(0, Number.POSITIVE_INFINITY, 10)).toThrowError(
+        /must be a whole number of at least 1/,
+      );
+    });
+
+    it('names the unpaged alternative, so the fault has an obvious remedy', () => {
+      expect(() => bind(0, 0, 5000)).toThrowError(
+        /do not render this component at all rather than binding a size of zero/,
+      );
     });
   });
 
@@ -80,10 +125,14 @@ describe('PaginationComponent', () => {
       expect(fixture.componentInstance.totalPages).toBe(3);
     });
 
-    it('reports one page when the page size requests every match, rather than dividing by zero', () => {
-      bind(0, 0, 5000);
+    it('never divides by zero, because the page size is validated on assignment', () => {
+      // The guard that used to sit inside this getter is gone: the invariant is
+      // established once at the boundary, so the arithmetic is unconditional and the
+      // count is always a finite positive whole number.
+      bind(0, 1, 5000);
 
-      expect(fixture.componentInstance.totalPages).toBe(1);
+      expect(fixture.componentInstance.totalPages).toBe(5000);
+      expect(Number.isFinite(fixture.componentInstance.totalPages)).toBeTrue();
     });
 
     it('renders the position one-based, because a person counts from one', () => {

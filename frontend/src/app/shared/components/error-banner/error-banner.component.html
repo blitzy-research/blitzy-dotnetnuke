@@ -58,14 +58,22 @@
         <dl class="error-banner__fields">
           @for (group of fieldErrors(); track trackByField($index, group)) {
             <dt class="error-banner__field">{{ labelFor(group.field) }}</dt>
-            @for (fieldMessage of group.messages; track fieldMessage) {
+            <!--
+              Tracked by position, not by message text. Duplicate messages against one
+              field are deliberately preserved rather than de-duplicated, and tracking
+              by the text itself makes the second occurrence collide with the first: the
+              framework treats them as one item and renders a single line, silently
+              dropping a message the server sent. The sibling form-field component
+              tracks its own messages by position for exactly this reason.
+            -->
+            @for (fieldMessage of group.messages; track $index) {
               <dd class="error-banner__detail">{{ fieldMessage }}</dd>
             }
           }
         </dl>
       }
 
-      @if (hasTraceId()) {
+      @if (hasSupportReference()) {
         <!--
           The server's own identifier for this request, and the only diagnostic shown.
           It is quotable in a support report and means nothing to anyone without the
@@ -73,7 +81,7 @@
           was not. It stays inside the atomic region so that a person using a screen
           reader can report it too.
         -->
-        <p class="error-banner__trace">Reference: {{ traceId() }}</p>
+        <p class="error-banner__trace">Reference: {{ supportReference() }}</p>
       }
     </div>
   }

@@ -2,8 +2,8 @@ namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
 /// The two key-value setting stores of one module, carried as the response body of
-/// <c>GET /api/v1/portals/{portalId}/modules/{moduleId}/settings</c> and as the request body of
-/// <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c>. A boundary contract and nothing more: no navigation
+/// <c>GET /api/v1/modules/{moduleId}/settings</c> and as the request body of
+/// <c>PUT /api/v1/modules/{moduleId}/settings</c>. A boundary contract and nothing more: no navigation
 /// property, no tracked state, no behaviour and no domain entity, in either direction.
 /// </summary>
 /// <remarks>
@@ -100,96 +100,72 @@ namespace DnnMigration.Application.Dtos.Module;
 /// validation lives with the request contracts.
 /// </para>
 /// </remarks>
-// MIGRATION: 5.1 - THE DISJOINT SCOPES ARE PRESERVED AS TWO EXPLICITLY NAMED MAPS. The legacy object model
+// MIGRATION: THE DISJOINT SCOPES ARE PRESERVED AS TWO EXPLICITLY NAMED MAPS. The legacy object model
 //   flattened the module-to-placement join into one class of fifty-eight properties, so a consumer holding
 //   a value could not tell whether it belonged to the module or to one of its placements. Two separately
-//   named maps make that recoverable, and the four-entity split of the same join expresses the same fact
-//   structurally. Both legacy readers documented the exclusion of the other store, and the legacy screen's
-//   own two captions said the same thing to end users, so this is fidelity rather than redesign.
+//   named maps make that recoverable. Both legacy readers documented the exclusion of the other store, and
+//   the legacy screen's two captions said the same thing to end users, so this is fidelity rather than
+//   redesign. The untyped hash tables those readers returned are retired with them: both maps are
+//   read-only string-to-string, so no call site casts.
 //
-// MIGRATION: 5.2 - THE UNTYPED HASH TABLE IS RETIRED. Both legacy readers returned a non-generic hash
-//   table, which boxed every key and every value as object and pushed a cast onto each call site. Both are
-//   now read-only maps of string to string: the key and value types are stated once, no cast is required,
-//   and the reflection-driven row hydrator that filled the legacy collections is gone with it.
+// MIGRATION: THE WRITE PATH REPLACES EACH SCOPE WHOLE, WHICH IS NEITHER OF THE TWO LEGACY BEHAVIOURS.
+//   The legacy documentation on both per-key writers promised that an empty value would remove the
+//   setting; neither legacy BODY did it - each updated the row if present and inserted it if absent, so
+//   removal was reachable only through four dedicated delete members. The target does a third thing:
+//   ModuleService.UpdateModuleSettingsAsync deletes every stored key the submitted map omits, updates the
+//   changed ones and inserts the new ones. Omission IS the deletion, which is why the four delete members
+//   have no counterpart on this contract; an empty value is still an empty value, so the
+//   documented-but-unimplemented legacy behaviour is not resurrected either.
 //
-// MIGRATION: 5.3 - THE WRITE PATH REPLACES EACH SCOPE WHOLE, WHICH IS NEITHER OF THE TWO LEGACY
-//   BEHAVIOURS. Three readings have to be kept apart. The legacy documentation on both per-key writers
-//   promised "empty SettingValue will remove the setting, if not preserveIfEmpty is true" (the placement
-//   writer spelling "remove" as "relove"). Neither legacy BODY did it: each read the existing row and then
-//   updated it if present or inserted it if absent, with no removal branch and no parameter of that name in
-//   either signature, so legacy removal was reachable only through four dedicated delete members. The
-//   TARGET does something different again: ModuleService.UpdateModuleSettingsAsync deletes every stored key
-//   the submitted map omits, updates the changed ones, inserts the new ones and commits once. The four
-//   delete members therefore have no counterpart on this contract - omission IS the deletion - and the
-//   divergence from the legacy per-key write is recorded here rather than absorbed. An empty value is still
-//   an empty value and not a deletion, so the legacy documented-but-unimplemented behaviour is not
-//   resurrected either.
+// MIGRATION: KEY COMPARISON IS ORDINAL HERE AND COLLATION-DEFINED IN THE STORE, AND THE ASYMMETRY IS
+//   DELIBERATE. Both legacy readers built a plain hash table with no comparer, which compares string keys
+//   ordinally, so both initialisers below name StringComparer.Ordinal explicitly rather than inheriting a
+//   default. No upgrade script assigns a collation to either setting-name column, so store-side equality
+//   and primary-key uniqueness follow the database collation - case-insensitive on a default SQL Server
+//   installation. The service reconciles submitted names case-insensitively, which is correct under either
+//   collation, so a populated instance can be more permissive on lookup than this type's own default. That
+//   is documented rather than resolved by silently changing one side.
 //
-// MIGRATION: 5.4 - THE LEGACY IN-MEMORY COLLECTION WAS CASE-SENSITIVE, AND THIS TYPE'S OWN DEFAULT SAYS SO
-//   EXPLICITLY. Both legacy readers constructed a plain hash table with NO comparer argument, which for
-//   string keys compares ordinally and case-sensitively; neither used a case-insensitive variant, and this
-//   was verified by execution rather than assumed. Both initialisers below therefore name
-//   StringComparer.Ordinal explicitly, so the guarantee is stated rather than inherited from whatever a
-//   dictionary's default happens to be. What the STORE does is a separate question and is deliberately
-//   left to the store: no upgrade script assigns a collation to either setting-name column, so equality
-//   and primary-key uniqueness there follow the database collation, which a default SQL Server
-//   installation makes case-insensitive. The service therefore reconciles submitted names
-//   case-insensitively, which is correct under either collation and means a populated instance can be more
-//   permissive on lookup than this type's own default. The asymmetry is documented rather than resolved by
-//   silently changing one side.
+// MIGRATION: A STORED SQL NULL SURFACES AS THE EMPTY STRING, NEVER AS NULL. Both legacy readers
+//   substituted an empty string for a null value column, which is this codebase's absent-string sentinel
+//   made explicit at the read site. Both value types below are therefore non-nullable string, and the
+//   mapping layer must not normalise an empty value to null nor drop the key that carries it.
 //
-// MIGRATION: 5.5 - A STORED SQL NULL SURFACES AS THE EMPTY STRING, NEVER AS NULL. Both legacy readers
-//   tested the value column for database null and substituted an empty string when it was, which is the
-//   absent-string sentinel of this codebase made explicit at the read site - that sentinel is the empty
-//   string, not null. Both value types below are therefore non-nullable string. Emitting null for such a
-//   value would be an observable change to the contract, so the mapping layer must not normalise an empty
-//   value to null nor drop the key that carries it.
+// MIGRATION: THE PLACEMENT IDENTIFIER IS THE ONLY NULLABLE MEMBER, AND -1 IS NEVER NULL. Null means no
+//   placement was addressed, so the placement-scoped map is empty while the module-scoped map remains
+//   meaningful on its own. The legacy absent-integer sentinel is -1 and the legacy predicate reported -1 as
+//   absent; here -1 is applied as an exact lookup value instead, and because TabModules.TabModuleID is
+//   seeded at 1 it normally matches nothing, so the answer is "no such placement" rather than "no
+//   placement named". Identity seeds in this schema are deliberately low and sometimes negative - the
+//   module key seeds at 0 and the placement key at 1 - so no single "first value" test is valid for both,
+//   and only null spells absence.
 //
-// MIGRATION: 5.6 - THE PLACEMENT IDENTIFIER IS THE ONLY NULLABLE MEMBER, AND -1 IS NEVER NULL. Null means
-//   no placement was addressed, so the placement-scoped map is empty while the module-scoped map remains
-//   meaningful on its own. It does NOT mean the sentinel value. The legacy absent-integer sentinel is -1
-//   and the legacy predicate reports -1 as absent, but -1 must never be read as absence here: identity
-//   seeds in this schema are deliberately low and even negative, so small and negative integers are real
-//   keys. The two identifiers below do not even share a seed - the module key seeds at 0 and the placement
-//   key seeds at 1 - so no single "first value" test is valid for both.
+// MIGRATION: BOTH VALUE COLUMNS ARE 2000 AT THE TERMINAL SCHEMA. The module-scoped column was created at
+//   256 by the baseline script, but 01.00.08.SqlDataProvider rebuilt the table through Tmp_ModuleSettings
+//   at nvarchar(2000) and renamed it over the original; no later script narrows it, and every subsequent
+//   nvarchar(256) in the chain is a stored-procedure parameter rather than a column. The placement-scoped
+//   table is created at 2000 outright. Reading only the baseline CREATE would invent an eightfold
+//   asymmetry the terminal schema does not have and would contradict ModuleSettingConfiguration. Keys are
+//   bounded at fifty in both stores. The bounds are documentation only: declarative validation belongs
+//   with the request contracts and persistence limits with the entity configurations.
 //
-// MIGRATION: 5.7 - THE VALUE LENGTH BOUNDS ARE SYMMETRIC AT THE TERMINAL SCHEMA, AND THE 256 THAT LOOKS
-//   LIKE AN ASYMMETRY IS A SUPERSEDED BASELINE. Both stores bound a key at fifty characters and both bound
-//   a value at 2000. The module-scoped column was created at 256 by the baseline script
-//   (01.00.00.SqlDataProvider line 353), but the upgrade chain rebuilt that table part way through:
-//   01.00.08.SqlDataProvider line 6252 creates Tmp_ModuleSettings with SettingValue nvarchar(2000), line
-//   6261 copies the rows across, line 6264 drops the original and line 6267 renames the temporary table
-//   over it. No later script narrows the column again - every subsequent nvarchar(256) in the chain is a
-//   stored-procedure PARAMETER, not a column - so 2000 is the terminal width. The placement-scoped table
-//   is created at 2000 outright (03.00.01.SqlDataProvider line 726). Reading only the baseline CREATE
-//   would therefore invent an eightfold asymmetry that the terminal schema does not have, and would make
-//   this contract contradict ModuleSettingConfiguration, which enforces 2000. The bounds are recorded on
-//   the members below as documentation only; no length attribute is declared, because declarative
-//   validation belongs with the request contracts and persistence limits are enforced by the entity
-//   configurations.
+// MIGRATION: CACHING IS NOT PART OF THIS CONTRACT. Both legacy readers cached their hash table against a
+//   global performance multiplier and invalidated by removing one coarse key on every write. Caching moves
+//   behind an injected cache service with the legacy key names kept as constants and invalidation made
+//   explicit, so no expiry, timestamp or cache-key member appears here: when a value was cached is a
+//   service concern and never a property of the value.
 //
-// MIGRATION: 5.8 - CACHING IS NOT PART OF THIS CONTRACT. Both legacy readers cached their hash table for a
-//   period computed as a fixed multiple of a global performance setting, and both invalidated by removing a
-//   single coarse key on every write. That global settings accessor is not ported; the multiplier becomes
-//   bound configuration and caching moves behind an injected cache service with the legacy key names kept
-//   as constants and invalidation made explicit. No expiry, timestamp or cache-key member appears here,
-//   because when a value was cached is a service concern and never a property of the value.
+// MIGRATION: THE GENERIC SHAPE IS THE EXCEPTION RATHER THAN THE RULE, recorded so that the
+//   untyped-bag-to-typed-projection transformation applied elsewhere is not applied here by analogy. It
+//   does not apply because these two stores are genuine key-value tables with open key vocabularies. A
+//   sibling contract also projects from the module-scoped store, but as a typed projection of a small
+//   KNOWN key vocabulary belonging to one module instance; the two must not be merged.
 //
-// MIGRATION: 5.9 - THE GENERIC SHAPE IS DELIBERATE AND IS THE EXCEPTION RATHER THAN THE RULE. Elsewhere in
-//   this migration an untyped bag is replaced by a typed projection, so the reasoning is recorded here to
-//   prevent that transformation being applied to this contract by analogy. It does not apply because these
-//   two stores are genuine key-value tables with open key vocabularies, whereas the portal configuration
-//   that superficially resembles them has no table at all. A sibling contract elsewhere also projects from
-//   the module-scoped store, but it does so as a typed projection of a small KNOWN key vocabulary
-//   belonging to one specific module instance; the two are not variants of each other and must not be
-//   merged.
-//
-// MIGRATION: 5.10 - DICTIONARY KEYS ARE DATA AND MUST SURVIVE SERIALISATION UNCHANGED. The legacy layer
-//   never transformed a setting name: the reader used the stored name as the hash-table key verbatim. The
-//   API edge applies one central property-naming policy to produce the wire casing of the four members
-//   below, and that policy must be confined to property names. Applied to dictionary keys it would rewrite
-//   every setting name in both maps, and because the key vocabulary is open there is no fixed list against
-//   which such a rewrite could be detected or reversed.
+// MIGRATION: DICTIONARY KEYS ARE DATA AND MUST SURVIVE SERIALISATION UNCHANGED. The legacy reader used
+//   the stored name as its hash-table key verbatim. The API edge's central property-naming policy must
+//   stay confined to property names: applied to dictionary keys it would rewrite every setting name, and
+//   because the key vocabulary is open there is no fixed list against which such a rewrite could be
+//   detected or reversed.
 public sealed class ModuleSettingsDto
 {
     /// <summary>
@@ -213,10 +189,11 @@ public sealed class ModuleSettingsDto
     /// The only nullable member on this contract. <see langword="null"/> means no placement context was
     /// supplied, in which case <see cref="TabModuleSettings"/> is empty and
     /// <see cref="ModuleSettings"/> is still meaningful on its own. <see langword="null"/> is the ONLY
-    /// representation of absence: the legacy absent-integer sentinel of -1 is a real identifier here and
-    /// must never be treated as null. Note also that this column is an identity seeded at one, unlike
-    /// <see cref="ModuleId"/> whose identity is seeded at zero, so the two identifiers do not share a
-    /// lowest legitimate value.
+    /// spelling of absence. A submitted -1 is not absence either: it is an exact lookup value, and since
+    /// <c>TabModules.TabModuleID</c> is an identity seeded at one it normally matches no placement at
+    /// all, so the request is answered as a placement that does not exist rather than as one that was
+    /// never named. That seed also differs from <see cref="ModuleId"/>, whose identity is seeded at
+    /// zero, so the two identifiers do not share a lowest legitimate value.
     /// </remarks>
     public int? TabModuleId { get; set; }
 

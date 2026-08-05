@@ -107,8 +107,8 @@
  * container as an environment variable, so the database is never addressable from
  * a browser and its location is never disclosed to one.
  *
- * MIGRATION: The legacy machineKey material — `decryptionKey="F9D1…F8D923AC"` with
- * `decryption="3DES"`, at release.config L89-93 — has NO counterpart in this client
+ * MIGRATION: The legacy machineKey material — a committed `decryptionKey` [redacted]
+ * under `decryption="3DES"`, at release.config L89-93 — has NO counterpart in this client
  * bundle by design, and the reason to state that in the DEVELOPMENT file rather
  * than only in the production one is precise: the diff of the legacy twins does
  * not list `decryptionKey` at all, which means the development twin

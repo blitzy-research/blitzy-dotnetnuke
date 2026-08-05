@@ -66,18 +66,27 @@
 // rules do the same: only the danger band takes --color-danger, and the warning band
 // takes the informational hint surface that stands in for the legacy yellow icon while
 // leaving its text in the inherited colour, exactly as `Normal` did.
-/* BLITZY [A11Y]: --color-danger measures 4.0:1 on --color-background, below the 4.5:1
-   WCAG AA minimum for normal text, and bold weight is not a mitigation below 18.66px. It
-   is implemented EXACTLY as the design token specifies rather than darkened, because
-   design-system compliance outranks the generic accessibility minimum and the value is
-   the measured legacy error colour - silently altering it here would put a second,
-   undocumented red into the system. It clears the 3:1 threshold for non-text UI, which is
-   what the border relies on. The deferral is compensated rather than ignored: the band is
-   also stated as a word by .error-banner__severity, so nothing depends on perceiving this
-   colour. Flagged for designer review; the remedy belongs in the token, not here. */
+// MIGRATION: THE TWO ROLES ARE NOW TWO TOKENS, and that is the resolution of the
+// accessibility deferral this rule used to carry. The flag here read that
+// --color-danger measures 4.0:1 on the page background - below the 4.5:1 WCAG AA
+// minimum for normal text, with bold weight no mitigation below 18.66px - that it was
+// nonetheless implemented exactly as the token specified because design-system
+// compliance outranks the generic accessibility minimum, and that "the remedy belongs
+// in the token, not here". The token layer has now supplied that remedy, so this rule
+// takes it up rather than continuing to defer:
+//   BORDER stays on --color-danger. The measured legacy error red is unchanged for
+//   this role and correct for it: 4.0:1 clears the 3:1 floor that governs a non-text
+//   UI component, which is the only thing the border ever relied on.
+//   TEXT moves to --color-danger-text, the same hue at a lower lightness, measured at
+//   7.20:1 on the page background and clear of 4.5:1 on every other surface the
+//   vocabulary can put behind it.
+// Nothing about the visual language changes - a reader sees the same red family, in
+// the same two places - and the text is now legible. The compensating cue is retained
+// rather than retired: .error-banner__severity still states the band as a word, so
+// nothing depends on perceiving the colour at all.
 .error-banner[data-severity='danger'] {
   border-color: var(--color-danger);
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 
 .error-banner[data-severity='warning'] {

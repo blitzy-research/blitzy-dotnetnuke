@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// The state submitted to <c>POST /api/v1/portals/{portalId}/modules/{moduleId}/export</c> to obtain a
+/// The state submitted to <c>POST /api/v1/modules/{moduleId}/export</c> to obtain a
 /// module's content as a portable document. A boundary contract and nothing more: no navigation
 /// property, no tracked state, no behaviour and no domain entity, in either direction.
 /// </summary>
@@ -12,9 +12,8 @@ namespace DnnMigration.Application.Dtos.Module;
 /// the path and this contract carries no module identifier at all; import is reached at
 /// <c>.../modules/import</c> with no identifier in its route, so <c>ModuleImportRequest</c> must - and
 /// does - carry one in its body. Anyone tempted to harmonise the two shapes should change neither. The
-/// planned endpoint surface names this route <c>POST /api/v1/modules/{id}/export</c>; it is realised
-/// portal-nested here because every write in this API is scoped to a tenant by its path, and that
-/// nesting is what lets the service refuse a module belonging to a different portal.
+/// endpoint is <c>POST /api/v1/modules/{id}/export</c>; the request host resolves its tenant before the
+/// service verifies that the addressed module belongs to that portal.
 /// </para>
 /// <para>
 /// TWO MEMBERS IS A MEASURED ANSWER, NOT AN ABBREVIATION. The legacy export screen was eighteen lines
@@ -80,14 +79,24 @@ namespace DnnMigration.Application.Dtos.Module;
 //   is not redefined either - only its transport changes, from a server-side file write to an HTTP
 //   response - so each module's own content format survives untouched.
 //
-// MIGRATION: 5.5 - VALIDATION WAS IMPERATIVE AND SINGULAR, SO THERE IS DELIBERATELY NO VALIDATOR TYPE
-//   FOR THIS REQUEST. The legacy markup declared no validator at all; the one rule lived in the click
-//   handler and failed with "You must specify a folder and file for export". In the target that rule is
-//   a failure reason raised by the module service, which refuses a blank file name, and NOT a class
-//   under the declarative validation folder - the planned validator set contains no entry for this
-//   request, and none has been created, referenced or implied. Note also that the folder half of the
-//   legacy guard has no direct equivalent left: it tested a LIST INDEX, and the target no longer needs
-//   a folder at all, per 5.4.
+// MIGRATION: 5.5 - VALIDATION WAS IMPERATIVE AND SINGULAR IN THE LEGACY, AND IS DECLARATIVE HERE. The
+//   legacy markup declared no validator at all; the one rule lived in the click handler and failed with
+//   "You must specify a folder and file for export". The target states it in
+//   Validation/ModuleExportRequestValidator.cs, so a caller receives a field-keyed answer naming
+//   `fileName`, and the module service keeps its own guard as well because it is reachable from callers
+//   the boundary validator does not sit in front of. Both wordings are identical, and the pair is
+//   annotated in both places.
+//
+//   AN EARLIER REVISION OF THIS NOTE ASSERTED THAT NO VALIDATOR TYPE EXISTED FOR THIS REQUEST AND THAT
+//   THE SERVICE'S REASON WAS THE WHOLE RULE, and the consequence was a published-contract defect: the
+//   export operation advertises ValidationProblemDetails for 400 - the document carrying a map of the
+//   refused members - while a blank file name produced a plain problem document with no map in it. The
+//   declaration described a response that could not occur. The validator is what makes it occur.
+//
+//   Note also that the folder half of the legacy guard has no direct equivalent left, and no rule
+//   invents one: it tested a LIST INDEX whose first entry was a non-selectable prompt, while the portal
+//   root's own entry was valued with the empty string - so a presence rule on this member would refuse
+//   the legacy's own root selection. The target no longer needs a folder at all, per 5.4.
 //
 // MIGRATION: 5.7 - THREE PRECONDITIONS GOVERN AN EXPORT AND NOT ONE OF THEM IS A REQUEST FIELD. First,
 //   the module had to be portable: the legacy code tested
@@ -142,8 +151,11 @@ public sealed class ModuleExportRequest
     /// name from four parts and the operator supplied only one of them, so a caller that treats this
     /// value as the whole name will mislabel what it receives. The 200-character bound is the maximum
     /// length of the legacy text box and NOT a column width: this request writes nothing to the module
-    /// or placement tables, so no column exists from which to derive one. It is preserved as a
-    /// documented parity bound rather than enforced by an attribute here.
+    /// or placement tables, so no column exists from which to derive one. It carries no validation
+    /// attribute here - this contract states shape and nothing else - and is enforced by
+    /// <c>Validation/ModuleExportRequestValidator.cs</c>, which is where a field-level bound belongs. An
+    /// earlier revision of this paragraph recorded the bound as "preserved as a documented parity bound"
+    /// and named no enforcement point, which left it enforced by nobody.
     /// </para>
     /// <para>
     /// The legacy layer represented "not supplied" as THE EMPTY STRING rather than as an absent value,

@@ -350,7 +350,7 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
     return;
   }
 
-  notifications.notify(severity, quoteReference(summary.message, summary.traceId, status));
+  notifications.notify(severity, quoteReference(summary.message, summary.supportReference, status));
 }
 
 // ---------------------------------------------------------------------------
@@ -420,23 +420,23 @@ function readProblem(error: HttpErrorResponse): ProblemDetails | null {
  * is quoted, even though it cannot legitimately contain markup. Every other
  * server-supplied fragment this file puts in front of an operator has passed that
  * normaliser - `summarizeProblem` applies it to each value it returns - whereas
- * `problemTraceId`, which produced this value, only trims. Normalising here is what
+ * `problemSupportReference`, which produced this value, only trims. Normalising here is what
  * makes "no server-supplied text reaches a notification unnormalised" true without
  * an exception, and an exception is what a later reader would have to rediscover.
  *
  * @param message The already-composed sentence.
- * @param traceId The identifier from the problem document, or null when absent.
+ * @param reference The support identifier from the problem document, or null when absent.
  * @param status The transport status of the failed response.
  * @returns The message, with the reference appended only when one is warranted.
  */
-function quoteReference(message: string, traceId: string | null, status: number): string {
-  if (traceId === null || isRefusal(status)) {
+function quoteReference(message: string, reference: string | null, status: number): string {
+  if (reference === null || isRefusal(status)) {
     return message;
   }
 
-  const reference = stripLegacyBreakTags(traceId);
+  const quoted = stripLegacyBreakTags(reference);
 
-  return reference.length > 0 ? `${message} ${REFERENCE_LABEL} ${reference}` : message;
+  return quoted.length > 0 ? `${message} ${REFERENCE_LABEL} ${quoted}` : message;
 }
 
 /**

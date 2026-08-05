@@ -6,35 +6,33 @@ using Microsoft.EntityFrameworkCore.Storage;
 namespace DnnMigration.Infrastructure.Persistence;
 
 /// <summary>
-/// Commits every change tracked by one <see cref="DnnDbContext"/> as a single unit.
+/// Flushes the changes tracked by one <see cref="DnnDbContext"/> and, when a workflow needs more than
+/// one flush, supplies the explicit transaction that makes them durable together.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The legacy write paths had no unit of work at all. Creating a tenant, for instance, issued
 /// separate stored procedure calls against the tenant table, the alias table, the roles table, the
 /// pages table and the modules table with no transaction spanning them, so a failure part way
-/// through left a half-built tenant behind. Because every repository in this assembly shares the
-/// scoped context that this type commits, a single call now sends all of those writes inside one
-/// transaction that the provider opens implicitly.
+/// through left a half-built tenant behind.
 /// </para>
 /// <para>
-/// EXPLICIT TRANSACTIONS ARE NOW OFFERED, AND THE REASON THEY WERE NOT IS WORTH KEEPING. This type
-/// previously exposed the commit alone, on the reasoning that the provider already wraps one save in a
-/// transaction and that exposing transaction control would invite the application layer to hold a
-/// transaction open across awaits it does not own. The first half is true and unchanged; the second
-/// half was answered in the wrong direction. Two sequences in this application cannot be expressed as
-/// one save - tenant creation, because three tenant columns need keys the store assigns during the
-/// first commit and the credential lives in an external membership store, and the last-tenant guard on
-/// deletion, because it counts and then deletes - and for those two the alternative to a transaction
-/// was an in-process compensation routine, which cannot run if the process is terminated, plus a
-/// count-then-delete race that can empty an installation. A scope that is rolled back by disposal is
-/// strictly safer than either.
+/// Two boundaries, and the distinction is load-bearing. <see cref="SaveChangesAsync"/> flushes what
+/// the shared scoped context is tracking; the provider wraps that one flush in a transaction of its
+/// own, so a single-flush operation is atomic without any further ceremony. A workflow that needs
+/// several flushes - tenant creation, because three tenant columns need keys the store assigns during
+/// the first flush and the credential lives in an external membership store, and the last-tenant guard
+/// on deletion, because it counts and then deletes - opens a scope through
+/// <see cref="BeginTransactionAsync"/> and becomes durable only at <c>ITransactionScope.CommitAsync</c>.
+/// For those workflows the alternative was an in-process compensation routine, which cannot run if the
+/// process is terminated, plus a count-then-delete race that can empty an installation; a scope that
+/// is rolled back by disposal is strictly safer than either.
 /// </para>
 /// <para>
-/// The surface stays as narrow as the reasoning allows: a commit, a disposal, and two isolation levels
-/// chosen from an enumeration declared in the Domain rather than the provider's own. No connection, no
-/// savepoint and no query surface is reachable through it, so nothing above this assembly can name the
-/// store even while holding a transaction.
+/// The surface stays as narrow as the reasoning allows: a flush, a scope, a disposal, and two isolation
+/// levels chosen from an enumeration declared in the Domain rather than the provider's own. No
+/// connection, no savepoint and no query surface is reachable through it, so nothing above this
+/// assembly can name the store even while holding a transaction.
 /// </para>
 /// </remarks>
 internal sealed class UnitOfWork : IUnitOfWork
@@ -62,29 +60,40 @@ internal sealed class UnitOfWork : IUnitOfWork
         _dbContext = dbContext;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// The provider's own answer is returned rather than a flag maintained here, so the property cannot
+    /// drift from the transaction it describes - including on a scope that was abandoned by disposal
+    /// rather than committed, which clears the provider's handle without any code here running.
+    /// </remarks>
+    public bool HasActiveTransaction => _dbContext.Database.CurrentTransaction is not null;
+
     /// <summary>
-    /// Commits every tracked change.
+    /// Flushes every change the shared context is tracking.
     /// </summary>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The number of rows affected.</returns>
     /// <exception cref="DbUpdateConcurrencyException">
-    /// Thrown when a tracked row was changed or removed by another caller. Application services
-    /// translate this into a conflict result rather than letting it escape as a server fault.
+    /// Thrown when a tracked row was changed or removed by another caller between the read and the
+    /// flush.
     /// </exception>
     /// <exception cref="DbUpdateException">
     /// Thrown when the store rejects the write, for example on a unique index violation that a
     /// pre-flight check could not exclude because of a concurrent insert.
     /// </exception>
-    // MIGRATION: this one call is now the atomic commit boundary. Legacy portal, user, role, tab, module
-    // and alias creation each issued its own stored procedure with no transaction spanning them - portal
-    // creation (Library/Components/Portal/PortalController.vb, line 980) writes the portal row, the
-    // administrator, the roles, the pages, the modules and the alias as separately durable steps, and its
-    // only recovery is an in-process compensation call that cannot run if the process is terminated - so a
-    // failure part way through left a half-built portal behind. The provider even declared transaction
-    // members (Library/Components/Providers/Data/DataProvider.vb, lines 70 to 74) that no caller invoked.
-    // Every repository in this assembly stages against the one scoped context committed here, so the whole
-    // batch now applies or none of it does. Gaining atomicity is a deliberate behavioural improvement over
-    // the legacy write paths, not an incidental effect, and is recorded as such in MIGRATION_NOTES.md.
+    // MIGRATION: legacy portal, user, role, tab, module and alias creation each issued its own stored
+    // procedure with no transaction spanning them - portal creation
+    // (Library/Components/Portal/PortalController.vb, line 980) writes the portal row, the administrator,
+    // the roles, the pages, the modules and the alias as separately durable steps, and its only recovery
+    // is an in-process compensation call that cannot run if the process is terminated. The provider even
+    // declared transaction members (Library/Components/Providers/Data/DataProvider.vb, lines 70 to 74)
+    // that no caller invoked.
+    //
+    // Every repository in this assembly stages against the one scoped context flushed here, so a single
+    // flush applies whole or not at all: the provider wraps it in its own transaction. A workflow that
+    // flushes more than once is atomic only inside a scope from BeginTransactionAsync, whose CommitAsync
+    // is the durability boundary. Gaining atomicity is a deliberate behavioural improvement over the
+    // legacy write paths and is recorded as such in MIGRATION_NOTES.md.
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>
         _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -143,6 +152,20 @@ internal sealed class UnitOfWork : IUnitOfWork
         return new TransactionScope(_dbContext, transaction);
     }
 
+    /// <inheritdoc />
+    public Task<ITransactionScope> JoinOrBeginTransactionAsync(
+        TransactionIsolation isolation = TransactionIsolation.Default,
+        CancellationToken cancellationToken = default)
+    {
+        if (_dbContext.Database.CurrentTransaction is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<ITransactionScope>(JoinedTransactionScope.Instance);
+        }
+
+        return BeginTransactionAsync(isolation, cancellationToken);
+    }
+
     /// <summary>
     /// Wraps one provider transaction as the Domain's technology-free scope.
     /// </summary>
@@ -196,5 +219,32 @@ internal sealed class UnitOfWork : IUnitOfWork
                 _dbContext.ExplicitTransactionOpen = false;
             }
         }
+    }
+
+    /// <summary>
+    /// Represents participation in a transaction owned by an outer application operation.
+    /// </summary>
+    /// <remarks>
+    /// Commit and disposal intentionally do nothing: only the scope that opened the provider transaction may
+    /// decide whether the complete operation commits. This lets a composed service retain its standalone
+    /// atomicity without creating a nested transaction or prematurely committing its caller's work.
+    /// </remarks>
+    private sealed class JoinedTransactionScope : ITransactionScope
+    {
+        internal static readonly JoinedTransactionScope Instance = new();
+
+        private JoinedTransactionScope()
+        {
+        }
+
+        /// <inheritdoc />
+        public Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

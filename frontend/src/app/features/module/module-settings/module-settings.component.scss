@@ -413,12 +413,11 @@
   min-inline-size: 0;
 }
 
-// MIGRATION: the two choice groups rendered horizontally in the legacy screen and
-// still do, but as a wrapping flex row rather than as a single non-wrapping line,
-// so four alignment choices cannot push the layout wider than the viewport. The
-// row gap is the tighter step and the column gap the looser one, which keeps the
-// options distinguishable from one another when the row wraps. The individual
-// option labels are styled by the global form layer and are not touched here.
+// MIGRATION: the surviving visibility choice group rendered horizontally in the
+// legacy screen and still does, but as a wrapping flex row rather than as a single
+// non-wrapping line. The row gap is the tighter step and the column gap the looser
+// one, which keeps the options distinguishable from one another when the row
+// wraps. The individual option labels are styled by the global form layer.
 .module-settings__choices {
   display: flex;
   flex-wrap: wrap;
@@ -504,13 +503,10 @@
 // the single base family token. No family name is written in this file; only the
 // token is referenced.
 //
-// MIGRATION: the module colour and module border entries on this screen are
-// PERSISTED DATA FIELDS, not style inputs. The legacy screen let an administrator
-// type a colour with no length limit and no validation at all, and a border width
-// limited to one digit with an integer check. Both are module properties the API
-// returns and the form edits. Neither becomes a token, and neither value is ever
-// interpolated into a declaration — doing so would break the zero-literal rule
-// and open a style-injection path through user-supplied text at the same time.
+// MIGRATION: the legacy colour, border and alignment controls are absent because
+// the update contract deliberately does not bind those server-rendering fields.
+// Keeping them in this form would present edits the API silently discarded. None
+// becomes a token or is interpolated into a declaration.
 //
 // MIGRATION: rich text editing is not carried forward. The two multi-line
 // entries are plain multi-line controls, because the legacy editor provider is

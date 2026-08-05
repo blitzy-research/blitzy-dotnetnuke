@@ -293,7 +293,7 @@ public sealed class PortalRepositoryTests
             descendingNames.Should().Equal(Enumerable.Reverse(ascendingNames));
 
             // The two tenants share a name, so their relative order is decided entirely by the identifier
-            // tie-break; asserting it here is what proves the tie-break is present in both directions.
+            // tie-break, in both directions.
             PagedResult<Portal> tied = await portals.ListAsync(0, 0, sharedName, "PortalName", descending: false);
             PagedResult<Portal> tiedReversed = await portals.ListAsync(0, 0, sharedName, "PortalName", descending: true);
 
@@ -344,7 +344,7 @@ public sealed class PortalRepositoryTests
         hostile.Items.Select(portal => portal.PortalId)
             .Should().Equal(byDefault.Items.Select(portal => portal.PortalId));
 
-        // The table is still there, which is the point of the previous assertion.
+        // The table survived, so the hostile sort field never reached the store as text.
         (await portals.ExistsAsync(_fixture.Seed.PortalId)).Should().BeTrue();
     }
 
@@ -390,14 +390,31 @@ public sealed class PortalRepositoryTests
         }
     }
 
-    /// <summary>The page count excludes pages that are in the recycle bin.</summary>
+    /// <summary>
+    /// The page count reproduces the terminal <c>GetTabCount</c>: the administration page and its direct
+    /// children are excluded, recycled pages are counted, one is subtracted, and a portal with no
+    /// administration page answers minus one.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Deletion of a page is the soft delete that backs the legacy recycle bin. A page awaiting emptying is
-    /// still a row, so counting rows would report a tenant as using quota it has released.
+    /// <para>
+    /// WHAT THIS ORACLE CHANGED AND WHY. An earlier revision asserted that the count excluded pages in the
+    /// recycle bin and included everything else - a plausible-sounding rule that agreed with the legacy
+    /// figure on no portal at all. The authority is the procedure the legacy grid actually displayed:
+    /// <c>PortalInfo.Pages</c> (<c>PortalInfo.vb</c> lines 320-325) resolved through
+    /// <c>TabController.GetTabCount(PortalID)</c>, whose terminal definition
+    /// (<c>04.04.00.SqlDataProvider</c> lines 511-527) is
+    /// <c>SELECT COUNT(*) - 1 ... WHERE PortalID = @PortalID AND TabID &lt;&gt; @AdminTabId AND (ParentId
+    /// &lt;&gt; @AdminTabId OR ParentId IS NULL)</c> - which states no soft-delete condition whatsoever.
+    /// </para>
+    /// <para>
+    /// Each stage below isolates one clause, so a regression names itself rather than merely moving a
+    /// total: the subtraction, the recycled row, the administration page, its direct child, its
+    /// grandchild, and the null-administration-page case.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task CountPagesAsync_ExcludesPagesInTheRecycleBin()
+    public async Task CountPagesAsync_ReproducesTheTerminalGetTabCount()
     {
         int portalId = await CreatePortalAsync(FormattableString.Invariant($"Page Counting Portal {Suffix()}"));
 
@@ -406,21 +423,57 @@ public sealed class PortalRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-            (await portals.CountPagesAsync(portalId)).Should().Be(0);
+            // A portal that records no administration page answers minus one, because the legacy statement
+            // compared every row against a null and then subtracted one from a count of nought. It is an
+            // arithmetic consequence, NOT the legacy Null.NullInteger sentinel.
+            (await portals.CountPagesAsync(portalId)).Should().Be(
+                -1,
+                "a null AdminTabId made every row's predicate unknown, so COUNT(*) - 1 was 0 - 1");
 
-            int liveTabId = await AddTabAsync(portalId, "Live", isDeleted: false);
+            int adminTabId = await AddTabAsync(portalId, "Admin", isDeleted: false);
+            await SetAdministrationPageAsync(portalId, adminTabId);
+
+            // One page, and it is the administration page, so it is excluded: nought counted, minus one.
+            (await portals.CountPagesAsync(portalId)).Should().Be(
+                -1,
+                "the administration page is excluded from its own portal's tally");
+
+            await AddTabAsync(portalId, "Live", isDeleted: false);
+            (await portals.CountPagesAsync(portalId)).Should().Be(
+                0,
+                "one countable page, minus the constant one the legacy expression subtracts");
+
+            await AddTabAsync(portalId, "Second", isDeleted: false);
             (await portals.CountPagesAsync(portalId)).Should().Be(1);
 
-            int binnedTabId = await AddTabAsync(portalId, "Binned", isDeleted: true);
-            (await portals.CountPagesAsync(portalId)).Should().Be(1, "a page in the recycle bin does not count against the tenant");
+            // MIGRATION: a page in the recycle bin IS counted. GetTabCount states no IsDeleted condition,
+            // so the legacy grid included it, and Rule T5 preserves that rather than improving on it.
+            await AddTabAsync(portalId, "Binned", isDeleted: true);
+            (await portals.CountPagesAsync(portalId)).Should().Be(
+                2,
+                "a recycled page still counts, because the legacy predicate never mentioned IsDeleted");
 
-            liveTabId.Should().NotBe(binnedTabId);
+            // A DIRECT child of the administration page is excluded.
+            int adminChildId = await AddChildTabAsync(portalId, "Admin Child", adminTabId);
+            (await portals.CountPagesAsync(portalId)).Should().Be(
+                2,
+                "a direct child of the administration page is excluded by the ParentId clause");
 
-            await _fixture.Database.ExecuteAsync(
-                "UPDATE [dbo].[Tabs] SET [IsDeleted] = 0 WHERE [TabID] = @tabId",
-                new Dictionary<string, object?> { ["tabId"] = binnedTabId });
+            // A GRANDCHILD is NOT excluded: the legacy predicate tests ParentId and nothing deeper. This is
+            // the clause an implementation is most likely to "improve" by walking the whole subtree.
+            await AddChildTabAsync(portalId, "Admin Grandchild", adminChildId);
+            (await portals.CountPagesAsync(portalId)).Should().Be(
+                3,
+                "only DIRECT children are excluded, so a grandchild of the administration page counts");
 
-            (await portals.CountPagesAsync(portalId)).Should().Be(2, "restoring a page returns it to the count");
+            // The page side of the same legacy question must agree exactly.
+            ITabRepository tabs = scope.ServiceProvider.GetRequiredService<ITabRepository>();
+            (await tabs.CountByPortalIdAsync(portalId)).Should().Be(
+                await portals.CountPagesAsync(portalId),
+                "TabRepository answers the same procedure and the two must not disagree");
+
+            // An identifier no portal bears answers minus one on the same terms.
+            (await portals.CountPagesAsync(UnknownPortalId)).Should().Be(-1);
         }
         finally
         {
@@ -429,7 +482,7 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// I-01: the batched tallies agree with the per-portal members, row for row, and answer for every
+    /// The batched tallies agree with the per-portal members, row for row, and answer for every
     /// identifier they were asked about.
     /// </summary>
     /// <returns>A task representing the test.</returns>
@@ -451,6 +504,13 @@ public sealed class PortalRepositoryTests
         {
             await AddMembershipAsync(populated, _fixture.Seed.AdminUserId, authorised: true);
             await AddMembershipAsync(populated, _fixture.Seed.MemberUserId, authorised: false);
+
+            // The populated tenant is given the full shape the legacy predicate discriminates on: an
+            // administration page, a direct child of it, a live page and a recycled page. Only the last two
+            // count, so COUNT(*) - 1 is one.
+            int adminTabId = await AddTabAsync(populated, "Admin", isDeleted: false);
+            await SetAdministrationPageAsync(populated, adminTabId);
+            await AddChildTabAsync(populated, "Admin Child", adminTabId);
             await AddTabAsync(populated, "Live", isDeleted: false);
             await AddTabAsync(populated, "Binned", isDeleted: true);
 
@@ -467,8 +527,18 @@ public sealed class PortalRepositoryTests
 
             users[populated].Should().Be(2, "an unauthorised member is still a member");
             users[empty].Should().Be(0, "a tenant with no members is present with a zero, not absent");
-            pages[populated].Should().Be(1, "a page in the recycle bin does not count against the tenant");
-            pages[empty].Should().Be(0);
+
+            // THE ASSERTIONS ARE AGAINST THE PROCEDURE'S OWN ARITHMETIC, not merely against the sibling
+            // member. Comparing the two members to each other alone is what let both of them drift away
+            // from GetTabCount together, so the literals come first and the agreement check follows.
+            pages[populated].Should().Be(
+                1,
+                "the administration page and its direct child are excluded, the recycled page is counted, "
+                + "and one is subtracted");
+            pages[empty].Should().Be(
+                -1,
+                "a tenant that records no administration page is present with minus one, not absent and "
+                + "not zero");
 
             foreach (int portalId in asked)
             {
@@ -488,7 +558,7 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// I-01: an empty request is answered with an empty result, and a repeated identifier collapses to one
+    /// An empty request is answered with an empty result, and a repeated identifier collapses to one
     /// entry.
     /// </summary>
     /// <returns>A task representing the test.</returns>
@@ -892,8 +962,8 @@ public sealed class PortalRepositoryTests
             (await portals.CountAsync()).Should()
                 .Be(all.Count, "the standalone tally and the materialised listing count the same table");
 
-            // The order is declared by the contract, so it is asserted rather than assumed. The identifier
-            // tie-break is what keeps the order total when two tenants share a name.
+            // The identifier tie-break is what keeps the contract's declared order total when two tenants
+            // share a name.
             all.Select(portal => portal.PortalName).Should().BeInAscendingOrder(StringComparer.OrdinalIgnoreCase);
         }
         finally
@@ -907,6 +977,16 @@ public sealed class PortalRepositoryTests
     /// The tally follows the table as tenants come and go, so it is computed rather than remembered.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The removal is part of what this fact asserts, so it stays in the body where its effect on the tally is
+    /// checked; the <c>finally</c> block is a SAFETY NET for the case where the first tally assertion fails
+    /// before the removal runs. Without it a failure here would leave an extra tenant in the installation for
+    /// the remainder of the run, and the installation-wide portal count is read by other facts - so one real
+    /// failure would be followed by unrelated ones that point at working code. The net asserts nothing, so it
+    /// can never replace the failure that brought it here, and it removes the row with a direct statement
+    /// rather than through the repository, because on that path the repository is the component under
+    /// suspicion.
+    /// </remarks>
     [Fact]
     public async Task CountAsync_TracksTheTableAsTenantsAreAddedAndRemoved()
     {
@@ -918,11 +998,18 @@ public sealed class PortalRepositoryTests
 
         int portalId = await CreatePortalAsync(FormattableString.Invariant($"Tally Portal {Suffix()}"));
 
-        (await portals.CountAsync()).Should().Be(before + 1);
+        try
+        {
+            (await portals.CountAsync()).Should().Be(before + 1);
 
-        await RemovePortalAsync(portalId);
+            await RemovePortalAsync(portalId);
 
-        (await portals.CountAsync()).Should().Be(before);
+            (await portals.CountAsync()).Should().Be(before);
+        }
+        finally
+        {
+            await EnsurePortalRemovedAsync(portalId);
+        }
     }
 
     /// <summary>
@@ -1580,6 +1667,19 @@ public sealed class PortalRepositoryTests
         return portal.PortalId;
     }
 
+    /// <summary>Ensures a tenant created by this suite is gone, whatever else happened.</summary>
+    /// <param name="portalId">The tenant to remove.</param>
+    /// <returns>A task that completes when no such row remains.</returns>
+    /// <remarks>
+    /// A direct statement rather than the repository, deliberately: this runs on the failure path, where the
+    /// repository may be the very thing that is broken, and a cleanup that depends on the component under test
+    /// cannot be relied on to clean up. The row was written bare by this suite so it has no dependents, and the
+    /// statement is unconditional so calling it after a successful removal costs nothing.
+    /// </remarks>
+    private Task EnsurePortalRemovedAsync(int portalId) => _fixture.Database.ExecuteAsync(
+        "DELETE FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+        new Dictionary<string, object?> { ["portalId"] = portalId });
+
     /// <summary>Removes a tenant created by this suite.</summary>
     /// <param name="portalId">The tenant to remove.</param>
     /// <returns>A task that completes when the tenant is gone.</returns>
@@ -1641,6 +1741,56 @@ public sealed class PortalRepositoryTests
                 ["tabName"] = tabName,
                 ["isDeleted"] = isDeleted,
             });
+    }
+
+    /// <summary>Records a page beneath a named parent page.</summary>
+    /// <param name="portalId">The tenant owning the page.</param>
+    /// <param name="tabName">The page name.</param>
+    /// <param name="parentTabId">The parent page.</param>
+    /// <returns>The identifier the store assigned.</returns>
+    /// <remarks>
+    /// The legacy page tally excludes DIRECT children of the administration page and nothing deeper, so a
+    /// parented page is required to exercise that clause and a grandchild is required to prove the clause
+    /// stops there.
+    /// </remarks>
+    private Task<int> AddChildTabAsync(int portalId, string tabName, int parentTabId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Tabs]
+                ([TabOrder], [PortalID], [TabName], [IsVisible], [ParentId], [Level], [DisableLink],
+                 [Title], [IsDeleted], [TabPath], [IsSecure])
+            VALUES (2, @portalId, @tabName, 1, @parentTabId, 1, 0, @tabName, 0, N'//' + @tabName, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = portalId,
+                ["tabName"] = tabName,
+                ["parentTabId"] = parentTabId,
+            });
+    }
+
+    /// <summary>Points a tenant's administration-page column at an existing page.</summary>
+    /// <param name="portalId">The tenant to amend.</param>
+    /// <param name="adminTabId">The page to designate.</param>
+    /// <returns>A task that completes when the column has been set.</returns>
+    /// <remarks>
+    /// Written directly rather than through the repository because the designation is a precondition of the
+    /// assertions rather than one of them, and because the tenant-creation helper deliberately leaves the
+    /// column null so the no-administration-page case is reachable.
+    /// </remarks>
+    private async Task SetAdministrationPageAsync(int portalId, int adminTabId)
+    {
+        int affected = await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Portals] SET [AdminTabId] = @adminTabId WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?>
+            {
+                ["adminTabId"] = adminTabId,
+                ["portalId"] = portalId,
+            });
+
+        affected.Should().Be(1);
     }
 
     /// <summary>Records a page belonging to the installation rather than to any tenant.</summary>

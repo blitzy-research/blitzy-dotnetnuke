@@ -57,4 +57,38 @@ public enum SecurityDiagnosticEvent
     /// not happen is part of the lock-out control.
     /// </remarks>
     MembershipRecordMissingDuringSignIn = 2,
+
+    /// <summary>
+    /// A committed business operation could not be written to the configured audit logging pipeline.
+    /// </summary>
+    /// <remarks>
+    /// The operation remains successful because failing after its transaction committed would report a
+    /// false failure to the caller and could prompt a duplicate retry. The loss is nevertheless
+    /// security-relevant and otherwise invisible, so the audit sink reports this bounded occurrence and
+    /// independently degrades the audit-pipeline health check.
+    /// </remarks>
+    AuditRecordNotWritten = 3,
+
+    /// <summary>
+    /// A legacy credential was verified during the bounded compatibility window, but its immediate BCrypt
+    /// replacement could not be stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The accepted sign-in proceeds because the submitted credential was correct and a transient
+    /// persistence fault must not create a new authentication failure. The occurrence is nevertheless
+    /// distinct from a work-factor upgrade failure: after the absolute migration deadline, the account
+    /// requires administrative reset unless a later successful sign-in completes the replacement.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THIS MEMBER AND <see cref="AuditRecordNotWritten"/> WERE BOTH INTRODUCED AS ORDINAL 3
+    /// AND BOTH ARE KEPT. They describe unrelated losses - an audit write that never reached the pipeline
+    /// and a credential replacement that never reached the store - and the second is the one an operator
+    /// acts on before the migration deadline, so folding either into the other would remove the only
+    /// signal that distinguishes them. This member takes the next free ordinal; the ordinal is an
+    /// internal diagnostic discriminator that never crosses the API boundary, so renumbering it changes
+    /// no contract.
+    /// </para>
+    /// </remarks>
+    LegacyCredentialMigrationFailed = 4,
 }

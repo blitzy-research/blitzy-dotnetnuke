@@ -1,0 +1,142 @@
+# =============================================================================
+# TLS termination for the DnnMigration SPA container - MOUNTED, NOT BAKED.
+#
+# docker/nginx.conf ends its http block with
+#
+#     include /etc/nginx/tls.d/*.conf;
+#
+# so this file becomes live the moment it is mounted there. A wildcard include
+# that matches nothing is not an error in nginx, which is what lets the shipped
+# image start with no certificate present and still satisfy the plain-HTTP
+# probe in AAP 0.9.4 gate 7 - and lets the SAME image serve HTTPS as soon as a
+# deployment supplies the two files below. Nothing here is compiled into the
+# image, and NO certificate, key or passphrase is committed to this repository.
+#
+# WHY THIS IS A SEPARATE FILE RATHER THAN A SERVER BLOCK IN nginx.conf. A
+# "listen 443 ssl" directive naming a certificate that is not present makes
+# nginx fail to START, not fail to serve - so the container would never become
+# healthy, docker-compose.yml's "condition: service_healthy" would never be
+# satisfied, and the end-to-end gate would fail on an image that is otherwise
+# correct. Splitting the TLS server out means the certificate's presence, and
+# nothing else, decides whether TLS is served.
+#
+# TO USE IT
+#
+#   1. Obtain a certificate and private key for the host name the browser will
+#      address. Any ACME client or internal certificate authority will do; a
+#      self-signed pair is acceptable for a private environment only, and a
+#      browser will warn about it.
+#
+#   2. Add both files and this snippet to the frontend service, and publish the
+#      TLS port. In docker-compose.yml:
+#
+#        frontend:
+#          ports:
+#            - "4200:80"        # kept: AAP 0.9.4 gate 7 probes this
+#            - "4443:443"       # the TLS listener declared below
+#          volumes:
+#            - ./nginx.tls.conf.example:/etc/nginx/tls.d/tls.conf:ro
+#            - /path/to/fullchain.pem:/etc/nginx/tls/fullchain.pem:ro
+#            - /path/to/privkey.pem:/etc/nginx/tls/privkey.pem:ro
+#
+#   3. Tell the API to trust this hop, so that a request arriving here over TLS
+#      is recognised as secure upstream instead of being redirected. In the api
+#      service's environment:
+#
+#        Proxy__KnownNetworks__0: 172.16.0.0/12     # the compose bridge network
+#
+#      The API refuses cleartext by default outside development
+#      (Api/Extensions/ApplicationBuilderExtensions.cs), and honours the
+#      X-Forwarded-Proto this proxy already sends once the hop is named. Until
+#      the hop is named the API cannot distinguish a proxied HTTPS request from a
+#      cleartext one, which is why the shipped compose file sets
+#      Https__RedirectEnabled=false for its plain-HTTP demonstration topology and
+#      a TLS deployment removes that line.
+#
+#   4. If the published TLS port is not 443, tell the API which port its own
+#      redirects should name, because that port is the one a browser reaches:
+#
+#        Https__Port: "4443"
+#
+#   5. Point the browser at https://<host>:4443/. The security headers, the SPA
+#      fallback and the /api/ proxy are all inherited from the http block in
+#      nginx.conf, so nothing is restated here: strict transport security starts
+#      being emitted automatically, because its value is mapped from $scheme.
+#
+# WHAT THIS FILE DELIBERATELY DOES NOT DO
+#
+#   - It does not redirect port 80 to 443. The plain-HTTP listener in nginx.conf
+#     is probed by gate 7 with "curl -f http://localhost:4200", and a deployment
+#     that wants the redirect adds the two lines shown at the end of this file
+#     to its own copy, having accepted that the gate then measures a redirect
+#     rather than the document.
+#   - It pins no cipher list beyond the protocol floor. nginx:alpine's defaults
+#     track the OpenSSL version in the image, and freezing a list here would age
+#     into a weaker one than the image would otherwise negotiate.
+# =============================================================================
+
+server {
+    listen              443 ssl;
+    listen              [::]:443 ssl;
+    http2               on;
+    server_name         _;
+
+    ssl_certificate     /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+
+    # TLS 1.2 is the floor because 1.0 and 1.1 are deprecated and no supported
+    # browser needs them; 1.3 is preferred automatically when both ends offer it.
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1h;
+    ssl_session_tickets off;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    # The three locations are copies of the plain-HTTP server's, because a server
+    # block inherits from http but not from a sibling server. Keeping them
+    # identical is what makes the TLS listener serve the same application; the
+    # security headers themselves are inherited from the http block, so they are
+    # not restated.
+    location /api/ {
+        proxy_pass         http://api:8080/api/;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+        expires    1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy $content_security_policy always;
+        add_header Strict-Transport-Security $hsts_policy always;
+        access_log off;
+    }
+
+    location / {
+        try_files  $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy $content_security_policy always;
+        add_header Strict-Transport-Security $hsts_policy always;
+    }
+}
+
+# To redirect plain HTTP to TLS as well, replace the plain-HTTP server's
+# "location /" in docker/nginx.conf with the two lines below - and note that
+# gate 7's "curl -f http://localhost:4200" will then observe a 301 rather than
+# the document:
+#
+#     return 301 https://$host$request_uri;

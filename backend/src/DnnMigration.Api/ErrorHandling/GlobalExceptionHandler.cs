@@ -46,9 +46,10 @@ namespace DnnMigration.Api.ErrorHandling;
 /// framework-native <c>traceId</c> extension - identical to the vocabulary of every
 /// validation response without restating any of the logic that produces it. The
 /// <c>errors</c> object is absent because an unhandled exception carries no per-field
-/// failures. The correlation identifier is likewise absent from the body and travels in its
-/// own response header, matching the single source of truth that factory already
-/// establishes. No serialiser options are declared here, so no legacy sentinel - the empty
+/// failures. The correlation identifier IS present in the body, as the factory's
+/// <c>correlationId</c> extension, and it is the same value this type writes to the response
+/// header - a caller quoting the reference from either place quotes the identifier the log
+/// entry below is tagged with. No serialiser options are declared here, so no legacy sentinel - the empty
 /// string for absent text, minus one or zero for an absent or a genuine identifier - can be
 /// rewritten or omitted on this path.
 /// </para>
@@ -158,6 +159,34 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// outside, endpoint selection.
     /// </summary>
     private const string UnmatchedRouteTemplate = "(no matched endpoint)";
+
+    /// <summary>
+    /// Key under which this type publishes the status code it answered a failed request with,
+    /// so a stage that unwound before the outcome was known can still record it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This handler runs OUTSIDE <c>RequestLoggingMiddleware</c>, which means a failure has
+    /// already passed through that stage by the time the status code is chosen here. The value
+    /// published under this key is the outcome that stage could not have known, and it is
+    /// authoritative for the request: it is the status this type assigned to the response, not
+    /// an inference from it.
+    /// </para>
+    /// <para>
+    /// It is published only where an outcome is actually chosen. Nothing is published when the
+    /// caller has gone away, because no response was written and there is no outcome to report,
+    /// and nothing is published when the response had already started, because the status line
+    /// the caller received was decided elsewhere and is already on the response for any reader
+    /// to see. A consumer must therefore treat an absent value as normal and fall back to the
+    /// status code on the response.
+    /// </para>
+    /// <para>
+    /// The prefix matches <see cref="CorrelationIdMiddleware.ItemKey"/> so that everything this
+    /// application publishes on the request's item dictionary is recognisable as its own and
+    /// cannot collide with a framework or library key.
+    /// </para>
+    /// </remarks>
+    internal const string AnsweredStatusItemKey = "DnnMigration.AnsweredStatusCode";
 
     /// <summary>
     /// Greatest number of links of an inner-exception chain that are described.
@@ -373,6 +402,14 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         // copy for the reader's benefit and does not set the status line.
         httpContext.Response.StatusCode = statusCode;
 
+        // Published for the request-logging stage, which unwound before this decision was made
+        // and would otherwise record the status the response carried BEFORE the failure - which
+        // for a fault raised inside a controller action is 200, for a request answered 500.
+        // The item dictionary is the only channel available: that stage is inside this handler,
+        // so it cannot be told by a return value, and it must not re-derive the status by
+        // repeating the translation performed here.
+        httpContext.Items[AnsweredStatusItemKey] = statusCode;
+
         // The dedicated pipeline stage normally supplies this header from a response-starting
         // callback, and assigning the same value through the indexer is idempotent. It is
         // assigned here anyway so that a failure raised before that callback was registered
@@ -561,8 +598,14 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// back to the path, because falling back to the path would reintroduce exactly the value
     /// this method exists to keep out of the log.
     /// </para>
+    /// <para>
+    /// Visible to the assembly rather than private because <c>RequestLoggingMiddleware</c>
+    /// describes the same request for the same reason, and two implementations of one
+    /// disclosure policy drift: the moment they disagree, the request log admits the value the
+    /// exception log refuses. One method, called from both, cannot.
+    /// </para>
     /// </remarks>
-    private static string DescribeRouteTemplate(HttpContext httpContext)
+    internal static string DescribeRouteTemplate(HttpContext httpContext)
     {
         string? template = (httpContext.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText;
 
@@ -607,8 +650,16 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// its first inner failure; enumerating every branch would let one exception produce an
     /// unbounded entry, and the first branch is what identifies the defect in practice.
     /// </para>
+    /// <para>
+    /// Visible to the assembly rather than private because <c>RequestLoggingMiddleware</c> has
+    /// the same failure to record and must record it under the same allowlist. Handing the
+    /// exception object to a logger there instead - which is what a request log conventionally
+    /// does - would publish through the provider's own renderer every message this method
+    /// exists to drop, and would do so from the highest-volume, longest-retained log the
+    /// application writes. The policy is therefore implemented once and shared, not restated.
+    /// </para>
     /// </remarks>
-    private static string DescribeForDiagnostics(Exception exception)
+    internal static string DescribeForDiagnostics(Exception exception)
     {
         StringBuilder description = new();
         Exception? current = exception;

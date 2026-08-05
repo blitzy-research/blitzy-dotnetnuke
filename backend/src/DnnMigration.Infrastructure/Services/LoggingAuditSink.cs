@@ -14,7 +14,11 @@
 // populated by the excluded logging provider from ambient machine state, and both are supplied by the
 // hosting environment now - the container name, the environment name - rather than by the record.
 
+using System.Collections;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Domain.Abstractions.Services;
+using DnnMigration.Domain.Enums;
+using DnnMigration.Infrastructure.HealthChecks;
 using Microsoft.Extensions.Logging;
 
 namespace DnnMigration.Infrastructure.Services;
@@ -24,16 +28,21 @@ namespace DnnMigration.Infrastructure.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Stateless and therefore registered as a singleton. It holds a logger and nothing else: no buffer, no
-/// queue and no per-request field, so there is nothing for two concurrent requests to contend over.
+/// Registered as a singleton and holding no per-request state. The logger and diagnostics route are
+/// singleton framework services, and the shared health collaborator contains only an atomic saturating
+/// counter, so concurrent requests neither share mutable event data nor contend on a queue.
 /// </para>
 /// <para>
-/// Every audit record is written at information level, including the refusals. A refusal is a normal,
-/// expected outcome of an authentication endpoint - it is not a warning about the server's health - and
-/// promoting it would make a brute-force attempt indistinguishable from a misconfiguration in an
-/// operator's alerting. The one exception is <see cref="AuditOutcome.Failed"/>, which by definition
-/// describes something that should have worked and is the reason the level is chosen per record rather
-/// than fixed.
+/// Completed operations are informational; denied and failed operations are warnings. Denials are raised
+/// because a run of refused sign-ins or privilege checks is an operator-visible security signal, while a
+/// completed administrative change is ordinary business activity.
+/// </para>
+/// <para>
+/// The sink is also the privacy enforcement boundary. It writes stable numeric identifiers, a closed set of
+/// bounded metadata keys and no raw account name, person name, electronic-mail address, tenant alias,
+/// filename, path or free-text description. Unknown keys are discarded; invalid values become one fixed
+/// scalar. This protects every configured logging provider rather than relying on each producer to remain
+/// careful forever.
 /// </para>
 /// </remarks>
 internal sealed class LoggingAuditSink : IAuditSink
@@ -44,27 +53,78 @@ internal sealed class LoggingAuditSink : IAuditSink
     /// <remarks>
     /// One template for every event, so that a structured sink groups the whole trail under one event
     /// identifier and an operator filters it by the <c>AuditEvent</c> property rather than by text. The
-    /// placeholder order matches the argument order of the logging call below exactly; Microsoft's
-    /// logging abstraction binds these POSITIONALLY, not by name, so reordering one without the other
-    /// would silently mislabel every property.
+    /// The custom state carries a matching <c>{OriginalFormat}</c> entry, so logging providers preserve this
+    /// one template while receiving each value as an independently queryable scalar.
     /// </remarks>
     private const string MessageTemplate =
         "Audit {AuditEvent} {AuditOutcome} portal={AuditPortalId} actor={AuditActorUserId} "
-        + "actorName={AuditActorUserName} subject={AuditSubjectUserId} "
-        + "resource={AuditResourceType}/{AuditResourceId} failure={AuditFailureCode} "
-        + "detail={AuditProperties}";
+        + "subject={AuditSubjectUserId} resource={AuditResourceType}/{AuditResourceId} "
+        + "failure={AuditFailureCode} details={AuditPropertyCount} "
+        + "withheld={AuditPropertyWithheldCount}";
+
+    /// <summary>The maximum number of allowlisted metadata values one record may add.</summary>
+    private const int MaximumMetadataCount = 16;
+
+    /// <summary>The maximum length of one metadata value.</summary>
+    private const int MaximumMetadataValueLength = 128;
+
+    /// <summary>The fixed substitute for a value that is not safe to write.</summary>
+    private const string RejectedMetadataValue = "rejected";
+
+    /// <summary>
+    /// Maps the only producer keys the logging pipeline accepts to their structured property names.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: THIS ALLOWLIST IS A CROSS-CUTTING COUPLING AND HAS TO BE EXTENDED WHENEVER A SERVICE
+    /// RECORDS A NEW PROPERTY. A key that is absent here is WITHHELD - counted, not written - which is the
+    /// correct default for caller-shaped text and a silent loss for a property a service deliberately added.
+    /// Five keys were added for exactly that reason after two revisions were combined: the portal-
+    /// installation record gained the administrator's numeric key and presence-only flags for its two
+    /// free-text members (AdministratorId, DescriptionSupplied, KeywordsSupplied), and the credential
+    /// migration record and its failure detail were added (PreviousFormat, ReplacementKind). Each is a
+    /// numeric identifier, a closed enumeration member, or a boolean - none is caller-shaped prose, which is
+    /// why the tenant NAME and ALIAS that the same revision recorded are deliberately still absent - and
+    /// every value still passes the bounded, control-character-rejecting check below before it is written.
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, string> AllowedMetadata = BuildAllowedMetadata();
+
+    /// <summary>
+    /// Stands in for a control character in a rendered property, so that no value can forge a line
+    /// break, repaint a terminal, or otherwise alter the structure of the record that contains it.
+    /// </summary>
+    /// <remarks>
+    /// A single printable character, chosen so that the substitution is visible to a reader rather than
+    /// silent: a record showing an unexpected placeholder invites the question, whereas a record with the
+    /// character removed looks like ordinary text and hides that anything was altered.
+    /// </remarks>
+    private const char ControlCharacterReplacement = '\uFFFD';
 
     /// <summary>The logger every record is written through.</summary>
     private readonly ILogger<LoggingAuditSink> _logger;
 
+    /// <summary>The bounded secondary channel used when the primary logger faults.</summary>
+    private readonly ISecurityDiagnostics _diagnostics;
+
+    /// <summary>The process-local health signal recording every failed primary delivery.</summary>
+    private readonly AuditPipelineHealth _health;
+
     /// <summary>Initialises a new instance of the <see cref="LoggingAuditSink"/> class.</summary>
     /// <param name="logger">The logger records are written through.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="logger"/> is <see langword="null"/>.</exception>
-    public LoggingAuditSink(ILogger<LoggingAuditSink> logger)
+    /// <param name="diagnostics">The bounded fallback signal used when the logger faults.</param>
+    /// <param name="health">The process-local failed-delivery counter surfaced by the health endpoint.</param>
+    /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
+    public LoggingAuditSink(
+        ILogger<LoggingAuditSink> logger,
+        ISecurityDiagnostics diagnostics,
+        AuditPipelineHealth health)
     {
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        ArgumentNullException.ThrowIfNull(health);
 
         _logger = logger;
+        _diagnostics = diagnostics;
+        _health = health;
     }
 
     /// <inheritdoc />
@@ -72,14 +132,16 @@ internal sealed class LoggingAuditSink : IAuditSink
     /// <para>
     /// Honours the contract's absolute guarantee that recording never throws. Three things could
     /// plausibly throw here and all three are contained: a null event, which is discarded; a logger or
-    /// sink that faults, which is swallowed; and the property rendering, which is performed inside the
-    /// same guarded region rather than before it.
+    /// sink that faults; and projection of a caller-supplied property dictionary, which is performed inside
+    /// the same guarded region rather than before it.
     /// </para>
     /// <para>
     /// Cancellation is deliberately NOT re-thrown from the catch, unlike every other guarded region in
     /// this solution. Nothing here is cancellable - no token is accepted and no awaitable is created -
     /// so an <see cref="OperationCanceledException"/> reaching this handler could only come from a
-    /// misbehaving sink, and letting it escape would fault an operation that had already completed.
+    /// misbehaving sink, and letting it escape would fault an operation that had already completed. A
+    /// contained failure increments the audit-pipeline health counter first, then attempts the closed
+    /// security-diagnostic fallback; failure of that fallback is contained independently.
     /// </para>
     /// </remarks>
     public void Record(AuditEvent auditEvent)
@@ -102,31 +164,22 @@ internal sealed class LoggingAuditSink : IAuditSink
 
             if (!_logger.IsEnabled(level))
             {
+                ReportFailure(auditEvent, "LogLevelDisabled", failure: null);
                 return;
             }
 
+            AuditLogState state = BuildState(auditEvent);
+
             _logger.Log(
                 level,
-                EventIdFor(auditEvent.EventName),
-                MessageTemplate,
-                auditEvent.EventName,
-                auditEvent.Outcome,
-                auditEvent.PortalId,
-                auditEvent.ActorUserId,
-                auditEvent.ActorUserName,
-                auditEvent.SubjectUserId,
-                auditEvent.ResourceType,
-                auditEvent.ResourceId,
-                auditEvent.FailureCode,
-                RenderProperties(auditEvent));
+                EventIdFor(state.EventName),
+                state,
+                exception: null,
+                static (logState, _) => logState.ToString());
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            // Contained deliberately, and this handler is empty by design rather than by omission. The
-            // contract states that recording must never throw for any reason: the caller has already
-            // committed the operation being described, so escalating a logging fault would destroy a
-            // successful request in order to complain about the note taken of it. There is nowhere to
-            // report the loss either - the only channel available is the one that just failed.
+            ReportFailure(auditEvent, exception.GetType().Name, exception);
         }
     }
 
@@ -163,7 +216,8 @@ internal sealed class LoggingAuditSink : IAuditSink
             or AuditEventNames.LoginUserLockedOut
             or AuditEventNames.LoginUserNotApproved => new EventId(1001, "SignInOutcome"),
 
-        AuditEventNames.PortalCreated => new EventId(1002, "PortalInstalled"),
+        AuditEventNames.PortalCreated
+            or AuditEventNames.HostAlert => new EventId(1002, "PortalInstalled"),
 
         AuditEventNames.SessionRenewed
             or AuditEventNames.SessionRefused
@@ -173,36 +227,236 @@ internal sealed class LoggingAuditSink : IAuditSink
     };
 
     /// <summary>
-    /// Renders an event's descriptive properties as one short, stable string.
+    /// Projects an application event onto the fixed structured logging contract.
     /// </summary>
-    /// <param name="auditEvent">The event whose properties are being rendered.</param>
-    /// <returns>
-    /// A <c>key=value</c> list joined by <c>"; "</c>, or <see langword="null"/> when the event carries no
-    /// properties, so an absent detail reads as absent rather than as an empty string.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// Rendered rather than passed through as a dictionary because the destructuring behaviour of a
-    /// collection property differs between logging sinks: one writes a structured map, another calls
-    /// <c>ToString</c> and records the type name. A deterministic string reads the same through every
-    /// sink, which matters more for an audit trail than nesting does.
-    /// </para>
-    /// <para>
-    /// Keys are emitted in the order the caller supplied them, so a record written twice for the same
-    /// operation renders identically and can be compared textually. A null value is rendered as the empty
-    /// string after its separator, which distinguishes "the key was recorded with no value" from "the key
-    /// was not recorded".
-    /// </para>
-    /// </remarks>
-    private static string? RenderProperties(AuditEvent auditEvent)
+    /// <param name="auditEvent">The event to project.</param>
+    /// <returns>A bounded state object carrying only allowlisted properties.</returns>
+    private static AuditLogState BuildState(AuditEvent auditEvent)
     {
-        if (auditEvent.Properties.Count == 0)
+        string eventName = SanitiseCode(auditEvent.EventName, "UNRECOGNISED_AUDIT_EVENT")!;
+        string? resourceType = SanitiseCode(auditEvent.ResourceType, null);
+        string? resourceId = SanitiseCode(auditEvent.ResourceId, null);
+        string? failureCode = SanitiseCode(auditEvent.FailureCode, RejectedMetadataValue);
+
+        List<KeyValuePair<string, object?>> properties =
+        [
+            new("AuditEvent", eventName),
+            new("AuditOutcome", auditEvent.Outcome),
+            new("AuditPortalId", auditEvent.PortalId),
+            new("AuditActorUserId", auditEvent.ActorUserId),
+            new("AuditSubjectUserId", auditEvent.SubjectUserId),
+            new("AuditResourceType", resourceType),
+            new("AuditResourceId", resourceId),
+            new("AuditFailureCode", failureCode),
+        ];
+
+        int acceptedMetadata = 0;
+        foreach (KeyValuePair<string, string?> property in auditEvent.Properties)
+        {
+            if (acceptedMetadata >= MaximumMetadataCount)
+            {
+                break;
+            }
+
+            if (!AllowedMetadata.TryGetValue(property.Key, out string? outputName))
+            {
+                continue;
+            }
+
+            properties.Add(new KeyValuePair<string, object?>(
+                outputName,
+                SanitiseMetadataValue(property.Value)));
+            acceptedMetadata++;
+        }
+
+        // ADMITTED AND WITHHELD ARE BOTH COUNTED, and the withheld count is the point. A caller that
+        // supplies a fact this sink will not carry - one outside the allowlist, or one whose value failed a
+        // bound - would otherwise see its fact vanish with no trace that it was ever offered. Counting both
+        // makes the omission visible in the same entry, so an operator can tell "this event carries no
+        // metadata" apart from "this event offered metadata that was refused" without reading the source.
+        int withheldMetadata = auditEvent.Properties.Count - acceptedMetadata;
+
+        properties.Add(new KeyValuePair<string, object?>("AuditPropertyCount", acceptedMetadata));
+        properties.Add(new KeyValuePair<string, object?>("AuditPropertyWithheldCount", withheldMetadata));
+        properties.Add(new KeyValuePair<string, object?>("{OriginalFormat}", MessageTemplate));
+
+        string message = FormattableString.Invariant(
+            $"Audit {eventName} {auditEvent.Outcome} portal={auditEvent.PortalId} actor={auditEvent.ActorUserId} subject={auditEvent.SubjectUserId} resource={resourceType}/{resourceId} failure={failureCode} details={acceptedMetadata} withheld={withheldMetadata}");
+
+        return new AuditLogState(eventName, message, properties);
+    }
+
+    /// <summary>Builds the closed metadata-key vocabulary accepted from producers.</summary>
+    private static IReadOnlyDictionary<string, string> BuildAllowedMetadata()
+    {
+        string[] keys =
+        [
+            "AccountRemoved",
+            "AdministratorId",
+            "Advisory",
+            "AffectedTabCount",
+            "AliasesReleased",
+            "ApplyToAllModules",
+            "Approved",
+            "AutoAssignment",
+            "BusinessControllerRegistered",
+            "DescriptionSupplied",
+            "DiagnosticType",
+            "EffectiveDate",
+            "EffectCount",
+            "Expired",
+            "ExpiryDate",
+            "IsChildPortal",
+            "IsDeleted",
+            "IsVisible",
+            "KeywordsSupplied",
+            "LineNumber",
+            "LinePosition",
+            "MustChangePassword",
+            "MustUpdateProfile",
+            "Operation",
+            "ParentId",
+            "PayloadLength",
+            "PlacementCount",
+            "PreviousFormat",
+            "PreviousParentId",
+            "Renewed",
+            "ReplacementKind",
+            "SetAsDefaultSettings",
+            "TabId",
+            "TabModuleId",
+            "Version",
+        ];
+
+        return keys.ToDictionary(
+            key => key,
+            key => "AuditMetadata_" + key,
+            StringComparer.Ordinal);
+    }
+
+    /// <summary>Reduces a metadata value to a bounded, single-field scalar.</summary>
+    private static string? SanitiseMetadataValue(string? value)
+    {
+        if (value is null)
         {
             return null;
         }
 
-        return string.Join(
-            "; ",
-            auditEvent.Properties.Select(property => $"{property.Key}={property.Value}"));
+        if (value.Length > MaximumMetadataValueLength)
+        {
+            return RejectedMetadataValue;
+        }
+
+        foreach (char character in value)
+        {
+            if (char.IsControl(character)
+                || character is ';' or '=' or '\u2028' or '\u2029')
+            {
+                return RejectedMetadataValue;
+            }
+        }
+
+        return value;
+    }
+
+    /// <summary>Reduces an envelope value to a short machine-readable code.</summary>
+    private static string? SanitiseCode(string? value, string? rejectedValue)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return rejectedValue;
+        }
+
+        if (value.Length > 64)
+        {
+            return rejectedValue;
+        }
+
+        foreach (char character in value)
+        {
+            bool permitted = character is >= 'a' and <= 'z'
+                or >= 'A' and <= 'Z'
+                or >= '0' and <= '9'
+                or '.' or '_' or '-' or ':';
+
+            if (!permitted)
+            {
+                return rejectedValue;
+            }
+        }
+
+        return value;
+    }
+
+    /// <summary>Records a failed primary delivery without letting either fallback escape.</summary>
+    private void ReportFailure(AuditEvent auditEvent, string reasonCode, Exception? failure)
+    {
+        _health.RecordFailure();
+
+        // Two channels, deliberately, because they answer different questions and fail independently. The
+        // health signal above is what an orchestrator reads, and the security diagnostic below is what an
+        // operator queries; this counter is neither - it is an out-of-band event source that survives the
+        // logging pipeline being the very thing that failed, and it is the only channel that can be trusted
+        // when the primary logger is the fault. It cannot throw back into this path.
+        try
+        {
+            AuditSinkDiagnostics.Instance.ReportLoss(auditEvent.EventName, failure);
+        }
+        catch (Exception)
+        {
+            // A diagnostic channel must never turn a recorded operation into a failed one.
+        }
+
+        try
+        {
+            _diagnostics.Record(
+                SecurityDiagnosticEvent.AuditRecordNotWritten,
+                auditEvent.PortalId,
+                auditEvent.ActorUserId,
+                reasonCode);
+        }
+        catch (Exception)
+        {
+            // The diagnostics contract already requires containment. This second guard defends the audit
+            // contract even from a non-conforming replacement supplied by a host or a test.
+        }
+    }
+
+    /// <summary>
+    /// A logging state whose key/value enumeration becomes structured sink properties.
+    /// </summary>
+    private sealed class AuditLogState : IReadOnlyList<KeyValuePair<string, object?>>
+    {
+        private readonly string _message;
+        private readonly IReadOnlyList<KeyValuePair<string, object?>> _properties;
+
+        /// <summary>Initialises one immutable logging state.</summary>
+        public AuditLogState(
+            string eventName,
+            string message,
+            IReadOnlyList<KeyValuePair<string, object?>> properties)
+        {
+            EventName = eventName;
+            _message = message;
+            _properties = properties;
+        }
+
+        /// <summary>Gets the sanitised event name used for family selection.</summary>
+        public string EventName { get; }
+
+        /// <inheritdoc />
+        public int Count => _properties.Count;
+
+        /// <inheritdoc />
+        public KeyValuePair<string, object?> this[int index] => _properties[index];
+
+        /// <inheritdoc />
+        public IEnumerator<KeyValuePair<string, object?>> GetEnumerator() => _properties.GetEnumerator();
+
+        /// <inheritdoc />
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        /// <inheritdoc />
+        public override string ToString() => _message;
     }
 }

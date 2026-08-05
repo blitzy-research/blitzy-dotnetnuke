@@ -284,7 +284,9 @@ public sealed class RoleService : IRoleService
     /// The account a membership change was made against, or <see langword="null"/> for a change that
     /// names no account.
     /// </param>
-    /// <param name="properties">Short, non-sensitive descriptive facts, or <see langword="null"/> for none.</param>
+    /// <param name="properties">
+    /// Short, non-sensitive machine-readable facts, or <see langword="null"/> for none.
+    /// </param>
     /// <remarks>
     /// Called only after the change has been committed, so no record can describe a write that was later
     /// abandoned. The acting account is read from the credential, never from a request.
@@ -301,7 +303,6 @@ public sealed class RoleService : IRoleService
         {
             PortalId = portalId,
             ActorUserId = _currentUser.UserId,
-            ActorUserName = _currentUser.UserName,
             SubjectUserId = subjectUserId,
             ResourceType = resourceType,
             ResourceId = resourceId.ToString(CultureInfo.InvariantCulture),
@@ -584,7 +585,6 @@ public sealed class RoleService : IRoleService
             stored.RoleId,
             properties: new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["RoleName"] = stored.RoleName,
                 ["AutoAssignment"] = request.AutoAssignment.ToString(CultureInfo.InvariantCulture),
             });
 
@@ -685,11 +685,7 @@ public sealed class RoleService : IRoleService
             AuditEventNames.RoleUpdated,
             portalId,
             RoleResourceType,
-            role.RoleId,
-            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
-            {
-                ["RoleName"] = role.RoleName,
-            });
+            role.RoleId);
 
         RoleDetailDto detail = RoleMappings.ToDetail(role);
         return Result<RoleDetailDto>.Success(detail);
@@ -718,8 +714,6 @@ public sealed class RoleService : IRoleService
         // rather than a role-scoped assignment read this contract deliberately does not expose. The
         // permission rows are NOT swept: FK_ModulePermission_Roles_RoleID and
         // FK_TabPermission_Roles_RoleID carry no cascade and are configured NoAction, exactly as before.
-        string removedRoleName = role.RoleName;
-
         await _roles.DeleteAsync(roleId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -734,11 +728,7 @@ public sealed class RoleService : IRoleService
             AuditEventNames.RoleDeleted,
             portalId,
             RoleResourceType,
-            roleId,
-            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
-            {
-                ["RoleName"] = removedRoleName,
-            });
+            roleId);
 
         return Result.Success();
     }
@@ -952,7 +942,6 @@ public sealed class RoleService : IRoleService
             subjectUserId: request.UserId,
             properties: new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["RoleName"] = role.RoleName,
                 ["Renewed"] = (existing is not null).ToString(CultureInfo.InvariantCulture),
                 ["EffectiveDate"] = effectiveDate?.ToString("O", CultureInfo.InvariantCulture),
                 ["ExpiryDate"] = expiryDate?.ToString("O", CultureInfo.InvariantCulture),
@@ -1063,7 +1052,6 @@ public sealed class RoleService : IRoleService
             subjectUserId: userId,
             properties: new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["RoleName"] = role.RoleName,
                 ["Expired"] = expireInsteadOfDelete.ToString(CultureInfo.InvariantCulture),
             });
 
@@ -1402,10 +1390,14 @@ public sealed class RoleService : IRoleService
     /// caller that copied the marker out of a legacy object may have a time component attached to it,
     /// so an exact-equality test would let such a value through.
     /// <para>
-    /// The Infrastructure write path applies the same rule again, deliberately, and the duplication is
-    /// not an oversight: this one exists so a submitted marker is INTERPRETED as absence by the layer
-    /// that derives the stored dates from the role's terms, while that one exists so no bound reaches
-    /// the store as a value the <c>datetime</c> columns cannot hold, whatever path produced it.
+    /// THIS IS THE ONLY PLACE THE RULE LIVES. An earlier revision applied it in the Infrastructure write
+    /// path as well, on the reasoning that a bound should not reach the store as a value the
+    /// <c>datetime</c> columns cannot hold whatever path produced it. That is one rule with two
+    /// implementations in two layers: they agree until one is amended, and then they disagree on exactly
+    /// the case that prompted the amendment. Rule T2 gives interpretation to this layer, so the
+    /// repository copy was removed - <c>IRoleRepository</c> now documents that a write member stages what
+    /// it is handed, and a marker reaching it is refused loudly by the store rather than quietly
+    /// reinterpreted. Every production write path passes through here or supplies an explicit null.
     /// </para>
     /// </remarks>
     private static DateTime? NormalizeLegacyDateMarker(DateTime? bound) =>

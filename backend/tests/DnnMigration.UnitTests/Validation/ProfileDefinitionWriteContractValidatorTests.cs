@@ -36,6 +36,30 @@
 // advertise only what the procedures honour. They assert the exact public member set of each request against
 // the parameter list of the procedure behind it, so a member re-added to either contract without a procedure
 // that writes it fails here by name.
+//
+// THIS SUITE IS NOW THE ONLY PROFILE-DEFINITION VALIDATOR SUITE, AND IT CARRIES EVERY ASSERTION THE DELETED
+// ONE DID. A sibling file used to run twenty-five tests against the validator declared for the RESPONSE
+// projection, ProfilePropertyDefinitionDto. No controller action binds that type - both write verbs bind the
+// two request contracts asserted here - so assembly scanning made that validator resolvable without making it
+// reachable, and its tests reported confidence in rules no request path applied. It was deleted rather than
+// annotated. Nothing was lost, and the mapping is exhaustive:
+//   * name presence, width and pattern; category presence and width; expression width; the
+//     report-only-the-presence-failure and report-only-the-length-failure orderings; the both-rules cascade;
+//     the append-order affordance; the unconstrained data type, length and default value - all present below,
+//     and asserted on BOTH verbs rather than on one type;
+//   * its negative data-type and negative length refusals had NO legacy counterpart. The authoritative
+//     declarations listed above give those two members a sort order and nothing else, so the write contracts
+//     correctly carry no numeric rule; the -1 rows on DataType_CarriesNoRule and Length_CarriesNoRule pin
+//     that deliberately. A numeric guard added later must therefore change those tests knowingly rather than
+//     discover them by surprise;
+//   * its visibility-range refusal governed a member the write contracts do not publish and the terminal
+//     schema does not carry as a column at all. NeitherWriteContract_AdvertisesAMemberItCannotHonour is the
+//     stronger statement of the same fact: the value cannot be submitted, so no rule about it is needed;
+//   * its no-bound-identifier assertions covered PortalId and PropertyDefinitionId, which arrive from the
+//     route. The same census test proves neither contract publishes them, which again supersedes a rule.
+// That the rules really run on the request path - the one thing no unit suite can show - is proven by
+// ProfileDefinitionWrites_AreValidatedByTheValidatorResolvedForEachVerb in
+// backend/tests/DnnMigration.IntegrationTests/Api/RequestValidationContractTests.cs.
 using System.Reflection;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Validation;
@@ -84,9 +108,9 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// <summary>Wording reported when the property category exceeds its column width.</summary>
     private const string PropertyCategoryTooLong = "Property Category must be 50 characters or fewer";
 
-    /// <summary>Wording reported when the validation expression exceeds its column width.</summary>
+    /// <summary>Wording reported when the validation expression exceeds its write work-factor limit.</summary>
     private const string ValidationExpressionTooLong =
-        "Validation Expression must be 2000 characters or fewer";
+        "Validation Expression must be 512 characters or fewer";
 
     /// <summary>
     /// Terminal width of <c>PropertyName nvarchar(50) NOT NULL</c> (<c>03.02.03.SqlDataProvider</c> L1071,
@@ -493,29 +517,26 @@ public class ProfileDefinitionWriteContractValidatorTests
             update => update.PropertyCategory = propertyCategory);
 
     // ------------------------------------------------------------------------
-    // ValidationExpression - the WIDENED column
+    // ValidationExpression - bounded tenant-authored regular expression
     // ------------------------------------------------------------------------
 
     /// <summary>
-    /// The validation expression is bounded at the TERMINAL width of 2000 on both verbs, not at the 100 it
-    /// was created with.
+    /// The validation expression is bounded at the 512-character write work-factor limit on both verbs.
     /// </summary>
     /// <param name="length">The submitted length.</param>
     /// <param name="accepted">Whether that length is within the ceiling.</param>
     /// <remarks>
-    /// The 101-character case is the one that proves the point: it is refused by the creating width and
-    /// accepted by the terminal one, so a validator taking the wrong number fails here and only here. Note
-    /// that the terminal PROCEDURE parameter is narrower than the column - <c>04.05.00:L1685</c> declares
-    /// <c>@ValidationExpression nvarchar(100)</c> - and the column is what decides, because it is what an
-    /// upgraded database actually holds.
+    /// The terminal column remains <c>nvarchar(2000)</c> for immutable-schema compatibility. New writes are
+    /// intentionally narrower because tenant-authored expressions are compiled and evaluated against profile
+    /// values; 512 characters, the bounded collection size and the matching timeout together limit that work.
     /// </remarks>
     [Theory]
     [InlineData(100, true)]
     [InlineData(101, true)]
-    [InlineData(1999, true)]
-    [InlineData(2000, true)]
-    [InlineData(2001, false)]
-    public void ValidationExpression_IsBoundedByItsTerminalColumnWidthOnBothVerbs(int length, bool accepted)
+    [InlineData(511, true)]
+    [InlineData(512, true)]
+    [InlineData(513, false)]
+    public void ValidationExpression_IsBoundedByItsWriteWorkFactorLimitOnBothVerbs(int length, bool accepted)
     {
         string expression = new('a', length);
 

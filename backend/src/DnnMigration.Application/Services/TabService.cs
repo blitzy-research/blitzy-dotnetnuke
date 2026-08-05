@@ -396,7 +396,6 @@ public sealed class TabService : ITabService
         // Read BEFORE the update is applied, because the mapper writes onto the tracked aggregate and the
         // former values are unrecoverable afterwards. They are carried on the audit record only when they
         // actually changed, so a record never asserts a rename that did not happen.
-        string previousTabName = tab.TabName;
         int? previousParentId = tab.ParentId;
 
         TabMappings.ApplyUpdate(tab, request);
@@ -419,6 +418,16 @@ public sealed class TabService : ITabService
 
             Portal? portal = await _portals.GetByIdAsync(portalId, includeAliases: false, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (portal is not null && IsProtectedSpecialPage(portal, tab.TabId))
+            {
+                // MIGRATION: ManageTabs.ascx.vb L88-L92 disabled the checkbox for the portal's five
+                // special pages, and L258-L260 consequently left DisableLink at its default false rather
+                // than accepting a submitted value. The API has no disabled form control to enforce that
+                // invariant, so the service repeats the authoritative stateful guard after mapping.
+                tab.DisableLink = false;
+            }
+
             RecomputeTree(tree, portal?.AdminTabId);
 
             await StageMovedPagesAsync(tree, positions, cancellationToken).ConfigureAwait(false);
@@ -474,27 +483,20 @@ public sealed class TabService : ITabService
 
         // MIGRATION: the legacy page change was recorded on the event log as EventLogType.TAB_UPDATED
         // (Library/Components/Providers/Logging/Event Logging/EventLogController.vb, among the forty-three
-        // members declared at L38-L77), and that record is what told an operator who had moved or renamed a
-        // page. The store behind it is out of scope, so the record is emitted through IAuditSink instead.
+        // members declared at L38-L77), and that record is what told an operator who had changed a page.
+        // The store behind it is out of scope, so the record is emitted through IAuditSink instead.
         //
         // Recorded AFTER the commit, so no record can describe a change that was rolled back, and only the
-        // facts an operator needs in order to recognise the page: its name, its tenant and the ancestry
-        // change, which is the one that moves other pages as a side effect. The page's DESCRIPTION, keywords
-        // and head text are deliberately NOT carried - they are free-text a caller supplies, they can be
-        // long, and the trail is not a change log of every field. The rename is carried explicitly, because
-        // a record naming only the new value cannot answer "what was this page called yesterday".
+        // stable identifiers and the ancestry change, which is the one that moves other pages as a side
+        // effect. The page's name, description, keywords and head text are deliberately NOT carried: they
+        // are caller-authored free text and the trail is independently retained, so copying them would
+        // create a second deletion and access-control lifecycle for no authorisation value.
         Dictionary<string, string?> pageFacts = new(StringComparer.Ordinal)
         {
-            ["TabName"] = tab.TabName,
             ["ParentId"] = tab.ParentId?.ToString(CultureInfo.InvariantCulture),
             ["IsVisible"] = tab.IsVisible.ToString(),
             ["IsDeleted"] = tab.IsDeleted.ToString(),
         };
-
-        if (!string.Equals(previousTabName, tab.TabName, StringComparison.Ordinal))
-        {
-            pageFacts["PreviousTabName"] = previousTabName;
-        }
 
         if (previousParentId != tab.ParentId)
         {
@@ -505,7 +507,6 @@ public sealed class TabService : ITabService
         {
             PortalId = tab.PortalId,
             ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
-            ActorUserName = _currentUser.IsAuthenticated ? _currentUser.UserName : null,
             ResourceType = TabResourceType,
             ResourceId = tab.TabId.ToString(CultureInfo.InvariantCulture),
             Properties = pageFacts,
@@ -515,6 +516,21 @@ public sealed class TabService : ITabService
 
         bool hasChildren = await HasChildrenAsync(tab, cancellationToken).ConfigureAwait(false);
         return Result<TabDetailDto>.Success(TabMappings.ToDetail(tab, hasChildren));
+    }
+
+    /// <summary>
+    /// Reports whether a page is one of the five portal-designated pages whose link cannot be disabled.
+    /// </summary>
+    /// <param name="portal">Owning portal.</param>
+    /// <param name="tabId">Page identifier.</param>
+    /// <returns><see langword="true"/> when the identifier occupies any protected special-page role.</returns>
+    private static bool IsProtectedSpecialPage(Portal portal, int tabId)
+    {
+        return portal.AdminTabId == tabId
+            || portal.SplashTabId == tabId
+            || portal.HomeTabId == tabId
+            || portal.LoginTabId == tabId
+            || portal.UserTabId == tabId;
     }
 
     /// <summary>

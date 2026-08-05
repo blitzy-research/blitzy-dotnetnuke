@@ -31,8 +31,9 @@
 // MIGRATION:      clear text as [Password] nvarchar(20) NOT NULL in the baseline schema, and the
 // MIGRATION:      later membership store was configured for reversible storage with retrieval
 // MIGRATION:      enabled, over signing material held in source control. Neither that material
-// MIGRATION:      nor its location is reproduced anywhere in this tree. Recovery here is one-way
-// MIGRATION:      hashing plus administrative reset.
+// MIGRATION:      nor its location is reproduced anywhere in this tree. The authentication service owns
+// MIGRATION:      bounded first-login migration; recovery here is one-way hashing plus administrative
+// MIGRATION:      reset as the fallback.
 //
 // MIGRATION: (05) ResetPassword L906 returned the new credential as its value. The reset path
 // MIGRATION:      here returns Task<Result> and never a credential.
@@ -53,20 +54,13 @@
 // MIGRATION:      because a generated credential has to be transmitted to be useful and that
 // MIGRATION:      reintroduces exactly the disclosure item (04) removes.
 //
-// MIGRATION: (08) THIS CONTRACT OWNS THE WHOLE OF THE CREDENTIAL MIGRATION PATH, NOT HALF OF IT.
-// MIGRATION:      AAP 0.7.5.5 prescribes re-hashing on first successful sign-in with administrative
-// MIGRATION:      reset as the fallback, which invites reading the reset as one half of a two-part
-// MIGRATION:      path. IT IS NOT. THE OTHER HALF DOES NOT EXIST AND
-// MIGRATION:      CANNOT BE BUILT WITHIN THIS PLAN: re-hashing on first sign-in requires verifying
-// MIGRATION:      a credential held under the legacy reversible scheme, which means mapping the
-// MIGRATION:      legacy membership store and decrypting it with the key committed at
-// MIGRATION:      Website/release.config:L89-L93 - and the same AAP section forbids reproducing
-// MIGRATION:      reversible storage, while the file inventories at 0.4.1.1 and 0.5.1.3 name no
-// MIGRATION:      verifier, no legacy credential entity and no credential column. The plan's own
-// MIGRATION:      fallback branch consequently applies universally, so administrative reset is the
-// MIGRATION:      only route by which a pre-existing account regains access. The sibling
-// MIGRATION:      authentication contract verifies BCrypt digests only and performs no upgrade.
-// MIGRATION:      The divergence is recorded in MIGRATION_NOTES.md.
+// MIGRATION: (08) THIS CONTRACT OWNS THE ADMINISTRATIVE FALLBACK OF THE CREDENTIAL MIGRATION PATH.
+// MIGRATION:      The authentication service owns the primary cut-over path: an opt-in,
+// MIGRATION:      bounded ILegacyCredentialVerifier checks the external membership row and a
+// MIGRATION:      successful presentation is immediately replaced with BCrypt. ResetPasswordAsync
+// MIGRATION:      remains mandatory for rows that cannot be verified, for owners who do not sign in
+// MIGRATION:      during the migration window, and after the legacy verifier is disabled. Neither
+// MIGRATION:      path exposes plaintext or reproduces password retrieval.
 //
 // MIGRATION: (09) GetCurrentUserInfo L381 resolved the caller from ambient per-request state and
 // MIGRATION:      is NOT here. The sibling ICurrentUser abstraction in this folder replaces it.
@@ -207,13 +201,9 @@ namespace DnnMigration.Application.Abstractions;
 /// <para>
 /// <b>Signing in is not asked here either.</b> Credential verification, token issue, refresh
 /// rotation and session termination belong to the sibling authentication and token contracts in
-/// this folder, as does the work-factor upgrade a successful sign-in performs on a value the
-/// current scheme itself produced. That upgrade is <em>not</em> a half of the credential migration,
-/// and an earlier revision of this paragraph called it one: there is no re-hash-on-first-sign-in
-/// tier anywhere in this solution, because verifying a legacy value is the step such a tier would
-/// have to begin with and nothing here can perform it. The whole of the credential migration is the
-/// administrative reset declared below - see migration note (08) at the head of this file. This
-/// contract covers administrative credential changes and that reset only. Nothing from
+/// this folder, as do both replacements a successful sign-in may perform: a current-scheme work-factor
+/// upgrade and the bounded legacy-to-BCrypt migration. This contract covers self-service changes and the
+/// administrative-reset fallback only. Nothing from
 /// the HTTP stack appears on this surface: this project declares one project reference, to the
 /// domain layer, and no web framework reference at all, so reaching for a transport type here
 /// does not compile.
@@ -672,16 +662,11 @@ public interface IUserService
     /// credential presented. <c>user.password.reset-not-enabled</c> is consequently unreachable here.
     /// </para>
     /// <para>
-    /// <see cref="ResetPasswordAsync"/> owns THE WHOLE of the credential migration path rather than half of
-    /// it.
-    /// Legacy credentials were held reversibly and cannot be verified against a one-way hash,
-    /// and no component in this solution can verify one - so the first-sign-in re-hash that
-    /// AAP 0.7.5.5 envisages has no implementation and, per that same section, may not be given
-    /// one. An administrative reset performed through this member is therefore the ONLY way a
-    /// pre-existing account regains access, which makes this member load-bearing for the
-    /// migration rather than a fallback within it. See migration note (08) at the head of this
-    /// file for the full reasoning. Two members of the legacy status enumeration, both
-    /// concerning the recovery answer and question, are unreachable here because that pair is
+    /// <see cref="ResetPasswordAsync"/> owns the administrative fallback of the credential migration
+    /// path. The authentication service may verify a bounded legacy representation during the
+    /// explicitly enabled migration window and immediately replace it with BCrypt; this member
+    /// handles every row that cannot take that path. Two members of the legacy status enumeration,
+    /// both concerning the recovery answer and question, are unreachable here because that pair is
     /// omitted.
     /// </para>
     /// <para>
@@ -755,10 +740,11 @@ public interface IUserService
     /// the caller in clear text. That is not reproduced in any form, and there is no retrieval member at all.
     /// </para>
     /// <para>
-    /// This member owns THE WHOLE of the credential migration path: legacy credentials were held reversibly
-    /// and cannot be verified against a one-way hash, so an administrative reset is the only way a
-    /// pre-existing account regains access. That is why the shipped default keeps reset enabled, faithfully
-    /// to <c>Website/release.config</c> L240.
+    /// This member owns the administrative fallback of credential migration. The first-login path belongs to
+    /// <see cref="IAuthService"/> and is available only inside its bounded compatibility window; reset remains
+    /// the route after that deadline, for an unsupported representation, or when the owner no longer knows
+    /// the credential. That is why the shipped default keeps reset enabled, faithfully to
+    /// <c>Website/release.config</c> L240.
     /// </para>
     /// </remarks>
     Task<Result> ResetPasswordAsync(
@@ -940,18 +926,20 @@ public interface IUserService
     /// Replaces the tenant-level membership settings.
     /// </summary>
     /// <param name="portalId">Identifier of the tenant whose settings are written.</param>
-    /// <param name="settings">
+    /// <param name="request">
     /// The complete settings to store. Every member is written, so this is a replace-the-set
     /// operation rather than a partial patch, which matches the legacy screen's behaviour of
     /// re-writing each setting it manages on every update.
     /// </param>
     /// <param name="cancellationToken">Token observed while the settings are written.</param>
     /// <returns>
-    /// A successful result with no value. The documented failure code is
-    /// <c>user.membership-settings.source-missing</c>, raised when the tenant has no settings
+    /// A successful result with no value. Two failure codes are documented.
+    /// <c>user.membership-settings.source-missing</c> is raised when the tenant has no settings
     /// source to write to - the same condition that makes the read above answer with a
-    /// <see langword="null"/> value. Absence is a legitimate answer to a read and an
+    /// <see langword="null"/> value; absence is a legitimate answer to a read and an
     /// impossibility for a write, which is why the two members treat it differently.
+    /// <c>user.membership-settings.redirect_not_in_portal</c> is raised when one of the three
+    /// redirect members names a page the tenant does not own.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -960,10 +948,45 @@ public interface IUserService
     /// at L183. Exposing only a read would have left that screen unimplementable, so this member
     /// exists on measured evidence rather than for symmetry.
     /// </para>
+    /// <para>
+    /// THE WRITE CONTRACT IS ITS OWN TYPE, and not the projection the read returns. The two are not the
+    /// same act: the read DERIVES the accounts-display choice from the tenant's account count when the
+    /// tenant stores none, and it is documented as never omitting a member, whereas a write states each
+    /// value explicitly and is subject to field rules. Binding the response projection as a request body -
+    /// which this member previously accepted - meant twenty-three administrative values reached the store
+    /// with no rule applied to any of them, because no validator existed for that type and none could be
+    /// registered for it without also firing on every read.
+    /// </para>
+    /// <para>
+    /// PAGE OWNERSHIP IS CHECKED HERE RATHER THAN BY A FIELD RULE. Whether a page identifier belongs to
+    /// this tenant is a data question, so the declarative rules bound the ranges and the widths and this
+    /// member refuses a redirect target the tenant does not own - reproducing the legacy page picker, which
+    /// could only offer the portal's own pages (<c>UserSettings.ascx.vb:L80-L82</c>).
+    /// </para>
     /// </remarks>
     Task<Result> UpdateMembershipSettingsAsync(
         int portalId,
-        MembershipSettingsDto settings,
+        UpdateMembershipSettingsRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Evaluates an electronic-mail address against the validation expression configured for one portal.
+    /// </summary>
+    /// <param name="portalId">The portal whose membership policy is applied.</param>
+    /// <param name="email">The address to validate.</param>
+    /// <param name="cancellationToken">Token observed while membership settings are read.</param>
+    /// <returns>
+    /// A successful result carrying the validation outcome. A malformed stored expression fails closed and
+    /// reports <c>profile-definition.validation-expression-invalid</c>.
+    /// </returns>
+    /// <remarks>
+    /// Shared by registration/account maintenance and the verified-registration approval path so the
+    /// <c>Security_EmailValidation</c> setting has one implementation at every boundary that admits an
+    /// account.
+    /// </remarks>
+    Task<Result<bool>> IsEmailValidAsync(
+        int portalId,
+        string email,
         CancellationToken cancellationToken = default);
 
     /// <summary>

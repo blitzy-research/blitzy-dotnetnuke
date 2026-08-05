@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.Common;
 
 /// <summary>
-/// The paging, sorting and filtering query contract bound by <c>GET /api/v1/portals/{portalId}/users</c>.
+/// The paging, sorting and filtering query contract bound by <c>GET /api/v1/users</c>.
 /// </summary>
 /// <remarks>
 /// <para>

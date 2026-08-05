@@ -293,16 +293,56 @@ $_breakpoint-epsilon: 0.001rem;
 // top-level include is a compile error rather than a silent no-op. Idempotent,
 // and therefore safe to apply broadly and again on an individual control.
 // `:focus-visible` rather than `:focus` keeps the ring off mouse presses.
-// `outline` rather than `border` or `box-shadow` because an outline is painted
-// outside the box without participating in layout, so it cannot shift, resize or
-// reflow what it marks, and unlike a shadow it survives forced-colours and
-// high-contrast modes. The ring resolves to the brand colour, which measures
-// 12.61:1 against the page background — well clear of the 3:1 AA threshold for a
-// non-text indicator.
+// `outline` rather than `border` because an outline is painted outside the box
+// without participating in layout, so it cannot shift, resize or reflow what it
+// marks, and unlike a shadow it survives forced-colours and high-contrast modes.
+// The ring resolves to the brand colour, which measures 12.61:1 against the page
+// background — well clear of the 3:1 AA threshold for a non-text indicator.
+//
+// MIGRATION: TWO-TONE, and the second tone is what makes the indicator independent
+// of the backdrop rather than merely usually-visible against it. The ring colour is
+// the brand colour, and the brand colour is also a painted surface in this system,
+// so a single-toned ring paints brand-on-brand at 1:1 wherever a focusable element
+// sits on a brand-filled band — a collision the record grid carried a standing
+// accessibility flag for, and one that no flat colour can resolve: the luminance
+// window that clears the 3:1 non-text floor on a brand band and on the selected tint
+// simultaneously is empty, with a best achievable worst-case of about 2.87:1.
+//
+// GEOMETRY. The outline occupies the annulus from `offset` to `offset + width`
+// outside the border box. A single outset shadow with no blur and a spread of
+// `offset + width + width` paints a solid block of the contrast colour from the
+// border box out to the ring's outer edge PLUS one ring width, and the outline is
+// painted on top of the middle of it — because a box shadow is painted beneath the
+// element's own background and border while an outline is painted above them. The
+// result is three concentric bands: contrast, ring, contrast. Every geometric term
+// is composed from the existing focus tokens, so retuning the width or the offset
+// keeps all three bands consistent with no second place to edit.
+//
+// WHY THIS COSTS NOTHING VISUALLY ON A LIGHT SURFACE. The contrast tone resolves to
+// the page background, so on the page background and on either neutral surface the
+// two bands are indistinguishable from the backdrop they replace — the inner band
+// occupies the gap the offset already left transparent, and the outer band lands on
+// a surface it matches to within 1.13:1. Only where the backdrop is dark do the
+// bands become visible, which is exactly where the ring alone stops being.
+//
+// NEITHER DECLARATION PARTICIPATES IN LAYOUT, so a two-tone ring shifts nothing that
+// a one-tone ring did not shift. In forced-colours mode the shadow is dropped by the
+// user agent and the outline remains, which is the correct degradation: the backdrop
+// is forced there too, so the collision the second tone exists to answer cannot
+// arise. The shadow is therefore additive and the outline stays the load-bearing
+// indicator.
+//
+// ONE CONSUMER SUPPRESSES THE SHADOW, and it is the only place a suppression is
+// legitimate: the record grid turns its row ring INWARD because the rows live in a
+// region that clips, and an outward band would then paint over the neighbouring rows.
+// That rule states the reason at its own site. Nothing else may suppress it.
 @mixin focus-ring {
   &:focus-visible {
     outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
     outline-offset: var(--focus-ring-offset);
+    box-shadow: 0 0 0
+      calc(var(--focus-ring-offset) + var(--focus-ring-width) + var(--focus-ring-width))
+      var(--focus-ring-contrast-color);
   }
 }
 

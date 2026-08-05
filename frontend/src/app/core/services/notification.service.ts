@@ -48,25 +48,20 @@ export interface AppNotification {
 const EMPTY_QUEUE: readonly AppNotification[] = Object.freeze([]);
 
 /**
- * The greatest number of UTF-16 code units of a single message this service will
- * retain.
+ * The greatest number of UTF-16 code units of a single message this service will retain.
  *
- * A notification message reaches this service from two directions, and one of
- * them is not under the application's control: the error interceptor composes it
- * from a server `ProblemDetails` payload, whose `detail` and `errors` members are
- * remote input. Retaining such a string at whatever length it happens to arrive
- * makes the queue's memory footprint a function of a remote response rather than
- * of this application, which is the unbounded-input exposure this bound closes.
+ * One of the two paths into this service is not under the application's control: the
+ * error interceptor composes its message from a server `ProblemDetails` payload, whose
+ * `detail` and `errors` members are remote input. Retaining such a string at whatever
+ * length it arrives makes the queue's memory footprint a function of a remote response
+ * rather than of this application, which is the unbounded-input exposure this bound
+ * closes.
  *
- * The figure is measured, not chosen for roundness. Across the 40 in-scope
- * `App_LocalResources` and `App_GlobalResources` resource files - 1561 plain
- * `<data>` values, the authoritative corpus of legacy admin wording - value
- * length runs to a median of 22 characters, a 95th percentile of 166 and a 99th
- * percentile of 387. The only values beyond about 7000 characters are
- * `MESSAGE_PORTAL_TERMS` and `MESSAGE_PORTAL_PRIVACY`, which are long-form legal
- * *page content* rather than banner messages and would never be queued here.
- * 1024 is therefore roughly 2.6 times the 99th percentile and clears every
- * in-scope message value, so it cannot truncate legitimate wording.
+ * The figure is measured against the legacy wording corpus - the in-scope
+ * `App_LocalResources` and `App_GlobalResources` `<data>` values - and clears every
+ * message value in it by a wide margin, so it cannot truncate legitimate wording. The
+ * only legacy values that exceed it are long-form legal *page content* rather than
+ * banner messages and would never be queued here.
  *
  * @see boundMessage - applies this bound.
  */
@@ -75,29 +70,20 @@ const MAX_MESSAGE_LENGTH = 1024;
 /**
  * The greatest number of entries the queue will hold at once.
  *
- * Beyond this depth the oldest entry is dropped as the newest is appended, so
- * the queue behaves as a fixed-capacity window over the most recent
- * notifications.
+ * Beyond this depth the oldest entry is dropped as the newest is appended, so the queue
+ * behaves as a fixed-capacity window over the most recent notifications. The bound exists
+ * for two reinforcing reasons. Combined with {@link MAX_MESSAGE_LENGTH} it makes retained
+ * message text finite - a worst case of 25 x 1024 code units, roughly 25 KB - instead of
+ * growing without limit for as long as a failing request is retried. It also stops the
+ * append cost compounding: each append copies the queue to keep the replace-never-mutate
+ * discipline below, which is O(n) in the depth, so capping the depth makes a run of
+ * appends linear rather than quadratic. The depth is generous against the behaviour being
+ * replaced, where the legacy `AddModuleMessage` surface rendered a single module message
+ * per page render.
  *
- * This bound exists for two reasons that reinforce each other:
- *
- * - **Retained bytes become finite.** Combined with
- *   {@link MAX_MESSAGE_LENGTH}, worst-case retained message text is a provable
- *   25 x 1024 code units - roughly 25 KB - instead of growing without limit for
- *   as long as a failing request is retried.
- * - **The append cost stops compounding.** Each append copies the queue to keep
- *   the replace-never-mutate discipline below, which is O(n) in the queue's
- *   depth. With the depth capped, n is a constant, so a run of appends is O(1)
- *   each and linear overall rather than quadratic.
- *
- * 25 is generous by an order of magnitude against the behaviour being replaced:
- * the legacy `AddModuleMessage` surface rendered a single module message per page
- * render, so no legacy screen ever displayed more than a handful at once.
- *
- * Dropping the oldest rather than refusing the newest is deliberate. The newest
- * notification is the one describing what just happened, so it is the one the
- * user needs; silently discarding it would hide a live failure, which is exactly
- * what the no-de-duplication rule above is there to prevent.
+ * Dropping the oldest rather than refusing the newest is deliberate: the newest
+ * notification describes what just happened, so it is the one the user needs, and
+ * silently discarding it would hide a live failure.
  */
 const MAX_QUEUED_NOTIFICATIONS = 25;
 
@@ -133,26 +119,19 @@ function boundMessage(message: string): string {
   return message.slice(0, cutSplitsSurrogatePair ? MAX_MESSAGE_LENGTH - 1 : MAX_MESSAGE_LENGTH);
 }
 
-// MIGRATION: the 116 in-scope legacy `DataCache` call sites are deliberately NOT
-// reproduced on the client.
+// MIGRATION: the legacy `DataCache` call sites are deliberately NOT reproduced on the
+// client. Their source of behaviour is Library/Components/Providers/Caching/DataCache.vb -
+// note the path, since a second, unrelated 85-line DataCache.vb lives under
+// Library/Controls/DotNetNuke.WebUtility/ and is out of scope. Caching in the target
+// architecture is a server-side concern only, `IMemoryCache` behind `ICacheService`, so
+// this queue holds no cache, keeps no de-duplication window and expires nothing on a
+// timer: it is a transient view-model slice and nothing more.
 //
-// Their source of behaviour is Library/Components/Providers/Caching/DataCache.vb
-// (317 lines). Note the real path: the plan text cites
-// Library/Components/Shared/DataCache.vb, which does not exist in this
-// repository - recorded as discrepancy D4. (A second, unrelated 85-line
-// DataCache.vb lives under Library/Controls/DotNetNuke.WebUtility/ and is out of
-// scope.)
-//
-// Caching in the target architecture is a server-side concern only -
-// `IMemoryCache` behind `ICacheService`. This queue therefore holds no cache,
-// keeps no de-duplication window and expires nothing on a timer: it is a
-// transient view-model slice and nothing more.
-//
-// The fixed-depth overflow guard at MAX_QUEUED_NOTIFICATIONS is not a cache
-// eviction policy and must not be read as one. It is keyless and timeless: there
-// is no key to look an entry up by, no expiry to reach and no re-population path,
-// so nothing here can be a hit or a miss. It is purely a capacity ceiling on a
-// display queue, and dropping an entry loses nothing that could be fetched again.
+// The fixed-depth overflow guard at MAX_QUEUED_NOTIFICATIONS is NOT a cache eviction
+// policy and must not be read as one. It is keyless and timeless - no key to look an entry
+// up by, no expiry to reach, no re-population path - so nothing here can be a hit or a
+// miss. It is purely a capacity ceiling on a display queue, and dropping an entry loses
+// nothing that could be fetched again.
 
 // MIGRATION: localisation is not ported.
 //
@@ -203,27 +182,18 @@ export class NotificationService {
    *
    * ## Blank messages are refused rather than queued
    *
-   * A message that is empty, or that consists only of whitespace, is discarded: no
-   * entry is created, the queue is left untouched, and {@link nextId} does not
-   * advance. The call is a no-op.
+   * A message that is empty, or that consists only of whitespace, is discarded: no entry
+   * is created, the queue is left untouched, and {@link nextId} does not advance, so the
+   * call is a no-op. A notification is an instruction to interrupt the user rather than
+   * data a component may choose how to render, so queueing a blank one would produce a
+   * visible, dismissible, screen-reader-announced alert carrying nothing to read - a
+   * defect no consumer can render its way out of. The legacy model agrees: `Null.vb`
+   * L71-L75 returns `""` from `NullString`, so the empty string IS its representation of
+   * an ABSENT string, and whitespace-only input is absent in the same sense.
    *
-   * A notification is not data a component may choose how to render; it is an
-   * instruction to interrupt the user. Queueing a blank one produces a visible,
-   * dismissible, screen-reader-announced alert carrying nothing to read - a defect
-   * no consumer can render its way out of, because the only correct rendering of
-   * "nothing to say" is not to appear at all. Pushing the check downstream would
-   * also multiply it across every current and future consumer.
-   *
-   * The legacy evidence points the same way: `Library/Components/Shared/Null.vb`
-   * L71-L75 returns `""` from `NullString`, so the empty string IS the legacy
-   * model's representation of an ABSENT string. A caller arriving here with `''`
-   * is reporting that it has no message, and the faithful response to "no message"
-   * is to raise no notification. Whitespace-only input is absent in exactly the
-   * same sense.
-   *
-   * `nextId` deliberately does not advance on a refusal. The counter's contract is
-   * that it never reissues an id, not that it counts call attempts, and leaving it
-   * still keeps the ids of real entries gapless.
+   * `nextId` deliberately does not advance on a refusal: the counter's contract is that it
+   * never reissues an id rather than that it counts call attempts, and holding it still
+   * keeps the ids of real entries gapless.
    *
    * ## Two bounds apply
    *
@@ -242,11 +212,11 @@ export class NotificationService {
    *
    * ## Behaviour that IS intentional pass-through
    *
-   * - two identical `(severity, message)` pairs produce two distinct entries with
-   *   distinct ids, because no de-duplication window exists here;
-   * - interior whitespace, casing, tabs and line breaks in a nonblank message are
-   *   all preserved exactly, including any leading or trailing padding, because
-   *   reformatting a message that does have content would be a display decision.
+   * Two identical `(severity, message)` pairs produce two distinct entries with distinct
+   * ids, because no de-duplication window exists here; and interior whitespace, casing,
+   * tabs and line breaks in a nonblank message are preserved exactly, including any
+   * leading or trailing padding, because reformatting a message that does have content
+   * would be a display decision.
    *
    * @param severity The already-decided severity to render at.
    * @param message The already-composed, display-ready plain-text message. A blank

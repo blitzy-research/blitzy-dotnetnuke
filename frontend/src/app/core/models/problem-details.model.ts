@@ -136,10 +136,26 @@ export interface ProblemDetails {
   /**
    * A URI reference identifying the specific occurrence.
    *
-   * Absent in practice. The API passes this through exactly as a caller supplies
-   * it and never derives it from the request path, and no call site supplies
-   * one, so it was missing from every response observed. Typed here because RFC
-   * 7807 defines it and a proxy may add one; consumers should not depend on it.
+   * OPTIONAL, AND GENUINELY ABSENT RATHER THAN NULL — and the difference from
+   * `meta` on the success envelope is worth stating, because the server's
+   * serializer policy writes every declared member INCLUDING one holding null,
+   * which would ordinarily make `"instance": null` appear here.
+   *
+   * It does not, and the reason is mechanical rather than incidental: the
+   * framework's problem-details type annotates each of its five standard members
+   * with a per-member null-omission condition, and a per-member condition
+   * OVERRIDES the collection-wide policy. A null `type`, `title`, `status`,
+   * `detail` or `instance` is therefore omitted from the document exactly as RFC
+   * 7807 describes, whatever the surrounding policy says. Verified twice — by
+   * reflecting over the framework type, and by measuring live `401` and `400`
+   * responses, whose members were `type`, `title`, `status`, `detail`, `errors`
+   * and `traceId` with no `instance` among them. The server side of that fact is
+   * pinned by `ProblemDetailsContractTests` so it cannot drift silently.
+   *
+   * No call site supplies a value: the API passes the member through exactly as
+   * given and never derives it from the request path. It is declared here because
+   * RFC 7807 defines it and a proxy may add one; consumers should not depend on
+   * it.
    */
   readonly instance?: string;
 
@@ -155,12 +171,37 @@ export interface ProblemDetails {
    * other.
    *
    * Consequently the correlation identifier is the value to quote when joining a
-   * browser-side report to a server-side log entry, and it travels in its own
-   * response header — never as a member of this body, and never on a successful
-   * response envelope, which has exactly one source of truth for it. Both
+   * browser-side report to a server-side log entry — and it is now published as
+   * {@link ProblemDetails.correlationId} for exactly that purpose, alongside the
+   * response header it has always travelled on. This member is NOT the support
+   * reference and must not be quoted as one where the other is present. Both
    * identifiers are diagnostic; neither is shown to a person.
    */
   readonly traceId?: string;
+
+  /**
+   * The correlation identifier the server validated for this request.
+   *
+   * This is the SUPPORT REFERENCE — the one identifier that appears on the
+   * response header, on the request envelope in the server's log, and on every
+   * audit event the request produced, so quoting it is what lets an operator find
+   * the request a person is describing. {@link ProblemDetails.traceId} cannot do
+   * that: it is a W3C trace-context value taken from whatever diagnostic activity
+   * happened to be current, so it appears in none of those records.
+   *
+   * It carries the same value as the `X-Correlation-Id` response header, and it is
+   * published in the body as well because a body is what an error handler already
+   * has in hand: reading the reference from the header would require every
+   * consumer of a failed response to reach past the payload for it, and a
+   * consumer that forgot would quote the wrong identifier — which is what
+   * happened before this member existed. The header remains the primary channel;
+   * this is the same value, not a second one.
+   *
+   * Optional for the same reason every other member here is: a proxy or gateway
+   * between the browser and the API can return an error body this application
+   * never produced.
+   */
+  readonly correlationId?: string;
 
   /**
    * Per-field validation failures, keyed by the field name.
@@ -244,19 +285,60 @@ export interface ValidationProblemDetails extends ProblemDetails {
 // values as text.
 
 /**
+ * The standard members of a problem document, paired with the test each must pass
+ * WHEN PRESENT.
+ *
+ * A problem document is permitted to carry any subset of these, and RFC 7807 also
+ * permits arbitrary extension members, so absence is never a failure and an
+ * unrecognised member is never inspected. What is checked is that a member which IS
+ * present carries the type this file declares for it.
+ */
+const STANDARD_MEMBERS: readonly (readonly [string, (value: unknown) => boolean])[] =
+  Object.freeze([
+    ['type', isString],
+    ['title', isString],
+    ['status', isNumber],
+    ['detail', isString],
+    ['instance', isString],
+    ['traceId', isString],
+    ['errors', isErrorMap],
+  ]);
+
+/**
  * Narrows an unknown value to a {@link ProblemDetails}.
  *
- * Deliberately permissive, and the reason is specific. A strict test — requiring
- * `type`, `title` and `status` together — would reject documents the API
- * genuinely emits, because a problem document is permitted to carry any subset
- * of the members. So the test asks the only question a consumer actually needs
- * answered: is this a non-null object that is not an array, carrying at least
- * one member a problem document would carry?
+ * Permissive about ABSENCE and strict about TYPE, and the difference between those
+ * two is the whole design. A test requiring `type`, `title` and `status` together
+ * would reject documents the API genuinely emits, because any subset is legal — so
+ * absence is admitted. But a member that is present and carries the wrong type makes
+ * the narrowing a lie, and every consumer of this predicate then reads that member
+ * as though the declaration were true.
  *
- * The array exclusion matters because `typeof [] === 'object'`, so without it a
- * JSON array body would pass. The "at least one recognised member" requirement
- * is what stops an arbitrary successful payload from being mistaken for a
- * failure when a caller passes the wrong thing.
+ * MIGRATION: THIS PREDICATE USED TO ASK WHETHER *SOME* MEMBER MATCHED, WHICH IS NOT
+ *   THE SAME QUESTION. It was a disjunction of type tests, so a single well-typed
+ *   member vouched for every other member however malformed. `{ status: 400, detail:
+ *   42 }` passed on the strength of `status`, narrowed to a shape declaring
+ *   `detail?: string`, and {@link problemDetailsMessage} then called `.trim()` on the
+ *   number and threw a `TypeError` — turning a server refusal a caller could have
+ *   rendered into an unhandled client fault. The disjunction also treated
+ *   `errors: null` as a member, because `typeof null === 'object'`. The test is now a
+ *   conjunction over every present member, and the "at least one recognised member"
+ *   requirement is applied AFTER it rather than instead of it.
+ *
+ * Two admissions are deliberate and are relied upon elsewhere, so neither may be
+ * tightened away:
+ *
+ * - an EMPTY `errors` object passes and counts as a recognised member. The API emits
+ *   `errors: {}` whenever model state carries no entries, and `error.interceptor.ts`
+ *   distinguishes "a per-field dictionary is present" from "anything renderable was
+ *   reported" precisely on that basis;
+ * - a DOM `ProgressEvent` passes, because it carries a string `type` and none of the
+ *   other standard members. That is why `error.interceptor.ts` resolves a transport
+ *   status of zero BEFORE it reads the body; the ordering there is load-bearing and
+ *   this predicate is not the place to compensate for it.
+ *
+ * The array exclusion matters because `typeof [] === 'object'`, so without it a JSON
+ * array body would pass.
  *
  * @param value A parsed response body, or anything else.
  * @returns True when the value can be read as a problem document.
@@ -271,12 +353,76 @@ export function isProblemDetails(value: unknown): value is ProblemDetails {
   // workspace.
   const candidate = value as Record<string, unknown>;
 
-  return (
-    typeof candidate['type'] === 'string' ||
-    typeof candidate['title'] === 'string' ||
-    typeof candidate['status'] === 'number' ||
-    typeof candidate['detail'] === 'string' ||
-    typeof candidate['errors'] === 'object'
+  let recognised = 0;
+
+  for (const [member, isValid] of STANDARD_MEMBERS) {
+    const held: unknown = candidate[member];
+
+    if (held === undefined) {
+      continue;
+    }
+
+    if (!isValid(held)) {
+      return false;
+    }
+
+    recognised += 1;
+  }
+
+  // Narrowed only now that the whole shape has passed. Without this last
+  // requirement an arbitrary successful payload — an object with no problem member
+  // at all — would be mistaken for a failure when a caller passes the wrong thing.
+  return recognised > 0;
+}
+
+/**
+ * Whether a present member is a string.
+ *
+ * @param value The member's value.
+ * @returns True for a string.
+ */
+function isString(value: unknown): boolean {
+  return typeof value === 'string';
+}
+
+/**
+ * Whether a present member is a number.
+ *
+ * `NaN` is admitted rather than excluded: it is a number on the wire only if a
+ * producer wrote one, no consumer here performs arithmetic on the status, and
+ * excluding it would be a validity judgement this predicate has no basis to make.
+ *
+ * @param value The member's value.
+ * @returns True for a number.
+ */
+function isNumber(value: unknown): boolean {
+  return typeof value === 'number';
+}
+
+/**
+ * Whether a present `errors` member is a per-field message dictionary.
+ *
+ * Three exclusions, each for a measured reason. `null` is excluded because
+ * `typeof null === 'object'` and the previous test admitted it, which let a document
+ * declaring `errors: ProblemDetailsErrors` hold nothing at all. An array is excluded
+ * for the same `typeof` reason. A dictionary whose values are not arrays of strings
+ * is excluded because {@link ProblemDetailsErrors} declares
+ * `Readonly<Record<string, readonly string[]>>`, and a consumer iterating a value
+ * that is not an array of strings is the failure this narrowing is supposed to
+ * prevent.
+ *
+ * An EMPTY dictionary is valid — see the note on {@link isProblemDetails}.
+ *
+ * @param value The member's value.
+ * @returns True for a dictionary of string arrays.
+ */
+function isErrorMap(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.values(value).every(
+    (messages) => Array.isArray(messages) && messages.every(isString),
   );
 }
 

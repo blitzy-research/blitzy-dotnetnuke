@@ -2,93 +2,63 @@
 //  data-table.component.scss — the shared record grid
 // =============================================================================
 //
-//  Eight legacy administration grids across the five in-scope trees collapse into
-//  this one component. This stylesheet carries ONLY what is specific to it.
+//  Eight legacy administration grids across the five in-scope trees collapse into this
+//  one component, and this stylesheet carries ONLY what is specific to it.
 //
 //  SCOPE — WHAT THIS FILE DELIBERATELY DOES NOT CONTAIN
 //  ---------------------------------------------------
 //  src/styles/_tables.scss owns the bare-element grid conventions and is loaded
-//  globally, fourth in the single global stylesheet. Everything it resolves is
-//  CONSUMED here and never restated:
+//  globally, so everything it resolves is CONSUMED here and never restated: the
+//  collapsed border model, the full-width transparent table, the base family and dense
+//  body type step, the one uniform cell-padding step, cell alignments, reflowing cell
+//  text, bold brand-coloured heading cells, the alternating-row surface, the
+//  selected-row tint, the selectable-row and sortable-heading pointers and active-column
+//  tint, the entire sort-button reset, the spanning message cell and the clipped-caption
+//  hook. Restating any of them would double the byte cost of the workspace's largest
+//  component stylesheet and give one value two definition sites that could drift. Where
+//  this file names a property that partial also names, the component genuinely needs a
+//  different value and the divergence is annotated.
 //
-//    the collapsed border model, the full-width table, the transparent table
-//    surface, the base family, the dense body type step and its line height,
-//    the one uniform cell-padding step, top cell alignment, reflowing cell text,
-//    bold brand-coloured heading cells, the column/row heading alignments, the
-//    alternating-row surface, the selected-row tint, the selectable-row pointer,
-//    the sortable-heading pointer and active-column tint, the ENTIRE sort-button
-//    reset, the spanning message cell, and the clipped-caption hook.
-//
-//  Restating any of those would double the byte cost of the workspace's largest
-//  component stylesheet and give one value two definition sites that could drift.
-//  Where this file names a property that partial also names, it is because the
-//  component genuinely needs a different value and the divergence is annotated.
-//
-//  Angular scopes these rules with an added attribute selector, so every class
-//  rule here outranks that partial's bare-element rules on specificity alone. No
-//  importance flag appears anywhere in this file and none is needed; the phrase is
-//  spelled out rather than written verbatim so that a search for the flag over
-//  this file finds nothing even inside a comment.
+//  Angular scopes these rules with an added attribute selector, so every class rule here
+//  outranks that partial's bare-element rules on specificity alone. No importance flag
+//  appears anywhere in this file and none is needed — the phrase is spelled out rather
+//  than written verbatim so a search for the flag finds nothing even inside a comment.
 //
 //  @use DEPTH IS FOUR, AND THAT IS NOT A TYPO
 //  ------------------------------------------
-//  ROOT CAUSE: core/, shared/ and layout/ are siblings INSIDE src/app/, but
-//  styles/ is a sibling of app/ one level HIGHER, inside src/. The Sass target is
-//  therefore always exactly ONE level further out than the TypeScript target a
-//  neighbouring file imports, and copying a neighbour's import depth is the way
-//  to get this wrong. Counting from this folder: `..` is components/, `../..` is
-//  shared/, `../../..` is app/ and `../../../..` is src/. Three levels resolves
-//  to src/app/styles/, which does not exist, and the build fails outright with
-//  "Can't find stylesheet to import."
+//  core/, shared/ and layout/ are siblings INSIDE src/app/, but styles/ is a sibling of
+//  app/ one level HIGHER, inside src/, so the Sass target is always exactly ONE level
+//  further out than the TypeScript target a neighbouring file imports — copying a
+//  neighbour's import depth is how this goes wrong. Counting from this folder: `..` is
+//  components/, `../..` is shared/, `../../..` is app/ and `../../../..` is src/. Three
+//  levels resolves to src/app/styles/, which does not exist, and the build fails outright
+//  with "Can't find stylesheet to import." The workspace configures no Sass load path, so
+//  a relative path is the only form that can resolve.
 //
-//  Verified by probing this exact folder rather than inferred: levels one, two,
-//  three and five are all absent and level four is the one that exists. The
-//  workspace configures no Sass load path — angular.json declares no
-//  stylePreprocessorOptions.includePaths — so a relative path is the only form
-//  that can resolve, and the mixins partial's own catalogue publishes this same
-//  four-level form for a shared component.
-//
-//  Sass modules are per-file and never ambient. The load in src/styles.scss does
-//  not make these mixins visible here and no forward can, so this file loads the
-//  partial itself. It loads ONLY that partial: design tokens are reached through
-//  `var()`, which needs no load at all because custom properties inherit through
-//  the DOM. An unused load would be dead weight, so there is not one.
+//  Sass modules are per-file and never ambient: the load in src/styles.scss does not make
+//  these mixins visible here and no forward can, so this file loads the partial itself. It
+//  loads ONLY that partial, because design tokens are reached through `var()`, which needs
+//  no load at all as custom properties inherit through the DOM.
 //
 //  ZERO HARDCODED VALUES — THE ONE NON-NEGOTIABLE RULE
 //  --------------------------------------------------
-//  Every value below resolves to a token declared in src/styles/_tokens.scss.
-//  The only literals are the six the migration plan permits — `0`, `none`,
-//  `auto`, `inherit`, `currentColor`, `transparent` — plus structural keywords
-//  and intrinsic units, which name a layout mechanism rather than a design
-//  decision. Unitless multipliers inside `calc()` are arithmetic, not lengths.
+//  Every value below resolves to a token declared in src/styles/_tokens.scss. The only
+//  literals are the six the migration plan permits — `0`, `none`, `auto`, `inherit`,
+//  `currentColor`, `transparent` — plus structural keywords and intrinsic units, which
+//  name a layout mechanism rather than a design decision; unitless multipliers inside
+//  `calc()` are arithmetic, not lengths. Where a value could not be composed from a token
+//  the treatment is OMITTED and the gap is noted below: no fallback literal appears
+//  anywhere, because a literal written as the second argument of `var()` is still a
+//  hardcoded value wearing a token's coat. Nothing here opens the document root or
+//  declares a custom property, no asset is referenced, and no legacy class name is
+//  reproduced.
 //
-//  Where a value could not be composed from a token, the treatment is OMITTED and
-//  the gap is REPORTED in a note below. No fallback literal appears anywhere: a
-//  literal written as the second argument of `var()` is still a hardcoded value,
-//  merely wearing a token's coat.
-//
-//  Nothing here opens the document root or declares a custom property; the tokens
-//  partial owns the workspace's only such block. No asset is referenced. No
-//  legacy class name is reproduced — the legacy values informed the tokens, and
-//  the vocabulary itself is replaced by the classes below.
-//
-//  PROVENANCE, AND WHY NO LEGACY VALUE IS QUOTED LITERALLY
-//  ------------------------------------------------------
-//  The only visual design source for this migration is the legacy portal CSS and
-//  the grid markup that wires it; no design file, frame or URL was supplied.
-//  Both reference stylesheets are read-only inputs — this migration is purely
-//  additive and no legacy file is modified or removed.
-//
-//  Legacy values are named below by their TOKEN or by DESCRIPTION and never as a
-//  literal, deliberately: a literal sitting in a comment is one copy-paste away
-//  from becoming a declaration, and the zero-hardcoded-values rule is enforced
-//  over the whole file rather than over its declarations alone.
-//
-//  NO USER-SPECIFIED RULES EXIST FOR THIS PROJECT, and that is not licence to
-//  lower the bar. The migration plan's own normative sections carry rule-force
-//  here, and its precedence order governs every decision below: design-system
-//  compliance first, then visual continuity with the legacy portal, then
-//  accessibility, then responsive behaviour, then code quality.
+//  Legacy values are named below by their TOKEN or by DESCRIPTION and never as a literal,
+//  deliberately: a literal sitting in a comment is one copy-paste away from becoming a
+//  declaration, so the zero-hardcoded-values rule is enforced over the whole file rather
+//  than over its declarations alone. The only visual design source for this migration is
+//  the legacy portal CSS and the grid markup that wires it — no design file was supplied —
+//  and both reference stylesheets are read-only inputs.
 // =============================================================================
 
 // Loaded for `visually-hidden` and `focus-ring`. Both are called below, which is
@@ -132,15 +102,13 @@
 // THE BOUNDARY COLOUR IS THE BRAND TOKEN, AND THAT FOLLOWS FROM THE SENTENCE
 // ABOVE. This edge is the only thing telling a reader that the grid continues
 // past the visible area, so it is a FUNCTIONAL non-text indicator and WCAG binds
-// it at 3:1 against what sits behind it. An earlier revision used the hairline
-// token, whose own annotation in the vocabulary measures it at 1.37 to 1 on this
-// surface and restricts it to decorative use, and the stronger hairline is only
-// 1.61 to 1 - so both fail, and the file was drawing a functional cue with a
-// value documented as unable to carry one. The brand token measures 12.61 to 1
-// here, and the vocabulary already directs a consumer to it or to the stronger
-// hairline "wherever a boundary must be perceivable"; only one of those two
-// actually clears the threshold. No eleventh colour is invented for this: the
-// palette stays closed at ten, and the radius and surface tokens are unchanged.
+// it at 3:1 against what sits behind it. Neither hairline token clears that on
+// this surface - the vocabulary's own annotations put them at 1.37 and 1.61 to 1
+// and restrict the first to decorative use - whereas the brand token measures
+// 12.61 to 1, so it is the only one of the values the vocabulary offers "wherever
+// a boundary must be perceivable" that can actually carry the cue. No eleventh
+// colour is invented for this: the palette stays closed at ten, and the radius and
+// surface tokens are unchanged.
 //
 // It reads as a deliberate frame rather than as an emphasis, because it is one
 // hairline wide - the boundary's WEIGHT comes from the border-width token, not
@@ -207,75 +175,50 @@
 // here because a heading cell is the single most likely place for a later author
 // to add a rule that quietly undoes all three decisions.
 //
-// MIGRATION 1 — THE BRAND HUE CARRIES THE HEADING TEXT, NEVER A FILLED BAND, and
-// the effective legacy rendering is what settles it. The heading class that six of
-// the seven record grids actually wired declares family, size and weight and NO
-// colour at all, so the bare heading-element rule's brand colour won the cascade
-// for every one of them; only the portal listing wired the grid-specific heading
-// class, which does declare its own colour and one step less size. The measured
-// legacy heading background is `transparent` in BOTH of those classes — there was
-// never a filled band in the legacy portal to carry forward. The global table
-// partial already resolves this exactly, colouring heading cells with the brand
+// MIGRATION 1 — THE BRAND HUE CARRIES THE HEADING TEXT, NEVER A FILLED BAND, and the
+// effective legacy rendering settles it: the heading class six of the seven record grids
+// wired declares no colour at all, so the bare heading-element rule's brand colour won
+// the cascade for every one of them, and the legacy heading background is `transparent`
+// in both of the classes involved — there was never a filled band to carry forward. The
+// global table partial resolves this exactly, colouring heading cells with the brand
 // token and painting no surface, so this file adds nothing and overrides nothing.
-// This also refines the type question: it is one step versus the next step up, not
-// one step versus two, because the bare heading element's larger size never
-// applied at run time — all eight grids set a heading class, and a class beats an
-// element selector for size. The partial resolves the final step and this file
-// consumes that resolution rather than re-opening it.
 //
-// AND IT RESOLVES A LIVE ACCESSIBILITY DEFECT AT ITS ROOT. Painting the heading band
-// with the brand token and reversing the text onto it is what must not be done here.
-// Because the shared focus ring also resolves its colour from that
-// same brand token, the sort control's ring would then paint brand-on-brand at a
-// contrast ratio of one to one — invisible, and geometrically unable to escape the
-// cell, as a pixel census of the ring annulus confirmed. The template carries a
-// standing flag for it and correctly states that the fix must live outside the
-// markup. Not painting the band IS that fix, and it needs no new token and no
-// second ring: the ring now falls on the page surface, the alternating surface or
-// the selected tint, which measure about twelve and a half, eleven and a half and
-// eight to one against the brand hue respectively — all of them clear of the three
-// to one floor for a non-text indicator. WCAG 2.4.7 and 2.4.11 are satisfied
-// without a compromise, and no surface anywhere in this component is painted with
-// the focus ring's own colour.
+// PAINTING THAT BAND WOULD ALSO CREATE AN ACCESSIBILITY DEFECT, which is why it must not
+// be done here. The shared focus ring resolves its colour from the same brand token, so a
+// brand-filled heading would paint the sort control's ring brand-on-brand at one to one —
+// invisible, and geometrically unable to escape the cell. Not painting the band is the
+// fix, and it needs no new token and no second ring: the ring falls on the page surface,
+// the alternating surface or the selected tint, each of which clears the three-to-one
+// floor for a non-text indicator by a wide margin. No surface anywhere in this component
+// is painted with the focus ring's own colour.
 //
-// MIGRATION 2 — NO CELL BORDERS, AND THIS IS A TRUE INVARIANT. All eight legacy
-// grids declare their grid lines off, without exception, and the entire legacy
-// grid vocabulary contains no dimensional CSS whatsoever: the only literals in
-// that whole block are four type sizes, and there is no padding, border, width,
-// height or margin anywhere in it. Drawing a
-// hairline above every body cell is exactly the "improvement" the global
-// partial warns against in its own opening rule, so none is drawn. The alternating
-// surface is the row separation, as it was. Stated prominently so that nobody
+// MIGRATION 2 — NO CELL BORDERS, AND THIS IS A TRUE INVARIANT. All eight legacy grids
+// declare their grid lines off without exception, and the entire legacy grid vocabulary
+// contains no dimensional CSS at all — no padding, border, width, height or margin
+// anywhere in it. Drawing a hairline above every body cell is exactly the "improvement"
+// the global partial warns against in its own opening rule, so none is drawn: the
+// alternating surface is the row separation, as it was. Stated prominently so nobody
 // reintroduces grid lines later believing they were merely forgotten.
 //
-// One genuine divergence is inseparable from that invariant and belongs on the
-// record: the collapsed border model. The legacy stylesheets declare a border
-// collapse mode, a border spacing and a table layout mode zero times each, so the
-// legacy grids used the browser default separated model and its inter-cell gap.
-// The global partial collapses the model, which is what makes the borderlessness
-// hold rather than merely look similar, and it also removes any dangling divider
-// after the final row. The divergence is owned there; this file does not restate
-// it.
+// One genuine divergence is inseparable from that invariant: the legacy grids used the
+// browser default SEPARATED border model and its inter-cell gap, and the global partial
+// collapses the model, which is what makes the borderlessness hold rather than merely
+// look similar and removes any dangling divider after the final row. The divergence is
+// owned there; this file does not restate it.
 //
 // MIGRATION 3 — THE CELL-PADDING AND TYPE STEPS ARE NORMALISED TO ONE VALUE EACH,
-// resolved in the global partial and consumed here unchanged. The legacy grids
-// disagreed with one another across FOUR states, not two: two of them set one
-// padding value, three set a larger one, two set none at all, and one declared no
-// padding attribute whatsoever. Because that spacing came from a markup attribute
-// and never from CSS, the target value has NO css provenance to preserve and is a
-// pure net-new token decision — which is precisely why it is made once, in the
-// shared partial, rather than argued again in every component. The spacing scale
-// it draws on is itself a net addition: the legacy stylesheets have no spacing
-// system at all.
+// resolved in the global partial and consumed here unchanged. The legacy grids disagreed
+// with one another across four states, and because that spacing came from a markup
+// attribute rather than from CSS the target value has no CSS provenance to preserve: it
+// is a net-new token decision, which is why it is made once in the shared partial rather
+// than argued again in every component. The spacing scale it draws on is itself a net
+// addition, since the legacy stylesheets have no spacing system at all.
 //
-// MIGRATION 4 — THE PORTAL LISTING'S SECOND HEADING STYLE IS NORMALISED AWAY.
-// That one file wires the grid-specific heading class on its grid and the shared
-// emphasis class again elsewhere on the same screen, so a single legacy screen
-// rendered its headings two different ways. One treatment replaces both, and the
-// three consolidated legacy font stacks — the dominant one used thirty-eight
-// times, plus two near-identical variants used twice and once — collapse into the
-// single base family token the global partial applies. Tahoma resolves first in
-// that stack, so the substitution is imperceptible.
+// MIGRATION 4 — THE PORTAL LISTING'S SECOND HEADING STYLE IS NORMALISED AWAY. That one
+// screen rendered its headings two different ways, and one treatment replaces both; the
+// three near-identical legacy font stacks likewise collapse into the single base family
+// token the global partial applies, and Tahoma resolves first in that stack, so the
+// substitution is imperceptible.
 
 // =============================================================================
 //  SORT CONTROL — only the two things the shared reset leaves open
@@ -319,13 +262,10 @@
 // all, so an unavailable control can never be painted as interactive whatever the
 // source order.
 .data-table__sort:enabled {
-  // Guarded by the shared hover-capability mixin. A bare hover rule is applied on
-  // tap on a touch device and then LEFT applied until something else is tapped, so a
-  // heading a reader merely touched would keep reading as hovered — and in a heading
-  // row where the active sort column is itself tinted, a stuck hover is genuinely
-  // misleading. This component previously recorded the absence of that guard as a
-  // reported gap and named the mixins partial as the place to close it; the mixin now
-  // exists there and this is its first consumer.
+  // Guarded by the shared hover-capability mixin. A bare hover rule is applied on tap on
+  // a touch device and then LEFT applied until something else is tapped, so a heading a
+  // reader merely touched would keep reading as hovered — and in a heading row where the
+  // active sort column is itself tinted, a stuck hover is genuinely misleading.
   //
   // The underline is the NON-COLOUR cue, so the state survives a colour-vision
   // deficiency and a monochrome rendering alike — the same pairing the application
@@ -408,8 +348,8 @@
 // layout above make the tracks independent of any row's content; without that pair,
 // columns would shift as rows entered and left the viewport.
 //
-// REPORTED GAP: the design-token set declares NO row-height and NO intrinsic-size
-// token. The placeholder is therefore composed from three existing tokens — the
+// The design-token set declares NO row-height and NO intrinsic-size token, so the
+// placeholder is composed from three existing tokens — the
 // base type size, the base line height and one spacing step, the step standing in
 // for the cell padding above and below the text — rather than being hardcoded to a
 // pixel count. The block axis is named explicitly and the inline axis is left
@@ -428,16 +368,11 @@
   // site; only the offset is corrected below.
   @include mx.focus-ring;
 
-  // The offset is turned INWARD, and this is the one correction the component
-  // needs. The shared ring sits outside the box it marks, which is right for a
-  // control in normal flow — but these rows live inside a scrolling region, and a
-  // region that scrolls in one axis clips in both, so an outward ring on the first
-  // or last row would be cut off exactly when it matters. Drawing it inside the row
-  // keeps the whole annulus visible and still shifts no layout, because an outline
-  // never participates in layout in either direction.
-  &:focus-visible {
-    outline-offset: calc(-1 * var(--focus-ring-offset));
-  }
+  // The row's ONE correction — an inward offset and no outer band — is not written
+  // here. It cannot be: a nested `&:focus-visible` compiles to a two-token selector
+  // that two broader rules out-specify, so the correction would be authored and never
+  // applied. It is therefore a compound top-level rule immediately after this block,
+  // and the reasoning is recorded there.
 
   // HOVER AND PRESS, giving a selectable row the same interaction feedback the sort
   // control above has. The shared table conventions already put the pointer and the
@@ -486,6 +421,45 @@
   }
 }
 
+// THE ROW'S FOCUS-RING CORRECTION, and the compound selector is load-bearing rather
+// than defensive. Measured in a real browser: a nested `&:focus-visible` inside the
+// row block compiles to `.data-table__row:focus-visible`, which two broader rules
+// out-specify — the base focus rule in the global reset, whose
+// `[tabindex]:not([tabindex='-1']):focus-visible` arm carries two attribute weights
+// and a pseudo-class, and the global table convention's
+// `tbody > tr[aria-selected]:focus-visible`. Every row here matches all three, because
+// the template sets `tabindex="0"` and `aria-selected` on each one, so the nested form
+// was authored and then simply never applied: the rows rendered the outward ring the
+// correction exists to prevent, and its outer band was clipped away on the left and
+// right edges of every row and on the bottom edge of the last one. Naming the
+// clipping ancestor and the row's own element and class raises this rule past both
+// aggressors, and it also states the REASON the correction exists rather than merely
+// winning a cascade argument. Do not flatten it back into the block above.
+//
+// THE OFFSET IS TURNED INWARD. The shared ring sits outside the box it marks, which
+// is right for a control in normal flow — but these rows sit inside a region that
+// scrolls, and a region that scrolls in one axis clips in both, so an outward ring on
+// the first or last row is cut off exactly when it matters. Drawing it inside the row
+// keeps the whole annulus visible and still shifts no layout, because an outline never
+// participates in layout in either direction.
+//
+// MIGRATION: the shared ring's SECOND TONE is withdrawn here, and this is the only
+// legitimate suppression of it in the application. That tone is an outset shadow,
+// which is the one part of the indicator that would paint outside the row — and a
+// row's neighbours are other rows, so the outer band would land on the row above and
+// the row below rather than on a backdrop, when it was not clipped away entirely. The
+// withdrawal costs nothing, because the second tone exists to rescue a ring whose
+// backdrop matches it and no row backdrop does: measured in a browser, the ring reads
+// 12.61:1 on the page surface, about 10.9:1 on the alternating surface and 8.24:1 on
+// the selected tint, every one clear of the 3:1 floor for a non-text indicator. The
+// inward outline alone is therefore already compliant on all three, which is why the
+// correction is a suppression rather than a re-tune. `none` is one of the six literals
+// the token vocabulary admits.
+.data-table__container tbody > tr.data-table__row:focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-offset));
+  box-shadow: none;
+}
+
 // MIGRATION: the selected row diverges from the legacy rendering over FOUR
 // distinct layers, and every one of them is recorded here rather than absorbed.
 //   (a) PROVENANCE. The tint token's only two uses in the entire legacy stylesheet
@@ -516,8 +490,8 @@
 // vocabulary's own contract for this tint requires, and the bold weight carries the
 // state for a reader who perceives neither the tint nor the announcement.
 //
-// No motion accompanies the change of state. REPORTED GAP: the design vocabulary
-// declares no duration and no easing token, and the mixins partial exports no
+// No motion accompanies the change of state: the design vocabulary declares no
+// duration and no easing token, and the mixins partial exports no
 // motion helper, so there is nothing to compose a transition from and a literal
 // duration is forbidden. The legacy portal declares a transition, an animation, a
 // keyframe rule and a transform zero times each, so the static presentation is also
@@ -622,20 +596,16 @@
 // selectable, so it can never receive that tint.
 //
 // MIGRATION, an ACCEPTED consequence rather than an oversight, measured in a real
-// browser and recorded so nobody has to rediscover it. The message spans every
-// column, so on a viewport narrower than the table's floor it is centred across the
-// FULL table width rather than across the visible part of the scrolling region, and
-// a few pixels of the longest wording therefore sit past the visible edge until the
-// reader scrolls. Measured on a small phone viewport: under four pixels of the
-// waiting wording and under twenty of the zero-result wording, both fully reachable
-// by the same horizontal scroll the column headings already require, and neither
-// affects a roomier viewport at all, where both wordings measured perfectly centred
-// and wholly visible. It is left alone deliberately: the alternatives are to
-// re-litigate the shared hook's centring — which this file consumes rather than
-// re-opens — or to introduce a container-query mechanism, and neither is warranted
-// by a sub-twenty-pixel offset on content that is already reachable. The floor that
-// causes it is the same floor that stops the columns being crushed, which is the
-// trade this component deliberately makes.
+// browser and recorded so nobody has to rediscover it. The message spans every column,
+// so on a viewport narrower than the table's floor it is centred across the FULL table
+// width rather than across the visible part of the scrolling region, and a few pixels of
+// the longest wording sit past the visible edge until the reader scrolls - reachable by
+// the same horizontal scroll the column headings already require, and with no effect at
+// all on a roomier viewport. It is left alone deliberately: the alternatives are to
+// re-litigate the shared hook's centring, which this file consumes rather than re-opens,
+// or to introduce a container-query mechanism, and neither is warranted by a small offset
+// on content that is already reachable. The floor that causes it is the same floor that
+// stops the columns being crushed, which is the trade this component makes.
 .data-table__message {
   padding-inline: var(--space-4);
 }
@@ -644,37 +614,31 @@
 //  DELIBERATE ABSENCES — read this before adding a rule
 // =============================================================================
 //
-// RESPONSIVE BEHAVIOUR IS BREAKPOINT-FREE BY CONSTRUCTION, and no breakpoint mixin
-// is included. The token-composed floor on the table and the automatic overflow on
-// the container together give the grid its entire responsive behaviour: the region
-// begins scrolling at whatever viewport can no longer afford the floor, and stops
-// when it can, with no step to choose and none to drift. Inventing a breakpoint the
-// design does not have would be worse than having none — the legacy stylesheets
-// declare a media query zero times, so every step in the shared scale is already a
-// net addition, and this component needs no step of its own. The shared scale
-// remains available should a genuine step ever be identified.
+// RESPONSIVE BEHAVIOUR IS BREAKPOINT-FREE BY CONSTRUCTION, and no breakpoint mixin is
+// included. The token-composed floor on the table and the automatic overflow on the
+// container together give the grid its entire responsive behaviour: the region begins
+// scrolling at whatever viewport can no longer afford the floor and stops when it can,
+// with no step to choose and none to drift. The legacy stylesheets declare a media query
+// zero times, so every step in the shared scale is already a net addition and this
+// component needs none of its own - though the scale remains available should a genuine
+// step ever be identified.
 //
-// HOVER IS PRESENT AND GUARDED — the gap this section used to report is CLOSED.
-// A hover rule sticks to the last-tapped element on a touch device until something
-// else is tapped, so it needs a hover-capability guard, and the mixins partial is the
-// only file in the workspace permitted a media feature query. Its exported surface
-// previously had no such member, and this file, the shared table conventions, the
-// global form vocabulary and the pagination component each recorded that absence as a
-// reported gap. The guard mixin now exists there and both hover rules in this file go
-// through it, so no query is written here and no rule can stick on a touch device.
-// An earlier revision of this stylesheet wrote the query directly and added a second
-// unguarded hover rule besides; neither of those forms returns.
+// HOVER IS PRESENT AND GUARDED. A hover rule sticks to the last-tapped element on a
+// touch device until something else is tapped, so it needs a hover-capability guard,
+// and the mixins partial is the only file in the workspace permitted a media feature
+// query. Both hover rules in this file go through that guard mixin, so no query is
+// written here and no rule can stick on a touch device. Writing the query directly, or
+// leaving a hover rule unguarded, are both forbidden for that reason.
 //
 // The hover states are additive decoration only. Nothing an interaction depends on
 // lives inside the guard: the pointer the global partial puts on selectable rows and
 // sortable headings, the focus ring, the programmatic selection state and the native
 // disabled property all carry the affordance for a reader whose device cannot hover.
 //
-// NO REDUCED-MOTION QUERY, for the same structural reason and with the same
-// resolution. That partial exports no reduced-motion guard either, and design-system
-// compliance outranks accessibility in this project's precedence order, so the query
-// may not be written here. REPORTED GAP — and a harmless one in this instance,
-// because this component emits no motion at all for such a query to withdraw.
+// NO REDUCED-MOTION QUERY, for the same structural reason: that partial exports no
+// reduced-motion guard, and design-system compliance outranks accessibility in this
+// project's precedence order, so the query may not be written here. The gap is harmless
+// in this instance, because this component emits no motion for such a query to withdraw.
 //
 // NO STICKY HEADING ROW. The global partial offers one as an opt-in and this
 // component does not take it: the container scrolls horizontally, not vertically, so

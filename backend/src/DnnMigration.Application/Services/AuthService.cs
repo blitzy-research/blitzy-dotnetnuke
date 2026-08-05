@@ -119,8 +119,10 @@
 // equivalent, and the reminder message it sent at L211 used a mail subsystem that is out of scope. No
 // recovery member is declared on this service, because IAuthService declares none: a member that could
 // neither disclose whether an account exists, nor transmit a credential, nor send a notification would
-// report success while doing nothing, which reads as a working feature. Administrative reset through
-// IUserService is the supported path, and this service owns no part of it.
+// report success while doing nothing, which reads as a working feature. During the explicitly enabled,
+// absolute-deadline migration window, this service can verify a stored legacy representation through
+// ILegacyCredentialVerifier and replace it immediately with BCrypt; administrative reset through
+// IUserService remains the fallback after that window or when a legacy representation cannot be verified.
 //
 // MIGRATION: the account approval question-and-answer pair is omitted. SendPassword.ascx.vb:L167
 // guarded on it, but the shipped policy set requiresQuestionAndAnswer="false"
@@ -177,7 +179,8 @@ namespace DnnMigration.Application.Services;
 /// <c>Website/admin/Security/SendPassword.ascx.vb</c>. Credential retrieval is deliberately not
 /// carried forward, the CAPTCHA gate is replaced by rate limiting at the Api layer, and a stored
 /// credential produced at a superseded cost is replaced on the first successful sign-in that presents
-/// it.
+/// it. A credential still held in a legacy membership format follows the same one-login replacement path,
+/// but only through the deployment-secret-backed verifier and only before its absolute deadline.
 /// </para>
 /// <para>
 /// Every rejected credential receives one answer. An unknown account name, a wrong credential, an
@@ -188,10 +191,10 @@ namespace DnnMigration.Application.Services;
 /// </para>
 /// <para>
 /// No member returns, echoes or records a credential, a stored hash, a verification code or a token
-/// value, and credentials are compared only through <see cref="IPasswordHasher"/> rather than by
-/// string equality. The one comparison of a literal credential is the shipped-default advisory, whose
-/// entire purpose is to recognise two specific values the product was distributed with, and which
-/// never reports the value it matched.
+/// value, and credentials are compared only through <see cref="IPasswordHasher"/> or the bounded
+/// <see cref="ILegacyCredentialVerifier"/> rather than by string equality. The one comparison of a literal
+/// credential is the shipped-default advisory, whose entire purpose is to recognise two specific values
+/// the product was distributed with, and which never reports the value it matched.
 /// </para>
 /// </remarks>
 public sealed class AuthService : IAuthService
@@ -223,6 +226,12 @@ public sealed class AuthService : IAuthService
     /// Reported when an authenticated caller's own account no longer exists.
     /// </summary>
     private const string UserNotFoundCode = "auth.user_not_found";
+
+    /// <summary>Reported when the account or tenant behind a session can no longer be resolved.</summary>
+    private const string RemediationSubjectUnresolvedCode = "auth.remediation.subject_unresolved";
+
+    /// <summary>Reported when required profile state cannot be evaluated safely.</summary>
+    private const string RemediationStoreUnavailableCode = "auth.remediation.store_unavailable";
 
     /// <summary>
     /// The approval outcome for an unapproved registration on a verified-registration tenant that
@@ -416,12 +425,23 @@ public sealed class AuthService : IAuthService
         "06f25bcf0acf336cdee0f93659c7647d8ab7b9c3c7d1d6274887a8c1d1b758cb",
     ];
 
+    private enum CredentialReplacementOutcome
+    {
+        NotRequired,
+        WorkFactorUpgraded,
+        LegacyCredentialMigrated,
+        WorkFactorUpgradeFailed,
+        LegacyMigrationFailed,
+    }
+
     private readonly IUserRepository _users;
     private readonly IPortalRepository _portals;
     private readonly IPermissionService _permissions;
     private readonly IUserService _accounts;
     private readonly ITokenService _tokens;
+    private readonly IRefreshTokenStore _refreshTokens;
     private readonly IPasswordHasher _passwordHasher;
+    private readonly ILegacyCredentialVerifier _legacyCredentials;
     private readonly IClock _clock;
     private readonly IHostSettingsService _hostSettings;
     private readonly IUnitOfWork _unitOfWork;
@@ -445,7 +465,13 @@ public sealed class AuthService : IAuthService
     /// its profile. The rule itself stays there, so it has a single implementation.
     /// </param>
     /// <param name="tokens">Token minting, rotation and revocation.</param>
+    /// <param name="refreshTokens">
+    /// Refresh-token inspection before any state-changing rotation is attempted.
+    /// </param>
     /// <param name="passwordHasher">One-way credential verification and replacement detection.</param>
+    /// <param name="legacyCredentials">
+    /// Migration-only verification of bounded legacy membership representations.
+    /// </param>
     /// <param name="clock">The instant every write and every expiry comparison is judged against.</param>
     /// <param name="hostSettings">
     /// Installation-wide settings, read for the two credential-expiry windows the legacy
@@ -482,7 +508,9 @@ public sealed class AuthService : IAuthService
         IPermissionService permissions,
         IUserService accounts,
         ITokenService tokens,
+        IRefreshTokenStore refreshTokens,
         IPasswordHasher passwordHasher,
+        ILegacyCredentialVerifier legacyCredentials,
         IClock clock,
         IHostSettingsService hostSettings,
         IUnitOfWork unitOfWork,
@@ -495,7 +523,9 @@ public sealed class AuthService : IAuthService
         ArgumentNullException.ThrowIfNull(portals);
         ArgumentNullException.ThrowIfNull(permissions);
         ArgumentNullException.ThrowIfNull(tokens);
+        ArgumentNullException.ThrowIfNull(refreshTokens);
         ArgumentNullException.ThrowIfNull(passwordHasher);
+        ArgumentNullException.ThrowIfNull(legacyCredentials);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(hostSettings);
         ArgumentNullException.ThrowIfNull(unitOfWork);
@@ -509,7 +539,9 @@ public sealed class AuthService : IAuthService
         _permissions = permissions;
         _accounts = accounts ?? throw new ArgumentNullException(nameof(accounts));
         _tokens = tokens;
+        _refreshTokens = refreshTokens;
         _passwordHasher = passwordHasher;
+        _legacyCredentials = legacyCredentials;
         _clock = clock;
         _hostSettings = hostSettings;
         _unitOfWork = unitOfWork;
@@ -591,23 +623,30 @@ public sealed class AuthService : IAuthService
             : await ResolveAccountByNameAsync(portalId, request.Username, cancellationToken)
                 .ConfigureAwait(false);
 
-        (bool exists, string? storedHash, bool isApproved, bool isLockedOut) = account is null
-            ? (false, null, false, false)
+        (
+            bool exists,
+            string? storedValue,
+            PasswordFormat? storedFormat,
+            string? passwordSalt,
+            bool isApproved,
+            bool isLockedOut) = account is null
+            ? (false, null, null, null, false, false)
             : await _users
                 .GetCredentialStateAsync(account.UserId, cancellationToken)
                 .ConfigureAwait(false);
 
-        // EXACTLY ONE CREDENTIAL COMPARISON, ON EVERY STRUCTURALLY VALID ATTEMPT, WHATEVER WAS FOUND. When
-        // there is no stored representation to compare against, the decoy the hashing abstraction publishes
-        // stands in for one: it is produced at the current work factor from input the implementation does not
-        // retain, so the comparison costs what a genuine one costs and cannot succeed. See
-        // IPasswordHasher.UnmatchableHash for why the decoy belongs to that abstraction rather than to this
-        // call site.
+        // EXACTLY ONE EXPENSIVE CURRENT-HASH COMPARISON, ON EVERY STRUCTURALLY VALID ATTEMPT, WHATEVER WAS
+        // FOUND. When there is no current BCrypt representation to compare against, the decoy the hashing
+        // abstraction publishes stands in for one: it is produced at the current work factor from input the
+        // implementation does not retain, so the comparison costs what a genuine one costs and cannot
+        // succeed. See IPasswordHasher.UnmatchableHash for why the decoy belongs to that abstraction rather
+        // than to this call site.
         //
-        // The comparison happens BEFORE the gates below rather than inside them, and the gates read its
-        // result rather than deciding whether to perform it. That is what makes the work unconditional: a
-        // comparison performed only when the gates allow it would still be skipped for a locked account, and
-        // the timing difference would come straight back.
+        // A legacy representation is deliberately NOT handed to the BCrypt parser. Doing so fails quickly,
+        // which would make a legacy account measurably faster than both a migrated account and an unknown
+        // account. It receives the same current-cost decoy comparison first and only then the bounded legacy
+        // comparison. The latter is cheap relative to BCrypt, so the deliberately expensive step remains
+        // unconditional throughout the transition.
         //
         // ONE residual difference is acknowledged rather than hidden: an unknown tenant performs one database
         // read where a known account performs three. Those reads are ordinary indexed lookups, and their
@@ -615,11 +654,23 @@ public sealed class AuthService : IAuthService
         // leave is far below the one this change removes. Equalising them would mean issuing reads whose
         // results are discarded, which trades a measurable improvement for a much larger and permanent cost
         // on every legitimate sign-in.
-        bool credentialAccepted = _passwordHasher.Verify(
-            request.Password,
-            storedHash ?? _passwordHasher.UnmatchableHash);
+        LegacyCredentialVerification legacyVerification =
+            exists && storedValue is not null && storedFormat is PasswordFormat format
+                ? _legacyCredentials.Verify(request.Password, storedValue, format, passwordSalt)
+                : LegacyCredentialVerification.Current;
 
-        if (portal is null || account is null || !exists || storedHash is null)
+        // MIGRATION: one current-cost BCrypt comparison still runs for every structurally valid request.
+        // A recognised legacy representation is paired with the hasher's decoy rather than handed to
+        // BCrypt, then checked by the isolated verifier. This preserves the timing defence while allowing
+        // the one successful legacy presentation that immediately replaces the stored value.
+        bool currentCredentialAccepted = _passwordHasher.Verify(
+            request.Password,
+            legacyVerification.IsLegacyCredential
+                ? _passwordHasher.UnmatchableHash
+                : storedValue ?? _passwordHasher.UnmatchableHash);
+        bool credentialAccepted = currentCredentialAccepted || legacyVerification.IsMatch;
+
+        if (portal is null || account is null || !exists || storedValue is null)
         {
             // ONE REFUSAL, FOUR CAUSES, AND THE TRAIL STILL SEPARATES THEM. The caller is told nothing about
             // which of the four closed - that uniformity is the whole point of collecting them here - but the
@@ -631,8 +682,6 @@ public sealed class AuthService : IAuthService
             RecordSignInOutcome(
                 UserLoginStatus.Failure,
                 portalId,
-                portal?.PortalName ?? string.Empty,
-                request.Username,
                 account?.UserId);
             return Denied();
         }
@@ -706,42 +755,56 @@ public sealed class AuthService : IAuthService
             // present and no tenant to be approved into.
             if (!isApproved && !account.IsSuperUser)
             {
-                // Composed exactly as the provider composed it at AspNetMembershipProvider.vb:L1468 --
-                // `verificationCode = (portalId.ToString & "-" & user.UserID)`. The code is stored nowhere,
-                // no column for it appears anywhere in the schema chain, so it is recomputed here and any
-                // account still awaiting verification at cut-over holds a code this comparison accepts.
-                // Ordinal and untrimmed on purpose: the value is machine generated and echoed back from a
-                // link, so any difference at all means the caller did not follow the link that was sent.
-                //
-                // Its predictability is why this comparison must sit behind the credential and not in front
-                // of it. Nothing here makes the code less guessable - it cannot, since existing pending
-                // accounts hold codes of exactly this shape - so the protection is the password, and the
-                // ordering is what applies it.
-                string expectedVerificationCode = FormattableString.Invariant($"{portalId}-{account.UserId}");
+                Result<bool> validEmail = await _accounts
+                    .IsEmailValidAsync(portalId, account.Email ?? string.Empty, cancellationToken)
+                    .ConfigureAwait(false);
 
-                if (!string.Equals(request.VerificationCode, expectedVerificationCode, StringComparison.Ordinal))
+                if (validEmail.IsFailure || !validEmail.Value)
                 {
+                    // Security_EmailValidation is an admission rule rather than a display hint. An existing
+                    // pending account whose address no longer satisfies the portal's configured expression
+                    // remains pending even when the predictable legacy verification code is presented.
                     loginStatus = UserLoginStatus.UserNotApproved;
-                }
-                else if (!await _users
-                    .SetApprovalAsync(account.UserId, true, cancellationToken)
-                    .ConfigureAwait(false))
-                {
-                    // The code was correct but the approval could not be recorded. Continuing would sign in
-                    // an account the store still holds as unapproved, so the gate stays closed. The legacy
-                    // could not reach this branch: its UpdateUser call at
-                    // AspNetMembershipProvider.vb:L1473 returned nothing and reported no failure.
-                    loginStatus = UserLoginStatus.UserNotApproved;
-                    approvalCouldNotBeRecorded = true;
                 }
                 else
                 {
-                    account.IsApproved = true;
-                    approvedByVerification = true;
+                    // Composed exactly as the provider composed it at AspNetMembershipProvider.vb:L1468 --
+                    // `verificationCode = (portalId.ToString & "-" & user.UserID)`. The code is stored nowhere,
+                    // no column for it appears anywhere in the schema chain, so it is recomputed here and any
+                    // account still awaiting verification at cut-over holds a code this comparison accepts.
+                    // Ordinal and untrimmed on purpose: the value is machine generated and echoed back from a
+                    // link, so any difference at all means the caller did not follow the link that was sent.
+                    //
+                    // Its predictability is why this comparison must sit behind the credential and not in front
+                    // of it. Nothing here makes the code less guessable - it cannot, since existing pending
+                    // accounts hold codes of exactly this shape - so the protection is the password, and the
+                    // ordering is what applies it.
+                    string expectedVerificationCode = FormattableString.Invariant($"{portalId}-{account.UserId}");
 
-                    // Reached only from inside the non-superuser branch, so the ordinary success is the
-                    // correct member here and no superuser test is needed.
-                    loginStatus = UserLoginStatus.Success;
+                    if (!string.Equals(request.VerificationCode, expectedVerificationCode, StringComparison.Ordinal))
+                    {
+                        loginStatus = UserLoginStatus.UserNotApproved;
+                    }
+                    else if (!await _users
+                        .SetApprovalAsync(account.UserId, true, cancellationToken)
+                        .ConfigureAwait(false))
+                    {
+                        // The code was correct but the approval could not be recorded. Continuing would sign in
+                        // an account the store still holds as unapproved, so the gate stays closed. The legacy
+                        // could not reach this branch: its UpdateUser call at
+                        // AspNetMembershipProvider.vb:L1473 returned nothing and reported no failure.
+                        loginStatus = UserLoginStatus.UserNotApproved;
+                        approvalCouldNotBeRecorded = true;
+                    }
+                    else
+                    {
+                        account.IsApproved = true;
+                        approvedByVerification = true;
+
+                        // Reached only from inside the non-superuser branch, so the ordinary success is the
+                        // correct member here and no superuser test is needed.
+                        loginStatus = UserLoginStatus.Success;
+                    }
                 }
             }
             else
@@ -780,8 +843,6 @@ public sealed class AuthService : IAuthService
             RecordSignInOutcome(
                 loginStatus,
                 portalId,
-                portal.PortalName ?? string.Empty,
-                request.Username,
                 account.UserId);
         }
 
@@ -809,7 +870,7 @@ public sealed class AuthService : IAuthService
                 // so the lock is genuinely current - either the window has not elapsed or the
                 // installation has switched automatic unlocking off with an explicit zero. The lock can
                 // then only be cleared by the administrative unlock member on IUserService.
-                return CallerIsEntitledToDetail(portal)
+                return await CallerIsEntitledToDetailAsync(portal, cancellationToken).ConfigureAwait(false)
                     ? Result<LoginResponse>.Failure(
                         LockedOutCode,
                         FormattableString.Invariant(
@@ -880,8 +941,9 @@ public sealed class AuthService : IAuthService
                 // MIGRATION: recorded with the REAL account identifier. The legacy passed
                 // Null.NullInteger for it (UserController.vb:L79), so its trail recorded that a sign-in
                 // had failed without recording whose - which makes a credential-stuffing run against one
-                // account indistinguishable from scattered mistyping. Deliberate improvement, and the
-                // account NAME is recorded as well because the legacy recorded that too.
+                // account indistinguishable from scattered mistyping. The target records the stable account
+                // identifier and deliberately drops the account name, so attribution does not create a
+                // second retained copy of a directly identifying value.
                 // THE ANSWER IS READ, WHICH IT PREVIOUSLY WAS NOT. This write is not bookkeeping around the
                 // security control - it IS the control: the counter it increments is the only thing that ever
                 // locks an account, so a failure to increment it means this attempt did not count and no
@@ -906,6 +968,19 @@ public sealed class AuthService : IAuthService
             now,
             cancellationToken).ConfigureAwait(false);
 
+        ResultReason? advisory = ShippedCredentialAdvisory(loginStatus);
+
+        // A shipped default credential has no durable marker of its own. Once it has been recognised after
+        // a successful comparison, promote it onto the same UpdatePassword flag used by an administrator-
+        // forced change. The password-change path already clears that flag atomically with the replacement,
+        // which makes the blocking state re-evaluable on refresh and on every protected request rather than
+        // knowable only during the one request that saw the raw credential.
+        bool forcedChangeRecorded = advisory is not null && !account.UpdatePassword;
+        if (forcedChangeRecorded)
+        {
+            account.UpdatePassword = true;
+        }
+
         MembershipWriteOutcome successRecorded = await _users
             .RecordSuccessfulLoginAsync(account.UserId, now, cancellationToken)
             .ConfigureAwait(false);
@@ -916,12 +991,26 @@ public sealed class AuthService : IAuthService
         // merely lose a timestamp - it leaves an account drifting towards a lock it has not earned.
         EnsureMembershipBookkeepingRan(successRecorded, account.UserId);
 
-        if (!await TryReplaceSupersededCredentialAsync(
-                account.UserId,
-                request.Password,
-                storedHash,
-                now,
-                cancellationToken).ConfigureAwait(false))
+        // MIGRATION: THE REPLACEMENT REPORTS WHICH REPLACEMENT IT WAS, NOT MERELY WHETHER IT WORKED. Two
+        // revisions wrote this call, one answering a boolean and one answering a closed outcome. The outcome
+        // survives because the three interesting states are not interchangeable: a work-factor upgrade that
+        // failed needs nothing from an operator, a LEGACY migration that failed strands the account the
+        // moment the compatibility window closes, and a legacy migration that SUCCEEDED changes the
+        // credential representation an operator has to account for and is therefore an audit event. A
+        // boolean can express none of those three.
+        //
+        // The two arguments are the locals this method already holds: the stored representation read from
+        // the membership row, and the verifier's own judgement that the row was legacy AND matched. The
+        // helper never re-decides either question.
+        CredentialReplacementOutcome replacement = await TryReplaceCredentialAsync(
+            account.UserId,
+            request.Password,
+            storedValue,
+            legacyVerification.IsMatch,
+            now,
+            cancellationToken).ConfigureAwait(false);
+
+        if (replacement == CredentialReplacementOutcome.WorkFactorUpgradeFailed)
         {
             // A cost upgrade that could not be stored, which must not fail a sign-in whose credential was
             // correct - see that method for why - but must not vanish either: an installation whose stored
@@ -931,8 +1020,43 @@ public sealed class AuthService : IAuthService
                 portalId,
                 account.UserId);
         }
+        else if (replacement == CredentialReplacementOutcome.LegacyMigrationFailed)
+        {
+            // The legacy credential was proven while the window was open, so refusing the sign-in because
+            // the replacement store was temporarily unavailable would add a new failure mode and strand the
+            // account for an infrastructure fault it did not cause. Proceed, but record the condition under
+            // its own closed diagnostic member: once the absolute deadline passes this account will require
+            // administrative reset unless a later successful login completes the migration.
+            _diagnostics.Record(
+                SecurityDiagnosticEvent.LegacyCredentialMigrationFailed,
+                portalId,
+                account.UserId);
+        }
+        else if (replacement == CredentialReplacementOutcome.LegacyCredentialMigrated)
+        {
+            // The successful migration is an audit event because it changes the credential representation
+            // an operator must account for. It carries the account, tenant and former FORMAT only - never the
+            // submitted password, the legacy value, its salt, the replacement hash or the deployment key.
+            _audit.Record(new AuditEvent(AuditEventNames.LegacyCredentialMigrated)
+            {
+                PortalId = portalId,
+                ActorUserId = account.UserId,
 
-        if (approvedByVerification)
+                // No actor NAME. The record identifies the account by its key, exactly as every other
+                // record this application writes does: the envelope carries no name member, because a user
+                // name is personal data and the general application log is not a records-management store.
+                // A revision that composed this record wrote one; the envelope never had the member.
+                SubjectUserId = account.UserId,
+                ResourceType = CredentialResourceType,
+                ResourceId = account.UserId.ToString(CultureInfo.InvariantCulture),
+                Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["PreviousFormat"] = storedFormat?.ToString(),
+                },
+            });
+        }
+
+        if (approvedByVerification || forcedChangeRecorded)
         {
             // The one branch of a sign-in that changes a tracked row, and therefore the only one that
             // opens the transaction boundary. It reproduces the account persistence the provider
@@ -942,7 +1066,29 @@ public sealed class AuthService : IAuthService
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        Result<LoginResponse> issued = await IssueAsync(portal, account, now, cancellationToken)
+        Result<bool> profileRemediation = await EvaluateProfileRemediationAsync(
+            portal.PortalId,
+            account,
+            cancellationToken).ConfigureAwait(false);
+
+        if (profileRemediation.IsFailure)
+        {
+            return Result<LoginResponse>.Failure(profileRemediation.Reason!);
+        }
+
+        // The blocking state is read from authoritative storage rather than inferred, and it travels on the
+        // RESPONSE only. It is deliberately not minted into the access token: the token carries identity,
+        // not mutable authority, so a remediation that is completed - or newly required - takes effect on
+        // the next request instead of surviving until the token expires.
+        AuthenticationRemediationState remediation = new(
+            mustChangePassword || advisory is not null,
+            profileRemediation.Value);
+
+        Result<LoginResponse> issued = await IssueAsync(
+            portal,
+            account,
+            remediation,
+            cancellationToken)
             .ConfigureAwait(false);
 
         if (issued.IsFailure)
@@ -955,8 +1101,6 @@ public sealed class AuthService : IAuthService
 
         LoginResponse response = issued.Value;
 
-        ResultReason? advisory = ShippedCredentialAdvisory(loginStatus);
-
         // MIGRATION: the two weak-credential outcomes are ADVISORIES ON A SUCCESSFUL SIGN-IN, never
         // refusals, which is exactly what the legacy made them: UserController.vb:L1144-L1152 REPLACED an
         // already-successful status with LOGIN_INSECUREADMINPASSWORD or LOGIN_INSECUREHOSTPASSWORD and
@@ -965,10 +1109,7 @@ public sealed class AuthService : IAuthService
         // as an informational reason on a successful result, which keeps the two cases distinguishable
         // to the Api edge, and as the must-change advisory on the body, because forcing a credential
         // change is the legacy remediation intent for both. No legacy status ordinal reaches the wire.
-        response.MustChangePassword = mustChangePassword || advisory is not null;
         response.PasswordExpiring = passwordExpiring;
-        response.MustUpdateProfile = await MustUpdateProfileAsync(portal.PortalId, account, cancellationToken)
-            .ConfigureAwait(false);
 
         // M-07: the ACCEPTED outcome, recorded after the sign-in has fully succeeded so that no accepted
         // event can describe a sign-in that then failed to issue. The legacy sign-in path recorded no
@@ -981,7 +1122,6 @@ public sealed class AuthService : IAuthService
         RecordLoginOutcome(
             loginStatus,
             portalId,
-            portal.PortalName ?? string.Empty,
             account,
             AuditOutcome.Succeeded,
             advisory?.Code,
@@ -1033,32 +1173,30 @@ public sealed class AuthService : IAuthService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (string.IsNullOrWhiteSpace(request.RefreshToken))
+        if (string.IsNullOrWhiteSpace(request.RefreshToken)
+            || string.IsNullOrWhiteSpace(request.ClientBinding))
         {
             return Result<LoginResponse>.Failure(InvalidRefreshTokenCode, "The refresh token is not valid.");
         }
 
-        Result<LoginResponse> rotated = await _tokens
-            .RefreshAsync(request.RefreshToken, cancellationToken)
+        // SEC-038: inspection is non-consuming. Every fallible tenant, account, credential and
+        // remediation read below completes before the store is asked to rotate, so a dependency failure
+        // cannot spend the old token without delivering its replacement.
+        RefreshTokenInspection inspection = await _refreshTokens
+            .InspectAsync(request.RefreshToken, request.ClientBinding, cancellationToken)
             .ConfigureAwait(false);
 
-        if (rotated.IsFailure)
+        if (inspection.Outcome != RefreshTokenOutcome.Succeeded || inspection.Subject is null)
         {
-            // The store outage travels unchanged; every other reason describes the presented token and is
-            // collapsed into one, so a caller cannot learn whether a guessed value ever existed.
-            return IsTokenStoreFailure(rotated.Reason)
-                ? Result<LoginResponse>.Failure(rotated.Reason!)
+            return inspection.Outcome == RefreshTokenOutcome.StoreUnavailable
+                ? Result<LoginResponse>.Failure(
+                    TokenStoreUnavailableCode,
+                    "The refresh token store could not be reached.")
                 : Result<LoginResponse>.Failure(InvalidRefreshTokenCode, "The refresh token is not valid.");
         }
 
-        LoginResponse response = rotated.Value;
-
-        // The identity, tenant and account name on the rotated response come from the token service's own
-        // record of the value being exchanged, never from anything the caller supplied - there is no
-        // parameter through which they could be supplied, which is the point. They are read back here
-        // only to re-read the mutable facts against them.
-        int portalId = response.User.PortalId;
-        int userId = response.User.UserId;
+        int portalId = inspection.Subject.PortalId;
+        int userId = inspection.Subject.UserId;
 
         Portal? portal = await _portals
             .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
@@ -1074,7 +1212,6 @@ public sealed class AuthService : IAuthService
             return await RefuseRotationAsync(
                 userId,
                 portalId,
-                response.User.Username,
                 AccountUnresolvedFailure,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -1097,11 +1234,17 @@ public sealed class AuthService : IAuthService
         // (AspNetMembershipProvider.vb:L1465-L1477). The credential VALUE is not re-verified and cannot be:
         // rotation carries no password, which is precisely why the ceiling exists as the point at which a
         // caller must present one again.
-        (bool exists, string? storedHash, bool isApproved, bool isLockedOut) = await _users
+        (
+            bool exists,
+            string? storedValue,
+            _,
+            _,
+            bool isApproved,
+            bool isLockedOut) = await _users
             .GetCredentialStateAsync(account.UserId, cancellationToken)
             .ConfigureAwait(false);
 
-        string? ineligible = !exists || storedHash is null
+        string? ineligible = !exists || storedValue is null
             ? CredentialMissingFailure
             : isLockedOut
                 ? AuditFailureCodeFor(UserLoginStatus.UserLockedOut)
@@ -1114,31 +1257,55 @@ public sealed class AuthService : IAuthService
             return await RefuseRotationAsync(
                 account.UserId,
                 portalId,
-                account.Username,
                 ineligible,
                 cancellationToken).ConfigureAwait(false);
         }
 
         DateTime now = _clock.UtcNow;
-
-        response.User = await BuildSnapshotAsync(portal, account, now, cancellationToken)
-            .ConfigureAwait(false);
-
         (bool mustChangePassword, bool passwordExpiring) = await EvaluateCredentialAdvisoriesAsync(
             account,
             now,
             cancellationToken).ConfigureAwait(false);
+        // FAILS CLOSED. Profile completion is an authorisation input rather than an advisory, so a store
+        // that cannot be read is not evidence that the requirement is satisfied: the rotation is refused
+        // and the token family ended, exactly as an unresolvable account is.
+        Result<bool> profileRemediation = await EvaluateProfileRemediationAsync(
+            portalId,
+            account,
+            cancellationToken).ConfigureAwait(false);
 
+        if (profileRemediation.IsFailure)
+        {
+            return await RefuseRotationAsync(
+                account.UserId,
+                portalId,
+                RemediationStoreUnavailableCode,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        bool mustUpdateProfile = profileRemediation.Value;
+
+        Result<LoginResponse> rotated = await _tokens
+            .RefreshAsync(request.RefreshToken, request.ClientBinding, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (rotated.IsFailure)
+        {
+            return IsTokenStoreFailure(rotated.Reason)
+                ? Result<LoginResponse>.Failure(rotated.Reason!)
+                : Result<LoginResponse>.Failure(InvalidRefreshTokenCode, "The refresh token is not valid.");
+        }
+
+        LoginResponse response = rotated.Value;
+        response.User = BuildIdentitySnapshot(portal, account);
         response.MustChangePassword = mustChangePassword;
         response.PasswordExpiring = passwordExpiring;
-        response.MustUpdateProfile = await MustUpdateProfileAsync(portalId, account, cancellationToken)
-            .ConfigureAwait(false);
+        response.MustUpdateProfile = mustUpdateProfile;
 
         _audit.Record(new AuditEvent(AuditEventNames.SessionRenewed)
         {
             PortalId = portalId,
             ActorUserId = account.UserId,
-            ActorUserName = account.Username,
             SubjectUserId = account.UserId,
         });
 
@@ -1199,7 +1366,6 @@ public sealed class AuthService : IAuthService
         {
             PortalId = _currentUser.IsAuthenticated ? _currentUser.PortalId : null,
             ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
-            ActorUserName = _currentUser.IsAuthenticated ? _currentUser.UserName : null,
         });
 
         // A store outage travels unchanged, because a sign-out that silently failed to revoke anything
@@ -1209,6 +1375,46 @@ public sealed class AuthService : IAuthService
         return revoked.IsFailure && IsTokenStoreFailure(revoked.Reason)
             ? Result.Failure(revoked.Reason!)
             : Result.Success();
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<AuthenticationRemediationState>> EvaluateRemediationAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        User? account = await ResolveAccountByIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (portal is null || account is null)
+        {
+            return Result<AuthenticationRemediationState>.Failure(
+                RemediationSubjectUnresolvedCode,
+                "The account or tenant behind the session can no longer be resolved.");
+        }
+
+        DateTime now = _clock.UtcNow;
+        (bool mustChangePassword, _) = await EvaluateCredentialAdvisoriesAsync(
+            account,
+            now,
+            cancellationToken).ConfigureAwait(false);
+
+        Result<bool> profileRemediation = await EvaluateProfileRemediationAsync(
+            portalId,
+            account,
+            cancellationToken).ConfigureAwait(false);
+
+        if (profileRemediation.IsFailure)
+        {
+            return Result<AuthenticationRemediationState>.Failure(profileRemediation.Reason!);
+        }
+
+        return Result<AuthenticationRemediationState>.Success(
+            new AuthenticationRemediationState(mustChangePassword, profileRemediation.Value));
     }
 
     /// <inheritdoc />
@@ -1281,8 +1487,6 @@ public sealed class AuthService : IAuthService
     /// </summary>
     /// <param name="outcome">The outcome the attempt produced.</param>
     /// <param name="portalId">The tenant the credential was presented to.</param>
-    /// <param name="portalName">The tenant's name, or an empty string when the tenant does not exist.</param>
-    /// <param name="username">The account name that was submitted, exactly as submitted.</param>
     /// <param name="userId">The account the attempt resolved to, or <see langword="null"/> for none.</param>
     /// <remarks>
     /// <para>
@@ -1292,31 +1496,18 @@ public sealed class AuthService : IAuthService
     /// enumeration.
     /// </para>
     /// <para>
-    /// The credential is not a parameter and could not be one: the audit contract declares no member that
-    /// could carry a password, a hash or a verification code. The submitted account NAME is carried,
-    /// unfiltered, because the value actually presented is the value an investigator needs - and it is
-    /// safe to carry unfiltered because the implementation emits it as a structured property rather than
-    /// interpolating it into a message, so it can never become part of a template. That replaces the
-    /// legacy's input filtering, which existed only because its record was later rendered.
+    /// Neither the credential nor the submitted account name is a parameter. A name that resolves is
+    /// represented by the stable account identifier; a name that does not resolve leaves the actor and
+    /// subject absent. This deliberately gives up correlating unknown-name probes in the audit sink so
+    /// caller-supplied identifiers do not acquire a second retention lifecycle outside the account store.
+    /// Request-rate and correlation telemetry remain the controls for grouping anonymous probes.
     /// </para>
     /// </remarks>
     private void RecordSignInOutcome(
         UserLoginStatus outcome,
         int portalId,
-        string portalName,
-        string username,
         int? userId)
     {
-        Dictionary<string, string?> properties = new(StringComparer.Ordinal)
-        {
-            ["Username"] = username,
-        };
-
-        if (!string.IsNullOrEmpty(portalName))
-        {
-            properties["PortalName"] = portalName;
-        }
-
         bool accepted = Admitted(outcome);
 
         _audit.Record(new AuditEvent(AuditEventNameFor(outcome))
@@ -1324,10 +1515,8 @@ public sealed class AuthService : IAuthService
             Outcome = accepted ? AuditOutcome.Succeeded : AuditOutcome.Denied,
             PortalId = portalId,
             ActorUserId = userId,
-            ActorUserName = username,
             SubjectUserId = userId,
             FailureCode = accepted ? null : AuditFailureCodeFor(outcome),
-            Properties = properties,
         });
     }
 
@@ -1520,6 +1709,7 @@ public sealed class AuthService : IAuthService
     /// Decides whether the caller of this request may be told that an account is locked.
     /// </summary>
     /// <param name="portal">The tenant the sign-in addresses.</param>
+    /// <param name="cancellationToken">Cancellation token for the authoritative host-account read.</param>
     /// <returns>
     /// <see langword="true"/> when the caller already administers the tenant or the installation.
     /// </returns>
@@ -1529,10 +1719,26 @@ public sealed class AuthService : IAuthService
     /// could not read from the account list, so it receives the actionable answer instead. The test is by
     /// identifier rather than by role name, because a role name is tenant-configurable.
     /// </remarks>
-    private bool CallerIsEntitledToDetail(Portal portal)
-        => _currentUser.IsAuthenticated
-            && (_currentUser.IsSuperUser
-                || (_currentUser.UserId is int actor && portal.AdministratorId == actor));
+    private async Task<bool> CallerIsEntitledToDetailAsync(
+        Portal portal,
+        CancellationToken cancellationToken)
+    {
+        if (!_currentUser.IsAuthenticated || _currentUser.UserId is not int actor)
+        {
+            return false;
+        }
+
+        if (portal.AdministratorId == actor)
+        {
+            return true;
+        }
+
+        User? account = await _users
+            .GetAsync(portalId: null, actor, cancellationToken)
+            .ConfigureAwait(false);
+
+        return account?.IsSuperUser == true;
+    }
 
     /// <summary>
     /// Resolves an account by name within a tenant, admitting a host account that holds no membership.
@@ -1597,7 +1803,7 @@ public sealed class AuthService : IAuthService
     /// </summary>
     /// <param name="portal">The tenant signed in to.</param>
     /// <param name="account">The authenticated account.</param>
-    /// <param name="asOfUtc">The instant role validity windows are evaluated against.</param>
+    /// <param name="remediation">The blocking state already evaluated from authoritative storage.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>
     /// A successful outcome carrying the issued pair and a freshly read snapshot of the caller, or the
@@ -1615,19 +1821,12 @@ public sealed class AuthService : IAuthService
     private async Task<Result<LoginResponse>> IssueAsync(
         Portal portal,
         User account,
-        DateTime asOfUtc,
+        AuthenticationRemediationState remediation,
         CancellationToken cancellationToken)
     {
-        CurrentUserDto snapshot = await BuildSnapshotAsync(portal, account, asOfUtc, cancellationToken)
-            .ConfigureAwait(false);
-
         Result<LoginResponse> issued = await _tokens.IssueTokensAsync(
             account.UserId,
             portal.PortalId,
-            account.Username,
-            account.IsSuperUser,
-            snapshot.Roles,
-            snapshot.Permissions,
             cancellationToken).ConfigureAwait(false);
 
         if (issued.IsFailure)
@@ -1636,13 +1835,35 @@ public sealed class AuthService : IAuthService
         }
 
         LoginResponse response = issued.Value;
-        response.User = snapshot;
+        response.MustChangePassword = remediation.MustChangePassword;
+        response.MustUpdateProfile = remediation.MustUpdateProfile;
+        response.User = BuildIdentitySnapshot(portal, account);
 
         return Result<LoginResponse>.Success(response);
     }
 
+    /// <summary>Builds the authority-minimised identity carried on login and refresh responses.</summary>
+    /// <param name="portal">The tenant the session addresses.</param>
+    /// <param name="account">The authenticated account.</param>
+    /// <returns>
+    /// Identity and display fields with empty role and permission collections. Expanded authority is
+    /// available only from the explicit current-user endpoint.
+    /// </returns>
+    private static CurrentUserDto BuildIdentitySnapshot(Portal portal, User account) => new()
+    {
+        UserId = account.UserId,
+        PortalId = portal.PortalId,
+        PortalName = portal.PortalName,
+        Username = account.Username,
+        DisplayName = account.DisplayName,
+        Email = account.Email ?? string.Empty,
+        IsSuperUser = account.IsSuperUser,
+        Roles = [],
+        Permissions = [],
+    };
+
     /// <summary>
-    /// Builds the caller snapshot carried on a token response and returned by the current-user read.
+    /// Builds the expanded caller snapshot returned only by the current-user read.
     /// </summary>
     /// <param name="portal">The tenant the caller is signed in to.</param>
     /// <param name="account">The account.</param>
@@ -1652,17 +1873,16 @@ public sealed class AuthService : IAuthService
     /// <remarks>
     /// <para>
     /// Roles are resolved as of the supplied instant, so an assignment whose validity window has not
-    /// opened or has already closed does not become a claim. Permission keys are resolved at tenant scope
+    /// opened or has already closed does not appear in the snapshot. Permission keys are resolved at tenant scope
     /// through <see cref="IPermissionService"/>, which owns the caller-to-role-names rule and delegates
     /// the allow-and-deny precedence to the single evaluator; resolving them from a repository here would
     /// duplicate that precedence, and a security rule with two implementations is a security rule with
-    /// two answers. The keys are required by <see cref="ITokenService.IssueTokensAsync"/>, which by
-    /// contract never invents, filters, reorders or deduplicates what it is handed.
+    /// two answers. None of these mutable values enters an access token.
     /// </para>
     /// <para>
     /// Those keys tell a client which affordances to render; they never stand in for the server-side
     /// authorisation policy, which re-evaluates on every request. A resolution that cannot be completed
-    /// therefore yields no keys rather than refusing a sign-in whose credential was already accepted -
+    /// therefore yields no keys rather than failing the current-user read -
     /// the client offers less than it might, and the API refuses anything it should not allow. That
     /// substitution is NOT silent: the failure is recorded through the Domain diagnostics contract, because an
     /// empty set is otherwise indistinguishable from a caller who genuinely holds nothing, and a fault that
@@ -1776,7 +1996,7 @@ public sealed class AuthService : IAuthService
     /// account. Recorded in MIGRATION_NOTES.md rather than absorbed.
     /// </para>
     /// <para>
-    /// C-03: the profile advisory is decided by <see cref="MustUpdateProfileAsync"/> rather than here,
+    /// C-03: the profile gate is decided by <see cref="EvaluateProfileRemediationAsync"/> rather than here,
     /// because this method answers only the CREDENTIAL question and the legacy separated the two the same
     /// way - the credential arms of <c>UserController.vb</c> L1175-L1188 and the profile arm at
     /// L1189-L1193 were consecutive but independent. An earlier revision reported the profile arm as an
@@ -1794,16 +2014,20 @@ public sealed class AuthService : IAuthService
         DateTime asOfUtc,
         CancellationToken cancellationToken)
     {
-        if (account.IsSuperUser)
-        {
-            return (false, false);
-        }
-
         // The administrator-forced update, read from the account row's own flag - the legacy read the
         // membership property of the same intent and gave it the highest precedence.
         if (account.UpdatePassword)
         {
             return (true, false);
+        }
+
+        // Host accounts are exempt from age-based expiry because they are installation-level operators,
+        // but not from an explicit forced-change flag. The shipped-default detection persists that flag for
+        // a host account as well, so the remediation gate remains re-evaluable after the raw credential is
+        // no longer available.
+        if (account.IsSuperUser)
+        {
+            return (false, false);
         }
 
         int expiryDays = await ReadHostSettingIntegerAsync(PasswordExpiryHostSettingName, 0, cancellationToken)
@@ -1850,8 +2074,9 @@ public sealed class AuthService : IAuthService
     /// <param name="account">The admitted account.</param>
     /// <param name="cancellationToken">Token observed while the question is asked.</param>
     /// <returns>
-    /// <see langword="true"/> when the tenant requires a valid profile at sign-in and the account leaves a
-    /// required property empty.
+    /// A successful outcome carrying <see langword="true"/> when the tenant requires a valid profile and the
+    /// account leaves a required property empty; otherwise a failed outcome when the required state could
+    /// not be evaluated.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -1878,26 +2103,31 @@ public sealed class AuthService : IAuthService
     /// behind a non-blocking one.
     /// </para>
     /// <para>
-    /// A failed question is answered <see langword="false"/> rather than propagated. The member declares no
-    /// failure code, so a failure here can only be an unexpected one, and refusing an otherwise valid
-    /// sign-in because a profile advisory could not be computed would convert an advisory into an outage.
+    /// This state is now an enforced gate rather than a client advisory, so an evaluation failure must fail
+    /// closed. Treating an unreadable required profile as complete would issue an unrestricted token on the
+    /// strength of missing evidence. The outward failure is deliberately generic and names no profile
+    /// definition or stored value.
     /// </para>
     /// </remarks>
-    private async Task<bool> MustUpdateProfileAsync(
+    private async Task<Result<bool>> EvaluateProfileRemediationAsync(
         int portalId,
         User account,
         CancellationToken cancellationToken)
     {
         if (account.IsSuperUser)
         {
-            return false;
+            return Result<bool>.Success(false);
         }
 
         Result<bool> outcome = await _accounts
             .RequiresProfileCompletionAsync(portalId, account.UserId, cancellationToken)
             .ConfigureAwait(false);
 
-        return outcome.IsSuccess && outcome.Value;
+        return outcome.IsSuccess
+            ? Result<bool>.Success(outcome.Value)
+            : Result<bool>.Failure(
+                RemediationStoreUnavailableCode,
+                "The account's required remediation state could not be evaluated.");
     }
 
     /// <summary>
@@ -2014,99 +2244,92 @@ public sealed class AuthService : IAuthService
     }
 
     /// <summary>
-    /// Replaces a stored credential representation that the hashing abstraction reports as superseded.
+    /// Replaces an accepted stored credential when it is legacy or uses a superseded current work factor.
     /// </summary>
     /// <param name="userId">The account whose stored representation is replaced.</param>
     /// <param name="password">The credential just accepted, which the replacement is computed from.</param>
-    /// <param name="storedHash">The stored representation that was just verified against.</param>
+    /// <param name="storedCredential">The stored representation accepted by one of the two verifiers.</param>
+    /// <param name="verifiedByLegacy">Whether the bounded legacy verifier accepted the credential.</param>
     /// <param name="asOfUtc">The instant the replacement is stamped with.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>
-    /// <see langword="true"/> when nothing needed replacing or the replacement was stored;
-    /// <see langword="false"/> when a replacement was due and could not be stored.
+    /// A value identifying whether no replacement was due, which replacement succeeded, or which one failed.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: this is the credential upgrade performed on a successful sign-in, and its scope must be
-    /// stated precisely because a broader reading of it has already been corrected once in
-    /// MIGRATION_NOTES.md. It upgrades the WORK FACTOR of an existing one-way hash. It does NOT migrate a
-    /// legacy value: the legacy store was reversible - registered with an encrypted format and retrieval
-    /// enabled at <c>Website/release.config</c> L236-L246 - and verifying such a value would need the
-    /// symmetric material committed at L89-L93, which is out of scope and is not reproduced anywhere in
-    /// this tree. The hashing abstraction holds exactly one algorithm and no legacy branch, so a
-    /// pre-migration value cannot be verified at all and its holder regains access through an
-    /// administrative reset on <see cref="IUserService"/>. This method is reachable only after a
-    /// successful verification, which is precisely why it can never see one.
+    /// MIGRATION: the frozen cut-over contract requires a bounded legacy verification path. When that
+    /// isolated verifier accepts a clear, legacy hash or format-2 encrypted representation, this method
+    /// immediately replaces it with BCrypt and rewrites the membership format/salt through the repository.
+    /// Administrative reset remains the fallback for disabled migration, malformed rows, credentials whose
+    /// legacy key is unavailable, and accounts that never sign in. The same method also raises the work
+    /// factor of a BCrypt value produced by an older target deployment.
     /// </para>
     /// <para>
     /// The upgrade is TRANSPARENT: no extra round trip for the caller, no change to the response, and no
     /// new failure mode. A persistence failure must not fail a sign-in whose credential was correct - the
-    /// account simply keeps a still-valid representation at the superseded cost and the next successful
-    /// sign-in tries again - so the failure is contained here. Cancellation is deliberately excluded from
-    /// the containment and continues to propagate, because a cancelled request is not a failed write.
+    /// account simply keeps the representation it just proved and the next successful sign-in tries again -
+    /// so the failure is contained here. For a legacy value that retry remains possible only until the
+    /// absolute migration deadline; afterwards administrative reset is the fallback. Cancellation is
+    /// deliberately excluded from the containment and continues to propagate.
     /// </para>
     /// <para>
     /// CONTAINED IS NOT UNRECORDED. An earlier revision swallowed the failure in silence and reported the
     /// inability to record it as an unclosable gap, on the grounds that no logger is resolvable in this
-    /// project. The consequence was that an installation could keep verifying credentials at a superseded
-    /// work factor indefinitely with no signal of any kind - the one failure mode where silence is
-    /// indistinguishable from success, because the sign-in works perfectly either way. The containment now
-    /// emits a security event through <see cref="IAuditSink"/>, which takes no package dependency and is
-    /// therefore available here. The event carries the account identifier and the exception TYPE NAME and
-    /// nothing else: never the submitted password, never the stored hash, and not the exception message
-    /// either, since a store failure's message can quote the value it failed to write.
+    /// project. The consequence was that an installation could keep verifying a superseded or legacy
+    /// representation with no signal of any kind. The containment now emits a security event through
+    /// <see cref="IAuditSink"/>. It carries the account identifier, replacement kind and exception TYPE NAME
+    /// only: never the submitted password, either stored representation, the salt, or the deployment key.
     /// </para>
     /// <para>
     /// THE OUTCOME IS REPORTED RATHER THAN ABSORBED, which is the difference from an earlier revision. That
     /// revision discarded the store's own return value AND caught every non-cancellation exception into an
-    /// empty handler, so a cost upgrade that never happened was indistinguishable from one that did. The
-    /// consequence is quiet and long-lived: an installation raises its work factor, believes every credential
-    /// re-hashes on next sign-in, and none of them does - with no error, no log line and no failing request to
-    /// suggest otherwise. Containing the failure is still correct; being unable to observe it is not, so the
-    /// two are now separated. This method still never throws for a store failure, and its caller records the
-    /// occurrence through the Domain diagnostics contract.
+    /// empty handler, so a replacement that never happened was indistinguishable from one that did. This
+    /// method still never throws for a store failure, and its caller records the specific occurrence through
+    /// the Domain diagnostics contract.
     /// </para>
     /// <para>
-    /// NOTHING ABOUT THE CREDENTIAL IS CARRIED OUT OF HERE. The return value is a single boolean and the
-    /// diagnostic the caller records carries a tenant, an account and nothing else: no password, no
-    /// representation, no exception message. The exception is deliberately not returned or rethrown for that
-    /// reason as much as for flow control - a provider exception can carry statement text and connection
-    /// detail, and this is the one path on a successful sign-in where such a value could otherwise escape.
+    /// NOTHING ABOUT THE CREDENTIAL IS CARRIED OUT OF HERE. The return value is a closed outcome and the
+    /// diagnostic carries a tenant and an account only: no password, representation, salt, key or exception
+    /// message. A provider exception can carry statement text and connection detail, so only its type name is
+    /// admitted to the failure audit.
     /// </para>
     /// </remarks>
-    private async Task<bool> TryReplaceSupersededCredentialAsync(
+    private async Task<CredentialReplacementOutcome> TryReplaceCredentialAsync(
         int userId,
         string password,
-        string storedHash,
+        string storedCredential,
+        bool verifiedByLegacy,
         DateTime asOfUtc,
         CancellationToken cancellationToken)
     {
-        if (!_passwordHasher.NeedsRehash(storedHash))
+        if (!verifiedByLegacy && !_passwordHasher.NeedsRehash(storedCredential))
         {
-            // Nothing was due, so nothing failed. Reported as success rather than as a distinct third state:
-            // the caller's only question is whether the stored representation is now at the current cost, and
-            // it is.
-            return true;
+            return CredentialReplacementOutcome.NotRequired;
         }
+
+        CredentialReplacementOutcome succeeded = verifiedByLegacy
+            ? CredentialReplacementOutcome.LegacyCredentialMigrated
+            : CredentialReplacementOutcome.WorkFactorUpgraded;
+        CredentialReplacementOutcome failed = verifiedByLegacy
+            ? CredentialReplacementOutcome.LegacyMigrationFailed
+            : CredentialReplacementOutcome.WorkFactorUpgradeFailed;
 
         try
         {
             // The store's own answer is part of the outcome. It reports false when no credential record was
             // updated, which is a silent no-op rather than an exception - so a method that only guarded against
             // exceptions would have called that a successful upgrade.
-            return await _users
+            bool stored = await _users
                 .SetPasswordHashAsync(userId, _passwordHasher.Hash(password), asOfUtc, cancellationToken)
                 .ConfigureAwait(false);
+
+            return stored ? succeeded : failed;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            // Contained on purpose: the only correct response to a failed cost upgrade is to leave the
-            // working credential alone and proceed with a sign-in that was already valid. The condition
-            // above re-raises cancellation, because a cancelled request is not a failed write.
-            //
             // Recorded at Failed outcome, which the sink raises to warning level, so an operator has the
-            // signal the silence used to withhold. Only the exception TYPE is carried - a message may
-            // quote the value that could not be written.
+            // signal the silence used to withhold. Only the replacement kind and exception TYPE are carried -
+            // a message may quote the value that could not be written.
             _audit.Record(new AuditEvent(AuditEventNames.PasswordRehashFailure)
             {
                 Outcome = AuditOutcome.Failed,
@@ -2114,13 +2337,13 @@ public sealed class AuthService : IAuthService
                 ResourceType = CredentialResourceType,
                 ResourceId = userId.ToString(CultureInfo.InvariantCulture),
                 FailureCode = exception.GetType().Name,
+                Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["ReplacementKind"] = verifiedByLegacy ? "LegacyMigration" : "WorkFactorUpgrade",
+                },
             });
-            // Contained on purpose: the only correct response to a failed cost upgrade is to leave the working
-            // credential alone and proceed with a sign-in that was already valid. What has changed is that the
-            // containment is no longer silent - the caller is told, and records it. The exception itself is
-            // deliberately not propagated in any form, including into the diagnostic. The condition above
-            // re-raises cancellation, because a cancelled request is not a failed write.
-            return false;
+
+            return failed;
         }
     }
 
@@ -2187,7 +2410,6 @@ public sealed class AuthService : IAuthService
     /// </summary>
     /// <param name="userId">The account the presented token belonged to.</param>
     /// <param name="portalId">The tenant the presented token named.</param>
-    /// <param name="userName">The account name recorded on the presented token, for the trail.</param>
     /// <param name="failureCode">Which eligibility question closed, recorded but never disclosed.</param>
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
     /// <returns>The single uniform refusal this contract reports for every rejected token.</returns>
@@ -2218,7 +2440,6 @@ public sealed class AuthService : IAuthService
     private async Task<Result<LoginResponse>> RefuseRotationAsync(
         int userId,
         int portalId,
-        string? userName,
         string failureCode,
         CancellationToken cancellationToken)
     {
@@ -2239,7 +2460,6 @@ public sealed class AuthService : IAuthService
             Outcome = AuditOutcome.Denied,
             PortalId = portalId,
             ActorUserId = userId,
-            ActorUserName = userName,
             SubjectUserId = userId,
             FailureCode = failureCode,
         });
@@ -2252,7 +2472,6 @@ public sealed class AuthService : IAuthService
     /// </summary>
     /// <param name="loginStatus">The outcome the gates settled on.</param>
     /// <param name="portalId">The tenant the credential was presented to.</param>
-    /// <param name="portalName">The tenant's name, carried so accepted and refused records read alike.</param>
     /// <param name="account">The account the name resolved to.</param>
     /// <param name="outcome">Whether the sign-in was accepted or refused.</param>
     /// <param name="advisoryCode">A weak-credential advisory carried on an accepted sign-in, if any.</param>
@@ -2273,17 +2492,13 @@ public sealed class AuthService : IAuthService
     private void RecordLoginOutcome(
         UserLoginStatus loginStatus,
         int portalId,
-        string portalName,
         User account,
         AuditOutcome outcome,
         string? advisoryCode = null,
         bool? mustChangePassword = null,
         bool? mustUpdateProfile = null)
     {
-        Dictionary<string, string?> properties = new(StringComparer.Ordinal)
-        {
-            ["Username"] = account.Username,
-        };
+        Dictionary<string, string?> properties = new(StringComparer.Ordinal);
 
         // M-07: the two advisories are recorded as properties rather than as separate events, because they
         // qualify an outcome that has already been decided rather than being outcomes of their own. They
@@ -2299,11 +2514,6 @@ public sealed class AuthService : IAuthService
             properties["MustUpdateProfile"] = profileRequired ? "true" : "false";
         }
 
-        if (!string.IsNullOrEmpty(portalName))
-        {
-            properties["PortalName"] = portalName;
-        }
-
         if (advisoryCode is not null)
         {
             properties["Advisory"] = advisoryCode;
@@ -2314,7 +2524,6 @@ public sealed class AuthService : IAuthService
             Outcome = outcome,
             PortalId = portalId,
             ActorUserId = account.UserId,
-            ActorUserName = account.Username,
             SubjectUserId = account.UserId,
             FailureCode = outcome == AuditOutcome.Succeeded ? null : AuditFailureCodeFor(loginStatus),
             Properties = properties,

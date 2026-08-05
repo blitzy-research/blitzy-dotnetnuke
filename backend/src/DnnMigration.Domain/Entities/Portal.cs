@@ -40,10 +40,10 @@ namespace DnnMigration.Domain.Entities;
 // resolved it by joining Files; the Files subsystem is out of scope, so resolving it is an Application
 // or Infrastructure projection concern and is deliberately not behaviour on this entity.
 
-// MIGRATION: ProcessorPassword is a payment-gateway credential that the legacy schema stores in clear
-// text. This entity is write-through storage for it and nothing more: identity-based equality is
-// inherited unchanged and there is no ToString override, so no member here can leak it through a
-// comparison, a hash or a diagnostic string. It must never reach a DTO, a log or a response.
+// MIGRATION: the legacy ProcessorPassword column stored a payment-gateway credential in clear text.
+// The immutable column now carries only an opaque managed-secret reference. Its CLR name states the
+// new contract while Infrastructure keeps HasColumnName("ProcessorPassword"); no plaintext credential
+// may be assigned, projected, logged or returned.
 
 // MIGRATION: UserRegistration and BannerAdvertising become enumerations over the same persisted
 // ordinals, which are live data and must never be renumbered or reordered. Both terminal columns are
@@ -70,8 +70,8 @@ namespace DnnMigration.Domain.Entities;
 /// <para>
 /// The schema is immutable for this migration, so this file describes a table that already exists
 /// rather than defining one. Two invariants govern every consumer: neither -1 nor 0 may be read as an
-/// absent key, and <see cref="ProcessorPassword"/> is a clear-text credential that must never leave
-/// the entity.
+/// absent key, and <see cref="ProcessorCredentialReference"/> is an opaque managed-secret reference,
+/// never the referenced credential itself.
 /// </para>
 /// </remarks>
 public sealed class Portal : Entity<int>
@@ -209,14 +209,16 @@ public sealed class Portal : Entity<int>
     public string? ProcessorUserId { get; set; }
 
     /// <summary>
-    /// The <c>ProcessorPassword</c> column: <c>nvarchar(50) NULL</c>, the credential presented to the
-    /// payment gateway.
+    /// The legacy <c>ProcessorPassword</c> column: <c>nvarchar(50) NULL</c>, repurposed to hold an
+    /// opaque managed-secret reference.
     /// </summary>
     /// <remarks>
-    /// SENSITIVE and stored in clear text by the legacy schema. It must never be projected onto a
-    /// response DTO, written to a log or diagnostic string, or read by any equality or hashing.
+    /// MIGRATION: the column name cannot change under Rule T4 and is too narrow for safe envelope
+    /// ciphertext. New writes therefore store a bounded <c>secret://</c> reference only. Existing
+    /// plaintext values require operator rotation and replacement; application code never treats them
+    /// as credentials or echoes them to a client.
     /// </remarks>
-    public string? ProcessorPassword { get; set; }
+    public string? ProcessorCredentialReference { get; set; }
 
     /// <summary>
     /// The <c>SiteLogHistory</c> column: <c>int NULL</c>, days of site-log retention; null when none is

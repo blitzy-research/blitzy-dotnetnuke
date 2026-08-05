@@ -26,9 +26,10 @@
       reference that names nothing - off the 5 of 186 legacy labels that declare no
       control association at all.
 
-      The `id` is bound because the projection group below is named from this
-      element, which is how every control in a multi-control field inherits the
-      field's name.
+      The `id` is bound because both the projection group and every otherwise
+      unnamed projected control reference this visible text. ARIA naming is not
+      inherited from a group, so the component applies the control references
+      directly after projected content is checked.
     -->
     <label class="form-field__label" [id]="labelId()" [attr.for]="labelFor()">
       {{ labelText() }}
@@ -43,8 +44,9 @@
           nor its colour carries the meaning alone.
 
           It stays inside the `label`, so the word joins the field's accessible
-          name and travels with it to the projection group. The caller still sets
-          `required` on the control itself; this marker cannot and does not.
+          name and travels with both the projection group and any control using the
+          component's direct fallback reference. The caller still sets `required`
+          on the control itself; this marker cannot and does not.
         -->
         <span class="form-field__required">
           <span aria-hidden="true">{{ requiredMarker }}</span>
@@ -113,11 +115,12 @@
     the projected children, and no `&nbsp;` is emitted to separate them - the 70
     literal ones in the legacy markup are replaced by the stylesheet's `gap`.
 
-    MIGRATION: `role="group"` named from the label closes a legacy gap. The legacy
-    `ControlName` reached exactly one control, so the second control of a
-    multi-control field was announced with no field name at all. Naming the group
-    names every control inside it, and it changes no layout, no colour and no
-    spacing.
+    MIGRATION: the named `role="group"` preserves the composite field context, but
+    that name is not inherited by descendant controls. The legacy `ControlName`
+    reached exactly one control, so the component also applies this label's id
+    directly to every otherwise unnamed projected control. Consumer-supplied
+    native or ARIA names take precedence. The wiring changes no layout, no colour
+    and no spacing.
 
     The description points only at regions that are actually rendered, so a
     reference never resolves to nothing. Projected content keeps the scoping of the

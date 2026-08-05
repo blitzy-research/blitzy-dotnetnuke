@@ -321,7 +321,7 @@ public class MappingTests
             UserQuota = 750,
             PaymentProcessor = "Stripe",
             ProcessorUserId = "new-processor-user",
-            ProcessorPassword = "new-processor-password",
+            ProcessorCredentialReference = "secret://processor/replacement",
             Description = "A renamed description",
             KeyWords = "renamed,keywords",
             BackgroundFile = "new-background.png",
@@ -351,7 +351,7 @@ public class MappingTests
         portal.UserQuota.Should().Be(750);
         portal.PaymentProcessor.Should().Be("Stripe");
         portal.ProcessorUserId.Should().Be("new-processor-user");
-        portal.ProcessorPassword.Should().Be("new-processor-password");
+        portal.ProcessorCredentialReference.Should().Be("secret://processor/replacement");
         portal.Description.Should().Be("A renamed description");
         portal.KeyWords.Should().Be("renamed,keywords");
         portal.BackgroundFile.Should().Be("new-background.png");
@@ -369,6 +369,28 @@ public class MappingTests
         portal.AdministratorRoleId.Should().Be(3, "role wiring is not part of the settings request");
         portal.RegisteredRoleId.Should().Be(4);
         portal.AdminTabId.Should().Be(11, "the administration page is not part of the settings request");
+    }
+
+    /// <summary>
+    /// The processor reference uses an explicit keep/clear/replace contract without ever carrying the
+    /// referenced credential.
+    /// </summary>
+    [Fact]
+    public void PortalApplyUpdate_UsesExplicitProcessorReferenceOperations()
+    {
+        Portal portal = FullPortal();
+        portal.ProcessorCredentialReference = "secret://processor/existing";
+
+        PortalMappings.ApplyUpdate(portal, new UpdatePortalRequest());
+        portal.ProcessorCredentialReference.Should().Be("secret://processor/existing");
+
+        PortalMappings.ApplyUpdate(portal, new UpdatePortalRequest { ProcessorCredentialReference = string.Empty });
+        portal.ProcessorCredentialReference.Should().BeNull();
+
+        PortalMappings.ApplyUpdate(
+            portal,
+            new UpdatePortalRequest { ProcessorCredentialReference = "secret://processor/new" });
+        portal.ProcessorCredentialReference.Should().Be("secret://processor/new");
     }
 
     /// <summary>
@@ -587,8 +609,6 @@ public class MappingTests
             IsVisible = false,
             DisableLink = false,
             IconFile = "renamed.gif",
-            SkinSrc = "[G]Skins/Default/Plain.ascx",
-            ContainerSrc = "[G]Containers/Default/Grey.ascx",
             Url = "~/Renamed.aspx",
             StartDate = new DateTime(2027, 5, 6, 0, 0, 0, DateTimeKind.Utc),
             EndDate = new DateTime(2027, 6, 7, 0, 0, 0, DateTimeKind.Utc),
@@ -615,12 +635,18 @@ public class MappingTests
         tab.PageHeadText.Should().Be("<meta name=\"renamed\" />");
         tab.IsSecure.Should().BeFalse();
 
+        // MIGRATION: the presentation tokens are PRESERVED, not written, and the request no longer carries
+        // either. Skinning and containers are an explicit exclusion of this migration, so the page-edit
+        // contract must not be the supported way to change them. Asserting the STORED values here - the ones
+        // FullTab seeded, not the ones an earlier revision submitted - is what proves the projection leaves
+        // them alone: an ordinary edit that mentioned neither previously blanked both, because this
+        // projection is a whole-row replacement.
         tab.SkinSrc.Should().Be(
-            "[G]Skins/Default/Plain.ascx",
-            "the skin source is a genuine column the terminal update procedure writes, so the request "
-            + "carries it and the mapper must apply it - skinning being out of scope makes the value "
-            + "opaque, not unwritable");
-        tab.ContainerSrc.Should().Be("[G]Containers/Default/Grey.ascx");
+            "[G]Skins/Default/Home.ascx",
+            "the stored skin survives an unrelated edit rather than being blanked by an absent member");
+        tab.ContainerSrc.Should().Be(
+            "[G]Containers/Default/Blue.ascx",
+            "the stored container survives for the same reason");
         tab.IsDeleted.Should().BeFalse(
             "both legacy recycle-bin transitions were plain writes of this flag through this very "
             + "update path, and the page surface exposes no delete or restore route, so the request "
@@ -1739,8 +1765,90 @@ public class MappingTests
         // a deliberate widening, and it means an omitted flag now clears rather than preserves.
         module.IsDeleted.Should().BeFalse("the request cleared the flag, exactly as the legacy save did");
         placement.TabModuleId.Should().Be(31);
-        placement.TabId.Should().Be(7, "moving a module between pages is not an edit of the module");
+        placement.TabId.Should().Be(
+            7,
+            "the projection leaves the page alone, and the request named the page the placement is on");
         placement.ModuleId.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Applying an update that names a DIFFERENT page leaves the placement where it is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: 5.11 - THIS FACT WAS WRITTEN THE OTHER WAY UP AND IS RE-ORACLED, NOT DELETED, BECAUSE THE
+    /// INPUT IT EXERCISES IS THE ONE THAT MATTERS. Two revisions reached opposite conclusions about the
+    /// submitted page. One read it as the legacy settings save did - <c>cboTab.SelectedItem.Value</c> is the
+    /// second argument of <c>UpdateTabModule</c>, so that screen genuinely moved a module between pages - and
+    /// therefore expected the projection to write it. The other read it as the SELECTOR of which placement is
+    /// being updated, which is what the request contract documents, and therefore expected the projection to
+    /// leave it alone.
+    /// </para>
+    /// <para>
+    /// The selector reading survived, so the assertion is inverted while the setup is kept verbatim: the
+    /// fixture still places the module on a page that is not the submitted one, because a projection that
+    /// silently re-parented a placement would only be caught by submitting a page that differs. Its sibling
+    /// above submits the page the placement is already on and therefore cannot distinguish the two readings
+    /// at all - which is exactly how the member came to be inert in one revision without any test noticing.
+    /// This fact is the one that pins it.
+    /// </para>
+    /// <para>
+    /// A page move is consequently not available through this contract, and reinstating it needs a second
+    /// member naming the destination: one page identifier cannot be both the placement being edited and the
+    /// page it should end up on. The service refuses a request naming a page the module does not occupy, so
+    /// the input below never reaches the projection in production; the divergence from the legacy screen is
+    /// recorded in MIGRATION_NOTES.md.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ModuleApplyUpdate_NamingADifferentPageDoesNotReParentThePlacement()
+    {
+        Module module = FullModule();
+        TabModule placement = FullPlacement();
+
+        placement.TabId.Should().Be(7, "the fixture places the module on a page that is not the submitted one");
+
+        ModuleMappings.ApplyUpdate(
+            module,
+            placement,
+            new UpdateModuleRequest { TabId = 9, ModuleTitle = "Renamed Module" });
+
+        placement.TabId.Should().Be(
+            7,
+            "the submitted page selects the placement and is never written onto it");
+        module.ModuleTitle.Should().Be(
+            "Renamed Module",
+            "the rest of the projection still applies, so this is not a wholesale refusal to write");
+
+        // The identity of the placement row itself is untouched either way: the key and the module it belongs
+        // to are write-once at create.
+        placement.TabModuleId.Should().Be(31);
+        placement.ModuleId.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Zero selects a page like any other identifier and is still never written onto the placement.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: page identity seeds at zero - <c>Tabs.TabID</c> is an identity column whose first value is
+    /// the first page of the installation - so a submitted zero is a legitimate page identifier and must
+    /// never be read as "no page supplied". Under the selecting contract that matters one layer up: the
+    /// service must look for the placement on page zero rather than treating the request as page-less, which
+    /// a positive-value guard would do and which would make the first page of a portal the one page whose
+    /// placements could never be addressed. The projection's own obligation is unchanged by the value: it
+    /// leaves the stored page alone whether the submitted one is zero, equal, or different.
+    /// </remarks>
+    [Fact]
+    public void ModuleApplyUpdate_TreatsPageZeroLikeAnyOtherSelectorAndStillDoesNotWriteIt()
+    {
+        Module module = FullModule();
+        TabModule placement = FullPlacement();
+
+        ModuleMappings.ApplyUpdate(module, placement, new UpdateModuleRequest { TabId = 0 });
+
+        placement.TabId.Should().Be(
+            7,
+            "zero is a real page identifier, and no page identifier is written onto an existing placement");
     }
 
     /// <summary>
@@ -2253,18 +2361,19 @@ public class MappingTests
     }
 
     /// <summary>
-    /// A new profile definition is anchored to the tenant the route named, starts undeleted, and floors a
-    /// negative length.
+    /// A new profile definition translates the legacy host identifier at the persistence boundary, starts
+    /// undeleted, and floors a negative length.
     /// </summary>
     /// <remarks>
     /// MIGRATION: this test previously supplied a definition key, a foreign tenant and a visibility hint on
     /// the body and asserted that all three were ignored. The create contract carries none of them - the first
     /// two arrive from the route or the store, and the third is not a column on the table at any point in the
     /// 88-script chain - so the guarantee is structural. The assertions on the tenant and the key are retained
-    /// because they prove the mapper writes the parameter and leaves the key unset.
+    /// because they prove the mapper applies the same <c>-1</c>-to-<c>NULL</c> translation as the legacy
+    /// provider and leaves the key unset.
     /// </remarks>
     [Fact]
-    public void ProfileDefinitionToNewDefinition_AnchorsTheTenantAndFloorsTheLength()
+    public void ProfileDefinitionToNewDefinition_TranslatesHostScopeAndFloorsTheLength()
     {
         CreateProfilePropertyDefinitionRequest request = new()
         {
@@ -2282,9 +2391,8 @@ public class MappingTests
 
         ProfilePropertyDefinition definition = UserMappings.ToNewDefinition(portalId: -1, request);
 
-        definition.PortalId.Should().Be(
-            -1,
-            "the tenant comes from the route, and the contract carries no member that could name another");
+        definition.PortalId.Should().BeNull(
+            "AddPropertyDefinition passed the legacy -1 identifier through GetNull before writing it");
         definition.ModuleDefinitionId.Should().Be(4);
         definition.IsDeleted.Should().BeFalse();
         definition.DataType.Should().Be(349);
@@ -2293,6 +2401,10 @@ public class MappingTests
         definition.PropertyName.Should().Be("Telephone");
         definition.Length.Should().Be(0, "a negative width is floored rather than stored");
         definition.IsRequired.Should().BeTrue();
+
+        UserMappings.ToNewDefinition(portalId: 0, request).PortalId.Should().Be(
+            0,
+            "only the measured host sentinel is translated; an ordinary portal identifier is unchanged");
         definition.ValidationExpression.Should().Be(@"^\d+$");
         definition.ViewOrder.Should().Be(3);
         definition.IsVisible.Should().BeTrue();
@@ -2477,7 +2589,7 @@ public class MappingTests
             UserQuota = 750,
             PaymentProcessor = "Stripe",
             ProcessorUserId = "new-processor-user",
-            ProcessorPassword = "not-a-real-secret",
+            ProcessorCredentialReference = "secret://processor/distinct",
             Description = "A renamed description",
             KeyWords = "renamed,keywords",
             BackgroundFile = "new-background.png",
@@ -2508,7 +2620,7 @@ public class MappingTests
             request.UserQuota!.Value.ToString(CultureInfo.InvariantCulture),
             request.PaymentProcessor!,
             request.ProcessorUserId!,
-            request.ProcessorPassword!,
+            request.ProcessorCredentialReference!,
             request.Description!,
             request.KeyWords!,
             request.BackgroundFile!,
@@ -3751,7 +3863,8 @@ public class MappingTests
     /// <para>
     /// MIGRATION: the entity models the host case as null, which is honest about the column, and the
     /// response projects it back to -1, which is what every legacy consumer of this contract expects to
-    /// read. The translation is one-directional and lives here.
+    /// read. This is the outbound half of the mapping-layer translation; the create mapper applies the
+    /// inverse because the legacy provider passed -1 through <c>GetNull</c> before writing.
     /// </para>
     /// </remarks>
     [Fact]
@@ -4032,7 +4145,7 @@ public class MappingTests
         PortalMappings.ToSettings(appliedTwice).Should().BeEquivalentTo(
             PortalMappings.ToSettings(appliedOnce),
             options => options.Excluding(settings => settings.Guid));
-        appliedTwice.ProcessorPassword.Should().Be(appliedOnce.ProcessorPassword);
+        appliedTwice.ProcessorCredentialReference.Should().Be(appliedOnce.ProcessorCredentialReference);
         appliedTwice.AdminTabId.Should().Be(appliedOnce.AdminTabId);
         appliedTwice.AdministratorRoleId.Should().Be(appliedOnce.AdministratorRoleId);
         appliedTwice.RegisteredRoleId.Should().Be(appliedOnce.RegisteredRoleId);
@@ -4094,7 +4207,7 @@ public class MappingTests
             PortalGuid = Guid.NewGuid(),
             PaymentProcessor = "PayPal",
             ProcessorUserId = "processor-user",
-            ProcessorPassword = "processor-password",
+            ProcessorCredentialReference = "secret://processor/existing",
             SiteLogHistory = 60,
             AdminTabId = 11,
             SplashTabId = 12,

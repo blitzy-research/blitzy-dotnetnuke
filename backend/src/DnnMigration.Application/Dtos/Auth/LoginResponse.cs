@@ -14,16 +14,16 @@ namespace DnnMigration.Application.Dtos.Auth;
 // and neither is any other legacy status enumeration. That enumeration is declared at L23-L29 of its
 // own source file under Library/Components/Users/Membership/ (namespace
 // DotNetNuke.Security.Membership) and is returned by UserController.vb:L1171. Its five values map
-// onto the two advisory flags below, value by value:
-//     value 0, valid                  -> no flag set; both flags stay false
+// onto the three response flags below, value by value:
+//     value 0, valid                  -> no flag set; all flags stay false
 //     value 1, password-expired       -> MustChangePassword   (legacy behaviour was blocking)
 //     value 2, password-expiring      -> PasswordExpiring     (legacy behaviour was NON-blocking)
-//     value 3, update-profile-needed  -> NOT REPRESENTED; see the reduction recorded below
+//     value 3, update-profile-needed  -> MustUpdateProfile    (legacy behaviour was blocking)
 //     value 4, password-update-forced -> MustChangePassword   (legacy behaviour was blocking)
 // ALL THREE FLAGS ARE POPULATED, and an earlier revision of this note said only two were. AuthService
 // assigns MustChangePassword and PasswordExpiring on both the sign-in and the rotation path, from
 // EvaluateCredentialAdvisoriesAsync, and assigns MustUpdateProfile on both paths from
-// MustUpdateProfileAsync, which asks IUserService.RequiresProfileCompletionAsync - the one
+// EvaluateProfileRemediationAsync, which asks IUserService.RequiresProfileCompletionAsync - the one
 // implementation of the legacy per-tenant gate and profile-completeness walk. The claim that no
 // production path assigned it described the tree before that producer existed; a flag that can only
 // ever answer one way is a false capability signal, which is precisely why the member is carried only
@@ -85,14 +85,12 @@ namespace DnnMigration.Application.Dtos.Auth;
 // provider was registered at Website/release.config:L236-L246 with an encrypted format (L245) and
 // with retrieval enabled (L239), decryptable through the symmetric material committed at L89-L93
 // (the field at L91, the cipher named at L92) - material that is read as historical fact and is
-// never reproduced, rotated or redacted by this migration. Retrieval is therefore not carried
+// never reproduced by the target configuration. Retrieval is therefore not carried
 // forward to any endpoint or screen, unlike the legacy flow that decrypted and mailed the stored
-// credential outright. AN ADMINISTRATIVE RESET IS THE ONLY WAY AN EXISTING STORED VALUE BECOMES
-// USABLE: an earlier revision of this note said existing values are re-hashed on the first successful
-// sign-in with reset as the fallback, and that was false - re-hashing requires first verifying the
-// submitted password against the legacy value, which nothing in this solution can do. What a sign-in
-// does upgrade is the COST of a value this scheme itself produced, which is a different operation and
-// rescues no legacy credential. No credential material appears on this contract either way.
+// credential outright. During an explicitly enabled migration window, the isolated legacy verifier
+// can accept a bounded clear, SHA-1 or encrypted representation and AuthService immediately replaces
+// it with BCrypt; administrative reset remains the fallback. No credential material or migration
+// key appears on this contract either way.
 //
 // MIGRATION: the expiry is published as one absolute instant in UTC rather than as a remaining
 // number of seconds. A relative lifetime is only correct at the moment the response is written and
@@ -109,7 +107,7 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// <summary>
 /// The successful payload of both <c>POST /api/v1/auth/login</c> and <c>POST /api/v1/auth/refresh</c>:
 /// the bearer credential pair the client uses from that point on, the moment the access token lapses,
-/// two advisory flags, and a snapshot of who the caller is.
+/// three remediation and expiry flags, and a snapshot of who the caller is.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -149,10 +147,10 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// rotation counter and no server-side rotation state of any kind.
 /// </para>
 /// <para>
-/// The two advisory flags are the boundary expression of a successful sign-in that nevertheless
-/// carries a caveat. Each is a plain non-nullable boolean whose <see langword="false"/> value means
-/// "no advisory", and each is written on the wire even when false, so an absent advisory is stated
-/// rather than inferred from a missing field. A nullable form would be wrong rather than merely
+/// The three remediation and expiry flags are the boundary expression of a successful sign-in that
+/// nevertheless carries follow-up state. Each is a plain non-nullable boolean whose
+/// <see langword="false"/> value means "not required", and each is written on the wire even when false,
+/// so absence is stated rather than inferred from a missing field. A nullable form would be wrong rather than merely
 /// generous: the legacy null test reported "absent" for <see langword="false"/> itself
 /// (<c>Null.vb</c> L227-L228), so a legacy false and a legacy unknown were never distinguishable, and
 /// modelling a third state here would advertise a distinction the source data cannot make. For the
@@ -223,7 +221,7 @@ public sealed class LoginResponse
 
     /// <summary>
     /// Whether the caller must change their credential before continuing. <see langword="false"/> means
-    /// no such advisory.
+    /// no such requirement.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -243,6 +241,11 @@ public sealed class LoginResponse
     /// <para>
     /// The identifier matches the member of the same meaning on the administrative user detail contract,
     /// so one signal has one name across every contract that carries it.
+    /// </para>
+    /// <para>
+    /// This is not merely a client prompt. The access token carries the same signed decision and the API
+    /// authorization gate re-evaluates the stored flag on every protected request, admitting only the
+    /// authentication lifecycle and the account owner's credential-change route until it clears.
     /// </para>
     /// </remarks>
     public bool MustChangePassword { get; set; }
@@ -273,7 +276,7 @@ public sealed class LoginResponse
 
     /// <summary>
     /// Whether the caller must complete or correct their profile before continuing.
-    /// <see langword="false"/> means no such advisory.
+    /// <see langword="false"/> means no such requirement.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -296,14 +299,12 @@ public sealed class LoginResponse
     /// question rather than re-deriving the answer.
     /// </para>
     /// <para>
-    /// MIGRATION: an earlier revision of this contract advertised this member with no production code
-    /// able to set it, so every client read a permanent <see langword="false"/> and would conclude the
-    /// installation never requires profile completion - a FALSE CAPABILITY SIGNAL, which is worse than an
-    /// absent member because a flag that can only answer one way is indistinguishable from one that is
-    /// answering correctly. The member is carried here only because that producer now exists and is
-    /// authoritative; the two extra reads it performs land on an ALREADY-AUTHENTICATED path, after the
-    /// credential has been accepted, never on the anonymous one, and a read that fails is treated as "no
-    /// advisory" so that an advisory outage can never become a sign-in outage.
+    /// MIGRATION: an earlier revision exposed this member without enforcing it and treated an unreadable
+    /// profile state as though no work were required. Both behaviours were unsafe: a blocking legacy state
+    /// became a client hint, and missing evidence opened the ordinary application surface. The authentication
+    /// service now evaluates the requirement for login, refresh and every protected request; a read failure
+    /// fails closed, while a true result admits only authentication lifecycle and the account owner's profile
+    /// read/update routes until the required values are complete.
     /// </para>
     /// </remarks>
     public bool MustUpdateProfile { get; set; }

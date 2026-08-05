@@ -35,10 +35,16 @@ namespace DnnMigration.Api.Middleware;
 /// this stage performs the work once and the later stages - the named resolution middleware and the
 /// portal-administration authorisation handler - observe the identical outcome without resolving again. All
 /// three ask for it through the same address helper, so no two of them can disagree about which tenant the
-/// request belongs to. What this stage deliberately does NOT do is refuse a request or report a failure: an
-/// unresolved tenant is left exactly as the later stage would leave it, with the reason logged there and the
-/// refusal owned by the endpoints that need a tenant. Reporting the same condition twice, in two places, is
-/// how two components come to disagree about it.
+/// request belongs to.
+/// </para>
+/// <para>
+/// WHAT THIS STAGE OWNS AND WHAT IT DOES NOT. It owns POPULATION and DIAGNOSIS; the named stage owns the
+/// REFUSAL. Diagnosis moved here because the named stage is ordered after authorisation, so a request
+/// authorisation refused never reached it - and an unresolvable host name is one of the likeliest causes of
+/// that refusal, which left an operator with a 403 and no entry explaining it. The refusal cannot move here in
+/// return: deciding whether an endpoint needs a tenant reads the matched endpoint's metadata, and routing has
+/// not run yet. The wording of the diagnosis is still declared on the named stage, so one component owns it
+/// and the two cannot drift.
 /// </para>
 /// <para>
 /// WHY THE PATH BASE AND NOT A REWRITE. Assigning the path base preserves the original address for anything
@@ -102,14 +108,23 @@ internal sealed class TenantPathBaseMiddleware
 
         string address = TenantAddress.Of(context);
 
-        // The outcome is deliberately not inspected. Every reason a tenant fails to resolve is reported by
-        // the named resolution stage, which runs later and observes this same memoised result; reporting it
-        // here as well would duplicate the log entry and split ownership of a single decision across two
-        // components.
-        _ = await portalContext.EnsureResolvedAsync(address, context.RequestAborted).ConfigureAwait(false);
+        // SEC-030: THE AUTHORITATIVE TENANT IS POPULATED HERE, AND SO IS ITS DIAGNOSIS. This stage runs before
+        // routing and therefore before authorisation, so by the time any authorisation handler asks which
+        // tenant a request belongs to, the answer is already established - and a failure to establish one has
+        // already been recorded. Both properties matter and neither was true before: the diagnosis lived in the
+        // named stage that runs AFTER authorisation, so a request authorisation refused - which an unresolvable
+        // host makes far more likely - produced a 403 with no entry saying why. The refusal itself stays in the
+        // named stage, because deciding whether an endpoint needs a tenant requires the matched endpoint's
+        // metadata, which does not exist yet here.
+        Result resolution = await portalContext
+            .EnsureResolvedAsync(address, context.RequestAborted)
+            .ConfigureAwait(false);
 
         if (!portalContext.IsResolved)
         {
+            // One wording, declared once, on the component that owns the vocabulary.
+            PortalAliasResolutionMiddleware.LogUnresolved(_logger, address, resolution);
+
             await _next(context).ConfigureAwait(false);
             return;
         }

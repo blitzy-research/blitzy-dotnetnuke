@@ -85,7 +85,7 @@ internal static class ProfileDefinitionTermsRules
 
     /// <summary>Reported when the validation expression exceeds the width of its column.</summary>
     internal const string ValidationExpressionTooLongMessage =
-        "Validation Expression must be 2000 characters or fewer";
+        "Validation Expression must be 512 characters or fewer";
 
     /// <summary>
     /// The legacy pattern, reproduced character for character from
@@ -99,6 +99,10 @@ internal static class ProfileDefinitionTermsRules
     /// <summary>Terminal width of <c>PropertyCategory nvarchar(50) NOT NULL</c>.</summary>
     internal const int PropertyCategoryMaximumLength = 50;
 
-    /// <summary>Terminal width of <c>ValidationExpression nvarchar(2000) NULL</c>.</summary>
-    internal const int ValidationExpressionMaximumLength = 2000;
+    /// <summary>
+    /// Security work-factor limit for tenant-authored expressions. The column remains mapped at its immutable
+    /// terminal width of 2000; new writes are intentionally constrained more narrowly so a policy value cannot
+    /// consume disproportionate parser and matching work.
+    /// </summary>
+    internal const int ValidationExpressionMaximumLength = 512;
 }

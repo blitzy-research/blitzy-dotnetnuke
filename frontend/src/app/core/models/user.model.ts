@@ -96,9 +96,14 @@
  * A new password travels in one direction only, on the request shapes that exist to
  * carry it, and never comes back on a response.
  *
- * Existing stored credentials cannot be verified against a one-way hash, so the
- * documented migration path is to re-hash on the first successful sign-in, with an
- * administrative reset as the fallback for accounts that never sign in again.
+ * Existing stored credentials cannot be verified at all: the target holds no legacy
+ * verifier and maps no legacy credential column, so no submitted password can be
+ * checked against a value written under the legacy reversible scheme. A first
+ * successful sign-in against such a value is therefore impossible, and the migration
+ * path is administrative RESET for every pre-existing account, without exception.
+ * Cost upgrading is a separate, narrower mechanism that applies only to BCrypt hashes
+ * this target produced: once such a hash verifies, it may be re-hashed at the current
+ * work factor. It is not, and never was, a legacy-credential detector.
  *
  * The legacy column was `[Password] [nvarchar](20) NOT NULL`
  * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L98-L111`).
@@ -844,4 +849,3 @@ export enum PasswordFormat {
   /** Stored reversibly under a symmetric key. Never to be used for a new credential. */
   Encrypted = 2,
 }
-

@@ -227,16 +227,25 @@ public interface IModuleService
     /// identifier.
     /// </para>
     /// <para>
+    /// <b>The window and the total are in ROW units, which is the unit the response carries.</b> A request
+    /// for a page of twenty receives at most twenty rows, the declared page size is the size that was
+    /// asked for, the total counts the rows the whole collection holds, and the next page index continues
+    /// where the previous one stopped - so a caller can walk the collection and account for every row.
+    /// Neither figure is widened to describe a projection, because the projection is what the window is
+    /// taken over.
+    /// </para>
+    /// <para>
     /// <b>The ordering is fixed and is not caller-selectable.</b> Modules are sequenced by title then
     /// key, and within each module its placements by page, then position, then placement identifier. A
     /// request that names a sort field is refused with <c>module.request_invalid</c>, not answered in
     /// the default order - a listing that accepted the field and then ignored it would return a page
     /// the caller believes was ordered and has no way to discover was not. The reason no ordering is
-    /// offered is structural, and it follows directly from the row-per-placement expansion above: the
-    /// page window is applied over MODULES while the response carries PLACEMENT rows, so an ordering
-    /// could only ever apply to the modules behind the rows rather than to the rows the caller receives.
-    /// <c>SortableFields.Modules</c> records the measurement and names every excluded member of the
-    /// projection. Reordering a page is a client-side projection over the answer.
+    /// offered is structural, and it follows from the row-per-placement expansion above: the rows are
+    /// grouped under the module they belong to, so a field that describes a PLACEMENT rather than a
+    /// module could only reorder rows inside one module's group, and a field derived at projection time
+    /// does not exist until the ordering has already run. <c>SortableFields.Modules</c> records the
+    /// measurement and names every excluded member of the projection. Reordering a page is a client-side
+    /// projection over the answer.
     /// </para>
     /// </remarks>
     Task<Result<PagedResult<ModuleListItemDto>>> ListModulesAsync(
@@ -302,11 +311,12 @@ public interface IModuleService
     /// <c>module.request_invalid</c> when the request is malformed.
     /// </returns>
     /// <remarks>
-    /// The two instruction flags on the request are honoured here and are the reason this is a
-    /// multi-table write: naming the module as the portal default writes portal-level keys, and
-    /// propagating appearance touches every module on every non-administrative page. Both are applied in
-    /// the same unit of work as the module's own change, and both are recorded on the audit log because
-    /// their blast radius exceeds the addressed module.
+    /// The selected page and the two instruction flags are honoured here and are the reason this is a
+    /// multi-table write. Changing the page copies the placement and its scoped settings before removing
+    /// the source; naming the module as the portal default writes portal-level keys; and propagating
+    /// appearance touches every module on every non-administrative page. All effects are applied in the
+    /// same unit of work as the module's own change and are recorded when their blast radius exceeds the
+    /// addressed placement.
     /// </remarks>
     Task<Result<ModuleDetailDto?>> UpdateModuleAsync(
         int portalId,
@@ -351,7 +361,9 @@ public interface IModuleService
     /// <param name="cancellationToken">Token that cancels the read.</param>
     /// <returns>
     /// A task producing a successful <see cref="Result{T}"/> carrying the configuration, or whose value is
-    /// <see langword="null"/> when no such module exists in the portal.
+    /// <see langword="null"/> when no such module exists in the portal. Administrative modules fail with
+    /// <c>module.settings_protected</c>, because their settings are exposed only through typed privileged
+    /// contracts.
     /// </returns>
     Task<Result<ModuleSettingsDto?>> GetModuleSettingsAsync(
         int portalId,
@@ -374,13 +386,15 @@ public interface IModuleService
     /// <returns>
     /// A task producing a successful <see cref="Result"/>. Fails with <c>module.not_found</c> when the
     /// module does not exist in the portal, or <c>module.setting_invalid</c> when a key is blank or a key
-    /// or value exceeds its column length.
+    /// or value exceeds its column length. Fails with <c>module.settings_protected</c> when the module is
+    /// administrative or a caller submits a security-owned setting name.
     /// </returns>
     /// <remarks>
     /// Replace-the-set rather than a granular add, update and delete triad: the caller submits the whole
     /// desired state and the service computes the difference and commits it as one unit of work.
     /// Exposing the triad would force the calling controller to decide which rows to insert, update or
-    /// delete, which is a business decision no controller may take.
+    /// delete, which is a business decision no controller may take. Security-owned rows omitted from this
+    /// generic contract are preserved rather than deleted; their typed privileged endpoint owns them.
     /// </remarks>
     Task<Result> UpdateModuleSettingsAsync(
         int portalId,
@@ -479,13 +493,40 @@ public interface IModuleService
     /// A task producing a successful <see cref="Result{T}"/> whose value is the exported document. Fails
     /// with <c>module.not_found</c> when the module does not exist in the portal,
     /// <c>module.not_portable</c> when the module's behaviour is not registered with the factory or does
-    /// not support export, or <c>module.request_invalid</c> when the naming hints are malformed.
+    /// not support export, <c>module.request_invalid</c> when the naming hints are malformed, or
+    /// <c>module.export_failed</c> when the module hands back content that an export document cannot
+    /// carry, or more content than the implementation's stated ceiling.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// The document is returned to the caller rather than written to a server path, which is the one
     /// substantive difference from the legacy screen and is recorded as such: the legacy destination was
     /// a folder beneath the portal home directory under the web root, which does not exist in the target
     /// container topology.
+    /// </para>
+    /// <para>
+    /// THE WIRE FORMAT IS THE LEGACY STANDALONE ADMIN SCREEN'S, and an implementer must not substitute the
+    /// portal-template one. A <c>content</c> root carries a <c>type</c> attribute holding the module name
+    /// with the legacy stripped character set removed, a <c>version</c> attribute holding the package
+    /// version, and the module's payload as its INNER XML - concatenated in, not escaped. That is what
+    /// <c>Website/admin/Modules/Export.ascx.vb</c> (lines 157-164) wrote and what its counterpart importer
+    /// read back, so a document produced here is interoperable with a legacy installation in both
+    /// directions. HTML-escaping the payload, as the portal-template writer did, is NOT part of this format
+    /// and produces a document neither reader can restore.
+    /// </para>
+    /// <para>
+    /// A payload that is not well-formed XML content is refused rather than written. The legacy exporter
+    /// concatenated it regardless and produced a corrupt file; the portability contract is an XML fragment,
+    /// so the refusal is a documented divergence in the caller's favour.
+    /// </para>
+    /// <para>
+    /// <b>The content an implementation will carry is bounded.</b> A payload arrives from module code
+    /// rather than from the caller's request, so no request-body limit applies to it, and the document
+    /// assembly and the well-formedness check that follow are both proportional to its length. An
+    /// implementation therefore states a ceiling and refuses beyond it with <c>module.export_failed</c>,
+    /// which is a server-side classification because the caller supplied nothing it could correct. The
+    /// legacy export had no such ceiling; the divergence is recorded in <c>MIGRATION_NOTES.md</c>.
+    /// </para>
     /// </remarks>
     Task<Result<string>> ExportModuleAsync(
         int portalId,
@@ -501,11 +542,26 @@ public interface IModuleService
     /// <param name="request">The target module, the document, and the provenance recorded on the audit log.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A task producing a successful <see cref="Result"/>. Fails with <c>module.request_invalid</c> when
-    /// the request names no target module at all, <c>module.not_found</c> when the target module does not
-    /// exist in the portal, <c>module.not_portable</c> when its behaviour is not registered with the
-    /// factory or does not support import, or <c>module.content_invalid</c> when the document cannot be
-    /// interpreted.
+    /// <para>
+    /// A task producing a successful <see cref="Result"/>, which is a positive statement that the module's
+    /// content was replaced. Fails with <c>module.request_invalid</c> when the request names no target
+    /// module at all, <c>module.not_found</c> when the target module does not exist in the portal,
+    /// <c>module.not_portable</c> when its package declares no portability at all,
+    /// <c>module.content_invalid</c> when the document cannot be interpreted, or
+    /// <c>module.content_type_mismatch</c> when the document's <c>type</c> attribute names a module type
+    /// that is not the target's.
+    /// </para>
+    /// <para>
+    /// Also fails with whichever code the module-lifecycle factory reports when the module's own behaviour
+    /// could not be asked or its restore broke - <c>module.controller.not_specified</c>,
+    /// <c>module.controller.not_registered</c>, <c>module.controller.contract_not_supported</c>,
+    /// <c>module.content.not_supplied</c> or <c>module.content.import_failed</c>. Those codes are forwarded
+    /// verbatim rather than folded into <c>module.not_portable</c>, because an operator acts differently on
+    /// each: a key no registration covers needs a code change, a controller that cannot restore is a module
+    /// that will never support this, an empty payload is the document's problem, and a broken restore is an
+    /// anomaly to investigate. NONE of them is reported as a success, so a caller that receives success has
+    /// been told content changed and nothing else.
+    /// </para>
     /// </returns>
     /// <remarks>
     /// <para>
@@ -513,6 +569,26 @@ public interface IModuleService
     /// as it was rather than half-loaded. The target module is named in the body because the endpoint
     /// carries no identifier in its route; the portal argument is what prevents that body-supplied
     /// identifier from reaching another tenant's module.
+    /// </para>
+    /// <para>
+    /// THE DOCUMENT'S DECLARED TYPE IS ENFORCED, and an implementer must not skip it. Only the cleaned
+    /// module name or the cleaned friendly name is accepted, exactly as
+    /// <c>Website/admin/Modules/Import.ascx.vb</c> (lines 195-205) accepted either; anything else is
+    /// <c>module.content_type_mismatch</c>. Without the check a document exported from one module type can
+    /// be loaded into a module of another, whose portability behaviour is then handed content it cannot
+    /// interpret and may store over the module's real content.
+    /// </para>
+    /// <para>
+    /// The payload handed to the module is the root element's INNER XML, unescaped and undecoded, which is
+    /// what the legacy standalone importer passed (line 200) and what makes an export round-trip exactly.
+    /// </para>
+    /// <para>
+    /// The provenance recorded on the audit trail is BOUNDED AND NORMALISED, not verbatim. The submitted
+    /// folder name, document name and declared version are caller-controlled and this request carries no
+    /// length bound of its own, so an implementer caps each one and replaces its control characters before
+    /// constructing the event, and prefers server-derived package facts wherever they answer the same
+    /// question. Recording them raw makes a metadata field into a disclosure channel and turns one bounded
+    /// request into an arbitrarily large retained log entry.
     /// </para>
     /// <para>
     /// Because the target is named in the body, its ABSENCE is a distinct outcome from its being unknown,

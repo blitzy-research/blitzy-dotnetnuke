@@ -469,8 +469,8 @@ public static class ModuleMappings
     /// deliberately does not accept one: the pane is part of the excluded Web Forms pane-layout and
     /// skinning surface, while the column behind it is nevertheless not nullable. Every created
     /// placement therefore lands in the conventional content pane, which is the pane every legacy
-    /// skin declares. A negative caching period is clamped to zero; zero itself is a real value
-    /// meaning "do not cache" and is passed through untouched.
+    /// skin declares. The submitted caching period is stored verbatim, negative values included; zero
+    /// means "do not cache" and is likewise passed through untouched.
     /// </remarks>
     // MIGRATION: THE PANE IS NO LONGER CALLER-SUPPLIED, AND THE CACHE PERIOD NO LONGER FALLS BACK TO
     //   THE DEFINITION'S DEFAULT. Both follow from the creation contract's measured member set. The
@@ -500,16 +500,15 @@ public static class ModuleMappings
             PaneName = DefaultPaneName,
             ModuleOrder = request.ModuleOrder,
 
-            // MIGRATION: 5.5 - THE SUBMITTED CACHE PERIOD IS STORED VERBATIM AND IS NOT CLAMPED. An earlier
-            // revision wrote Math.Max(request.CacheTime, 0) here on the stated ground that the store would
-            // refuse to interpret a negative; that ground is false. The column is a plain int NOT NULL
-            // across the whole DDL chain with NO check constraint - the only constraint bearing a cache name
-            // anywhere is DF_ModuleDefinitions_DefaultCacheTime, a DEFAULT on a different table's column -
-            // and the legacy screen stored whatever parsed, Int32.Parse(txtCacheTime.Text) at
-            // ModuleSettings.ascx.vb L349-L350, with no comparison of any kind. Clamping therefore accepted
-            // the caller's value and then silently rewrote it, so the record read back afterwards was not
-            // the record submitted and the caller had no way to detect the substitution. Zero remains the
-            // real value "do not cache", reached both by an explicit zero and by an omitted property.
+            // MIGRATION: THE SUBMITTED CACHE PERIOD IS STORED VERBATIM AND IS NOT CLAMPED. The column is a
+            // plain int NOT NULL across the whole DDL chain with NO check constraint - the only constraint
+            // bearing a cache name anywhere is DF_ModuleDefinitions_DefaultCacheTime, a DEFAULT on a
+            // different table's column - and the legacy screen stored whatever parsed,
+            // Int32.Parse(txtCacheTime.Text) at ModuleSettings.ascx.vb L349-L350, with no comparison of any
+            // kind. Clamping would accept the caller's value and then silently rewrite it, so the record
+            // read back afterwards would not be the record submitted and the caller would have no way to
+            // detect the substitution. Zero remains the real value "do not cache", reached both by an
+            // explicit zero and by an omitted property.
             CacheTime = request.CacheTime,
             IconFile = request.IconFile,
             Visibility = request.Visibility,
@@ -529,6 +528,14 @@ public static class ModuleMappings
     /// the service performs after this projection has run, and mapping them onto columns would silently
     /// invent state the schema does not have.
     /// </remarks>
+    /// <remarks>
+    /// <see cref="TabModule.TabId"/> is NOT assigned here, and the reason is a contract decision rather
+    /// than an omission: the submitted page SELECTS which of the module's placements is being updated, so
+    /// the service has already resolved the placement by that page before calling here and the two values
+    /// are equal by construction. Assigning it would be a no-op on a correct call and a silent re-parent on
+    /// an incorrect one. See the paragraph on the assignment below for the full reasoning and for what
+    /// reinstating a page move would require.
+    /// </remarks>
     public static void ApplyUpdate(Module module, TabModule placement, UpdateModuleRequest request)
     {
         ArgumentNullException.ThrowIfNull(module);
@@ -546,11 +553,37 @@ public static class ModuleMappings
         module.EndDate = request.EndDate;
         module.IsDeleted = request.IsDeleted;
 
-        // Placement scope: the six surviving value arguments of the legacy second provider call.
+        // Placement scope: the seven surviving value arguments of the legacy second provider call.
         //
+        // MIGRATION: 5.11 - THE SUBMITTED PAGE IS DELIBERATELY NOT ASSIGNED, AND ONE REVISION ASSIGNED IT.
+        // Two revisions reached opposite conclusions about the same member and both are recorded here,
+        // because the disagreement is about the CONTRACT rather than about this line.
+        //
+        // The surviving contract is that the submitted page SELECTS the placement: the service reads it,
+        // finds the placement the module has on that page, refuses the request outright when the module is
+        // not on it, and passes that placement here - so by the time this projection runs placement.TabId
+        // already equals request.TabId. Assigning it is therefore a no-op on a correct call and a silent
+        // RE-PARENT on an incorrect one, which is a move rather than the edit the caller asked for.
+        //
+        // The withdrawn revision read the member as a page-move command instead, assigned it here, and
+        // gated the change on portal administration with the destination page validated first. That reading
+        // cannot be reinstated by restoring this line alone, and restoring it alone is actively harmful: the
+        // service that would hand the placement over resolves it WITHOUT reading the request, so for a
+        // module placed on several pages an ordinary edit of the page-four instance would relocate the
+        // page-one instance onto page four - corrupting a layout in the name of honouring a move nobody
+        // asked for. A move needs a SECOND member naming the destination, because one page identifier
+        // cannot be both the placement being edited and the page it should end up on. The divergence from
+        // the legacy settings screen, which had a distinct page picker for exactly that reason, is recorded
+        // in MIGRATION_NOTES.md.
+        //
+        // The seed trap still applies to the member the service reads: the page identity seeds at ZERO, so 0
+        // is a legitimate page and no positive-value guard may stand in for a presence test; and -1 was an
+        // "any page" wildcard in the legacy QUERY surface, never an absence marker on a stored row.
+
         // The position is assigned unresolved, exactly as on the creation projection above: the submitted
         // value may be the append instruction, and the service overwrites this member immediately after
-        // this call returns so that the instruction never reaches a column.
+        // this call returns so that the instruction never reaches a column. The service resolves it against
+        // the page the placement sits on, which is the page the request named.
         placement.ModuleOrder = request.ModuleOrder;
         placement.CacheTime = request.CacheTime;
         placement.IconFile = request.IconFile;
@@ -566,26 +599,34 @@ public static class ModuleMappings
         // the write outright. Not assigning them preserves the stored values exactly, which is what the
         // exclusion means. They are consequently write-once at create for pane and read-only thereafter.
         //
-        // MIGRATION: 5.6 - IsDeleted IS assigned here, which is a deliberate widening of the legacy settings
+        // MIGRATION: IsDeleted IS assigned here, which is a deliberate widening of the legacy settings
         // screen. That screen held the bare unconditional assignment of False, so every save silently
         // un-deleted the module; the flag was actually toggled by the placement-delete and recycle-bin paths
         // instead. The column is real and is genuinely the ninth argument of the legacy first provider call,
         // so consolidating soft delete and restore onto this contract is justified - but it means this
         // endpoint can now SET a flag the legacy screen could only clear.
         //
-        // MIGRATION: 5.5 - CacheTime is a non-nullable integer and zero is a REAL value meaning "do not
+        // MIGRATION: CacheTime is a non-nullable integer and zero is a REAL value meaning "do not
         // cache", so there is no coalesce to a stored value here: a blank legacy field wrote literally zero
         // rather than a sentinel. The submitted value is stored VERBATIM, with no clamp - the reasoning is
         // recorded in full on the creation projection above, and the same removal is annotated on both
         // module request validators.
         //
         // MIGRATION: THE SUBMITTED PAGE KEY IS DELIBERATELY NOT ASSIGNED TO THE PLACEMENT. The update
-        // contract carries one, but it identifies WHICH placement is being updated - the application
-        // service resolves the placement before calling here and reads the submitted page key only on the
-        // creation path. Assigning it here would silently RE-PARENT the placement onto another page, which
-        // is a move operation rather than an edit, and the caller asked for an edit. The page key of an
-        // existing placement is consequently write-once at create, in the same way and for the same reason
-        // as the pane. Nothing is lost: the identity the route addresses is honoured exactly.
+        // contract carries one, but it SELECTS which placement is being updated - the application service
+        // reads it, finds the placement the module has on that page and passes that placement here, so by
+        // the time this projection runs the value has already done its work and placement.TabId is equal to
+        // it. Assigning it would therefore be a no-op on a correct call and a silent RE-PARENT on an
+        // incorrect one, which is a move operation rather than an edit; the caller asked for an edit. The
+        // page key of an existing placement is consequently write-once at create, in the same way and for
+        // the same reason as the pane.
+        //
+        // MIGRATION: THIS PARAGRAPH USED TO ASSERT THE SELECTION WAS PERFORMED AND IT WAS NOT. The service
+        // resolved the placement with the lowest identifier and never read the request, so for a module
+        // placed on several pages the caller's choice was discarded and the edit landed on whichever
+        // placement had been created first - while this comment described the behaviour the contract
+        // promised. The projection did not change; the service now performs the selection this note always
+        // claimed it did.
     }
 
     /// <summary>

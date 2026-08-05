@@ -459,15 +459,13 @@ public static class PortalMappings
     /// stored it.
     /// </para>
     /// <para>
-    /// MIGRATION: the payment-gateway credential travels in ONE DIRECTION ONLY. It is written here and
-    /// read nowhere: neither response contract declares it, so no projection can echo it back. It is
-    /// also assigned unconditionally, which preserves a legacy behaviour worth stating plainly - the
-    /// legacy save signature had no optional arguments, so submitting the settings screen with the box
-    /// empty stored an empty credential and cleared the stored one. A blank therefore still clears it,
-    /// and a caller intending to leave it alone must echo the value it already holds.
+    /// MIGRATION: plaintext processor credentials are no longer accepted or stored. The legacy
+    /// ProcessorPassword column carries an opaque managed-secret reference and the request uses an
+    /// explicit three-state update: null keeps, empty clears, and a non-empty reference replaces.
+    /// No response projection carries the reference.
     /// </para>
     /// </remarks>
-    public static void ApplyUpdate(Portal portal, UpdatePortalRequest request)
+    public static void ApplyUpdate(Portal portal, IPortalSettingsUpdateRequest request)
     {
         ArgumentNullException.ThrowIfNull(portal);
         ArgumentNullException.ThrowIfNull(request);
@@ -487,10 +485,15 @@ public static class PortalMappings
         portal.PaymentProcessor = request.PaymentProcessor;
         portal.ProcessorUserId = request.ProcessorUserId;
 
-        // MIGRATION: written, never read back. The contract that carries this credential is the update
-        // request and nothing else, and assigning it unconditionally is what preserves the legacy
-        // clear-on-blank behaviour described on this member.
-        portal.ProcessorPassword = request.ProcessorPassword;
+        // MIGRATION: null is the explicit keep operation. Empty clears the reference to SQL NULL, while
+        // a non-empty, validator-approved secret:// value replaces it. The referenced credential never
+        // crosses this boundary.
+        if (request.ProcessorCredentialReference is not null)
+        {
+            portal.ProcessorCredentialReference = request.ProcessorCredentialReference.Length == 0
+                ? null
+                : request.ProcessorCredentialReference;
+        }
 
         portal.Description = request.Description;
         portal.KeyWords = request.KeyWords;

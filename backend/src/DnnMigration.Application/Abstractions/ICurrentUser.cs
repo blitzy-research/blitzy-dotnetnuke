@@ -37,12 +37,15 @@ namespace DnnMigration.Application.Abstractions;
 /// legacy string sentinel was.
 /// </para>
 /// <para>
-/// <b>Facts, never decisions.</b> Every member reports something already true about the request.
+/// <b>Facts, never decisions.</b> The authority-minimised bearer token reports only the account and
+/// tenant identifiers. Compatibility members for names, host status, roles and permissions return
+/// their neutral values and must not be used for authorization or presentation; consumers that need
+/// those facts re-read them through the appropriate repository or the explicit current-user
+/// endpoint.
 /// Deliberately absent are helpers that would answer "may the caller do X?": that is an access-control
 /// decision, settled by the API layer's authorisation policies over the infrastructure permission
 /// evaluator. Exposing a decision helper here would let a controller settle a business question
-/// directly. Consumers read <see cref="Roles"/> and <see cref="PermissionKeys"/> and let the policy
-/// layer adjudicate.
+/// directly.
 /// </para>
 /// <para>
 /// <b>Deliberately free of transport types, and deliberately synchronous.</b> Nothing from the HTTP
@@ -74,8 +77,8 @@ public interface ICurrentUser
     /// verified.
     /// </summary>
     /// <value>
-    /// <c>true</c> when the request presented a valid, verified token and the caller's identity was
-    /// established; otherwise <c>false</c>.
+    /// <c>true</c> when the request presented a valid, verified token carrying parseable account and
+    /// tenant identity; otherwise <c>false</c>.
     /// </value>
     /// <remarks>
     /// This is the only correct way to test for an anonymous caller; never infer anonymity by
@@ -100,16 +103,14 @@ public interface ICurrentUser
     int? UserId { get; }
 
     /// <summary>
-    /// Gets the login name of the authenticated caller, corresponding to the legacy
-    /// <c>Users.Username</c> column.
+    /// Gets the compatibility login-name projection.
     /// </summary>
     /// <value>
-    /// The caller's user name, or <c>null</c> when the caller is anonymous.
+    /// Always <c>null</c>. User names are mutable profile data and are not carried in access tokens.
     /// </value>
     /// <remarks>
-    /// An absent user name is <c>null</c> - never the empty string, which would revive the legacy
-    /// string sentinel and make "no caller" indistinguishable from "a caller whose name failed to
-    /// project". An implementation should treat a blank or whitespace-only claim value as absent.
+    /// Consumers that need a display or audit name must read it from authoritative account storage;
+    /// the identifier remains available through <see cref="UserId"/>.
     /// </remarks>
     string? UserName { get; }
 
@@ -131,20 +132,14 @@ public interface ICurrentUser
     int? PortalId { get; }
 
     /// <summary>
-    /// Gets a value indicating whether the caller is flagged as a host-level super user,
-    /// corresponding to the legacy <c>Users.IsSuperUser</c> column.
+    /// Gets the compatibility host-authority projection.
     /// </summary>
     /// <value>
-    /// <c>true</c> when the caller's verified identity carries the super-user flag; otherwise
-    /// <c>false</c>. Always <c>false</c> for an anonymous caller.
+    /// Always <c>false</c>. Host authority is mutable and is not carried in access tokens.
     /// </value>
     /// <remarks>
-    /// <b>Informational only, and never an access-control shortcut.</b> The legacy role-check helper
-    /// opened by short-circuiting on this flag, which let a single boolean act as a blanket permission
-    /// grant across the whole application; that shortcut is not reproduced, and a guard written
-    /// against this flag would silently re-create it. Access control is policy-based and evaluated in
-    /// the API layer. Host-level super-user administration is outside the migrated feature set, so the
-    /// flag is surfaced for auditing, diagnostics and presentation only.
+    /// Access-control code must read the account from authoritative storage. The neutral compatibility
+    /// value prevents a stale token claim from becoming an authorization shortcut.
     /// </remarks>
     bool IsSuperUser { get; }
 
@@ -152,17 +147,11 @@ public interface ICurrentUser
     /// Gets the names of the security roles held by the caller.
     /// </summary>
     /// <value>
-    /// The caller's role names, or an empty collection when the caller is anonymous or holds no roles.
-    /// Never <c>null</c>.
+    /// Always an empty collection. Roles are mutable authority and are not carried in access tokens.
     /// </value>
     /// <remarks>
-    /// These derive from the legacy <c>Roles</c>, <c>UserRoles</c> and <c>RoleGroups</c> tables,
-    /// projected into the caller's verified claims by the API layer. An implementation must return an
-    /// empty collection rather than <c>null</c>, which would force a defensive check at every use site
-    /// and invite a null-reference fault on the common path. The collection is read-only because the
-    /// caller's roles are a fact about the request that a consumer has no business mutating - the
-    /// legacy equivalent was a mutable array whose getter also lazily queried the database, and both
-    /// of those properties are deliberately gone.
+    /// Consumers that need roles must read them from authoritative storage or use the store-backed
+    /// <c>/auth/me</c> projection. Never <c>null</c>.
     /// </remarks>
     IReadOnlyList<string> Roles { get; }
 
@@ -170,16 +159,12 @@ public interface ICurrentUser
     /// Gets the granular permission keys held by the caller.
     /// </summary>
     /// <value>
-    /// The caller's permission keys, or an empty collection when the caller is anonymous or holds
-    /// none. Never <c>null</c>.
+    /// Always an empty collection. Permission keys are mutable authority and are not carried in
+    /// access tokens.
     /// </value>
     /// <remarks>
-    /// These mirror the permission keys the API layer evaluates server-side, so a client and the
-    /// server reason over the same vocabulary; reporting them supports presentation - deciding whether
-    /// to render an action a caller could not perform - and diagnostics. Exposing the collection is
-    /// not the same as granting anything: whether a given operation is allowed remains a decision for
-    /// the API layer's authorisation policies, which are the sole enforcement point, and inspection of
-    /// this collection must never become the only check protecting an operation.
+    /// The API layer evaluates permissions from authoritative storage on every protected request, and
+    /// the current-user endpoint supplies the client-side affordance projection. Never <c>null</c>.
     /// </remarks>
     IReadOnlyList<string> PermissionKeys { get; }
 }

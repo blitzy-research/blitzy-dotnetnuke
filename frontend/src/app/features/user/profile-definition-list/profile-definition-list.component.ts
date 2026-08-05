@@ -92,6 +92,7 @@ interface VisibilityOption {
  * API validates nothing about it, exactly as the legacy screen's own dropdown did not.
  */
 const DEFAULT_DATA_TYPE = 349;
+const DEFAULT_HEADING = 'Profile Properties';
 
 /**
  * The profile-property catalogue: the tenant's declarations, and the inline form that
@@ -204,6 +205,9 @@ export class ProfileDefinitionListComponent {
    */
   private held: readonly ProfilePropertyDefinition[] = [];
 
+  /** Backing field for the route-safe screen heading. */
+  private pageHeading = DEFAULT_HEADING;
+
   /**
    * The tenant's declarations, in the order they are to be displayed.
    *
@@ -212,15 +216,16 @@ export class ProfileDefinitionListComponent {
    * the screen disagree with the server the moment two operators reorder at once.
    */
   @Input()
-  set definitions(value: readonly ProfilePropertyDefinition[]) {
-    this.held = value;
+  set definitions(value: readonly ProfilePropertyDefinition[] | undefined) {
+    const resolved = value ?? [];
+    this.held = resolved;
 
     // A declaration that has just been replaced or removed must not leave the form
     // editing a row that is no longer there, so the editing target is re-resolved
     // against the incoming list rather than kept as a stale object.
     const editingId = this.editing?.propertyDefinitionId;
     if (editingId !== undefined) {
-      const stillPresent = value.find(
+      const stillPresent = resolved.find(
         (candidate) => candidate.propertyDefinitionId === editingId,
       );
 
@@ -234,7 +239,7 @@ export class ProfileDefinitionListComponent {
     const pendingId = this.pendingRemoval?.propertyDefinitionId;
     if (
       pendingId !== undefined &&
-      value.find((candidate) => candidate.propertyDefinitionId === pendingId) === undefined
+      resolved.find((candidate) => candidate.propertyDefinitionId === pendingId) === undefined
     ) {
       this.pendingRemoval = null;
     }
@@ -247,7 +252,16 @@ export class ProfileDefinitionListComponent {
   /**
    * The screen's title, rendered by the shared page header.
    */
-  @Input() heading = 'Profile Properties';
+  @Input()
+  set heading(value: string | undefined) {
+    const normalised = value?.trim();
+    this.pageHeading =
+      normalised === undefined || normalised.length === 0 ? DEFAULT_HEADING : normalised;
+  }
+
+  get heading(): string {
+    return this.pageHeading;
+  }
 
   /**
    * Whether the catalogue is still being fetched.

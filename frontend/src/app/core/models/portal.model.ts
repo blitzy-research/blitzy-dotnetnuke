@@ -12,6 +12,7 @@
  * | `PortalSettings`      | `Dtos/Portal/PortalSettingsDto.cs`        |
  * | `CreatePortalRequest` | `Dtos/Portal/CreatePortalRequest.cs`      |
  * | `UpdatePortalRequest` | `Dtos/Portal/UpdatePortalRequest.cs`      |
+ * | `UpdatePortalSettingsRequest` | `Dtos/Portal/UpdatePortalSettingsRequest.cs` |
  * | `PortalAlias`         | `Dtos/Portal/PortalAliasDto.cs`           |
  *
  * ## Member naming
@@ -410,14 +411,11 @@ export type PortalListPage = PagedResult<PortalListItem>;
 //   The remaining ten are present here but not updatable; the update contract's own notes record
 //   which and why.
 //
-// MIGRATION: THE PAYMENT-PROCESSOR PASSWORD APPEARS ON NO RESPONSE CONTRACT. PortalInfo.vb:L261
-//   declares ProcessorPassword, and it is carried ONLY by UpdatePortalRequest, verified at
-//   Dtos/Portal/UpdatePortalRequest.cs:L819 and verified absent from PortalDetailDto,
-//   PortalListItemDto, PortalSettingsDto and PortalAliasDto. It is therefore write-only across this
-//   boundary: a stored processor password is never returned to a browser, and the settings form
-//   starts that field blank on every load. Relatedly, the legacy configuration committed a
-//   reversible three-key symmetric decryption key to source control alongside its password format;
-//   no such key or key material is reproduced here in any form.
+// MIGRATION: THE PAYMENT-PROCESSOR CREDENTIAL AND ITS REFERENCE APPEAR ON NO RESPONSE CONTRACT.
+//   PortalInfo.vb:L261 declared ProcessorPassword. The update request now carries only an opaque
+//   managed-secret reference, and even that reference is absent from PortalDetail, PortalSettings,
+//   list and alias responses. The settings form starts the reference blank on every load, with
+//   explicit keep/replace/clear operations. No plaintext or reversible key material is reproduced.
 export interface PortalDetail {
   /**
    * The portal's identifier. Both `-1` and `0` are real values — see the note
@@ -598,13 +596,14 @@ export interface PortalDetail {
  * `GET /api/v1/portals/{portalId}/settings`.
  *
  * Mirrors `Dtos/Portal/PortalSettingsDto.cs` and its twenty-seven members. It is
- * the read counterpart of {@link UpdatePortalRequest}, and the two differ in
+ * the read counterpart of {@link UpdatePortalSettingsRequest}, and the two differ in
  * exactly two places, neither accidental:
  *
  * - `guid` is present here and absent from the request, because it is assigned at
  *   provisioning and is never editable.
- * - `processorPassword` is present on the request and absent here, because a
- *   stored payment-processor password is never returned to a browser.
+ * - `processorCredentialReference` is present on the request and absent here,
+ *   because neither a payment credential nor its managed-secret reference is
+ *   returned to a browser.
  *
  * It also carries fewer members than {@link PortalDetail}: the computed counts,
  * the administrator's e-mail, the role identifiers and names, and the two
@@ -753,7 +752,7 @@ export interface PortalSettings {
 //   identifier, which carries a database-side default.
 export interface CreatePortalRequest {
   /** The new portal's title. */
-  portalName: string | null;
+  readonly portalName: string | null;
 
   /**
    * The first host name through which the portal will be reached.
@@ -762,19 +761,19 @@ export interface CreatePortalRequest {
    * the alias sub-resource. Matched later by exact host and port, never by
    * substring — see the note on {@link PortalAlias}.
    */
-  portalAlias: string | null;
+  readonly portalAlias: string | null;
 
   /** Free-text description offered to search engines. */
-  description: string | null;
+  readonly description: string | null;
 
   /** Comma-separated search keywords. */
-  keyWords: string | null;
+  readonly keyWords: string | null;
 
   /** Portal-relative root for the new portal's file storage. */
-  homeDirectory: string | null;
+  readonly homeDirectory: string | null;
 
   /** The portal template the new portal is built from. */
-  templateFile: string | null;
+  readonly templateFile: string | null;
 
   /**
    * Whether the portal is reached through a path beneath an existing host name
@@ -784,29 +783,29 @@ export interface CreatePortalRequest {
    * `False` and "no value" as the same thing, so a nullable boolean here would
    * invent a state the source never distinguished.
    */
-  isChildPortal: boolean;
+  readonly isChildPortal: boolean;
 
   /** Given name of the portal's first administrator. */
-  administratorFirstName: string | null;
+  readonly administratorFirstName: string | null;
 
   /** Family name of the portal's first administrator. */
-  administratorLastName: string | null;
+  readonly administratorLastName: string | null;
 
   /** Sign-in name of the portal's first administrator. */
-  administratorUsername: string | null;
+  readonly administratorUsername: string | null;
 
   /**
    * Initial password for the portal's first administrator.
    *
-   * Write-only, like {@link UpdatePortalRequest.processorPassword}: it is accepted
+   * Write-only, like {@link UpdatePortalRequest.processorCredentialReference}: it is accepted
    * here and returned by nothing. The server stores a one-way hash, which is a
    * documented departure from the legacy store — that used a reversible format with
    * retrieval enabled, and password retrieval is deliberately not carried forward.
    */
-  administratorPassword: string | null;
+  readonly administratorPassword: string | null;
 
   /** E-mail address of the portal's first administrator. */
-  administratorEmail: string | null;
+  readonly administratorEmail: string | null;
 }
 
 /**
@@ -867,16 +866,16 @@ export interface UpdatePortalRequest {
    * naming this field. Both `-1` and `0` are real identifiers, so no lower bound
    * and no emptiness test applies.
    */
-  portalId: number;
+  readonly portalId: number;
 
   /** The portal's title, at most 128 characters. */
-  portalName: string | null;
+  readonly portalName: string | null;
 
   /** Portal-relative path of the logo image, at most 50 characters. */
-  logoFile: string | null;
+  readonly logoFile: string | null;
 
   /** Copyright line, at most 100 characters. */
-  footerText: string | null;
+  readonly footerText: string | null;
 
   /**
    * When the hosting subscription lapses, as an ISO 8601 instant, or `null`.
@@ -884,19 +883,19 @@ export interface UpdatePortalRequest {
    * Host-only. The legacy screen carried a data-type validator on this field and
    * nothing stronger.
    */
-  expiryDate: string | null;
+  readonly expiryDate: string | null;
 
   /** How the portal admits new accounts. Round-trips by ordinal; see the enumeration. */
-  userRegistration: UserRegistrationMode;
+  readonly userRegistration: UserRegistrationMode;
 
   /** Where banner advertising is administered. */
-  bannerAdvertising: BannerAdvertisingMode;
+  readonly bannerAdvertising: BannerAdvertisingMode;
 
   /** Three-letter currency code, or `null`. */
-  currency: string | null;
+  readonly currency: string | null;
 
   /** The account to hold the portal administrator role. */
-  administratorId: number | null;
+  readonly administratorId: number | null;
 
   /**
    * Recurring hosting fee, denominated in {@link currency}.
@@ -905,13 +904,13 @@ export interface UpdatePortalRequest {
    * negative fee to nought is applied by the server, so a client neither clamps nor
    * rounds.
    */
-  hostFee: number | null;
+  readonly hostFee: number | null;
 
   /** Disk-space allowance in whole megabytes; nought means unlimited. Host-only. */
-  hostSpace: number | null;
+  readonly hostSpace: number | null;
 
   /** Ceiling on pages. Host-only. Sent back exactly as received; never coalesced. */
-  pageQuota: number | null;
+  readonly pageQuota: number | null;
 
   /**
    * Ceiling on accounts; nought means unlimited.
@@ -919,53 +918,52 @@ export interface UpdatePortalRequest {
    * Host-only. The canonical quota hazard — see the note on {@link PortalDetail}.
    * Whatever value was loaded is sent back unchanged unless the operator edited it.
    */
-  userQuota: number | null;
+  readonly userQuota: number | null;
 
   /** Payment processor name, at most 50 characters. */
-  paymentProcessor: string | null;
+  readonly paymentProcessor: string | null;
 
   /** Payment processor account identifier, at most 50 characters. */
-  processorUserId: string | null;
+  readonly processorUserId: string | null;
 
   /**
-   * Payment processor password, at most 50 characters.
+   * Opaque managed-secret reference for the payment processor, at most 50 characters.
    *
-   * **Write-only.** This is the one field on this contract that no response
-   * carries, so a form cannot pre-populate it: it is present here and on no
-   * response shape at all. A blank submission is sent as `null`, which the server
-   * reads as "leave the stored secret alone".
+   * **Write-only.** `null` keeps the current reference, `''` clears it and a
+   * non-empty `secret://...` value replaces it. The referenced credential never
+   * crosses this contract and no response shape echoes even the reference.
    */
-  processorPassword: string | null;
+      readonly processorCredentialReference: string | null;
 
   /** Portal description, at most 500 characters. */
-  description: string | null;
+  readonly description: string | null;
 
   /** Search keywords, at most 500 characters. */
-  keyWords: string | null;
+  readonly keyWords: string | null;
 
   /** Portal-relative path of the background image, at most 50 characters. */
-  backgroundFile: string | null;
+  readonly backgroundFile: string | null;
 
   /** Days of activity history retained. Host-only. Never coalesced; see the quota note. */
-  siteLogHistory: number | null;
+  readonly siteLogHistory: number | null;
 
   /** The page shown ahead of the home page, if any. See the page-reference note. */
-  splashTabId: number | null;
+  readonly splashTabId: number | null;
 
   /** The portal's home page. See the page-reference note. */
-  homeTabId: number | null;
+  readonly homeTabId: number | null;
 
   /** The page carrying the sign-in form. See the page-reference note. */
-  loginTabId: number | null;
+  readonly loginTabId: number | null;
 
   /** The page carrying the account screens. See the page-reference note. */
-  userTabId: number | null;
+  readonly userTabId: number | null;
 
   /** Culture code, at most six characters. */
-  defaultLanguage: string | null;
+  readonly defaultLanguage: string | null;
 
   /** Offset from co-ordinated universal time in minutes; nought is a real offset. */
-  timeZoneOffset: number | null;
+  readonly timeZoneOffset: number | null;
 
   /**
    * Portal-relative root of the portal's file storage, at most 100 characters.
@@ -973,8 +971,24 @@ export interface UpdatePortalRequest {
    * The relative directory name only. No absolute server path is accepted from a
    * client; see the note on {@link PortalDetail}.
    */
-  homeDirectory: string | null;
+  readonly homeDirectory: string | null;
 }
+
+/**
+ * Body of `PUT /api/v1/portals/{portalId}/settings`.
+ *
+ * Mirrors `Dtos/Portal/UpdatePortalSettingsRequest.cs`: the same twenty-six editable
+ * values as {@link UpdatePortalRequest}, without the latter's legacy body-level
+ * `portalId`. The settings route is the sole authority for the portal being written,
+ * so accepting the identifier a second time would create a disagreement the endpoint
+ * would then have to detect.
+ *
+ * Defined from the existing request rather than retyping twenty-six members. A field
+ * added, removed or renamed on the shared write surface therefore changes both client
+ * contracts in one place, matching the shared C# interface used by the mapper,
+ * validators and service guards.
+ */
+export type UpdatePortalSettingsRequest = Omit<UpdatePortalRequest, 'portalId'>;
 
 /**
  * The lookup lists a settings screen needs in order to offer the choices the legacy
@@ -1006,4 +1020,3 @@ export interface PortalSettingsLookups {
   /** Time zones, valued in minutes from co-ordinated universal time. */
   readonly timeZones: readonly SelectOption<number>[];
 }
-

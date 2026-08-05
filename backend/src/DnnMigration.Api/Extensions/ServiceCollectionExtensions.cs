@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -11,6 +12,7 @@ using DnnMigration.Application.Options;
 using DnnMigration.Application.Serialization;
 using DnnMigration.Application.Validation;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.HttpsPolicy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -121,6 +123,57 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public const string KnownNetworksSectionName = "Proxy:KnownNetworks";
 
+
+    /// <summary>
+    /// Reports whether the deployment has named at least one reverse proxy whose
+    /// forwarded headers may be trusted.
+    /// </summary>
+    /// <param name="configuration">The application's configuration.</param>
+    /// <returns>
+    /// <see langword="true"/> when <see cref="KnownProxiesSectionName"/> or
+    /// <see cref="KnownNetworksSectionName"/> names anything.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="configuration"/> is <see langword="null"/>.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The pipeline asks this before registering the forwarded-headers stage, so that
+    /// the stage exists only where a deployment has declared what it trusts. That is a
+    /// security decision rather than an optimisation: promoting a forwarded address
+    /// supplied by an untrusted hop lets a caller name its own address, and therefore
+    /// choose its own rate-limit partition.
+    /// </para>
+    /// <para>
+    /// Blank entries are ignored, so a section left as an empty string by a deployment
+    /// template does not read as trust. The values themselves are parsed and validated
+    /// by <see cref="AddForwardedHeaders"/>, which refuses malformed ones at startup;
+    /// this member only answers whether any were declared.
+    /// </para>
+    /// </remarks>
+    public static bool HasTrustedProxies(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return Declared(KnownProxiesSectionName) || Declared(KnownNetworksSectionName);
+
+        bool Declared(string sectionName) =>
+            (configuration.GetSection(sectionName).Get<string[]>() ?? [])
+                .Any(entry => !string.IsNullOrWhiteSpace(entry));
+    }
+
+
+    // MIGRATION: TWO KEY NAMES AND TWO REGISTRATIONS FOR ONE REDIRECT PORT, WITHDRAWN A SECOND TIME. A
+    // Https:Port key with a 443 default, and a private AddHttpsRedirection that applied it, were declared
+    // here alongside AddTransportSecurity's own Https:RedirectPort. Both called the framework's
+    // AddHttpsRedirection, so the LATER callback silently overwrote the port the earlier one had computed and
+    // every redirect named 443 whatever a deployment configured - and the shipped production overlay set the
+    // key that was no longer applied while start-up validation demanded the key it did not set. The surviving
+    // key is Https:RedirectPort, validated at start-up by AddTransportSecurity, and it is the only one: this
+    // process never listens on TLS, so a bare "port" would read as a listener rather than as the authority a
+    // redirect names. See the remarks on AddTransportSecurity for the full reasoning and for why the status
+    // is 308.
+
     /// <summary>
     /// Adds the API layer's own services and binds every configuration section it
     /// owns.
@@ -153,6 +206,7 @@ public static class ServiceCollectionExtensions
         AddErrorHandling(services);
         AddControllerServices(services);
         AddRequestLimits(services);
+        AddTransportSecurity(services, configuration);
         AddForwardedHeaders(services, configuration);
 
         return services;
@@ -191,6 +245,15 @@ public static class ServiceCollectionExtensions
             .ValidateOnStart();
 
         services.AddSingleton<IValidateOptions<PasswordPolicyOptions>, PasswordPolicyOptionsValidator>();
+
+        // MIGRATION: THE LEGACY-CREDENTIAL MIGRATION WINDOW IS DELIBERATELY NOT BOUND HERE. Its settings
+        // section carries a deployment-supplied decryption key, so the settings type that holds it lives
+        // beside the verifier that consumes it, internal to the Infrastructure project, rather than in a
+        // publicly reachable options type this layer could hand to anything. AddInfrastructure reads the
+        // section, validates it - the switch, the absolute UTC deadline, the algorithm names, the key
+        // length, its hexadecimal content and its Triple-DES strength - and throws before the host is
+        // built, so an invalid window still fails at start-up exactly as a ValidateOnStart binding would.
+        // Registering it in both places would give one section two validators and two failure messages.
 
         // The three password validators take a bound PasswordPolicyOptions directly, not
         // IOptions<PasswordPolicyOptions>: the Application project references FluentValidation
@@ -399,22 +462,72 @@ public static class ServiceCollectionExtensions
                 // reaches `.slice()` on `undefined` and throws - for any module whose schedule
                 // columns are null, which is the ordinary case for a nullable column.
                 //
+                // THIS POLICY REACHES THE SUCCESS ENVELOPE ITSELF, NOT ONLY THE PAYLOAD INSIDE
+                // IT, and that consequence has to be stated because it is easy to overlook.
+                // Dtos/Common/ApiResponse<T>.Meta carries no per-member condition of its own, and
+                // every single-payload success is wrapped by the shared result translator in
+                // ErrorHandling/GlobalExceptionHandler.cs, so EVERY scalar response writes
+                // "meta": null on the wire. That is measured against a running server, not
+                // inferred: POST /api/v1/auth/login answers with top-level keys ["data", "meta"]
+                // and a null second member. The client therefore declares
+                // `meta: ApiMeta | null` - required and nullable - in
+                // frontend/src/app/core/models/paged-result.model.ts. An earlier revision of that
+                // file declared it optional and non-null, which is the one shape this policy can
+                // never produce.
+                //
                 // The problem-details contract is deliberately NOT affected by this and must not
-                // be "aligned" with it. ProblemDetails annotates each of its own optional members
-                // with a per-member null-omission condition, and a per-member condition overrides
-                // the collection-wide one set here, so an absent `detail` or `instance` stays
-                // absent exactly as RFC 7807 describes and as problem-details.model.ts declares
-                // it - those members, and only those, are the ones optional on the client.
+                // be "aligned" with it. ProblemDetails annotates EACH of its five standard
+                // members - type, title, status, detail and instance - with a per-member
+                // null-omission condition, and a per-member condition overrides the
+                // collection-wide one set here, so an absent detail or instance stays absent
+                // exactly as RFC 7807 describes and as problem-details.model.ts declares it.
+                // Those five, and only those, are the members optional on the client; every
+                // member of every SUCCESS model is present-and-nullable instead.
                 options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
 
-                // Member names are camel-cased, and this is stated rather than inherited for the
-                // same reason the condition above is. It happens to be the web defaults' value,
-                // so the assignment changes nothing today; what it buys is that the single most
-                // load-bearing property of the whole wire contract is written down. Every member
-                // of every model under frontend/src/app/core/models is spelled in camel case, so
-                // a change to this policy would not break one endpoint - it would rename every
-                // member of every response at once, and no compiler on either side would notice.
+                // Member names are camel-cased, stated rather than inherited for the same reason the
+                // condition above is: every member of every model under frontend/src/app/core/models
+                // is spelled in camel case, so a change to this policy would not break one endpoint -
+                // it would rename every member of every response at once, and no compiler on either
+                // side would notice.
                 options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+
+                // A MEMBER NO CONTRACT DECLARES IS A REFUSED REQUEST, NOT A DISCARDED ONE.
+                //
+                // MIGRATION: this exists because silent discarding cost this API two working
+                // features and hid the loss completely. The Angular module-settings screen emitted
+                // `isDefaultModule` and `allModules`, the names the LEGACY object used, while
+                // Dtos/Module/UpdateModuleRequest.cs declares `setAsDefaultSettings` and
+                // `applyToAllModules` - the names the legacy SCREEN showed its users. The
+                // deserialiser dropped both, the two most far-reaching operations on the module
+                // API therefore did nothing at all, and every layer reported success: the request
+                // bound, the validator passed, the service ran, the response described a module
+                // that had been updated. Six further members on the same client contract were
+                // discarded the same way. Nothing on either side of the wire could detect it,
+                // which is what makes silent tolerance the wrong default for a contract two
+                // codebases have to keep in step by hand.
+                //
+                // Applied to the WHOLE surface rather than to the module contracts alone,
+                // deliberately. The defect is not a property of modules; it is a property of any
+                // hand-maintained mirror of a DTO, and every request type here is one. A per-type
+                // opt-in would leave the identical trap on every contract not yet bitten by it,
+                // and would have to be extended by whoever adds the next one - which is exactly
+                // the maintenance the assembly-wide validator scan was chosen over.
+                //
+                // The refusal SHAPE is what makes this safe to apply broadly. A rejected member
+                // raises inside the input formatter, which [ApiController] records as a model-state
+                // error and answers with the automatic 400 - a ValidationProblemDetails naming the
+                // offending member, which is precisely the document every action already advertises
+                // for 400. So a caller sending a member the contract does not declare is told which
+                // member, in the shape it already parses, rather than having part of its request
+                // quietly ignored.
+                //
+                // Note that this governs DESERIALISATION only, so it applies to request bodies and
+                // to nothing else. The sibling options object configured in AddErrorHandling above
+                // serialises problem documents and never reads a body, which is why it does not
+                // carry this setting and must not be "aligned" with it.
+                options.JsonSerializerOptions.UnmappedMemberHandling =
+                    JsonUnmappedMemberHandling.Disallow;
             });
 
         // The framework maps sixteen status codes to a problem-type link and a title, and 429 is
@@ -447,6 +560,70 @@ public static class ServiceCollectionExtensions
         services.Configure<KestrelServerOptions>(options =>
             options.Limits.MaxRequestBodySize = MaximumRequestBodyBytes);
     }
+
+    /// <summary>Configures HTTPS redirection and strict transport security.</summary>
+    /// <param name="services">The container being populated.</param>
+    /// <param name="configuration">Configuration naming whether and where HTTPS is exposed.</param>
+    /// <exception cref="InvalidOperationException">
+    /// HTTPS redirection is enabled without a valid external TLS port.
+    /// </exception>
+    /// <remarks>
+    /// Kestrel remains plain HTTP on the private container network; nginx terminates TLS and forwards the
+    /// original scheme. The configured port is therefore the proxy's published port, not a Kestrel listener.
+    /// Failing startup when it is absent prevents a deployment from enabling redirection only to discover at
+    /// request time that the framework cannot construct a destination.
+    /// <para>
+    /// <b>ONE registration, ONE key.</b> This concern was configured twice for a while, from two key names:
+    /// this stage read <c>Https:RedirectPort</c> and validated it at start-up, while a second registration
+    /// read a <c>Https:Port</c> of its own and defaulted it to 443. Both called
+    /// <c>AddHttpsRedirection</c>, so the later callback silently overwrote the port the earlier one had
+    /// computed and every redirect named 443 regardless of configuration - and worse, the shipped production
+    /// overlay set the key that was no longer applied while start-up validation demanded the key it did not
+    /// set, so enabling redirection in production threw. The duplicate is withdrawn and the key is
+    /// <c>Https:RedirectPort</c>: this process never listens on TLS, so a bare "port" would wrongly read as a
+    /// listener, whereas the port a redirect names is exactly what a deployment configures.
+    /// </para>
+    /// <para>
+    /// <b>The status is 308, and the alternative was considered.</b> A permanent redirect is cached by the
+    /// browser and by every intermediary between it and the deployment, so a host that later has to answer on
+    /// plain HTTP - during a certificate replacement, or after moving TLS termination - stays unreachable for
+    /// callers that cached it; the framework's own default of 307 avoids that. It is nonetheless 308 here
+    /// deliberately: both codes preserve the method and the body, which is the property that matters, and a
+    /// permanent answer is the honest one for a deployment whose whole perimeter terminates TLS. The
+    /// reversibility that argument gives up is bought back by the bounded strict-transport-security lifetime
+    /// registered immediately below, which expires on its own rather than living in a cache indefinitely.
+    /// </para>
+    /// </remarks>
+    private static void AddTransportSecurity(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        bool redirectEnabled =
+            configuration.GetValue<bool>(ApplicationBuilderExtensions.HttpsRedirectionSectionName);
+        int? redirectPort =
+            configuration.GetValue<int?>(ApplicationBuilderExtensions.HttpsRedirectPortSectionName);
+
+        if (redirectEnabled && redirectPort is not (>= 1 and <= 65535))
+        {
+            throw new InvalidOperationException(
+                $"'{ApplicationBuilderExtensions.HttpsRedirectPortSectionName}' must be a TCP port from 1 "
+                + $"through 65535 when '{ApplicationBuilderExtensions.HttpsRedirectionSectionName}' is true.");
+        }
+
+        services.AddHttpsRedirection(options =>
+        {
+            options.RedirectStatusCode = StatusCodes.Status308PermanentRedirect;
+            options.HttpsPort = redirectPort;
+        });
+
+        services.AddHsts(options =>
+        {
+            options.IncludeSubDomains = true;
+            options.Preload = false;
+            options.MaxAge = TimeSpan.FromDays(365);
+        });
+    }
+
 
     /// <summary>
     /// Configures which reverse proxies, if any, are trusted to report the original
@@ -483,6 +660,22 @@ public static class ServiceCollectionExtensions
     /// The hop limit is one. Each entry consumed walks one step further back through a
     /// chain the deployment has to trust in full, and the shipped topology has exactly
     /// one proxy in front of this application.
+    /// </para>
+    /// <para>
+    /// <b>What is registered here has no effect until the pipeline activates it.</b> These
+    /// options are read by the forwarded-header stage that
+    /// <see cref="ApplicationBuilderExtensions.UseApiPipeline"/> installs; configuring them
+    /// without that stage leaves them dead, and the symptom is not an error but a rate
+    /// limiter that partitions every caller behind the proxy into one shared budget and a
+    /// transport check that cannot see the scheme the browser actually used. The two halves
+    /// belong together and are cross-referenced for that reason.
+    /// </para>
+    /// <para>
+    /// The production overlay ships the address range the container runtime allocates its
+    /// bridge networks from, so the shipped topology trusts its own proxy and nothing else.
+    /// A deployment on a named network, an overlay network or an orchestrator that assigns
+    /// addresses from elsewhere replaces that value with its own; the narrower the entry,
+    /// the less a caller that reaches this application directly can claim.
     /// </para>
     /// </remarks>
     private static void AddForwardedHeaders(IServiceCollection services, IConfiguration configuration)
@@ -592,6 +785,7 @@ public static class ServiceCollectionExtensions
 
         return (prefix, prefixLength);
     }
+
 
     /// <summary>
     /// Checks the bound password policy against the bounds

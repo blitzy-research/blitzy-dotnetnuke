@@ -52,7 +52,7 @@ public sealed class ResponseDeclarationContractTests
     /// Route template of the one success that is a document rather than a payload, written as the published
     /// document renders it with the version substituted into the path.
     /// </summary>
-    private const string ExportPath = "/api/v1/portals/{portalId}/modules/{moduleId}/export";
+    private const string ExportPath = "/api/v1/modules/{moduleId}/export";
 
     /// <summary>The media type a module's exported content is served as.</summary>
     private const string ExportMediaType = "application/xml";
@@ -61,9 +61,8 @@ public sealed class ResponseDeclarationContractTests
     private const string JsonMediaType = "application/json";
 
     /// <summary>
-    /// Trailing segment shared by both addresses of the single profile-definition resource, matched as a
-    /// suffix so the flat and the portal-nested route templates are both found without either being spelled
-    /// out and going stale if a prefix changes.
+    /// Trailing segment of the single canonical profile-definition member resource, matched as a suffix so
+    /// the versioned prefix does not have to be repeated in the assertion.
     /// </summary>
     private const string ProfileDefinitionResourceSuffix = "/profile-definitions/{propertyDefinitionId}";
 
@@ -95,16 +94,12 @@ public sealed class ResponseDeclarationContractTests
     /// operation its exemption: <c>?moduleDefinitionId=0</c> answers 400 with a plain problem document, while
     /// <c>?permissionKey=99</c> answers 400 with a validation document naming the parameter. Both shapes, one
     /// operation, so only the supertype describes it honestly. The role listing was confirmed the same way at
-    /// both of its addresses, and the portal creation refuses an unresolvable parent alias.
+    /// its canonical address, and the portal creation refuses an unresolvable parent alias.
     /// </para>
     /// <para>
-    /// FOUR ENTRIES NAME THREE ACTIONS. The role listing is reachable at two addresses - the flat
-    /// <c>roles</c> and the portal-nested <c>portals/{portalId}/roles</c> - because its action carries two
-    /// <c>HttpGet</c> templates, and the explorer publishes one operation per template. The exemption is
-    /// keyed by published operation identity rather than by action, which is what lets a single action be
-    /// held to different rules at different addresses if it ever needs to be; the price is that an action
-    /// with several templates must be named once per template. Omitting either address leaves that address
-    /// reported as an offender, which is precisely how this entry was found.
+    /// THREE ENTRIES NAME THREE ACTIONS. Each action has one canonical route, so the literal roster and the
+    /// action roster are now one-to-one. The exemption remains keyed by published operation identity because
+    /// that is the contract a generated client consumes.
     /// </para>
     /// <para>
     /// Note what is NOT here. Every listing enforces its collection's sortable vocabulary in the application
@@ -118,7 +113,6 @@ public sealed class ResponseDeclarationContractTests
     [
         "Post /api/v1/portals",
         "Get /api/v1/roles",
-        "Get /api/v1/portals/{portalId}/roles",
         "Get /api/v1/permissions",
     ];
 
@@ -145,6 +139,51 @@ public sealed class ResponseDeclarationContractTests
         _document = scope.ServiceProvider
             .GetRequiredService<ISwaggerProvider>()
             .GetSwagger(documentName);
+    }
+
+    /// <summary>The published document contains only the AAP-canonical route family for each operation.</summary>
+    /// <remarks>
+    /// A duplicate route is not harmless compatibility: generated clients expose both paths as separate
+    /// operations and force callers to guess which identity is authoritative. This assertion pins the flat
+    /// module, account, role, role-group and profile-definition families, the portal-owned alias family and
+    /// the two permission-catalogue reads while explicitly rejecting every duplicate removed by AAP-1 and
+    /// AAP-3.
+    /// </remarks>
+    [Fact]
+    public void RouteSurface_PublishesCanonicalFamiliesAndNoWithdrawnDuplicates()
+    {
+        string[] canonical =
+        [
+            "/api/v1/modules",
+            "/api/v1/modules/{moduleId}",
+            "/api/v1/users",
+            "/api/v1/users/settings",
+            "/api/v1/roles",
+            "/api/v1/role-groups",
+            "/api/v1/profile-definitions",
+            "/api/v1/portals/{portalId}/aliases",
+            "/api/v1/permissions",
+            "/api/v1/permissions/{permissionId}",
+        ];
+
+        string[] withdrawn =
+        [
+            "/api/v1/portals/{portalId}/modules",
+            "/api/v1/portals/{portalId}/users",
+            "/api/v1/portals/{portalId}/roles",
+            "/api/v1/portals/{portalId}/role-groups",
+            "/api/v1/portals/{portalId}/profile-definitions",
+            "/api/v1/portal-aliases",
+            "/api/v1/permissions/modules/{moduleId}",
+            "/api/v1/permissions/tabs/{tabId}",
+        ];
+
+        _document.Paths.Keys.Should().Contain(
+            canonical,
+            "every AAP-authorized resource family must be discoverable at its canonical address");
+        _document.Paths.Keys.Should().NotContain(
+            withdrawn,
+            "the frozen API permits one public identity per operation, not compatibility aliases");
     }
 
     /// <summary>
@@ -221,11 +260,10 @@ public sealed class ResponseDeclarationContractTests
     /// </para>
     /// <para>
     /// The converse is still asserted, in <see cref="AnOperationCarryingContent_AdvertisesTheValidationDocumentUnlessItsRefusalCanBeSemantic"/>,
-    /// against an explicit exemption set naming those three actions at every address each publishes - four
-    /// entries, because the role listing answers at both a flat and a portal-nested path. Keeping it as a
-    /// separate fact with a named list is what stops the exemption from becoming a silent hole: admitting
-    /// another mixed-refusal operation is a deliberate edit to that list rather than a test that quietly
-    /// keeps passing.
+    /// against an explicit exemption set naming those three actions at their canonical addresses. Keeping it
+    /// as a separate fact with a named list is what stops the exemption from becoming a silent hole: admitting
+    /// another mixed-refusal operation is a deliberate edit to that list rather than a test that quietly keeps
+    /// passing.
     /// </para>
     /// </remarks>
     [Fact]
@@ -286,7 +324,7 @@ public sealed class ResponseDeclarationContractTests
     ///   question about stored state.
     ///   </description></item>
     ///   <item><description>
-    ///   <c>GET /api/v1/portals/{portalId}/roles</c> - a group identifier combined with the ungrouped scope
+    ///   <c>GET /api/v1/roles</c> - a group identifier combined with the ungrouped scope
     ///   (<c>role_group.scope_invalid</c>). Both parameters are individually valid and contradict each other.
     ///   </description></item>
     ///   <item><description>
@@ -418,8 +456,7 @@ public sealed class ResponseDeclarationContractTests
     }
 
     /// <summary>
-    /// Every deletion whose service can report a persistence conflict advertises <c>409</c>, at every address
-    /// the action answers on.
+    /// Every deletion whose service can report a persistence conflict advertises <c>409</c>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -438,10 +475,6 @@ public sealed class ResponseDeclarationContractTests
     /// it, which made the gap read as intentional; it did not, and the comment was corrected alongside the
     /// declaration.
     /// </para>
-    /// <para>
-    /// Both addresses are asserted because the action answers on a flat and a portal-nested path, and a
-    /// declaration added to one route template would leave the other silently undocumented.
-    /// </para>
     /// </remarks>
     [Fact]
     public void TheProfileDefinitionDeletion_AdvertisesTheConflictItCanReport()
@@ -452,8 +485,8 @@ public sealed class ResponseDeclarationContractTests
             .Select(path => path.Key)];
 
         deletions.Should().HaveCount(
-            2,
-            "the deletion answers on both a flat and a portal-nested address, and both must be checked");
+            1,
+            "the deletion has one canonical address and no portal-nested duplicate");
 
         foreach (string path in deletions)
         {

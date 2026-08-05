@@ -21,13 +21,10 @@ namespace DnnMigration.Infrastructure.Repositories;
 //            store was reversible by design - registered with passwordFormat="Encrypted" and
 //            enablePasswordRetrieval="true" at Website/release.config lines 245 and 239, over a 3DES key
 //            committed to source control at lines 89 to 93 - and neither the reversible storage nor the
-//            retrieval it enabled is reproduced. A stored hash is a value this type carries between the
-//            store and IPasswordHasher; the comparison itself belongs to the Application AuthService.
-//            AN ADMINISTRATIVE RESET IS THE ONLY WAY A PRE-EXISTING CREDENTIAL BECOMES USABLE: re-hashing
-//            on first sign-in would require verifying the submitted password against the legacy value
-//            first, and nothing in this solution can do that, so the "rehash on first login" path must not
-//            be described as a fallback that exists. That functional reduction is recorded in
-//            MIGRATION_NOTES.md, which this file does not edit.
+//            retrieval it enabled is reproduced. This repository transports the stored value, legacy
+//            format discriminator and salt to AuthService without interpreting them. The isolated
+//            ILegacyCredentialVerifier owns the bounded comparison, and an accepted value is immediately
+//            replaced through SetPasswordHashAsync; administrative reset remains the fallback.
 //
 // MIGRATION: APPROVAL AND AUTHORISATION ARE TWO DIFFERENT FACTS AND ARE NEVER CONFLATED. Approval lives
 //            in the external membership store and is installation-wide, so it is composed onto
@@ -496,6 +493,25 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Unlike the ordinary listing paths, this query intentionally performs no membership-store
+    /// population. Portal removal needs the relational account and membership graph only, and the
+    /// returned entities must remain tracked so that membership or account removal can be staged in the
+    /// same unit of work that removes the portal.
+    /// </remarks>
+    public async Task<IReadOnlyList<User>> ListPortalMembersForRemovalAsync(
+        int portalId,
+        CancellationToken cancellationToken = default)
+    {
+        return await _context.Users
+            .Include(u => u.UserPortals)
+            .Where(u => u.UserPortals.Any(membership => membership.PortalId == portalId))
+            .OrderBy(u => u.UserId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     // MIGRATION: THE SWALLOWED DUPLICATE PATH IS NOT REPRODUCED, AND THAT IS A CONTRACT BOUNDARY RATHER
     //            THAN AN OMISSION. The legacy membership provider wrapped its whole AddUser body in a
     //            catch-all and answered a failure of ANY kind by returning the -1 null-integer sentinel, so
@@ -550,7 +566,13 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    public async Task<(bool Exists, string? PasswordHash, bool IsApproved, bool IsLockedOut)> GetCredentialStateAsync(
+    public async Task<(
+        bool Exists,
+        string? PasswordValue,
+        PasswordFormat? Format,
+        string? PasswordSalt,
+        bool IsApproved,
+        bool IsLockedOut)> GetCredentialStateAsync(
         int userId,
         CancellationToken cancellationToken = default)
     {
@@ -558,7 +580,7 @@ internal sealed class UserRepository : IUserRepository
 
         if (userName is null)
         {
-            return (false, null, false, false);
+            return (false, null, null, null, false, false);
         }
 
         MembershipCredentialSnapshot? snapshot = await _membership
@@ -566,8 +588,14 @@ internal sealed class UserRepository : IUserRepository
             .ConfigureAwait(false);
 
         return snapshot is null
-            ? (false, null, false, false)
-            : (true, snapshot.PasswordHash, snapshot.IsApproved, snapshot.IsLockedOut);
+            ? (false, null, null, null, false, false)
+            : (
+                true,
+                snapshot.PasswordValue,
+                snapshot.Format,
+                snapshot.PasswordSalt,
+                snapshot.IsApproved,
+                snapshot.IsLockedOut);
     }
 
     /// <inheritdoc />
@@ -805,15 +833,12 @@ internal sealed class UserRepository : IUserRepository
     //            Website/Providers/DataProviders/SqlDataProvider/04.03.03.SqlDataProvider line 266 reads
     //            "(PropertyValue LIKE @PropertyValue OR PropertyText LIKE @PropertyValue)".
     //
-    //            An earlier revision of this method searched PropertyValue alone and justified it on the
-    //            grounds that PropertyValue "is the column the legacy search compared". THAT CLAIM WAS
-    //            FALSE and is removed rather than softened. The procedure was redefined across five
-    //            upgrade scripts and the two-column form appears in four of them - 03.02.03 line 901,
-    //            03.03.03 line 266, 04.00.04 line 946 and terminally 04.03.03 line 266. Only 03.02.06
-    //            line 148 narrowed it to the single column, and DotNetNuke reverted that in the very next
-    //            release. The single-column reading therefore reproduced a transient defect its own
-    //            authors had already withdrawn, and it is the terminal state that Rule T4 makes
-    //            authoritative.
+    //            Searching PropertyValue alone would reproduce a transient legacy defect rather than the
+    //            terminal behaviour: the procedure was redefined across five upgrade scripts and the
+    //            two-column form appears in four of them - 03.02.03 line 901, 03.03.03 line 266,
+    //            04.00.04 line 946 and terminally 04.03.03 line 266. Only 03.02.06 line 148 narrowed it
+    //            to the single column, and DotNetNuke reverted that in the very next release. Rule T4
+    //            makes the terminal state authoritative.
     //
     // MIGRATION: the match is expressed with LIKE rather than with a StartsWith translation, and that is
     //            forced by the store rather than chosen. SQL Server rejects an ntext argument to LEN, to

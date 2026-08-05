@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
@@ -8,8 +9,10 @@ using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
-using DnnMigration.Infrastructure.Security;
+using DnnMigration.Infrastructure;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
@@ -19,7 +22,7 @@ using Xunit;
 // ambiguity is resolved once here rather than by qualifying each of its use sites.
 using Module = DnnMigration.Domain.Entities.Module;
 
-namespace DnnMigration.UnitTests.Security;
+namespace DnnMigration.IntegrationTests.Security;
 
 /// <summary>
 /// Covers permission evaluation: the catalogue projection, the scope cascade, the pseudo-roles an
@@ -51,8 +54,25 @@ namespace DnnMigration.UnitTests.Security;
 /// a renamed code silently turns a not-found into a bad-request without any other test noticing.
 /// </para>
 /// </remarks>
-public class PermissionEvaluatorTests
+[Trait("Category", "Integration")]
+[Collection(IntegrationTestCollection.Name)]
+public sealed class PermissionEvaluatorTests
 {
+    /// <summary>
+    /// The implementation type the infrastructure layer registers for the evaluation contract, read once
+    /// per run out of the registration itself.
+    /// </summary>
+    private static readonly Lazy<Type> RegisteredEvaluator = new(ReadRegisteredEvaluatorType);
+
+    private readonly ApiTestFixture _fixture;
+
+    /// <summary>Initialises a new instance of the <see cref="PermissionEvaluatorTests"/> class.</summary>
+    /// <param name="fixture">
+    /// The shared composed host. Used solely as the composition root, to read which type the application
+    /// registers for the evaluation contract; no test here opens a connection or sends a request.
+    /// </param>
+    public PermissionEvaluatorTests(ApiTestFixture fixture) => _fixture = fixture;
+
     private const int PortalId = -1;
 
     private const int OtherPortalId = 3;
@@ -76,6 +96,20 @@ public class PermissionEvaluatorTests
     private const int TabId = 12;
 
     private const int SecondTabId = 13;
+
+    /// <summary>
+    /// The role the tenant designates as its administrator role.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately zero. <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so zero is the first real role a
+    /// portal ever gets and is exactly the value that a defaulted-integer bug would also produce. Pinning
+    /// the designation to it means an authority check that answered from an unset field rather than from the
+    /// stored designation cannot pass by coincidence.
+    /// </remarks>
+    private const int AdministratorRoleId = 0;
+
+    /// <summary>A role the caller may hold that is not the administrator role.</summary>
+    private const int OrdinaryRoleId = 4;
 
     /// <summary>
     /// The key of the module's placement on <see cref="TabId"/>, used when a test addresses a placement by its
@@ -185,6 +219,20 @@ public class PermissionEvaluatorTests
     private const string ExcludedSubsystemScopeCode = "SYSTEM_EXCLUDED_SUBSYSTEM";
 
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Every permission key name the schema can hold, which is the closed enumeration itself.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the enumeration rather than written out, so a member added to <c>PermissionKey</c>
+    /// widens the expectation automatically instead of leaving a stale literal behind. It is the answer the
+    /// unfiltered key listing owes - that listing reaches no store, because the catalogue of keys IS the
+    /// vocabulary - and it is also the number of candidate reads a code-scoped listing performs.
+    /// </remarks>
+    private static readonly IReadOnlyList<string> AllKeyNames = Enum
+        .GetValues<PermissionKey>()
+        .Select(key => key.ToString())
+        .ToList();
 
     /// <summary>
     /// The catalogue is projected upper-cased, without duplicates, and in ordinal order.
@@ -728,7 +776,7 @@ public class PermissionEvaluatorTests
         ];
 
         Result<IReadOnlyList<PermissionDto>> result = await harness.Service
-            .GetModulePermissionDefinitionsAsync(ModuleId, CancellationToken.None);
+            .GetModulePermissionDefinitionsAsync(PortalId, ModuleId, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Select(row => row.PermissionId).Should().Equal(
@@ -738,17 +786,35 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The page-scoped read answers with the page scope, and ignores its page argument entirely.
+    /// A module from another tenant is refused before any catalogue metadata is read.
+    /// </summary>
+    [Fact]
+    public async Task ModuleDefinitions_RefuseAModuleOwnedByAnotherPortal()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.PortalId = OtherPortalId;
+
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetModulePermissionDefinitionsAsync(PortalId, ModuleId, CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error?.Code.Should().Be(ModuleNotFoundCode);
+        harness.Permissions.Verify(
+            permissions => permissions.GetByModuleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// The page-scoped read answers with the page scope for each valid page in the tenant.
     /// </summary>
     /// <remarks>
-    /// This pins a legacy QUIRK rather than a design: the terminal <c>GetPermissionsByTabID</c> (04.05.03)
-    /// never references <c>@TabID</c>, so every page receives the identical catalogue. Two different pages
-    /// are asked here precisely so that the equality of the two answers is recorded as intended behaviour;
-    /// if a later change made the argument meaningful, this test would fail and demand a decision rather
-    /// than passing silently.
+    /// SEC-033 changes the precondition, not the catalogue: the page must exist in the addressed tenant, but
+    /// the terminal <c>GetPermissionsByTabID</c> scope remains shared by every valid page.
     /// </remarks>
     [Fact]
-    public async Task TabDefinitions_AnswerWithThePageScopeAndIgnoreThePageArgument()
+    public async Task TabDefinitions_AnswerWithThePageScopeForEachValidPage()
     {
         Harness harness = Harness.Ready();
         harness.Catalogue =
@@ -772,15 +838,36 @@ public class PermissionEvaluatorTests
         ];
 
         Result<IReadOnlyList<PermissionDto>> first = await harness.Service
-            .GetTabPermissionDefinitionsAsync(TabId, CancellationToken.None);
+            .GetTabPermissionDefinitionsAsync(PortalId, TabId, CancellationToken.None);
         Result<IReadOnlyList<PermissionDto>> second = await harness.Service
-            .GetTabPermissionDefinitionsAsync(SecondTabId, CancellationToken.None);
+            .GetTabPermissionDefinitionsAsync(PortalId, SecondTabId, CancellationToken.None);
 
         first.IsSuccess.Should().BeTrue(first.Reason?.ToString());
         first.Value.Select(row => row.PermissionId).Should().Equal(5);
         second.Value.Select(row => row.PermissionId).Should().Equal(
             first.Value.Select(row => row.PermissionId),
-            "the terminal statement never references the page argument");
+            "every valid page receives the shared SYSTEM_TAB catalogue");
+    }
+
+    /// <summary>
+    /// A page from another tenant is refused before any catalogue metadata is read.
+    /// </summary>
+    [Fact]
+    public async Task TabDefinitions_RefuseAPageOwnedByAnotherPortal()
+    {
+        Harness harness = Harness.Ready();
+        harness.Tab.PortalId = OtherPortalId;
+
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetTabPermissionDefinitionsAsync(PortalId, TabId, CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error?.Code.Should().Be(TabNotFoundCode);
+        harness.Permissions.Verify(
+            permissions => permissions.GetByTabIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -815,7 +902,7 @@ public class PermissionEvaluatorTests
         ];
 
         Result<IReadOnlyList<PermissionDto>> result = await harness.Service
-            .GetModulePermissionDefinitionsAsync(ModuleId, CancellationToken.None);
+            .GetModulePermissionDefinitionsAsync(PortalId, ModuleId, CancellationToken.None);
 
         result.Value.Select(row => row.PermissionId).Should().Equal(new[] { 4, 9 });
     }
@@ -1550,6 +1637,103 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
+    /// The placements are read ONCE even when the request both reconciles two forms of address and inherits
+    /// its view decision from the page.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the one request shape that needs the placement set twice - once to check that the page and the
+    /// placement key name the same row, and once to decide the inherited view - and it used to read the set
+    /// twice to serve them, an identical round trip issued back to back within a single decision on the
+    /// authorization path. The set is now read once and handed to both, which is why the placements are left
+    /// in the STORE here rather than loaded onto the module: a loaded navigation would satisfy both consumers
+    /// without any read at all and the assertion would prove nothing.
+    /// </remarks>
+    [Fact]
+    public async Task HasModulePermission_ReadsThePlacementsOnceWhenItBothReconcilesAndInherits()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.StoredPlacements =
+        [
+            Placement(TabId, FirstPlacementId),
+            Placement(SecondTabId, SecondPlacementId),
+        ];
+        harness.PageViewGrants[TabId] = true;
+
+        Result<bool> outcome = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: TabId,
+            placementTabModuleId: FirstPlacementId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Value.Should().BeTrue("hoisting the read must not change the answer it feeds");
+        harness.Modules.Verify(
+            modules => modules.GetTabModulesByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A request that reaches neither the reconciliation nor the inherited-view branch makes no placement
+    /// read at all, so hoisting the read added no round trip to any shape.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The hoisted read is taken LAZILY, and this is the fact that keeps it that way. Only two consumers need
+    /// the set - the reconciliation, which has something to reconcile only when BOTH forms of address are
+    /// present, and the inherited-view decision - so a request naming one form and asking about a key other
+    /// than view needs it for neither. Reading unconditionally at the top of the member would trade a
+    /// duplicated round trip on one shape for a brand-new one on every other, which is why the shape that
+    /// must stay free of the read is asserted alongside the shape that must issue it exactly once.
+    /// </remarks>
+    [Fact]
+    public async Task HasModulePermission_TakesTheHoistedPlacementReadLazily()
+    {
+        Harness singleAddress = Harness.Ready();
+        singleAddress.Module.InheritViewPermissions = true;
+        singleAddress.StoredPlacements = [Placement(TabId, FirstPlacementId)];
+        singleAddress.ModuleKeys = ["EDIT"];
+
+        Result<bool> nonInheritingKey = await singleAddress.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: TabId,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        nonInheritingKey.IsSuccess.Should().BeTrue(nonInheritingKey.Reason?.ToString());
+        singleAddress.Modules.Verify(
+            modules => modules.GetTabModulesByModuleIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never());
+
+        Harness unaddressed = Harness.Ready();
+        unaddressed.Module.InheritViewPermissions = true;
+        unaddressed.StoredPlacements = [Placement(TabId, FirstPlacementId)];
+        unaddressed.PageViewGrants[TabId] = true;
+
+        Result<bool> everywhere = await unaddressed.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        everywhere.IsSuccess.Should().BeTrue(everywhere.Reason?.ToString());
+        everywhere.Value.Should().BeTrue();
+        unaddressed.Modules.Verify(
+            modules => modules.GetTabModulesByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
     /// A module that inherits its view permission and sits on no page at all is not viewable.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -2261,10 +2445,29 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The removal lands as one unit of work rather than as two independently durable statements.
+    /// The removal lands as one unit of work rather than as two independently durable statements, and it
+    /// takes no transaction of its own to achieve that.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy pair was unprotected. The provider declared transaction members at
+    /// <c>Library/Components/Providers/Data/DataProvider.vb</c>:L70-L74 and neither cleanup -
+    /// <c>ModulePermissionController.vb</c>:L218 nor <c>TabPermissionController.vb</c>:L209 - invoked them,
+    /// so each statement committed alone and a failure between them left the account's module grants gone
+    /// and its page grants intact.
+    /// </para>
+    /// <para>
+    /// THE ORACLE IS ONE COMMIT AND NO SCOPE, and the "and no scope" half is the part that matters. Both
+    /// repository members STAGE against the change tracker - <c>IPermissionRepository</c> declares them as
+    /// staging members - so a single <c>SaveChangesAsync</c> already applies them indivisibly, which is the
+    /// guarantee <c>IUnitOfWork.SaveChangesAsync</c> makes. An earlier revision wrapped them in an explicit
+    /// scope on the mistaken premise that each reached the store when called; that scope is what made this
+    /// member unusable inside the account-deletion cascade, because the unit of work refuses a nested one.
+    /// Pinning its absence is therefore pinning the fix, not merely recording an implementation detail.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task RemoveGrants_CommitsBothTablesInOneTransaction()
+    public async Task RemoveGrants_CommitsBothTablesInOneUnitOfWorkWithoutOpeningATransaction()
     {
         Harness harness = Harness.Ready();
 
@@ -2275,28 +2478,141 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
 
-        // MIGRATION: the legacy pair was unprotected. The provider declared transaction members at
-        //            Library/Components/Providers/Data/DataProvider.vb:L70-L74 and neither cleanup -
-        //            ModulePermissionController.vb:L218 nor TabPermissionController.vb:L209 - invoked
-        //            them, so each statement committed alone and a failure between them left the
-        //            account's module grants gone and its page grants intact. Both repository members
-        //            issue a set-based delete that reaches the store when called rather than when
-        //            changes are flushed, so an enclosing transaction is the only thing that makes the
-        //            pair atomic.
-        harness.UnitOfWork.Verify(
-            unitOfWork => unitOfWork.BeginTransactionAsync(
-                TransactionIsolation.Default,
-                It.IsAny<CancellationToken>()),
-            Times.Once());
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Once());
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.BeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
         harness.Transaction.Verify(
             transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// The stage-only form stages both tables and neither commits nor evicts, which is what lets it join a
+    /// larger unit of work.
+    /// </summary>
+    /// <remarks>
+    /// THE REGRESSION THIS PINS is the partial-commit boundary the account-deletion cascade used to carry.
+    /// The cascade documents its permission step as staged, but it called the top-level member, which
+    /// committed the grant removals on its own; a credential removal failing afterwards then left an account
+    /// intact with its grants already destroyed - and the reply said the account had been left alone. The
+    /// staging member exists so the cascade can decide WHEN the removal becomes durable, so a commit or an
+    /// eviction here would reintroduce the defect exactly.
+    /// </remarks>
+    [Fact]
+    public async Task StageGrantRemoval_StagesBothTablesWithoutCommittingOrEvicting()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalTabs = [new Tab { TabId = TabId, PortalId = PortalId, TabName = "First" }];
+
+        Result result = await harness.Service.StageUserPermissionRemovalAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByUserIdAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
             Times.Once());
 
-        // Disposal is what rolls an uncommitted transaction back, so it has to happen on every path.
-        harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.BeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(It.IsAny<int>()), Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(It.IsAny<int>()), Times.Never());
+    }
+
+    /// <summary>
+    /// The stage-only form refuses an unknown tenant or a non-member account and stages nothing, so a
+    /// caller's own unit of work is unaffected by having asked.
+    /// </summary>
+    /// <param name="unknownPortal">
+    /// <see langword="true"/> to make the tenant unknown, <see langword="false"/> to make the account a
+    /// non-member.
+    /// </param>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StageGrantRemoval_RefusesAndStagesNothing(bool unknownPortal)
+    {
+        Harness harness = Harness.Ready();
+
+        if (unknownPortal)
+        {
+            harness.Portals
+                .Setup(portals => portals.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(false);
+        }
+        else
+        {
+            harness.Users
+                .Setup(users => users.GetAsync(
+                    It.IsAny<int?>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((User?)null);
+        }
+
+        Result result = await harness.Service.StageUserPermissionRemovalAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(unknownPortal ? PortalNotFoundCode : UserNotFoundCode);
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// The eviction member evicts both grant families, the module family page by page, for the caller that
+    /// owned the commit.
+    /// </summary>
+    [Fact]
+    public async Task InvalidateGrantCaches_EvictsBothGrantFamilies()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalTabs =
+        [
+            new Tab { TabId = TabId, PortalId = PortalId, TabName = "First" },
+            new Tab { TabId = TabId + 1, PortalId = PortalId, TabName = "Second" },
+        ];
+
+        await harness.Service.InvalidateUserPermissionCachesAsync(PortalId, CancellationToken.None);
+
+        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(PortalId), Times.Once());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId), Times.Once());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId + 1), Times.Once());
     }
 
     /// <summary>
@@ -2338,7 +2654,7 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A removal refused before it starts neither opens a transaction nor evicts anything.
+    /// A removal refused before it starts neither commits nor evicts anything.
     /// </summary>
     [Fact]
     public async Task RemoveGrants_TouchesNothingWhenThePortalIsUnknown()
@@ -2355,6 +2671,9 @@ public class PermissionEvaluatorTests
 
         result.IsFailure.Should().BeTrue();
         result.Reason!.Code.Should().Be(PortalNotFoundCode);
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.BeginTransactionAsync(
                 It.IsAny<TransactionIsolation>(),
@@ -2458,16 +2777,19 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A cached catalogue read asks for the legacy lifetime: twenty minutes times the multiplier.
+    /// A cached definition read asks for the legacy lifetime: twenty minutes times the multiplier.
     /// </summary>
     [Fact]
-    public async Task CatalogueRead_RequestsTheLegacyLifetime()
+    public async Task DefinitionRead_RequestsTheLegacyLifetime()
     {
         Harness harness = Harness.Ready();
         harness.CachingOptions.PerformanceMultiplier = 3;
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
-            cancellationToken: CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> result =
+            await harness.Service.GetModulePermissionDefinitionsAsync(
+                PortalId,
+                ModuleId,
+                CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
 
@@ -2475,33 +2797,55 @@ public class PermissionEvaluatorTests
         //            installation-wide performance setting at its point of use
         //            (ModulePermissionController.vb:L177 and L315, TabPermissionController.vb:L285).
         //            The shipped multiplier is 3, so the lifetime is an hour.
+        //
+        // The lifetime is pinned through a DEFINITION read rather than through the filtered key listing,
+        // because the listing is deliberately uncached - its key space cannot be bounded, as the fact below
+        // records - and the two definition reads are now the only members that reach the read-through
+        // helper. The arithmetic being asserted is the helper's, so either cached read proves it.
         harness.CacheLifetimesRequested.Should().ContainSingle()
             .Which.Should().Be(TimeSpan.FromMinutes(60));
 
-        // The catalogue gets its own key family; reusing a legacy grant key would collide with the grant
+        // The definitions get their own key family; reusing a legacy grant key would collide with the grant
         // eviction that ICacheService targets at that exact name.
         harness.CacheKeysRequested.Should().ContainSingle()
-            .Which.Should().StartWith("PermissionCatalogueKeys|");
+            .Which.Should().StartWith("PermissionDefinitionsByModuleDefinition|");
     }
 
     /// <summary>
-    /// A multiplier of zero bypasses the cache rather than writing an entry that expires at once.
+    /// The filtered key listing reaches the store on every call and takes no cache entry, so two filter
+    /// shapes can never answer one another's question.
     /// </summary>
     [Fact]
-    public async Task CatalogueRead_BypassesTheCacheWhenCachingIsDisabled()
+    public async Task CatalogueRead_IsUncachedSoFilterShapesCannotServeEachOther()
     {
         Harness harness = Harness.Ready();
-        harness.CachingOptions.PerformanceMultiplier = 0;
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        // Caching is ENABLED, which is what makes this fact about the member and not about the multiplier.
+        harness.CachingOptions.PerformanceMultiplier = 3;
+        harness.Catalogue = [Entry(PermissionKey.VIEW)];
+
+        // The unfiltered shape is the closed enumeration itself, and the code-scoped shape asks the store
+        // which keys are declared under a code. Under the withdrawn cache both of these produced the key
+        // "PermissionCatalogueKeys|*|*|*": the absent-filter token was rendered as "*", and "*" is itself a
+        // legal scope code, so the request that FILTERED on it and the request that filtered on nothing were
+        // indistinguishable. Whichever warmed the entry first then answered both.
+        Result<IReadOnlyList<string>> unfiltered = await harness.Service.GetPermissionKeysAsync(
+            cancellationToken: CancellationToken.None);
+        Result<IReadOnlyList<string>> filteredOnTheOldToken = await harness.Service.GetPermissionKeysAsync(
+            permissionCode: "*",
             cancellationToken: CancellationToken.None);
 
-        // MIGRATION: the legacy writes were conditioned on the product being positive
-        //            (ModulePermissionController.vb:L183, TabPermissionController.vb:L290), so a zero
-        //            multiplier meant "do not cache". The store is still reached - only the cache is
-        //            skipped - because an entry with a zero lifetime is a write, an eviction and a miss
-        //            where the configuration asked for none of them.
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        unfiltered.IsSuccess.Should().BeTrue(unfiltered.Reason?.ToString());
+        filteredOnTheOldToken.IsSuccess.Should().BeTrue(filteredOnTheOldToken.Reason?.ToString());
+
+        unfiltered.Value.Should().BeEquivalentTo(
+            AllKeyNames,
+            "the unfiltered catalogue of keys is the closed enumeration");
+        filteredOnTheOldToken.Value.Should().BeEmpty(
+            "no catalogue entry carries that scope code, and the answer must be its own rather than the "
+            + "unfiltered one");
+
+        // No entry, and therefore no key space to bound: the member never reaches the read-through helper.
         harness.CacheKeysRequested.Should().BeEmpty();
         harness.Cache.Verify(
             cache => cache.GetOrCreateAsync(
@@ -2510,28 +2854,179 @@ public class PermissionEvaluatorTests
                 It.IsAny<TimeSpan>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
+
+        // The store is still reached, once per candidate key, so withdrawing the entry withdrew a cache and
+        // not an answer.
+        harness.Permissions.Verify(
+            permissions => permissions.GetByCodeAndKeyAsync(
+                "*",
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()),
+            Times.Exactly(AllKeyNames.Count));
     }
 
     /// <summary>
-    /// The two definition reads are cached under their own key families, keyed by their own subject.
+    /// A multiplier of zero bypasses the cache rather than writing an entry that expires at once.
+    /// </summary>
+    [Fact]
+    public async Task DefinitionRead_BypassesTheCacheWhenCachingIsDisabled()
+    {
+        Harness harness = Harness.Ready();
+        harness.CachingOptions.PerformanceMultiplier = 0;
+
+        Result<IReadOnlyList<PermissionDto>> result =
+            await harness.Service.GetModulePermissionDefinitionsAsync(
+                PortalId,
+                ModuleId,
+                CancellationToken.None);
+
+        // MIGRATION: the legacy writes were conditioned on the product being positive
+        //            (ModulePermissionController.vb:L183, TabPermissionController.vb:L290), so a zero
+        //            multiplier meant "do not cache". The store is still reached - only the cache is
+        //            skipped - because an entry with a zero lifetime is a write, an eviction and a miss
+        //            where the configuration asked for none of them.
+        //
+        // Asserted through a DEFINITION read because the two definition reads are the only members that
+        // reach the read-through helper the multiplier governs; the filtered key listing takes no entry at
+        // any multiplier, which is a property of its key space rather than of the configuration.
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        harness.CacheKeysRequested.Should().BeEmpty();
+        harness.Cache.Verify(
+            cache => cache.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<Func<CancellationToken, Task<IReadOnlyList<PermissionDto>>>>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+
+        // The store IS still reached, which is the half of the legacy behaviour that a bypass has to keep.
+        harness.Permissions.Verify(
+            permissions => permissions.GetByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// The two definition reads are cached under their own key families, each keyed by the dimension its
+    /// answer actually depends on rather than by the identifier the caller named.
     /// </summary>
     [Fact]
     public async Task DefinitionReads_AreCachedUnderTheirOwnKeyFamilies()
     {
         Harness harness = Harness.Ready();
 
-        _ = await harness.Service.GetModulePermissionDefinitionsAsync(ModuleId, CancellationToken.None);
-        _ = await harness.Service.GetTabPermissionDefinitionsAsync(TabId, CancellationToken.None);
+        _ = await harness.Service.GetModulePermissionDefinitionsAsync(
+            PortalId,
+            ModuleId,
+            CancellationToken.None);
+        _ = await harness.Service.GetTabPermissionDefinitionsAsync(
+            PortalId,
+            TabId,
+            CancellationToken.None);
 
         harness.CacheKeysRequested.Should().HaveCount(2);
-        harness.CacheKeysRequested[0].Should().Be(
-            FormattableString.Invariant($"PermissionDefinitionsByModule|{ModuleId}"));
 
-        // The page identifier is part of the key even though the read behind it ignores the argument,
-        // so a later product revision that makes the page distinction real cannot serve one page's
-        // answer for another.
-        harness.CacheKeysRequested[1].Should().Be(
-            FormattableString.Invariant($"PermissionDefinitionsByTab|{TabId}"));
+        // THE DIMENSION IS THE MODULE DEFINITION, NOT THE MODULE. The read selects the entries of the
+        // module's own definition unioned with the product-wide definition scope, so two modules sharing a
+        // definition have the same answer by construction. Keying by module admitted one entry per
+        // identifier a caller chose to name, which is unbounded growth bought with well-formed requests.
+        //
+        // SEC-033 is upheld by the GUARD rather than by the key: a module that does not exist, or exists in
+        // another portal, is refused before the cache is consulted, and the rows an entry holds are
+        // product-wide definition metadata rather than one tenant's data.
+        harness.CacheKeysRequested[0].Should().Be(
+            FormattableString.Invariant(
+                $"PermissionDefinitionsByModuleDefinition|{harness.Module.ModuleDefinitionId}"));
+
+        // ONE ENTRY, WITH NO PAGE DIMENSION, and that is a measurement rather than a simplification: the
+        // terminal page-scoped statement filters on the product-wide page scope code and never references
+        // its page argument, so every page receives the identical rows. Keying by page stored one identical
+        // copy per page identifier a caller happened to name. Should a revision ever make the page
+        // distinction real, this assertion is what forces the key to regain the dimension alongside it.
+        harness.CacheKeysRequested[1].Should().Be("PermissionDefinitionsByTab|all");
+    }
+
+    /// <summary>
+    /// Two modules of one definition collapse onto a single entry, and two pages onto a single entry, so
+    /// neither key space grows with the identifiers callers name.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DefinitionReads_CollapseOntoOneEntryPerDistinctAnswer()
+    {
+        Harness harness = Harness.Ready();
+
+        // A SECOND, DIFFERENT module carrying the SAME definition, and belonging to the same tenant so that
+        // the guard admits it. Answered by the module repository so the service resolves a genuinely
+        // different module row and still arrives at one key.
+        const int secondModuleId = ModuleId + 77;
+        harness.Modules
+            .Setup(modules => modules.GetByIdAsync(secondModuleId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Module
+            {
+                ModuleId = secondModuleId,
+                ModuleDefinitionId = harness.Module.ModuleDefinitionId,
+                PortalId = PortalId,
+                ModuleTitle = "Second Measured Module",
+            });
+
+        _ = await harness.Service.GetModulePermissionDefinitionsAsync(PortalId, ModuleId, CancellationToken.None);
+        _ = await harness.Service.GetModulePermissionDefinitionsAsync(
+            PortalId,
+            secondModuleId,
+            CancellationToken.None);
+        _ = await harness.Service.GetTabPermissionDefinitionsAsync(PortalId, TabId, CancellationToken.None);
+        _ = await harness.Service.GetTabPermissionDefinitionsAsync(
+            PortalId,
+            SecondTabId,
+            CancellationToken.None);
+
+        harness.CacheKeysRequested.Should().HaveCount(4, "every call still consults the cache");
+        harness.CacheKeysRequested.Distinct(StringComparer.Ordinal).Should().HaveCount(
+            2,
+            "four calls naming four identifiers must resolve to the two distinct answers behind them");
+
+        // The read behind each call is unchanged: the repository is still asked about the module and the
+        // page the caller named, so the canonical key changes what is STORED and not what is ANSWERED.
+        harness.Permissions.Verify(
+            permissions => permissions.GetByModuleIdAsync(secondModuleId, It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Permissions.Verify(
+            permissions => permissions.GetByTabIdAsync(SecondTabId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// An identifier that names no module earns no cache entry, because it is refused before the cache is
+    /// reached.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// An earlier revision answered every unknown identifier from one shared absent-module entry, which
+    /// bounded the key space but handed the product-wide catalogue to a caller naming a module that does not
+    /// exist. SEC-033 refuses instead, which bounds the space more tightly still - an unknown identifier
+    /// earns no entry at all - and keeps the tenant check ahead of every read. That is the shape a hostile
+    /// caller would otherwise have used to grow the store one invented identifier at a time.
+    /// </remarks>
+    [Fact]
+    public async Task DefinitionReads_RefuseAnAbsentModuleBeforeConsultingTheCache()
+    {
+        Harness harness = Harness.Ready();
+        harness.Modules
+            .Setup(modules => modules.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Module?)null);
+
+        Result<IReadOnlyList<PermissionDto>> first = await harness.Service
+            .GetModulePermissionDefinitionsAsync(PortalId, 4242, CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> second = await harness.Service
+            .GetModulePermissionDefinitionsAsync(PortalId, 9999, CancellationToken.None);
+
+        first.IsFailure.Should().BeTrue();
+        first.Error?.Code.Should().Be(ModuleNotFoundCode);
+        second.IsFailure.Should().BeTrue();
+        second.Error?.Code.Should().Be(ModuleNotFoundCode);
+
+        harness.CacheKeysRequested.Should().BeEmpty(
+            "an identifier naming no module is refused before the cache is consulted, so it earns no entry");
     }
 
     /// <summary>
@@ -2606,6 +3101,260 @@ public class PermissionEvaluatorTests
         outsiderAnswer.Reason!.Code.Should().Be(UserNotFoundCode);
     }
 
+    // =================================================================================================
+    // Portal authority.
+    //
+    // Authority OVER a tenant is a different question from a grant ON a resource, and these tests exist to
+    // keep the two from collapsing into one another. A grant answers "may this caller change this thing";
+    // authority answers "may this caller change what this tenant is", which is what an operation that moves
+    // content between pages or overwrites every placement in the portal really asks. The answer is taken
+    // from stored state - the tenant's own administrator designation and the caller's currently valid
+    // assignments - and never from a claim, because a claim is minted at sign-in and a designation can be
+    // reassigned after it.
+    // =================================================================================================
+
+    /// <summary>
+    /// An unidentified caller administers nothing, and nothing is read in order to say so.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_ForAnUnidentifiedCallerIsRefusedWithoutAnyRead()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            userId: null,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().BeFalse("an anonymous caller holds no designation to read");
+
+        // The refusal is decided before any store is touched, so an unauthenticated request cannot be used
+        // to probe whether a portal or an account exists.
+        harness.Users.Verify(
+            users => users.GetAsync(It.IsAny<int?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Portals.Verify(
+            portals => portals.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.RoleStore.Verify(
+            roles => roles.GetUserRolesAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// An account that resolves nowhere administers nothing.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_ForAnUnresolvableAccountIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.Users
+            .Setup(users => users.GetAsync(
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((User?)null);
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().BeFalse("an account that resolves neither inside nor outside the tenant holds nothing");
+    }
+
+    /// <summary>
+    /// A host account administers every tenant, and the designation is never consulted for it.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_ForAHostAccountIsGrantedWithoutReadingTheDesignation()
+    {
+        Harness harness = Harness.Ready();
+        harness.Users
+            .Setup(users => users.GetAsync(
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new User
+            {
+                UserId = HostUserId,
+                Username = "host",
+                FirstName = "Host",
+                LastName = "Account",
+                DisplayName = "Host Account",
+                IsSuperUser = true,
+            });
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            HostUserId,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().BeTrue(
+            "the installation-wide account outranks every tenant designation, exactly as PortalSecurity.IsInRoles treated it");
+
+        // A host account holds no tenant-scoped assignment, so reading the designation or the assignments
+        // would answer false for the one caller that must always be true.
+        harness.RoleStore.Verify(
+            roles => roles.GetUserRolesAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A tenant that designates no administrator role confers authority on nobody.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_ForAPortalWithNoDesignationIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalRow.AdministratorRoleId = null;
+
+        // The caller holds an assignment that WOULD match if the designation existed, so the refusal can
+        // only come from the missing designation rather than from an empty membership.
+        harness.RoleAssignments = [Assignment(AdministratorRoleId)];
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().BeFalse("an unset designation names no role, so no assignment can match it");
+    }
+
+    /// <summary>
+    /// A tenant row that cannot be loaded confers authority on nobody.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_ForAnAbsentPortalIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.Portals
+            .Setup(portals => portals.GetByIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Portal?)null);
+        harness.RoleAssignments = [Assignment(AdministratorRoleId)];
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().BeFalse("no tenant row means no designation to hold");
+    }
+
+    /// <summary>
+    /// A currently valid assignment to the designated role confers authority; every other membership state
+    /// does not.
+    /// </summary>
+    /// <param name="effectiveOffsetDays">
+    /// Days from now at which the assignment becomes effective, or <c>null</c> for no start bound.
+    /// </param>
+    /// <param name="expiryOffsetDays">
+    /// Days from now at which the assignment lapses, or <c>null</c> for no end bound.
+    /// </param>
+    /// <param name="expected">Whether the caller is expected to administer the tenant.</param>
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(-30, null, true)]
+    [InlineData(-30, 30, true)]
+    [InlineData(30, null, false)]
+    [InlineData(-60, -30, false)]
+    public async Task PortalAuthority_TurnsOnTheValidityOfTheDesignatedAssignment(
+        int? effectiveOffsetDays,
+        int? expiryOffsetDays,
+        bool expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.RoleAssignments =
+        [
+            Assignment(
+                AdministratorRoleId,
+                effectiveOffsetDays is int effective ? Now.AddDays(effective) : null,
+                expiryOffsetDays is int expiry ? Now.AddDays(expiry) : null),
+        ];
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().Be(
+            expected,
+            "a pending or lapsed administrator membership is not authority, and the dates are the only thing that says so");
+    }
+
+    /// <summary>
+    /// Holding some other role, however many, is not authority.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_ForAnOrdinaryMembershipIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.RoleAssignments = [Assignment(OrdinaryRoleId), Assignment(OrdinaryRoleId + 1)];
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
+        answer.Value.Should().BeFalse("only the designated role confers authority over the tenant");
+    }
+
+    /// <summary>
+    /// The question is asked of the tenant named in the argument and of the caller named in the argument.
+    /// </summary>
+    [Fact]
+    public async Task PortalAuthority_AsksTheStoreForTheNamedTenantAndCaller()
+    {
+        Harness harness = Harness.Ready();
+        harness.RoleAssignments = [Assignment(AdministratorRoleId)];
+
+        Result<bool> answer = await harness.Service.IsPortalAdministratorAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        answer.Value.Should().BeTrue(answer.Reason?.ToString());
+
+        // Pinned because a transposed argument pair would still compile - both are integers - and would
+        // then answer about the wrong tenant, which is precisely the confusion this member exists to stop.
+        harness.RoleStore.Verify(
+            roles => roles.GetUserRolesAsync(PortalId, UserId, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Portals.Verify(
+            portals => portals.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// Builds a role assignment for the harness account.
+    /// </summary>
+    /// <param name="roleId">The role held.</param>
+    /// <param name="effectiveDate">When the membership starts, or <c>null</c> for no start bound.</param>
+    /// <param name="expiryDate">When the membership lapses, or <c>null</c> for no end bound.</param>
+    /// <returns>The assignment.</returns>
+    private static UserRole Assignment(
+        int roleId,
+        DateTime? effectiveDate = null,
+        DateTime? expiryDate = null)
+        => new()
+        {
+            UserRoleId = 900 + roleId,
+            UserId = UserId,
+            RoleId = roleId,
+            EffectiveDate = effectiveDate,
+            ExpiryDate = expiryDate,
+        };
+
     /// <summary>
     /// Every collaborator is required.
     /// </summary>
@@ -2618,6 +3367,7 @@ public class PermissionEvaluatorTests
         Mock<IModuleRepository> modules = new();
         Mock<ITabRepository> tabs = new();
         Mock<IUserRepository> users = new();
+        Mock<IRoleRepository> roles = new();
         Mock<IUnitOfWork> unitOfWork = new();
         Mock<ICacheService> cache = new();
         Mock<IClock> clock = new();
@@ -2632,67 +3382,73 @@ public class PermissionEvaluatorTests
         {
             _ = new PermissionService(
                 null!, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, null!, portals.Object, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, null!, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, null!, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, null!, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, null!,
-                unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                null!, cache.Object, clock.Object, options, caching);
+                null!, unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, null!, clock.Object, options, caching);
+                roles.Object, null!, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, null!, options, caching);
+                roles.Object, unitOfWork.Object, null!, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, null!, caching);
+                roles.Object, unitOfWork.Object, cache.Object, null!, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                unitOfWork.Object, cache.Object, clock.Object, options, null!);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, null!, caching);
+        });
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            _ = new PermissionService(
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, null!);
         });
     }
 
@@ -2948,6 +3704,15 @@ public class PermissionEvaluatorTests
     /// asserting something false. The prohibition that carries the architectural weight is "no second
     /// reducer anywhere", which the previous test enforces where it can actually be broken.
     /// </para>
+    /// <para>
+    /// The membership of the set is pinned by name as well as by count. Two of the three are grant
+    /// questions - "may this caller act on this module", "may this caller act on this page" - and those are
+    /// the only two scopes a grant is recorded against. The third is deliberately NOT a grant question:
+    /// authority over a tenant asks whether the caller is the portal's administrator, which is answered from
+    /// the tenant's own designation rather than from any permission row, and which no grant on a single
+    /// resource can stand in for. Naming them keeps a fourth decision from being added silently, and keeps
+    /// the third from being mistaken for a third grant scope.
+    /// </para>
     /// </remarks>
     [Fact]
     public void Contract_ADecisionIsAnOutcomeCarryingABooleanNeverABareBoolean()
@@ -2957,9 +3722,15 @@ public class PermissionEvaluatorTests
             .Where(member => ProducedValue(member.ReturnType) == typeof(bool))
             .ToArray();
 
-        decisions.Should().HaveCount(
-            2,
-            "a caller asks about a module or about a page, and those are the only two scopes a grant is recorded against");
+        decisions.Select(decision => decision.Name).Should().BeEquivalentTo(
+            new[]
+            {
+                nameof(IPermissionService.HasModulePermissionAsync),
+                nameof(IPermissionService.HasTabPermissionAsync),
+                nameof(IPermissionService.IsPortalAdministratorAsync),
+            },
+            "two grant scopes exist - module and page - and tenant authority is a separate question answered "
+            + "from the portal's own administrator designation rather than from a permission row");
 
         foreach (MethodInfo decision in decisions)
         {
@@ -3170,6 +3941,63 @@ public class PermissionEvaluatorTests
     // =================================================================================================
 
     /// <summary>
+    /// The evaluator every test below activates is the one the composed host resolves for the contract,
+    /// and it is scoped, internal and sealed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the assertion that ties the whole concrete section to production, and it is the one a
+    /// direct construction could never make. Every other test here activates an implementation type over
+    /// substituted repositories; if that type were not the type a request resolves, all of them would be
+    /// exercising something the application does not use. Reading the type from the registration and then
+    /// resolving an instance through the real container closes both halves: the registration names it, and
+    /// the container can actually build it.
+    /// </para>
+    /// <para>
+    /// Scoped rather than singleton is asserted because the evaluator holds repositories, which hold the
+    /// per-request data context: a singleton would share one change tracker across concurrent requests
+    /// and answer one tenant's question from another tenant's pending state. Two resolutions inside one
+    /// scope must be the same instance, and resolutions in different scopes must not be.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Evaluator_IsTheImplementationTheContainerRegistersAndResolves()
+    {
+        Type registered = RegisteredEvaluatorType();
+
+        registered.Assembly.Should().BeSameAs(
+            typeof(DependencyInjection).Assembly,
+            "an access decision belongs to the infrastructure layer, which is the only layer that reads "
+            + "the grant rows");
+        registered.IsSealed.Should().BeTrue(
+            "an evaluator that can be subclassed can have its deny precedence overridden");
+        registered.IsPublic.Should().BeFalse(
+            "the implementation is internal so that no layer above it can name it, which is what makes "
+            + "the contract the only way to ask the question");
+
+        using (ScopedServices first = _fixture.CreateScopedServices())
+        {
+            IPermissionEvaluator resolved = first.Resolve<IPermissionEvaluator>();
+
+            resolved.GetType().Should().Be(
+                registered,
+                "every test in this section activates the registered type, so a registration pointing "
+                + "somewhere else would leave the whole section exercising unused code");
+            first.Resolve<IPermissionEvaluator>().Should().BeSameAs(
+                resolved,
+                "one request asks the same question repeatedly, and each answer must be read through one "
+                + "data context");
+
+            using ScopedServices second = _fixture.CreateScopedServices();
+
+            second.Resolve<IPermissionEvaluator>().Should().NotBeSameAs(
+                resolved,
+                "the evaluator holds the scoped data context, so sharing it between requests would let "
+                + "one tenant's pending state decide another tenant's access");
+        }
+    }
+
+    /// <summary>
     /// The evaluator refuses to be constructed without any one of its five collaborators.
     /// </summary>
     /// <param name="omitted">Which collaborator is withheld.</param>
@@ -3190,12 +4018,13 @@ public class PermissionEvaluatorTests
     {
         EvaluatorWorld world = EvaluatorWorld.Create();
 
-        Action construct = () => _ = new PermissionEvaluator(
-            omitted == "permissions" ? null! : world.Permissions.Object,
-            omitted == "roles" ? null! : world.RoleStore.Object,
-            omitted == "modules" ? null! : world.ModuleStore.Object,
-            omitted == "tabs" ? null! : world.TabStore.Object,
-            omitted == "portalOptions" ? null! : Options.Create(world.Portal));
+        Action construct = () => _ = Activate(
+            RegisteredEvaluatorType(),
+            omitted == "permissions" ? null : world.Permissions.Object,
+            omitted == "roles" ? null : world.RoleStore.Object,
+            omitted == "modules" ? null : world.ModuleStore.Object,
+            omitted == "tabs" ? null : world.TabStore.Object,
+            omitted == "portalOptions" ? null : Options.Create(world.Portal));
 
         construct.Should().Throw<ArgumentNullException>().And.ParamName.Should().Be(omitted);
     }
@@ -4861,9 +5690,18 @@ public class PermissionEvaluatorTests
                 PortalId = portalId,
             });
 
-        /// <summary>Constructs the concrete evaluator over this world.</summary>
+        /// <summary>Constructs the registered evaluator implementation over this world.</summary>
         /// <returns>The evaluator, typed as the contract its callers depend on.</returns>
-        public IPermissionEvaluator Build() => new PermissionEvaluator(
+        /// <remarks>
+        /// The production type is activated over substituted collaborators rather than resolved from the
+        /// container, because each test states its own catalogue, roles, modules and pages, and the
+        /// container binds the real repositories. Which type gets activated is not a guess: it is the type
+        /// the container registers for <see cref="IPermissionEvaluator"/>, read off the registration by
+        /// <see cref="RegisteredEvaluatorType"/>, so a repointed registration takes every test below with
+        /// it instead of leaving them asserting against an abandoned implementation.
+        /// </remarks>
+        public IPermissionEvaluator Build() => Activate(
+            RegisteredEvaluatorType(),
             Permissions.Object,
             RoleStore.Object,
             ModuleStore.Object,
@@ -4902,7 +5740,18 @@ public class PermissionEvaluatorTests
                 TabName = "Measured Page",
             };
 
+            // The tenant row the portal-authority question reads its administrator designation from. The
+            // designation is a nullable column, so a portal that has none is a real state and is exercised
+            // by clearing this member rather than by removing the row.
+            PortalRow = new Portal
+            {
+                PortalId = PortalId,
+                PortalName = "Measured Portal",
+                AdministratorRoleId = AdministratorRoleId,
+            };
+
             Catalogue = [];
+            RoleAssignments = [];
             AssignedRoles = [];
             PortalKeys = [];
             ModuleKeys = [];
@@ -4921,16 +5770,18 @@ public class PermissionEvaluatorTests
             Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
             Tabs = new Mock<ITabRepository>(MockBehavior.Loose);
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
+            RoleStore = new Mock<IRoleRepository>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
 
-            // The transaction scope is handed back by the unit of work so that the cleanup member under test
-            // can open, commit and dispose one. Loose behaviour would return null for the scope and the
-            // await-using would then dereference it, so this stub is required rather than decorative.
+            // The scope stub is retained even though this service no longer opens a transaction of its own,
+            // because it is what lets a test assert that none is opened without a null dereference if that
+            // expectation is ever broken - a stub that returns null would surface the regression as a
+            // NullReferenceException instead of as a failed Times.Never assertion.
             UnitOfWork
-                .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
+                .Setup(unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Transaction.Object);
@@ -4947,6 +5798,7 @@ public class PermissionEvaluatorTests
                 Modules.Object,
                 Tabs.Object,
                 Users.Object,
+                RoleStore.Object,
                 UnitOfWork.Object,
                 Cache.Object,
                 Clock.Object,
@@ -4960,7 +5812,13 @@ public class PermissionEvaluatorTests
 
         public Tab Tab { get; }
 
+        /// <summary>The tenant row, mutable so that a portal with no administrator designation is testable.</summary>
+        public Portal PortalRow { get; }
+
         public PortalOptions PortalOptions { get; }
+
+        /// <summary>The caller's role assignments within the portal, as the role store would return them.</summary>
+        public IReadOnlyList<UserRole> RoleAssignments { get; set; }
 
         public IReadOnlyList<Permission> Catalogue { get; set; }
 
@@ -4993,6 +5851,13 @@ public class PermissionEvaluatorTests
         public Mock<ITabRepository> Tabs { get; }
 
         public Mock<IUserRepository> Users { get; }
+
+        /// <summary>
+        /// The role store. Only the portal-authority question reads it, and it reads assignments rather than
+        /// role names, because authority over a tenant turns on whether the administrator assignment is
+        /// currently valid and only the assignment row carries the dates that decide that.
+        /// </summary>
+        public Mock<IRoleRepository> RoleStore { get; }
 
         public Mock<IUnitOfWork> UnitOfWork { get; }
 
@@ -5028,6 +5893,25 @@ public class PermissionEvaluatorTests
             harness.Portals
                 .Setup(portals => portals.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(true);
+
+            // Only the portal-authority question loads the tenant row; every other member of the service
+            // asks the cheaper existence question above. The row is returned by reference so that a test can
+            // clear the administrator designation on it and observe the answer change.
+            harness.Portals
+                .Setup(portals => portals.GetByIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.PortalRow);
+
+            // Assignments, not role names: authority over a tenant turns on whether the administrator
+            // assignment is currently valid, and the validity window lives on the assignment row.
+            harness.RoleStore
+                .Setup(roles => roles.GetUserRolesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.RoleAssignments);
 
             harness.Users
                 .Setup(users => users.GetAsync(
@@ -5279,5 +6163,86 @@ public class PermissionEvaluatorTests
     {
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         return result.Value;
+    }
+
+    /// <summary>
+    /// The concrete type the infrastructure layer registers for <see cref="IPermissionEvaluator"/>.
+    /// </summary>
+    /// <returns>The registered implementation type.</returns>
+    /// <remarks>
+    /// <para>
+    /// Read out of the REGISTRATION rather than searched for by name or by scanning the assembly for
+    /// implementers, so the type every test in the concrete section activates is provably the one the
+    /// application evaluates permissions with. A second implementation added to the assembly, or the
+    /// registration repointed at a different one, changes what these tests exercise instead of leaving
+    /// them asserting against an abandoned class.
+    /// </para>
+    /// <para>
+    /// The implementation is internal sealed to the infrastructure assembly and this project is granted
+    /// no visibility into it. A <see cref="Type"/> needs none, which is what lets the real rules be
+    /// exercised without widening the production assembly's surface for a test's convenience.
+    /// </para>
+    /// <para>
+    /// Registrations are collected rather than a provider built, so this costs nothing and opens no
+    /// connection: <c>AddInfrastructure</c> reads the connection string to hand it to the context and to
+    /// the database probe, and never dials it, so the throwaway value below is never used for anything.
+    /// The result is computed once per run.
+    /// </para>
+    /// </remarks>
+    private static Type RegisteredEvaluatorType() => RegisteredEvaluator.Value;
+
+    /// <summary>Collects the infrastructure registrations and reads the evaluator's out of them.</summary>
+    /// <returns>The registered implementation type.</returns>
+    private static Type ReadRegisteredEvaluatorType()
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Default"] = "Server=(registration-read-only);Database=(unused)",
+            })
+            .Build();
+
+        ServiceCollection registrations = [];
+        registrations.AddInfrastructure(configuration);
+
+        ServiceDescriptor descriptor = registrations
+            .Should()
+            .ContainSingle(
+                registration => registration.ServiceType == typeof(IPermissionEvaluator),
+                "permission evaluation has exactly one implementation, and a second registration would "
+                + "make which one answers a question depend on registration order")
+            .Subject;
+
+        return descriptor.ImplementationType
+            ?? throw new InvalidOperationException(
+                "The evaluator is registered through a factory, so its implementation type cannot be "
+                + "read from the registration. Register the type directly, or resolve an instance here "
+                + "instead.");
+    }
+
+    /// <summary>
+    /// Activates an implementation type, surfacing a constructor failure as the constructor threw it.
+    /// </summary>
+    /// <param name="implementation">The type to construct.</param>
+    /// <param name="arguments">The constructor arguments.</param>
+    /// <returns>The constructed evaluator.</returns>
+    /// <remarks>
+    /// Reflection wraps anything a constructor throws in a <see cref="TargetInvocationException"/>, which
+    /// would make an argument-guard assertion match on the wrapper and lose both the exception type and
+    /// the parameter name it names - and the parameter name is the whole point of the guard test, because
+    /// it is what says WHICH collaborator was missing. The inner exception is therefore rethrown with its
+    /// stack intact, so a guard reads exactly as it would against a direct construction.
+    /// </remarks>
+    private static IPermissionEvaluator Activate(Type implementation, params object?[] arguments)
+    {
+        try
+        {
+            return (IPermissionEvaluator)Activator.CreateInstance(implementation, arguments)!;
+        }
+        catch (TargetInvocationException wrapped) when (wrapped.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(wrapped.InnerException).Throw();
+            throw;
+        }
     }
 }

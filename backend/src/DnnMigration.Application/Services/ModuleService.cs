@@ -17,17 +17,24 @@
 // too: the exclusion covering VB6 and ActiveX activation is vacuous against this codebase, so nothing
 // here should be read as removing that kind of interop, because there was never any to remove.
 //
-// MIGRATION: the two - not one - ambient System.Web calls this file replaces are named here together,
-// because they are one pipeline seen from its two ends and were measured as the only System.Web
-// dependencies in the 1,456-line source (`grep -n HttpContext` returns exactly L244 and L428):
+// MIGRATION: the two - not one - ambient System.Web calls in the 1,456-line source are named here
+// together, because they are one pipeline seen from its two ends and were measured as its only System.Web
+// dependencies (`grep -n HttpContext` returns exactly L244 and L428):
 //
-//     L244  Content    = HttpContext.Current.Server.HtmlEncode(Content)     ' EXPORT
-//     L428  strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)  ' IMPORT
+//     L244  Content    = HttpContext.Current.Server.HtmlEncode(Content)     ' PORTAL TEMPLATE WRITER
+//     L428  strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)  ' PORTAL TEMPLATE READER
 //
-// Both become System.Net.WebUtility calls at the two sites below, so this layer takes no ASP.NET
-// dependency while the escaping behaviour a stored document was produced under is preserved exactly.
-// WebUtility is the framework's own successor to HttpServerUtility for this pair and is reachable from
-// a plain class library, which HttpUtility historically was not.
+// NEITHER IS REPRODUCED, AND THE REASON IS THE WORKFLOW THEY BELONG TO RATHER THAN THE DEPENDENCY THEY
+// CARRY. That pair reads and writes the PORTAL TEMPLATE format, in which L244 encodes the payload and
+// L245-L246 wrap the result in a CDATA section for L414 and L428 to undo. The content endpoints in this
+// file migrate the MODULE ADMIN workflow instead - Website/admin/Modules/Export.ascx.vb L157-L165 and
+// Import.ascx.vb L196-L200 - which escapes nothing on the way out and reads DocumentElement.InnerXml on
+// the way in. An earlier revision applied the template pair here, which escaped every exported payload
+// twice and corrupted every entity reference on import; both halves are withdrawn together and the
+// divergence is recorded in MIGRATION_NOTES.md. The consequence for this file is that it performs NO
+// HTML escaping at all and consequently needs no substitute for HttpServerUtility: the ambient
+// dependency disappears with the transformation rather than being replaced by a framework-agnostic
+// equivalent.
 //
 // MIGRATION: reported and not corrected - the migration plan describes ModuleInfo.vb as 58 properties,
 // whereas the measured count of `Public Property` declarations in that 936-line class is 54. The
@@ -57,7 +64,7 @@
 // to a scoped unit of work or reading the rows twice. The definition catalogue, which is
 // installation-time reference data, is cached instead.
 using System.Globalization;
-using System.Net;
+using System.Text;
 using System.Xml;
 using System.Xml.Linq;
 using DnnMigration.Application.Abstractions;
@@ -106,8 +113,17 @@ public sealed class ModuleService : IModuleService
     private const string RequestInvalidCode = "module.request_invalid";
 
     /// <summary>
-    /// Reported when a placement is named that does not belong to the addressed module.
+    /// Reported when the placement a request addresses does not exist: a placement identifier naming a row
+    /// that belongs to another module, or a page the addressed module is not placed on.
     /// </summary>
+    /// <remarks>
+    /// One code covers both because they are one condition seen through the two ways a caller can name a
+    /// placement - by its own identifier on the read and settings paths, by the page it sits on for a full
+    /// replacement. The <c>not_found</c> token is what the shared status table answers with 404, so the
+    /// status is decided by the code rather than written out at a call site. The message names the module and
+    /// the page, which leaks nothing: every route carrying this code is already gated on a grant over the
+    /// module in question.
+    /// </remarks>
     private const string PlacementNotFoundCode = "module.placement_not_found";
 
     /// <summary>
@@ -128,6 +144,21 @@ public sealed class ModuleService : IModuleService
     private const string EditForbiddenCode = "module.edit_forbidden";
 
     /// <summary>
+    /// Reported when a caller asks for one of the four portal-wide effects without administering the
+    /// portal.
+    /// </summary>
+    /// <remarks>
+    /// A code of its own rather than a reuse of <see cref="EditForbiddenCode"/>, because the two refusals
+    /// mean different things to a client and are corrected differently: the edit refusal says "you may not
+    /// touch this module", while this one says "you may edit this module, but not in a way that reaches
+    /// pages you do not administer". A client can act on the difference - by disabling exactly the four
+    /// controls the legacy screen disabled - which it cannot do if both arrive under one code. The
+    /// <c>forbidden</c> token is what the shared status translator classifies as a 403, so the code itself
+    /// decides the status.
+    /// </remarks>
+    private const string AdministratorForbiddenCode = "module.administrator_forbidden";
+
+    /// <summary>
     /// Reported when the named definition does not exist or is not available to the portal.
     /// </summary>
     private const string DefinitionNotFoundCode = "module.definition_not_found";
@@ -143,6 +174,17 @@ public sealed class ModuleService : IModuleService
     private const string SettingInvalidCode = "module.setting_invalid";
 
     /// <summary>
+    /// Reported when the generic settings surface is asked to read or mutate security-owned settings.
+    /// </summary>
+    /// <remarks>
+    /// The <c>protected</c> token is intentionally part of the code because the API result translator maps
+    /// that token to HTTP 403. Administrative modules are configured through typed, portal-administrator
+    /// endpoints; allowing their open key/value stores through the generic ModuleEdit boundary would bypass
+    /// those stronger policies.
+    /// </remarks>
+    private const string SettingsProtectedCode = "module.settings_protected";
+
+    /// <summary>
     /// Reported when the module cannot take part in a content export or import.
     /// </summary>
     private const string NotPortableCode = "module.not_portable";
@@ -151,6 +193,27 @@ public sealed class ModuleService : IModuleService
     /// Reported when a submitted content document cannot be read.
     /// </summary>
     private const string ContentInvalidCode = "module.content_invalid";
+
+    /// <summary>
+    /// Reported when a submitted content document names a module type that is not the target module's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: restores the fourth outcome of the legacy import screen, "The import file specified is not
+    /// the correct type for this module" (<c>Website/admin/Modules/Import.ascx.vb</c>, reported from both
+    /// line 205 and line 217). Distinct from <see cref="ContentInvalidCode"/> because the document is
+    /// perfectly well-formed and perfectly valid - it is simply somebody else's. Conflating the two would
+    /// tell an operator to repair a file that needs no repair.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy screen sourced this refusal from the document's FILE NAME - it tested whether
+    /// the name contained the cleaned module name - and additionally from the type attribute once the file
+    /// was open. The target has no shared file system, so the name-based half has nothing to test; the
+    /// attribute-based half is what survives, which is recorded on <c>ModuleImportRequest</c> as the
+    /// re-sourcing of an outcome rather than the loss of one.
+    /// </para>
+    /// </remarks>
+    private const string ContentTypeMismatchCode = "module.content_type_mismatch";
 
     /// <summary>
     /// Reported when a module hands over content that cannot be carried by the export document.
@@ -325,6 +388,129 @@ public sealed class ModuleService : IModuleService
     /// </summary>
     private const string ContentVersionAttributeName = "version";
 
+    /// <summary>Maximum number of characters accepted in one portable-content XML document.</summary>
+    private const long ImportDocumentCharacterMaximum = 1_048_576;
+
+    /// <summary>Maximum number of XML nodes accepted before module-owned content is invoked.</summary>
+    private const int ImportDocumentNodeMaximum = 10_000;
+
+    /// <summary>Maximum nesting depth accepted in portable-content XML.</summary>
+    private const int ImportDocumentDepthMaximum = 64;
+
+    /// <summary>Maximum number of attributes accepted on any one XML element.</summary>
+    private const int ImportElementAttributeMaximum = 64;
+
+    /// <summary>Maximum number of characters accepted in any one text-like XML node.</summary>
+    private const int ImportTextNodeCharacterMaximum = 262_144;
+
+    /// <summary>Fixed caller-safe message for every XML parser or work-budget refusal.</summary>
+    private const string ImportParseFailureMessage =
+        "The submitted document could not be parsed safely as portable module content.";
+
+    /// <summary>
+    /// The declaration an exported document opens with, reproduced character for character from the legacy
+    /// export screen - including the space before the closing angle bracket pair.
+    /// </summary>
+    /// <remarks>
+    /// <c>Website/admin/Modules/Export.ascx.vb</c> L158 emits
+    /// <c>"&lt;?xml version=""1.0"" encoding=""utf-8"" ?&gt;"</c> as a literal. It is a literal here too,
+    /// rather than being produced by an XML writer, because a writer normalises the spacing and the whole
+    /// point of this member is that a document leaving this endpoint is byte-comparable with one the legacy
+    /// application wrote. The declared encoding is honest: the response is served as UTF-8.
+    /// </remarks>
+    private const string XmlDeclaration = "<?xml version=\"1.0\" encoding=\"utf-8\" ?>";
+
+    /// <summary>
+    /// The punctuation the legacy name sanitiser removes, in its own order.
+    /// </summary>
+    /// <remarks>
+    /// Reproduced character for character from <c>Website/admin/Modules/Export.ascx.vb</c> L212, which
+    /// declares <c>". ~`!@#$%^&amp;*()-_+={[}]|\:;&lt;,&gt;?/" &amp; Chr(34) &amp; Chr(39)</c> - the set
+    /// ending in the double quote and the apostrophe. The same set appears in
+    /// <c>Library/Components/Shared/Globals.vb</c> L1688, which the legacy history records as the shared
+    /// version of this very helper, so the two agree. Note what the set does NOT contain: the leading
+    /// character is a full stop and there is no closing angle bracket omission - every character is removed
+    /// rather than substituted for, so the sanitiser shortens a name and never lengthens it.
+    /// </remarks>
+    private const string NamePunctuation = ". ~`!@#$%^&*()-_+={[}]|\\:;<,>?/\"'";
+
+    /// <summary>
+    /// The characters the legacy portability screens stripped out of a module name before writing it into
+    /// a document's type attribute or comparing it against one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: measured character for character from <c>CleanName</c>, which both portability screens
+    /// declared identically - <c>Website/admin/Modules/Export.ascx.vb</c> lines 208-209 and
+    /// <c>Website/admin/Modules/Import.ascx.vb</c>, each as
+    /// <c>". ~`!@#$%^&amp;*()-_+={[}]|\:;&lt;,&gt;?/" &amp; Chr(34) &amp; Chr(39)</c>. The two appended
+    /// characters are the double and single quotation marks, spelled as character codes in the source
+    /// because the surrounding literal could not carry them.
+    /// </para>
+    /// <para>
+    /// The set is reproduced rather than replaced by a general-purpose rule, because it is part of the FILE
+    /// FORMAT: the value it produces is what the legacy exporter wrote into the attribute and what the
+    /// legacy importer compared against, so a document written here stays readable by a legacy
+    /// installation and vice versa. A stricter or looser rule would break that in one direction or the
+    /// other. Note that it happens to remove every character an XML attribute value would need escaped -
+    /// the angle brackets, the ampersand and both quotation marks are all members - so the cleaned value
+    /// is inert in the position it occupies, but that is a consequence of the legacy set rather than the
+    /// reason for it.
+    /// </para>
+    /// </remarks>
+    private const string ContentTypeStrippedCharacters = ". ~`!@#$%^&*()-_+={[}]|\\:;<,>?/\"'";
+
+    /// <summary>
+    /// Longest caller-supplied provenance value recorded on an import audit event.
+    /// </summary>
+    /// <remarks>
+    /// The submitted folder and document names are recorded because the contract promises the provenance,
+    /// but they are caller-controlled and the request applies no length bound of its own, so a bound is
+    /// applied HERE rather than trusted upstream. Without one, a caller could move arbitrary content into
+    /// a metadata field and have it copied verbatim into retained logs - a disclosure channel and, at
+    /// scale, an amplification of one request into an arbitrarily large log event.
+    /// </remarks>
+    private const int AuditProvenanceMaximumLength = 128;
+
+    /// <summary>
+    /// Longest declared document version recorded on an import audit event.
+    /// </summary>
+    /// <remarks>
+    /// <c>DesktopModules.Version</c> is a six-character column, so a legitimate value is far shorter than
+    /// this; the allowance exists only so a mismatched document is described rather than discarded.
+    /// </remarks>
+    private const int AuditVersionMaximumLength = 32;
+
+    /// <summary>
+    /// Marker appended to an audited value that was longer than its bound.
+    /// </summary>
+    /// <remarks>
+    /// A truncated value must not read as a complete one, or an operator reading the trail would draw a
+    /// conclusion from a value that was never submitted in that form.
+    /// </remarks>
+    private const string AuditTruncationMarker = "...";
+
+    /// <summary>
+    /// Largest content, in characters, that an export will carry out of a module.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One mebibyte of characters, which is the API's own request-body allowance restated here: that
+    /// figure is the largest content this application is willing to move in either direction, and an
+    /// export beyond it could not be handed back to the import endpoint anyway. The Application layer
+    /// cannot name the hosting constant that declares it - this project references the Domain and
+    /// nothing else - so the figure is restated rather than imported, and the two must be changed
+    /// together.
+    /// </para>
+    /// <para>
+    /// The ceiling exists because an export payload arrives from MODULE code rather than from the
+    /// caller's request, so no request-body limit bounds it, and every step after it - the document
+    /// assembly and the well-formedness parse that checks it - is proportional to its length. It is three orders of magnitude above the few
+    /// kilobytes an administration module's content actually runs to.
+    /// </para>
+    /// </remarks>
+    private const int ExportPayloadMaximumLength = 1024 * 1024;
+
     /// <summary>
     /// Page size that requests every match unpaged, per the repository contracts.
     /// </summary>
@@ -347,26 +533,19 @@ public sealed class ModuleService : IModuleService
     private const int UnattributedUserId = -1;
 
     /// <summary>
-    /// Stable audit event name for every module change this service records.
+    /// Greatest length of a version string this service will carry into an audit record.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy module audit trail used one event type,
-    /// <c>EventLogType.MODULE_UPDATED</c>, written through
-    /// <c>EventLogController.AddLog</c> at <c>EventMessageProcessor.vb</c> L69 - the only
-    /// <c>AddLog(</c> call site anywhere in the Modules tree. The string is reproduced verbatim so an
-    /// operator reading the new trail recognises the events from the old one, and so a log query written
-    /// against the legacy event type keeps working.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this is a local constant rather than a member of <see cref="AuditEventNames"/>, and
-    /// that is a scope boundary rather than a preference. That type is a sibling this file may not
-    /// extend; it declares names for the user, portal, page, role and session domains and none for
-    /// modules. The gap is recorded here instead of being closed by editing a file outside this unit of
-    /// work, and the value is identical to what the shared constant would hold.
-    /// </para>
+    /// The value is read from an attribute of a caller-supplied document, so it is neither validated by
+    /// the request contract nor bounded by the schema. A version is a handful of characters in every
+    /// real package, so a ceiling this generous can only be exceeded deliberately.
     /// </remarks>
-    private const string ModuleUpdatedEventName = "MODULE_UPDATED";
+    private const int MaximumAuditedVersionLength = 32;
+
+    /// <summary>
+    /// Recorded in place of a declared version that is not a plain version string.
+    /// </summary>
+    private const string UnusableVersion = "(unusable)";
 
     /// <summary>
     /// Resource type recorded on every module audit event, naming what the identifier identifies.
@@ -448,22 +627,39 @@ public sealed class ModuleService : IModuleService
     /// which is what the legacy join-based read did too.
     /// </para>
     /// <para>
-    /// The total count needs an explicit reconciliation. <see cref="ReadModulePageAsync"/>
-    /// pages over modules, so its total is a module count. When a page is named the two agree, because
-    /// a module has at most one placement on any one page. When no page is named an unpaged read
-    /// reports the exact placement count, because every row is present; a paged read reports the
-    /// module total, which is the only figure obtainable without an unbounded read of every placement
-    /// in the portal. That trade is recorded here rather than hidden.
-    /// </para>
-    /// <para>
-    /// Ordering is fixed: modules by title then key, and within each module its placements by page,
-    /// then position, then placement identifier. It is not caller-selectable, and a request that names
-    /// an ordering is REFUSED with <c>module.request_invalid</c> rather than accepted and ignored -
-    /// accepting it would return a page the caller believes was ordered and cannot tell was not. The
-    /// refusal is structural rather than a limitation of the read: the page window is taken over
-    /// modules while each module contributes one row per placement, so any ordering could only apply to
-    /// the modules behind the rows, never to the rows returned. <c>SortableFields.Modules</c> records
-    /// the measurement and enumerates every excluded member of the projection.
+        /// THE WINDOW IS TAKEN OVER THE PLACEMENT ROWS, WHICH ARE THE UNIT THIS LISTING RETURNS, so
+        /// <c>totalCount</c> is the exact number of rows the whole filtered collection holds and
+        /// <c>pageSize</c> is exactly the width the caller asked for. <see cref="ReadPlacementRowsAsync"/>
+        /// therefore returns the whole filtered, ordered ROW set rather than a page of it, and the
+        /// expansion from modules to rows happens before the window is cut.
+        /// </para>
+        /// <para>
+        /// MIGRATION: THIS REPLACES A PAGING CONTRACT THAT WAS ARITHMETICALLY UNSOUND, and the unsoundness is
+        /// worth recording because the shape of it is easy to reintroduce. The window used to be taken over
+        /// MODULES and the rows emitted were PLACEMENTS, so the two figures the envelope publishes were not in
+        /// the unit of the thing being counted. A caller asking for one row could receive four - every placement
+        /// of the one module the window admitted - and the metadata was then patched with
+        /// <c>Math.Max(total, rows)</c> and <c>Math.Max(pageSize, rows)</c> to stop the envelope's own guards
+        /// rejecting the mismatch. That made <c>totalCount</c> a lower bound rather than a count, made
+        /// <c>pageSize</c> a value the caller never sent, and made <c>totalPages</c> - which is computed from
+        /// both - unstable: the same collection reported a different page count depending on which page was
+        /// asked for, so a pager built from the envelope could not enumerate the collection. The exact total
+        /// costs nothing per module to obtain: composing the row set takes a FIXED number of reads whatever
+        /// the window is - the tenant's modules, then the placements of every module that survived the
+        /// filters in ONE set-based read, or none at all when a page was named because that page's own
+        /// placement read already holds them, and then the definition names, and only when the window has a
+        /// row in it to name. Nothing is read per module. The reads remain bounded by the tenant, as the
+        /// unpaged module read above it already was.
+        /// </para>
+        /// <para>
+        /// Row order is total and deterministic: the caller's chosen module ordering first - defaulting to
+        /// title then key - and within each module its placements by page, then position, then placement
+        /// identifier. Only the MODULE ordering is caller-selectable; a name outside
+        /// <c>SortableFields.Modules</c> is REFUSED with <c>module.request_invalid</c> rather than accepted and
+        /// ignored, because accepting it would return a page the caller believes was ordered and cannot tell was
+        /// not. The placement tie-break is fixed and is not offered, for the reasons that field set records: a
+        /// placement position belongs to one pane of one page and carries the append sentinel, so ordering a
+        /// cross-page listing by it would sort unrelated positions against each other.
     /// </para>
     /// </remarks>
     public async Task<Result<PagedResult<ModuleListItemDto>>> ListModulesAsync(
@@ -487,85 +683,98 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Portal {portalId} does not exist."));
         }
 
-        PagedResult<Module> page = await ReadModulePageAsync(
+        // The complete ordered row set, in the unit the response carries. Both the window below and the
+        // total it is described by are taken from this one sequence, so the two cannot disagree.
+        IReadOnlyList<ModulePlacement> rows = await ReadPlacementRowsAsync(
             portalId,
             tabId,
             includeDeleted,
             request,
             cancellationToken).ConfigureAwait(false);
 
-        IReadOnlyDictionary<int, string> friendlyNames = page.Items.Count == 0
+        bool unpaged = request.PageSize == UnpagedPageSize;
+
+        IReadOnlyList<ModulePlacement> window = unpaged
+            ? rows
+            : rows
+                .Skip(Paging.SkipCount(request.PageIndex, request.PageSize))
+                .Take(request.PageSize)
+                .ToList();
+
+        // Read once, and only when there is a row to name. A window that lands past the end of the
+        // collection projects nothing, so it asks the definition catalogue nothing either.
+        IReadOnlyDictionary<int, string> friendlyNames = window.Count == 0
             ? new Dictionary<int, string>()
             : await ReadDefinitionNamesAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        var rows = new List<ModuleListItemDto>(page.Items.Count);
-        foreach (Module module in page.Items)
+        var items = new List<ModuleListItemDto>(window.Count);
+        foreach (ModulePlacement row in window)
         {
-            IReadOnlyList<TabModule> placements =
-                await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
-
-            foreach (TabModule placement in OrderPlacements(placements, tabId))
-            {
-                rows.Add(ModuleMappings.ToListItem(module, placement, ResolveFriendlyName(module, friendlyNames)));
-            }
+            items.Add(ModuleMappings.ToListItem(
+                row.Module,
+                row.Placement,
+                ResolveFriendlyName(row.Module, friendlyNames)));
         }
 
-        if (request.PageSize == UnpagedPageSize)
-        {
-            return Result<PagedResult<ModuleListItemDto>>.Success(
-                PagedResult<ModuleListItemDto>.Unpaged(rows));
-        }
-
-        // The window is taken over MODULES while the rows carry PLACEMENTS, so the two figures the envelope
-        // needs are not in the same unit and cannot be handed over unreconciled.
-        //
-        // The remarks above note that a module has at most one placement on any one page, and therefore
-        // that the module total and the row count agree for a paged read. That holds only while a page is
-        // NAMED. When tabId is null - which is the default listing of a portal's modules - no page filter is
-        // applied, so a module contributes EVERY placement it has and the expansion can carry more rows than
-        // there are modules behind them. Both of the envelope's guards then reject the arguments: the row
-        // count exceeds the module total, and it can exceed the requested window size as well. That threw
-        // ArgumentOutOfRangeException on a listing whose only unusual feature was a module placed on two
-        // pages, which is an entirely ordinary configuration and the norm for a module marked AllTabs.
-        //
-        // Both figures are therefore raised to the number of rows actually being carried. Neither becomes
-        // less truthful by it: the module total was already a LOWER BOUND on the placement total - the
-        // documented trade, taken because the exact figure needs an unbounded read of every placement in the
-        // portal - and the row count is a better lower bound from the same information. The declared window
-        // widens only when the expansion overflowed it, so a page that fits reports the size that was asked
-        // for, unchanged. No extra repository read is introduced.
-        int carriedRows = rows.Count;
-
+        // The envelope is handed the figures unaltered: the total is the number of rows in the whole
+        // collection and the declared size is the size the caller asked for. Neither is widened to
+        // accommodate the projection, because the projection is what the window was taken over.
         return Result<PagedResult<ModuleListItemDto>>.Success(
-            PagedResult<ModuleListItemDto>.Create(
-                rows,
-                Math.Max(page.TotalCount, carriedRows),
-                page.PageIndex,
-                Math.Max(page.PageSize, carriedRows)));
+            unpaged
+                ? PagedResult<ModuleListItemDto>.Unpaged(items)
+                : PagedResult<ModuleListItemDto>.Create(
+                    items,
+                    rows.Count,
+                    request.PageIndex,
+                    request.PageSize));
     }
 
     /// <summary>
-    /// Reads one page of a tenant's modules, applying the recycle-bin, page and title filters.
+    /// Composes the listing's complete row set - one row per placement - after applying the recycle-bin,
+    /// page and title filters and the module ordering.
     /// </summary>
     /// <param name="portalId">The tenant whose modules are read.</param>
     /// <param name="tabId">Restrict to the modules placed on one page, or <see langword="null"/> for the whole tenant.</param>
     /// <param name="includeDeleted">Whether modules already in the recycle bin are included.</param>
-    /// <param name="request">The paging request supplying the page window and the optional title query.</param>
-    /// <param name="cancellationToken">Token observed for cancellation.</param>
-    /// <returns>The requested page of modules together with the unpaged total.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy module block of the data provider carries no paging member of any kind, so
-    /// none is invented on the repository contract; the page window and the filters are composed here,
-    /// in the layer that owns the paging request. The predicates are applied in the same order and with
-    /// the same meaning the single legacy query had.
+        /// <param name="request">The paging request supplying the ordering and the optional title query.</param>
+        /// <param name="cancellationToken">Token observed for cancellation.</param>
+        /// <returns>
+        /// Every row the request selects, in the order the response must carry them: the modules in their
+        /// chosen order, and within each module its placements by page, then position, then placement key.
+        /// The page window is NOT applied here - the caller takes it over these rows, which is what keeps the
+        /// window and the answer in the same unit.
+        /// </returns>
+        /// <remarks>
+        /// MIGRATION: the legacy module block of the data provider carries no paging member of any kind, so
+        /// none is invented on the repository contract; the filters and the ordering are composed here,
+        /// in the layer that owns the paging request, and the window is cut by the caller over what this
+        /// returns. The predicates are applied in the same order and with the same meaning the single legacy
+        /// query had.
+    /// <para>
+    /// NO WINDOW IS TAKEN HERE, AND THAT IS THE POINT OF THIS MEMBER'S SHAPE. The rows the listing returns
+    /// are PLACEMENTS, and a module contributes one row per placement, so a window cut over modules is a
+    /// window in the wrong unit - which is exactly the defect that made the published paging metadata
+    /// unsound. The caller cuts its window over the expanded rows instead, which is why this returns the
+    /// whole ordered set rather than a <c>PagedResult</c>. The ordering still happens HERE, before the
+    /// expansion, so it orders the collection rather than one arbitrary page of it.
+    /// </para>
     /// <para>
     /// The page filter is answered by the page repository rather than by reading each candidate module's
     /// placements in turn. "Which modules sit on this page" is a page-centric question, it belongs to
     /// that contract by the same ownership split that keeps placement mutation on the module contract,
-    /// and it resolves in one read instead of one per candidate.
+    /// and it resolves in one read instead of one per candidate. That single read is returned alongside the
+    /// modules so the row expansion can reuse it and the page repository is consulted exactly once.
+    /// </para>
+    /// <para>
+    /// The placements the rows are built from are read SET-BASED, exactly once. When a page was named,
+    /// that page's own placement read already holds every placement the rows can be drawn from, so it is
+    /// reused rather than asked for again and no second read happens at all. When no page was named, one
+    /// batched read covers every module that survived the filters. Neither shape reads per module, which
+    /// is the property that keeps the cost of this listing independent of how many modules the tenant
+    /// holds.
     /// </para>
     /// </remarks>
-    private async Task<PagedResult<Module>> ReadModulePageAsync(
+    private async Task<IReadOnlyList<ModulePlacement>> ReadPlacementRowsAsync(
         int portalId,
         int? tabId,
         bool includeDeleted,
@@ -580,14 +789,19 @@ public sealed class ModuleService : IModuleService
             candidates = candidates.Where(module => !module.IsDeleted);
         }
 
+        IReadOnlyList<TabModule>? placementsOnNamedPage = null;
+
         if (tabId is int addressedTab)
         {
             // The presence of a value selects the filter, never its magnitude: TabID is IDENTITY(0, 1),
             // so a page identifier of zero is a real page and must not be read as "unspecified".
-            IReadOnlyList<TabModule> onPage =
+            placementsOnNamedPage =
                 await _tabs.GetTabModulesAsync(addressedTab, cancellationToken).ConfigureAwait(false);
 
-            HashSet<int> placedModuleIds = onPage.Select(placement => placement.ModuleId).ToHashSet();
+            HashSet<int> placedModuleIds = placementsOnNamedPage
+                .Select(placement => placement.ModuleId)
+                .ToHashSet();
+
             candidates = candidates.Where(module => placedModuleIds.Contains(module.ModuleId));
         }
 
@@ -603,17 +817,55 @@ public sealed class ModuleService : IModuleService
 
         List<Module> ordered = ApplyOrder(candidates, request).ToList();
 
-        if (request.PageSize == UnpagedPageSize)
+        // One read for every row, or none when a page was named and its placements are already in hand.
+        // An empty candidate set asks for nothing: the batched read short-circuits, but not issuing the
+        // call at all is clearer about the intent.
+        IReadOnlyList<TabModule> placements;
+        if (placementsOnNamedPage is not null)
         {
-            return PagedResult<Module>.Unpaged(ordered);
+            placements = placementsOnNamedPage;
+        }
+        else if (ordered.Count == 0)
+        {
+            placements = Array.Empty<TabModule>();
+        }
+        else
+        {
+            placements = await _modules
+                .GetTabModulesByModuleIdsAsync(
+                    ordered.Select(module => module.ModuleId).ToList(),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        List<Module> window = ordered
-            .Skip(Paging.SkipCount(request.PageIndex, request.PageSize))
-            .Take(request.PageSize)
-            .ToList();
+        var placementsByModuleId = new Dictionary<int, List<TabModule>>();
+        foreach (TabModule placement in placements)
+        {
+            if (!placementsByModuleId.TryGetValue(placement.ModuleId, out List<TabModule>? group))
+            {
+                group = new List<TabModule>();
+                placementsByModuleId[placement.ModuleId] = group;
+            }
 
-        return PagedResult<Module>.Create(window, ordered.Count, request.PageIndex, request.PageSize);
+            group.Add(placement);
+        }
+
+        var rows = new List<ModulePlacement>(ordered.Count);
+        foreach (Module module in ordered)
+        {
+            // A module placed nowhere contributes no row, which is what the legacy join-based read did.
+            if (!placementsByModuleId.TryGetValue(module.ModuleId, out List<TabModule>? modulePlacements))
+            {
+                continue;
+            }
+
+            foreach (TabModule placement in OrderPlacements(modulePlacements, tabId))
+            {
+                rows.Add(new ModulePlacement(module, placement));
+            }
+        }
+
+        return rows;
     }
 
     /// <summary>
@@ -756,7 +1008,16 @@ public sealed class ModuleService : IModuleService
         ModuleDefinition? definition = definitions
             .FirstOrDefault(candidate => candidate.ModuleDefinitionId == request.ModuleDefId);
 
-        if (definition is null)
+        DesktopModule? package = definition is null
+            ? null
+            : await _definitions
+                .GetDesktopModuleByIdAsync(definition.DesktopModuleId, cancellationToken)
+                .ConfigureAwait(false);
+
+        // SEC-007: the repository is the primary enforcement point, but the service independently refuses
+        // an administrative package so a stale cache, alternate repository implementation or future query
+        // regression cannot turn host administration functionality into portal-placeable content.
+        if (definition is null || package is null || package.IsAdmin)
         {
             return Result<ModuleDetailDto>.Failure(
                 DefinitionNotFoundCode,
@@ -773,9 +1034,9 @@ public sealed class ModuleService : IModuleService
         }
 
         // The caller must hold the edit grant on the page they are placing a module on. Verified here rather
-        // than by a policy because the page arrives in the BODY, which no route-reading policy can see - and
-        // verified at all because it previously was not: tenant ownership was checked and the permission was
-        // not, so any authenticated caller could place a module on any tenant's page. When the request also
+        // than by a policy because the page arrives in the BODY, which no route-reading policy can see;
+        // tenant ownership alone is not sufficient, or any authenticated caller could place a module on any
+        // tenant's page. When the request also
         // asks for every page, the grant on the addressed page is what authorises the fan-out, exactly as the
         // legacy screen's "all pages" switch was reached from one page already in edit mode.
         if (await EnsureMayEditPageAsync(portalId, request.TabId, cancellationToken).ConfigureAwait(false)
@@ -840,8 +1101,14 @@ public sealed class ModuleService : IModuleService
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// This member carries the module's own change plus up to three wider effects, and all of them
+    /// This member carries the module's own change plus up to four wider effects, and all of them
     /// commit together.
+    /// </para>
+    /// <para>
+    /// THE REQUEST'S PAGE KEY SELECTS THE PLACEMENT, which is what makes a full replacement address one
+    /// occurrence of a module rather than an arbitrary one. A module that is not placed on that page is
+    /// reported as a placement not found, not amended elsewhere; the reasoning is recorded at the point the
+    /// selection happens.
     /// </para>
     /// <para>
     /// Naming the module as the portal default writes the two settings rows the legacy
@@ -862,6 +1129,12 @@ public sealed class ModuleService : IModuleService
     /// from; turning it off removes every placement other than the addressed one, together with that
     /// placement's own settings.
     /// </para>
+    /// <para>
+    /// Changing the selected page while the resulting module is not an all-pages module performs the
+    /// legacy move: the addressed placement and its placement-scoped settings are copied to the selected
+    /// page, then the source placement is removed. The move is staged with every other effect and committed
+    /// once, so a failure cannot leave copies on both pages or on neither page.
+    /// </para>
     /// </remarks>
     public async Task<Result<ModuleDetailDto?>> UpdateModuleAsync(
         int portalId,
@@ -880,31 +1153,127 @@ public sealed class ModuleService : IModuleService
             return Result<ModuleDetailDto?>.Success(null);
         }
 
-        Result<TabModule?> resolved = await ResolvePlacementAsync(
-            module,
-            tabModuleId: null,
-            mismatchCode: null,
-            cancellationToken).ConfigureAwait(false);
+        // THE PLACEMENT IS SELECTED BY THE PAGE THE REQUEST NAMES, and this is the one member of the update
+        // contract whose omission cannot be recovered from.
+        //
+        // MIGRATION: THE SUBMITTED PAGE KEY USED TO BE READ BY NOTHING AT ALL. UpdateModuleRequest.TabId is
+        // documented as required and as the key identifying WHICH placement is being updated, and
+        // ModuleMappings.ApplyUpdate documents that it deliberately does not assign the value because "the
+        // application service resolves the placement before calling here" - yet this method resolved the
+        // placement with the lowest TabModuleId and never looked at the request. For a module on one page the
+        // two agree by accident; for a module on several the caller's choice of page was DISCARDED and the
+        // edit landed on whichever placement happened to have been created first. A caller editing the
+        // instance on page four saw its own submission apparently accepted and page one silently rewritten,
+        // with the response describing the placement it had not addressed. Nothing in the contract, the
+        // projection or the response revealed it.
+        //
+        // Refusing rather than falling back is deliberate. A module that is not on the named page has no
+        // placement for this request to update, and quietly amending a different one is precisely the
+        // behaviour being removed - so the outcome is the documented placement-not-found reason, whose token
+        // the shared status table answers with 404. That is the same status the previous absence produced, so
+        // no caller sees a new class of failure; what changes is that the answer now names why.
+        TabModule? placement = await ReadPlacementOnPageAsync(module, request.TabId, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (resolved.Value is not TabModule placement)
+        if (placement is null)
         {
-            return Result<ModuleDetailDto?>.Success(null);
+            return Result<ModuleDetailDto?>.Failure(
+                PlacementNotFoundCode,
+                FormattableString.Invariant(
+                    $"Module {moduleId} is not placed on page {request.TabId} in portal {portalId}."));
         }
 
         bool wasPlacedEverywhere = module.AllTabs;
+
+        // SEC: THE ADMINISTRATOR-ONLY FIELDS ARE AUTHORISED HERE, BEFORE ANY OF THEM IS APPLIED.
+        // The legacy settings screen disabled cboTab, chkAllTabs, chkDefault and chkAllModules outright
+        // for any caller outside the portal administrator role, at both ModuleSettings.ascx.vb:L214-L219
+        // and :L332-L338, under the comment that tab administrators can only manage their own tab. That is
+        // a rule about four FIELDS of this request rather than about reaching this route, so no [Authorize]
+        // attribute can express it - the route's policy admits a page administrator by design, which is
+        // correct, because a page administrator may legitimately edit the module in front of them.
+        //
+        // Until this gate existed the rule was documented in three places and enforced in none: the DTO
+        // said authorisation would decide, the controller said the service owned the rule and reported a
+        // distinct 403, and the service applied all four unconditionally. A caller holding only the module
+        // edit grant on one page could therefore move a module to a page they do not administer, fan it out
+        // across every page of the portal, name it as the portal's default, or rewrite the appearance of
+        // every module on every content page - four portal-wide effects from a page-scoped grant.
+        //
+        // The gate is a DELTA test, not a presence test, and the distinction is what keeps ordinary edits
+        // working. A non-administrator submitting the module's stored AllTabs value with both intent flags
+        // unset is changing none of them, so nothing administrator-only is being applied and the request
+        // proceeds. Only an actual change - a flipped fan-out flag, or either instruction asked for -
+        // requires the authority. Reading it as a presence test would refuse every non-administrator save.
+        //
+        // MIGRATION: THE PAGE IS NOT ONE OF THE GATED FIELDS HERE, THOUGH THE REVISION THAT WROTE THIS GATE
+        // COUNTED IT AS THE FOURTH. That revision read the submitted page as a MOVE command and gated the
+        // move on portal administration. The surviving contract reads it as the SELECTOR of the placement
+        // being edited, so a submitted page that differs from the placement's own page does not relocate
+        // anything - it is refused before this gate is reached, with the placement-not-found reason. Keeping
+        // a move term here would be a test that can never be true, and a reader would take its presence as
+        // evidence that a move exists. Three portal-wide effects remain and are gated; see the note on the
+        // withdrawn move below.
+        if (request.AllTabs != module.AllTabs
+            || request.SetAsDefaultSettings
+            || request.ApplyToAllModules)
+        {
+            if (await EnsureAdministersPortalAsync(portalId, cancellationToken).ConfigureAwait(false)
+                is ResultReason forbidden)
+            {
+                // Returned BEFORE the projection runs, so not one of the four values has touched the
+                // tracked entities and there is nothing staged for a later commit to pick up. A refusal
+                // that had already mutated the graph would depend on nobody calling SaveChanges afterwards,
+                // which is not a property this method can guarantee for its callers.
+                return Result<ModuleDetailDto?>.Failure(forbidden);
+            }
+        }
+
+        // SEC: THE CALLER MUST HOLD THE EDIT GRANT ON THE PAGE WHOSE PLACEMENT IT IS EDITING, which is the
+        // page the request named and the placement was selected by. The revision that read the page as a
+        // move destination required this grant on the destination, citing the legacy page picker only ever
+        // offering pages the caller could edit; under the selecting contract the destination and the edited
+        // page are the same page, so the requirement survives its withdrawn condition and applies to every
+        // update rather than only to a move. Without it, a caller holding the grant on page one could edit
+        // the placement the module has on page four by naming page four, because the route's own policy
+        // admits any page administrator of the tenant. The page's tenant needs no separate test: the
+        // placement was found on it for a module already proven to belong to this portal.
+        if (await EnsureMayEditPageAsync(portalId, request.TabId, cancellationToken).ConfigureAwait(false)
+            is ResultReason pageForbidden)
+        {
+            // Returned BEFORE the projection runs, for the same reason the field gate above returns early:
+            // nothing has touched the tracked entities, so a later commit by any caller cannot pick up a
+            // half-applied refusal.
+            return Result<ModuleDetailDto?>.Failure(pageForbidden);
+        }
+
         ModuleMappings.ApplyUpdate(module, placement, request);
 
+        // NO MOVE IS DERIVED HERE, AND NONE CAN BE. The submitted page SELECTS the placement above, so by
+        // the time control reaches this line the placement's page and the submitted page are the same value
+        // by construction - a request naming a page the module does not occupy was already refused with the
+        // placement-not-found reason. An earlier revision tested the two for inequality and reproduced the
+        // legacy MoveModule copy-then-delete when they differed; that test could never be true once the page
+        // became the selector, so the branch was unreachable and is withdrawn rather than left to read as a
+        // feature. Reinstating a move needs a second member naming the destination, because one page
+        // identifier cannot be both the placement being edited and the page it should end up on. The
+        // divergence from the legacy screen is recorded in MIGRATION_NOTES.md.
+        //
         // The projection above assigned the submitted position verbatim, which may be the append
-        // instruction. Resolving it here - after the projection and before the fan-out below - is what
-        // stops the instruction reaching the column and stops it being copied onto every other page as
-        // though it were a position. The stored pane is used, because the update contract carries no
-        // pane and the projection deliberately leaves the column alone.
+        // instruction, so it is resolved against the page the placement sits on.
         placement.ModuleOrder = await ResolvePositionAsync(
             placement.TabId,
             placement.PaneName,
             request.ModuleOrder,
             cancellationToken).ConfigureAwait(false);
 
+        // BOTH pages are invalidated on a move, not just the destination. The placement list of the page
+        // the module left is now wrong too, and an entry that keeps answering with a module that is no
+        // longer there is the more visible of the two staleness bugs.
+        // ONE PAGE IS AFFECTED, NOT TWO. The revision that assigned the page collected both the page being
+        // left and the page being joined here, which is correct for a move and misleading without one: under
+        // the selecting contract the placement never changes page, so the second entry was always the same
+        // value as the first.
         var affectedTabIds = new HashSet<int> { placement.TabId };
         var effects = new List<string>();
 
@@ -955,7 +1324,7 @@ public sealed class ModuleService : IModuleService
         // than as an instruction about them, following ModuleSettings.ascx.resx plAllModules.Text, "Apply To
         // All Modules?".
         //
-        // MIGRATION: 5.9 - the propagation this triggers is NARROWER than the legacy's. The legacy loop
+        // MIGRATION: the propagation this triggers is NARROWER than the legacy's. The legacy loop
         // copied NINE appearance values - alignment, colour, border, icon, visibility, container source and
         // the title, print and syndicate flags - to every module on every non-administrative page. SIX of
         // those nine are excluded from UpdateModuleRequest as pane-layout, rendering or skinning concerns,
@@ -985,6 +1354,7 @@ public sealed class ModuleService : IModuleService
         if (effects.Count > 0)
         {
             RecordModuleAudit(
+                AuditEventNames.ModuleUpdated,
                 portalId,
                 module.ModuleId,
                 new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -995,7 +1365,7 @@ public sealed class ModuleService : IModuleService
                     ["SetAsDefaultSettings"] = request.SetAsDefaultSettings.ToString(),
                     ["ApplyToAllModules"] = request.ApplyToAllModules.ToString(),
                     ["AffectedTabCount"] = affectedTabIds.Count.ToString(CultureInfo.InvariantCulture),
-                    ["Effects"] = string.Join("; ", effects),
+                    ["EffectCount"] = effects.Count.ToString(CultureInfo.InvariantCulture),
                 });
         }
 
@@ -1069,6 +1439,25 @@ public sealed class ModuleService : IModuleService
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         InvalidatePlacements(affectedTabIds);
 
+        // MIGRATION: the legacy recycle bin recorded a module removal as EventLogType.MODULE_DELETED
+        // (RecycleBin.ascx.vb:L156) and this boundary recorded NOTHING, which left the one operation in this
+        // service that destroys a caller's work as the only one with no trail. The recycle-bin PAGE is
+        // excluded by AAP 0.2.2.2; the deletion it audited is not, and this is where the deletion happens.
+        //
+        // Emitted after the commit, so no record can describe a removal that was rolled back, and the facts
+        // are the blast radius: whether one placement or the whole module went, which placement was
+        // addressed when one was, and how many pages were affected. No caller free-text is carried.
+        RecordModuleAudit(
+            AuditEventNames.ModuleDeleted,
+            portalId,
+            moduleId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Operation"] = tabModuleId is null ? "Recycle" : "RemovePlacement",
+                ["TabModuleId"] = tabModuleId?.ToString(CultureInfo.InvariantCulture),
+                ["AffectedTabCount"] = affectedTabIds.Count.ToString(CultureInfo.InvariantCulture),
+            });
+
         return Result.Success();
     }
 
@@ -1093,6 +1482,14 @@ public sealed class ModuleService : IModuleService
             return Result<ModuleSettingsDto?>.Success(null);
         }
 
+        DesktopModule? package = await ReadPackageAsync(module, cancellationToken).ConfigureAwait(false);
+        if (package?.IsAdmin == true)
+        {
+            return Result<ModuleSettingsDto?>.Failure(
+                SettingsProtectedCode,
+                "Administrative module settings are available only through their typed privileged endpoint.");
+        }
+
         Result<TabModule?> resolved = await ResolvePlacementAsync(
             module,
             tabModuleId,
@@ -1110,8 +1507,17 @@ public sealed class ModuleService : IModuleService
         IReadOnlyList<TabModuleSetting> placementSettings =
             await _modules.GetTabModuleSettingsAsync(placement.TabModuleId, cancellationToken).ConfigureAwait(false);
 
+        // Security-owned names are never projected from the generic open-key contract. They are managed by
+        // typed portal-administrator endpoints, whose DTOs intentionally expose only their documented fields.
+        IReadOnlyList<ModuleSetting> publicModuleSettings = moduleSettings
+            .Where(setting => !IsSecurityOwnedSettingName(setting.SettingName))
+            .ToList();
+        IReadOnlyList<TabModuleSetting> publicPlacementSettings = placementSettings
+            .Where(setting => !IsSecurityOwnedSettingName(setting.SettingName))
+            .ToList();
+
         return Result<ModuleSettingsDto?>.Success(
-            ModuleMappings.ToSettings(module, placement, moduleSettings, placementSettings));
+            ModuleMappings.ToSettings(module, placement, publicModuleSettings, publicPlacementSettings));
     }
 
     /// <inheritdoc />
@@ -1197,6 +1603,14 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
         }
 
+        DesktopModule? package = await ReadPackageAsync(module, cancellationToken).ConfigureAwait(false);
+        if (package?.IsAdmin == true)
+        {
+            return Result.Failure(
+                SettingsProtectedCode,
+                "Administrative module settings must be changed through their typed privileged endpoint.");
+        }
+
         // MIGRATION: the two stores are normalised and length-checked SEPARATELY, against their own column
         // width and under their own scope word, because they are separate tables - dbo.ModuleSettings keyed
         // (ModuleID, SettingName) and dbo.TabModuleSettings keyed (TabModuleID, SettingName). The legacy
@@ -1220,6 +1634,17 @@ public sealed class ModuleService : IModuleService
 
         Dictionary<string, string> desiredModuleSettings = desiredModule.Values;
         Dictionary<string, string> desiredPlacementSettings = desiredPlacement.Values;
+
+        string? protectedName = desiredModuleSettings.Keys
+            .Concat(desiredPlacementSettings.Keys)
+            .FirstOrDefault(IsSecurityOwnedSettingName);
+        if (protectedName is not null)
+        {
+            return Result.Failure(
+                SettingsProtectedCode,
+                FormattableString.Invariant(
+                    $"The setting name \"{protectedName}\" is reserved for a typed privileged endpoint."));
+        }
 
         TabModule? placement = null;
         if (tabModuleId is int addressed)
@@ -1267,6 +1692,14 @@ public sealed class ModuleService : IModuleService
         var survivingModuleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (ModuleSetting stored in storedModuleSettings)
         {
+            // A replace request governs only the generic settings namespace. Omitting a protected setting
+            // must not delete it, otherwise an editor could erase administrator-owned security policy simply
+            // by submitting an otherwise valid generic settings document.
+            if (IsSecurityOwnedSettingName(stored.SettingName))
+            {
+                continue;
+            }
+
             if (!desiredModuleSettings.TryGetValue(stored.SettingName, out string? desired))
             {
                 await _modules
@@ -1310,6 +1743,11 @@ public sealed class ModuleService : IModuleService
             var survivingPlacementNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (TabModuleSetting stored in storedPlacementSettings)
             {
+                if (IsSecurityOwnedSettingName(stored.SettingName))
+                {
+                    continue;
+                }
+
                 if (!desiredPlacementSettings.TryGetValue(stored.SettingName, out string? desired))
                 {
                     await _modules
@@ -1475,18 +1913,45 @@ public sealed class ModuleService : IModuleService
     /// and the requested file name is validated so the caller can label what it receives.
     /// </para>
     /// <para>
-    /// MIGRATION: the payload is HTML-encoded before it is written, which is the first half of the
-    /// legacy escaping pipeline and is preserved deliberately. <c>ModuleController.vb</c> L244 read
-    /// <c>Content = HttpContext.Current.Server.HtmlEncode(Content)</c> and the following line wrapped
-    /// the encoded text in a CDATA section; the import path at L428 unwrapped the section and applied
-    /// the matching <c>Server.HtmlDecode</c>. Dropping the encode would still round-trip documents this
-    /// service produced, but it would silently corrupt a document produced by the legacy application -
-    /// its payload would come back with one layer of HTML escaping still on it - and interoperating with
-    /// those documents is the entire purpose of a migrated export format. The ambient
-    /// <c>HttpContext.Current.Server</c> accessor is replaced by <see cref="WebUtility"/>, so the
-    /// escaping is identical while this layer takes no ASP.NET dependency. The CDATA wrap itself is not
-    /// reproduced: an XML writer escapes the element's text content correctly on its own, and the
-    /// reader below accepts either form.
+    /// MIGRATION: THE PAYLOAD IS EMBEDDED VERBATIM, AND THE AUTHORITY FOR THAT IS THE MODULE ADMIN
+    /// SCREEN RATHER THAN THE PORTAL TEMPLATE WRITER. <c>Website/admin/Modules/Export.ascx.vb</c>
+    /// L157-L165 composes the document by concatenation -
+    /// <c>"&lt;?xml version=""1.0"" encoding=""utf-8"" ?&gt;" &amp; "&lt;content type=""..." version="..."&gt;" &amp; Content &amp; "&lt;/content&gt;"</c>
+    /// - with NO escaping of any kind, and its import counterpart at
+    /// <c>Import.ascx.vb</c> L196-L200 reads the payload back as
+    /// <c>xmlDoc.DocumentElement.InnerXml</c> with no decoding. This endpoint is the migration of THAT
+    /// workflow, so that is the document contract it reproduces.
+    /// </para>
+    /// <para>
+    /// MIGRATION: AN EARLIER REVISION APPLIED <c>HtmlEncode</c> HERE, COPIED FROM THE PORTAL TEMPLATE
+    /// PATH, AND IT PRODUCED A DOCUMENT NOTHING BUT ITSELF COULD READ. <c>ModuleController.vb</c> L244
+    /// does read <c>Content = HttpContext.Current.Server.HtmlEncode(Content)</c> before wrapping the
+    /// result in a CDATA section, and L428 undoes both - but that pair belongs to the portal template
+    /// writer and reader, a different format with a different consumer. Applied here it escaped the
+    /// payload TWICE: HTML encoding turned <c>&lt;</c> into <c>&amp;lt;</c> and the XML writer then
+    /// escaped that ampersand into <c>&amp;amp;lt;</c>. A legacy importer reading such a document, or any
+    /// standards-based reader, recovered <c>&amp;lt;item&amp;gt;</c> instead of <c>&lt;item&gt;</c> -
+    /// only a round trip through this same service masked it, because only this service knew to undo a
+    /// layer the format does not declare. The encode is therefore removed rather than kept, and with it
+    /// the matching decode on the import path.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE CONSEQUENCE OF EMBEDDING VERBATIM IS THAT A MODULE MUST HAND BACK WELL-FORMED XML,
+    /// AND ONE THAT DOES NOT IS NOW REFUSED. The portability contract is an XML contract, so this is the
+    /// obligation it always carried; what changes is when the breach is discovered. Under the withdrawn
+    /// encoding a module returning bare text with an ampersand in it exported "successfully" and could be
+    /// re-imported only here. The legacy wrote that text into a file unescaped and the legacy IMPORTER
+    /// then refused the file with "The file you selected does not contain a valid XML structure", so the
+    /// content was never importable either way - the composed document is validated below and the failure
+    /// is reported at the point the caller can act on it instead. Recorded in MIGRATION_NOTES.md.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE TYPE ATTRIBUTE CARRIES THE SANITISED MODULE NAME, NOT THE RAW ONE. The legacy wrote
+    /// <c>CleanName(objModule.ModuleName)</c> (Export.ascx.vb L159, helper at L209-L221), which strips a
+    /// fixed punctuation set outright, and its importer compared the attribute against the same sanitised
+    /// value - so a document carrying the raw name was refused by the legacy importer as belonging to
+    /// another module. Writing the raw name here, as an earlier revision did, made every document this
+    /// endpoint produced unreadable by a DotNetNuke 4.x installation for a reason no reader could see.
     /// </para>
     /// <para>
     /// An empty payload still yields a document, because "asked and given nothing" is a real answer that
@@ -1503,6 +1968,12 @@ public sealed class ModuleService : IModuleService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // ModuleExportRequestValidator refuses a blank name at the boundary with a field-keyed answer naming
+        // `fileName`, which is what the operation's published 400 schema advertises. This guard is retained
+        // rather than removed because this service is reachable from callers the MVC validation filter does
+        // not sit in front of - the unit suites call it directly, and so would any future in-process consumer.
+        // The wording is identical to the validator's on purpose: one condition enforced at two points must
+        // read as one rule, not two, and the pair is annotated in both places.
         if (string.IsNullOrWhiteSpace(request.FileName))
         {
             return Result<string>.Failure(
@@ -1548,54 +2019,95 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Module {moduleId} could not be asked for content: {advisory}"));
         }
 
-        // MIGRATION: ModuleController.vb:L244 - `Content = HttpContext.Current.Server.HtmlEncode(Content)`.
-        // The ambient HttpContext accessor is replaced by System.Net.WebUtility, which performs the same
-        // escaping and is reachable from a class library that references no web framework. The encode is
-        // kept rather than dropped so that a document this service writes is escaped the way the legacy
-        // application escaped one, which is what lets ImportModuleAsync accept both interchangeably.
-        string encodedPayload = WebUtility.HtmlEncode(exported.Value);
+        string payload = exported.Value;
 
-        var document = new XElement(
-            ContentElementName,
-            new XAttribute(ContentTypeAttributeName, package.ModuleName),
-            new XAttribute(ContentVersionAttributeName, package.Version ?? string.Empty),
-            encodedPayload);
-
-        // Serialising is the step that can still refuse the payload, so it is guarded rather than assumed
-        // to succeed. HTML encoding escapes markup but the XML specification has no encoding at all for a
-        // C0 control character, so a module that returns one produces content this format cannot carry. The
-        // writer signals that by raising, and an unhandled raise here would surface as an unexplained
-        // server error rather than as the documented outcome this contract owes the caller.
+        // BOUNDED BEFORE ANY WORK IS DONE ON IT. What the module hands over is not the caller's own
+        // submission - it arrives from module code and its size is decided there - so nothing upstream
+        // bounds it, and everything below is document assembly and parsing proportional to it. Refusing at a
+        // stated ceiling is what keeps one export from allocating an arbitrarily large document, and it is
+        // tested here rather than mid-assembly so the refusal costs nothing and is predictable.
         //
-        // Only the two exception types the writer raises for unrepresentable content are caught. Anything
-        // else is left to propagate: a broad catch would convert a genuine defect into a tidy failure code
-        // and hide it.
-        string serialised;
+        // MIGRATION: the legacy export had no ceiling of any kind - it wrote whatever the module returned to
+        // disk - so the ceiling is a deliberate divergence, recorded in MIGRATION_NOTES.md. It is classified
+        // as an export failure rather than as a bad request because the content came from the MODULE and not
+        // from the caller, which is the same distinction ExportFailedCode already draws.
+        if (payload.Length > ExportPayloadMaximumLength)
+        {
+            return Result<string>.Failure(
+                ExportFailedCode,
+                FormattableString.Invariant(
+                    $"Module {moduleId} returned {payload.Length} characters of content, which exceeds the {ExportPayloadMaximumLength} character ceiling this endpoint will carry."));
+        }
+
+        // The caller may already have gone while the module was assembling its content, and what follows is
+        // processor and memory work rather than I/O - so the token is observed here, where that work begins.
+        // Without this an abandoned request paid for the whole document anyway.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // MIGRATION: Export.ascx.vb:L157-L165 - the document is COMPOSED, not serialised from a tree, and
+        // the module's payload is placed between the tags exactly as it was handed over. An XML writer
+        // cannot express that: given a string it writes an escaped TEXT node, which is why the withdrawn
+        // encoding revision could not be repaired by removing the encode alone. Concatenation is what the
+        // legacy did and it is the only construction that carries a payload of markup through unaltered.
+        //
+        // The two attribute values are the only parts this layer supplies, and neither can carry a quote
+        // that would break out of the attribute: the type is CleanName-sanitised, which strips the double
+        // quote and the apostrophe outright, and the version is a package version string. The composed
+        // document is parsed below before it is returned, so a value that did break the shape is caught
+        // rather than shipped.
+        string composed = string.Concat(
+            XmlDeclaration,
+            FormattableString.Invariant(
+                $"<{ContentElementName} {ContentTypeAttributeName}=\"{CleanName(package.ModuleName)}\""),
+            FormattableString.Invariant(
+                $" {ContentVersionAttributeName}=\"{package.Version ?? string.Empty}\">"),
+            payload,
+            FormattableString.Invariant($"</{ContentElementName}>"));
+
+        // Parsing is what turns "the module handed back something" into "the module handed back a document
+        // this format can carry", and it is the step that still refuses a payload. Two classes of content
+        // fail here: markup that is not well formed, and a C0 control character, for which the XML
+        // specification provides no escape at all. Both are faults in the MODULE rather than in the request,
+        // which is why the reason code below is classified as a server fault and the caller is not told to
+        // correct anything. The tree the reader builds is transient - it is never returned, and the document
+        // handed back is the composed string itself - and the ceiling above is what bounds it.
+        //
+        // Only the exception the reader raises for unreadable content is caught. Anything else is left to
+        // propagate: a broad catch would convert a genuine defect into a tidy failure code and hide it.
         try
         {
-            serialised = document.ToString(SaveOptions.DisableFormatting);
+            XDocument.Parse(composed);
         }
-        catch (Exception exception) when (exception is ArgumentException or XmlException)
+        catch (XmlException)
         {
-            // The module's own text is deliberately NOT quoted in the message. It is module content and may
-            // carry the portal's user data, and the message is published verbatim as the problem detail.
+            // The module's own text is deliberately NOT quoted in the message, and neither is the reader's
+            // - a parser message quotes the offending fragment. It is module content and may carry the
+            // portal's user data, and the message is published verbatim as the problem detail.
             return Result<string>.Failure(
                 ExportFailedCode,
                 FormattableString.Invariant(
                     $"Module {moduleId} returned content that cannot be represented in an export document."));
         }
 
+        string serialised = composed;
+
         // The trail records that content left the module, and the SIZE of what left rather than any part
         // of it: an export payload is module content, which may be arbitrarily large and may carry data
         // belonging to the portal's users.
+        //
+        // MIGRATION: named MODULE_EXPORTED rather than MODULE_UPDATED. An export changes nothing, so
+        // recording it as an update stated something untrue in a trail whose entire value is that it is
+        // believed. The legacy export page wrote no audit record at all, so there is no legacy name to
+        // preserve here and the honest one is used instead - the reasoning is on AuditEventNames.
         RecordModuleAudit(
+            AuditEventNames.ModuleExported,
             portalId,
             module.ModuleId,
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["Operation"] = "Export",
                 ["BusinessControllerRegistered"] = bool.TrueString,
-                ["PayloadLength"] = exported.Value.Length.ToString(CultureInfo.InvariantCulture),
+                ["PayloadLength"] = payload.Length.ToString(CultureInfo.InvariantCulture),
             });
 
         return Result<string>.Success(serialised);
@@ -1609,24 +2121,35 @@ public sealed class ModuleService : IModuleService
     /// body-supplied identifier from reaching another tenant's module.
     /// </para>
     /// <para>
-    /// The document is read the way this service writes it: the version attribute names the version the
-    /// content was produced by, falling back to the installed version when the document omits it, and
-    /// the element's content is the payload. A payload that is itself markup is handed on as markup; a
-    /// payload that is text is unescaped once, which round-trips an export exactly.
+    /// The document is read the way this service writes it, which is the way the legacy module admin
+    /// screen wrote and read one: the <c>type</c> attribute must name this module, the <c>version</c>
+    /// attribute names the version the content was produced by and falls back to the installed version
+    /// when the document omits it, and the root element's INNER XML is the payload, handed on verbatim.
+    /// Nothing is escaped or unescaped in either direction.
     /// </para>
     /// <para>
-    /// MIGRATION: the extracted payload is HTML-decoded, which is the second half of the legacy escaping
-    /// pipeline. <c>ModuleController.vb</c> L428 read
-    /// <c>strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)</c>, and the line before it
-    /// stripped the CDATA section the export had wrapped the encoded text in - literally
+    /// MIGRATION: <c>Import.ascx.vb</c> L196-L200 is the authority for all three steps, and the payload
+    /// step is <c>xmlDoc.DocumentElement.InnerXml</c> - markup, not text. An earlier revision instead
+    /// applied the PORTAL TEMPLATE reader's <c>Server.HtmlDecode</c> from <c>ModuleController.vb</c> L428,
+    /// together with its fixed-offset CDATA strip at L414 - literally
     /// <c>strcontent.Substring(9, strcontent.Length - 12)</c>, the 9 characters of the opening delimiter
-    /// and the 3 of the closing one. The ambient accessor is replaced by <see cref="WebUtility"/> so this
-    /// layer takes no ASP.NET dependency, and the fixed-offset substring is replaced by reading the
-    /// element's value: an XML reader resolves a CDATA section to its text automatically, so a legacy
-    /// document and one written by this service both arrive here as the same encoded string and are
-    /// decoded identically. The fixed offsets were also a latent defect - a document whose content
-    /// element was not exactly a CDATA section had 9 characters of real payload removed - and replacing
-    /// them removes that failure mode rather than reproducing it.
+    /// and the 3 of the closing one. That decode belongs to a format whose writer had encoded the payload
+    /// first; applied to a module admin document it corrupted every entity reference the content
+    /// legitimately carried, and the corruption was invisible because the matching encode on the export
+    /// side undid it again. Both halves are withdrawn. The fixed offsets are not reproduced either - they
+    /// were a latent defect that removed 9 characters of real payload from any document whose content
+    /// element was not exactly a CDATA section - and nothing replaces them, because inner XML keeps a CDATA
+    /// section's delimiters exactly as <c>InnerXml</c> did.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE TYPE IS ENFORCED, which an earlier revision of this implementation did not do at
+    /// all. <c>Website/admin/Modules/Import.ascx.vb</c> lines 195-205 proceeded only when the attribute
+    /// equalled <c>CleanName(ModuleName)</c> or <c>CleanName(FriendlyName)</c> and otherwise reported
+    /// "The import file specified is not the correct type for this module". Both forms are accepted here
+    /// for the same reason, and a document naming neither is refused with
+    /// <c>module.content_type_mismatch</c>: without the check, a document exported from one module type
+    /// could be loaded into a module of another, whose portability behaviour would then be handed
+    /// content it cannot interpret.
     /// </para>
     /// <para>
     /// MIGRATION: the legacy path swallowed every exception the module's own import code raised and
@@ -1643,12 +2166,17 @@ public sealed class ModuleService : IModuleService
 
         // MIGRATION: the target module arrives in the BODY, because this endpoint carries no identifier in
         // its route, and ModuleImportRequest.ModuleId is consequently NULLABLE so that an omitted value is
-        // distinguishable from a supplied one. That distinction has to be resolved right here and cannot be
-        // deferred: this request has no FluentValidation validator - the planned validator set contains no
-        // entry for it - so nothing upstream refuses the omission, and Modules.ModuleID is IDENTITY(0,1),
-        // which makes ZERO A REAL MODULE. A non-nullable property would therefore have deserialised a
-        // missing moduleId into a live request against module zero, and this service could not have told
-        // the two apart.
+        // distinguishable from a supplied one. Modules.ModuleID is IDENTITY(0,1), which makes ZERO A REAL
+        // MODULE, so a non-nullable property would have deserialised a missing moduleId into a live request
+        // against module zero and nothing could have told the two apart.
+        //
+        // ModuleImportRequestValidator now refuses the omission at the boundary with a field-keyed answer,
+        // and this guard is retained rather than removed. It is not redundant: this service is reachable from
+        // callers the MVC validation filter does not sit in front of - the unit suites call it directly, and
+        // so would any future in-process consumer - so the condition is enforced at both points, with the
+        // same wording, and the pair is annotated in both places. An earlier revision of this comment
+        // asserted that no validator existed for the request and that the distinction therefore could not be
+        // resolved anywhere but here; that is the drift the review closed.
         //
         // Refused by ABSENCE alone, never by sign. Both 0 and -1 are legitimate identifier values in this
         // schema - 0 is the module identity seed and -1 is a real portal identifier as well as the legacy
@@ -1673,8 +2201,8 @@ public sealed class ModuleService : IModuleService
         }
 
         // The caller must hold the edit grant on the module whose content they are replacing. Verified here
-        // for the same reason as on creation - the target arrives in the BODY - and verified at all because it
-        // previously was not, so any authenticated caller could overwrite any tenant's module content.
+        // for the same reason as on creation - the target arrives in the BODY - and required at all because
+        // without it any authenticated caller could overwrite any tenant's module content.
         if (await EnsureMayEditModuleAsync(portalId, moduleId, cancellationToken).ConfigureAwait(false)
             is ResultReason forbidden)
         {
@@ -1716,50 +2244,113 @@ public sealed class ModuleService : IModuleService
         XDocument document;
         try
         {
-            // PreserveWhitespace is required, not cosmetic. Without it the reader discards a text node that
-            // is entirely whitespace as insignificant, so a payload of nothing but spaces or tabs arrived as
-            // the empty string and the module was handed content the caller had not sent. Measured, not
-            // theorised: a three-space payload round-tripped to "" until this option was supplied. Content
-            // whose significance the caller decides must not be filtered by an XML reader's default.
-            document = XDocument.Parse(request.Content, LoadOptions.PreserveWhitespace);
+            document = ParseImportDocument(request.Content);
         }
         catch (XmlException exception)
         {
-            return Result.Failure(
-                ContentInvalidCode,
-                FormattableString.Invariant($"The submitted document is not well-formed XML: {exception.Message}"));
+            RecordModuleImportParseFailure(portalId, moduleId, exception);
+            return Result.Failure(ContentInvalidCode, ImportParseFailureMessage);
         }
 
         XElement? root = document.Root;
-        if (root is null || !string.Equals(root.Name.LocalName, ContentElementName, StringComparison.OrdinalIgnoreCase))
+        if (root is null
+            || root.Name.Namespace != XNamespace.None
+            || !string.Equals(root.Name.LocalName, ContentElementName, StringComparison.OrdinalIgnoreCase))
         {
             return Result.Failure(
                 ContentInvalidCode,
                 FormattableString.Invariant($"The submitted document must have a <{ContentElementName}> root element."));
         }
 
+        // SEC: THE ROOT ELEMENT MAY CARRY ONLY THE TWO ATTRIBUTES THIS CONTRACT DECLARES, and no namespace
+        // declaration at all. A caller-supplied document is otherwise free to attach arbitrary attributes and
+        // namespaces to the element this service reads, which is the shape a namespace-confusion or
+        // attribute-smuggling attempt takes; refusing the document outright is cheaper and safer than
+        // deciding, per attribute, whether it could matter.
+        if (root.Attributes().Any(attribute =>
+                attribute.IsNamespaceDeclaration
+                || attribute.Name.Namespace != XNamespace.None
+                || (!string.Equals(attribute.Name.LocalName, ContentTypeAttributeName, StringComparison.Ordinal)
+                    && !string.Equals(attribute.Name.LocalName, ContentVersionAttributeName, StringComparison.Ordinal))))
+        {
+            return Result.Failure(
+                ContentInvalidCode,
+                "The submitted document contains an unsupported root namespace or attribute.");
+        }
+
         // A payload that is itself markup is handed on as markup and is NOT decoded: it was never encoded,
         // so decoding it would corrupt any entity reference it legitimately contains. Only the text form -
         // which is what both this service and the legacy exporter write - carries the encoding to undo.
         //
-        // MIGRATION: ModuleController.vb:L428 - `strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)`,
-        // preceded by the fixed-offset CDATA strip at L414. WebUtility.HtmlDecode replaces the ambient
-        // HttpContext accessor, and XElement.Value replaces the substring arithmetic because an XML reader
-        // already resolves a CDATA section to its text. This is what makes a legacy-produced export file
-        // importable unchanged.
+        // MIGRATION: Import.ascx.vb:L196-L197 - the document's type attribute is compared against the
+        // module's own sanitised name and its sanitised friendly name, and a mismatch is refused with
+        // "The import file specified is not the correct type for this module". Reproduced here, and reproduced
+        // at all because it was PROMISED and not delivered: ModuleImportRequest.FileName documents that the
+        // legacy name-based check was re-sourced onto this attribute precisely so the refusal survived, and
+        // until now nothing performed it - so a document belonging to another module was imported into this
+        // one without complaint, handing a module content it could not interpret.
+        //
+        // The check is applied AFTER well-formedness and the root-element test, in the legacy's own order:
+        // the legacy could not read an attribute off a document that had failed to load either.
+        //
+        // Both sides are sanitised, which is a bounded widening of the legacy comparison and the reason is
+        // interoperability with this endpoint's OWN earlier output. The legacy compared the raw attribute
+        // against the two sanitised names; an earlier revision of the export path wrote the RAW module name,
+        // so documents this API has already produced carry a value the legacy rule would refuse. Sanitising
+        // the submitted value too accepts both spellings of the same name while still refusing a different
+        // name - the discriminating power is unchanged, because the sanitiser only removes punctuation and
+        // the module name carries a unique constraint. The comparison stays case-SENSITIVE: VB's default
+        // string comparison is binary, so the legacy refused a document whose type differed only in case,
+        // and widening that would admit documents the legacy did not.
+        string declaredType = root.Attribute(ContentTypeAttributeName)?.Value ?? string.Empty;
+        string sanitisedType = CleanName(declaredType);
+
+        if (!string.Equals(sanitisedType, CleanName(package.ModuleName), StringComparison.Ordinal)
+            && !string.Equals(sanitisedType, CleanName(package.FriendlyName), StringComparison.Ordinal))
+        {
+            // The module's own names are named in the message but the SUBMITTED value is not echoed back:
+            // it is caller-supplied text and the message is published verbatim as the problem detail.
+            string expectedName = CleanName(package.ModuleName);
+            string expectedFriendlyName = CleanName(package.FriendlyName);
+
+            // The two accepted spellings are frequently the SAME value - a module whose friendly name matches
+            // its name sanitises to one string - and offering an operator a choice between a value and itself
+            // reads as a defect in the message rather than as a hint. They are therefore named once when they
+            // agree, and both only when there is genuinely a second thing to try.
+            string accepted = string.Equals(expectedName, expectedFriendlyName, StringComparison.Ordinal)
+                ? FormattableString.Invariant($"\"{expectedName}\"")
+                : FormattableString.Invariant($"\"{expectedName}\" or \"{expectedFriendlyName}\"");
+
+            return Result.Failure(
+                ContentTypeMismatchCode,
+                FormattableString.Invariant(
+                    $"The submitted document type does not match the target module package: module {moduleId} expects {accepted}."));
+        }
+
+        // MIGRATION: Import.ascx.vb:L200 - `CType(objObject, IPortable).ImportModule(ModuleId,
+        // xmlDoc.DocumentElement.InnerXml, strVersion, UserInfo.UserID)`. The payload is the root element's
+        // INNER XML, verbatim, with no decoding of any kind, and the concatenation below is that property's
+        // exact semantics: each child node written back as the markup it is, so an element stays an element,
+        // an entity reference stays escaped and a CDATA section keeps its delimiters.
+        //
+        // MIGRATION: THE `HtmlDecode` THIS REPLACES CAME FROM THE PORTAL TEMPLATE READER AND DID NOT BELONG
+        // HERE. ModuleController.vb:L428 does apply `Server.HtmlDecode`, preceded by the fixed-offset CDATA
+        // strip at L414 - but that pair reads the PORTAL TEMPLATE format, whose writer at L244-L246 had
+        // encoded and CDATA-wrapped the payload in the first place. This endpoint migrates the module admin
+        // workflow, whose exporter escapes nothing, so there was no encoding to undo: applying the decode
+        // corrupted every entity reference a module's content legitimately contained, and it was invisible
+        // only because the matching encode on the export side undid it again. Both halves are withdrawn
+        // together; the divergence from the previous revision is recorded in MIGRATION_NOTES.md.
         //
         // MIGRATION: A CARRIAGE RETURN IN THE PAYLOAD BECOMES A LINE FEED, and that is PRESERVED legacy
         // behaviour rather than a new loss. The XML specification requires a reader to normalise every
-        // line ending to a single line feed, and it applies that inside a CDATA section too, so the legacy
-        // path lost the carriage return at exactly the same point. Verified by running both forms rather
-        // than reasoned about: a payload of "a\r\nb" returns as "a\nb" through the CDATA shape the legacy
-        // exporter wrote and through the shape this service writes, identically. Preserving it would need
-        // the return escaped as a character reference, which would make documents this service writes
-        // unreadable by the legacy importer - so the behaviour is annotated and left alone, per the rule
-        // that a discovered legacy defect is recorded rather than quietly improved.
-        string payload = root.HasElements
-            ? string.Concat(root.Nodes().Select(node => node.ToString(SaveOptions.DisableFormatting)))
-            : WebUtility.HtmlDecode(root.Value);
+        // line ending to a single line feed, and the legacy importer's own reader applied the same rule
+        // before InnerXml was ever read, so the carriage return was lost at exactly the same point.
+        // Preserving it would need the return escaped as a character reference, which would make documents
+        // this service writes unreadable by the legacy importer - so the behaviour is annotated and left
+        // alone, per the rule that a discovered legacy defect is recorded rather than quietly improved.
+        string payload = string.Concat(
+            root.Nodes().Select(node => node.ToString(SaveOptions.DisableFormatting)));
 
         string? version = root.Attribute(ContentVersionAttributeName)?.Value;
         if (string.IsNullOrWhiteSpace(version))
@@ -1775,6 +2366,13 @@ public sealed class ModuleService : IModuleService
             _currentUser.UserId ?? UnattributedUserId,
             cancellationToken).ConfigureAwait(false);
 
+        // NOTHING BELOW THIS POINT RUNS UNLESS CONTENT WAS ACTUALLY RESTORED. The factory reports every
+        // state in which the module was not asked - no controller declared, a stored key no registration
+        // covers, a registered controller that cannot restore, or an empty payload - as a failure rather
+        // than as a success carrying an advisory, so this one guard now covers all of them as well as a
+        // restore that broke. Before it did, the commit, the cache eviction and the Operation=Import audit
+        // record below all ran for an installation whose closed controller set did not cover the module:
+        // the caller was answered 200 and the trail recorded an import that had not happened.
         if (imported.IsFailure)
         {
             return Result.Failure(imported.Error!);
@@ -1790,24 +2388,48 @@ public sealed class ModuleService : IModuleService
             _cache.InvalidateModules(placement.TabId);
         }
 
-        // The provenance this contract promises to record: which module received content, where the caller
-        // said it came from, which version the document declared, and how much arrived. The PAYLOAD IS NOT
-        // RECORDED - only its length - because it is module content and may carry the portal's user data.
-        // Emitted after the commit, so a failed import leaves no record claiming success.
+            // The bounded operational facts this contract records: which module received content, which version
+            // the document declared, how much arrived and how many placements were invalidated. The
+            // caller-authored folder, filename and PAYLOAD are not recorded, because each can carry tenant or
+            // user data and belongs under the module content's own access and deletion policy. Emitted after the
+            // commit, so a failed import leaves no record claiming success.
+            //
+            // MIGRATION: DIVERGENCE, and a correction. Two facts an earlier revision recorded here are gone.
+            // SourceFolder and SourceFileName were copied verbatim from the request, and ModuleImportRequest
+            // documents both as accepted-and-deliberately-unused parity metadata with NO LENGTH BOUND and no
+            // interpretation as a path - so nothing validated them, nothing read them, and a caller could put a
+            // secret, a personal identifier, control text or an unbounded high-cardinality value into the audit
+            // trail simply by naming a file that way. They are not recorded, because the trail loses nothing an
+            // operator can act on: the module, the version, the size and the placement count all describe what
+            // actually happened, whereas the caller's own description of where the document came from describes
+            // only what the caller said.
+            //
+            // Withdrawing them bounds the WORK as well as the content. The sink joins every property and
+            // writes the entry synchronously, so an unbounded property is unbounded work on the logging path -
+            // one request whose body is within the API's limit could otherwise produce an audit entry of
+            // nearly the same size. Nothing that reaches this dictionary is caller-sized.
+            //
+            // The declared version IS still recorded, because it is the one provenance fact that identifies the
+            // content - but it comes from an attribute of a caller-supplied document, so it is reduced to digits,
+            // dots and hyphens within a length bound before it is offered, and the sink then admits it only
+            // because the name appears on its closed allowlist. Anything else becomes a fixed marker.
         RecordModuleAudit(
+            AuditEventNames.ModuleUpdated,
             portalId,
             module.ModuleId,
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["Operation"] = "Import",
-                ["Version"] = version,
-                ["SourceFolder"] = request.Folder,
-                ["SourceFileName"] = request.FileName,
+                ["Version"] = DescribeDeclaredVersion(version),
                 ["PayloadLength"] = payload.Length.ToString(CultureInfo.InvariantCulture),
                 ["PlacementCount"] = placements.Count.ToString(CultureInfo.InvariantCulture),
             });
 
-        return imported.Reason is ResultReason advisory ? Result.Success(advisory) : Result.Success();
+        // A bare success, with no advisory to forward. The factory's four "nothing was restored" states are
+        // failures, so reaching this line means the module was asked and answered, and there is nothing left
+        // to qualify the answer with. Forwarding an advisory here would be dead code that reads as though a
+        // successful import could still have imported nothing.
+        return Result.Success();
     }
 
     /// <summary>
@@ -1824,12 +2446,6 @@ public sealed class ModuleService : IModuleService
     /// runs. Creation does not: the page it targets arrives in the request BODY, which no policy can read,
     /// and there is no module yet to evaluate against. The check therefore has to be performed after binding,
     /// and the only layer holding both the caller and the permission evaluator is this one.
-    /// </para>
-    /// <para>
-    /// WHAT IT WAS BEFORE. Creation carried the bare authentication requirement, and this service's own
-    /// commentary asserted that the service performed the check. It did not - it verified only that the page
-    /// belonged to the tenant - so any authenticated caller could place a module on any page of any tenant.
-    /// The assertion is now true.
     /// </para>
     /// <para>
     /// EDIT ON THE PAGE IS THE LEGACY RULE. The legacy module-settings screen was reachable only from a page
@@ -1865,6 +2481,52 @@ public sealed class ModuleService : IModuleService
                 EditForbiddenCode,
                 FormattableString.Invariant(
                     $"The caller may not place a module on page {tabId} in portal {portalId}."));
+    }
+
+    /// <summary>
+    /// Confirms that the caller administers the portal, which is what the four portal-wide fields of an
+    /// update require.
+    /// </summary>
+    /// <param name="portalId">The tenant whose administration is required.</param>
+    /// <param name="cancellationToken">Abandons the reads when the caller disconnects.</param>
+    /// <returns>The reason the caller may not, or <see langword="null"/> when they may.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS SEPARATE FROM THE EDIT GRANT. Editing a module is a grant on a resource; changing where
+    /// it is placed, fanning it out across the portal, naming it as the portal default, or rewriting every
+    /// module's appearance are effects on pages the caller may hold no grant on at all. The legacy screen
+    /// drew exactly that line by disabling four controls for anyone outside the portal administrator role
+    /// while leaving the rest of the form editable, and this reproduces the line rather than collapsing it
+    /// into the module grant - which would either refuse ordinary page administrators everything or admit
+    /// them to everything.
+    /// </para>
+    /// <para>
+    /// The decision is delegated to <see cref="IPermissionService.IsPortalAdministratorAsync"/> so that it
+    /// is taken from stored state in one place: the portal's own administrator role identifier and the
+    /// caller's active assignments, with a host account admitted first. A failed decision - which that
+    /// member does not currently produce - is treated as a refusal rather than as an admission, because a
+    /// question about authority that could not be answered must never be answered "yes".
+    /// </para>
+    /// <para>
+    /// The message names the tenant and the nature of the refusal but not WHICH of the four fields
+    /// triggered it. The caller submitted all four, so naming one would be arbitrary, and the correction is
+    /// the same in every case.
+    /// </para>
+    /// </remarks>
+    private async Task<ResultReason?> EnsureAdministersPortalAsync(
+        int portalId,
+        CancellationToken cancellationToken)
+    {
+        Result<bool> administers = await _permissions
+            .IsPortalAdministratorAsync(portalId, _currentUser.UserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return administers.IsSuccess && administers.Value
+            ? null
+            : new ResultReason(
+                AdministratorForbiddenCode,
+                FormattableString.Invariant(
+                    $"Changing a module's page, its portal-wide placement, or either propagation instruction requires administering portal {portalId}."));
     }
 
     /// <summary>
@@ -2008,6 +2670,22 @@ public sealed class ModuleService : IModuleService
         Dictionary<string, string> Values);
 
     /// <summary>
+    /// One row of the module listing: a module together with the single placement that row describes.
+    /// </summary>
+    /// <param name="Module">The module the row projects.</param>
+    /// <param name="Placement">
+    /// The one placement this row carries. A module placed on several pages yields several rows, each
+    /// pairing the same module with a different placement.
+    /// </param>
+    /// <remarks>
+    /// The pair exists so that the row set can be ordered and windowed as ROWS before anything is
+    /// projected. Carrying the two references rather than the finished contract type is deliberate: the
+    /// definition names needed to project a row are read only once the window is known, so a row that
+    /// falls outside the window is never mapped at all.
+    /// </remarks>
+    private readonly record struct ModulePlacement(Module Module, TabModule Placement);
+
+    /// <summary>
     /// Normalises a submitted settings map, rejecting anything the columns cannot hold.
     /// </summary>
     /// <param name="submitted">The desired state of one settings store.</param>
@@ -2071,6 +2749,118 @@ public sealed class ModuleService : IModuleService
     }
 
     /// <summary>
+    /// Identifies setting names whose authority belongs to typed portal-administration contracts rather
+    /// than the generic module-settings surface.
+    /// </summary>
+    /// <param name="settingName">The stored or submitted setting name.</param>
+    /// <returns><see langword="true"/> for the legacy security and user-list column namespaces.</returns>
+    private static bool IsSecurityOwnedSettingName(string settingName)
+        => settingName.StartsWith("Security_", StringComparison.OrdinalIgnoreCase)
+            || settingName.StartsWith("Column_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Parses one import document with DTD resolution disabled and bounded character, node and nesting work.
+    /// </summary>
+    /// <param name="content">The caller-supplied XML document.</param>
+    /// <returns>The parsed document with whitespace-only payload nodes preserved.</returns>
+    /// <exception cref="XmlException">The document is malformed, prohibited or exceeds a work budget.</exception>
+    private static XDocument ParseImportDocument(string content)
+    {
+        if (content.Length > ImportDocumentCharacterMaximum)
+        {
+            throw new XmlException("Portable-content XML exceeds the configured character budget.");
+        }
+
+        XmlReaderSettings settings = CreateImportXmlReaderSettings();
+
+        // Validate work factors before constructing an object graph. The content string is immutable, so
+        // the second pass cannot differ from the first; parsing twice is a bounded cost and prevents a deeply
+        // nested document from reaching XDocument's tree builder before its depth has been refused.
+        using (var validationInput = new StringReader(content))
+        using (XmlReader validationReader = XmlReader.Create(validationInput, settings))
+        {
+            int nodeCount = 0;
+            while (validationReader.Read())
+            {
+                nodeCount++;
+                if (validationReader.NodeType == XmlNodeType.Element)
+                {
+                    nodeCount += validationReader.AttributeCount;
+                    if (validationReader.AttributeCount > ImportElementAttributeMaximum)
+                    {
+                        throw new XmlException("Portable-content XML exceeds the per-element attribute budget.");
+                    }
+                }
+
+                if (nodeCount > ImportDocumentNodeMaximum)
+                {
+                    throw new XmlException("Portable-content XML exceeds the node budget.");
+                }
+
+                if (validationReader.Depth > ImportDocumentDepthMaximum)
+                {
+                    throw new XmlException("Portable-content XML exceeds the nesting-depth budget.");
+                }
+
+                if ((validationReader.NodeType is XmlNodeType.Text
+                        or XmlNodeType.CDATA
+                        or XmlNodeType.Whitespace
+                        or XmlNodeType.SignificantWhitespace)
+                    && validationReader.Value.Length > ImportTextNodeCharacterMaximum)
+                {
+                    throw new XmlException("Portable-content XML exceeds the text-node budget.");
+                }
+            }
+        }
+
+        using var input = new StringReader(content);
+        using XmlReader reader = XmlReader.Create(input, settings);
+
+        // PreserveWhitespace is required, not cosmetic. Without it a whitespace-only payload becomes empty
+        // and the module is handed content the caller did not send.
+        return XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+    }
+
+    /// <summary>Builds the immutable security settings used for both import parsing passes.</summary>
+    /// <returns>An XML reader configuration that performs no external resolution.</returns>
+    private static XmlReaderSettings CreateImportXmlReaderSettings() => new()
+    {
+        DtdProcessing = DtdProcessing.Prohibit,
+        XmlResolver = null,
+        MaxCharactersFromEntities = 0,
+        MaxCharactersInDocument = ImportDocumentCharacterMaximum,
+        IgnoreWhitespace = false,
+        ConformanceLevel = ConformanceLevel.Document,
+        CloseInput = true,
+    };
+
+    /// <summary>Records a bounded parser diagnostic without publishing parser text or submitted content.</summary>
+    /// <param name="portalId">The tenant in which import was attempted.</param>
+    /// <param name="moduleId">The target module.</param>
+    /// <param name="exception">The parser exception whose type and position are retained.</param>
+    private void RecordModuleImportParseFailure(int portalId, int moduleId, XmlException exception)
+    {
+        AuditEvent record = new(AuditEventNames.ModuleUpdated)
+        {
+            Outcome = AuditOutcome.Denied,
+            PortalId = portalId,
+            ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
+            ResourceType = ModuleResourceType,
+            ResourceId = moduleId.ToString(CultureInfo.InvariantCulture),
+            FailureCode = ContentInvalidCode,
+            Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Operation"] = "Import",
+                ["DiagnosticType"] = exception.GetType().Name,
+                ["LineNumber"] = exception.LineNumber.ToString(CultureInfo.InvariantCulture),
+                ["LinePosition"] = exception.LinePosition.ToString(CultureInfo.InvariantCulture),
+            },
+        };
+
+        _audit.Record(record);
+    }
+
+    /// <summary>
     /// Resolves the placement a member addresses.
     /// </summary>
     /// <param name="module">The module whose placement is wanted.</param>
@@ -2114,6 +2904,92 @@ public sealed class ModuleService : IModuleService
 
         return Result<TabModule?>.Success(
             placements.OrderBy(candidate => candidate.TabModuleId).FirstOrDefault());
+    }
+
+    /// <summary>
+    /// Reads the placement a module has on one named page.
+    /// </summary>
+    /// <param name="module">The module whose placement is wanted.</param>
+    /// <param name="tabId">The page the placement must sit on.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The placement on that page, or <see langword="null"/> when the module is not placed there.</returns>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="ResolvePlacementAsync"/> and deliberately so. That member answers "which
+    /// placement does a caller that named none mean", and its answer is the lowest placement identifier -
+    /// deterministic, stable, and correct for the two members that address a module without carrying a page.
+    /// This member answers a different question: "does this module sit on THIS page", which is what a request
+    /// carrying a page key is entitled to have honoured. Folding the two together is what produced the defect
+    /// recorded on the update path, because the fallback silently satisfied a request that had named a page.
+    /// </para>
+    /// <para>
+    /// The page is matched by VALUE and never by sign. <c>dbo.Tabs.TabID</c> is <c>IDENTITY(0, 1)</c>, so page
+    /// zero is the first page a portal ever created and a positive-value test would refuse it; <c>-1</c> was
+    /// an "any page" wildcard in the legacy query surface rather than an absence. Neither may be read as
+    /// unspecified, which is also why no validator places a numeric floor on the member this value arrives in.
+    /// </para>
+    /// <para>
+    /// The tracked collection is preferred over a repository read when it is populated, exactly as the sibling
+    /// resolver does, so that a placement already loaded into the unit of work is the instance that gets
+    /// modified rather than a second copy of the same row. The identifier tie-break keeps the answer
+    /// deterministic in the degenerate case of two rows on one page, which the schema's composite key should
+    /// make impossible and which a read must not depend on being impossible.
+    /// </para>
+    /// </remarks>
+    private async Task<TabModule?> ReadPlacementOnPageAsync(
+        Module module,
+        int tabId,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<TabModule> placements = module.TabModules.Count > 0
+            ? module.TabModules.ToList()
+            : await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+
+        return placements
+            .Where(candidate => candidate.TabId == tabId)
+            .OrderBy(candidate => candidate.TabModuleId)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Strips the legacy punctuation set from a name, reproducing the sanitiser both content workflows used
+    /// to label and to identify an exported document.
+    /// </summary>
+    /// <param name="name">The name to sanitise.</param>
+    /// <returns>The name with every character of <see cref="NamePunctuation"/> removed.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>Website/admin/Modules/Export.ascx.vb</c> L209-L221, duplicated at
+    /// <c>Library/Components/Shared/Globals.vb</c> L1686-L1694. The legacy walked the punctuation set and
+    /// called <c>String.Replace</c> once per character, which allocates a string per iteration; a single
+    /// pass over the input produces the identical result. The result is identical rather than merely
+    /// equivalent because removal is order-independent: no replacement can introduce a character a later
+    /// replacement would have removed.
+    /// </para>
+    /// <para>
+    /// It is deliberately NOT a general-purpose sanitiser and must not be reached for as one. It does not
+    /// remove control characters, it does not remove path separators other than the two in the set, and it
+    /// is not an escaping function - it exists to reproduce one legacy transformation exactly, and its only
+    /// callers are the export composition and the import type check that the legacy pair keeps in step.
+    /// </para>
+    /// </remarks>
+    private static string CleanName(string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return string.Empty;
+        }
+
+        var cleaned = new StringBuilder(name.Length);
+        foreach (char character in name)
+        {
+            if (!NamePunctuation.Contains(character, StringComparison.Ordinal))
+            {
+                cleaned.Append(character);
+            }
+        }
+
+        return cleaned.ToString();
     }
 
     /// <summary>
@@ -2479,11 +3355,15 @@ public sealed class ModuleService : IModuleService
         int tabId,
         CancellationToken cancellationToken)
     {
-        IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
-
-        ModuleDefinition? siteSettings = definitions.FirstOrDefault(candidate =>
-            string.Equals(candidate.FriendlyName, SiteSettingsDefinitionName, StringComparison.OrdinalIgnoreCase));
+        // SEC-007: Site Settings is an administrative package. It is intentionally excluded from the
+        // portal-placeable catalogue and reached only through the explicit privileged lookup used by the
+        // two administrative settings paths.
+        ModuleDefinition? siteSettings = await _definitions
+            .GetAdministrativeDefinitionByFriendlyNameAsync(
+                portalId,
+                SiteSettingsDefinitionName,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         if (siteSettings is null)
         {
@@ -2630,22 +3510,73 @@ public sealed class ModuleService : IModuleService
     }
 
     /// <summary>
+    /// Bounds and allowlists the version an imported document declares, before it is recorded.
+    /// </summary>
+    /// <param name="version">The version read from the document, or resolved from the package.</param>
+    /// <returns>
+    /// The declared version when it is a plain version string within
+    /// <see cref="MaximumAuditedVersionLength"/>; otherwise <see cref="UnusableVersion"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// An ALLOWLIST of digits, dots and hyphens, which is every character a version has ever needed and
+    /// nothing that could carry a secret, a personal identifier or a control character. The alternative -
+    /// stripping the characters that are unwelcome - reshapes a hostile value into something that looks
+    /// authentic, and an audit record must not contain a value that reads as provenance but is not.
+    /// </para>
+    /// <para>
+    /// A value that fails is REPLACED rather than dropped, so the record still says that the document
+    /// declared something and that what it declared was not usable. Dropping it would make a hostile
+    /// document indistinguishable from one that declared no version at all.
+    /// </para>
+    /// </remarks>
+    private static string DescribeDeclaredVersion(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version) || version.Length > MaximumAuditedVersionLength)
+        {
+            return UnusableVersion;
+        }
+
+        foreach (char character in version)
+        {
+            if (!char.IsAsciiDigit(character) && character != '.' && character != '-')
+            {
+                return UnusableVersion;
+            }
+        }
+
+        return version;
+    }
+
+    /// <summary>
     /// Records one module change on the audit trail.
     /// </summary>
     /// <param name="portalId">The tenant the module belongs to.</param>
     /// <param name="moduleId">The module the record is about.</param>
     /// <param name="facts">
-    /// The facts describing what happened. Callers pass identifiers, counts and sizes only.
+    /// The facts describing what happened. Callers pass allowlisted codes, booleans, identifiers, counts and
+    /// sizes only.
+    /// </param>
+    /// <param name="eventName">
+    /// The catalogue name describing what happened, from <see cref="AuditEventNames"/>.
     /// </param>
     /// <remarks>
     /// <para>
-    /// MIGRATION: the legacy trail was written by <c>EventLogController.AddLog</c> against
-    /// <c>EventLogType.MODULE_UPDATED</c> - the single <c>AddLog(</c> site in the Modules tree, at
-    /// <c>EventMessageProcessor.vb</c> L69, which recorded the business controller class, the version and
-    /// the upgrade results as named properties. The event-log storage provider is out of scope, so the
-    /// record is emitted through <see cref="IAuditSink"/>, whose Infrastructure implementation writes it
-    /// as a structured Serilog event. The event name is preserved verbatim, so the trail remains
-    /// queryable by the identifier an operator already knows.
+    /// MIGRATION: the legacy module trail was written by <c>EventLogController.AddLog</c> against the
+    /// <c>MODULE_*</c> members of <c>EventLogType</c> (<c>EventLogController.vb:L38-L77</c>). The
+    /// event-log storage provider is out of scope, so the record is emitted through
+    /// <see cref="IAuditSink"/>, whose Infrastructure implementation writes it as a structured Serilog
+    /// event. The names are preserved verbatim, so the trail remains queryable by the identifiers an
+    /// operator already knows.
+    /// </para>
+    /// <para>
+    /// MIGRATION: CORRECTION, on two counts. This helper previously hard-coded ONE name for every module
+    /// operation, taken from a local constant that cited <c>EventMessageProcessor.vb:L69</c> - a file
+    /// AAP 0.2.2.1 excludes - as its provenance. The name was always a member of the in-scope enumeration
+    /// and is now drawn from <see cref="AuditEventNames"/> like every other, and the operation is named by
+    /// the CALLER rather than assumed: a settings change and a content import are updates, an export
+    /// changes nothing and has its own name, and a deletion is a deletion. One name for four operations
+    /// meant the trail asserted that a module had changed when it had only been read.
     /// </para>
     /// <para>
     /// <b>WHAT IS NEVER RECORDED.</b> No caller passes content. An export or import payload is module
@@ -2661,19 +3592,22 @@ public sealed class ModuleService : IModuleService
     /// database. Every call site below sits after its unit of work has been saved.
     /// </para>
     /// <para>
-    /// The actor is carried only when the caller is authenticated. An unauthenticated caller reaching a
-    /// write is already refused by the permission checks above, so a null actor here means a genuinely
-    /// anonymous path rather than a missing lookup, and recording it as absent is more honest than
+    /// The actor identifier is carried only when the caller is authenticated. An unauthenticated caller
+    /// reaching a write is already refused by the permission checks above, so a null actor here means a
+    /// genuinely anonymous path rather than a missing lookup, and recording it as absent is more honest than
     /// recording a placeholder identifier.
     /// </para>
     /// </remarks>
-    private void RecordModuleAudit(int portalId, int moduleId, IReadOnlyDictionary<string, string?> facts)
+    private void RecordModuleAudit(
+        string eventName,
+        int portalId,
+        int moduleId,
+        IReadOnlyDictionary<string, string?> facts)
     {
-        AuditEvent record = new(ModuleUpdatedEventName)
+        AuditEvent record = new(eventName)
         {
             PortalId = portalId,
             ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
-            ActorUserName = _currentUser.IsAuthenticated ? _currentUser.UserName : null,
             ResourceType = ModuleResourceType,
             ResourceId = moduleId.ToString(CultureInfo.InvariantCulture),
             Properties = facts,
@@ -2681,4 +3615,5 @@ public sealed class ModuleService : IModuleService
 
         _audit.Record(record);
     }
+
 }

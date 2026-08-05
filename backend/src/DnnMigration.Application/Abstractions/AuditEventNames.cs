@@ -1,5 +1,3 @@
-using DnnMigration.Domain.Enums;
-
 // MIGRATION: every name published below is the VERBATIM member name of the legacy
 // DotNetNuke.Services.Log.EventLog.EventLogController.EventLogType enumeration, measured at
 // Library/Components/Providers/Logging/Event Logging/EventLogController.vb:L38-L77. The names are
@@ -21,8 +19,27 @@ using DnnMigration.Domain.Enums;
 // SCHEDULER_* and APPLICATION_* members belong to the excluded scheduling subsystem and the application
 // lifetime of a Web Forms host; CACHE_REFRESHED belonged to the excluded cache provider family;
 // PASSWORD_SENT_SUCCESS, PASSWORD_SENT_FAILURE and LOG_NOTIFICATION_FAILURE belonged to the excluded mail
-// subsystem; ADMIN_ALERT and HOST_ALERT were raised by host administration, which AAP 0.2.2.4 excludes.
+// subsystem; ADMIN_ALERT was raised by host administration, which AAP 0.2.2.4 excludes.
 // Publishing a name nothing can raise would be a placeholder, so none is published.
+//
+// MIGRATION: CORRECTION. An earlier revision of the paragraph above also listed HOST_ALERT as belonging
+// to excluded host administration. THAT WAS WRONG, and it cost the migration an audit record: the single
+// legacy site that raises HOST_ALERT is the TENANT INSTALLATION at PortalController.vb:L1140-L1141, which
+// is squarely in scope and is implemented by PortalService.CreatePortalAsync. The claim is corrected
+// rather than softened, and HostAlert is published below.
+//
+// MIGRATION: five further members of the enumeration are legacy events this migration CANNOT raise, and
+// they are named here so that their absence is a recorded decision rather than an oversight. TAB_CREATED
+// (ManageTabs.ascx.vb:L315), TAB_DELETED (RecycleBin.ascx.vb:L205), TAB_SENT_TO_RECYCLE_BIN
+// (TabController.vb:L840 and L952), TAB_RESTORED (RecycleBin.ascx.vb:L280) and MODULE_RESTORED
+// (RecycleBin.ascx.vb:L392) each describe an operation that has NO committed boundary in this solution to
+// raise it from: AAP 0.5.1.4 makes the page surface "deliberately narrow - GET /api/v1/portals/{id}/tabs
+// and GET/PUT /api/v1/tabs/{id} only", so a page can be read and updated but never created or removed,
+// and the recycle-bin surface those four events belong to is excluded by AAP 0.2.2.2 along with the rest
+// of the Web Forms administration pages. Publishing a name that nothing can raise would be a placeholder
+// - the same reason the paragraph above gives for the other omissions - so none of the five is published,
+// and each becomes raisable in the same change that adds the operation it describes. The decision is
+// recorded in MIGRATION_NOTES.md as well as here.
 
 namespace DnnMigration.Application.Abstractions;
 
@@ -138,44 +155,87 @@ public static class AuditEventNames
     /// </remarks>
     public const string PasswordRehashFailure = "PASSWORD_REHASH_FAILURE";
 
+    /// <summary>
+    /// A credential accepted through the bounded legacy verifier was replaced with BCrypt.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: NET-NEW. The legacy application never changed storage technology during sign-in, so no
+    /// historical event name exists. The event records only the tenant, account and former format; it carries
+    /// no password, stored representation, salt, replacement hash or deployment key.
+    /// </remarks>
+    public const string LegacyCredentialMigrated = "LEGACY_CREDENTIAL_MIGRATED";
+
 
     /// <summary>
-    /// Returns the stable audit event name for a sign-in outcome.
+    /// A host-level event of note occurred. Legacy <c>HOST_ALERT</c>.
     /// </summary>
-    /// <param name="loginStatus">The outcome the sign-in gates produced.</param>
-    /// <returns>The legacy event-type spelling for that outcome.</returns>
     /// <remarks>
     /// <para>
-    /// M-07: the legacy sign-in audit did not name its event separately - it assigned
-    /// <c>objEventLogInfo.LogTypeKey = loginStatus.ToString</c> (<c>UserController.vb:L80</c>), so the
-    /// event name WAS the outcome enumeration's own member name. Those names are declared at
-    /// <c>Library/Components/Users/Membership/UserLoginStatus.vb:L23-L30</c> and again as event types at
-    /// <c>EventLogController.vb:L41-L45</c>. The target enumeration is idiomatic C# and therefore spells
-    /// its members differently, so this mapping restores the legacy spelling on the wire: an operator's
-    /// existing queries for <c>LOGIN_FAILURE</c> or <c>LOGIN_USERLOCKEDOUT</c> keep matching.
+    /// MIGRATION: raised for a TENANT INSTALLATION, alongside <see cref="PortalCreated"/>, because the
+    /// legacy installation raised exactly this type and nothing else:
+    /// <c>PortalController.vb:L1140-L1141</c> assigns
+    /// <c>objEventLogInfo.LogTypeKey = ...EventLogType.HOST_ALERT.ToString</c> before the record is
+    /// written at <c>L1157</c>.
     /// </para>
     /// <para>
-    /// Every member is mapped rather than only the two the legacy emitted, because the caller decides
-    /// WHICH outcomes to record and this function decides only what each is CALLED. The two weak-credential
-    /// outcomes have legacy event-type names too, even though the legacy sign-in path never logged them.
+    /// BOTH names are emitted for that one operation, and the redundancy is the point. An operator with an
+    /// existing saved search or alert on <c>HOST_ALERT</c> keeps matching the event they have always
+    /// matched, which is the whole reason this vocabulary is preserved verbatim; and a reader who wants to
+    /// know specifically that a tenant appeared gets the enumeration's own accurate member,
+    /// <see cref="PortalCreated"/>, rather than having to infer it from a coarse alert. Emitting only one
+    /// of the two silently breaks one of those two readers, and which one depends on a judgement about
+    /// legacy intent that this migration is not entitled to make on their behalf.
+    /// </para>
+    /// <para>
+    /// Nothing else in this solution raises it. The other legacy uses of this type belong to host
+    /// administration, which AAP 0.2.2.4 excludes, so a second producer would be inventing an event rather
+    /// than porting one.
     /// </para>
     /// </remarks>
-    public static string ForLoginStatus(UserLoginStatus loginStatus) => loginStatus switch
-    {
-        UserLoginStatus.Failure => "LOGIN_FAILURE",
-        UserLoginStatus.Success => "LOGIN_SUCCESS",
-        UserLoginStatus.SuperUser => "LOGIN_SUPERUSER",
-        UserLoginStatus.UserLockedOut => "LOGIN_USERLOCKEDOUT",
-        UserLoginStatus.UserNotApproved => "LOGIN_USERNOTAPPROVED",
-        UserLoginStatus.InsecureAdminPassword => "LOGIN_INSECUREADMINPASSWORD",
-        UserLoginStatus.InsecureHostPassword => "LOGIN_INSECUREHOSTPASSWORD",
+    public const string HostAlert = "HOST_ALERT";
 
-        // Unreachable for any declared member. An outcome outside the enumeration is a programming error
-        // rather than a runtime condition, and naming it explicitly is better than recording an event under
-        // a name no query will ever match.
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(loginStatus),
-            loginStatus,
-            "The sign-in outcome has no audit event name."),
-    };
+    /// <summary>A module instance or its content was changed. Legacy <c>MODULE_UPDATED</c>.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: a verbatim member of the legacy enumeration, at
+    /// <c>EventLogController.vb:L38-L77</c>. This is a CORRECTION of provenance as well as an addition of
+    /// a name: the module service previously declared this string as a private constant of its own and
+    /// cited <c>EventMessageProcessor.vb:L69</c> for it - a file AAP 0.2.2.1 excludes - which made an
+    /// in-scope legacy event look like a borrowing from out-of-scope code. The name was always the
+    /// enumeration's, and it is published here so that every producer draws it from one catalogue.
+    /// </para>
+    /// <para>
+    /// It covers a change to the module's placement or settings and a change to its content by import.
+    /// It deliberately does NOT cover an export, which changes nothing and has its own name, nor a
+    /// deletion, which has <see cref="ModuleDeleted"/>. The <c>Operation</c> fact on the record narrows it
+    /// further.
+    /// </para>
+    /// </remarks>
+    public const string ModuleUpdated = "MODULE_UPDATED";
+
+    /// <summary>A module instance was removed. Legacy <c>MODULE_DELETED</c>.</summary>
+    /// <remarks>
+    /// MIGRATION: a verbatim member of the legacy enumeration, raised by the legacy recycle bin at
+    /// <c>RecycleBin.ascx.vb:L156</c>. The recycle-bin surface itself is excluded, but the DELETION it
+    /// audited is not: this solution removes a module through its own committed boundary, so the event has
+    /// a real producer and is published. The legacy soft-delete-then-purge distinction is not reproduced -
+    /// there is one removal operation, and one event for it.
+    /// </remarks>
+    public const string ModuleDeleted = "MODULE_DELETED";
+
+    /// <summary>A module's content was exported.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: NET-NEW, and the enumeration has no member to cite because the legacy export page wrote
+    /// no audit record at all - <c>Website/admin/Modules/Export.ascx.vb</c> contains no <c>AddLog</c>
+    /// call. The name follows the legacy register so it reads alongside the other <c>MODULE_*</c> members.
+    /// </para>
+    /// <para>
+    /// It exists because the alternative was worse. An export was previously recorded as
+    /// <see cref="ModuleUpdated"/>, which states that a module changed when nothing changed - a false
+    /// record in a trail whose value is that it is believed. Reading a module's content out of the system
+    /// is worth auditing on its own terms, so the operation keeps its record and gets an honest name.
+    /// </para>
+    /// </remarks>
+    public const string ModuleExported = "MODULE_EXPORTED";
 }

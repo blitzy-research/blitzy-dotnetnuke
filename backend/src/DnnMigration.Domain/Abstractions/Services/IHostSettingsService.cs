@@ -1,7 +1,7 @@
 namespace DnnMigration.Domain.Abstractions.Services;
 
 /// <summary>
-/// Reads and writes the installation-wide configuration rows that the legacy platform persisted
+/// Reads the installation-wide configuration rows that the legacy platform persisted
 /// in the <c>HostSettings</c> table.
 /// </summary>
 /// <remarks>
@@ -23,14 +23,12 @@ namespace DnnMigration.Domain.Abstractions.Services;
 /// <para>
 /// A key with no matching row is reported as <see langword="null"/> rather than as the legacy
 /// empty string. <c>DnnMigration.Infrastructure</c> is expected to supply the single
-/// implementation: it alone may hold the persistence context, and it alone performs the
-/// stored-copy discard the legacy write performed as its final step, neither of which is
-/// expressible through this contract.
+/// implementation: it alone may hold the persistence context needed to materialise the rows.
 /// </para>
 /// </remarks>
 public interface IHostSettingsService
 {
-    // MIGRATION: the legacy read and write shapes are not carried forward. Both host reads
+    // MIGRATION: the legacy read shapes are not carried forward. Both host reads
     // answered with a forward-only data-reader (Library/Components/Providers/Data/DataProvider.vb
     // L87 and L88) and the whole-table read answered with an untyped, mutable, pre-generics
     // collection (Library/Components/Host/HostSettings.vb L47-L70). The reader type is
@@ -42,11 +40,6 @@ public interface IHostSettingsService
     // cancellable method. Library/Components/Shared/Globals.vb L221-L225 declared the whole-table
     // read as a read-only property and reached storage from inside its getter, so all twenty-one
     // call sites issued blocking I/O through what looked like a field access.
-
-    // MIGRATION: the write side effect belongs to the implementer, not to this contract. The
-    // legacy upsert finished by discarding the host-wide stored copy
-    // (Library/Components/Host/HostSettingsController.vb L57), a storage concern, so this
-    // interface declares no eviction member, no key name and no timeout.
 
     // MIGRATION: five of the six legacy members reached from migrated code are deliberately absent
     // because reconstructing the excluded Globals module was never the intent, and each has its own
@@ -90,28 +83,4 @@ public interface IHostSettingsService
     /// empty when the table holds no rows and is never <see langword="null"/>.
     /// </returns>
     Task<IReadOnlyDictionary<string, string>> GetSettingsAsync(CancellationToken cancellationToken = default);
-
-    // MIGRATION: the separate add and update primitives collapse into one upsert. The legacy
-    // provider declared AddHostSetting and UpdateHostSetting as two distinct writes and its
-    // controller read the row first to branch between them, so the caller-facing contract was
-    // already upsert semantics; exposing the primitives separately would push that read-then-branch
-    // decision back onto every caller. The isSecure default of false reproduces the legacy
-    // two-argument overload exactly.
-
-    /// <summary>
-    /// Stores a host setting, inserting the row when no setting of that name exists and overwriting
-    /// the stored value when one already does.
-    /// </summary>
-    /// <param name="settingName">Name of the setting to store.</param>
-    /// <param name="settingValue">
-    /// Value to store. An empty string is stored as an empty string and is not treated as a request
-    /// to remove the row.
-    /// </param>
-    /// <param name="isSecure">
-    /// Whether the value is sensitive and should be withheld from callers that are not entitled to
-    /// it. Defaults to <see langword="false"/>, matching the legacy two-argument overload.
-    /// </param>
-    /// <param name="cancellationToken">Signals that the write should be abandoned.</param>
-    /// <returns>A task that completes once the setting has been persisted.</returns>
-    Task UpsertSettingAsync(string settingName, string settingValue, bool isSecure = false, CancellationToken cancellationToken = default);
 }

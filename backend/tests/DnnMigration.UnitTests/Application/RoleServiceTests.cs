@@ -69,7 +69,7 @@ namespace DnnMigration.UnitTests.Application;
 /// canonical members they forwarded to are tested instead.
 /// </para>
 /// </remarks>
-public class RoleServiceTests
+public class RoleServiceApplicationTests
 {
     /// <summary>
     /// The tenant under test. Minus one is a REAL portal identifier, not an absence marker: the column is
@@ -1247,10 +1247,9 @@ public class RoleServiceTests
         record.EventName.Should().Be("USER_ROLE_CREATED", "the legacy key is the stable event name");
         record.PortalId.Should().Be(PortalId);
         record.ActorUserId.Should().Be(OperatorUserId);
-        record.ActorUserName.Should().Be(OperatorUserName);
         record.SubjectUserId.Should().Be(UserId);
         record.ResourceId.Should().Be(RoleId.ToString(CultureInfo.InvariantCulture));
-        record.Properties.Should().ContainKey("RoleName").WhoseValue.Should().Be(RoleName);
+        record.Properties.Should().NotContainKey("RoleName", "stable identifiers replace retained role names");
         record.Properties.Should().ContainKey("Renewed").WhoseValue.Should().Be(false.ToString(CultureInfo.InvariantCulture));
         record.Properties.Should().ContainKey("ExpiryDate")
             .WhoseValue.Should().Be(Now.AddMonths(1).ToString("O", CultureInfo.InvariantCulture));
@@ -1932,7 +1931,7 @@ public class RoleServiceTests
             };
 
             PortalExists = true;
-            Member = RoleServiceTests.Member();
+            Member = RoleServiceApplicationTests.Member();
             LookupRole = TermRole(Frequency.Month, period: 1);
             ExistingAssignment = null;
             PortalRoles = [];

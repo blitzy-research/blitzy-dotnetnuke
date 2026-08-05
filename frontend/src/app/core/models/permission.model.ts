@@ -1,15 +1,12 @@
 /**
- * Client-side type declarations for the DotNetNuke permission model: the
- * permission catalogue and the two permission-grant shapes that bind a
- * catalogue entry to a role or to a single user.
+ * Client-side type declarations for the DotNetNuke permission catalogue.
  *
- * Four declarations live here — {@link PermissionKey}, {@link Permission},
- * {@link ModulePermission} and {@link TabPermission}. They are consumed by the
- * `hasPermission` structural directive, by the permission route guard, and by
- * the module and tab feature screens.
+ * Two declarations live here — {@link PermissionKey} and {@link Permission}.
+ * They are consumed by the `hasPermission` structural directive, the permission
+ * route guard and the read-only permission API.
  *
  * THIS FILE IS TYPE-ONLY AND EMITS NO RUNTIME JAVASCRIPT. A string-literal
- * union and three interfaces are erased entirely by the compiler, so nothing
+ * union and one interface are erased entirely by the compiler, so nothing
  * here reaches a bundle. That is deliberate: a permission decision is not the
  * browser's to make (see the enforcement note below), so this module has no
  * behaviour to contribute — only the shape of the data it describes. There is
@@ -34,10 +31,9 @@
  * pinned there precisely because the legacy encoding makes `-1`, `0`, the empty
  * string and `false` all legitimate values, so a condition that omitted nulls
  * or defaults would erase real data from every response. The practical
- * consequence for the members below: a nullable member arrives PRESENT with the
- * value `null`, so it is declared `| null` rather than `?:`. That matches every
- * other model in this folder except the problem-details model, which documents
- * its own opposite convention and is the one exception.
+ * consequence for models generally is that a nullable member arrives PRESENT
+ * with the value `null`, never as an omitted property. The two catalogue shapes
+ * below happen to contain no nullable member.
  *
  * SENTINEL DISCIPLINE — WHY NO IDENTIFIER HERE IS TESTED FOR TRUTHINESS. The
  * legacy code encoded absence in-band rather than with a null:
@@ -55,8 +51,7 @@
  * every string member below is a plain required `string`.
  *
  * IDENTIFIER SPELLING. Every identifier member ends in a single lower-case `d`
- * — `permissionId`, `moduleDefId`, `modulePermissionId`, `tabPermissionId`,
- * `roleId`, `userId`, `tabId`, `moduleId`. This is not cosmetic. The camelCase
+ * — `permissionId` and `moduleDefId`. This is not cosmetic. The camelCase
  * policy lower-cases a LEADING RUN of capitals, so a server property spelled
  * `PermissionID` would serialise as `permissionID` while `PermissionId`
  * serialises as `permissionId`. The server DTOs use the `...Id` spelling, so
@@ -65,9 +60,8 @@
  *
  * ROUTE PARAMETER NAMES. The server's authorisation handler reads the scope
  * identifier out of route data, trying `moduleId` and then `id` for a
- * module-scoped policy, and `tabId` and then `id` for a tab-scoped one. The
- * route parameters this application uses are therefore `portalId`, `moduleId`,
- * `userId` and `roleId`. A route that spelled a parameter `moduleID` would
+ * module-scoped policy, and `tabId` and then `id` for a tab-scoped one. A route
+ * that spelled a parameter `moduleID` would
  * still match its own path and still render, but the handler would fail to find
  * the scope and refuse the request — so keep route parameter spellings in step
  * with the member names above.
@@ -95,23 +89,10 @@
 //   only because those helpers had to hand a single string to a role-membership
 //   test; it is lossy (a role whose name contains a semicolon cannot survive
 //   it) and it forced every consumer to re-derive structure that the database
-//   already had. The underlying model is a first-class `UserID` column
-//   discriminated against a sentinel plus a separate `AllowAccess` flag, and
-//   that structured shape is what crosses the wire now. So this file declares
-//   `roleId`, `roleName`, `userId` and `allowAccess` as distinct members and
-//   declares NO delimited string member and NO parser. Nothing downstream
-//   should reconstruct that format.
-
-// MIGRATION: TypeScript composition replaces VB inheritance. Both legacy grant
-//   classes declared `Inherits PermissionInfo`
-//   (`ModulePermission.vb:L29`, `TabPermission.vb:L30`), so each carried its own
-//   8 members plus the base 5, for 13 in total. VB inheritance does not survive
-//   a language change on its own, so the relationship is restated explicitly
-//   with TypeScript `extends` below. That the base members are genuinely part of
-//   each grant is not an assumption: the legacy copy constructor at
-//   `ModulePermission.vb:L55-L63` copies all five across, and the `Equals`
-//   override at `:L158-L165` compares the inherited `PermissionID` when
-//   de-duplicating a grant collection.
+//   already had. Grant rows remain an authoritative server-side concern. The
+//   current API produces catalogue definitions and bare keys, not module/tab
+//   grant DTOs, so this client declares NO grant wire shape, NO delimited string
+//   member and NO parser. Nothing downstream should reconstruct that format.
 
 // MIGRATION: two different permission vocabularies exist in this system and
 //   only ONE of them is modelled here. The first is the persisted key — the
@@ -134,7 +115,8 @@
 //   is expressed positively, by the presence of a row whose `allowAccess` is
 //   `true`. So there is no refusal member, no negated key value and no notion of
 //   a permission that subtracts, and adding one would invent a model the data
-//   does not have.
+//   does not have. The server evaluates its stored grant rows; the client models
+//   only the resulting catalogue vocabulary.
 
 /**
  * The DotNetNuke permission keys: the discrete access rights a catalogue entry
@@ -185,9 +167,9 @@
  * permission key.
  *
  * A GRANT IS A ROW, NOT A BIT. Each catalogue entry names exactly one key, and
- * access is granted by a separate {@link ModulePermission} or
- * {@link TabPermission} row. These values are NOT bit-mask flags: they must
- * never be combined, or-ed together or treated as a set packed into one value.
+ * the server evaluates separate stored module or page grant rows. These values
+ * are NOT bit-mask flags: they must never be combined, or-ed together or treated
+ * as a set packed into one value.
  *
  * As with everything in this file, a check against one of these values in the
  * browser is a rendering hint — the `hasPermission` directive is NEVER the sole
@@ -205,8 +187,8 @@ export type PermissionKey = 'VIEW' | 'EDIT' | 'READ' | 'WRITE';
  *
  * This is a DEFINITION, not a grant. It says "an access right called `EDIT`
  * exists for module definitions"; it does not say that anybody holds it. The
- * holding of a right is a {@link ModulePermission} or {@link TabPermission},
- * each of which extends this shape to add the role or user it was granted to.
+ * current API does not publish module- or page-grant rows, so no client wire type
+ * claims to extend this definition with a role or user.
  *
  * WHICH ENDPOINT RETURNS THIS SHAPE. The catalogue's own list endpoint
  * deliberately publishes a bare array of {@link PermissionKey} strings rather
@@ -282,253 +264,4 @@ export interface Permission {
    * compared, this is the label that is shown. Never compare against this.
    */
   readonly permissionName: string;
-}
-
-/**
- * A grant of one permission over one module placement, to either a role or a
- * single user.
- *
- * Extends {@link Permission}, so all five catalogue members — `permissionId`,
- * `permissionCode`, `moduleDefId`, `permissionKey` and `permissionName` — are
- * present on this shape in addition to the eight declared below. That mirrors
- * the legacy `ModulePermissionInfo`, which declared 8 members of its own and
- * inherited 5, for 13 in total
- * (`Library/Components/Security/Permissions/ModulePermission.vb:L28-L136`).
- *
- * ROLE GRANT OR USER GRANT — READ {@link userId} FIRST. A row is one or the
- * other, and {@link userId} is what distinguishes them. Everything else about
- * the row is interpreted in light of that single member, so a consumer that
- * ignores it will attribute a user's grant to a role and vice versa.
- *
- * A GRANT IS NOT A PERMISSION UNTIL {@link allowAccess} IS `true`. The presence
- * of a row is not sufficient — the flag is a separate, independent gate.
- */
-export interface ModulePermission extends Permission {
-  /**
-   * Identifier of this grant row, from `ModulePermission.ModulePermissionID`.
-   *
-   * `IDENTITY(1, 1)`, so no value collides with a sentinel. Opaque: it
-   * identifies the grant for update and delete, and carries no other meaning.
-   */
-  readonly modulePermissionId: number;
-
-  /**
-   * The module placement this grant applies to, from
-   * `ModulePermission.ModuleID`.
-   *
-   * `Modules.ModuleID` is `IDENTITY(0, 1)`, so `0` IS A REAL MODULE. Never test
-   * this for truthiness and never treat `0` as absent.
-   */
-  readonly moduleId: number;
-
-  /**
-   * The role the permission is granted to, from `ModulePermission.RoleID`.
-   *
-   * MEANINGFUL ONLY WHEN {@link userId} IS `null`. On a user grant this member
-   * carries no useful information and must be ignored.
-   *
-   * DELIBERATELY A PLAIN `number`, INCLUDING NEGATIVES AND ZERO — do not
-   * narrow it to a union or an enumeration, and do not filter negatives out.
-   * Two separate facts make that necessary. First, `Roles.RoleID` is
-   * `IDENTITY(0, 1)`, so `0` is an ordinary role. Second,
-   * `Library/Components/Shared/Globals.vb:L95-L98` reserves four NEGATIVE
-   * identifiers for roles that are not rows in the `Roles` table at all:
-   * `-1` for all users, `-2` for super users, `-3` for unauthenticated users
-   * and `-4` for no role. These are genuinely used as role identifiers — the
-   * portal-creation path passes the all-users value straight into a permission
-   * row at `PortalController.vb:L1416-L1418` — so a type that excluded them
-   * would make a legitimate grant unrepresentable. Note that only three of the
-   * four have a matching display name constant; the no-role value has none,
-   * which is one reason {@link roleName} can arrive empty.
-   *
-   * A note on nullability, because the layers differ and the difference is
-   * deliberate rather than an oversight. The database column and the server's
-   * internal entity both allow a null here, which is how the storage layer
-   * records "this row grants to a user, not a role". The legacy in-memory model
-   * never did: it initialised the field to the reserved no-role value `-4`
-   * (`ModulePermission.vb:L47`) and left it a plain integer. This member follows
-   * the legacy contract, so absence of a role arrives in-band as one of the
-   * reserved values rather than as a null. Use {@link userId} to decide which
-   * kind of grant you are looking at — never the presence or absence of this
-   * member.
-   */
-  readonly roleId: number;
-
-  /**
-   * Display name of the granted role, for rendering in a permissions grid.
-   *
-   * A convenience projection joined in by the server, not a stored column of
-   * the grant row. Arrives as `""` rather than as `null` when there is no role
-   * name to show — on a user grant, or for the reserved no-role identifier
-   * which has no display-name constant. A plain required `string` for exactly
-   * that reason; see the sentinel note in this file's header. Never compare
-   * against this to make a decision — it is a label, and {@link roleId} is the
-   * identity.
-   */
-  readonly roleName: string;
-
-  /**
-   * The user the permission is granted to, from `ModulePermission.UserID`, or
-   * `null` when this row grants to a role rather than to an individual.
-   *
-   * THIS MEMBER IS THE ROLE-VERSUS-USER DISCRIMINATOR, AND IT IS THE ONLY
-   * RELIABLE ONE. `null` means "this is a role grant" — read {@link roleId} and
-   * {@link roleName}. A number means "this is a user grant" — read
-   * {@link username} and {@link displayName}, and ignore {@link roleId}. The
-   * legacy code made exactly this branch, testing the identifier against its
-   * null sentinel at `ModulePermissionController.vb:L37` and again at `:L244`,
-   * with the tab equivalent at `TabPermissionController.vb:L42` and `:L219`.
-   *
-   * Compare with `=== null`, never with truthiness. `if (userId)` is wrong for
-   * two independent reasons: it treats a legitimate `0` as absent, and it reads
-   * as correct while being wrong, which is how this class of bug survives
-   * review. The habit matters more than this one field — `0` and `-1` are both
-   * real identifiers elsewhere in this model.
-   *
-   * One narrow caution. The legacy sentinel for an absent integer was `-1`, and
-   * this member is the one place in this file where that sentinel is translated
-   * into an honest `null`. Do NOT generalise that translation: `-1` is a valid
-   * portal identifier (`Portals.PortalID` is `IDENTITY(-1, 1)`) and a reserved
-   * role identifier, so `-1` elsewhere means what it says.
-   */
-  readonly userId: number | null;
-
-  /**
-   * Whether this row grants access, from `ModulePermission.AllowAccess`.
-   *
-   * NON-NULLABLE AND NON-OPTIONAL BY DESIGN — never widen this to
-   * `boolean | null` and never make it optional. In the legacy encoding
-   * `false` was itself the null sentinel for a boolean, so
-   * `Library/Components/Shared/Null.vb` reports a plain `false` as null
-   * (L227-L228) and a legacy `false` is therefore indistinguishable from
-   * "unknown". Admitting `null` here would import that ambiguity into new code,
-   * where it does not exist and cannot be resolved. The server keeps the same
-   * discipline from the other direction: its serialiser is explicitly forbidden
-   * from omitting default values, precisely so that every `false` is written
-   * out rather than silently dropped.
-   *
-   * A grant is only effective when this is `true`. The legacy checks tested it
-   * alongside the key rather than assuming it — `ModulePermissionController.vb`
-   * requires `AllowAccess = True` at `:L243` and again at `:L333`.
-   */
-  readonly allowAccess: boolean;
-
-  /**
-   * Login name of the granted user, for rendering in a permissions grid.
-   *
-   * MEANINGFUL ONLY WHEN {@link userId} IS NOT `null`. Like
-   * {@link roleName} this is a convenience projection rather than a stored
-   * column of the grant row, and it arrives as `""` rather than as `null` on a
-   * role grant. A label, not an identity — {@link userId} is the identity.
-   */
-  readonly username: string;
-
-  /**
-   * Display name of the granted user, preferred over {@link username} when
-   * showing the grant to a person.
-   *
-   * MEANINGFUL ONLY WHEN {@link userId} IS NOT `null`, and arrives as `""`
-   * rather than as `null` on a role grant or where the user has no display name
-   * recorded. A consumer rendering this should fall back to {@link username}
-   * when it is empty — and must test for the empty string, not for null.
-   */
-  readonly displayName: string;
-}
-
-/**
- * A grant of one permission over one page, to either a role or a single user.
- *
- * The page-scoped counterpart of {@link ModulePermission}, and structurally
- * identical to it apart from the two identifiers that name the scope. Extends
- * {@link Permission}, so all five catalogue members are present here too,
- * mirroring the legacy `TabPermissionInfo` — 8 own members plus 5 inherited, 13
- * in total (`Library/Components/Security/Permissions/TabPermission.vb:L29-L128`).
- *
- * "Tab" is the DotNetNuke term for a page in a portal's navigation hierarchy,
- * not a tab strip in a user interface. The legacy vocabulary is kept because the
- * table, the columns and the route parameters all use it, and renaming it here
- * would put this model out of step with every identifier it has to match.
- *
- * The two rules that govern {@link ModulePermission} govern this shape
- * identically: {@link userId} decides whether the row is a role grant or a user
- * grant, and {@link allowAccess} must be `true` before the row grants anything.
- */
-export interface TabPermission extends Permission {
-  /**
-   * Identifier of this grant row, from `TabPermission.TabPermissionID`.
-   *
-   * `IDENTITY(1, 1)`, so no value collides with a sentinel. Opaque: it
-   * identifies the grant for update and delete, and carries no other meaning.
-   */
-  readonly tabPermissionId: number;
-
-  /**
-   * The page this grant applies to, from `TabPermission.TabID`.
-   *
-   * `Tabs.TabID` is `IDENTITY(0, 1)`, so `0` IS A REAL PAGE. Never test this for
-   * truthiness and never treat `0` as absent.
-   */
-  readonly tabId: number;
-
-  /**
-   * The role the permission is granted to, from `TabPermission.RoleID`.
-   *
-   * MEANINGFUL ONLY WHEN {@link userId} IS `null`. A plain `number` that
-   * legitimately carries zero and the four reserved negative values; the full
-   * reasoning, including why this member is not nullable while the underlying
-   * column is, is given on {@link ModulePermission.roleId} and applies here
-   * unchanged. The legacy default was likewise the reserved no-role value
-   * (`TabPermission.vb:L48`).
-   */
-  readonly roleId: number;
-
-  /**
-   * Display name of the granted role, for rendering in a permissions grid.
-   *
-   * A server-joined convenience projection that arrives as `""` rather than as
-   * `null` when there is no role name to show. A label, not an identity.
-   */
-  readonly roleName: string;
-
-  /**
-   * The user the permission is granted to, from `TabPermission.UserID`, or
-   * `null` when this row grants to a role rather than to an individual.
-   *
-   * THIS MEMBER IS THE ROLE-VERSUS-USER DISCRIMINATOR. `null` means role grant;
-   * a number means user grant. The legacy code branched on exactly this at
-   * `TabPermissionController.vb:L42` and again at `:L219`. Compare with
-   * `=== null`, never with truthiness — see
-   * {@link ModulePermission.userId} for why the distinction is not pedantic.
-   */
-  readonly userId: number | null;
-
-  /**
-   * Whether this row grants access, from `TabPermission.AllowAccess`.
-   *
-   * NON-NULLABLE AND NON-OPTIONAL BY DESIGN, for the reason set out on
-   * {@link ModulePermission.allowAccess}: the legacy null sentinel for a
-   * boolean was `false` itself, so admitting `null` would import an ambiguity
-   * that does not exist here. A grant is effective only when this is `true`;
-   * `TabPermissionController.vb:L218` tests it alongside the key.
-   */
-  readonly allowAccess: boolean;
-
-  /**
-   * Login name of the granted user, for rendering in a permissions grid.
-   *
-   * MEANINGFUL ONLY WHEN {@link userId} IS NOT `null`; arrives as `""` rather
-   * than as `null` on a role grant.
-   */
-  readonly username: string;
-
-  /**
-   * Display name of the granted user, preferred over {@link username} when
-   * showing the grant to a person.
-   *
-   * MEANINGFUL ONLY WHEN {@link userId} IS NOT `null`; arrives as `""` rather
-   * than as `null` on a role grant or where no display name is recorded. Fall
-   * back to {@link username} when empty, testing for the empty string rather
-   * than for null.
-   */
-  readonly displayName: string;
 }

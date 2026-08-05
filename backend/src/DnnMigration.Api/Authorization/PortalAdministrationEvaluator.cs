@@ -228,6 +228,101 @@ internal sealed class PortalAdministrationEvaluator
     }
 
     /// <summary>
+    /// Reports whether the caller's token was issued for the tenant the request acts on.
+    /// </summary>
+    /// <param name="user">The caller.</param>
+    /// <param name="cancellationToken">Abandons the reads when the caller disconnects.</param>
+    /// <returns>
+    /// <see langword="true"/> when the caller presents no token at all, when the caller is an authoritative
+    /// host account, or when the token's portal claim and the arrival tenant both name the same portal the
+    /// request acts on; otherwise <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// SEC: THIS IS THE ONE PLACE THE THREE TENANT IDENTITIES ARE RECONCILED, and every policy that needs the
+    /// reconciliation asks here rather than repeating it. A request carries as many as three: the tenant the
+    /// caller ARRIVED through (the host name, resolved against the alias table), the tenant the route NAMES,
+    /// and the tenant the token was ISSUED for. <see cref="ResolveTargetPortalIdAsync"/> collapses the first
+    /// two - the route wins where it names one, because the route names the resource - and this member binds
+    /// the third to the result.
+    /// </para>
+    /// <para>
+    /// WITHOUT THIS BINDING, AUTHORITY TRAVELS BETWEEN TENANTS. An account may belong to several portals
+    /// (<c>dbo.Users</c> is installation-wide; <c>dbo.UserPortals</c> associates it with tenants), and roles
+    /// and permissions are per portal. A caller could therefore present a token minted in portal A - carrying
+    /// A's roles, A's permissions and A's grants - against a route naming portal B, and be judged on the
+    /// authority it holds in A. Binding the claim closes that for the whole life of the token rather than
+    /// only at issue time.
+    /// </para>
+    /// <para>
+    /// A HOST ACCOUNT IS THE ONE EXEMPTION, and it is read from the store, not from the token's super-user
+    /// claim, so an account demoted since sign-in loses the exemption at once. It has to be exempt: a host
+    /// account belongs to no tenant, so it has no portal claim that could ever equal a route's portal, and
+    /// every other layer of this solution already answers a host account affirmatively.
+    /// </para>
+    /// <para>
+    /// AN ABSENT CLAIM IS A REFUSAL, BUT AN ABSENT TOKEN IS NOT. Every token this installation mints carries
+    /// the portal claim, so an AUTHENTICATED caller without one is either foreign or a defect and neither
+    /// should confer authority; a request that names no target portal at all - no route segment and no
+    /// resolvable arrival tenant - is likewise refused, because there is then nothing for the claim to agree
+    /// with. An ANONYMOUS caller is the opposite case and is answered affirmatively: it holds no authority in
+    /// any tenant, so none can travel, and refusing it would withdraw the anonymous access the target tenant
+    /// itself published rather than close a hole.
+    /// </para>
+    /// </remarks>
+    internal async Task<bool> IsTenantBoundAsync(ClaimsPrincipal? user, CancellationToken cancellationToken)
+    {
+        if (user?.Identity?.IsAuthenticated != true)
+        {
+            // A CALLER WITH NO TOKEN CANNOT CONTRADICT THE TARGET TENANT, so there is nothing here to refuse.
+            // This member reconciles a token's portal against the tenant a request acts on; an anonymous
+            // caller presents no portal claim, no roles and no permissions, so it carries no authority from
+            // any tenant that could travel to another one - which is the entire harm this member exists to
+            // prevent. Whether such a caller may proceed is decided wholly by the grants the TARGET portal
+            // publishes to the pseudo-roles, which is how the legacy application served anonymous readers:
+            // Website/release.config registered the unauthenticated role name, and a page or module granting
+            // view to it, or to All Users, was readable without an account.
+            //
+            // ANSWERING false HERE WOULD BE A DENIAL OF SERVICE, NOT A HARDENING. It would make every
+            // permission-protected endpoint unreachable without a token regardless of what the tenant
+            // published, which is a behaviour change no finding asked for and which contradicts Rule T5. It is
+            // asserted against by the anonymous pseudo-role facts in the module and page suites.
+            return true;
+        }
+
+        if (await IsHostAccountAsync(user, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        if (await ResolveTargetPortalIdAsync(cancellationToken).ConfigureAwait(false) is not { } portalId)
+        {
+            return false;
+        }
+
+        if (AuthorizationClaims.ReadTokenPortalId(user) != portalId)
+        {
+            return false;
+        }
+
+        // SEC: AND THE TENANT THE CALLER ARRIVED THROUGH MUST BE THE SAME ONE. This is the third identity, and
+        // binding it is what closes the arrival-tenant bypass: a route naming portal B, reached under portal
+        // A's host name or under a host name that names no tenant at all, is not a request about B that
+        // happens to have taken an unusual path - it is a request whose only claim to B is the identifier it
+        // put in the route. Every tenant-scoped decision this API takes is therefore about one tenant reached
+        // one way.
+        //
+        // AN UNRESOLVED ARRIVAL TENANT IS A REFUSAL, not a pass. A host name that resolves to no portal cannot
+        // agree with anything, and treating "unknown" as "whatever the route said" is precisely the bypass.
+        // The host account exemption settled above is the deliberate escape hatch: an operator whose alias
+        // table is misconfigured signs in as a host account and repairs it, which is the one scenario that
+        // genuinely needs to work from an unconfigured host.
+        IPortalContext? arrival = await TryGetResolvedTenantAsync(cancellationToken).ConfigureAwait(false);
+
+        return arrival is not null && arrival.PortalId == portalId;
+    }
+
+    /// <summary>
     /// Reports whether the caller may administer the portal the request acts on.
     /// </summary>
     /// <param name="user">The caller.</param>
@@ -279,19 +374,12 @@ internal sealed class PortalAdministrationEvaluator
             return false;
         }
 
-        // SEC: THE TENANT THE TOKEN WAS MINTED FOR MUST BE THE TENANT THE REQUEST IS ABOUT. Three tenants
-        // are in play on any request - the one the caller arrived at, the one the credential was presented
-        // to, and the one the route names - and administering a portal requires them to agree. The route
-        // tenant is bound above; this binds the token tenant. Without it a caller who legitimately holds the
-        // administrator role in portal B could present a token minted in portal A and administer B through
-        // it, so authority granted in one tenant would travel into another for the whole life of an issued
-        // token. A host account is exempt because it belongs to no tenant, which is settled before this
-        // point, and this claim decides TENANCY only - the role membership below is still verified against
+        // SEC: THE TENANT THE TOKEN WAS MINTED FOR MUST BE THE TENANT THE REQUEST IS ABOUT. The rule itself
+        // lives on IsTenantBoundAsync, which every tenant-scoped policy in this API asks, so that the three
+        // tenant identities are reconciled in exactly one place and cannot be reconciled differently by two
+        // components. The host-account arm inside it is already settled above, so reaching it here costs one
+        // claim comparison. This decides TENANCY only - the role membership below is still verified against
         // stored state, so a demoted administrator is refused however recently the token was minted.
-        //
-        // A token carrying no readable portal claim cannot say which tenant it was presented to and is
-        // refused rather than given the benefit of the doubt: every token this installation mints carries
-        // the claim, so an absent one is either foreign or a defect, and neither should confer authority.
         if (AuthorizationClaims.ReadTokenPortalId(user) != portalId)
         {
             return false;

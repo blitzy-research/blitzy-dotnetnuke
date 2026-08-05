@@ -32,10 +32,8 @@
  * (`TabsController.cs:L183`), not the shared paging envelope declared in `paged-result.model.ts`, so
  * no shape below is wrapped in that envelope and no page-list alias is declared here - deliberately
  * unlike the portal and user models, each of which does declare one. A hierarchy is read whole
- * because a partially fetched tree cannot be indented correctly. Recorded divergence: the list
- * shape's own backend summary prose still describes itself as an element "carried inside the paged
- * envelope"; the controller signature is authoritative and contradicts that prose, and this file
- * follows the controller.
+ * because a partially fetched tree cannot be indented correctly. The controller signature is
+ * authoritative for that shape.
  *
  * MIGRATION: ZERO IS A REAL PAGE IDENTIFIER AND MINUS ONE IS A REAL TENANT IDENTIFIER. `dbo.Tabs` is
  * declared `[TabID] [int] IDENTITY (0, 1)` (`01.00.00.SqlDataProvider:L140`) and `dbo.Portals` is
@@ -48,16 +46,13 @@
  * literally `Return ""`).
  *
  * MIGRATION: A ROOT-LEVEL PAGE ARRIVES AS `parentId: null`, NEVER AS `-1`. The legacy property was a
- * non-nullable integer whose "no parent" value was the in-band `-1` sentinel: the constructor seeded
- * it that way (`TabInfo.vb:L91`), and the template importer reassigned the same sentinel at two
- * further sites - once for a freshly created page and once when a named parent could not be resolved
- * (`TabController.vb:L1032` and `:L1074`). The backend converts that sentinel to a genuine null at
- * the boundary and documents the conversion, because `-1` is simultaneously a legitimate tenant
- * identifier and the two were otherwise indistinguishable on the wire. The member is therefore typed
- * `number | null` below in order to mirror exactly what the wire carries - not to introduce a null of
- * this file's own invention. Test the root case with `parentId === null`. Never write `parentId > 0`,
- * never write a truthiness test, and never coalesce in either direction: `0` names a real parent
- * page, because the page key is seeded at zero.
+ * non-nullable integer whose "no parent" value was the in-band `-1` sentinel, seeded by the
+ * constructor (`TabInfo.vb:L91`) and reassigned by the template importer. The backend converts that
+ * sentinel to a genuine null at the boundary, because `-1` is simultaneously a legitimate tenant
+ * identifier and the two were otherwise indistinguishable on the wire; the member is typed
+ * `number | null` below to mirror exactly what the wire carries. Test the root case with
+ * `parentId === null` - never `parentId > 0`, never a truthiness test, and never a coalesce in
+ * either direction, because `0` names a real parent page.
  *
  * MIGRATION: AN UNSET DATE ARRIVES AS `null`, NEVER AS THE MINIMUM INSTANT. The legacy entity
  * declared both date members non-nullable and seeded them with the null-date sentinel
@@ -96,12 +91,11 @@
  * MIGRATION: the two semicolon-delimited legacy role strings are abandoned rather than parsed. The
  * legacy entity carried access twice over - once structurally, and once as a pair of joined display
  * strings that discarded every attribute except the role name. Neither string reaches any shape
- * below. The structured page-permission contract lives in `permission.model.ts`, which models a
- * first-class nullable user reference alongside an explicit allow flag so that the several ways a
- * grant can be withheld stay distinguishable. No shape below carries permissions in any form: all
- * three backend page shapes declare none, and this file mirrors what they declare rather than what
- * the legacy entity happened to hold. That was verified rather than assumed, which is why nothing is
- * imported here.
+ * below. The current permission API publishes catalogue definitions and bare keys but no page-grant
+ * DTO, so `permission.model.ts` deliberately declares no grant shape either. No shape below carries
+ * permissions in any form: all three backend page shapes declare none, and this file mirrors what
+ * they declare rather than what the legacy entity happened to hold. That was verified rather than
+ * assumed, which is why nothing is imported here.
  *
  * MIGRATION: every member below is always present on the wire, so not one of them is declared
  * optional. The API serialises with an ignore condition of `Never` and a camel-case naming policy
@@ -531,21 +525,21 @@ export interface UpdateTabRequest {
    * the backend validator reproduces it as a non-empty rule rather than a non-null one, so that a
    * whitespace-only name is refused just as an absent one is.
    */
-  tabName: string;
+  readonly tabName: string;
 
   /**
    * The browser-window title, captioned "Page Title", or `null` to clear it.
    *
    * At most 200 characters.
    */
-  title: string | null;
+  readonly title: string | null;
 
   /**
    * The page description, or `null` to clear it.
    *
    * At most 500 characters.
    */
-  description: string | null;
+  readonly description: string | null;
 
   /**
    * The comma-separated search keywords, captioned "Keywords", or `null` to clear them.
@@ -554,7 +548,7 @@ export interface UpdateTabRequest {
    * interior capital, and the backend maps this member onto that column, so the wire name is
    * `keywords`.
    */
-  keywords: string | null;
+  readonly keywords: string | null;
 
   /**
    * The page this one should hang beneath, or `null` to make it a root-level page.
@@ -577,7 +571,7 @@ export interface UpdateTabRequest {
    * preserved; how the failure is surfaced is a service concern, and this shape neither detects nor
    * reports it.
    */
-  parentId: number | null;
+  readonly parentId: number | null;
 
   /**
    * Whether the page should appear in the navigation menu, captioned "Include In Menu".
@@ -585,7 +579,7 @@ export interface UpdateTabRequest {
    * Menu inclusion only. Note the consequence of complete-replacement semantics: no default is
    * supplied, so omitting the field binds it to false and drops the page out of the menu.
    */
-  isVisible: boolean;
+  readonly isVisible: boolean;
 
   /**
    * Whether the page should be disabled, captioned "Disabled".
@@ -593,7 +587,7 @@ export interface UpdateTabRequest {
    * The server ignores this for the five protected system pages, preserving the legacy behaviour
    * described on the detail shape.
    */
-  disableLink: boolean;
+  readonly disableLink: boolean;
 
   /**
    * The menu icon reference, captioned "Icon", or `null` to clear it.
@@ -601,26 +595,18 @@ export interface UpdateTabRequest {
    * At most 100 characters, and the backend additionally refuses a value that escapes its permitted
    * location, so a caller must submit a contained reference rather than an arbitrary path.
    */
-  iconFile: string | null;
+  readonly iconFile: string | null;
 
-  /**
-   * The opaque skin token to store against this page, captioned "Page Skin", or `null` to clear it.
-   *
-   * MIGRATION: carried on the write surface because the terminal update procedure persists this
-   * column, so omitting it would silently discard a stored value on every save. It remains INERT in
-   * this target: the value is stored verbatim and nothing resolves, loads or renders it. At most 200
-   * characters.
-   */
-  skinSrc: string | null;
-
-  /**
-   * The opaque container token to store against the modules on this page, captioned "Page Container",
-   * or `null` to clear it.
-   *
-   * MIGRATION: carried for the same reason as the skin token, and INERT for the same reason. At most
-   * 200 characters.
-   */
-  containerSrc: string | null;
+  // MIGRATION: NO `skinSrc` AND NO `containerSrc` ON THIS REQUEST. Both were declared here, mirroring a
+  //   server contract that carried them, on the reasoning that a column the terminal procedure persists
+  //   must be settable or a save would discard it. That reasoning is subordinate to an explicit
+  //   exclusion: skinning and containers are out of scope for this migration, and a member that a client
+  //   can set is not an inert one — declaring it made this the supported way to change a page's skin and
+  //   published it as part of the page-edit contract. Both columns are still READABLE, on
+  //   {@link TabDetail}, so a stored choice remains observable; it is simply no longer settable through
+  //   this API, and the server's projection now leaves both columns exactly as stored. That is strictly
+  //   safer than what it replaced: because this body is a whole-row replacement, a caller that omitted
+  //   either member previously BLANKED an administrator's stored token on every unrelated edit.
 
   /**
    * The navigation target when the page should act as a link to another resource, captioned
@@ -630,7 +616,7 @@ export interface UpdateTabRequest {
    * character, on the ground that no single-line form field could ever have submitted one even though
    * the column could store it.
    */
-  url: string | null;
+  readonly url: string | null;
 
   /**
    * The instant from which the page becomes available as an ISO 8601 string, or `null` for no start
@@ -641,7 +627,7 @@ export interface UpdateTabRequest {
    * storable by the column, which begins centuries later than the platform date type does; that is a
    * representability check and not a business rule, and no ordering against the end date is imposed.
    */
-  startDate: string | null;
+  readonly startDate: string | null;
 
   /**
    * The instant after which the page ceases to be available as an ISO 8601 string, or `null` for no
@@ -650,7 +636,7 @@ export interface UpdateTabRequest {
    * MIGRATION: as with the start date, send `null` rather than the minimum instant to mean "unset".
    * The two dates are never compared against one another, here or on the server.
    */
-  endDate: string | null;
+  readonly endDate: string | null;
 
   /**
    * The automatic refresh interval in SECONDS, or `null` for no automatic refresh.
@@ -659,19 +645,19 @@ export interface UpdateTabRequest {
    * no validation rule whatsoever and the backend invents none, so a caller is responsible for
    * submitting a sensible interval.
    */
-  refreshInterval: number | null;
+  readonly refreshInterval: number | null;
 
   /**
    * Raw markup to inject into the document head, captioned "Page Header Tags", or `null` to clear it.
    *
    * Stored verbatim and never sanitised by the server. At most 500 characters.
    */
-  pageHeadText: string | null;
+  readonly pageHeadText: string | null;
 
   /**
    * Whether the page must be served over a secure connection, captioned "Secure?".
    */
-  isSecure: boolean;
+  readonly isSecure: boolean;
 
   /**
    * Whether the page should sit in the recycle bin: `true` soft-deletes it, `false` restores it.
@@ -695,6 +681,5 @@ export interface UpdateTabRequest {
    * restoration was blocked while the page's own parent remained deleted, and deletion was refused
    * outright both for the five protected system pages and for a page that still had descendants.
    */
-  isDeleted: boolean;
+  readonly isDeleted: boolean;
 }
-

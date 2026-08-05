@@ -8,28 +8,21 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations;
 //
 // This file records the twenty-one-entity model as it stands AFTER the baseline migration beside it
 // has been applied. Entity Framework Core diffs the next migration against exactly this record, so
-// the file is load-bearing in a way nothing exercises directly: an inaccuracy here fails no build
-// and no test, it silently corrupts every migration generated afterwards.
+// an inaccuracy here corrupts every migration generated afterwards.
 //
-// The body below is the target model recorded by 20260730120000_InitialCreate.Designer.cs,
-// reproduced without alteration. That is not duplication for its own sake: the baseline is the only
-// migration in this folder, so the model after it is applied is by definition the model it targets,
-// and the two records must never be allowed to drift. Equality was established against the context
-// itself rather than by eye - the tooling's pending-model-changes check reports no difference
-// between this record and the model DnnDbContext actually builds from the twenty-one configuration
-// classes under Persistence/Configurations.
+// The body below is generated code and must stay that way: it must remain semantically identical
+// both to the target model recorded by 20260730120000_InitialCreate.Designer.cs and to the model
+// DnnDbContext builds from the twenty-one IEntityTypeConfiguration classes under
+// Persistence/Configurations. The baseline is the only migration in this folder, so the model after
+// it is applied is by definition the model it targets, and the two records must not drift. If a
+// configuration changes, REGENERATE rather than hand-edit.
 //
-// Consequently this file is generated, not hand-authored, and must not be hand-edited. If a
-// configuration changes, REGENERATE: editing the record away from what the context produces is the
-// single failure mode here that nothing downstream would catch.
-//
-// It carries no data-definition language and no migration operation of any kind. No
-// operation-builder parameter is in scope anywhere in the file, and the apply and revert methods
-// belong to the sibling migration, which declares both of them empty on purpose. The full reasoning
-// lives there; the short form is that the terminal DotNetNuke schema depends on membership objects
-// installed by an external tool, which the eighty-eight upgrade scripts only ever amend and never
-// originate, so a generated schema could not reproduce a valid database even in principle. AAP
-// Rule T4, "Schema is immutable".
+// It carries no data-definition language and no migration operation of any kind: the apply and
+// revert methods belong to the sibling migration, which declares both of them empty on purpose. The
+// full reasoning lives there; the short form is that the terminal DotNetNuke schema depends on
+// membership objects installed by an external tool, which the eighty-eight upgrade scripts only ever
+// amend and never originate, so a generated schema could not reproduce a valid database even in
+// principle. AAP Rule T4, "Schema is immutable".
 //
 // Three properties of the record look like mistakes and are not. First, six legacy table names are
 // singular while their siblings are plural, and the entity holding profile values does not share the
@@ -40,11 +33,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations;
 // generated model code, so a converted property is recorded in its STORE-facing form instead - the
 // two role billing-cycle properties as nullable one-character ANSI strings, and the permission key
 // as a required fifty-character ANSI string. That is the generator's behaviour, not an omission.
-//
-// Like its sibling, this comment is deliberately free of the identifiers this folder's audit checks
-// treat as red flags, so that those checks stay meaningful. Naming a schema-altering operation or a
-// legacy provider setting even in prose would trip a check whose entire purpose is to prove that no
-// such call appears here.
 [DbContext(typeof(DnnDbContext))]
 internal partial class DnnDbContextModelSnapshot : ModelSnapshot
 {
@@ -548,7 +536,7 @@ internal partial class DnnDbContextModelSnapshot : ModelSnapshot
                     .HasColumnType("nvarchar(128)")
                     .HasColumnName("PortalName");
 
-                b.Property<string>("ProcessorPassword")
+                b.Property<string>("ProcessorCredentialReference")
                     .HasMaxLength(50)
                     .HasColumnType("nvarchar(50)")
                     .HasColumnName("ProcessorPassword");

@@ -12,14 +12,10 @@ namespace DnnMigration.Domain.Abstractions.Services;
 // any holder of the legacy sources could read every stored password - which is why neither
 // mechanism is reproduced and why no key material, and no pointer to it, appears here.
 //
-// MIGRATION: a one-way digest cannot check a credential stored under the legacy reversible
-// scheme, and THERE IS NO LAZY UPGRADE THAT WORKS AROUND THAT. An earlier revision of this note
-// said existing rows migrate on the first successful legacy sign-in with a reset as the
-// fallback; that description was false, because a successful sign-in against a legacy stored
-// value is the very thing this contract cannot perform - it declares no legacy verifier and no
-// implementation of it holds one. An administrative reset is therefore the ONLY path by which a
-// pre-existing credential becomes usable, and it is a deliberate functional reduction rather
-// than a fallback.
+// MIGRATION: this one-way contract deliberately does not interpret legacy representations.
+// ILegacyCredentialVerifier owns the bounded, opt-in comparison of clear, SHA-1 and encrypted
+// membership rows. When that isolated verifier accepts a credential, AuthService immediately uses
+// this contract to create the BCrypt replacement; administrative reset remains the fallback.
 //
 // MIGRATION: NeedsRehash exists for the upgrade that IS supported, which is a different
 // operation entirely: raising the cost of a value this scheme itself produced, once the current
@@ -103,10 +99,10 @@ public interface IPasswordHasher
     /// migration notes on this file.
     /// </returns>
     /// <remarks>
-    /// It does <b>not</b> report that a value was produced by the legacy reversible scheme, and an
-    /// implementation must not attempt to: a legacy value cannot be verified here at all, so a
-    /// <see langword="true"/> answer about one would promise an upgrade that could never be
-    /// performed. Legacy values are dealt with by administrative reset, never by this member.
+    /// It does <b>not</b> report that a value was produced by a legacy scheme, and an implementation
+    /// must not attempt to. Legacy recognition belongs to <see cref="ILegacyCredentialVerifier"/>;
+    /// an accepted legacy value forces replacement independently of this predicate. This member is
+    /// only the cost-upgrade check for a BCrypt representation this contract already owns.
     /// </remarks>
     bool NeedsRehash(string passwordHash);
 

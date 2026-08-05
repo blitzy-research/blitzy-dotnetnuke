@@ -528,12 +528,30 @@ public interface IRoleRepository
     /// Stages a new role assignment for insertion.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Realises membership <c>DataProvider.vb:L112 AddUserRole(PortalID, UserId, RoleId,
     /// EffectiveDate, ExpiryDate)</c>. The portal argument is dropped for the reason given in the
     /// migration note above, and the remaining four values are carried by the entity. Both dates stay
     /// nullable, so an assignment with no expiry is stored as a null rather than as a far-future date.
     /// Nothing is written until <see cref="IUnitOfWork.SaveChangesAsync"/> runs, after which
     /// <see cref="UserRole.UserRoleId"/> holds the generated key.
+    /// </para>
+    /// <para>
+    /// EVERY VALUE ON THE ASSIGNMENT IS STAGED EXACTLY AS SUPPLIED, and an implementer must not amend
+    /// one. The caller states the final effective date, the final expiry and the final trial-used flag;
+    /// deriving a term from the role's billing or trial columns, clearing an effective date that has
+    /// passed, or reinterpreting a particular instant as "no bound" are all subscription rules, and an
+    /// implementation that applied them would be a second, invisible copy of rules the Application layer
+    /// already owns - two copies that agree until one is amended and then disagree on precisely the case
+    /// that prompted the amendment.
+    /// </para>
+    /// <para>
+    /// "No bound" is therefore <see langword="null"/> and nothing else. The legacy absent-date marker
+    /// <c>Null.NullDate</c> (<c>DateTime.MinValue</c>) is unstorable in these columns - both are SQL
+    /// Server <c>datetime</c>, whose range begins at 1753-01-01 - so a caller translates it to a null
+    /// before staging, and an implementer passing it through is refused loudly by the store rather than
+    /// quietly reinterpreted.
+    /// </para>
     /// </remarks>
     /// <param name="userRole">The assignment to insert.</param>
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
@@ -544,11 +562,20 @@ public interface IRoleRepository
     /// Stages an existing role assignment's modifications for update.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Realises membership <c>DataProvider.vb:L113 UpdateUserRole(UserRoleId, EffectiveDate,
     /// ExpiryDate)</c>. The legacy member could rewrite only the two dates; passing the entity also
     /// lets the trial-used flag be persisted, which the legacy cancellation path depended on when it
     /// back-dated an expiry in order to retain the fact that a trial had been consumed. Nothing is
     /// written until <see cref="IUnitOfWork.SaveChangesAsync"/> runs.
+    /// </para>
+    /// <para>
+    /// As on <see cref="AddUserRoleAsync"/>, every value is staged exactly as supplied. An expiry the
+    /// caller states is persisted whether it lies in the future or in the past - which is what keeps the
+    /// expire-rather-than-delete cancellation described on <see cref="DeleteUserRoleAsync"/> reachable at
+    /// all, since an implementer that re-derived the value would silently undo the back-dating the caller
+    /// had just computed.
+    /// </para>
     /// </remarks>
     /// <param name="userRole">The assignment whose stored row is to be brought into line with it.</param>
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
@@ -569,6 +596,13 @@ public interface IRoleRepository
     /// had been consumed, so that the consumed-trial fact survived; a caller reproducing that
     /// behaviour uses <see cref="UpdateUserRoleAsync"/>. Nothing is written until
     /// <see cref="IUnitOfWork.SaveChangesAsync"/> runs.
+    /// </para>
+    /// <para>
+    /// THE CHOICE BETWEEN THE TWO IS THE CALLER'S, AND THIS MEMBER IS UNCONDITIONAL. An implementer must
+    /// not test the role's fee and the assignment's trial-used flag and quietly expire the row instead:
+    /// that test is a paid-membership rule, the fee is not even a column on the assignment, and a caller
+    /// that asked for removal must not be answered with a retention it cannot observe. A caller reaches
+    /// this member only having decided that deletion is what it wants.
     /// </para>
     /// </remarks>
     /// <param name="userId">The account whose assignment is to be removed.</param>

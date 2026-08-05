@@ -360,16 +360,16 @@ export interface ApiMeta {
  * remove, so failure never travels in this shape — `problem-details.model.ts` is the
  * only wire error contract.
  *
- * ## Not currently returned by any endpoint
+ * ## Returned by EVERY single-payload endpoint
  *
- * Verified against the running server: a single-item endpoint serialises its data
- * transfer contract directly rather than wrapping it, so `data` is never a key on a
- * response body. {@link ApiMeta} is a different matter — it IS on the wire, nested
- * under {@link PagedResult.meta} on every collection response. This declaration
- * exists because the server declares the envelope and this module is the only place
- * on the client that can host it, so an endpoint that adopts it later has a type
- * waiting rather than provoking one to be invented ad hoc. Do not type a response as
- * this envelope unless you have confirmed the endpoint in hand actually returns it.
+ * MIGRATION: an earlier revision of this comment stated that no endpoint returns this
+ * envelope and that a single-item endpoint serialises its contract directly. That
+ * stopped being true when the server moved the envelope into its one shared result
+ * translator, and the stale claim mattered: it was the justification for typing
+ * {@link ApiResponse.meta} as optional. Re-measured against a running server —
+ * `POST /api/v1/auth/login` answers with top-level keys `["data", "meta"]` — and the
+ * server's own published schema agrees, `SuccessEnvelopeContractTests` asserting that
+ * every single-payload operation declares exactly `data` and `meta`.
  *
  * @typeParam T The transported payload contract. Always a data transfer contract and
  * never a persisted entity. Deliberately unconstrained, so a single item, a
@@ -381,14 +381,30 @@ export interface ApiResponse<T> {
   readonly data: T;
 
   /**
-   * The metadata describing the response, or absent when the response has no page to
-   * describe: populated for a collection, absent for a single item.
+   * The metadata describing the response, or `null` when the response has no page to
+   * describe — which is every response that uses this envelope, because the envelope
+   * is what a SINGLE-payload endpoint returns.
    *
-   * Optional by design — a scalar payload genuinely has no total, page index or page
-   * size, and reporting zeroes for them would be indistinguishable from a real, empty
-   * first page.
+   * PRESENT AND NULLABLE, NOT OPTIONAL. The member is always on the wire and its
+   * value is `null`; it never goes missing. That follows from the server's serializer
+   * policy, which writes every declared member including one holding null — absence is
+   * expressed by the VALUE being null, never by the member disappearing — and it was
+   * confirmed against a running server rather than inferred.
+   *
+   * MIGRATION: this was declared `meta?: ApiMeta` — optional and non-null — which is
+   * the one shape the wire never produces. The distinction is not academic under
+   * `strictNullChecks`: the compiled type promised that reading it yields `ApiMeta` or
+   * `undefined`, so a consumer narrowing with `=== undefined` took the wrong branch for
+   * the `null` that actually arrives, and a consumer that had proved the member present
+   * would have been handed `null` where the type guaranteed an object. Declaring it
+   * required and nullable makes the compiler force the one check the wire actually
+   * requires.
+   *
+   * `null` rather than zeroes is deliberate on the server's side too: a scalar payload
+   * genuinely has no total, page index or page size, and reporting zeroes for them would
+   * be indistinguishable from a real, empty first page.
    */
-  readonly meta?: ApiMeta;
+  readonly meta: ApiMeta | null;
 }
 
 /**
@@ -396,18 +412,32 @@ export interface ApiResponse<T> {
  * deletion that reports only that it happened.
  *
  * The payload-free companion to {@link ApiResponse}, declared beside it so the two
- * arities of one contract are read together, and subject to the same caveat: no endpoint
- * returns this envelope at present. The two are deliberately separate
- * rather than related by inheritance: a payload-bearing envelope assigned to a
- * payload-free declared type would lose its payload silently.
+ * arities of one contract are read together. The two are deliberately separate rather
+ * than related by inheritance: a payload-bearing envelope assigned to a payload-free
+ * declared type would lose its payload silently.
+ *
+ * UNLIKE {@link ApiResponse}, THIS ARITY GENUINELY HAS NO PRODUCER, and `meta` is
+ * therefore left OPTIONAL rather than being made present-and-nullable to match its
+ * sibling. The reason is structural rather than an oversight: a payload-free response
+ * is what an endpoint answers when it has nothing to send, which in this API is a
+ * `204`, and `204` forbids a body — so there is nothing for the server to write this
+ * shape into. `AuthService.logout` accordingly types its call as bare `void`. The
+ * declaration is kept because the server declares the arity, and its `meta` stays
+ * optional because no observed body constrains it; the moment an endpoint does
+ * produce one, that observation should decide the member and not this note.
  */
 export interface EmptyApiResponse {
   /**
-   * The metadata describing the response, or absent when there is no page to
-   * describe — the usual case for this form. Present for the endpoint that has a
-   * total to report but no records to return with it.
+   * The metadata describing the response, or `null` when there is no page to
+   * describe — the usual case for this form. Populated for a response that has a total
+   * to report but no records to return with it.
+   *
+   * Present and nullable for the same reason as {@link ApiResponse.meta}: the server
+   * writes every declared member, so absence arrives as `null` rather than as a missing
+   * key. Declared consistently with its payload-bearing twin so the two arities of one
+   * contract cannot disagree about the member they share.
    */
-  readonly meta?: ApiMeta;
+  readonly meta: ApiMeta | null;
 }
 
 /**

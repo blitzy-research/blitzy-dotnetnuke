@@ -14,17 +14,17 @@ namespace DnnMigration.Api.Controllers;
 
 /// <summary>
 /// The role resource - DotNetNuke's permission grouping - together with the membership that joins an
-/// account to a role, exposed at <c>/api/v1/roles</c> and <c>/api/v1/roles/{roleId}/users</c>, and
-/// additionally at <c>/api/v1/portals/{portalId}/roles</c> and
-/// <c>/api/v1/portals/{portalId}/roles/{roleId}/users</c>.
+/// account to a role, exposed at <c>/api/v1/roles</c>,
+/// <c>/api/v1/roles/{roleId}/users</c> and the account-side
+/// <c>/api/v1/users/{userId}/roles</c> projection.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <strong>What this type does, and the complete list.</strong> It binds a request, delegates to
 /// <see cref="IRoleService"/>, and translates the returned outcome into a status code. Nothing else. No
 /// billing or trial expiry date is computed here, no name is checked for uniqueness, no administrator
-/// account is shielded from being date-limited, no cache is evicted, no audit record is written and no
-/// notification is sent. Every one of those rules is real and every one of them lives in
+/// account is shielded from being date-limited, no cache is evicted, no audit record is written directly
+/// by this controller and no notification is sent. Every one of those rules is real and every one lives in
 /// <c>Application/Services/RoleService.cs</c>, because a rule implemented in a controller applies only
 /// to callers arriving over HTTP and silently fails to apply to every other caller - a background job, a
 /// console tool, a unit test - while a rule in the service applies to all of them and is the thing the
@@ -214,14 +214,12 @@ namespace DnnMigration.Api.Controllers;
 /// </para>
 /// <para>
 /// A distinction worth stating plainly, because it is easy to misread: the tenant the policy evaluates
-/// is the one the REQUEST resolves to, from the host header through the portal alias table, and it is
-/// not the <c>portalId</c> in the path. The routed identifier is the subject the application contract
-/// scopes its work to; the resolved tenant is who the caller is administering. This file performs
-/// neither resolution - the alias lookup belongs to the resolution middleware, which is the one place
-/// in the project permitted to reach for the ambient HTTP context, and the scoping belongs to the
-/// service. The practical consequence for a caller is that a request must arrive on a host that has an
-/// alias row, or the tenant cannot be resolved and the policy denies for want of a portal rather than
-/// for want of a role.
+/// is the one the REQUEST resolves to, from the host header through the portal alias table. There is no
+/// portal identifier in this flat route family and therefore no second tenant identity to reconcile.
+/// This file performs neither resolution nor scoping: the alias lookup belongs to the resolution
+/// middleware, and the scoped identifier is passed to the application service. The practical consequence
+/// is that a request must arrive on a host that has an alias row, or the tenant cannot be resolved and the
+/// policy denies for want of a portal rather than for want of a role.
 /// </para>
 /// <para>
 /// The two are nevertheless RECONCILED, and by the policy rather than by anything written here: a caller
@@ -230,12 +228,11 @@ namespace DnnMigration.Api.Controllers;
 /// reconciliation is what keeps a routed identifier from becoming a way to read another tenant's roles.
 /// </para>
 /// <para>
-/// <strong>Paging and searching.</strong> The page index is zero-based, so index 0 is the first page,
-/// and a free-text filter matches from the start of the value rather than anywhere within it. Both are
-/// the legacy data layer's own conventions rather than new ones, and both are fixed by the envelope and
-/// the request contract this file binds; restating or converting them here would give the API two
-/// answers to one question. The listing of the roles an account holds is deliberately unpaged, because
-/// the read it replaces was.
+/// <strong>Paging and searching.</strong> The page index is zero-based, so index 0 is the first page -
+/// the legacy data layer's own convention rather than a new one, and fixed by the envelope and the
+/// request contract this file binds. A free-text filter is a case-insensitive SUBSTRING match, so a
+/// value matches wherever the text occurs within it and not only at its start. The listing of the roles
+/// an account holds is deliberately unpaged, because the read it replaces was.
 /// </para>
 /// <para>
 /// <strong>What this resource deliberately does not expose.</strong> There is no role-group create,
@@ -253,23 +250,11 @@ namespace DnnMigration.Api.Controllers;
 /// this file binds carries it.
 /// </para>
 /// <para>
-/// <strong>Two addresses, one implementation.</strong> The specified addresses for this resource are the
-/// flat <c>/api/v1/roles</c> and <c>/api/v1/roles/{roleId}/users</c>, and each action declares its flat
-/// template first because that is the canonical one. The nested
-/// <c>/api/v1/portals/{portalId}/roles...</c> forms are retained alongside them, and both are served by the
-/// same nine actions - no second controller, no duplicated body, no forwarding action. They differ in
-/// exactly one respect, which is where the tenant comes from. On a FLAT address it is the tenant the
-/// request resolved to, and a caller cannot name another one because there is no parameter through which
-/// to name it, so the isolation is structural. On a NESTED address the routed identifier is reconciled
-/// against the resolved tenant by the policy, as described above. The identifier is bound
-/// <c>[FromRoute]</c> and never from the query string, and that is load-bearing rather than tidy: a
-/// query-bound tenant would travel on the flat addresses too, where the policy has no route value to
-/// reconcile it against, and would reopen precisely the hole the reconciliation closes.
-/// </para>
-/// <para>
-/// The nested addresses are also what make a host account able to administer a NAMED tenant's roles. A
-/// request resolves to whichever portal's alias it arrived on and an HTTP client cannot forge another
-/// tenant's host name, so removing them would leave cross-tenant administration with no address at all.
+/// <strong>One canonical address.</strong> The role resource is exposed only beneath
+/// <c>/api/v1/roles</c> (plus the account-side <c>/api/v1/users/{userId}/roles</c> projection). The tenant
+/// is the portal resolved from the request host, so a caller cannot name a different portal in a route or
+/// query parameter. A host account administers another tenant by addressing that tenant's own alias, not
+/// through a second nested identity for the same role resource.
 /// </para>
 /// <para>
 /// <strong>Why there are nine actions and not eight.</strong> The extra one is the account-side projection
@@ -289,7 +274,7 @@ namespace DnnMigration.Api.Controllers;
 /// outcome and is translated by status code, and an unexpected exception is left to surface and is
 /// translated once, at the outermost boundary. A per-action validation call would have a silent failure
 /// mode, because an endpoint whose author forgot the call looks exactly like one with no rules declared
-/// against it - which is precisely what this file previously did for two of its four write paths.
+/// against it.
 /// </para>
 /// </remarks>
 [ApiController]
@@ -299,20 +284,6 @@ namespace DnnMigration.Api.Controllers;
 [Authorize(Policy = PolicyNames.PortalAdministrator)]
 public sealed class RolesController : ControllerBase
 {
-    /// <summary>The application contract that owns roles, role groups and membership.</summary>
-    /// <remarks>
-    /// The only service dependency, and it is an application-layer interface. There is no repository, no
-    /// persistence context, no unit of work, no cache, no clock and no HTTP context accessor here. The
-    /// first three are unreachable by ACCESSIBILITY rather than by the reference graph: this project does
-    /// reference <c>DnnMigration.Infrastructure</c>, because composition must register its services, but
-    /// <c>DnnDbContext</c>, the unit of work and every repository implementation are
-    /// <see langword="internal"/> to that assembly, so naming one here would not compile. The tenant
-    /// holder beside it is not a fourth kind of thing: it reads a value the middleware already resolved
-    /// and performs no lookup of its own.
-    /// The acting user is not injected either: the legacy assignment call passed the operator's
-    /// identifier as its sixth argument (<c>SecurityRoles.ascx.vb:L542</c>), and that fact is now read
-    /// from the current-user abstraction inside the service, so it cannot be spoofed by a request body.
-    /// </remarks>
     /// <summary>
     /// Failure code carried as the problem type when the request reached this action without a tenant.
     /// </summary>
@@ -334,6 +305,20 @@ public sealed class RolesController : ControllerBase
     /// </remarks>
     private const string TenantUnresolvedCode = "portal.tenant_unresolved";
 
+    /// <summary>The application contract that owns roles, role groups and membership.</summary>
+    /// <remarks>
+    /// The only service dependency, and it is an application-layer interface. There is no repository, no
+    /// persistence context, no unit of work, no cache, no clock and no HTTP context accessor here. The
+    /// first three are unreachable by ACCESSIBILITY rather than by the reference graph: this project does
+    /// reference <c>DnnMigration.Infrastructure</c>, because composition must register its services, but
+    /// <c>DnnDbContext</c>, the unit of work and every repository implementation are
+    /// <see langword="internal"/> to that assembly, so naming one here would not compile. The tenant
+    /// holder beside it is not a fourth kind of thing: it reads a value the middleware already resolved
+    /// and performs no lookup of its own.
+    /// The acting user is not injected either: the legacy assignment call passed the operator's
+    /// identifier as its sixth argument (<c>SecurityRoles.ascx.vb:L542</c>), and that fact is now read
+    /// from the current-user abstraction inside the service, so it cannot be spoofed by a request body.
+    /// </remarks>
     private readonly IRoleService _roles;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -360,71 +345,42 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>
-    /// Chooses the tenant an action acts on: the routed identifier when a nested address was used, and
-    /// otherwise the tenant the request resolved to.
+    /// Returns the tenant the request resolved to.
     /// </summary>
-    /// <param name="routedPortalId">
-    /// The identifier bound from the route, or <see langword="null"/> when a flat address was used.
-    /// </param>
     /// <returns>
-    /// The tenant identifier, or <see langword="null"/> when a flat address was used and the request
-    /// resolved to no tenant at all.
+    /// The tenant identifier, or <see langword="null"/> when the request resolved to no tenant.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// The routed value wins when present, because on that address it IS the subject of the request and the
-    /// portal-administrator policy has already reconciled it against the resolved tenant. It is forwarded
-    /// exactly as bound: no lower bound is imposed and no value is treated as "absent", because the portal
-    /// table is <c>IDENTITY (-1, 1)</c> and -1 is therefore a real portal rather than the legacy
-    /// missing-integer sentinel.
-    /// </para>
     /// <para>
     /// The holder throws rather than yielding a placeholder tenant, so resolution is tested before the
     /// tenant is read, and the null answer here is a precondition rather than a state a caller can steer
     /// into.
     /// </para>
     /// <para>
-    /// MIGRATION: WHAT REFUSES FIRST IS THE TENANT-RESOLUTION MIDDLEWARE, NOT THE CLASS-LEVEL POLICY, and an
-    /// earlier revision of this block credited the policy. Measured both ways against a running instance: a
-    /// portal administrator addressing a host name with no alias row is refused by the policy with
-    /// <c>auth.not_permitted</c>, but a superuser passes that policy from any host name whatsoever, because
-    /// the policy is anchored to the portal named in the route and the unscoped route names none. That
-    /// request is refused by the middleware instead, with <c>portal.tenant_unresolved</c>. Either way the
+    /// MIGRATION: WHAT REFUSES FIRST DEPENDS ON THE CALLER. The tenant-resolution middleware records an
+    /// unresolved host and continues. A portal administrator is then refused by the policy with
+    /// <c>auth.not_permitted</c>; a superuser passes that policy because host authority is installation-wide
+    /// and is refused by this guard with <c>portal.tenant_unresolved</c>. Either way the
     /// action never runs, so this guard is defence in depth and is expected to be unreachable; it stays
     /// because the alternative to an unreachable refusal is the holder throwing, and a <c>500</c> is a worse
     /// answer than a <c>403</c> for a condition that is not the caller's fault.
     /// </para>
     /// <para>
-    /// MIGRATION: THE REFUSAL IS NO LONGER A BARE <c>403</c>. This block previously said the caller sees the
-    /// same bare status either way, which was the justification for answering with <c>Forbid()</c>, and it
-    /// described a body that contradicted this action's own declaration: <c>Forbid()</c> does not pass
-    /// through the authorisation middleware's result handler, so it produced an EMPTY body while every action
-    /// here declares a problem document for <c>403</c>. The guard now answers through the shared
+    /// MIGRATION: THE REFUSAL IS NOT A BARE <c>403</c>. A controller's <c>Forbid()</c> does not pass through
+    /// the authorisation middleware's result handler, so it produces an EMPTY body while every action here
+    /// declares a problem document for <c>403</c>. The guard therefore answers through the shared
     /// problem-details path carrying the same failure code the middleware uses, so the two refusals are
     /// indistinguishable to a client keying on that code.
     /// </para>
     /// </remarks>
-    private int? ResolvePortalId(int? routedPortalId)
-    {
-        if (routedPortalId is { } portalId)
-        {
-            return portalId;
-        }
-
-        return _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
-    }
+    private int? ResolvePortalId() =>
+        _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
 
     /// <summary>Lists one page of the roles a portal defines.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal whose roles are listed. Forwarded exactly as bound: no lower bound is
-    /// imposed, because <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c>, so -1 is its seed and first
-    /// generated value while the shipped default portal row carries an explicit 0. Both are real portal
-    /// keys and neither means "absent".
-    /// </param>
     /// <param name="request">
     /// Paging, sorting and free-text filtering, bound from the query string. The page index is
-    /// zero-based and the filter matches from the start of the value; both are fixed by the request
-    /// contract and are not restated per action.
+    /// zero-based and the filter is a case-insensitive substring match on the role name; both are fixed
+    /// by the request contract and are not restated per action.
     /// </param>
     /// <param name="roleGroupId">
     /// Restricts the listing to one role group. Omit it to let <paramref name="scope"/> decide. Zero is a
@@ -485,20 +441,16 @@ public sealed class RolesController : ControllerBase
     /// expressible here, and the untyped collection becomes a typed page.
     /// </para>
     /// <para>
-    /// MIGRATION: an earlier revision of this endpoint offered only two of the three, and recorded the
-    /// missing one - the legacy drop-down's "&lt; Global Roles &gt;" entry, the roles belonging to no
-    /// group - as "a known difference from the legacy screen". The concern that produced that gap was
-    /// sound: letting -1 travel as a magic value would restore the collision in which one integer meant
-    /// an absent value, a stored identifier and a filtering intent at once. The gap itself was not
-    /// acceptable, because the legacy screen's selector is part of the functional parity this migration
-    /// owes. Both are satisfied by separating the two concerns: the identifier stays a plain nullable key
-    /// with no magic values, and the branch that no key can name is chosen by a closed enumeration. The
-    /// evidence for all three legacy bands, including the stale legacy comment that misdescribes the
-    /// middle one, is recorded on <see cref="RoleGroupScope"/>.
+    /// MIGRATION: the third intent - the legacy drop-down's "&lt; Global Roles &gt;" entry, the roles
+    /// belonging to no group - is reachable without letting -1 travel as a magic value, which would
+    /// restore the collision in which one integer meant an absent value, a stored identifier and a
+    /// filtering intent at once. The two concerns are separated instead: the identifier stays a plain
+    /// nullable key with no magic values, and the branch that no key can name is chosen by a closed
+    /// enumeration. The evidence for all three legacy bands, including the stale legacy comment that
+    /// misdescribes the middle one, is recorded on <see cref="RoleGroupScope"/>.
     /// </para>
     /// </remarks>
     [HttpGet("roles")]
-    [HttpGet("portals/{portalId:int}/roles")]
     [ProducesResponseType(typeof(PagedResponse<RoleListItemDto>), StatusCodes.Status200OK)]
     // BASE ProblemDetails, not ValidationProblemDetails. Both shapes are reachable: the binder and the paging
     // validator name the offending member, while the contradiction between a group identifier and the
@@ -510,13 +462,12 @@ public sealed class RolesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<RoleListItemDto>>> ListAsync(
-        [FromRoute] int? portalId,
         [FromQuery] RolePagedRequest request,
         [FromQuery] int? roleGroupId,
         [FromQuery] RoleGroupScope scope,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -539,7 +490,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Reads one role.</summary>
-    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">
     /// Identifier of the role to read. Forwarded exactly as bound and never compared against a
     /// sentinel; the column is seeded <c>IDENTITY (0, 1)</c>, so 0 addresses a portal's first role.
@@ -562,17 +512,15 @@ public sealed class RolesController : ControllerBase
     /// screens treated a cross-tenant identifier.
     /// </response>
     [HttpGet("roles/{roleId:int}")]
-    [HttpGet("portals/{portalId:int}/roles/{roleId:int}")]
     [ProducesResponseType(typeof(ApiResponse<RoleDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<RoleDetailDto?>>> GetAsync(
-        [FromRoute] int? portalId,
         int roleId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -587,11 +535,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Creates a role in a portal.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that will own the role. Authoritative, and deliberately not restatable
-    /// in the body: a value that cannot be supplied cannot contradict the route, so no reconciliation
-    /// check is needed and a caller can never assert a tenant other than the one it addressed.
-    /// </param>
     /// <param name="request">
     /// The role to create: its name, description, optional role group, visibility and automatic-enrolment
     /// switches, invitation code, icon, and the paid-membership terms - a service fee with a billing
@@ -606,9 +549,9 @@ public sealed class RolesController : ControllerBase
     /// </response>
     /// <response code="400">
     /// The request breaks a declared rule - an absent or over-long name, a negative fee, a period that is
-    /// not positive, a frequency code outside the six the schema permits - or the role could not be
-    /// stored. Reported as an RFC 7807 validation document naming each offending member, with the message
-    /// text passed through exactly as the rule declared it.
+    /// not positive, a frequency code outside the six the schema permits. Reported as an RFC 7807
+    /// validation document naming each offending member, with the message text passed through exactly as
+    /// the rule declared it.
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -621,6 +564,11 @@ public sealed class RolesController : ControllerBase
     /// The portal already defines a role with that name. This is the successor to the legacy editor's
     /// duplicate refusal, which the add branch alone applied.
     /// </response>
+    /// <response code="500">
+    /// The request was valid and permitted, but the store rejected the insert or the created role could
+    /// not be read back. Reported as a problem document carrying <c>role.create_failed</c>; nothing the
+    /// caller could change would make the identical request succeed.
+    /// </response>
     /// <remarks>
     /// MIGRATION: the fifteen values this replaces were assigned one at a time onto a mutable role object
     /// at <c>EditRoles.ascx.vb:L234-L248</c> and the screen then chose between inserting and updating by
@@ -631,7 +579,6 @@ public sealed class RolesController : ControllerBase
     /// service performs both inside one unit of work.
     /// </remarks>
     [HttpPost("roles")]
-    [HttpPost("portals/{portalId:int}/roles")]
     [ProducesResponseType(typeof(ApiResponse<RoleDetailDto>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -640,11 +587,10 @@ public sealed class RolesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult<ApiResponse<RoleDetailDto>>> CreateAsync(
-        [FromRoute] int? portalId,
         [FromBody] CreateRoleRequest request,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -659,7 +605,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Updates a role's writable state.</summary>
-    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role to update.</param>
     /// <param name="request">
     /// The new state: name, description, role group, visibility and automatic-enrolment switches,
@@ -704,7 +649,6 @@ public sealed class RolesController : ControllerBase
     /// maps it.
     /// </remarks>
     [HttpPut("roles/{roleId:int}")]
-    [HttpPut("portals/{portalId:int}/roles/{roleId:int}")]
     [ProducesResponseType(typeof(ApiResponse<RoleDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -712,12 +656,11 @@ public sealed class RolesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<RoleDetailDto>>> UpdateAsync(
-        [FromRoute] int? portalId,
         int roleId,
         [FromBody] UpdateRoleRequest request,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -730,7 +673,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Deletes a role.</summary>
-    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role to delete.</param>
     /// <param name="cancellationToken">Abandons the write when the caller disconnects.</param>
     /// <returns>An empty response when the role has been removed.</returns>
@@ -755,17 +697,15 @@ public sealed class RolesController : ControllerBase
     /// across statements.
     /// </remarks>
     [HttpDelete("roles/{roleId:int}")]
-    [HttpDelete("portals/{portalId:int}/roles/{roleId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> DeleteAsync(
-        [FromRoute] int? portalId,
         int roleId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -779,7 +719,6 @@ public sealed class RolesController : ControllerBase
 
 
     /// <summary>Lists one page of the accounts that hold a role.</summary>
-    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role whose members are listed.</param>
     /// <param name="request">
     /// Paging, sorting and free-text filtering, bound from the query string, on the same zero-based,
@@ -813,13 +752,9 @@ public sealed class RolesController : ControllerBase
     /// </para>
     /// <para>
     /// MIGRATION: all five columns the legacy grid bound are on this read path, including the
-    /// membership's effective and expiry dates. An earlier revision of this action projected the ACCOUNT
-    /// contract and recorded the two dates as "a functional reduction, stated rather than hidden",
-    /// reasoning that restoring them would mean inventing a projection no other layer owned. The
-    /// reduction is now closed: the membership projection is owned by the application layer, named in the
-    /// role DTO folder AAP 0.4.1.1 enumerates, and derived from what the legacy screen rendered as
-    /// AAP 0.5.1.2 requires. The earlier note is quoted here rather than deleted so that the change is
-    /// legible to anyone who read it.
+    /// membership's effective and expiry dates. That requires a membership projection rather than the
+    /// account contract, and it is owned by the application layer - named in the role DTO folder
+    /// AAP 0.4.1.1 enumerates and derived from what the legacy screen rendered, as AAP 0.5.1.2 requires.
     /// </para>
     /// <para>
     /// Consequently the record is a membership and not an account: it carries the account's key, login
@@ -840,19 +775,17 @@ public sealed class RolesController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpGet("roles/{roleId:int}/users")]
-    [HttpGet("portals/{portalId:int}/roles/{roleId:int}/users")]
     [ProducesResponseType(typeof(PagedResponse<RoleMembershipDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<RoleMembershipDto>>> ListUsersAsync(
-        [FromRoute] int? portalId,
         int roleId,
         [FromQuery] RoleUserPagedRequest request,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -868,7 +801,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Lists the roles one account holds in a portal.</summary>
-    /// <param name="portalId">Identifier of the portal the account belongs to.</param>
     /// <param name="userId">Identifier of the account whose roles are listed.</param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The roles the account holds in this portal.</returns>
@@ -905,17 +837,15 @@ public sealed class RolesController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpGet("users/{userId:int}/roles")]
-    [HttpGet("portals/{portalId:int}/users/{userId:int}/roles")]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<RoleListItemDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<RoleListItemDto>>>> ListForUserAsync(
-        [FromRoute] int? portalId,
         int userId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -928,7 +858,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Grants an account a role, for a period.</summary>
-    /// <param name="portalId">Identifier of the portal that owns both the role and the account.</param>
     /// <param name="roleId">Identifier of the role being granted.</param>
     /// <param name="request">
     /// The account to enrol, with the optional dates the membership takes effect and ceases, and the
@@ -977,15 +906,11 @@ public sealed class RolesController : ControllerBase
     /// arithmetic is performed in this file.
     /// </para>
     /// <para>
-    /// MIGRATION: HOW AN ABSENT DATE LEAVES ON THE WAY BACK OUT - stated from a measured response,
-    /// because an earlier revision of this paragraph asserted the opposite and was wrong. Serialisation is
-    /// configured once with <c>JsonIgnoreCondition.Never</c>
-    /// (<c>ServiceCollectionExtensions.cs</c>, both the minimal-API and controller surfaces), so a
-    /// <c>null</c> date IS written, as <c>"effectiveDate": null</c>, and the member is never omitted.
-    /// Measured against a live response: an open-ended membership returns
-    /// <c>{"userRoleId":1,"userId":1,"username":"admin","displayName":"Baseline Administrator",</c>
-    /// <c>"roleId":0,"roleName":"Administrators","effectiveDate":null,"expiryDate":null}</c>. A client
-    /// therefore reads absence as a present member holding <c>null</c>, not as a missing key. That is the
+    /// MIGRATION: HOW AN ABSENT DATE LEAVES ON THE WAY BACK OUT. Serialisation is configured once with
+    /// <c>JsonIgnoreCondition.Never</c> (<c>ServiceCollectionExtensions.cs</c>, both the minimal-API and
+    /// controller surfaces), so a <c>null</c> date IS written, as <c>"effectiveDate": null</c>, and the
+    /// member is never omitted. A client therefore reads absence as a present member holding
+    /// <c>null</c>, not as a missing key. That is the
     /// intended contract and it is required rather than incidental: the same setting is what keeps a
     /// legitimate <c>0</c>, <c>false</c> or empty string on the wire in this schema, where
     /// <c>Roles.RoleID</c> is <c>IDENTITY(0,1)</c> and the legacy null encoding is a sentinel table rather
@@ -1010,19 +935,17 @@ public sealed class RolesController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("roles/{roleId:int}/users")]
-    [HttpPost("portals/{portalId:int}/roles/{roleId:int}/users")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> AssignUserAsync(
-        [FromRoute] int? portalId,
         int roleId,
         [FromBody] RoleAssignmentRequest request,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -1035,7 +958,6 @@ public sealed class RolesController : ControllerBase
     }
 
     /// <summary>Removes an account's membership of a role.</summary>
-    /// <param name="portalId">Identifier of the portal that owns both the role and the account.</param>
     /// <param name="roleId">Identifier of the role the account is being removed from.</param>
     /// <param name="userId">Identifier of the account being removed.</param>
     /// <param name="cancellationToken">Abandons the write when the caller disconnects.</param>
@@ -1051,8 +973,8 @@ public sealed class RolesController : ControllerBase
     /// <response code="403">
     /// The removal is refused because it is protected: the portal's designated administrator may not be
     /// stripped of that portal's administrator role, and no account may be removed from the portal's
-    /// registered-users role. The legacy rule lived in a predicate the source itself flagged as a hack and
-    /// duplicated in two bodies; it is enforced once, in the service. This status is also returned when
+    /// registered-users role. The legacy rule was duplicated across two bodies; here it is enforced once,
+    /// in the service. This status is also returned when
     /// the caller does not administer the portal the request resolves to - the problem type distinguishes
     /// the two.
     /// </response>
@@ -1073,18 +995,16 @@ public sealed class RolesController : ControllerBase
     /// from an account - collapse into this single operation.
     /// </remarks>
     [HttpDelete("roles/{roleId:int}/users/{userId:int}")]
-    [HttpDelete("portals/{portalId:int}/roles/{roleId:int}/users/{userId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> RemoveUserAsync(
-        [FromRoute] int? portalId,
         int roleId,
         int userId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }

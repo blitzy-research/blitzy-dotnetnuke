@@ -168,7 +168,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// Advisory code reported when a module identifier names no module.
     /// </summary>
     /// <remarks>
-    /// M-10: deliberately NOT spelled with a token the API edge's status mapper screens for. It travels on
+    /// Deliberately NOT spelled with a token the API edge's status mapper screens for. It travels on
     /// a successful outcome, so it is never translated into a status code at all, and a spelling the mapper
     /// recognised would become a trap the moment some future caller propagated it onto a failure.
     /// </remarks>
@@ -553,7 +553,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         Module? module = await _modules.GetByIdAsync(moduleId, cancellationToken).ConfigureAwait(false);
         if (module is null)
         {
-            // M-10: null and an empty list mean different things to the caller, and the difference is the
+            // Null and an empty list mean different things to the caller, and the difference is the
             // reason this method is nullable. Null is "no module carries that identifier"; an empty list is
             // "the module exists and the caller reached none of its grants". Both deny, so the VERDICT is
             // the same either way - what differs is only whether the outcome can name the absence.
@@ -773,10 +773,10 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// ONE READ FOR THE WHOLE SET. The distinct identifiers are collected first - a tenant records the same
     /// handful of permissions across all of its content, so resolving per grant row would multiply the work
     /// by the size of the portal for no additional information - and then resolved in a single set-wise
-    /// read. MIGRATION: an earlier revision issued one read per distinct identifier, which on this path
-    /// made the round-trip count a function of how many distinct permissions the tenant uses; the set-wise
-    /// catalogue reader was added to <c>IPermissionRepository</c> precisely so the batching lives where the
-    /// query is composed rather than being simulated in a loop here.
+    /// read. Reading one permission per distinct identifier would make the round-trip count a function of
+    /// how many distinct permissions the tenant uses, so the set-wise catalogue reader on
+    /// <c>IPermissionRepository</c> exists precisely to keep the batching where the query is composed
+    /// rather than simulated in a loop here.
     /// </para>
     /// <para>
     /// An identifier naming no entry is simply absent from the result, and the caller treats that as
@@ -1005,7 +1005,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// <param name="moduleId">The identifier the caller supplied.</param>
     /// <returns>The advisory reason accompanying the closed-default verdict.</returns>
     /// <remarks>
-    /// M-10: carried on a SUCCESSFUL outcome, never a failed one. The verdict for a module that does not
+    /// Carried on a SUCCESSFUL outcome, never a failed one. The verdict for a module that does not
     /// exist is the same closed default a denial produces - the caller holds nothing - and turning it into
     /// a failure would convert "you may not" into "something went wrong" for every anonymous caller who
     /// followed a stale link. The reason exists so a caller that needs to tell the two apart can, without

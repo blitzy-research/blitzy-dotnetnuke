@@ -1,7 +1,5 @@
 using DnnMigration.Domain.Abstractions.Repositories;
-using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Entities;
-using DnnMigration.Domain.Enums;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -28,44 +26,47 @@ namespace DnnMigration.Infrastructure.Repositories;
 // the store wins, so this file works exclusively in the entity's decimal? fees and int? periods.
 // No float, no double, no VB Single and no string period appears anywhere below.
 //
-// MIGRATION: ALL SIX PERSISTED FREQUENCY CODES ARE LOAD-BEARING AND ARE PRESERVED AS THEY ARE. The
-// legacy Select Case at Library/Components/Security/Roles/RoleController.vb:L540-L547 branches on
-// the literal characters N, O, D, W, M and Y, and those characters are the bytes sitting in the two
-// char(1) role columns of every existing database - the installer seeds them as Lists rows under
-// ListName 'Frequency' and the terminal role-listing procedures join on them to resolve display
-// text. They are therefore reached here only through BillingFrequency, whose members carry the code
-// points as their values. Nothing below renames a code, re-letters one, reorders the members or
-// persists an ordinal, and the switch handles all six explicitly rather than folding any of them
-// into a default arm.
+// MIGRATION: ALL SIX PERSISTED FREQUENCY CODES ARE LOAD-BEARING AND ARE PRESERVED AS THEY ARE, AND
+// NOTHING HERE INTERPRETS ONE. The legacy Select Case at
+// Library/Components/Security/Roles/RoleController.vb:L540-L547 branches on the literal characters N,
+// O, D, W, M and Y, and those characters are the bytes sitting in the two char(1) role columns of
+// every existing database - the installer seeds them as Lists rows under ListName 'Frequency' and the
+// terminal role-listing procedures join on them to resolve display text. They reach the store through
+// the BillingFrequency enum, whose members carry the code points as their values, and this file
+// neither renames a code, re-letters one, reorders the members nor persists an ordinal. The six-way
+// branch that ACTS on a code is a subscription rule and lives in RoleService; no code is examined
+// below this line.
 //
-// MIGRATION: THE TWO SENTINEL EXPIRY VALUES ARE TREATED DIFFERENTLY, DELIBERATELY. Code O assigned
-// the literal New System.DateTime(9999, 12, 31) (RoleController.vb:L542), a real and externally
-// observable instant that a caller can read and compare, so it is reproduced exactly and is not
-// turned into a null. Code N and an absent period assigned Null.NullDate - Date.MinValue, per
-// Library/Components/Shared/Null.vb:L66-L70 - which was the legacy way of writing "no expiry" and
-// could never reach the column, because SQL Server datetime begins at 1753-01-01 and the legacy
-// write path converted the marker to DBNull on every call. Under Rule T7 that one becomes a null
-// expiry, and the marker itself is converted here on the write path exactly as Null.GetNull did.
+// MIGRATION: THE TWO SENTINEL EXPIRY VALUES ARE TREATED DIFFERENTLY, DELIBERATELY - AND THE DECISION
+// IS MADE ABOVE THIS LAYER. Code O assigned the literal New System.DateTime(9999, 12, 31)
+// (RoleController.vb:L542), a real and externally observable instant that a caller can read and
+// compare, so it survives the migration exactly and is not turned into a null. Code N and an absent
+// period assigned Null.NullDate - Date.MinValue, per Library/Components/Shared/Null.vb:L66-L70 -
+// which was the legacy way of writing "no expiry" and could never reach the column, because SQL
+// Server datetime begins at 1753-01-01. Under Rule T7 that one becomes a null expiry. BOTH
+// translations belong to RoleService, which is the single owner of the subscription rules; this file
+// stages whichever value it is handed and asserts nothing about which of the two it is.
 //
-// MIGRATION: THE AMBIENT SERVER-LOCAL CLOCK BECOMES AN INJECTED UTC CLOCK. The legacy engine read
-// Now four separate times and Date.Today once within a single operation (RoleController.vb:L505,
-// L530, L533, L534 and L496). Two substitutions follow and both are recorded rather than absorbed.
-// First, the readings are collapsed into ONE capture per operation, because four readings of a
-// moving clock can disagree with each other and a request crossing a tick could clear an effective
-// date against one instant and seed an expiry from another. Second, Now and Date.Today were
-// server-LOCAL whereas IClock is UTC-ONLY, so a date-only value derived here CAN NAME A DIFFERENT
-// CALENDAR DAY from the one a legacy installation would have produced for the same real instant -
-// a day earlier west of Greenwich, a day later east of it. That is accepted deliberately: a
-// local-zone stamp is not comparable between hosts and cannot be read without knowing the machine
-// that wrote it, and the injected clock is also what makes this file testable at a chosen moment.
-// No line below reads DateTime.Now, DateTime.Today or DateTime.UtcNow.
+// MIGRATION: THE SUBSCRIPTION ENGINE IS NOT HERE, AND ITS ABSENCE IS THE POINT. An earlier revision
+// of this file carried its own copy of the legacy billing engine - a captured clock reading, the
+// absent-date-marker translation, the past-effective-date reset, the trial-versus-billing term
+// selection, the six-code expiry switch with its calendar clamps, and the expire-rather-than-delete
+// cancellation - while RoleService carried the same rules for the same reasons. Two copies of one
+// business rule in two layers is worse than either copy alone: they agree until one is amended, and
+// then they disagree on exactly the case that prompted the amendment. Under Rule T2 the Application
+// layer owns business logic, so the rules now live once, in RoleService (DeriveAssignmentDates,
+// NormalizeLegacyDateMarker and the removal path's expire-rather-than-delete branch), and this file
+// keeps no clock at all: no member below reads DateTime.Now, DateTime.Today or DateTime.UtcNow, and
+// none is injected. Every value in a UserRole reaching a write member here is already FINAL.
 //
-// MIGRATION: A CANCELLED PAID TRIAL IS EXPIRED, NOT DELETED. RoleController.vb:L494-L496 refuses to
-// remove an assignment when the role carries a service fee and the trial has already been consumed;
-// it back-dates the expiry by one day instead, so the consumed-trial fact survives and a cancelled
-// subscriber cannot restart a trial by re-subscribing. That rule is reproduced on the removal path
-// below. See the note on DeleteUserRoleAsync for how it composes with the Application service that
-// applies the same rule before calling in, and with the account-deletion cascade.
+// MIGRATION: A CANCELLED PAID TRIAL IS EXPIRED, NOT DELETED - DECIDED BY RoleService, NOT HERE.
+// RoleController.vb:L494-L496 refuses to remove an assignment when the role carries a service fee and
+// the trial has already been consumed; it back-dates the expiry by one day instead, so the
+// consumed-trial fact survives and a cancelled subscriber cannot restart a trial by re-subscribing.
+// RoleService.RemoveUserFromRoleAsync evaluates that test and takes the back-dating branch itself,
+// reaching DeleteUserRoleAsync only when the test is false - so the removal member below is an
+// unconditional delete, as the legacy provider member it stands in for was. See the note on
+// DeleteUserRoleAsync.
 //
 // MIGRATION: POSITIONAL PROCEDURE CALLS, SCOPE_IDENTITY AND READERS ALL DISAPPEAR. Every legacy read
 // returned a forward-only IDataReader that the caller turned into objects either by hand, one
@@ -99,8 +100,7 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// <c>Library/Providers/MembershipProviders/DataProvider/DataProvider.vb</c> L91-L115, and the
 /// members appear in that provider's own order - roles, then groups, then assignments - so the two
 /// can be read side by side. The contract itself, together with the reasoning behind each
-/// divergence, is documented on <see cref="IRoleRepository"/>; this type adds only the query detail
-/// and the write-path normalisation.
+/// divergence, is documented on <see cref="IRoleRepository"/>; this type adds only the query detail.
 /// </para>
 /// <para>
 /// A role belongs to a portal through a nullable <c>Roles.PortalID</c>, and an installation-wide
@@ -126,87 +126,41 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// raise a duplicate-tracking failure on the way to one commit.
 /// </para>
 /// <para>
-/// <b>The two assignment writes normalise what they are given, and they are deliberately not
-/// symmetrical.</b> Both convert the legacy absent-date marker to a null and clear an effective date
-/// that has already passed. Beyond that they follow the two legacy members they stand in for, which
-/// differed: <c>AddUserRole</c> (L294-L313) stored the caller's dates verbatim and derived nothing,
-/// while <c>UpdateUserRole(..., Cancel:=False)</c> (L508-L554) was the subscription operation and
-/// derived the term. So <see cref="AddUserRoleAsync"/> stages what it is handed, and
-/// <see cref="UpdateUserRoleAsync"/> derives an expiry from the role's own billing or trial terms
-/// only when the caller left the expiry unset. An expiry the caller did state is persisted verbatim
-/// on both paths, which keeps the documented expire-rather-than-delete cancellation reachable
-/// through <see cref="UpdateUserRoleAsync"/> and stops this layer from overruling the one that
-/// computed the value - the Application service still owns the renewal engine, and the legacy
-/// provider's own write members applied nothing but the <c>Null.GetNull</c> conversion (membership
-/// <c>DataProvider/SqlDataProvider.vb</c> L280-L286).
+/// <b>The three assignment writes stage exactly what they are handed and decide nothing.</b> Both
+/// bounds are persisted as supplied, the trial-used flag is persisted as supplied, and the removal is
+/// an unconditional delete. That is what the legacy provider's own write members did - membership
+/// <c>DataProvider/SqlDataProvider.vb</c> L280-L286 applied nothing but the <c>Null.GetNull</c>
+/// conversion, and <c>DeleteUserRole(UserId, RoleId)</c> deleted - and it is what Rule T2 requires:
+/// the marker translation, the past-effective-date reset, the term derivation and the
+/// expire-rather-than-delete cancellation are subscription rules, and <c>RoleService</c> is their one
+/// owner. A caller therefore reads a repository member here as a statement about rows, never as a
+/// statement about billing.
 /// </para>
 /// <para>
 /// No member commits, evaluates a permission, classifies an assignment - callers use
-/// <see cref="UserRole.GetStatus(DateTime)"/> - caches a result, sends a notification or validates a
-/// request.
+/// <see cref="UserRole.GetStatus(DateTime)"/> - reads a clock, derives a date, caches a result, sends
+/// a notification or validates a request.
 /// </para>
 /// </remarks>
 internal sealed class RoleRepository : IRoleRepository
 {
-    /// <summary>
-    /// Days in a billing week, applied as a day offset rather than any week interval.
-    /// </summary>
-    /// <remarks>
-    /// The legacy week case multiplied by seven and added DAYS -
-    /// <c>DateAdd(DateInterval.Day, (Period * 7), ...)</c> at
-    /// <c>RoleController.vb:L543</c> - so the migrated arithmetic multiplies and adds days too. Using
-    /// a week interval would agree on every input and would still be the wrong translation to leave
-    /// behind for the next reader.
-    /// </remarks>
-    private const int DaysPerWeek = 7;
-
-    /// <summary>Months in a billing year, applied as a month offset.</summary>
-    /// <remarks>
-    /// <c>DateAdd(DateInterval.Year, Period, ...)</c> at <c>RoleController.vb:L545</c> is expressed
-    /// as a month offset so that both calendar cases clamp through one helper and so that the
-    /// framework's own leap-day handling - 29 February onto a non-leap year - is preserved.
-    /// </remarks>
-    private const int MonthsPerYear = 12;
-
-    /// <summary>
-    /// The perpetual-access expiry that a one-time fee assigns, reproduced exactly.
-    /// </summary>
-    /// <remarks>
-    /// <c>New System.DateTime(9999, 12, 31)</c> at <c>RoleController.vb:L542</c>. The value is a real
-    /// instant rather than a marker for absence, so it survives the migration unchanged; it doubles
-    /// as the upper clamp for every offset below, because it is also the last day SQL Server
-    /// <c>datetime</c> can store.
-    /// </remarks>
-    private static readonly DateTime PerpetualExpiry = new(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc);
-
-    /// <summary>The earliest instant SQL Server <c>datetime</c> can store.</summary>
-    /// <remarks>
-    /// The lower clamp for a negative offset. It is declared here rather than imported so that this
-    /// repository depends on nothing beyond its own contract surface; the value is the same
-    /// 1753-01-01 boundary the Domain records, and the two must stay in agreement.
-    /// </remarks>
-    private static readonly DateTime MinimumStorableDateTime = new(1753, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-
     private readonly DnnDbContext _context;
-    private readonly IClock _clock;
 
     /// <summary>Initialises a new instance of the <see cref="RoleRepository"/> class.</summary>
     /// <param name="context">The unit-of-work scoped database context.</param>
-    /// <param name="clock">
-    /// The solution's only sanctioned source of the present instant. The abstraction is injected
-    /// rather than a concrete implementation constructed, so a test fixes the instant that the
-    /// subscription and cancellation paths derive their dates from.
-    /// </param>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="context"/> or <paramref name="clock"/> is <see langword="null"/>.
-    /// </exception>
-    public RoleRepository(DnnDbContext context, IClock clock)
+    /// <exception cref="ArgumentNullException"><paramref name="context"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// MIGRATION: no clock is injected, and that absence is deliberate. An earlier revision took an
+    /// <c>IClock</c> in order to normalise subscription dates, derive expiries from billing terms and
+    /// back-date a cancelled paid trial - all of which duplicated rules <c>RoleService</c> already
+    /// owned. Rule T2 places those in the Application layer, so they were removed from here rather than
+    /// left to drift out of step with the copy that decides them.
+    /// </remarks>
+    public RoleRepository(DnnDbContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(clock);
 
         _context = context;
-        _clock = clock;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -535,35 +489,37 @@ internal sealed class RoleRepository : IRoleRepository
     /// The four values the legacy <c>AddUserRole(PortalID, UserId, RoleId, EffectiveDate,
     /// ExpiryDate)</c> carried positionally are carried by the entity, and the portal argument is
     /// dropped because <c>dbo.UserRoles</c> has no portal column - it served validation only, which
-    /// the Application service performs before staging. Both bounds pass through
-    /// <see cref="NormaliseSubscriptionBoundsAsync"/> first, so the legacy absent-date marker becomes
-    /// a null and an effective date already in the past is cleared.
+    /// the Application service performs before staging.
     /// </para>
     /// <para>
-    /// MIGRATION: NO TERM IS DERIVED ON THIS PATH, AND THAT IS THE LEGACY BEHAVIOUR RATHER THAN AN
-    /// OMISSION. <c>RoleController.AddUserRole</c> (L294-L313) stored the two dates it was given
-    /// VERBATIM, and the portal-creation sequence called it with the absent-date marker for both, so a
-    /// stock membership was unbounded. The derivation lived exclusively in
-    /// <c>UpdateUserRole(..., Cancel:=False)</c>, which is a subscription operation. Reproducing it
-    /// here instead would be unsound as well as unfaithful, because a null expiry cannot distinguish
-    /// "unbounded, as an enrolment means it" from "apply the role's term": both of this member's
-    /// production callers pass a null expiry for exactly the first meaning - the portal-creation
-    /// sequence enrolling a new administrator in the three stock roles, and the role service's
-    /// auto-assignment sweep enrolling existing members in a newly created role - and the stock roles
-    /// are built with a monthly billing frequency and a ZERO billing period, so a term applied here
-    /// would offset the current instant by zero months and stamp every new administrator's assignment
-    /// as expiring at the instant it was created. The tenant-administration policy reads that
-    /// assignment through <see cref="UserRole.GetStatus(DateTime)"/> a moment later, so the tenant's
-    /// own administrator would be refused. Only the caller knows which meaning a null carries, which
-    /// is precisely why the legacy engine derived in the caller.
+    /// MIGRATION: NEITHER BOUND IS NORMALISED AND NO TERM IS DERIVED, WHICH IS BOTH THE LEGACY
+    /// BEHAVIOUR AND THE LAYERING RULE. <c>RoleController.AddUserRole</c> (L294-L313) stored the two
+    /// dates it was given VERBATIM and derived nothing; the derivation lived exclusively in
+    /// <c>UpdateUserRole(..., Cancel:=False)</c>, a subscription operation. Deriving here would also be
+    /// unsound, because a null expiry cannot distinguish "unbounded, as an enrolment means it" from
+    /// "apply the role's term": every production caller passes a null expiry for the first meaning -
+    /// the portal-creation sequence enrolling a new administrator in the three stock roles, and the
+    /// role service's auto-assignment sweep enrolling existing members in a newly created role - and
+    /// the stock roles are built with a monthly billing frequency and a ZERO billing period, so a term
+    /// applied here would offset the present instant by zero months and stamp every new
+    /// administrator's assignment as expiring at the instant it was created. The
+    /// tenant-administration policy reads that assignment through
+    /// <see cref="UserRole.GetStatus(DateTime)"/> a moment later, so the tenant's own administrator
+    /// would be refused. Only the caller knows which meaning a null carries, which is precisely why
+    /// the legacy engine derived in the caller and why <c>RoleService</c> owns it here.
+    /// </para>
+    /// <para>
+    /// A CONSEQUENCE THE CALLER MUST HONOUR: both columns are SQL Server <c>datetime</c>, whose range
+    /// begins at 1753-01-01, so the legacy absent-date marker <c>DateTime.MinValue</c> is not merely
+    /// absent from them but unstorable. A caller that means "no bound" passes <see langword="null"/>;
+    /// <c>RoleService.DeriveAssignmentDates</c> translates a submitted marker into that null before any
+    /// value reaches here, and passing the marker anyway is refused loudly by the store rather than
+    /// silently reinterpreted by this layer.
     /// </para>
     /// </remarks>
     public async Task AddUserRoleAsync(UserRole userRole, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userRole);
-
-        await NormaliseSubscriptionBoundsAsync(userRole, deriveUnsetExpiry: false, cancellationToken)
-            .ConfigureAwait(false);
 
         // Staged only; UserRoleID is IDENTITY(1, 1) and appears on the entity once the unit of work
         // commits.
@@ -573,40 +529,36 @@ internal sealed class RoleRepository : IRoleRepository
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// MIGRATION: THE CHOSEN BRANCH, STATED EXPLICITLY, BECAUSE THIS IS THE ONE MEMBER WHERE THE TWO
-    /// LEGACY BEHAVIOURS MEET. <c>RoleController.UpdateUserRole(..., Cancel:=False)</c> (L508-L554) was
-    /// the subscription operation: it primed itself from the stored assignment, chose the trial or the
-    /// billing term and DERIVED an expiry, having no date parameters to honour.
-    /// <c>RoleController.AddUserRole</c> (L294-L313) honoured its caller's dates and derived nothing.
-    /// One member cannot reproduce both, so the two are separated by whether there is anything to
-    /// preserve.
+    /// <b>Every value on the assignment is persisted exactly as supplied</b>, both bounds and the
+    /// trial-used flag, whether an expiry lies in the future or in the past. That is what the
+    /// coordinated contract requires: <see cref="IRoleRepository.DeleteUserRoleAsync"/> documents that
+    /// a caller reproducing the legacy expire-rather-than-delete cancellation does so by back-dating
+    /// the expiry, and a repository that re-derived the value would silently undo exactly that.
     /// </para>
     /// <para>
-    /// <b>An expiry the caller stated is persisted unchanged</b>, whether it lies in the future or in
-    /// the past. That is what the coordinated contract requires:
-    /// <see cref="IRoleRepository.DeleteUserRoleAsync"/> documents that a caller reproducing the legacy
-    /// expire-rather-than-delete cancellation does so through THIS member by back-dating the expiry,
-    /// and a repository that re-derived the value would silently undo exactly that.
-    /// </para>
-    /// <para>
-    /// <b>An expiry the caller left unset is derived from the role's own terms</b>, which is the state
-    /// the legacy renewal path itself began from - it seeded the expiry from the stored row and treated
-    /// the absent-date marker as already past. <see cref="AddUserRoleAsync"/> deliberately does not do
-    /// this, for the reason recorded there: an enrolment's null expiry means unbounded.
+    /// MIGRATION: NO TERM IS DERIVED HERE, THOUGH THE LEGACY MEMBER THIS STANDS IN FOR DERIVED ONE.
+    /// <c>RoleController.UpdateUserRole(..., Cancel:=False)</c> (L508-L554) was the subscription
+    /// operation: it primed itself from the stored assignment, chose the trial or the billing term and
+    /// DERIVED an expiry, having no date parameters to honour. That engine is preserved in full - it is
+    /// <c>RoleService.DeriveAssignmentDates</c>, which runs before the value reaches this layer - and it
+    /// is preserved THERE rather than here because it is a business rule, and because a second copy in
+    /// this layer would silently overrule the first. The legacy DATA member this file actually realises
+    /// is membership <c>DataProvider/SqlDataProvider.vb</c> L280-L286
+    /// <c>UpdateUserRole(UserRoleId, EffectiveDate, ExpiryDate)</c>, which applied no derivation of any
+    /// kind.
     /// </para>
     /// <para>
     /// The legacy member could rewrite only the two dates; passing the entity also lets the
     /// trial-used flag be persisted, which the cancellation path depends on.
     /// </para>
     /// </remarks>
-    public async Task UpdateUserRoleAsync(UserRole userRole, CancellationToken cancellationToken = default)
+    public Task UpdateUserRoleAsync(UserRole userRole, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userRole);
 
-        await NormaliseSubscriptionBoundsAsync(userRole, deriveUnsetExpiry: true, cancellationToken)
-            .ConfigureAwait(false);
-
         _context.UserRoles.Update(userRole);
+
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
@@ -619,32 +571,30 @@ internal sealed class RoleRepository : IRoleRepository
     /// that is already gone is an idempotent no-op.
     /// </para>
     /// <para>
-    /// MIGRATION: A CANCELLED PAID TRIAL IS EXPIRED RATHER THAN DELETED, AND THE RULE LIVES IN BOTH
-    /// PLACES ON PURPOSE. <c>RoleController.vb:L494-L496</c> tests
+    /// MIGRATION: THE REMOVAL IS UNCONDITIONAL, AND THE EXPIRE-RATHER-THAN-DELETE RULE IS DECIDED BY
+    /// THE CALLER. <c>RoleController.vb:L494-L496</c> tests
     /// <c>userRole.ServiceFee &gt; 0.0 AndAlso userRole.IsTrialUsed</c> and, when it holds, assigns
     /// <c>DateAdd(DateInterval.Day, -1, Date.Today())</c> and updates instead of deleting, so that the
     /// consumed-trial fact survives and a cancelled subscriber cannot restart a trial by
-    /// re-subscribing. Reproducing it here makes the guarantee a property of the row rather than of
-    /// one caller's diligence: the Application service applies the same rule before it ever reaches
-    /// this member - which is why the two never both fire, the service's remaining branch arriving
-    /// here only when the test is false - and the two other callers, the account-deletion cascade and
-    /// the failed-creation compensation, remove the owning account in the same unit of work, where
-    /// <c>FK_UserRoles_Users ON DELETE CASCADE</c> discards the retained row regardless. The fee is
-    /// read from the assignment's role because <c>dbo.UserRoles</c> has no fee column; the legacy test
-    /// could write <c>userRole.ServiceFee</c> only because <c>UserRoleInfo</c> inherited
-    /// <c>RoleInfo</c>, an inheritance Rule T8 removes.
+    /// re-subscribing. That test is a business rule about paid membership, so under Rule T2 it lives in
+    /// <c>RoleService.RemoveUserFromRoleAsync</c>, which back-dates the expiry itself on the retaining
+    /// branch and reaches this member only on the other one. An earlier revision evaluated the same test
+    /// here as well, which meant one rule with two implementations free to drift apart; the fee is in
+    /// any case a column on the ROLE rather than on the assignment - the legacy test could write
+    /// <c>userRole.ServiceFee</c> only because <c>UserRoleInfo</c> inherited <c>RoleInfo</c>, an
+    /// inheritance Rule T8 removes - so evaluating it here also required a join this member has no other
+    /// reason to make.
     /// </para>
     /// <para>
-    /// The date is <c>UtcNow.Date.AddDays(-1)</c>: date-only because the legacy value carried no time
-    /// component either, and because the row must read as already expired for the whole of the current
-    /// day rather than only after the current hour. The clock is the injected UTC one, so the
-    /// calendar-day caveat recorded in this file's header applies.
+    /// The rule is not weakened by living in one place. The two remaining callers - the
+    /// account-deletion cascade and the failed-creation compensation - remove the owning account in the
+    /// same unit of work, where <c>FK_UserRoles_Users ON DELETE CASCADE</c> discards a retained row
+    /// regardless, so retaining one for them would have been a no-op even when it fired.
     /// </para>
     /// </remarks>
     public async Task DeleteUserRoleAsync(int userId, int roleId, CancellationToken cancellationToken = default)
     {
         List<UserRole> assignments = await _context.UserRoles
-            .Include(a => a.Role)
             .Where(a => a.UserId == userId && a.RoleId == roleId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -656,28 +606,7 @@ internal sealed class RoleRepository : IRoleRepository
             return;
         }
 
-        // One clock reading for the whole operation, so several rows of one pair cannot be expired
-        // against instants that disagree.
-        DateTime expiredOnTheDayBefore = _clock.UtcNow.Date.AddDays(-1);
-
-        foreach (UserRole assignment in assignments)
-        {
-            Role? role = assignment.Role;
-
-            bool retainForConsumedTrial = role?.ServiceFee is decimal serviceFee
-                && serviceFee > 0m
-                && assignment.IsTrialUsed == true;
-
-            if (retainForConsumedTrial)
-            {
-                assignment.ExpiryDate = expiredOnTheDayBefore;
-                _context.UserRoles.Update(assignment);
-            }
-            else
-            {
-                _context.UserRoles.Remove(assignment);
-            }
-        }
+        _context.UserRoles.RemoveRange(assignments);
     }
 
     /// <inheritdoc />
@@ -704,337 +633,5 @@ internal sealed class RoleRepository : IRoleRepository
             .ThenBy(r => r.RoleId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Write-path normalisation - RoleController.vb L508-L554 and membership
-    // DataProvider/SqlDataProvider.vb L280-L286
-    // ---------------------------------------------------------------------------------------------
-
-    /// <summary>
-    /// Brings an assignment's two validity bounds into the shape the store expects before the row is
-    /// staged.
-    /// </summary>
-    /// <param name="userRole">The assignment being staged.</param>
-    /// <param name="deriveUnsetExpiry">
-    /// Whether an expiry the caller left unset should be derived from the role's billing or trial
-    /// terms. Set by the calling member rather than by its caller, because the two legacy write
-    /// members differed on exactly this point: an enrolment stored what it was given and a
-    /// subscription renewal computed the term. See the remarks on <see cref="AddUserRoleAsync"/> and
-    /// <see cref="UpdateUserRoleAsync"/>.
-    /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
-    /// <returns>A task that completes once both bounds have been settled.</returns>
-    /// <remarks>
-    /// <para>
-    /// Three things happen here, in this order, and each one reproduces a specific legacy line.
-    /// </para>
-    /// <para>
-    /// <b>One.</b> Both bounds pass through <see cref="ReadLegacyDateMarkerAsAbsent"/>, which is
-    /// <c>Null.GetNull</c> at the same boundary and for the same reason: the legacy write path wrapped
-    /// both values on every call (membership <c>DataProvider/SqlDataProvider.vb</c> L280-L286), and
-    /// the marker is unstorable in a SQL Server <c>datetime</c> column anyway.
-    /// </para>
-    /// <para>
-    /// <b>Two.</b> An effective date that has already passed is cleared, reproducing
-    /// <c>If EffectiveDate &lt; Now Then EffectiveDate = Null.NullDate</c>
-    /// (<c>RoleController.vb</c>:L530-L532). The comparison is strict, so an effective date falling
-    /// exactly on the captured instant is left in place - it is in force, not past - which agrees with
-    /// the inclusive lower bound the terminal <c>GetRolesByUser</c> predicate tests and with
-    /// <see cref="UserRole.GetStatus(DateTime)"/>.
-    /// </para>
-    /// <para>
-    /// <b>Three.</b> When the calling member asks for it AND the caller stated no expiry, one is
-    /// derived from the role's own terms by <see cref="DeriveExpiryFromRoleTerms"/>. A stated expiry is
-    /// left exactly as it was, for the reason recorded on <see cref="UpdateUserRoleAsync"/>.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the present instant is captured ONCE and every comparison and offset below runs
-    /// against that single value, replacing the four separate ambient <c>Now</c> readings the legacy
-    /// engine took within one operation. It is read from the injected UTC clock, never from the
-    /// machine.
-    /// </para>
-    /// </remarks>
-    private async Task NormaliseSubscriptionBoundsAsync(
-        UserRole userRole,
-        bool deriveUnsetExpiry,
-        CancellationToken cancellationToken)
-    {
-        DateTime now = _clock.UtcNow;
-
-        userRole.EffectiveDate = ReadLegacyDateMarkerAsAbsent(userRole.EffectiveDate);
-        userRole.ExpiryDate = ReadLegacyDateMarkerAsAbsent(userRole.ExpiryDate);
-
-        if (userRole.EffectiveDate is DateTime effectiveDate && effectiveDate < now)
-        {
-            userRole.EffectiveDate = null;
-        }
-
-        if (!deriveUnsetExpiry || userRole.ExpiryDate is not null)
-        {
-            return;
-        }
-
-        Role? role = await ResolveRoleTermsAsync(userRole, cancellationToken).ConfigureAwait(false);
-
-        if (role is null)
-        {
-            // No terms are reachable, so the membership is unbounded - which is the same answer the
-            // legacy absent-period branch stored, and the same answer a null expiry already carries.
-            return;
-        }
-
-        userRole.ExpiryDate = DeriveExpiryFromRoleTerms(role, userRole.IsTrialUsed, userRole.ExpiryDate, now);
-    }
-
-    /// <summary>
-    /// Obtains the role whose billing and trial terms govern an assignment's expiry.
-    /// </summary>
-    /// <param name="userRole">The assignment being staged.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
-    /// <returns>
-    /// The role, or <see langword="null"/> when no role bearing the assignment's key is reachable -
-    /// which is the ordinary state while a role and its first membership are being staged together in
-    /// one unit of work.
-    /// </returns>
-    /// <remarks>
-    /// The navigation is preferred when the caller has already set it, so attaching an assignment to a
-    /// role object costs no query at all. Otherwise the key is resolved through the context's own
-    /// key-lookup, which consults the change tracker before the store: that is what lets a role staged
-    /// earlier in the same unit of work, and therefore not yet present in any table, still supply its
-    /// terms. The navigation on the assignment is deliberately not populated as a side effect, because
-    /// assigning it would drag the role into the graph that
-    /// <see cref="UpdateUserRoleAsync"/> subsequently attaches.
-    /// </remarks>
-    private async Task<Role?> ResolveRoleTermsAsync(UserRole userRole, CancellationToken cancellationToken)
-    {
-        if (userRole.Role is Role attached)
-        {
-            return attached;
-        }
-
-        return await _context.Roles
-            .FindAsync([userRole.RoleId], cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Derives a membership expiry from a role's billing or trial terms.
-    /// </summary>
-    /// <param name="role">The role whose terms govern the membership.</param>
-    /// <param name="isTrialUsed">
-    /// Whether the membership has already consumed the role's trial period. The column is nullable, so
-    /// "nothing recorded" is a third state; it is read as "not yet used" here, which is the state the
-    /// legacy non-nullable flag collapsed to.
-    /// </param>
-    /// <param name="storedExpiry">
-    /// The expiry already standing on the membership, which seeds the offset. A value in the past is
-    /// advanced to the present instant so that the term runs forward from now.
-    /// </param>
-    /// <param name="now">The single instant captured for this operation.</param>
-    /// <returns>
-    /// The derived expiry, or <see langword="null"/> when the terms grant a membership that never
-    /// lapses.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// A faithful translation of <c>RoleController.vb</c> L515-L547, in its own order.
-    /// </para>
-    /// <para>
-    /// <b>Term selection.</b> <c>If IsTrialUsed = False And role.TrialFrequency.ToString &lt;&gt; "N"</c>
-    /// (L521) chose the trial period and frequency, and anything else chose the billing pair. So the
-    /// trial governs only while it has not been consumed AND the role states a trial frequency that is
-    /// not the no-billing code - which is the second, independent responsibility
-    /// <see cref="BillingFrequency.None"/> carries.
-    /// </para>
-    /// <para>
-    /// <b>The absence guard runs before the code is examined at all.</b>
-    /// <c>If Period = Null.NullInteger Then ExpiryDate = Null.NullDate</c> (L537) short-circuited to
-    /// "no expiry", and both period columns are <c>int NULL</c>, so absence is a null rather than a
-    /// small number. An absent frequency is treated the same way: with no code there is no term to
-    /// apply, and a membership with no term does not lapse.
-    /// </para>
-    /// <para>
-    /// <b>All six codes are handled explicitly and there is no default label.</b> The legacy
-    /// <c>Select Case</c> had no <c>Case Else</c>, so a stored character outside the six left the date
-    /// exactly as the seeding above had set it; initialising the result from that seed reproduces the
-    /// same outcome without inventing a fall-through branch that swallows the six real codes.
-    /// </para>
-    /// <para>
-    /// <b>Every offset is clamped into the storable calendar.</b> The period is an unbounded stored
-    /// integer and the four direct legacy calls each failed on a large one: the week case multiplied by
-    /// seven in 32-bit arithmetic and could wrap to a negative day count, silently moving an expiry
-    /// into the past, while the day, month and year cases raised an out-of-range fault. Widening the
-    /// multiplication to 64 bits removes the wrap outright - no product of an <see cref="int"/> period
-    /// and seven, or twelve, can overflow a <see cref="long"/> - and the two helpers below then clamp
-    /// the result rather than letting it throw.
-    /// </para>
-    /// </remarks>
-    private static DateTime? DeriveExpiryFromRoleTerms(
-        Role role,
-        bool? isTrialUsed,
-        DateTime? storedExpiry,
-        DateTime now)
-    {
-        bool trialGoverns = isTrialUsed != true
-            && role.TrialFrequency is BillingFrequency trialFrequency
-            && trialFrequency != BillingFrequency.None;
-
-        int? period = trialGoverns ? role.TrialPeriod : role.BillingPeriod;
-        BillingFrequency? frequency = trialGoverns ? role.TrialFrequency : role.BillingFrequency;
-
-        if (period is not int units || frequency is not BillingFrequency code)
-        {
-            return null;
-        }
-
-        // If ExpiryDate < Now Then ExpiryDate = Now (RoleController.vb:L533-L535), with an absent
-        // expiry taking the same branch because the legacy absent-date marker was the minimum date
-        // value and therefore always in the past.
-        DateTime offsetBase = storedExpiry is DateTime stored && stored > now ? stored : now;
-
-        DateTime? expiry = offsetBase;
-
-        switch (code)
-        {
-            case BillingFrequency.None:
-                // 'N' - the role is not billed and the membership never lapses. The legacy line
-                // assigned Null.NullDate; under Rule T7 that is a null expiry.
-                expiry = null;
-                break;
-
-            case BillingFrequency.OneTime:
-                // 'O' - a single fee buys perpetual access, so the far-future sentinel is assigned
-                // outright and the period is not consulted.
-                expiry = PerpetualExpiry;
-                break;
-
-            case BillingFrequency.Day:
-                // 'D' - DateAdd(DateInterval.Day, Period, ...).
-                expiry = AddDaysWithinStorableRange(offsetBase, units);
-                break;
-
-            case BillingFrequency.Week:
-                // 'W' - DateAdd(DateInterval.Day, (Period * 7), ...). A day offset, never a week
-                // interval, and multiplied in 64-bit arithmetic so it cannot wrap.
-                expiry = AddDaysWithinStorableRange(offsetBase, (long)units * DaysPerWeek);
-                break;
-
-            case BillingFrequency.Month:
-                // 'M' - DateAdd(DateInterval.Month, Period, ...), which clamps onto a shorter month.
-                expiry = AddMonthsWithinStorableRange(offsetBase, units);
-                break;
-
-            case BillingFrequency.Year:
-                // 'Y' - DateAdd(DateInterval.Year, Period, ...), expressed in months so that both
-                // calendar cases clamp through one helper and 29 February keeps its legacy handling.
-                expiry = AddMonthsWithinStorableRange(offsetBase, (long)units * MonthsPerYear);
-                break;
-        }
-
-        return expiry;
-    }
-
-    /// <summary>
-    /// Returns <see langword="null"/> when the supplied bound is the legacy absent-date marker, and
-    /// the bound itself otherwise.
-    /// </summary>
-    /// <param name="bound">A membership bound as the caller supplied it.</param>
-    /// <returns>The value to store.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: THIS IS <c>Null.GetNull</c>, AT THE SAME BOUNDARY AND FOR THE SAME REASON. The
-    /// legacy absent-date marker is <c>Null.NullDate</c>, which is <c>Date.MinValue</c>
-    /// (<c>Null.vb</c> L66-L70), and the legacy data-access layer converted it to <c>DBNull</c> on the
-    /// way to the database - <c>Null.GetNull</c> (<c>Null.vb</c> L183-L186) substitutes <c>DBNull</c>
-    /// when the DATE PART equals <c>NullDate.Date</c>, carrying the source comment "this avoids subtle
-    /// time differences". Both members that wrote these two columns wrapped both values on every call:
-    /// <c>AddUserRole(PortalId, UserId, RoleId, GetNull(EffectiveDate), GetNull(ExpiryDate))</c> and
-    /// <c>UpdateUserRole(UserRoleId, GetNull(EffectiveDate), GetNull(ExpiryDate))</c>, membership
-    /// <c>DataProvider/SqlDataProvider.vb</c> L280-L286. The two repository members that stand in for
-    /// those two legacy members therefore do the same thing, which is what keeps the stored shape
-    /// identical under Rule T5 and keeps the sentinel out of the Domain under Rule T7.
-    /// </para>
-    /// <para>
-    /// The comparison is on the date part alone, matching <c>Null.GetNull</c> rather than improving on
-    /// it. A caller that carried the marker forward from a legacy object may well have a non-zero time
-    /// component attached to it, and an exact-equality test would let such a value through.
-    /// </para>
-    /// <para>
-    /// This is not merely a compatibility nicety. <c>dbo.UserRoles.EffectiveDate</c> and
-    /// <c>ExpiryDate</c> are both SQL Server <c>datetime</c>, whose range begins at 1753-01-01, so
-    /// 0001-01-01 is unstorable and an attempt to write it is refused by the database outright. Absent
-    /// this normalisation a caller passing the marker would receive a range failure from the store
-    /// rather than the "no bound" the legacy application recorded.
-    /// </para>
-    /// <para>
-    /// It is done here, in an explicit method on the write path, rather than as a mapping value
-    /// converter. Entity Framework Core does not invoke a value converter for a null model value and a
-    /// converter cannot introduce one, so expressing "this value becomes SQL NULL" as a converter would
-    /// require a null-converting converter - a construct documented as unsupported for most uses. The
-    /// entity configuration records that no conversion is attached and points here instead, so the two
-    /// files cannot drift into disagreeing about where the normalisation lives.
-    /// </para>
-    /// </remarks>
-    private static DateTime? ReadLegacyDateMarkerAsAbsent(DateTime? bound) =>
-        bound is DateTime value && value.Date == DateTime.MinValue.Date ? null : bound;
-
-    /// <summary>
-    /// Offsets an instant by a number of days, clamped into the calendar the column can store.
-    /// </summary>
-    /// <param name="offsetBase">The instant the term runs from.</param>
-    /// <param name="days">
-    /// The offset in days, already widened to 64 bits so that a large weekly period cannot wrap.
-    /// </param>
-    /// <returns>The offset instant, or the nearer storable boundary when the offset overshoots it.</returns>
-    /// <remarks>
-    /// A period large enough to leave the storable calendar is a data defect rather than a request for
-    /// an exception: the legacy code would have thrown, which surfaced as a server fault naming no
-    /// field, so the boundary is returned and the membership reads as perpetual or as long expired
-    /// accordingly. A negative period is clamped at the lower boundary for the same reason.
-    /// </remarks>
-    private static DateTime AddDaysWithinStorableRange(DateTime offsetBase, long days)
-    {
-        if (days >= 0)
-        {
-            long daysAvailable = (PerpetualExpiry - offsetBase).Days;
-            return days > daysAvailable ? PerpetualExpiry : offsetBase.AddDays(days);
-        }
-
-        long daysBehind = (offsetBase - MinimumStorableDateTime).Days;
-        return -days > daysBehind ? MinimumStorableDateTime : offsetBase.AddDays(days);
-    }
-
-    /// <summary>
-    /// Offsets an instant by a number of months, clamped into the calendar the column can store.
-    /// </summary>
-    /// <param name="offsetBase">The instant the term runs from.</param>
-    /// <param name="months">
-    /// The offset in months, already widened to 64 bits so that a large yearly period cannot wrap.
-    /// </param>
-    /// <returns>The offset instant, or the nearer storable boundary when the offset overshoots it.</returns>
-    /// <remarks>
-    /// The comparison counts month ordinals from year one, which turns the range test into a single
-    /// subtraction and avoids reasoning about calendar carries twice. Once the ordinal is proved to sit
-    /// inside the storable calendar - which is narrower than the type's own - the framework call cannot
-    /// fail and the narrowing cast is provably safe.
-    /// </remarks>
-    private static DateTime AddMonthsWithinStorableRange(DateTime offsetBase, long months)
-    {
-        long ordinalBase = ((long)offsetBase.Year * MonthsPerYear) + offsetBase.Month;
-        long ordinalTarget = ordinalBase + months;
-
-        if (ordinalTarget > ((long)PerpetualExpiry.Year * MonthsPerYear) + PerpetualExpiry.Month)
-        {
-            return PerpetualExpiry;
-        }
-
-        if (ordinalTarget
-            < ((long)MinimumStorableDateTime.Year * MonthsPerYear) + MinimumStorableDateTime.Month)
-        {
-            return MinimumStorableDateTime;
-        }
-
-        return offsetBase.AddMonths((int)months);
     }
 }

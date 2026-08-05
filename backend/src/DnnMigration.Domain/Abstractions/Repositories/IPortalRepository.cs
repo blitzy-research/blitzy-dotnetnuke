@@ -307,19 +307,44 @@ public interface IPortalRepository
     Task<int> CountUsersAsync(int portalId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Counts the supplied portal's live pages.
+    /// Counts the supplied portal's pages the way the legacy administration grid counted them.
     /// </summary>
     /// <remarks>
-    /// Deletion of a page is the soft delete that backs the legacy recycle bin, so a page
-    /// sitting in the bin is excluded from the tally exactly as the legacy administration
-    /// grid excluded it. Like the member tally, this is a projection over related data
-    /// rather than a stored column.
+    /// <para>
+    /// THE TALLY IS THE TERMINAL <c>GetTabCount</c> AND NOTHING ELSE, because that procedure
+    /// is what the legacy grid actually displayed: <c>PortalInfo.Pages</c>
+    /// (<c>PortalInfo.vb</c> lines 320-325) resolved its value through
+    /// <c>TabController.GetTabCount(PortalID)</c>. The terminal definition
+    /// (<c>04.04.00.SqlDataProvider</c> lines 511-527) reads the portal's
+    /// <c>AdminTabId</c> and then issues
+    /// <c>SELECT COUNT(*) - 1 FROM Tabs WHERE PortalID = @PortalID AND TabID &lt;&gt;
+    /// @AdminTabId AND (ParentId &lt;&gt; @AdminTabId OR ParentId IS NULL)</c>.
+    /// </para>
+    /// <para>
+    /// Three parts of that are counter-intuitive, and all three are preserved under Rule T5
+    /// rather than corrected. FIRST, the administration page and its DIRECT children are
+    /// excluded - only direct children, because the predicate tests <c>ParentId</c> and
+    /// nothing deeper, so a grandchild of the administration page is counted. SECOND, a page
+    /// in the recycle bin IS counted: the procedure states no soft-delete condition at all,
+    /// so an implementation that excluded soft-deleted pages would report a figure the
+    /// legacy grid never showed. THIRD, one is subtracted from the total, which is what the
+    /// legacy figure meant by "pages" and is not an off-by-one.
+    /// </para>
+    /// <para>
+    /// Like the member tally, this is a projection over related data rather than a stored
+    /// column. <see cref="ITabRepository.CountByPortalIdAsync"/> answers the same legacy
+    /// question from the page side and must agree with this member exactly.
+    /// </para>
     /// </remarks>
     /// <param name="portalId">The portal identifier.</param>
     /// <param name="cancellationToken">Abandons the operation.</param>
     /// <returns>
-    /// The number of pages that are not soft-deleted, which is zero for a portal with no
-    /// pages and for an identifier no portal bears.
+    /// The legacy page tally. MINUS ONE for a portal that does not exist and for a portal
+    /// that records no administration page - the two are indistinguishable, as they were to
+    /// the legacy statement, where a null <c>@AdminTabId</c> made every row's predicate
+    /// unknown and <c>COUNT(*) - 1</c> evaluated to <c>0 - 1</c>. The value is an arithmetic
+    /// consequence and NOT the legacy <c>Null.NullInteger</c> sentinel, so a caller must not
+    /// read it as "unknown".
     /// </returns>
     Task<int> CountPagesAsync(int portalId, CancellationToken cancellationToken = default);
 
@@ -356,14 +381,24 @@ public interface IPortalRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Counts the live pages of every supplied portal in one read.
+    /// Counts the pages of every supplied portal in one read, on the same terms as
+    /// <see cref="CountPagesAsync"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The batched counterpart of <see cref="CountPagesAsync"/>, and it exists for the same
     /// reason as <see cref="CountUsersForPortalsAsync"/>: a listing needs one tally per row
-    /// and must not pay a round trip per row to obtain it. Soft-deleted pages are excluded
-    /// exactly as the single-portal member excludes them, so the two members cannot
-    /// disagree. The result is TOTAL over the supplied identifiers on the same terms.
+    /// and must not pay a round trip per row to obtain it. The result is TOTAL over the
+    /// supplied identifiers on the same terms.
+    /// </para>
+    /// <para>
+    /// EVERY PART OF THE <c>GetTabCount</c> SEMANTICS APPLIES HERE TOO - the administration
+    /// page and its direct children excluded, recycled pages included, one subtracted, and
+    /// minus one for a portal with no administration page - so the two members cannot
+    /// disagree. That agreement is the whole point of the member's existence: an
+    /// implementation whose batched predicate drifts from its single one reports two
+    /// different figures for the same tenant depending on which screen asked.
+    /// </para>
     /// </remarks>
     /// <param name="portalIds">
     /// The portal identifiers to tally. An empty collection is answered with an empty
@@ -371,7 +406,8 @@ public interface IPortalRepository
     /// </param>
     /// <param name="cancellationToken">Abandons the operation.</param>
     /// <returns>
-    /// One entry per distinct supplied identifier, mapping it to its live page count.
+    /// One entry per distinct supplied identifier, mapping it to its legacy page tally -
+    /// minus one where the portal does not exist or records no administration page.
     /// </returns>
     Task<IReadOnlyDictionary<int, int>> CountPagesForPortalsAsync(
         IReadOnlyCollection<int> portalIds,

@@ -753,28 +753,24 @@ public sealed class User : Entity<int>
     /// <para>
     /// What the target does. Credentials are stored as a one-way BCrypt hash produced by the
     /// Infrastructure password hasher behind the Domain's hashing abstraction. The salt and cost
-    /// factor are carried inside the hash string itself, so no separate salt property exists here
-    /// - the external store's <c>PasswordSalt</c> and <c>PasswordFormat</c> columns
-    /// (<c>InstallMembership.sql</c> lines 83-84) belong to that store's scheme and are not
-    /// modelled. No <c>PasswordFormat</c> member, no encryption helper, no key material and no
-    /// reversible-encryption path appears anywhere on this type.
+    /// factor are carried inside the hash string itself, so no separate salt property exists here.
+    /// The external membership store's <c>PasswordSalt</c> and <c>PasswordFormat</c> columns
+    /// (<c>InstallMembership.sql</c> lines 83-84) are read through the repository contract during
+    /// migration and never become properties on this account entity. No encryption helper, key
+    /// material or reversible-encryption path appears anywhere on this type.
     /// </para>
     /// <para>
-    /// Migrating existing credentials. A one-way hash cannot verify a legacy encrypted secret, and
-    /// no component in this solution holds a legacy verifier - AAP section 0.7.5.5 forbids building
-    /// one - so <b>an administrative reset is the only path by which a pre-existing credential becomes
-    /// usable</b>. An earlier revision of this paragraph offered "after a successful verification
-    /// against the legacy scheme" as an alternative; that verification cannot occur, so the
-    /// alternative was never real. The reset is performed through the account-administration
-    /// contract, an administrator supplies the replacement, the Infrastructure security services
-    /// write its hash, and the resulting functional reduction is recorded in
-    /// <c>MIGRATION_NOTES.md</c>.
+    /// Migrating existing credentials. The opt-in <c>ILegacyCredentialVerifier</c> performs a
+    /// bounded comparison against the external membership row during the migration window and
+    /// returns only a boolean outcome. AuthService immediately replaces an accepted legacy value
+    /// with BCrypt; it never exposes decrypted plaintext or a retrieval operation. Administrative
+    /// reset remains the fallback for rows that cannot be verified or are not presented before the
+    /// migration window closes.
     /// </para>
     /// <para>
-    /// What IS performed automatically is a different operation: a value this scheme produced is
-    /// re-hashed at the current cost once that cost has been raised, on a sign-in that has already
-    /// verified it. That upgrades the strength of a working credential; it never rescues a legacy
-    /// one.
+    /// A value already produced by BCrypt is also re-hashed at the current cost once that cost has
+    /// been raised. That work-factor upgrade and the legacy-format replacement share the same final
+    /// repository write, but their verification paths remain deliberately separate.
     /// </para>
     /// <para>
     /// Password RETRIEVAL is deliberately not carried forward, in any form. There is no member

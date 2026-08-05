@@ -2,7 +2,7 @@ namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
 /// Inbound contract for user creation: the request body bound by
-/// <c>UsersController</c> on <c>POST /api/v1/portals/{portalId}/users</c>, which answers
+/// <c>UsersController</c> on <c>POST /api/v1/users</c>, which answers
 /// <c>201 Created</c> with a <c>UserDetailDto</c>.
 /// </summary>
 /// <remarks>
@@ -188,17 +188,11 @@ public sealed class CreateUserRequest
     // Hashing is exclusively an Infrastructure concern and is unreachable from
     // this layer by project reference.
     //
-    // MIGRATION: CREDENTIALS THAT ALREADY EXIST ARE MIGRATED BY ADMINISTRATIVE
-    // RESET, AND BY NOTHING ELSE. It must not be described as re-hashing on first
-    // successful login with administrative reset as a mere
-    // fallback, because no such path can run: the
-    // hasher verifies BCrypt digests only, no legacy credential column is mapped
-    // by the persistence layer, and no service in this solution can check a
-    // submitted password against a value held under the legacy reversible scheme -
-    // so the first-login sequence it described could never execute. Every
-    // pre-existing account therefore needs an administrative password reset before
-    // its owner can sign in. This is a deliberate functional reduction and is
-    // recorded in MIGRATION_NOTES.md.
+    // MIGRATION: this CREATE contract always supplies a new credential and therefore
+    // writes BCrypt directly. Existing rows migrate elsewhere: AuthService uses the
+    // bounded legacy verifier for the primary first-login path, and administrative
+    // reset remains the fallback. Neither mechanism adds a legacy-format member to
+    // this request.
     //
     // MIGRATION: password RETRIEVAL is not carried forward to any endpoint or
     // screen, so there is no retrieval request shape and no password-hint member

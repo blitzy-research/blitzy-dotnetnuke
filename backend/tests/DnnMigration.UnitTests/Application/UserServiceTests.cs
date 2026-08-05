@@ -57,7 +57,7 @@ namespace DnnMigration.UnitTests.Application;
 /// member the legacy surface had and the target deliberately dropped.
 /// </para>
 /// </remarks>
-public class UserServiceTests
+public class UserServiceApplicationTests
 {
     /// <summary>
     /// The tenant these assertions address, chosen as the identity seed on purpose.
@@ -207,6 +207,17 @@ public class UserServiceTests
     {
         private Subject()
         {
+            // Both account-lifecycle workflows now open ONE explicit transaction - creation so that the
+            // account row and its external credential are published together, deletion so that the grant
+            // cascade, the assignments, the membership, the account row and the credential removal are
+            // all-or-nothing. Loose behaviour would hand back a null scope and the await-using would
+            // dereference it, so this stub is required rather than decorative.
+            UnitOfWork
+                .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => Transaction.Object);
+
             Service = new UserService(
                 Users.Object,
                 Profiles.Object,
@@ -215,6 +226,7 @@ public class UserServiceTests
                 Portals.Object,
                 Modules.Object,
                 Definitions.Object,
+                Tabs.Object,
                 UnitOfWork.Object,
                 PasswordHasher.Object,
                 Clock.Object,
@@ -250,8 +262,20 @@ public class UserServiceTests
         /// <summary>Gets the module-definition repository mock.</summary>
         public Mock<IModuleDefinitionRepository> Definitions { get; } = new();
 
+        /// <summary>
+        /// Gets the page repository mock, read only to prove that a membership-settings redirect target
+        /// belongs to the tenant being written.
+        /// </summary>
+        public Mock<ITabRepository> Tabs { get; } = new();
+
         /// <summary>Gets the unit-of-work mock, which owns the single transactional commit point.</summary>
         public Mock<IUnitOfWork> UnitOfWork { get; } = new();
+
+        /// <summary>
+        /// Gets the transaction-scope mock the unit of work hands back, so a multi-write cascade can open,
+        /// commit and dispose one under test.
+        /// </summary>
+        public Mock<ITransactionScope> Transaction { get; } = new();
 
         /// <summary>Gets the hashing mock, observed for orchestration only.</summary>
         public Mock<IPasswordHasher> PasswordHasher { get; } = new();
@@ -433,7 +457,13 @@ public class UserServiceTests
             subject.Users.Setup(users => users.GetCredentialStateAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync((true, FakeStoredHash, true, false));
+                .ReturnsAsync((
+                    true,
+                    FakeStoredHash,
+                    PasswordFormat.Hashed,
+                    string.Empty,
+                    true,
+                    false));
             subject.Users.Setup(users => users.CreateCredentialAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
@@ -509,12 +539,32 @@ public class UserServiceTests
                 .Returns(Task.CompletedTask)
                 .Callback(() => subject.CallLog.Add("assignment.delete"));
 
-            subject.Permissions.Setup(permissions => permissions.DeleteUserPermissionsAsync(
+            // The account-deletion cascade calls the STAGE-ONLY member, never its committing sibling: the
+            // whole cascade is one transaction and a suboperation that committed inside it would make the
+            // sequence partially durable. The call log records the staging so the ordering assertions can
+            // prove it happens before the single commit.
+            subject.Permissions.Setup(permissions => permissions.StageUserPermissionRemovalAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result.Success())
                 .Callback(() => subject.CallLog.Add("grants.delete"));
+            subject.Permissions.Setup(permissions => permissions.InvalidateUserPermissionCachesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask)
+                .Callback(() => subject.CallLog.Add("grants.evict"));
+
+            // Loose behaviour hands back a null scope, which the await-using would then dereference, so this
+            // stub is required rather than decorative.
+            subject.UnitOfWork.Setup(unit => unit.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => subject.Transaction.Object)
+                .Callback(() => subject.CallLog.Add("transaction.begin"));
+            subject.Transaction.Setup(transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask)
+                .Callback(() => subject.CallLog.Add("transaction.commit"));
 
             subject.Tokens.Setup(tokens => tokens.RevokeAllRefreshTokensAsync(
                     It.IsAny<int>(),
@@ -530,11 +580,32 @@ public class UserServiceTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Array.Empty<UserProfileValue>());
+            subject.Profiles.Setup(profiles => profiles.GetProfileValuesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Array.Empty<UserProfileValue>());
+            subject.Profiles.Setup(profiles => profiles.DeleteProfileValuesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask)
+                .Callback(() => subject.CallLog.Add("profile-values.delete"));
 
             subject.Definitions.Setup(definitions => definitions.GetModuleDefinitionsByPortalIdAsync(
                     It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => subject.ModuleDefinitions)
+                .Callback(() => subject.CallLog.Add("definitions.read"));
+            subject.Definitions.Setup(definitions => definitions.GetAdministrativeDefinitionByFriendlyNameAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, string friendlyName, CancellationToken _) =>
+                    subject.ModuleDefinitions.FirstOrDefault(definition => string.Equals(
+                        definition.FriendlyName,
+                        friendlyName,
+                        StringComparison.OrdinalIgnoreCase)))
                 .Callback(() => subject.CallLog.Add("definitions.read"));
             subject.Modules.Setup(modules => modules.GetByPortalIdAsync(
                     It.IsAny<int>(),
@@ -554,6 +625,20 @@ public class UserServiceTests
                     subject.CommitCount++;
                     subject.CallLog.Add("commit");
                 });
+            subject.UnitOfWork.Setup(unit => unit.JoinOrBeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(subject.Transaction.Object)
+                .Callback(() => subject.CallLog.Add("transaction.begin-or-join"));
+            subject.Transaction.Setup(scope => scope.CommitAsync(It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask)
+                .Callback(() => subject.CallLog.Add("transaction.commit"));
+
+            subject.Portals.Setup(portals => portals.TabBelongsToPortalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
 
             subject.Cache.Setup(cache => cache.InvalidatePortal(It.IsAny<int>()))
                 .Callback<int>(portalId =>
@@ -1967,7 +2052,7 @@ public class UserServiceTests
 
         Result write = await subject.Service.UpdateMembershipSettingsAsync(
             SeedPortalId,
-            new MembershipSettingsDto(),
+            new UpdateMembershipSettingsRequest(),
             CancellationToken.None);
 
         write.IsFailure.Should().BeTrue("there is nowhere to store them");

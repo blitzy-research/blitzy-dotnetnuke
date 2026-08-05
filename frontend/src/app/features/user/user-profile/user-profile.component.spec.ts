@@ -83,7 +83,7 @@ describe('UserProfileComponent', () => {
    * @param inputValue The value to set.
    */
   function setInput(
-    name: 'profile' | 'mode' | 'loading' | 'saving' | 'manageVisibility',
+    name: 'profile' | 'mode' | 'heading' | 'loading' | 'saving' | 'manageVisibility',
     inputValue: unknown,
   ): void {
     fixture.componentRef.setInput(name, inputValue);
@@ -188,6 +188,19 @@ describe('UserProfileComponent', () => {
 
     it('defaults to the editing mode', () => {
       expect(component.mode).toBe('edit');
+    });
+
+    it('restores safe defaults when route input binding supplies no data', () => {
+      expect(() => {
+        setInput('profile', undefined);
+        setInput('mode', undefined);
+        setInput('heading', undefined);
+      }).not.toThrow();
+
+      expect(component.profile).toBeNull();
+      expect(component.mode).toBe('edit');
+      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe('Profile');
+      expect(host().querySelector('app-empty-state')).not.toBeNull();
     });
 
     it('defaults to offering the visibility control', () => {

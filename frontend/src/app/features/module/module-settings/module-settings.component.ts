@@ -6,13 +6,16 @@ import { LoadingSpinnerComponent } from '../../../shared/components/loading-spin
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import {
-  MODULE_ALIGNMENT,
   MODULE_VISIBILITY,
-  type ModuleSettings,
   type ModuleVisibility,
   type UpdateModuleRequest,
 } from '../../../core/models/module.model';
 import type { SelectOption } from '../../../core/models/select-option.model';
+import {
+  toUpdateModuleRequest,
+  type ModuleSettingsFormState,
+  type ModuleSettingsViewModel,
+} from './module-settings.view-model';
 
 /**
  * The seven disclosure regions this screen presents, named after the legacy section heads they replace.
@@ -37,8 +40,17 @@ export type ModuleSettingsSection =
  * reset returns each control to its declared initial value instead of to `null`.
  */
 interface ModuleSettingsFormModel {
+  /**
+   * The page whose placement is being edited.
+   *
+   * MIGRATION: the legacy control was a MOVE affordance and its wording is preserved, but the value now
+   * SELECTS the placement the update addresses rather than relocating it - the update contract carries one
+   * page identifier and a move would need two. Naming a page the module does not occupy is refused by the
+   * service with `module.placement_not_found`. Recorded in MIGRATION_NOTES.md.
+   */
+  tabId: FormControl<number>;
+
   moduleTitle: FormControl<string>;
-  paneName: FormControl<string>;
   moduleOrder: FormControl<number>;
   allTabs: FormControl<boolean>;
   inheritViewPermissions: FormControl<boolean>;
@@ -47,35 +59,18 @@ interface ModuleSettingsFormModel {
   startDate: FormControl<string>;
   endDate: FormControl<string>;
   iconFile: FormControl<string>;
-  alignment: FormControl<string>;
-  color: FormControl<string>;
-  border: FormControl<string>;
   visibility: FormControl<ModuleVisibility>;
   displayTitle: FormControl<boolean>;
-  displayPrint: FormControl<boolean>;
-  displaySyndicate: FormControl<boolean>;
   cacheTime: FormControl<number>;
-  isDefaultModule: FormControl<boolean>;
-  allModules: FormControl<boolean>;
+  setAsDefaultSettings: FormControl<boolean>;
+  applyToAllModules: FormControl<boolean>;
 }
 
 /** The bound on `dbo.Modules.ModuleTitle` (`nvarchar(256) NULL`). */
 const MODULE_TITLE_MAX_LENGTH = 256;
 
-/** The bound on `dbo.TabModules.PaneName` (`nvarchar(50) NOT NULL`). */
-const PANE_NAME_MAX_LENGTH = 50;
-
 /** The bound on `dbo.TabModules.IconFile` (`nvarchar(100) NULL`). */
 const ICON_FILE_MAX_LENGTH = 100;
-
-/** The bound on `dbo.TabModules.Alignment` (`nvarchar(10) NULL`). */
-const ALIGNMENT_MAX_LENGTH = 10;
-
-/** The bound on `dbo.TabModules.Color` (`nvarchar(20) NULL`). */
-const COLOR_MAX_LENGTH = 20;
-
-/** The bound on `dbo.TabModules.Border` (`nvarchar(1) NULL`) — one character used as a flag. */
-const BORDER_MAX_LENGTH = 1;
 
 /**
  * The regions that start closed.
@@ -139,22 +134,18 @@ const FIELD_LABELS = {
   moduleTitle: 'Title:',
   permissions: 'Permissions:',
   inheritViewPermissions: 'Inherit View permissions from Page',
+  tabId: 'Move To Page:',
   allTabs: 'Display Module On All Pages?',
   header: 'Header:',
   footer: 'Footer:',
   startDate: 'Start Date:',
   endDate: 'End Date:',
   iconFile: 'Icon:',
-  alignment: 'Alignment:',
-  color: 'Color:',
-  border: 'Border:',
   visibility: 'Visibility:',
   displayTitle: 'Display Container?',
-  displayPrint: 'Allow Print?',
-  displaySyndicate: 'Allow Syndicate?',
   cacheTime: 'Cache Time (secs):',
-  isDefaultModule: 'Set As Default Settings?',
-  allModules: 'Apply To All Modules?',
+  setAsDefaultSettings: 'Set As Default Settings?',
+  applyToAllModules: 'Apply To All Modules?',
 } as const;
 
 /** The keys of {@link FIELD_HINTS} and {@link FIELD_LABELS}. */
@@ -187,24 +178,20 @@ const FIELD_HINTS: Readonly<Record<ModuleSettingsField, string>> = {
   inheritViewPermissions:
     'Select the View and Edit permissions by checking/unchecking the boxes in the grid.  The module can '
     + 'inherit its permissions from the Page.  To do this check the Inherit View Permissions checkbox.',
+  tabId: 'Move this module instance to another Page.',
   allTabs: 'Select whether the module should appear in the same location on all pages of the site',
   header: 'Enter header text for this Module',
   footer: 'Enter footer text for this Module',
   startDate: 'Enter the start date for displaying this module.  You may use the Calendar to pick a date.',
   endDate: 'Enter the end date for displaying this module.  You may use the Calendar to pick a date.',
   iconFile: 'Select an Icon for this Module to display in the Title Bar',
-  alignment: 'Select the Alignment of the Module',
-  color: 'Enter a Color for the module',
-  border: 'Enter a Border width for the Module',
   visibility: 'Choose the default visibility for this Module',
   displayTitle: 'Select this option if you would like to display the Module container.',
-  displayPrint: 'Select this option if you would like to enable printing on this module',
-  displaySyndicate: 'Select this option if you would like to enable RSS on this module',
   cacheTime: 'Enter the time this object is kept in the Cache',
-  isDefaultModule:
+  setAsDefaultSettings:
     'Select this option if you would like the Page Settings for this module to be used as the default '
     + 'settings when adding new modules.',
-  allModules:
+  applyToAllModules:
     'Select this option if you would like the Page Settings for this module to be applied to all existing '
     + 'modules in the site.',
 };
@@ -229,39 +216,11 @@ const DELETE_CONFIRM_LABEL = 'Delete';
  */
 const NO_MODULE_MESSAGE = 'No module settings are available.';
 
-/**
- * The validation message for the border flag.
- *
- * MIGRATION: reproduced from `ModuleSettings.ascx.resx` valBorder.ErrorMessage, whose leading `<br>` was
- * markup for the inline validator summary and is dropped. This is the one appearance field the legacy screen
- * genuinely validated — `modulesettings.ascx:L135` declares a CompareValidator with
- * `Operator="DataTypeCheck" Type="Integer"` against a `MaxLength="1"` text box, so a legal value is exactly
- * one digit. The same rule is enforced server side by `UpdateModuleRequestValidator`.
- */
-const BORDER_INVALID_MESSAGE = 'Invalid Border (must be a number between 0 and 9)';
-
 /** The validation message for a negative cache period, from `ModuleSettings.ascx.resx` valCacheTime. */
 const CACHE_TIME_INVALID_MESSAGE = 'Invalid Cache Time';
 
 /** The validation message for a title longer than its column. */
 const MODULE_TITLE_TOO_LONG_MESSAGE = 'Title must be 256 characters or fewer.';
-
-/** The validation message for a missing pane, matching the server's PaneRequiredMessage. */
-const PANE_REQUIRED_MESSAGE = 'A pane must be selected.';
-
-/**
- * The alignment choices, declared inline in the legacy markup rather than fetched.
- *
- * MIGRATION: the order is the legacy order, which puts "Not Specified" LAST rather than first. That is
- * deliberate: `modulesettings.ascx:L122-L127` lists Left, Center, Right, Not Specified in that sequence, and
- * a horizontal radio group's reading order is its meaning. The empty value is a real choice, not an absence.
- */
-const ALIGNMENT_CHOICES: readonly SelectOption<string>[] = [
-  { value: MODULE_ALIGNMENT.left, label: 'Left' },
-  { value: MODULE_ALIGNMENT.center, label: 'Center' },
-  { value: MODULE_ALIGNMENT.right, label: 'Right' },
-  { value: MODULE_ALIGNMENT.notSpecified, label: 'Not Specified' },
-];
 
 /** The visibility choices, from `modulesettings.ascx:L144-L148`. */
 const VISIBILITY_CHOICES: readonly SelectOption<ModuleVisibility>[] = [
@@ -286,34 +245,6 @@ function toDateInputValue(instant: string | null): string {
 }
 
 /**
- * Collapses a blank string to `null` for transmission.
- *
- * The columns behind these fields are nullable, and the server's projection is a whole-row replacement, so
- * an emptied control must be sent as an absent value for the column to be cleared.
- *
- * @param value The control's value.
- * @returns The trimmed value, or `null` when it holds nothing but whitespace.
- */
-function textOrNull(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
-
-/**
- * Sends an alignment choice without collapsing the legacy "Not Specified" selection.
- *
- * MIGRATION: this is why {@link textOrNull} is not used for alignment. An empty string here means the
- * operator explicitly chose "Not Specified", which the legacy screen stored as an empty string, so it is sent
- * as one. Collapsing it to `null` would be indistinguishable from a column that was never written.
- *
- * @param value The control's value.
- * @returns The value unchanged.
- */
-function alignmentValue(value: string): string {
-  return value;
-}
-
-/**
  * The module settings screen, replacing `Website/admin/Modules/modulesettings.ascx` and its code-behind.
  *
  * The screen is purely presentational: it accepts the module's stored state and the lookup lists it needs,
@@ -326,6 +257,11 @@ function alignmentValue(value: string): string {
  *    API inventory in the action plan enumerates this resource's operations explicitly and contains no move
  *    operation; adding one would be a new endpoint, service member and repository member outside that
  *    enumeration. Recorded as an out-of-scope divergence rather than silently dropped.
+ *  - The pane, alignment, colour, border, print and syndication controls are NOT carried across. Their
+ *    columns remain mapped in the domain, but AAP 0.2.2 excludes the skinning and server-rendering surface
+ *    they configure, and neither the module read contract nor `UpdateModuleRequest` transports them. The API
+ *    now rejects undeclared JSON members, so rendering controls that can only produce a 400 would be
+ *    actively misleading. The stored values are preserved because the update projection never writes them.
  *  - The module container selector (ctlModuleContainer) is NOT carried across, because a container is a skin
  *    object and skinning is excluded. The stored container value is preserved untouched by the server on
  *    every update rather than being cleared, so nothing is lost by not editing it here.
@@ -358,13 +294,10 @@ function alignmentValue(value: string): string {
 export class ModuleSettingsComponent {
   /** The typed form backing every editable field on the screen. */
   protected readonly form = new FormGroup<ModuleSettingsFormModel>({
+    tabId: new FormControl(0, { nonNullable: true }),
     moduleTitle: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(MODULE_TITLE_MAX_LENGTH)],
-    }),
-    paneName: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(PANE_NAME_MAX_LENGTH)],
     }),
     moduleOrder: new FormControl(0, { nonNullable: true }),
     allTabs: new FormControl(false, { nonNullable: true }),
@@ -377,26 +310,11 @@ export class ModuleSettingsComponent {
       nonNullable: true,
       validators: [Validators.maxLength(ICON_FILE_MAX_LENGTH)],
     }),
-    alignment: new FormControl<string>(MODULE_ALIGNMENT.notSpecified, {
-      nonNullable: true,
-      validators: [Validators.maxLength(ALIGNMENT_MAX_LENGTH)],
-    }),
-    color: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.maxLength(COLOR_MAX_LENGTH)],
-    }),
-    // The legacy CompareValidator required an integer in a one-character box, so exactly one digit.
-    border: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.maxLength(BORDER_MAX_LENGTH), Validators.pattern(/^[0-9]?$/)],
-    }),
     visibility: new FormControl<ModuleVisibility>(MODULE_VISIBILITY.maximized, { nonNullable: true }),
     displayTitle: new FormControl(true, { nonNullable: true }),
-    displayPrint: new FormControl(true, { nonNullable: true }),
-    displaySyndicate: new FormControl(true, { nonNullable: true }),
     cacheTime: new FormControl(0, { nonNullable: true, validators: [Validators.min(0)] }),
-    isDefaultModule: new FormControl(false, { nonNullable: true }),
-    allModules: new FormControl(false, { nonNullable: true }),
+    setAsDefaultSettings: new FormControl(false, { nonNullable: true }),
+    applyToAllModules: new FormControl(false, { nonNullable: true }),
   });
 
   /** The regions currently closed. Seeded from the legacy `isexpanded` attributes. */
@@ -417,9 +335,6 @@ export class ModuleSettingsComponent {
   /** The migrated help text, exposed for binding. */
   protected readonly hints = FIELD_HINTS;
 
-  /** The alignment choices. */
-  protected readonly alignmentChoices = ALIGNMENT_CHOICES;
-
   /** The visibility choices. */
   protected readonly visibilityChoices = VISIBILITY_CHOICES;
 
@@ -432,29 +347,20 @@ export class ModuleSettingsComponent {
   /** The message shown when no module has been supplied. */
   protected readonly noModuleMessage = NO_MODULE_MESSAGE;
 
-  /** The border validation message. */
-  protected readonly borderInvalidMessage = BORDER_INVALID_MESSAGE;
-
   /** The cache period validation message. */
   protected readonly cacheTimeInvalidMessage = CACHE_TIME_INVALID_MESSAGE;
 
   /** The title-length validation message. */
   protected readonly moduleTitleTooLongMessage = MODULE_TITLE_TOO_LONG_MESSAGE;
 
-  /** The missing-pane validation message. */
-  protected readonly paneRequiredMessage = PANE_REQUIRED_MESSAGE;
-
   /** The column bounds the template advertises through `maxlength`. */
   protected readonly limits = {
     moduleTitle: MODULE_TITLE_MAX_LENGTH,
-    paneName: PANE_NAME_MAX_LENGTH,
     iconFile: ICON_FILE_MAX_LENGTH,
-    color: COLOR_MAX_LENGTH,
-    border: BORDER_MAX_LENGTH,
   } as const;
 
   /** The backing field for {@link settings}. */
-  private module: ModuleSettings | null = null;
+  private module: ModuleSettingsViewModel | null = null;
 
   /** The backing field for {@link canManageAllPages}. */
   private allPagesManageable = false;
@@ -471,6 +377,9 @@ export class ModuleSettingsComponent {
   /** Whether a deletion affordance should be offered. */
   @Input() canDelete = false;
 
+  /** The portal pages available to the legacy "Move To Page" picker. */
+  @Input() pages: readonly SelectOption<number>[] = [];
+
   /**
    * The module and placement being edited, or `null` when none has resolved.
    *
@@ -478,7 +387,7 @@ export class ModuleSettingsComponent {
    * not hold.
    */
   @Input()
-  set settings(value: ModuleSettings | null) {
+  set settings(value: ModuleSettingsViewModel | null) {
     this.module = value;
     if (value !== null) {
       this.seed(value);
@@ -486,16 +395,16 @@ export class ModuleSettingsComponent {
   }
 
   /** The module and placement being edited, or `null`. */
-  get settings(): ModuleSettings | null {
+  get settings(): ModuleSettingsViewModel | null {
     return this.module;
   }
 
   /**
-   * Whether the caller may change the three settings that reach beyond this page.
+   * Whether the caller may change the four settings that reach beyond this page.
    *
    * MIGRATION: `ModuleSettings.ascx.vb:L333-L338` disabled chkAllTabs, chkDefault, chkAllModules and cboTab
    * for a caller who was not a portal administrator, because each of those settings alters pages the caller
-   * does not administer. The three that survive are locked the same way — through the reactive forms API, so
+   * does not administer. All four are locked the same way — through the reactive forms API, so
    * that `getRawValue()` still carries the stored value unchanged and a locked field cannot be zeroed by
    * being absent from the submission.
    */
@@ -505,7 +414,7 @@ export class ModuleSettingsComponent {
     this.applyPrivilegeLocks();
   }
 
-  /** Whether the caller may change the three far-reaching settings. */
+  /** Whether the caller may change the four far-reaching settings. */
   get canManageAllPages(): boolean {
     return this.allPagesManageable;
   }
@@ -655,32 +564,25 @@ export class ModuleSettingsComponent {
       return;
     }
 
+    // A submission with nothing seeded cannot be composed. `tabId` is a required member of the request
+    // and zero is a legitimate page, so there is no value that could stand in for the page this
+    // placement sits on - and the form holds no page of its own to fall back to. The template only
+    // renders the form once a module has resolved, so this guard is unreachable through the interface;
+    // it is here because a required wire member must never be defaulted, not to handle a known path.
+    const module = this.module;
+
+    if (module === null) {
+      return;
+    }
+
     // getRawValue rather than value: it includes the controls locked by applyPrivilegeLocks, so a caller
     // without the privilege submits their stored values unchanged instead of clearing them.
-    const raw = this.form.getRawValue();
+    const raw: ModuleSettingsFormState = this.form.getRawValue();
 
-    this.save.emit({
-      moduleTitle: textOrNull(raw.moduleTitle),
-      paneName: raw.paneName,
-      moduleOrder: raw.moduleOrder,
-      allTabs: raw.allTabs,
-      inheritViewPermissions: raw.inheritViewPermissions,
-      alignment: alignmentValue(raw.alignment),
-      color: textOrNull(raw.color),
-      border: textOrNull(raw.border),
-      visibility: raw.visibility,
-      displayTitle: raw.displayTitle,
-      displayPrint: raw.displayPrint,
-      displaySyndicate: raw.displaySyndicate,
-      cacheTime: raw.cacheTime,
-      iconFile: textOrNull(raw.iconFile),
-      startDate: textOrNull(raw.startDate),
-      endDate: textOrNull(raw.endDate),
-      header: textOrNull(raw.header),
-      footer: textOrNull(raw.footer),
-      isDefaultModule: raw.isDefaultModule,
-      allModules: raw.allModules,
-    });
+    // The single crossing of the form/wire boundary. The adapter projects the fourteen editable values
+    // onto their wire members, collapses emptied text to null, and supplies `tabId` and `isDeleted` from
+    // the seeded state - see module-settings.view-model.ts for the reasoning behind each of the three.
+    this.save.emit(toUpdateModuleRequest(raw, { isDeleted: module.isDeleted }));
   }
 
   /**
@@ -692,10 +594,10 @@ export class ModuleSettingsComponent {
    *
    * @param value The state to show.
    */
-  private seed(value: ModuleSettings): void {
+  private seed(value: ModuleSettingsViewModel): void {
     this.form.reset({
+      tabId: value.tabId,
       moduleTitle: value.moduleTitle ?? '',
-      paneName: value.paneName,
       moduleOrder: value.moduleOrder,
       allTabs: value.allTabs,
       inheritViewPermissions: value.inheritViewPermissions ?? true,
@@ -704,16 +606,11 @@ export class ModuleSettingsComponent {
       startDate: toDateInputValue(value.startDate),
       endDate: toDateInputValue(value.endDate),
       iconFile: value.iconFile ?? '',
-      alignment: value.alignment ?? MODULE_ALIGNMENT.notSpecified,
-      color: value.color ?? '',
-      border: value.border ?? '',
       visibility: value.visibility,
       displayTitle: value.displayTitle,
-      displayPrint: value.displayPrint,
-      displaySyndicate: value.displaySyndicate,
       cacheTime: value.cacheTime ?? 0,
-      isDefaultModule: false,
-      allModules: false,
+      setAsDefaultSettings: false,
+      applyToAllModules: false,
     });
 
     // reset() re-enables every control, so the privilege locks must be reapplied after it.
@@ -721,14 +618,19 @@ export class ModuleSettingsComponent {
   }
 
   /**
-   * Locks or releases the three settings that reach beyond the page being edited.
+   * Locks or releases the four settings that reach beyond the page being edited.
    *
    * The reactive forms API is used rather than a `disabled` attribute binding: binding the attribute on a
    * control a `formControlName` owns contests the directive for the property and raises Angular's reactive
    * forms warning. `emitEvent: false` keeps the lock from looking like an edit.
    */
   private applyPrivilegeLocks(): void {
-    const gated = [this.form.controls.allTabs, this.form.controls.isDefaultModule, this.form.controls.allModules];
+    const gated = [
+      this.form.controls.tabId,
+      this.form.controls.allTabs,
+      this.form.controls.setAsDefaultSettings,
+      this.form.controls.applyToAllModules,
+    ];
 
     for (const control of gated) {
       if (this.allPagesManageable) {

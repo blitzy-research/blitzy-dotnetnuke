@@ -5,9 +5,11 @@ using DnnMigration.Api.Extensions;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace DnnMigration.Api.Controllers;
 
@@ -202,11 +204,11 @@ namespace DnnMigration.Api.Controllers;
 /// rather than trusted.
 /// </para>
 /// <para>
-/// <strong>Tenant administration</strong>, ten routes, requiring administration of the portal the route
-/// names: list the accounts; create one; update one; delete one; reset a credential; clear a lockout; set
-/// approval; require a change at next sign-in; and read and write the tenant's membership settings. The
-/// caller must administer the very tenant addressed, which the policy handler binds to the route's own
-/// portal value, so an administrator of one tenant cannot reach another's accounts.
+/// <strong>Tenant administration</strong>, ten routes, requiring administration of the tenant resolved for
+/// the request: list the accounts; create one; update one; delete one; reset a credential; clear a lockout;
+/// set approval; require a change at next sign-in; and read and write the tenant's membership settings. The
+/// flat resource exposes no portal identifier a caller can substitute, so another tenant is reached only
+/// through that tenant's own host alias and credentials.
 /// </para>
 /// <para>
 /// <strong>Account access</strong>, three routes, admitting either the account the route names or an
@@ -272,11 +274,13 @@ namespace DnnMigration.Api.Controllers;
 /// </remarks>
 [ApiController]
 [ApiVersion("1.0")]
-[Route("api/v{version:apiVersion}")]
+[Route("api/v{version:apiVersion}/users")]
 [Authorize]
 [Produces("application/json")]
 public sealed class UsersController : ControllerBase
 {
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
     // NO VALIDATOR IS INJECTED, AND THAT IS THE POINT. Every request contract this controller binds is
     //   validated by the globally registered validation filter, which runs before the action, resolves a
     //   validator from each bound argument's declared type and short-circuits with the RFC 7807 validation
@@ -294,17 +298,23 @@ public sealed class UsersController : ControllerBase
 
     /// <summary>The account service this controller delegates to.</summary>
     private readonly IUserService _users;
+    private readonly IPortalContextHolder _portalContext;
 
     /// <summary>Initialises a new instance of the <see cref="UsersController"/> class.</summary>
     /// <param name="users">The application-layer contract for the account aggregate.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="users"/> is <see langword="null"/>.</exception>
-    public UsersController(IUserService users)
+    /// <param name="portalContext">The tenant resolved from the request host.</param>
+    /// <exception cref="ArgumentNullException">Either dependency is <see langword="null"/>.</exception>
+    public UsersController(IUserService users, IPortalContextHolder portalContext)
     {
         _users = users ?? throw new ArgumentNullException(nameof(users));
+        _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
     }
 
+    /// <summary>Returns the tenant resolved for the current request, or <see langword="null"/>.</summary>
+    private int? ResolvePortalId() =>
+        _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
+
     /// <summary>Lists a portal's users.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="request">Paging and sorting arguments, bound from the query string.</param>
     /// <param name="userName">Restricts the result to user names beginning with this text.</param>
     /// <param name="email">Restricts the result to addresses beginning with this text.</param>
@@ -336,7 +346,7 @@ public sealed class UsersController : ControllerBase
     /// would silently alter which rows a client receives.
     /// </para>
     /// </remarks>
-    [HttpGet("portals/{portalId:int}/users")]
+    [HttpGet]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(typeof(PagedResponse<UserListItemDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -344,7 +354,6 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<UserListItemDto>>> ListAsync(
-        int portalId,
         [FromQuery] UserPagedRequest request,
         [FromQuery] string? userName,
         [FromQuery] string? email,
@@ -353,6 +362,11 @@ public sealed class UsersController : ControllerBase
         [FromQuery] bool? isApproved,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // Validated by the globally registered filter. It resolves the account collection's own paging
         // validator from this parameter's DECLARED TYPE, which is why the type is the specialised one: the
         // unspecialised paging contract resolves the general validator, whose sortable set is the union of
@@ -377,21 +391,24 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Retrieves one user.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The user.</returns>
-    [HttpGet("portals/{portalId:int}/users/{userId:int}")]
+    [HttpGet("{userId:int}")]
     [Authorize(Policy = PolicyNames.AccountOwnerOrPortalAdministrator)]
     [ProducesResponseType(typeof(ApiResponse<UserDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<UserDetailDto?>>> GetAsync(
-        int portalId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result<UserDetailDto?> outcome = await _users
             .GetUserAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -400,7 +417,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Creates a user in a portal.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="request">The user to create.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The created user, with their address in the location header.</returns>
@@ -431,7 +447,7 @@ public sealed class UsersController : ControllerBase
     /// conflict with it - the caller is simply not permitted to add another account.
     /// </para>
     /// </remarks>
-    [HttpPost("portals/{portalId:int}/users")]
+    [HttpPost]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     // HASHES A CREDENTIAL, and was completely unbounded: the credential window and the process-wide
     // concurrency bound were applied by matching whole segments of the request path against a word list, and
@@ -452,10 +468,14 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult<ApiResponse<UserDetailDto>>> CreateAsync(
-        int portalId,
         [FromBody] CreateUserRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // Validated by the globally registered filter; see the note on the constructor.
         Result<UserDetailDto> outcome = await _users
             .CreateUserAsync(portalId, request, cancellationToken)
@@ -465,12 +485,11 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Updates a user.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="request">The new state.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The updated user.</returns>
-    [HttpPut("portals/{portalId:int}/users/{userId:int}")]
+    [HttpPut("{userId:int}")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(typeof(ApiResponse<UserDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -479,11 +498,15 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<UserDetailDto>>> UpdateAsync(
-        int portalId,
         int userId,
         [FromBody] UpdateUserRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // Validated by the globally registered filter; see the note on the constructor.
         Result<UserDetailDto> outcome = await _users
             .UpdateUserAsync(portalId, userId, request, cancellationToken)
@@ -493,7 +516,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Deletes a user.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> when the user has been removed.</returns>
@@ -515,7 +537,7 @@ public sealed class UsersController : ControllerBase
     /// unknown account and an unreachable store answer <c>403</c>, <c>404</c> and <c>503</c> respectively
     /// instead of collapsing into one message.
     /// </remarks>
-    [HttpDelete("portals/{portalId:int}/users/{userId:int}")]
+    [HttpDelete("{userId:int}")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -523,10 +545,14 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult> DeleteAsync(
-        int portalId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _users
             .DeleteUserAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -535,7 +561,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Changes the calling account's own password.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier, which must be the caller's own.</param>
     /// <param name="request">The current and new passwords.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -547,8 +572,10 @@ public sealed class UsersController : ControllerBase
     /// shape of body sent to this one - the arrangement that previously let any bearer token overwrite any
     /// account's credential in any tenant simply by naming it in the route.
     /// </remarks>
-    [HttpPost("portals/{portalId:int}/users/{userId:int}/password")]
+    [HttpPost("{userId:int}/password")]
     [Authorize(Policy = PolicyNames.AccountOwner)]
+    [RemediationAllowed]
+    [AllowDuringRemediation(RemediationEndpointKind.Password)]
     // Verifies the current credential and hashes the replacement.
     [CredentialEndpoint]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -560,11 +587,15 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult> ChangePasswordAsync(
-        int portalId,
         int userId,
         [FromBody] ChangePasswordRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // Validated by the globally registered filter; see the note on the constructor. The credential
         // itself is forwarded and never inspected, compared, hashed or logged here.
         Result outcome = await _users
@@ -575,7 +606,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Resets a user's password administratively, without the current one.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="request">The new password. The current password is neither required nor consulted.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -593,7 +623,7 @@ public sealed class UsersController : ControllerBase
     /// unlike the legacy reset, which handed it back in clear text.
     /// </para>
     /// </remarks>
-    [HttpPost("portals/{portalId:int}/users/{userId:int}/password-reset")]
+    [HttpPost("{userId:int}/password-reset")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     // HASHES A CREDENTIAL, and was unbounded for a subtler reason than account creation: the path matcher
     // compares WHOLE segments, and this route's segment is "password-reset", which is equal to neither
@@ -608,11 +638,15 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult> ResetPasswordAsync(
-        int portalId,
         int userId,
         [FromBody] ChangePasswordRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // Validated by the globally registered filter; see the note on the constructor. The replacement
         // credential is forwarded and never inspected, hashed, echoed or logged here - and the new value is
         // not returned to the caller, unlike the legacy reset, which handed it back in clear text.
@@ -624,7 +658,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Clears a lockout so the account can be used again.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> when the lockout has been cleared.</returns>
@@ -639,7 +672,7 @@ public sealed class UsersController : ControllerBase
     /// this action declares a <c>400</c> at all - and declares it carrying the plain problem document, since
     /// the request has no member that could be named as the offender.
     /// </remarks>
-    [HttpPost("portals/{portalId:int}/users/{userId:int}/unlock")]
+    [HttpPost("{userId:int}/unlock")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
@@ -647,10 +680,14 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> UnlockAsync(
-        int portalId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _users
             .UnlockUserAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -659,12 +696,12 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Approves or unapproves a user.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="isApproved">The approval state to set.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> when the approval state has been set.</returns>
     /// <response code="204">The approval state has been set.</response>
+    /// <response code="400">The approval state was not stated. It is required and is never inferred.</response>
     /// <response code="403">
     /// An administrator may not set their own approval state. That rule is the service's.
     /// </response>
@@ -678,7 +715,9 @@ public sealed class UsersController : ControllerBase
     /// <para>
     /// The desired state is an explicit argument rather than two endpoints named approve and unapprove,
     /// because the service reports setting the state it already holds as a conflict - and that answer is only
-    /// meaningful if the caller stated which state they meant.
+    /// meaningful if the caller stated which state they meant. It is bound as a NULLABLE boolean and a null
+    /// is refused: a non-nullable binding made the parameter optional, so a caller who omitted it withdrew
+    /// approval and ended the account's sessions without ever having asked for either.
     /// </para>
     /// <para>
     /// MIGRATION: replaces the authorise and unauthorise commands of
@@ -688,7 +727,7 @@ public sealed class UsersController : ControllerBase
     /// carried separately is now enforced in one place.
     /// </para>
     /// </remarks>
-    [HttpPut("portals/{portalId:int}/users/{userId:int}/approval")]
+    [HttpPut("{userId:int}/approval")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -698,20 +737,43 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult> SetApprovalAsync(
-        int portalId,
         int userId,
-        [FromQuery] bool isApproved,
+        [FromQuery] bool? isApproved,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+        // THE STATE MUST BE STATED, AND OMITTING IT IS NOT THE SAME AS SAYING FALSE. Bound as a
+        // non-nullable boolean this parameter was OPTIONAL: a caller who addressed
+        // .../approval with no query string bound the default, which is false, so a request that named no
+        // state silently WITHDREW approval and revoked the account's live sessions. Nothing about that
+        // request was malformed enough for the model binder to object, so the 400 this action advertises was
+        // unreachable and the destructive outcome was the quiet one. A nullable parameter makes absence
+        // representable, and this refusal is what turns it into the advertised answer.
+        if (isApproved is not { } desiredState)
+        {
+            return this.ValidationProblem(new ValidationProblemDetails(
+                new Dictionary<string, string[]>(StringComparer.Ordinal)
+                {
+                    [nameof(isApproved)] =
+                    [
+                        "The approval state is required. Send ?isApproved=true to approve the account or "
+                        + "?isApproved=false to withdraw approval; omitting it is refused rather than read "
+                        + "as false, because withdrawing approval also ends the account's live sessions.",
+                    ],
+                }));
+        }
+
         Result outcome = await _users
-            .SetUserApprovalAsync(portalId, userId, isApproved, cancellationToken)
+            .SetUserApprovalAsync(portalId, userId, desiredState, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
     }
 
     /// <summary>Requires the user to change their password at next sign-in.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> when the requirement has been recorded.</returns>
@@ -725,7 +787,7 @@ public sealed class UsersController : ControllerBase
     /// address rather than a field on the update request because it was its own administrative act on the
     /// legacy screen, and because an update of a display name should not be able to carry it.
     /// </remarks>
-    [HttpPost("portals/{portalId:int}/users/{userId:int}/require-password-change")]
+    [HttpPost("{userId:int}/require-password-change")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -733,10 +795,14 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult> RequirePasswordChangeAsync(
-        int portalId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _users
             .RequirePasswordChangeAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -745,7 +811,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Retrieves a portal's membership settings.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The membership settings.</returns>
     /// <response code="200">The tenant's membership settings.</response>
@@ -758,16 +823,20 @@ public sealed class UsersController : ControllerBase
     /// object replaces the dictionary, so the available settings are declared rather than discovered. The
     /// address is keyed by the PORTAL alone: these are the tenant's settings, not any account's.
     /// </remarks>
-    [HttpGet("portals/{portalId:int}/membership-settings")]
+    [HttpGet("settings")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(typeof(ApiResponse<MembershipSettingsDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<MembershipSettingsDto?>>> GetMembershipSettingsAsync(
-        int portalId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result<MembershipSettingsDto?> outcome = await _users
             .GetMembershipSettingsAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
@@ -775,12 +844,11 @@ public sealed class UsersController : ControllerBase
         return this.Complete(outcome);
     }
 
-    /// <summary>Replaces a portal's membership settings.</summary>
-    /// <param name="portalId">The portal identifier.</param>
-    /// <param name="settings">The settings to store.</param>
+    /// <summary>Replaces the resolved tenant's membership settings.</summary>
+    /// <param name="request">The settings to store.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> when the settings have been stored.</returns>
-    [HttpPut("portals/{portalId:int}/membership-settings")]
+    [HttpPut("settings")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -788,19 +856,22 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> UpdateMembershipSettingsAsync(
-        int portalId,
-        [FromBody] MembershipSettingsDto settings,
+        [FromBody] UpdateMembershipSettingsRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _users
-            .UpdateMembershipSettingsAsync(portalId, settings, cancellationToken)
+            .UpdateMembershipSettingsAsync(portalId, request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
     }
 
     /// <summary>Retrieves a user's profile.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The profile, including the definition of each property.</returns>
@@ -813,17 +884,23 @@ public sealed class UsersController : ControllerBase
     /// resolves it, validates against a closed set or converts it. A client renders the form from the
     /// definitions, exactly as the legacy property editor did.
     /// </remarks>
-    [HttpGet("portals/{portalId:int}/users/{userId:int}/profile")]
+    [HttpGet("{userId:int}/profile")]
     [Authorize(Policy = PolicyNames.AccountOwnerOrPortalAdministrator)]
+    [RemediationAllowed]
+    [AllowDuringRemediation(RemediationEndpointKind.Profile)]
     [ProducesResponseType(typeof(ApiResponse<UserProfileDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<UserProfileDto?>>> GetProfileAsync(
-        int portalId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result<UserProfileDto?> outcome = await _users
             .GetProfileAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -832,7 +909,6 @@ public sealed class UsersController : ControllerBase
     }
 
     /// <summary>Replaces a user's profile values.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="userId">The user identifier.</param>
     /// <param name="profile">The values to store.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -847,19 +923,26 @@ public sealed class UsersController : ControllerBase
     /// legacy property editor enforced in the page are enforced in the service - which is why a refused value
     /// answers <c>400</c> while an undefined property answers <c>404</c>.
     /// </remarks>
-    [HttpPut("portals/{portalId:int}/users/{userId:int}/profile")]
+    [HttpPut("{userId:int}/profile")]
     [Authorize(Policy = PolicyNames.AccountOwnerOrPortalAdministrator)]
+    [RemediationAllowed]
+    [AllowDuringRemediation(RemediationEndpointKind.Profile)]
+    [EnableRateLimiting(RateLimitingExtensions.ProfileWritePolicyName)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> UpdateProfileAsync(
-        int portalId,
         int userId,
         [FromBody] UserProfileDto profile,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _users
             .UpdateProfileAsync(portalId, userId, profile, cancellationToken)
             .ConfigureAwait(false);

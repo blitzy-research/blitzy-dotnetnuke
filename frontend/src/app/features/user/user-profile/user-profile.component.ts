@@ -50,6 +50,8 @@ const UNCATEGORISED_HEADING = 'General';
  * single-line control stops being reviewable.
  */
 const MULTILINE_LENGTH_THRESHOLD = 250;
+const DEFAULT_MODE: UserProfileMode = 'edit';
+const DEFAULT_HEADING = 'Profile';
 
 /**
  * One category of profile properties, as the template consumes it.
@@ -304,6 +306,12 @@ export class UserProfileComponent {
    */
   private held: UserProfile | null = null;
 
+  /** Backing field for the route-safe rendering mode. */
+  private heldMode: UserProfileMode = DEFAULT_MODE;
+
+  /** Backing field for the route-safe screen heading. */
+  private pageHeading = DEFAULT_HEADING;
+
   /**
    * The profile to render.
    *
@@ -314,9 +322,10 @@ export class UserProfileComponent {
    * touched.
    */
   @Input()
-  set profile(value: UserProfile | null) {
-    this.held = value;
-    this.categories = groupByCategory(value);
+  set profile(value: UserProfile | null | undefined) {
+    const resolved = value ?? null;
+    this.held = resolved;
+    this.categories = groupByCategory(resolved);
     this.collapsed.clear();
     this.rebuildControls();
   }
@@ -328,7 +337,14 @@ export class UserProfileComponent {
   /**
    * Which mode to render.
    */
-  @Input() mode: UserProfileMode = 'edit';
+  @Input()
+  set mode(value: UserProfileMode | undefined) {
+    this.heldMode = value ?? DEFAULT_MODE;
+  }
+
+  get mode(): UserProfileMode {
+    return this.heldMode;
+  }
 
   /**
    * The screen's title, rendered by the shared page header.
@@ -337,7 +353,16 @@ export class UserProfileComponent {
    * its action bar, and explicitly disclaims styling either, so the title is rendered
    * through that component rather than as an ad-hoc heading here.
    */
-  @Input() heading = 'Profile';
+  @Input()
+  set heading(value: string | undefined) {
+    const normalised = value?.trim();
+    this.pageHeading =
+      normalised === undefined || normalised.length === 0 ? DEFAULT_HEADING : normalised;
+  }
+
+  get heading(): string {
+    return this.pageHeading;
+  }
 
   /**
    * The screen's supporting line, rendered by the shared page header.

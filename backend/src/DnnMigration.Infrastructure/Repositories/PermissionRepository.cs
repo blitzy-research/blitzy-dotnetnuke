@@ -77,18 +77,37 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// widening into a principal lookup, or the reverse.
 /// </para>
 /// <para>
-/// <strong>Reads do not track; deletes must.</strong> Every read-only query is issued without change
-/// tracking, so a materialised grant cannot be mutated into an accidental update by unrelated work
-/// sharing the scoped context. The load that precedes a removal is the deliberate exception: staging a
-/// removal requires the entity the change tracker will act on.
+/// <strong>Reads do not track.</strong> Every read-only query is issued without change tracking, so a
+/// materialised grant cannot be mutated into an accidental update by unrelated work sharing the scoped
+/// context. The single-row load that precedes a single-row removal is the deliberate exception: staging
+/// one removal requires the entity the change tracker will act on.
 /// </para>
 /// <para>
-/// <strong>Writes and removals are staged, never committed.</strong> No member below commits, and none
-/// issues a set-based statement that would reach the store before the surrounding unit of work is
-/// ready. That is what allows a batch - a page's grants copied onto each of its children, or the
-/// tenant-creation sequence that writes portals, aliases, roles, pages and modules together - to
-/// succeed or fail as one operation. Each staged entity carries its generated key once the unit of
-/// work commits.
+/// <strong>Reads project the grant and nothing beyond it.</strong> No read below pulls the catalogue
+/// entry, the role or the account alongside a grant. A grant is five scalars and its own key; the
+/// principal it names is a bare identifier, deliberately, because a negative identifier names a
+/// pseudo-principal that has no row to join to at all. Every consumer in this solution decides access
+/// from those scalars and resolves the catalogue separately by identifier when it needs display text, so
+/// a joined payload was cost without a reader: on a tenant-wide or page-wide grant read it multiplied
+/// every returned row by an account row, and an account row carries the credential and contact columns
+/// that an authorisation read has no business loading. Reaching the joined values through the configured
+/// navigations remains available to a future consumer that genuinely needs them - the relationships are
+/// declared in <c>Persistence/Configurations</c> - but it is that consumer's read that should ask for
+/// them, at the breadth it actually needs.
+/// </para>
+/// <para>
+/// <strong>Single-row writes and removals are staged; bulk removals are immediate.</strong> No member
+/// below commits. The inserts, the updates and the two single-grant removals stage, which is what allows
+/// a batch - a page's grants copied onto each of its children, or the tenant-creation sequence that
+/// writes portals, aliases, roles, pages and modules together - to succeed or fail as one operation, and
+/// each staged entity carries its generated key once the unit of work commits. The four BULK removals are
+/// different in kind and say so: each issues one set-based statement that reaches the store when it is
+/// called. That is the only way to remove an unbounded number of rows without first loading every one of
+/// them into the change tracker, and it costs nothing in atomicity, because a set-based statement enlists
+/// in whatever transaction the context already has open. A caller combining a bulk removal with other
+/// work therefore opens a transaction through <see cref="IUnitOfWork"/> - which is exactly what the sole
+/// caller of the two account-scoped removals does, and what its own remarks already describe these
+/// members as requiring.
 /// </para>
 /// </remarks>
 internal sealed class PermissionRepository : IPermissionRepository
@@ -316,25 +335,25 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// <remarks>
     /// <para>
     /// MIGRATION: the terminal page-scoped catalogue reader (<c>04.05.03.SqlDataProvider</c>) filters on
-    /// the product-wide page scope code and <strong>never references its page argument at all</strong>, so
-    /// every page receives the same catalogue. That is reproduced rather than corrected. Inventing the
-    /// page filter the legacy statement does not apply would narrow an answer the legacy application
-    /// returned in full, and this note exists so that nobody reads the body below as having lost a
-    /// predicate.
+    /// the product-wide page scope code, so every EXISTING page receives the same catalogue. SEC-033 adds
+    /// only the missing existence predicate: an identifier naming no page now yields no metadata rather
+    /// than the installation-wide page catalogue. It does not narrow the catalogue for a real page.
     /// </para>
     /// <para>
-    /// The argument is therefore accepted and unused. It is kept because the contract declares it and
-    /// callers pass it, and because removing it would change a signature to describe an implementation
-    /// detail of one statement rather than the question being asked.
+    /// The argument is therefore used to prove the resource exists, while the catalogue entries themselves
+    /// remain selected by the shared page scope code. Portal ownership is proved by the application service,
+    /// which has the tenant identity this repository deliberately does not.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<Permission>> GetByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
     {
-        _ = tabId;
+        IQueryable<int> matchingTabIds = _dbContext.Tabs
+            .Where(tab => tab.TabId == tabId)
+            .Select(tab => tab.TabId);
 
         return await _dbContext.Permissions
             .AsNoTracking()
-            .Where(entry => entry.PermissionCode == TabScopeCode)
+            .Where(entry => matchingTabIds.Any() && entry.PermissionCode == TabScopeCode)
             .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -397,14 +416,23 @@ internal sealed class PermissionRepository : IPermissionRepository
     // =================================================================================================
     // ModulePermission - one grant recorded against one module instance, to a role or to an account.
     //
-    // MIGRATION: each read below loads the catalogue entry, the role and the account alongside the
-    //            grant. That is not convenience: the legacy reader selected every column of a view that
-    //            left-joined the catalogue and the roles table onto the grant, so those values were part
-    //            of what a caller received. Reaching them through the configured navigations keeps that
-    //            payload available without mapping the view. The role navigation is null for a grant
-    //            addressed to a pseudo-principal - the left join finds no row, because none exists - and
-    //            that is a correct grant rather than a broken one, which is exactly why the raw
-    //            identifier is the fact to read and the navigation is the convenience.
+    // MIGRATION: no read below loads the catalogue entry, the role or the account alongside the grant,
+    //            and the legacy view is the reason the question arises rather than the reason to do it.
+    //            The legacy reader selected every column of a view that left-joined the catalogue and the
+    //            roles table onto the grant, so a role NAME and a permission NAME were part of what a
+    //            caller received - but the caller that mattered used them to render a permission matrix,
+    //            and that presentation concern does not exist on this side of the boundary: the display
+    //            name for a negative role identifier is composed in Infrastructure/Security, and the
+    //            catalogue is resolved there by identifier through the set-based catalogue read.
+    //
+    //            So the joined payload had no reader here and was not free. A tenant-wide or page-wide
+    //            grant read multiplied every row it returned by a catalogue row, a role row and an
+    //            ACCOUNT row, and an account row carries the credential and contact columns that an
+    //            authorisation read must not be pulling across the wire at all. The raw identifier is the
+    //            fact - it is the only thing that is always present, since a grant addressed to a
+    //            pseudo-principal has no role row to join to - and the navigations remain declared in
+    //            Persistence/Configurations for a consumer that one day genuinely needs them to ask at
+    //            its own breadth.
     // =================================================================================================
 
     /// <inheritdoc />
@@ -417,9 +445,6 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         return _dbContext.ModulePermissions
             .AsNoTracking()
-            .Include(grant => grant.Permission)
-            .Include(grant => grant.Role)
-            .Include(grant => grant.User)
             .FirstOrDefaultAsync(grant => grant.ModulePermissionId == modulePermissionId, cancellationToken);
     }
 
@@ -457,11 +482,7 @@ internal sealed class PermissionRepository : IPermissionRepository
         int permissionId,
         CancellationToken cancellationToken = default)
     {
-        IQueryable<ModulePermission> query = _dbContext.ModulePermissions
-            .AsNoTracking()
-            .Include(grant => grant.Permission)
-            .Include(grant => grant.Role)
-            .Include(grant => grant.User);
+        IQueryable<ModulePermission> query = _dbContext.ModulePermissions.AsNoTracking();
 
         if (moduleId != AnyModuleId)
         {
@@ -498,9 +519,6 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         return await _dbContext.ModulePermissions
             .AsNoTracking()
-            .Include(grant => grant.Permission)
-            .Include(grant => grant.Role)
-            .Include(grant => grant.User)
             .Where(grant => grant.Module.PortalId == portalId)
             .OrderBy(grant => grant.ModuleId)
             .ThenBy(grant => grant.PermissionId)
@@ -534,9 +552,6 @@ internal sealed class PermissionRepository : IPermissionRepository
 
         return await _dbContext.ModulePermissions
             .AsNoTracking()
-            .Include(grant => grant.Permission)
-            .Include(grant => grant.Role)
-            .Include(grant => grant.User)
             .Where(grant => placedModuleIds.Contains(grant.ModuleId))
             .OrderBy(grant => grant.ModuleId)
             .ThenBy(grant => grant.PermissionId)
@@ -549,26 +564,36 @@ internal sealed class PermissionRepository : IPermissionRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal bulk removal filters on the module column alone. The rows are loaded WITH
-    /// change tracking and staged for removal, so the removal lands in the same commit as everything else
-    /// the caller has staged - typically the module itself. A set-based statement issued here would reach
-    /// the store before that commit, leave the change tracker holding rows the store no longer has, and
-    /// put the removal outside the rollback protecting the rest of the operation. Removing nothing is a
-    /// legitimate outcome, so a module with no grants stages nothing and reports nothing.
+    /// <para>
+    /// MIGRATION: the terminal bulk removal filters on the module column alone and removes the matching
+    /// rows in one statement. This does the same: ONE set-based delete carrying the same predicate, and no
+    /// load. Removing nothing is a legitimate outcome, so a module with no grants issues its statement,
+    /// affects no row and reports nothing - the contract yields no count, exactly as the legacy procedure
+    /// yielded none.
+    /// </para>
+    /// <para>
+    /// <strong>The number of grants on a module is not bounded by anything, which is why this cannot load
+    /// them.</strong> A load-then-stage removal reads every matching row into memory and into the change
+    /// tracker, then emits one parameterised statement per row: the cost of removing a module's grants
+    /// would scale with how many it has, on a path that needs none of their values. This member is
+    /// immediate rather than staged for that reason alone.
+    /// </para>
+    /// <para>
+    /// Immediacy costs nothing in atomicity, and that is a property of the statement rather than an
+    /// assumption about the caller. A set-based delete is issued on the same connection as the rest of the
+    /// unit of work and enlists in whatever transaction the context already has open, so a caller that
+    /// removes a module's grants alongside the module itself opens a transaction through
+    /// <see cref="IUnitOfWork"/> and gets one rollback boundary over both. What immediacy does mean is
+    /// that the caller must open that transaction: without one the statement is independently durable the
+    /// moment it is called. The account-scoped counterpart below documents the same requirement, and its
+    /// caller satisfies it.
+    /// </para>
     /// </remarks>
-    public async Task DeleteModulePermissionsByModuleIdAsync(int moduleId, CancellationToken cancellationToken = default)
+    public Task DeleteModulePermissionsByModuleIdAsync(int moduleId, CancellationToken cancellationToken = default)
     {
-        List<ModulePermission> doomed = await _dbContext.ModulePermissions
+        return _dbContext.ModulePermissions
             .Where(grant => grant.ModuleId == moduleId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (doomed.Count == 0)
-        {
-            return;
-        }
-
-        _dbContext.ModulePermissions.RemoveRange(doomed);
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -587,24 +612,26 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// are not matched.
     /// </para>
     /// <para>
-    /// The rows are staged rather than removed outright. This member is one half of a two-table cleanup,
-    /// and staging is what lets both halves land in one commit instead of leaving the account's module
-    /// grants gone and its page grants intact.
+    /// ONE set-based delete, issued when this member is called rather than when changes are flushed, and
+    /// no load: the number of grants an account holds directly is unbounded, and none of their values is
+    /// needed to remove them. The tenant predicate is expressed through the configured module relationship
+    /// rather than a restated join, so the statement is a delete guarded by an existence test over the
+    /// modules table - which is what the legacy procedure's join amounted to.
+    /// </para>
+    /// <para>
+    /// This member is one half of a two-table cleanup, and the half-cleaned state its caller must avoid is
+    /// prevented by a TRANSACTION rather than by staging. A set-based delete enlists in the transaction the
+    /// context already has open, so both halves sit inside one rollback boundary; the caller opens that
+    /// boundary explicitly through <see cref="IUnitOfWork"/> precisely because these two statements are
+    /// immediate, and its own remarks say so. Staging instead would put both halves in one flush but would
+    /// pay for it by loading every row of both tables first.
     /// </para>
     /// </remarks>
-    public async Task DeleteModulePermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
+    public Task DeleteModulePermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
     {
-        List<ModulePermission> doomed = await _dbContext.ModulePermissions
+        return _dbContext.ModulePermissions
             .Where(grant => grant.UserId == userId && grant.Module.PortalId == portalId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (doomed.Count == 0)
-        {
-            return;
-        }
-
-        _dbContext.ModulePermissions.RemoveRange(doomed);
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -674,11 +701,13 @@ internal sealed class PermissionRepository : IPermissionRepository
     //            invented here, and no page wildcard constant exists for one to be built from. A
     //            reviewer looking for the missing members should stop here rather than add them.
     //
-    // MIGRATION: as in the module section, the catalogue entry, role and account are loaded alongside
-    //            each grant because the legacy reader selected every column of a view that left-joined
-    //            them. The view also carried the tenant column, sourced from its inner join to the pages
-    //            table; here the tenant is reached through the configured page relationship instead, so
-    //            no fourth entity is introduced to hold a column that belongs to the page.
+    // MIGRATION: as in the module section, the catalogue entry, role and account are NOT loaded alongside
+    //            each grant, for the reasons recorded there - the joined payload existed to render a
+    //            legacy screen, has no reader on this side of the boundary, and put account columns into
+    //            an authorisation read. The legacy view also carried the tenant column, sourced from its
+    //            inner join to the pages table; that column is still reached through the configured page
+    //            relationship where a member filters on it, so no fourth entity is introduced to hold a
+    //            column that belongs to the page.
     // =================================================================================================
 
     /// <inheritdoc />
@@ -701,9 +730,6 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         return await _dbContext.TabPermissions
             .AsNoTracking()
-            .Include(grant => grant.Permission)
-            .Include(grant => grant.Role)
-            .Include(grant => grant.User)
             .Where(grant => grant.Tab.PortalId == portalId)
             .OrderBy(grant => grant.TabId)
             .ThenBy(grant => grant.PermissionId)
@@ -743,9 +769,6 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         IQueryable<TabPermission> query = _dbContext.TabPermissions
             .AsNoTracking()
-            .Include(grant => grant.Permission)
-            .Include(grant => grant.Role)
-            .Include(grant => grant.User)
             .Where(grant => grant.TabId == tabId);
 
         if (permissionId != AnyPermissionId)
@@ -764,24 +787,26 @@ internal sealed class PermissionRepository : IPermissionRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal bulk removal filters on the page column alone. The rows are loaded WITH
-    /// change tracking and staged, so the removal commits with whatever else the caller staged - typically
-    /// the page itself, or the page's grants being replaced wholesale. Removing nothing is a legitimate
-    /// outcome.
+    /// <para>
+    /// MIGRATION: the terminal bulk removal filters on the page column alone and removes the matching rows
+    /// in one statement, which is what this issues - ONE set-based delete carrying that predicate, with no
+    /// load. Removing nothing is a legitimate outcome and yields no count, as the legacy procedure yielded
+    /// none.
+    /// </para>
+    /// <para>
+    /// The count of grants on a page is unbounded - a page's grant set grows with the roles and accounts an
+    /// installation has - and this path needs none of their values, so loading them to remove them would
+    /// make the cost of clearing a page scale with its history. Immediate rather than staged for that
+    /// reason; a caller pairing it with the page's own removal, or replacing a page's grants wholesale,
+    /// opens a transaction through <see cref="IUnitOfWork"/> and both statements share one rollback
+    /// boundary, because a set-based delete enlists in the transaction the context already holds.
+    /// </para>
     /// </remarks>
-    public async Task DeleteTabPermissionsByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
+    public Task DeleteTabPermissionsByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
     {
-        List<TabPermission> doomed = await _dbContext.TabPermissions
+        return _dbContext.TabPermissions
             .Where(grant => grant.TabId == tabId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (doomed.Count == 0)
-        {
-            return;
-        }
-
-        _dbContext.TabPermissions.RemoveRange(doomed);
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -794,24 +819,18 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// </para>
     /// <para>
     /// MIGRATION: only grants naming the account itself are removed; a grant reaching the account through
-    /// a role belongs to the role. Staged rather than removed outright, so this half and its module
-    /// counterpart land in one commit - the alternative leaves an account half-cleaned, and a later
-    /// account reusing the identifier would inherit whatever was left behind.
+    /// a role belongs to the role. ONE set-based delete with no load, for the same reason as its module
+    /// counterpart: the row count is unbounded and no value on those rows is needed to remove them. This
+    /// half and that one land inside a single TRANSACTION the caller opens rather than inside a single
+    /// flush - the alternative leaves an account half-cleaned, and a later account reusing the identifier
+    /// would inherit whatever was left behind, which is exactly what the enclosing transaction prevents.
     /// </para>
     /// </remarks>
-    public async Task DeleteTabPermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
+    public Task DeleteTabPermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
     {
-        List<TabPermission> doomed = await _dbContext.TabPermissions
+        return _dbContext.TabPermissions
             .Where(grant => grant.UserId == userId && grant.Tab.PortalId == portalId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (doomed.Count == 0)
-        {
-            return;
-        }
-
-        _dbContext.TabPermissions.RemoveRange(doomed);
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     /// <inheritdoc />

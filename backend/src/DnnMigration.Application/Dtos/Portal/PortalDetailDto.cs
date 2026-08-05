@@ -3,7 +3,8 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Portal;
 
 /// <summary>
-/// Response body for <c>GET /api/v1/portals/{id}</c>: the complete attribute set of one portal.
+/// The <c>data</c> payload of the success envelope for <c>GET /api/v1/portals/{id}</c>: the complete
+/// attribute set of one portal.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -51,7 +52,7 @@ public sealed class PortalDetailDto
     // MIGRATION: three of the thirty-nine legacy properties are deliberately absent, each for a
     // reason that outlives this file.
     //
-    // ProcessorPassword (PortalInfo.vb line 261) is the payment gateway's credential. Omitting it
+    // ProcessorCredentialReference maps the legacy ProcessorPassword column. Omitting it
     // is an active decision rather than an oversight, because the view the read path selects
     // through does project it (04.05.00.SqlDataProvider line 1571), so it would otherwise arrive
     // free of charge. Its two non-secret companions, PaymentProcessor and ProcessorUserId, are
@@ -307,7 +308,17 @@ public sealed class PortalDetailDto
     // lines 311 to 313 and 322 to 325), which a property cannot do asynchronously, and blocking is
     // not permitted anywhere in this codebase. An implementer of the portal service is therefore
     // obliged to assign both from counts it has already awaited. Both are non-nullable and start
-    // at zero, so neither ever reports a negative count on the wire.
+    // at zero.
+    //
+    // MIGRATION: the PAGE tally can legitimately be NEGATIVE on the wire, and that is preserved legacy
+    // arithmetic rather than a defect. The legacy getter resolved it through GetTabCount, whose terminal
+    // definition (04.04.00.SqlDataProvider lines 511 to 527) is SELECT COUNT(*) - 1 over the portal's
+    // pages with the administration page and its direct children excluded; a portal that records no
+    // administration page made every row's predicate unknown, so the expression evaluated to 0 - 1 and
+    // the grid displayed minus one. The value is carried through exactly as the counting query produces
+    // it, because clamping it to zero here would report a figure the legacy application never showed and
+    // would hide the misconfiguration the negative value announces. It is NOT the legacy Null.NullInteger
+    // sentinel and a consumer must not read it as "unknown".
 
     /// <summary>
     /// Gets or sets the number of user accounts registered against the portal. A measurement, not
@@ -317,8 +328,10 @@ public sealed class PortalDetailDto
     public int Users { get; set; }
 
     /// <summary>
-    /// Gets or sets the number of pages defined within the portal. A measurement, not a limit: the
-    /// permitted maximum is <see cref="PageQuota"/>. See the note above for how it is populated.
+    /// Gets or sets the number of pages defined within the portal, as the legacy
+    /// <c>GetTabCount</c> counted them. A measurement, not a limit: the permitted maximum is
+    /// <see cref="PageQuota"/>. See the note above for how it is populated, for the three
+    /// counter-intuitive parts of the legacy predicate, and for why the value may be minus one.
     /// </summary>
     public int Pages { get; set; }
 

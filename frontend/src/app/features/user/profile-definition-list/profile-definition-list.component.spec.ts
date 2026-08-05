@@ -205,6 +205,19 @@ describe('ProfileDefinitionListComponent', () => {
       );
     });
 
+    it('restores safe defaults when route input binding supplies no data', () => {
+      expect(() => {
+        setInput('definitions', undefined);
+        setInput('heading', undefined);
+      }).not.toThrow();
+
+      expect(component.definitions).toEqual([]);
+      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe(
+        'Profile Properties',
+      );
+      expect(host().querySelector('app-empty-state')).not.toBeNull();
+    });
+
     it('opens with the help paragraph, which the stylesheet owns', () => {
       expect(host().querySelector('p.profile-definitions__help')).not.toBeNull();
     });

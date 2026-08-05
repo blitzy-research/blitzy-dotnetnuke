@@ -34,15 +34,19 @@ internal sealed record MembershipAccountSnapshot(
 /// <summary>
 /// The credential state authentication needs in order to decide a sign-in.
 /// </summary>
-/// <param name="PasswordHash">The stored one-way hash, or <see langword="null"/> when none is stored.</param>
+/// <param name="PasswordValue">The stored credential representation, or <see langword="null"/> when none is stored.</param>
+/// <param name="Format">The persisted legacy format discriminator, or <see langword="null"/> when invalid.</param>
+/// <param name="PasswordSalt">The base-64 membership salt, or <see langword="null"/> when none is stored.</param>
 /// <param name="IsApproved">Whether the account is approved for use.</param>
 /// <param name="IsLockedOut">Whether the account is locked out.</param>
 /// <remarks>
-/// Obtained only by <see cref="MembershipStore.GetCredentialStateAsync"/>. The hash it carries must
-/// never be placed in a result returned across the API boundary, in a log entry or in a message.
+/// Obtained only by <see cref="MembershipStore.GetCredentialStateAsync"/>. None of its credential
+/// material may be placed in a result returned across the API boundary, in a log entry or in a message.
 /// </remarks>
 internal sealed record MembershipCredentialSnapshot(
-    string? PasswordHash,
+    string? PasswordValue,
+    PasswordFormat? Format,
+    string? PasswordSalt,
     bool IsApproved,
     bool IsLockedOut);
 
@@ -277,7 +281,7 @@ WHERE EXISTS (
         }
 
         const string Sql = @"
-SELECT am.[Password], am.[IsApproved], am.[IsLockedOut]
+SELECT am.[Password], am.[PasswordFormat], am.[PasswordSalt], am.[IsApproved], am.[IsLockedOut]
 FROM [dbo].[aspnet_Users] au
 INNER JOIN [dbo].[aspnet_Applications] aa ON aa.[ApplicationId] = au.[ApplicationId]
 INNER JOIN [dbo].[aspnet_Membership] am ON am.[UserId] = au.[UserId]
@@ -295,10 +299,17 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
                         return null;
                     }
 
+                    int storedFormat = reader.GetInt32(1);
+                    PasswordFormat? format = Enum.IsDefined(typeof(PasswordFormat), storedFormat)
+                        ? (PasswordFormat)storedFormat
+                        : null;
+
                     return new MembershipCredentialSnapshot(
                         reader.IsDBNull(0) ? null : reader.GetString(0),
-                        reader.GetBoolean(1),
-                        reader.GetBoolean(2));
+                        format,
+                        reader.IsDBNull(2) ? null : reader.GetString(2),
+                        reader.GetBoolean(3),
+                        reader.GetBoolean(4));
                 },
                 cancellationToken)
             .ConfigureAwait(false);

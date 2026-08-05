@@ -1,4 +1,5 @@
 using DnnMigration.Api.Extensions;
+using DnnMigration.Api.Logging;
 using DnnMigration.Application;
 using DnnMigration.Infrastructure;
 using Serilog;
@@ -55,10 +56,8 @@ try
     // registered service.
     //
     // The console sink, the configuration reader and the compact formatter all arrive
-    // transitively with Serilog.AspNetCore 8.0.3 - verified with
-    // `dotnet list package --include-transitive` as Serilog.Sinks.Console 5.0.0,
-    // Serilog.Settings.Configuration 8.0.4 and Serilog.Formatting.Compact 2.0.0 - so
-    // reading configuration here adds no package reference to this project.
+    // transitively with Serilog.AspNetCore 8.0.3, so reading configuration here adds no
+    // package reference to this project.
     //
     // MIGRATION: the legacy audit trail survives the change of mechanism but not the
     // mechanism itself. Nineteen in-scope AddLog call sites wrote typed EventLogType
@@ -72,7 +71,16 @@ try
     builder.Host.UseSerilog((context, services, logger) => logger
         .ReadFrom.Configuration(context.Configuration)
         .ReadFrom.Services(services)
-        .Enrich.FromLogContext());
+        .Enrich.FromLogContext()
+
+        // Runs after the logging-scope properties have been attached, which is the only
+        // position from which one of them can be taken back off. The hosting layer opens a
+        // scope carrying the raw request path over every entry written while a request is
+        // handled - the audit events and the database entries included - so removing the
+        // path from one message template would leave the same value on the same entry
+        // under a different name. See SensitiveLogPropertyScrubber for what it removes and
+        // why the path in particular cannot be kept.
+        .Enrich.With(new SensitiveLogPropertyScrubber()));
 
     // Order matters in exactly one place. The API layer's own registration runs first
     // because it registers the controller services, and the versioned API explorer
@@ -132,33 +140,19 @@ try
     //    7. authorization            UseAuthorization()
     //    8. portal-alias resolution  PortalAliasResolutionMiddleware
     //    9. controllers              MapControllers()
-    //   10. health checks            MapHealthChecks("/health")
+    //   10. health checks            MapHealthChecks("/health") liveness
+    //                                MapHealthChecks("/health/ready") readiness
     //
-    // Five of those positions carry a consequence worth stating outright. 1 is first
-    // because an exception handler covers what follows it and nothing that precedes it,
-    // so anything placed above would answer with a bare 500 carrying no problem
-    // details. 2 precedes 3 so that the entry describing a request is written inside
-    // the scope that names it, and both sit inside 1 so that a failed request is
-    // correlated too. 5 follows routing because endpoint-aware policy needs the
-    // endpoint routing selected, and precedes 7 so that a refused pre-flight still
-    // carries its headers. 8 follows 6 because tenant resolution reads the caller's
-    // claims as well as the route, and there is no principal to read before
-    // authentication has run. 10 is anonymous and must remain so: the image's
-    // HEALTHCHECK probes it with wget before any credential exists in the system, and
-    // the front-end service is held back by "condition: service_healthy" until it
-    // answers, so requiring authorisation there would stop the deployment rather than
-    // secure it.
+    // Extensions/ApplicationBuilderExtensions.cs argues every position at length and is
+    // the place to read for the reasoning; only one consequence belongs here, because it
+    // reaches outside the pipeline. Stage 10 is ANONYMOUS AND MUST REMAIN SO: the image's
+    // HEALTHCHECK probes it with wget before any credential exists in the system, and the
+    // front-end service is held back by "condition: service_healthy" until it answers, so
+    // requiring authorisation there would stop the deployment rather than secure it.
     //
-    // Five further stages are interleaved and not one of them displaces a numbered one:
-    // HSTS and HTTPS redirection sit inside stage 1 behind an environment check and a
-    // configuration flag that is off by default, so the container's plain-HTTP probe on
-    // 8080 can never be answered with a redirect; a tenant path-base stage sits before
-    // routing, because routing cannot be undone afterwards; the credential rate limiter
-    // sits after CORS so that a refusal is still readable by a browser, and before
-    // authentication because the flood it bounds is made of requests that never
-    // authenticate; and the documentation console sits between authentication and
-    // authorisation. Extensions/ApplicationBuilderExtensions.cs argues each position at
-    // length, and no URL or port is set anywhere: the container supplies
+    // Five further stages are interleaved there and none displaces a numbered one - HSTS
+    // and HTTPS redirection, a tenant path-base stage, the credential rate limiter and
+    // the documentation console. No URL or port is set anywhere: the container supplies
     // ASPNETCORE_URLS=http://+:8080 and runs unprivileged, so binding is its decision.
     //
     // MIGRATION: stage 1 is net-new behaviour rather than a port. The legacy exception

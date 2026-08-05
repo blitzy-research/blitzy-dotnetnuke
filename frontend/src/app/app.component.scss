@@ -1,38 +1,27 @@
 // Root component stylesheet. The template mounts a single element, so the only visual job here is to
 // establish the box that element lays out inside; there is no wrapper, hence `:host` rather than a class.
-// The viewport floor below is expressed as a viewport length, for which the token vocabulary carries no
-// entry.
-
-// MIGRATION: the legacy equivalent of this layer was a runtime, cached, ordered
-// stylesheet cascade assembled per request. `ManageStyleSheets` in
-// Website/Default.aspx.vb read the `CSS` entry out of the shared cache into a
-// Hashtable and appended, in order, the host `default.css` — marked in the source
-// itself as the required default sheet — then the skin package's own sheet, probed
-// for existence with a physical path lookup, then the skin-file sheet, then the
-// portal sheet, with the cache writes gated on the global performance setting. It
-// ran twice per request, straddling the skin injection. All of that is replaced by
-// one build-time bundle plus component-scoped stylesheets such as this one, so the
-// cascade order is fixed at compile time instead of being recomputed and cached at
+//
+// MIGRATION: the legacy equivalent of this layer was a runtime, cached, ordered stylesheet cascade
+// assembled per request. `ManageStyleSheets` in Website/Default.aspx.vb read the `CSS` entry out of the
+// shared cache and appended, in order, the host `default.css` (marked in the source itself as the
+// required default sheet), the skin package's own sheet, the skin-file sheet and the portal sheet, with
+// the cache writes gated on the global performance setting - and it ran twice per request, straddling
+// the skin injection. All of it is replaced by one build-time bundle plus component-scoped stylesheets
+// such as this one, so the cascade order is fixed at compile time rather than recomputed and cached at
 // runtime.
 
 :host {
-  // A custom element has no user-agent display and would lay out inline,
-  // shrink-wrapping the shell. A block box fills the available inline size and
-  // gives the shell the block-level containing block it expects.
+  // A custom element has no user-agent display and would lay out inline, shrink-wrapping the shell. A
+  // block box fills the available inline size and gives the shell the block-level containing block it
+  // expects.
   display: block;
 
-  // MIGRATION: no viewport-height floor is declared here, deliberately, and the
-  // omission is the whole point rather than an oversight. Full height belongs to
-  // exactly ONE authority — `.shell` in _layout.scss — which declares
-  // `min-block-size: 100vh` and then `min-block-size: 100dvh`, so an engine that
-  // understands the dynamic unit measures the visual viewport instead of the
-  // larger layout viewport. Restating `100vh` on this host would silently defeat
-  // that: a parent minimum cannot be reduced by a child, so on a mobile browser
-  // whose toolbar has retracted the root would stay taller than the visible area
-  // and push a vertical scroll range onto a page that fits. The two behaviours
-  // the floor was there to provide are already properties of the shell's own
-  // grid — it fills the window when a route renders very little, because its
-  // `1fr` main row absorbs the slack, and taller content grows it rather than
-  // being clipped, because a minimum is a floor and not a fixed size — and this
-  // host inherits both simply by being a block box that the shell fills.
+  // MIGRATION: NO viewport-height floor is declared here, and the omission is the point. Full height
+  // belongs to exactly one authority - `.shell` in _layout.scss, which declares `min-block-size: 100vh`
+  // then `100dvh` so an engine understanding the dynamic unit measures the visual viewport. Restating
+  // `100vh` here would silently defeat that, because a parent minimum cannot be reduced by a child: on a
+  // mobile browser whose toolbar has retracted, the root would stay taller than the visible area and
+  // push a scroll range onto a page that fits. Both behaviours the floor would provide are already
+  // properties of the shell's own grid - its `1fr` main row absorbs slack, and a minimum is a floor
+  // rather than a fixed size - and this host inherits them by being a block box the shell fills.
 }

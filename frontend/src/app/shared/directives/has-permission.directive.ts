@@ -8,6 +8,7 @@ import {
   signal,
 } from '@angular/core';
 
+import type { PermissionKey } from '../../core/models/permission.model';
 import { TokenStorageService } from '../../core/services/token-storage.service';
 
 /**
@@ -37,16 +38,34 @@ import { TokenStorageService } from '../../core/services/token-storage.service';
  *   mirrors the server exactly: no claims means no affordances, and the person still
  *   reaches every screen the server admits them to.
  *
+ * KEYS ARE COMPARED EXACTLY, AND THE VOCABULARY IS CLOSED AT FOUR. The bound key must
+ * be one of the {@link PermissionKey} values, spelled in the upper case the server
+ * stores and sends. Nothing is case-folded, trimmed or otherwise normalised on either
+ * side, and a value outside the vocabulary is refused rather than compared. The reason
+ * is that lenient matching here fails OPEN: were both sides lower-cased, an unrecognised
+ * key that merely happened to lower-case onto a held one would silently admit the
+ * content, and a misspelling would be indistinguishable from a real grant. Exact
+ * comparison also matches the server and the database, where the key is stored as
+ * `varchar(20)` and compared with ordinal equality.
+ *
  * MIGRATION: the legacy screens performed this check imperatively in the page's own
  * code-behind, calling into `PermissionController`, `ModulePermissionController` or
  * `TabPermissionController` and then setting a control's visibility. Three of those
  * checks lived in the page, which is why the same rule was written slightly differently
  * on different screens. Declaring it in the template puts one rule at every call site.
  *
+ * MIGRATION: the legacy comparison was case-sensitive, and so is this one. The class
+ * library was compiled with `<OptionCompare>Binary</OptionCompare>`
+ * (`Library/DotNetNuke.Library.vbproj:L22`), under which VB string equality is ordinal,
+ * and every legacy comparison site relies on it — `ModulePermissionController.vb:L36`,
+ * `:L243` and `:L333`, `TabPermissionController.vb:L41`, `:L218` and `:L309`, and
+ * `PortalController.vb:L1416`. Case-folding the comparison would therefore have been a
+ * behavioural change dressed as a convenience, and one that widened access.
+ *
  * @example
  * ```html
  * <button *appHasPermission="'EDIT'" type="button">Edit</button>
- * <a *appHasPermission="['EDIT', 'MANAGE']" [routerLink]="link">Settings</a>
+ * <a *appHasPermission="['VIEW', 'EDIT']" [routerLink]="link">Settings</a>
  * ```
  */
 @Directive({
@@ -59,13 +78,13 @@ export class HasPermissionDirective {
   private readonly tokenStorage = inject(TokenStorageService);
 
   /**
-   * The keys being required, already lower-cased for comparison.
+   * The keys being required, already validated against the closed vocabulary.
    *
    * A signal so the effect below re-evaluates when the binding changes as well as when
    * the session changes — a screen that swaps the required key on the same element must
    * not keep rendering against the previous one.
    */
-  private readonly requiredKeys = signal<readonly string[]>([]);
+  private readonly requiredKeys = signal<readonly PermissionKey[]>([]);
 
   /** Whether the content is currently in the document, so it is created only once. */
   private rendered = false;
@@ -74,15 +93,21 @@ export class HasPermissionDirective {
    * The permission key, or keys, that admit the content.
    *
    * A list is satisfied by holding ANY ONE of its keys, not all of them. That is the
-   * useful semantic for the administration screens — a control that several permissions
-   * can reach, such as a settings link open to both editors and managers — and the
-   * alternative is expressible by nesting the directive, whereas "any" is not
-   * expressible from "all".
+   * useful semantic for the administration screens — a control that more than one
+   * permission can reach — and the alternative is expressible by nesting the directive,
+   * whereas "any" is not expressible from "all".
    *
-   * @throws Error if no non-blank key is supplied.
+   * Typed as {@link PermissionKey} rather than `string`, so a misspelling, an invented
+   * key or the wrong case is a COMPILE error at the call site instead of a control that
+   * silently never appears. The keys the caller holds stay a plain string list, because
+   * that is what the server sends; it is only the key being ASKED FOR that is constrained,
+   * and it is constrained because it is an authored constant rather than data.
+   *
+   * @throws Error if no key is supplied, or if a supplied value is not a recognised
+   *   permission key.
    */
   @Input({ required: true })
-  set appHasPermission(value: string | readonly string[] | null | undefined) {
+  set appHasPermission(value: PermissionKey | readonly PermissionKey[] | null | undefined) {
     this.requiredKeys.set(normaliseRequiredKeys(value));
   }
 
@@ -130,67 +155,145 @@ export class HasPermissionDirective {
 }
 
 /**
- * Normalises the bound permission specification into a comparable key list.
+ * The permission vocabulary, as a membership lookup.
  *
- * Keys are lower-cased so that a template may spell a key in the case that reads best
- * while still matching the server's canonical spelling. Case cannot change WHICH key is
- * being asked for, so this widens nothing: `EDIT` and `edit` name one permission, and
- * treating them as two would produce a control that silently never appears.
+ * Declared as a record keyed by {@link PermissionKey} rather than as an array so that the
+ * compiler enforces the set in BOTH directions: a key added to the vocabulary leaves this
+ * object incomplete, and a key that is not in the vocabulary is an excess property.
+ * Neither compiles. `core/models/permission.model.ts` therefore remains the single
+ * definition of the vocabulary — this object cannot drift away from it and still build,
+ * which is what makes restating the four values here safe rather than a second source of
+ * truth.
  *
- * A blank specification throws rather than quietly denying. Permission keys in this
- * application are authored constants, never data, so a blank one is a typo or a binding
- * to an absent member — and a directive that responded by hiding the control would make
- * that typo look exactly like a correctly denied permission, which is the single hardest
- * version of this bug to find. Failing loudly at binding time surfaces it on the first
- * render instead.
+ * A record rather than a `Set` because the membership test is then a plain property check
+ * with no construction cost, and because a `Set` of string literals would have to be
+ * declared as `Set<string>` and would lose exactly the exhaustiveness this buys.
+ */
+const RECOGNISED_KEYS: Readonly<Record<PermissionKey, true>> = {
+  VIEW: true,
+  EDIT: true,
+  READ: true,
+  WRITE: true,
+};
+
+/**
+ * Whether a value is one of the four recognised permission keys.
+ *
+ * Uses an own-property test rather than an `in` check or a direct index, so an inherited
+ * member such as `constructor` or `toString` cannot masquerade as a permission key.
+ *
+ * @param value The candidate spelling.
+ * @returns True when the value is a recognised key, narrowing it to {@link PermissionKey}.
+ */
+function isRecognisedKey(value: string): value is PermissionKey {
+  return Object.prototype.hasOwnProperty.call(RECOGNISED_KEYS, value);
+}
+
+/**
+ * Validates the bound permission specification into a comparable key list.
+ *
+ * NOTHING IS NORMALISED. Keys are neither case-folded nor trimmed, and a value that is
+ * not exactly one of the four recognised keys is refused rather than adjusted. Lenient
+ * matching here would fail OPEN, which is the one failure mode this directive must not
+ * have: lower-casing both sides would let an unrecognised key that merely happened to
+ * lower-case onto a held one admit the content. The server and the database compare these
+ * keys with ordinal equality, so exact comparison is also the faithful behaviour rather
+ * than merely the safe one.
+ *
+ * A missing or unrecognised specification throws rather than quietly denying. Permission
+ * keys in this application are authored constants, never data, so a bad one is a typo, an
+ * invented key or a binding to an absent member — and a directive that responded by hiding
+ * the control would make that mistake look exactly like a correctly denied permission,
+ * which is the single hardest version of this bug to find. Failing loudly at binding time
+ * surfaces it on the first render instead. Refusing is also never permissive: no input
+ * reaches a state where content is shown that should not be.
+ *
+ * Takes `unknown` deliberately. The directive's input is typed, so a template gets
+ * compile-time protection; this function is the runtime boundary behind it, and a
+ * validator that only accepted already-valid values could not do its job.
  *
  * @param value The bound specification.
- * @returns The lower-cased keys, never empty.
- * @throws Error if no non-blank key is present.
+ * @returns The recognised keys, in the order supplied, never empty.
+ * @throws Error if no key is present, or if any value is not a recognised permission key.
  */
-export function normaliseRequiredKeys(
-  value: string | readonly string[] | null | undefined,
-): readonly string[] {
-  const candidates = typeof value === 'string' ? [value] : (value ?? []);
+export function normaliseRequiredKeys(value: unknown): readonly PermissionKey[] {
+  const candidates: readonly unknown[] =
+    value === null || value === undefined
+      ? []
+      : typeof value === 'string'
+        ? [value]
+        : Array.isArray(value)
+          ? value
+          : [value];
 
-  const keys = candidates
-    .filter((key): key is string => typeof key === 'string')
-    .map((key) => key.trim().toLowerCase())
-    .filter((key) => key.length > 0);
-
-  if (keys.length === 0) {
+  if (candidates.length === 0) {
     throw new Error(
-      'HasPermissionDirective: at least one non-blank permission key is required. ' +
-        'A blank key would hide the content in a way indistinguishable from a ' +
+      'HasPermissionDirective: at least one permission key is required. ' +
+        'An absent key would hide the content in a way indistinguishable from a ' +
         'correctly denied permission, so it is refused instead. Bind a key such as ' +
         "'EDIT', or remove the directive if the content is unconditional.",
     );
+  }
+
+  const keys: PermissionKey[] = [];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !isRecognisedKey(candidate)) {
+      throw new Error(
+        `HasPermissionDirective: ${describeCandidate(candidate)} is not a recognised ` +
+          "permission key. The vocabulary is closed at 'VIEW', 'EDIT', 'READ' and " +
+          "'WRITE', spelled in upper case exactly as the server stores and sends them. " +
+          'Keys are compared exactly, so a differently cased or invented key would ' +
+          'never match and the content would silently never appear.',
+      );
+    }
+
+    keys.push(candidate);
   }
 
   return keys;
 }
 
 /**
+ * Renders a rejected candidate for the error message.
+ *
+ * Quotes a string so that a blank or whitespace-only key is visible in the message rather
+ * than vanishing into it, and names the type of anything that is not a string.
+ *
+ * @param candidate The rejected value.
+ * @returns A short description safe to concatenate into an error message.
+ */
+function describeCandidate(candidate: unknown): string {
+  return typeof candidate === 'string' ? `'${candidate}'` : `a value of type ${typeof candidate}`;
+}
+
+/**
  * Whether any required key is present in the granted set.
  *
- * The granted list arrives from the server in its own casing, so both sides are compared
- * lower-cased. The required side is already normalised by
- * {@link normaliseRequiredKeys}; the granted side is normalised here, at the point of
- * comparison, because it is not this application's value to reshape.
+ * COMPARISON IS EXACT ON BOTH SIDES. Neither list is case-folded or trimmed. The granted
+ * list arrives already canonical — the server upper-cases, trims and de-duplicates it
+ * before issuing it — so there is nothing left to normalise, and normalising anyway would
+ * be the fail-open defect described on {@link normaliseRequiredKeys}: it would make an
+ * unrecognised spelling match a held key. Anything the server sends that is not an exact
+ * key simply grants nothing, which is the same outcome the server itself would reach.
  *
- * @param required The lower-cased keys that admit the content.
- * @param granted The keys the signed-in account holds.
+ * The granted side stays a plain string list rather than a typed one because it is wire
+ * data: it is whatever arrived, and narrowing it here would assert a guarantee this side
+ * of the boundary cannot make.
+ *
+ * @param required The keys that admit the content.
+ * @param granted The keys the signed-in account holds, exactly as the server sent them.
  * @returns True when the content should be rendered.
  */
 export function isPermitted(
-  required: readonly string[],
+  required: readonly PermissionKey[],
   granted: readonly string[],
 ): boolean {
   if (required.length === 0 || granted.length === 0) {
     return false;
   }
 
-  const held = new Set(granted.map((key) => key.trim().toLowerCase()));
+  const held = new Set<string>(granted);
 
   return required.some((key) => held.has(key));
 }

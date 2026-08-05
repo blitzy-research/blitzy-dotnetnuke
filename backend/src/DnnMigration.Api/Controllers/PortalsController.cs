@@ -49,13 +49,13 @@ namespace DnnMigration.Api.Controllers;
 /// </para>
 /// <para>
 /// <strong>TWO KINDS OF AUTHORITY, DECLARED PER ACTION, and the split is measured rather than chosen.</strong>
-/// Three of the six actions resolve no tenant at all and were host-only in the legacy application:
+/// Three of the seven actions resolve no tenant at all and were host-only in the legacy application:
 /// enumerating every portal and removing a portal both lived on
 /// <c>Website/admin/Portal/Portals.ascx.vb</c>, which opens at L339 with
 /// <c>If Not UserInfo.IsSuperUser Then Response.Redirect(NavigateURL("Access Denied"), True)</c>, and
 /// creation lived on <c>Signup.ascx.vb</c>, gated at L70 on the host menu together with
 /// <c>UserInfo.IsSuperUser</c>. Those three therefore name
-/// <see cref="PolicyNames.HostAdministrator"/>. The other three address one named tenant and were
+/// <see cref="PolicyNames.HostAdministrator"/>. The other four address one named tenant and were
 /// reached through <c>SiteSettings.ascx.vb</c>, an ordinary tenant administration screen, so they name
 /// <see cref="PolicyNames.PortalAdministrator"/> - whose handler additionally binds the route's tenant
 /// to the tenant the request resolved to, so an administrator of one portal cannot address another.
@@ -96,16 +96,16 @@ namespace DnnMigration.Api.Controllers;
 /// only way the two can stay consistent.
 /// </para>
 /// <para>
-/// MIGRATION: there is no configuration-writing action, and no key-value configuration action of any
-/// kind. The shipped schema defines no portal-settings table - it defines <c>ModuleSettings</c>,
+/// MIGRATION: there is no key-value configuration action of any kind. The shipped schema defines no
+/// portal-settings table - it defines <c>ModuleSettings</c>,
 /// <c>HostSettings</c>, <c>TabModuleSettings</c> and <c>ScheduleItemSettings</c>, and none for a portal
 /// - and the legacy type of that name was a per-request composite assembled in memory. What the legacy
 /// application called site settings were physically module-setting rows hanging off a module instance
 /// located by a magic-string definition lookup (<c>PortalSettings.vb:L923-L976</c>), and its seven keys
 /// - the inline-editor flag, the three control-panel keys and the three host-only transport-security
-/// keys (<c>PortalSettings.vb:L811-L823</c>) - are deliberately not carried forward. The projection
-/// this file serves reads stored columns on the portal record, and every settable column is written
-/// through the single update action.
+/// keys (<c>PortalSettings.vb:L811-L823</c>) - are deliberately not carried forward. The settings GET
+/// and PUT project and replace columns on the portal row; they do not expose the omitted key/value
+/// mechanism under a new name.
 /// </para>
 /// <para>
 /// <strong>Two authorisation policies, not one, and the split is the security boundary.</strong> The class
@@ -424,9 +424,8 @@ public sealed class PortalsController : ControllerBase
 
     /// <summary>Modifies an existing portal.</summary>
     /// <param name="portalId">
-    /// The portal identifier, bound from the route. This is the only place the subject is named - the
-    /// body carries no identifier of its own - so a caller cannot retarget the write at another tenant
-    /// and there is no disagreement for any layer to detect.
+    /// The portal identifier, bound from the route. The legacy-compatible body also carries the identifier,
+    /// and its validator requires the two to agree before this action is entered.
     /// </param>
     /// <param name="request">The values to store.</param>
     /// <param name="cancellationToken">Abandons the work when the caller disconnects.</param>
@@ -446,11 +445,11 @@ public sealed class PortalsController : ControllerBase
     /// <para>
     /// MIGRATION: replaces the twenty-seven-argument <c>UpdatePortalInfo</c> call at
     /// <c>SiteSettings.ascx.vb:L772-L780</c> and the record-taking overload at
-    /// <c>PortalController.vb:L1524</c> that merely unpacked into it. This is the single write path for
-    /// every settable column, which is why no separate configuration-writing action exists: two write
-    /// paths over one set of columns could diverge. The two selected-index arguments in that list become
-    /// the registration-mode and banner-mode enumerations, so a stored integer stops being a magic
-    /// number.
+    /// <c>PortalController.vb:L1524</c> that merely unpacked into it. The settings-specific PUT exposes the
+    /// same underlying write through a route-shaped body without a duplicate portal identifier; both
+    /// delegate to the same mapper and business guards so the two representations cannot acquire different
+    /// behaviour. The two selected-index arguments in the legacy list become the registration-mode and
+    /// banner-mode enumerations, so a stored integer stops being a magic number.
     /// </para>
     /// <para>
     /// MIGRATION - the host-only field rule, and why it answers <c>403</c> rather than <c>500</c>. When
@@ -558,15 +557,12 @@ public sealed class PortalsController : ControllerBase
     /// portal was removed" are distinguishable.
     /// </para>
     /// <para>
-    /// MIGRATION - AUDIT OMISSION, stated plainly rather than papered over. The legacy screen wrote an
-    /// audit entry keyed <c>PortalName</c> with the event type <c>PORTAL_DELETED</c> on the success path
-    /// (<c>Portals.ascx.vb:L397-L398</c>). The event-log provider it used is beyond the migrated scope,
-    /// and NO equivalent business-audit record is written by this endpoint or by the service behind it.
-    /// The request log that <c>Middleware/RequestLoggingMiddleware.cs</c> emits, correlated by
-    /// <c>Middleware/CorrelationIdMiddleware.cs</c>, is not a replacement and must not be read as one -
-    /// that middleware says so itself (<c>RequestLoggingMiddleware.cs:L11-L16</c>): it records that a
-    /// request occurred, not that a business event happened, and it names no portal. A deployment that
-    /// requires deletion to be auditable has to add that record deliberately.
+    /// MIGRATION: the legacy screen wrote an audit entry keyed <c>PortalName</c> with event type
+    /// <c>PORTAL_DELETED</c> on the success path (<c>Portals.ascx.vb:L397-L398</c>). The event-log provider
+    /// is not ported, but the business event is: <c>PortalService</c> emits <c>PORTAL_DELETED</c> through
+    /// <c>IAuditSink</c> after the transaction commits, carrying the portal identifier and name without any
+    /// credential or caller-supplied path. Request logging remains a separate transport record rather than
+    /// a substitute for that business audit.
     /// </para>
     /// </remarks>
     [HttpDelete("{portalId:int}")]
@@ -606,17 +602,13 @@ public sealed class PortalsController : ControllerBase
     /// Serves the dedicated configuration screen, whose legacy counterparts are
     /// <c>Website/admin/Portal/SiteSettings.ascx.vb</c> and the configuration step of
     /// <c>SiteWizard.ascx.vb</c>. It is a projection of stored columns on the portal record, shaped for
-    /// that screen, and reading it is separated from writing it: every settable column is written through
-    /// the update action above, which is the single successor to the one legacy write path for all of
-    /// them.
+    /// that screen. The matching PUT below writes the same stored columns and returns this same projection.
     /// </para>
     /// <para>
-    /// MIGRATION: there is deliberately no companion write action here, and its absence is a decision
-    /// rather than an omission. <see cref="IPortalService"/> declares a reader for this projection and no
-    /// writer, for the reason just given, and inventing a service member to sit behind a second write
-    /// endpoint is not this file's prerogative. The reasoning that there is no portal-settings table at
-    /// all, and that the legacy site-setting keys are not carried forward, is recorded once on this type
-    /// rather than repeated per action.
+    /// MIGRATION: the resource is not a key/value settings table. Both actions operate on columns of the
+    /// portal aggregate, and the legacy site-setting keys with no column counterpart remain deliberately
+    /// excluded. Adding the required PUT therefore adds a second HTTP representation of the same business
+    /// write, not a second persistence mechanism.
     /// </para>
     /// </remarks>
     [HttpGet("{portalId:int}/settings")]
@@ -631,6 +623,51 @@ public sealed class PortalsController : ControllerBase
     {
         Result<PortalSettingsDto?> outcome = await _portalService
             .GetPortalSettingsAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Replaces a portal's editable configuration and returns the stored projection.</summary>
+    /// <param name="portalId">The portal identifier, supplied only by the route.</param>
+    /// <param name="request">The complete editable settings state.</param>
+    /// <param name="cancellationToken">Abandons the update when the caller disconnects.</param>
+    /// <returns>The updated configuration projection.</returns>
+    /// <response code="200">The configuration was stored. The body is its current state.</response>
+    /// <response code="400">
+    /// The body was absent or malformed, or a declared Site Settings rule refused a field.
+    /// </response>
+    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
+    /// <response code="403">
+    /// Either the caller does not administer the addressed portal, or a tenant administrator attempted
+    /// to alter one of the host-only terms.
+    /// </response>
+    /// <response code="404">No portal bears that identifier.</response>
+    /// <remarks>
+    /// <para>
+    /// Reproduces the save at <c>Website/admin/Portal/SiteSettings.ascx.vb:L687-L821</c>. The request
+    /// deliberately omits both the route-owned portal identifier and the immutable portal GUID; it adds
+    /// only the write-only payment-processor credential that no response may echo.
+    /// </para>
+    /// <para>
+    /// The service applies the same host-only comparison, administrator invariant, mapper, commit and
+    /// cache invalidation as the general portal update. The controller performs no rule itself.
+    /// </para>
+    /// </remarks>
+    [HttpPut("{portalId:int}/settings")]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<PortalSettingsDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<PortalSettingsDto?>>> UpdateSettingsAsync(
+        int portalId,
+        [FromBody] UpdatePortalSettingsRequest request,
+        CancellationToken cancellationToken)
+    {
+        Result<PortalSettingsDto?> outcome = await _portalService
+            .UpdatePortalSettingsAsync(portalId, request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);

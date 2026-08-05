@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DnnMigration.Api.Controllers;
@@ -138,12 +139,6 @@ namespace DnnMigration.IntegrationTests;
 /// </remarks>
 public static class AuthenticatedClientFactory
 {
-    /// <summary>Claim value written for a boolean claim, matching what the token service emits.</summary>
-    private const string TrueValue = "true";
-
-    /// <summary>Claim value written for a boolean claim, matching what the token service emits.</summary>
-    private const string FalseValue = "false";
-
     /// <summary>The sign-in address, relative to the client's base address.</summary>
     private const string LoginPath = "/api/v1/auth/login";
 
@@ -192,17 +187,17 @@ public static class AuthenticatedClientFactory
     private static readonly ConditionalWeakTable<ApiTestFixture, SessionCache> Sessions = new();
 
     /// <summary>
-    /// Mints a signed bearer token carrying the claim vocabulary the API reads.
+    /// Mints a signed bearer token carrying only the stable identity vocabulary the API reads.
     /// </summary>
     /// <param name="secret">The signing secret; must match the host's <c>Jwt:Secret</c>.</param>
     /// <param name="issuer">The issuer; must match the host's <c>Jwt:Issuer</c>.</param>
     /// <param name="audience">The audience; must match the host's <c>Jwt:Audience</c>.</param>
     /// <param name="userId">The account identifier written to the subject claim.</param>
-    /// <param name="userName">The account name written to the unique-name claim.</param>
+    /// <param name="userName">Compatibility input validated but deliberately not written as a claim.</param>
     /// <param name="portalId">The tenant written to the portal claim.</param>
-    /// <param name="isSuperUser">Whether the caller is a host account.</param>
-    /// <param name="roles">Role names, written under <see cref="ClaimTypes.Role"/>.</param>
-    /// <param name="permissions">Permission keys, one claim each - never a delimited list.</param>
+    /// <param name="isSuperUser">Compatibility input deliberately not written as a claim.</param>
+    /// <param name="roles">Compatibility input deliberately not written as claims.</param>
+    /// <param name="permissions">Compatibility input deliberately not written as claims.</param>
     /// <param name="lifetime">How long the token stays valid; defaults to thirty minutes.</param>
     /// <param name="notBefore">
     /// When the token becomes valid; defaults to one minute ago so that a token cannot be rejected by the
@@ -214,20 +209,16 @@ public static class AuthenticatedClientFactory
     /// <strong>This does not exercise the sign-in path and is not a substitute for it.</strong> Prefer
     /// <see cref="CreateAuthenticatedClientAsync(ApiTestFixture, string, string, CancellationToken)"/> unless
     /// the test needs material the endpoint would never issue - an expired token, a token signed with a
-    /// foreign key, a tenant claim that disagrees with the route, or a permission no seeded account holds.
+    /// foreign key, or a tenant claim that disagrees with the route.
     /// Those cases are why this member exists, and refusing such material is behaviour worth asserting.
     /// </para>
     /// <para>
     /// <strong>Why it constructs the token the same way production does.</strong> This uses the
     /// <see cref="JwtSecurityToken"/> constructor followed by
     /// <see cref="JwtSecurityTokenHandler.WriteToken(SecurityToken)"/>, which is precisely what
-    /// <c>Infrastructure/Security/JwtTokenService</c> does. That matters because the alternative -
-    /// building a <see cref="SecurityTokenDescriptor"/> and calling
-    /// <see cref="JwtSecurityTokenHandler.CreateToken(SecurityTokenDescriptor)"/> - applies the handler's
-    /// outbound claim-type map and would rename <see cref="ClaimTypes.Role"/> to <c>role</c> on the way out.
-    /// The API sets <c>MapInboundClaims = false</c>, so a renamed role claim would arrive under a type that
-    /// the configured role claim type does not match and every role-based policy would silently fail.
-    /// Mirroring the production construction keeps a minted token representative of a real one.
+    /// <c>Infrastructure/Security/JwtTokenService</c> does. Mirroring that construction keeps the
+    /// subject, tenant and token-identifier claim names representative of a real token while ensuring
+    /// mutable authority cannot be injected through this test helper.
     /// </para>
     /// </remarks>
     public static string CreateToken(
@@ -255,20 +246,8 @@ public static class AuthenticatedClientFactory
         {
             new(DnnClaimTypes.Subject, userId.ToString(CultureInfo.InvariantCulture)),
             new(DnnClaimTypes.JwtId, Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)),
-            new(DnnClaimTypes.UniqueName, userName),
             new(DnnClaimTypes.PortalId, portalId.ToString(CultureInfo.InvariantCulture)),
-            new(DnnClaimTypes.SuperUser, isSuperUser ? TrueValue : FalseValue, ClaimValueTypes.Boolean),
         };
-
-        foreach (string role in roles ?? Array.Empty<string>())
-        {
-            claims.Add(new Claim(ClaimTypes.Role, role));
-        }
-
-        foreach (string permission in permissions ?? Array.Empty<string>())
-        {
-            claims.Add(new Claim(DnnClaimTypes.Permission, permission));
-        }
 
         var credentials = new SigningCredentials(
             new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret)),
@@ -919,7 +898,7 @@ public static class AuthenticatedClientFactory
 
         using HttpResponseMessage response = await client
             .PostAsJsonAsync(
-                SignInRoute(portalId),
+                SignInRoute(portalId, host),
                 new LoginRequest { Username = userName, Password = password },
                 ApiTestFixture.Json,
                 cancellationToken)
@@ -934,13 +913,42 @@ public static class AuthenticatedClientFactory
 
     /// <summary>Builds the sign-in address, naming a tenant when one was supplied.</summary>
     /// <param name="portalId">The tenant identifier, or <see langword="null"/> to omit it.</param>
+    /// <param name="host">The host being addressed, or <see langword="null"/> for the seeded alias.</param>
     /// <returns>A relative address.</returns>
-    private static Uri SignInRoute(int? portalId) => portalId is null
-        ? new Uri(LoginPath, UriKind.Relative)
-        : new Uri(
-            $"{LoginPath}?{AuthController.PortalQueryParameterName}="
-            + portalId.Value.ToString(CultureInfo.InvariantCulture),
-            UriKind.Relative);
+    /// <remarks>
+    /// The address is composed BENEATH the path segment a child portal's alias carries. A child portal is
+    /// addressed as authority plus segment - the resolver stores the composed form and the path-base stage
+    /// strips the segment before routing - so a sign-in posted to the bare path would be resolved by the
+    /// authority alone and would present the credential to the PARENT tenant, which the child's administrator
+    /// is not a member of. Stating the segment is therefore what makes a child tenant signable-in at all, and
+    /// it is inert for every alias that carries no segment.
+    /// </remarks>
+    private static Uri SignInRoute(int? portalId, string? host)
+    {
+        string path = PathBaseOf(host) + LoginPath;
+
+        return portalId is null
+            ? new Uri(path, UriKind.Relative)
+            : new Uri(
+                $"{path}?{AuthController.PortalQueryParameterName}="
+                + portalId.Value.ToString(CultureInfo.InvariantCulture),
+                UriKind.Relative);
+    }
+
+    /// <summary>Extracts the path segment a composed child-portal alias carries.</summary>
+    /// <param name="host">The host being addressed, or <see langword="null"/>.</param>
+    /// <returns>A leading-slash segment, or an empty string when the alias names an authority alone.</returns>
+    private static string PathBaseOf(string? host)
+    {
+        if (host is null)
+        {
+            return string.Empty;
+        }
+
+        int separator = host.IndexOf('/', StringComparison.Ordinal);
+
+        return separator < 0 ? string.Empty : host[separator..].TrimEnd('/');
+    }
 
     /// <summary>Returns the body of a successful response, or throws describing the refusal.</summary>
     /// <param name="response">The response to read.</param>
@@ -975,9 +983,11 @@ public static class AuthenticatedClientFactory
     /// or the account awaiting approval. The document's stable failure code can, and so it is surfaced here.
     /// </para>
     /// <para>
-    /// <b>The submitted credential is never included</b> - only the account name, which the test supplied and
-    /// already knows. When the body does not parse as a problem document it is included verbatim instead,
-    /// because an unparseable refusal from an endpoint contracted to emit one is itself the finding.
+    /// <b>Neither the submitted credential nor any response value is included</b> - only the account name,
+    /// which the test supplied and already knows, and the problem document's own published members. When the
+    /// body does not parse as a problem document it is described STRUCTURALLY by
+    /// <see cref="DescribeBody(string)"/> rather than quoted, because a body arriving in an unexpected shape
+    /// is exactly the case that could be carrying issued tokens.
     /// </para>
     /// </remarks>
     private static async Task<InvalidOperationException> DescribeFailureAsync(
@@ -1000,8 +1010,7 @@ public static class AuthenticatedClientFactory
 
         if (problem is null)
         {
-            message.Append(" The body carried no problem document: ")
-                .Append(string.IsNullOrWhiteSpace(body) ? "<empty>" : body);
+            message.Append(" The body carried no problem document: ").Append(DescribeBody(body));
 
             return new InvalidOperationException(message.ToString());
         }
@@ -1064,7 +1073,7 @@ public static class AuthenticatedClientFactory
         {
             throw new InvalidOperationException(
                 "The API answered a success carrying no access token, so no client could be authenticated. "
-                + "Body: " + body);
+                + "Body: " + DescribeBody(body));
         }
 
         return issued;
@@ -1075,6 +1084,12 @@ public static class AuthenticatedClientFactory
     /// <param name="body">The response body.</param>
     /// <param name="address">The address that produced the body, for the failure message.</param>
     /// <returns>The payload.</returns>
+    /// <remarks>
+    /// The body is described rather than quoted. This runs on a SUCCESSFUL response, so a body that fails to
+    /// bind here is a successful sign-in whose envelope drifted - the one case where the material being
+    /// diagnosed is a live access and refresh token pair. Quoting it would write both to the build log of
+    /// every run that hit the drift.
+    /// </remarks>
     private static T ReadPayload<T>(string body, string address)
     {
         ApiEnvelope<T>? envelope;
@@ -1086,18 +1101,112 @@ public static class AuthenticatedClientFactory
         catch (JsonException failure)
         {
             throw new InvalidOperationException(
-                $"The body '{address}' answered is not the shared success envelope. Body: {body}",
+                $"The body '{address}' answered is not the shared success envelope. "
+                + $"Body: {DescribeBody(body)}",
                 failure);
         }
 
         if (envelope is null || envelope.Data is null)
         {
             throw new InvalidOperationException(
-                $"The body '{address}' answered carried no payload inside the success envelope. Body: {body}");
+                $"The body '{address}' answered carried no payload inside the success envelope. "
+                + $"Body: {DescribeBody(body)}");
         }
 
         return envelope.Data;
     }
+
+    /// <summary>
+    /// Describes a response body by its SHAPE - its length, a short digest and the member names it carries -
+    /// without reproducing a single value from it.
+    /// </summary>
+    /// <param name="body">The body to describe.</param>
+    /// <returns>A diagnostic string that cannot carry a credential.</returns>
+    /// <remarks>
+    /// <para>
+    /// Every caller of this runs while building a failure message for a body that arrived in an unexpected
+    /// shape, and the bodies this factory reads are sign-in, refresh and current-account responses. An
+    /// unexpected shape from any of the first two is a live access token and a live refresh token, so quoting
+    /// the body verbatim would publish working credentials to a build log - retained, searchable, and valid
+    /// for as long as the token's lifetime.
+    /// </para>
+    /// <para>
+    /// Member NAMES are safe and are what a drifted envelope is diagnosed from: they say whether the payload
+    /// was published bare rather than wrapped, or whether a member was renamed. VALUES are never emitted, not
+    /// even for members whose names look harmless, because the shape being diagnosed is by definition not the
+    /// shape whose members are known. The length and digest between them distinguish two different unexpected
+    /// bodies from each other and let one run be compared with another, which is all a diagnostic needs.
+    /// </para>
+    /// <para>
+    /// The digest is truncated deliberately: it exists to correlate observations of the same body, not to
+    /// withstand an attempt to recover the body from it, and a full digest of a short body would be closer to
+    /// an encoding of it than a fingerprint of it.
+    /// </para>
+    /// </remarks>
+    private static string DescribeBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return "<empty>";
+        }
+
+        var description = new StringBuilder("<")
+            .Append("length=")
+            .Append(body.Length.ToString(CultureInfo.InvariantCulture))
+            .Append(" sha256=")
+            .Append(ShortDigest(body));
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body);
+
+            description.Append(" json=").Append(document.RootElement.ValueKind.ToString());
+
+            if (document.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                description.Append(" members=[").Append(string.Join(", ", MemberNames(document.RootElement)))
+                    .Append(']');
+            }
+        }
+        catch (JsonException)
+        {
+            description.Append(" json=none");
+        }
+
+        return description.Append('>').ToString();
+    }
+
+    /// <summary>Lists the member names an object carries, one level into each nested object.</summary>
+    /// <param name="element">The object to read.</param>
+    /// <returns>Dotted member paths, in document order.</returns>
+    /// <remarks>
+    /// One level of nesting is enough to tell a wrapped payload from a bare one, which is the question these
+    /// diagnostics answer. Recursing without bound would be a way of reconstructing an arbitrarily deep body
+    /// from its own member names, and nothing here needs that.
+    /// </remarks>
+    private static IEnumerable<string> MemberNames(JsonElement element)
+    {
+        foreach (JsonProperty member in element.EnumerateObject())
+        {
+            if (member.Value.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty nested in member.Value.EnumerateObject())
+                {
+                    yield return member.Name + "." + nested.Name;
+                }
+            }
+            else
+            {
+                yield return member.Name;
+            }
+        }
+    }
+
+    /// <summary>Computes a truncated hexadecimal digest of a string.</summary>
+    /// <param name="value">The value to digest.</param>
+    /// <returns>The first four bytes of the SHA-256 digest, in lower-case hexadecimal.</returns>
+    private static string ShortDigest(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..8].ToLowerInvariant();
 
     /// <summary>Identifies one persona's sign-in within one host.</summary>
     /// <param name="UserName">The account name presented.</param>
@@ -1219,4 +1328,3 @@ public sealed class CorrelatedResponse : IDisposable
     /// <inheritdoc />
     public void Dispose() => Response.Dispose();
 }
-

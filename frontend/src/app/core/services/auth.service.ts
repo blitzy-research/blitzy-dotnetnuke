@@ -1,6 +1,16 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { Observable, catchError, finalize, map, of, shareReplay, tap, throwError } from 'rxjs';
+import {
+  Observable,
+  catchError,
+  finalize,
+  map,
+  of,
+  shareReplay,
+  switchMap,
+  tap,
+  throwError,
+} from 'rxjs';
 
 import { AUTH_ENDPOINTS } from '../config/api-endpoints';
 import {
@@ -13,6 +23,8 @@ import {
 } from '../models/auth.model';
 import { ApiResponse } from '../models/paged-result.model';
 import { TokenStorageService } from './token-storage.service';
+
+const AUTHORIZATION_HEADER = 'Authorization';
 
 /**
  * Owns the three token operations: sign in, refresh, sign out.
@@ -53,6 +65,16 @@ export class AuthService {
   readonly isAuthenticated = this.tokenStorage.isAuthenticated;
 
   /**
+   * Whether the signed-in account must complete its profile before continuing.
+   *
+   * Re-exposed for the same reason as {@link currentUser}: a consumer of this
+   * service should not need a second injection to read a fact about the session it
+   * just established. {@link login} returns the identity rather than the session, so
+   * without this projection the advisory would have no reader at all.
+   */
+  readonly mustUpdateProfile = this.tokenStorage.mustUpdateProfile;
+
+  /**
    * Exchanges credentials for a token pair and stores the resulting session.
    *
    * A failure is re-thrown unchanged so the caller can render the server's problem
@@ -72,8 +94,17 @@ export class AuthService {
     // would read as undefined, and the stored session would be a shape-correct blank.
     return this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.login, request).pipe(
       map((envelope) => sessionFromLoginResponse(envelope.data)),
+      switchMap((session) =>
+        this.loadCurrentUser(session.accessToken).pipe(
+          map((user) => ({ ...session, user })),
+        ),
+      ),
       tap((session) => this.tokenStorage.store(session)),
       map((session) => session.user),
+      catchError((error: unknown) => {
+        this.tokenStorage.clear();
+        return throwError(() => error);
+      }),
     );
   }
 
@@ -111,6 +142,11 @@ export class AuthService {
 
     const request = this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.refresh, body).pipe(
       map((envelope) => sessionFromLoginResponse(envelope.data)),
+      switchMap((session) =>
+        this.loadCurrentUser(session.accessToken).pipe(
+          map((user) => ({ ...session, user })),
+        ),
+      ),
       // Storing here rather than at the call site is what guarantees the rotated
       // refresh token replaces the consumed one exactly once, however many
       // subscribers are sharing this request.
@@ -136,6 +172,24 @@ export class AuthService {
     this.refreshInFlight = request;
 
     return request;
+  }
+
+  /**
+   * Reads expanded display authority only from the explicit current-user endpoint.
+   *
+   * Login and refresh responses intentionally carry an authority-minimised identity, and access
+   * tokens carry no role or permission claims. The freshly issued token is attached explicitly so
+   * the general auth interceptor neither substitutes an older token nor recursively refreshes this
+   * bootstrap read.
+   */
+  private loadCurrentUser(accessToken: string): Observable<CurrentUser> {
+    const headers = new HttpHeaders({
+      [AUTHORIZATION_HEADER]: `Bearer ${accessToken}`,
+    });
+
+    return this.http
+      .get<ApiResponse<CurrentUser>>(AUTH_ENDPOINTS.me, { headers })
+      .pipe(map((envelope) => envelope.data));
   }
 
   /**

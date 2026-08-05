@@ -476,6 +476,50 @@ internal sealed class ModuleRepository : IModuleRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// The set-based twin of <see cref="GetTabModulesByModuleIdAsync"/>. One statement answers "every
+    /// page each of these modules appears on", which is what keeps a listing that emits one row per
+    /// placement from issuing one read per module. The ordering leads with the module so that the flat
+    /// result can be grouped in one pass, and finishes on the placement key so the sequence is total:
+    /// <c>ModuleOrder</c> is not unique within a page, so it cannot terminate an ordering on its own.
+    /// </para>
+    /// <para>
+    /// The identifiers are snapshotted into an array before they reach the predicate, so the translated
+    /// membership test is built from a stable sequence rather than from a collection the caller could
+    /// still be mutating, and duplicates collapse first because a repeated identifier would lengthen the
+    /// statement without widening the answer. An empty request short-circuits with no round trip, which
+    /// is correctness as much as economy: the answer is knowably empty.
+    /// </para>
+    /// </remarks>
+    // MIGRATION: no legacy provider member corresponds to this read, for the same reason its
+    // single-module twin has none - legacy callers received one flattened join row per page and so never
+    // asked the question separately. It is a READ ONLY: no page window, no total and no ordering
+    // parameter reaches this contract, because the legacy module block declares no paging member and the
+    // page window over a projection belongs to the layer that owns the paging request.
+    public async Task<IReadOnlyList<TabModule>> GetTabModulesByModuleIdsAsync(
+        IReadOnlyCollection<int> moduleIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(moduleIds);
+
+        if (moduleIds.Count == 0)
+        {
+            return Array.Empty<TabModule>();
+        }
+
+        int[] wanted = moduleIds.Distinct().ToArray();
+
+        return await _dbContext.TabModules
+            .Where(placement => wanted.Contains(placement.ModuleId))
+            .OrderBy(placement => placement.ModuleId)
+            .ThenBy(placement => placement.TabId)
+            .ThenBy(placement => placement.TabModuleId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// Staging only; <see cref="TabModule.TabModuleId"/> is assigned when the unit of work commits.
     /// </remarks>
     // MIGRATION: replaces the fourteen-argument `AddTabModule(TabId, ModuleId, ModuleOrder, PaneName,

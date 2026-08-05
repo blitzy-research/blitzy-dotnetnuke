@@ -6,7 +6,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Declares the field rules for <see cref="CreateRoleRequest"/>, the payload submitted to
-/// <c>POST /api/v1/portals/{portalId}/roles</c> to create a security role together with its
+/// <c>POST /api/v1/roles</c> to create a security role together with its
 /// paid-membership terms.
 /// </summary>
 /// <remarks>

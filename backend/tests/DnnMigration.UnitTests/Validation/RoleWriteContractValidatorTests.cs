@@ -838,29 +838,28 @@ public class RoleWriteContractValidatorTests
 
 
     /// <summary>
-    /// The definition widths are the terminal ones, so the widened validation expression is accepted well
-    /// beyond the length the legacy update procedure still declares.
+    /// Definition text widths follow the terminal schema except for tenant-authored validation expressions,
+    /// whose write boundary is intentionally narrower to cap regular-expression compilation and match work.
     /// </summary>
     /// <remarks>
-    /// The terminal update procedure declares the expression parameter at a hundred characters while the
-    /// column holds two thousand - a real legacy truncation defect. This migration writes through the ORM,
-    /// so the column's width governs, and a value of a thousand characters proves it.
+    /// The terminal column remains two thousand characters for existing rows and schema compatibility, while
+    /// new expressions are limited to 512 characters and evaluated with a bounded timeout.
     /// </remarks>
     [Fact]
-    public void ProfileDefinition_EnforcesTheTerminalWidthsRatherThanTheProcedureParameters()
+    public void ProfileDefinition_EnforcesTheRegexWriteWorkFactorLimit()
     {
         CreateProfilePropertyDefinitionRequestValidator validator = new();
 
         CreateProfilePropertyDefinitionRequest widened = ValidDefinition();
-        widened.ValidationExpression = new string('x', 1000);
+        widened.ValidationExpression = new string('x', 511);
         ShouldAccept(validator.Validate(widened));
 
         CreateProfilePropertyDefinitionRequest atLimit = ValidDefinition();
-        atLimit.ValidationExpression = new string('x', 2000);
+        atLimit.ValidationExpression = new string('x', 512);
         ShouldAccept(validator.Validate(atLimit));
 
         CreateProfilePropertyDefinitionRequest overLimit = ValidDefinition();
-        overLimit.ValidationExpression = new string('x', 2001);
+        overLimit.ValidationExpression = new string('x', 513);
         // The message is the AUTHORED one, not the framework default. Every other rule on this validator
         // reports wording carried over from the legacy screen, and reporting one member in the framework's
         // voice - which also quotes the submitted length back - would make the response inconsistent with
@@ -868,7 +867,7 @@ public class RoleWriteContractValidatorTests
         ShouldReport(
             validator.Validate(overLimit),
             nameof(CreateProfilePropertyDefinitionRequest.ValidationExpression),
-            "Validation Expression must be 2000 characters or fewer");
+            "Validation Expression must be 512 characters or fewer");
     }
 
     /// <summary>

@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using DnnMigration.Api.Controllers;
+using DnnMigration.Api.Extensions;
 using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
@@ -56,8 +57,26 @@ namespace DnnMigration.IntegrationTests.Api;
 [Collection(IntegrationTestCollection.Name)]
 public sealed class ModuleApiTests
 {
+    /// <summary>Failure code reported when a request names a page the module is not placed on.</summary>
+    /// <remarks>
+    /// Stated as the value a client observes, because it is the value a client branches on: it distinguishes
+    /// "this module has no placement on that page" from "there is no such module", and the two need different
+    /// remedies.
+    /// </remarks>
+    private const string PlacementNotFoundCode = "module.placement_not_found";
     /// <summary>An identifier no seeded or created row can hold, used for the absent-resource paths.</summary>
     private const int UnknownModuleId = 987654;
+
+    /// <summary>
+    /// The widest window the paging contract admits, spelled out here rather than referenced from the
+    /// validator so a fact does not silently follow a change to the rule it is measuring against.
+    /// </summary>
+    /// <remarks>
+    /// <c>PagedRequestValidator.MaximumPageSize</c> is 100 and the request is refused past it, so a fact that
+    /// wants "the whole collection in one window" has to ask for exactly this and then confirm the collection
+    /// fits. An earlier draft asked for a thousand and was answered <c>400</c>.
+    /// </remarks>
+    private const int MaximumPageSize = 100;
 
     /// <summary>A page identifier no seeded row can hold.</summary>
     private const int UnknownTabId = 987654;
@@ -80,7 +99,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListModuleDefinitions_ReturnsOkIncludingSeededDefinition()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/module-definitions", UriKind.Relative));
@@ -146,12 +165,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListModuleDefinitions_AsMemberWithoutAdministratorRole_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/module-definitions", UriKind.Relative));
@@ -169,7 +183,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModuleDefinition_ByIdentifier_ReturnsOkWithTheSeededDefinition()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             $"/api/v1/module-definitions/{_fixture.Seed.ModuleDefinitionId.ToString(CultureInfo.InvariantCulture)}",
@@ -200,7 +214,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModuleDefinition_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/module-definitions/987654", UriKind.Relative));
@@ -213,7 +227,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListDesktopModuleDefinitions_ReturnsOkWithThatPackagesDefinitions()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             "/api/v1/module-definitions/desktop-modules/"
@@ -242,7 +256,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListDesktopModuleDefinitions_WhenPackageUnknown_ReturnsOkWithAnEmptyArray()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/module-definitions/desktop-modules/987654", UriKind.Relative));
@@ -265,12 +279,7 @@ public sealed class ModuleApiTests
     [InlineData("/api/v1/module-definitions/desktop-modules/1")]
     public async Task ModuleDefinitionReads_AsMemberWithoutAdministratorRole_ReturnForbidden(string path)
     {
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
@@ -300,7 +309,7 @@ public sealed class ModuleApiTests
     [InlineData("DELETE", "/api/v1/module-definitions/1")]
     public async Task ModuleDefinitions_DeclareNoMutator(string method, string path)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpRequestMessage request = new(new HttpMethod(method), new Uri(path, UriKind.Relative));
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -313,7 +322,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_ReturnsCreatedWithResolvableLocation()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
 
@@ -343,7 +352,7 @@ public sealed class ModuleApiTests
 
         response.Headers.Location.Should().NotBeNull();
         response.Headers.Location!.OriginalString.Should().Be(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules/{Route(created.ModuleId)}");
+            $"/api/v1/modules/{Route(created.ModuleId)}");
 
         using HttpResponseMessage followed = await client.GetAsync(
             new Uri(response.Headers.Location.OriginalString, UriKind.Relative));
@@ -365,7 +374,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithUnknownDefinition_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
         request.ModuleDefId = UnknownModuleId;
@@ -378,12 +387,47 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    /// <summary>
+    /// A definition published by an administrative package is not part of the portal-placeable catalogue.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_WithAdministrativeDefinition_ReturnsNotFoundAndWritesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        int administrativeDefinitionId = await InsertAdministrativeDefinitionAsync();
+
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+        request.ModuleDefId = administrativeDefinitionId;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        int written = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[Modules]
+            WHERE [PortalID] = @portalId AND [ModuleDefID] = @definitionId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["definitionId"] = administrativeDefinitionId,
+            });
+
+        written.Should().Be(0);
+    }
+
     /// <summary>A create naming a page in another tenant is refused, which is a tenant-isolation guarantee.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task CreateModule_WithPageOutsideThePortal_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(UnknownTabId);
 
@@ -406,7 +450,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithoutPageEditGrant_ReturnsForbiddenAndWritesNothing()
     {
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
 
@@ -435,7 +479,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithPageEditGrant_IsAdmittedAndThenRefusedByADeny()
     {
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         await GrantTabPermissionAsync(
             _fixture.Seed.ChildTabId,
@@ -493,7 +537,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithNegativeCacheTime_PersistsItVerbatim()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
         request.CacheTime = -30;
@@ -557,7 +601,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithEndBeforeStart_IsAcceptedAndStoredVerbatim()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         DateTime start = new(2030, 6, 1, 0, 0, 0, DateTimeKind.Utc);
         DateTime end = new(2030, 5, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -609,7 +653,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_WithEndBeforeStart_IsAcceptedAndStoredVerbatim()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         DateTime start = new(2031, 9, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -635,17 +679,17 @@ public sealed class ModuleApiTests
         updated.EndDate.Should().Be(end);
     }
 
-    /// <summary>A create against a tenant that does not exist is refused before anything is written.</summary>
+    /// <summary>An unresolved request host cannot select a module collection.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ListModules_ForUnknownPortal_ReturnsNotFound()
+    public async Task ListModules_FromAnUnclaimedHost_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync("unclaimed-" + Suffix() + ".invalid");
 
         using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(987654)}/modules?pageIndex=0&pageSize=10", UriKind.Relative));
+            new Uri("/api/v1/modules?pageIndex=0&pageSize=10", UriKind.Relative));
 
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     /// <summary>The collection answers <c>200 OK</c> and carries a created module with its placement.</summary>
@@ -653,12 +697,12 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListModules_ReturnsOkContainingCreatedModule()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules?pageIndex=0&pageSize=100",
+                "/api/v1/modules?pageIndex=0&pageSize=100",
                 UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -684,12 +728,12 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListModules_FilteredByPage_ReturnsOnlyThatPagesPlacements()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto onChild = await CreateModuleAsync(client, _fixture.Seed.ChildTabId);
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri(
-                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules"
+                "/api/v1/modules"
                     + $"?pageIndex=0&pageSize=100&tabId={Route(_fixture.Seed.ChildTabId)}",
                 UriKind.Relative));
 
@@ -709,7 +753,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModule_ReturnsOkWithDetail()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.GetAsync(
@@ -747,7 +791,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModule_WhenUnresolvable_ReturnsForbiddenWithoutDisclosingExistence()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
@@ -761,15 +805,67 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task GetModule_WhenModuleBelongsToAnotherTenant_ReturnsForbidden()
+    public async Task GetModule_WhenTokenTenantDiffersFromResolvedTenant_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
-        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
-        // The tenant in the route is one that does not contain the module. The answer must be identical to the
-        // answer for a module that does not exist at all, or the pair of answers becomes an existence oracle.
+        using HttpClient client = _fixture.CreateClientFor(
+            _fixture.Seed.AdminUserId,
+            IntegrationSeed.AdminUserName,
+            _fixture.Seed.PortalId + 5000,
+            isSuperUser: false,
+            roles: [IntegrationSeed.AdministratorsRoleName]);
+
+        // The flat route derives its tenant from the request host. A token that names another tenant must not
+        // turn that route into a cross-tenant alias for the same module identifier.
         using HttpResponseMessage response = await client.GetAsync(
-            ModuleRoute(_fixture.Seed.PortalId + 5000, created.ModuleId));
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// A token issued by portal A cannot exercise a real user-specific module grant in portal B.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// SEC-005: the member is deliberately provisioned into both portals and receives a direct VIEW grant on
+    /// portal B's module. Without token-to-route tenant binding every stored permission check below the policy
+    /// would answer yes; the only reason for refusal is that the presented token was issued by portal A.
+    /// </remarks>
+    [Fact]
+    public async Task GetModule_WithAuthorityInPortalBButATokenFromPortalA_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (int portalId, string alias, int homeTabId) = await CreateForeignPortalAsync(host);
+        int moduleId = await InsertForeignModuleAsync(portalId, homeTabId);
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[UserPortals] ([UserId], [PortalId], [CreatedDate], [Authorised])
+            VALUES (@userId, @portalId, SYSUTCDATETIME(), 1);
+
+            INSERT INTO [dbo].[ModulePermission] ([ModuleID], [PermissionID], [UserID], [AllowAccess])
+            VALUES (@moduleId, @permissionId, @userId, 1);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = _fixture.Seed.MemberUserId,
+                ["portalId"] = portalId,
+                ["moduleId"] = moduleId,
+                ["permissionId"] = _fixture.Seed.ModuleViewPermissionId,
+            });
+
+        using HttpClient attacker = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        attacker.BaseAddress = new Uri($"http://{alias}", UriKind.Absolute);
+
+        using HttpResponseMessage response = await attacker.GetAsync(ModuleRoute(portalId, moduleId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -783,15 +879,10 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModule_AsMemberWithoutGrant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
@@ -809,15 +900,10 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModule_WithRoleGrant_IsAdmittedAndThenRefusedByADeny()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         // A module that inherits its view permission from its page would be answered from the page's grants
         // instead, so inheritance is switched off first to make this test about the module's own grant.
@@ -853,7 +939,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_ReturnsOkAndPersists()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         var request = new UpdateModuleRequest
@@ -898,6 +984,120 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// A <c>tabId</c> naming a page the module is not placed on is REFUSED, and nothing is moved.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>tabId</c> SELECTS the placement being updated; it does not relocate one. This fact
+    /// asserted the opposite for a while - that naming another page moved the placement and its page-scoped
+    /// settings there, appending to the destination pane the way the legacy administration screen did - and the
+    /// reconciled contract withdrew that reading deliberately. One page identifier cannot express a move: it is
+    /// the same field the request uses to say WHICH of a module's placements it is about, so a value that meant
+    /// "move to here" and a value that meant "the one on here" would be indistinguishable, and an ordinary edit
+    /// submitted against the wrong page would silently relocate a module instead of failing. A move needs a
+    /// source and a destination, and the surface offers no way to name both.
+    /// </para>
+    /// <para>
+    /// The absence is asserted with everything the withdrawn behaviour would have disturbed - the source
+    /// placement, its order, its page-scoped setting and the absence of any placement on the named page - so a
+    /// re-introduction fails here rather than passing as a 200 nobody inspected.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_NamingAPageTheModuleIsNotPlacedOn_IsRefusedAndMovesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabModuleSettings] ([TabModuleID], [SettingName], [SettingValue])
+            VALUES (@tabModuleId, N'theme', N'legacy');
+            """,
+            new Dictionary<string, object?> { ["tabModuleId"] = created.TabModuleId });
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new UpdateModuleRequest
+            {
+                TabId = _fixture.Seed.ChildTabId,
+                ModuleTitle = created.ModuleTitle,
+                AllTabs = false,
+                ModuleOrder = 99,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "the request names a placement that does not exist, which is an absent resource rather than a "
+            + "malformed request");
+
+        ProblemDetails? problem = await response.Content.ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Type.Should().Contain(
+            PlacementNotFoundCode,
+            "the refusal names the placement rule, so a client can tell it from an absent module");
+
+        int sourcePlacements = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[TabModules]
+            WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["tabId"] = _fixture.Seed.RootTabId,
+            });
+
+        int destinationPlacements = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[TabModules]
+            WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["tabId"] = _fixture.Seed.ChildTabId,
+            });
+
+        string retainedSetting = await _fixture.Database.ScalarAsync<string>(
+            """
+            SELECT [SettingValue]
+            FROM [dbo].[TabModuleSettings]
+            WHERE [TabModuleID] = @tabModuleId AND [SettingName] = N'theme';
+            """,
+            new Dictionary<string, object?> { ["tabModuleId"] = created.TabModuleId });
+
+        sourcePlacements.Should().Be(1, "the placement the module really has is untouched by a refusal");
+        destinationPlacements.Should().Be(0, "no placement is created on the page the request named");
+        retainedSetting.Should().Be(
+            "legacy",
+            "the page-scoped setting belongs to the surviving placement and is not carried anywhere");
+    }
+
+    /// <summary>
+    /// Omitting the selected page is a malformed update rather than an implicit move to page zero.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_WithoutTabId_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new { moduleTitle = created.ModuleTitle },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
     /// The placement's appearance fields are accepted on the write path and exposed by no response
     /// contract, and omitting one is accepted just as setting it is.
     /// </summary>
@@ -923,7 +1123,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_DeclaresNoAppearanceFieldOnAnyModuleContract()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         var request = new UpdateModuleRequest
@@ -1012,7 +1212,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_WithAnOverlongIconFile_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -1037,7 +1237,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_WhenUnresolvable_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId),
@@ -1060,7 +1260,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_WithNegativeCachePeriod_PersistsItVerbatim()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -1078,12 +1278,296 @@ public sealed class ModuleApiTests
         stored.Should().Be(-1);
     }
 
+    // MIGRATION: A FACT ASSERTING THAT AN ADMINISTRATOR'S SUBMISSION MOVES THE PLACEMENT WAS WITHDRAWN HERE.
+    // It read the submitted page as the legacy screen's page picker and asserted the stored page, the stored
+    // order and a single surviving placement row afterwards. The reconciled contract reads that member as the
+    // SELECTOR of which placement the request is about, so a request naming a page the module does not occupy
+    // is refused before anything is written and no authority can turn it into a move. Its coverage is not
+    // lost: UpdateModule_NamingAPageTheModuleIsNotPlacedOn_IsRefusedAndMovesNothing above asserts the same
+    // stored state - the source placement, its order, its page-scoped setting, and the absence of any
+    // placement on the named page - against the refusal instead of against a relocation, and the divergence
+    // from the legacy screen is recorded in MIGRATION_NOTES.md. Reinstating a move needs a second member
+    // naming the destination, and this fact would then be the right shape for it.
+
+    /// <summary>
+    /// Each administrator-only field is refused for a caller that holds the module edit grant but does not
+    /// administer the portal, and nothing is written.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The legacy settings screen disabled the page picker, the every-page checkbox and both propagation
+    /// checkboxes outright for any caller outside the portal administrator role, in the page load and again
+    /// in the save handler. That is a rule about four FIELDS of one request rather than about reaching the
+    /// route, so no policy attribute can express it: the route's own policy admits a caller holding the
+    /// module edit grant, correctly, because such a caller may legitimately edit the module in front of them.
+    /// </para>
+    /// <para>
+    /// Until the service enforced it, the rule was documented in three places and enforced in none, and the
+    /// consequence was four portal-wide effects reachable from a page-scoped grant: move a module onto a page
+    /// the caller does not administer, fan it out across every page of the tenant, name its appearance as the
+    /// tenant's default, or rewrite the appearance of every module on every content page.
+    /// </para>
+    /// <para>
+    /// All four are asserted in one test because they share one gate, and a single representative field would
+    /// leave three able to regress silently. The stored placement is re-read afterwards to prove the refusal
+    /// happened before anything was written rather than after.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_AsNonAdministratorHoldingEditGrant_RefusesAdministratorOnlyFields()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
+
+        // The caller genuinely holds the module edit grant, which is what makes this a test of the field rule
+        // rather than of the route policy: without the grant every request below would be refused for a
+        // different reason and would prove nothing.
+        await GrantModulePermissionAsync(
+            created.ModuleId,
+            _fixture.Seed.ModuleEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        // And may edit both pages, so a refusal cannot be attributed to the destination grant either.
+        await GrantTabPermissionAsync(
+            _fixture.Seed.RootTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        // MIGRATION: THREE FIELDS, NOT FOUR. A submission naming a DIFFERENT page was the first entry here,
+        // because the revision that wrote this fact read the page as a move command and counted it among the
+        // administrator-only fields. Under the reconciled contract the page SELECTS the placement, so such a
+        // request is refused earlier - and with the placement-not-found answer rather than a forbidden one -
+        // which is asserted by its own fact. It is removed from this array rather than left to fail for a
+        // reason that has nothing to do with the gate this fact exists to prove. The three portal-wide effects
+        // that remain are exactly the ones the gate covers.
+        UpdateModuleRequest[] administratorOnly =
+        [
+            new() { TabId = _fixture.Seed.RootTabId, ModuleTitle = created.ModuleTitle, AllTabs = true },
+            new()
+            {
+                TabId = _fixture.Seed.RootTabId,
+                ModuleTitle = created.ModuleTitle,
+                SetAsDefaultSettings = true,
+            },
+            new()
+            {
+                TabId = _fixture.Seed.RootTabId,
+                ModuleTitle = created.ModuleTitle,
+                ApplyToAllModules = true,
+            },
+        ];
+
+        foreach (UpdateModuleRequest request in administratorOnly)
+        {
+            using HttpResponseMessage response = await client.PutAsJsonAsync(
+                ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+                request,
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.Forbidden,
+                "a page-scoped grant does not carry authority over the tenant");
+        }
+
+        // An ordinary save by the same caller still works, which is the half that proves the gate is a DELTA
+        // test rather than a presence test. The contract requires the page identifier on every request, so a
+        // gate that refused whenever the field was present would refuse every non-administrator save.
+        using HttpResponseMessage ordinary = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new UpdateModuleRequest
+            {
+                TabId = _fixture.Seed.RootTabId,
+                ModuleTitle = "Renamed by a page editor",
+            },
+            ApiTestFixture.Json);
+
+        ordinary.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        int storedTabId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [TabID] FROM [dbo].[TabModules] WHERE [TabModuleID] = @tabModuleId;",
+            new Dictionary<string, object?> { ["tabModuleId"] = created.TabModuleId });
+
+        storedTabId.Should().Be(
+            _fixture.Seed.RootTabId,
+            "the placement's page is write-once after creation, whatever a request submits");
+
+        int allTabs = await _fixture.Database.ScalarAsync<int>(
+            "SELECT CAST([AllTabs] AS int) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        allTabs.Should().Be(0, "the refused fan-out must not have reached the column either");
+
+        await RevokeTabPermissionAsync(
+            _fixture.Seed.RootTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId);
+        await RevokeTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId);
+    }
+
+    /// <summary>
+    /// A page in another tenant, and a page that does not exist, are refused identically.
+    /// </summary>
+    /// <remarks>
+    /// The two answer alike on purpose. Distinguishing them would tell an administrator of one tenant which
+    /// page identifiers exist in tenants it cannot see, which is an enumeration oracle.
+    /// <para>
+    /// MIGRATION: this was written as a fact about a MOVE's destination being validated before the projection
+    /// assigned it. Under the reconciled contract the submitted page selects the placement instead, so both
+    /// values are refused one step earlier and for a stronger reason - no placement of this module exists on
+    /// either page - and neither can reach a column because nothing is projected at all. The status and the
+    /// non-enumerating property, which are what this fact protects, are unchanged.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_WhenTheDestinationPageIsNotInTheTenant_ReturnsNotFound()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new UpdateModuleRequest { TabId = UnknownTabId, ModuleTitle = created.ModuleTitle },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "the update path uses the same non-enumerating answer as module creation for an unknown or "
+            + "cross-tenant page");
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain(
+            "is not placed on page",
+            "the refusal names the placement rule, and it names it identically for a page that does not "
+            + "exist and for one this tenant cannot see");
+
+        int storedTabId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [TabID] FROM [dbo].[TabModules] WHERE [TabModuleID] = @tabModuleId;",
+            new Dictionary<string, object?> { ["tabModuleId"] = created.TabModuleId });
+
+        storedTabId.Should().Be(_fixture.Seed.RootTabId);
+    }
+
+    /// <summary>
+    /// An import into a module whose package names a business controller this installation does not register
+    /// is REFUSED, and nothing is committed or recorded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the state every installation of this migration is permanently in for every module: the
+    /// lifecycle factory resolves from a closed set fixed in code, AAP section 0.2.2.2 places every bundled
+    /// module out of scope, and the set is therefore empty. The factory previously reported that as a
+    /// SUCCESS carrying an advisory, and the module service reads a successful import as licence to commit
+    /// its unit of work, evict the placement caches and write an <c>Operation=Import</c> audit record - so
+    /// the caller was answered <c>200 OK</c> and the audit trail recorded content that had never been
+    /// imported into a module the installation cannot even ask.
+    /// </para>
+    /// <para>
+    /// The seeded package is temporarily made to declare portability and to name a controller, because the
+    /// suite's package otherwise declares none and the request is refused earlier for that different and
+    /// entirely correct reason - which is exactly why this path had never been reached over HTTP. The row is
+    /// restored afterwards so the rest of the suite sees the package it expects.
+    /// </para>
+    /// <para>
+    /// The absence of an audit record is asserted as well as the status code. A refusal that had already
+    /// written the record would still answer the caller correctly while leaving a trail that says an import
+    /// happened, and the trail is what an operator reads afterwards.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ImportModule_WhenTheControllerIsNotRegistered_RefusesAndRecordsNothing()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        // 1 is the portable capability bit, reproducing the legacy SupportedFeatures encoding exactly.
+        await _fixture.Database.ExecuteAsync(
+            """
+            UPDATE [dbo].[DesktopModules]
+               SET [BusinessControllerClass] = @controllerClass,
+                   [SupportedFeatures] = 1
+             WHERE [DesktopModuleID] = @desktopModuleId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["controllerClass"] = "Measured.Modules.UnregisteredController",
+                ["desktopModuleId"] = _fixture.Seed.DesktopModuleId,
+            });
+
+        try
+        {
+            // The host has one process-wide recording sink, shared by every suite in this serial collection.
+            // Count only this module's import records before and after the request instead of assuming that
+            // every log written while this fact runs belongs to it.
+            bool IsThisModulesImportRecord(LogRecord record) =>
+                Equals(record.Properties.GetValueOrDefault("AuditEvent"), "MODULE_UPDATED")
+                && Equals(record.Properties.GetValueOrDefault("AuditResourceType"), "Module")
+                && Equals(
+                    record.Properties.GetValueOrDefault("AuditResourceId"),
+                    created.ModuleId.ToString(CultureInfo.InvariantCulture))
+                && record.Properties.GetValueOrDefault("AuditProperties")?.ToString()?.Contains(
+                    "Operation=Import",
+                    StringComparison.Ordinal) == true;
+
+            int importAuditCountBefore = RecordedLogs.Snapshot().Count(IsThisModulesImportRecord);
+
+            using HttpResponseMessage response = await host.PostAsJsonAsync(
+                ModuleImportRoute(_fixture.Seed.PortalId),
+                new ModuleImportRequest
+                {
+                    ModuleId = created.ModuleId,
+                    Content = "<content type=\"IntegrationDesktopModule\" version=\"01.00.00\">x</content>",
+                    Folder = "Portals/0/",
+                    FileName = "content.xml",
+                },
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.BadRequest,
+                "an import that restored no content is not something a caller may be told succeeded");
+
+            string body = await response.Content.ReadAsStringAsync();
+            body.Should().Contain(
+                "No business controller is registered",
+                "the refusal names the installation's own limitation rather than blaming the document");
+
+            RecordedLogs.Snapshot().Count(IsThisModulesImportRecord).Should().Be(
+                importAuditCountBefore,
+                "an audit record claiming an import happened is worse than no record at all");
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                """
+                UPDATE [dbo].[DesktopModules]
+                   SET [BusinessControllerClass] = NULL,
+                       [SupportedFeatures] = 0
+                 WHERE [DesktopModuleID] = @desktopModuleId;
+                """,
+                new Dictionary<string, object?> { ["desktopModuleId"] = _fixture.Seed.DesktopModuleId });
+        }
+    }
+
     /// <summary>Reading and writing the settings projection round-trips both scopes of setting.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ModuleSettings_RoundTripBothScopes()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         Uri settingsRoute = ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId);
@@ -1161,6 +1645,108 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// Even an explicit anonymous VIEW grant cannot disclose the open-key settings contract, because that
+    /// contract now requires an authenticated editor.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetModuleSettings_WithAnonymousViewGrant_ReturnsUnauthorized()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Modules] SET [InheritViewPermissions] = 0 WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+        await GrantModulePermissionAsync(
+            created.ModuleId,
+            _fixture.Seed.ModuleViewPermissionId,
+            roleId: -1,
+            allowAccess: true);
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage visibleModule = await anonymous.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+        visibleModule.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage settings = await anonymous.GetAsync(
+            ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
+        settings.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// A signed-in caller who may view a module but has no edit grant cannot read its raw settings.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetModuleSettings_WithViewButWithoutEdit_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Modules] SET [InheritViewPermissions] = 0 WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+        await GrantModulePermissionAsync(
+            created.ModuleId,
+            _fixture.Seed.ModuleViewPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        using HttpClient member = await MemberClientAsync();
+
+        using HttpResponseMessage visibleModule = await member.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+        visibleModule.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage settings = await member.GetAsync(
+            ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
+        settings.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// The generic settings surface cannot read or overwrite an administrative module's security rows, even
+    /// for a host caller; the typed privileged endpoint remains the only authority for those values.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GenericModuleSettings_RefuseAdministrativeModuleAndPreserveSecurityRows()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        int administrativeModuleId = await InsertAdministrativeModuleAsync();
+        Uri route = ModuleSettingsRoute(_fixture.Seed.PortalId, administrativeModuleId);
+
+        using HttpResponseMessage read = await host.GetAsync(route);
+        read.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage write = await host.PutAsJsonAsync(
+            route,
+            new ModuleSettingsDto
+            {
+                ModuleId = administrativeModuleId,
+                ModuleSettings = new Dictionary<string, string>
+                {
+                    ["Security_EmailValidation"] = "replacement",
+                },
+                TabModuleSettings = new Dictionary<string, string>(),
+            },
+            ApiTestFixture.Json);
+
+        write.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        string persisted = await _fixture.Database.ScalarAsync<string>(
+            """
+            SELECT [SettingValue]
+            FROM [dbo].[ModuleSettings]
+            WHERE [ModuleID] = @moduleId AND [SettingName] = N'Security_EmailValidation';
+            """,
+            new Dictionary<string, object?> { ["moduleId"] = administrativeModuleId });
+
+        persisted.Should().Be("original-expression");
+    }
+
+    /// <summary>
     /// A module that is placed on no page can still hold module-scoped settings, and is told plainly that it
     /// cannot hold placement-scoped ones.
     /// </summary>
@@ -1174,11 +1760,11 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModuleSettings_ForAnUnplacedModule_AcceptsModuleScopeAndRefusesPlacementScope()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage withdrawn = await client.DeleteAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules/{Route(created.ModuleId)}"
+            $"/api/v1/modules/{Route(created.ModuleId)}"
                 + $"?tabModuleId={Route(created.TabModuleId)}",
             UriKind.Relative));
 
@@ -1225,7 +1811,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task GetModuleSettings_WhenUnresolvable_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, UnknownModuleId));
@@ -1238,7 +1824,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModuleSettings_WhenUnresolvable_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, UnknownModuleId),
@@ -1261,7 +1847,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task DeleteModule_ReturnsNoContentAndHidesItFromTheCollection()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.DeleteAsync(
@@ -1294,11 +1880,11 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task DeleteModulePlacement_ReturnsNoContentAndRemovesOnlyThePlacement()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.DeleteAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules/{Route(created.ModuleId)}"
+            $"/api/v1/modules/{Route(created.ModuleId)}"
                 + $"?tabModuleId={Route(created.TabModuleId)}",
             UriKind.Relative));
 
@@ -1322,12 +1908,12 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task DeleteModulePlacement_WhenPlacementBelongsElsewhere_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto first = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
         ModuleDetailDto second = await CreateModuleAsync(client, _fixture.Seed.ChildTabId);
 
         using HttpResponseMessage response = await client.DeleteAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules/{Route(first.ModuleId)}"
+            $"/api/v1/modules/{Route(first.ModuleId)}"
                 + $"?tabModuleId={Route(second.TabModuleId)}",
             UriKind.Relative));
 
@@ -1339,7 +1925,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task DeleteModule_WhenUnresolvable_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
@@ -1355,7 +1941,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ExportModule_WhenPackageIsNotPortable_ReturnsBadRequestNamingTheReason()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1374,7 +1960,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ExportModule_WithoutFileName_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1393,7 +1979,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ExportModule_WhenUnresolvable_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             ModuleExportRoute(_fixture.Seed.PortalId, UnknownModuleId),
@@ -1408,7 +1994,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ImportModule_WhenModuleUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             ModuleImportRoute(_fixture.Seed.PortalId),
@@ -1423,7 +2009,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ImportModule_WithEmptyContent_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1447,10 +2033,10 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ImportModule_WithoutModuleEditGrant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             ModuleImportRoute(_fixture.Seed.PortalId),
@@ -1473,7 +2059,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ImportModule_WithModuleEditGrant_ReachesTheCapabilityCheck()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
         // TWO gates stand in front of the capability check, and the caller has to clear both. The route names
@@ -1483,7 +2069,7 @@ public sealed class ModuleApiTests
         // EDIT grant itself, which is not implied by administering the tenant: only a host account is answered
         // affirmatively without a grant. So the grant is granted to the role the administrator holds, and
         // reaching the capability refusal is the proof that it was consulted and honoured.
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         await GrantModulePermissionAsync(
             created.ModuleId,
@@ -1513,7 +2099,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ImportModule_WhenPackageIsNotPortable_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1532,6 +2118,60 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// A DTD is rejected before module-owned code runs, and parser implementation text is not published in
+    /// the problem response.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_WithDtd_ReturnsFixedSafeBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        (int moduleId, string moduleName) = await InsertPortableModuleAsync();
+
+        string document =
+            $"<!DOCTYPE content [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>"
+            + $"<content type=\"{moduleName}\">&xxe;</content>";
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleImportRoute(_fixture.Seed.PortalId),
+            new ModuleImportRequest { ModuleId = moduleId, Content = document },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("could not be parsed safely as portable module content");
+        body.Should().NotContain("DTD", "parser diagnostics must remain in the protected audit channel");
+        body.Should().NotContain("/etc/passwd");
+    }
+
+    /// <summary>
+    /// A well-formed import document cannot be directed into a package other than the one named by its type
+    /// attribute.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_WithForeignType_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        (int moduleId, _) = await InsertPortableModuleAsync();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleImportRoute(_fixture.Seed.PortalId),
+            new ModuleImportRequest
+            {
+                ModuleId = moduleId,
+                Content = "<content type=\"ForeignPackage\">content</content>",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("document type does not match the target module package");
+    }
+
+    /// <summary>
     /// The three module endpoints that name no module — the collection listing, creation and content import —
     /// are administrative, so an ordinary member of the tenant holding a perfectly valid token is refused all
     /// three.
@@ -1542,22 +2182,17 @@ public sealed class ModuleApiTests
     /// permission policy has no module to evaluate against. That is true and beside the point: naming no module
     /// is a reason to choose a different policy, not a reason to have none. Any authenticated caller of any
     /// tenant could enumerate this tenant's content, add modules to its pages and import arbitrary content into
-    /// it. The policy that applies is the tenant the route DOES name.
+    /// it. The policy that applies is the tenant the request host and caller context resolve.
     /// </remarks>
     [Fact]
     public async Task ModuleEndpointsThatNameNoModule_AreRefusedToAnOrdinaryMember()
     {
-        using HttpClient member = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
 
         int portalId = _fixture.Seed.PortalId;
 
         using HttpResponseMessage listed = await member.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(portalId)}/modules?pageIndex=0&pageSize=10",
+            "/api/v1/modules?pageIndex=0&pageSize=10",
             UriKind.Relative));
 
         listed.StatusCode.Should().Be(
@@ -1575,7 +2210,7 @@ public sealed class ModuleApiTests
         created.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
         using HttpResponseMessage imported = await member.PostAsJsonAsync(
-            new Uri($"/api/v1/portals/{Route(portalId)}/modules/import", UriKind.Relative),
+            new Uri("/api/v1/modules/import", UriKind.Relative),
             new ModuleImportRequest
             {
                 ModuleId = 1,
@@ -1587,7 +2222,7 @@ public sealed class ModuleApiTests
 
         // The refused creation left nothing behind, which is what distinguishes a refusal from a report of one.
         // The collection is read as host, because the member may not read it at all.
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         IReadOnlyList<ModuleListItemDto> modules = await ListModulesAsync(host, includeDeleted: true);
         modules.Should().NotContain(
             module => module.ModuleTitle == attemptedTitle,
@@ -1618,7 +2253,7 @@ public sealed class ModuleApiTests
     [InlineData(-3)]
     public async Task GetModule_WhosePageGrantsViewToAPseudoRole_IsReachableAnonymously(int pseudoRoleId)
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.ChildTabId);
 
         using HttpClient anonymous = _fixture.CreateAnonymousClient();
@@ -1670,7 +2305,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task UpdateModule_IsRefusedToAnAnonymousCallerEvenWhenThePageIsPublic()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.ChildTabId);
 
         await GrantTabPermissionAsync(
@@ -1752,7 +2387,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithEmptyTitle_KeepsItDistinguishableFromAnAbsentOne()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest empty = NewModuleRequest(_fixture.Seed.RootTabId);
         empty.ModuleTitle = string.Empty;
@@ -1837,7 +2472,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithTheAppendOrderSentinel_PublishesItAsMinusOne()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
         request.ModuleOrder = -1;
@@ -1897,7 +2532,7 @@ public sealed class ModuleApiTests
 
         try
         {
-            using HttpClient client = _fixture.CreateHostClient();
+            using HttpClient client = await _fixture.CreateHostClientAsync();
 
             using HttpResponseMessage response = await client.GetAsync(
                 ModuleRoute(_fixture.Seed.PortalId, 0));
@@ -1985,7 +2620,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task CreateModule_WithAnUnknownVisibility_PublishesAFieldKeyedProblemDocument()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // Posted as a raw document rather than through the typed contract, because the value has to be one
         // the enumeration does not define and the typed property cannot express that.
@@ -2043,6 +2678,107 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// The two content-movement operations publish the field-keyed document they advertise, keyed on the
+    /// member that was actually missing.
+    /// </summary>
+    /// <param name="operation">Which operation to exercise: the export or the import.</param>
+    /// <param name="expectedKey">The member the error map must be keyed on.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: BOTH OPERATIONS ADVERTISED THIS DOCUMENT AND NEITHER COULD PRODUCE IT. Each declares
+    /// <c>ValidationProblemDetails</c> for <c>400</c> - the shape carrying the per-field <c>errors</c> map -
+    /// while no validator was registered for either request type, so the only 400 either could raise was the
+    /// service's plain problem document with no map in it at all. A client written against the published
+    /// description read <c>errors</c> and found nothing. The declaration described a response that could not
+    /// occur, which is a published-contract defect rather than a missing convenience.
+    /// </para>
+    /// <para>
+    /// The assertion is on the KEY, not merely on the presence of the map, because a document keyed on the
+    /// wrong member - or on none - satisfies both a status assertion and an envelope assertion while leaving
+    /// the caller no better off. The export row omits the file name, which the legacy click handler required;
+    /// the import row omits the module, which the legacy screen never had to require because its route
+    /// carried the target and this one does not.
+    /// </para>
+    /// <para>
+    /// The bodies are raw documents rather than typed contracts, so that a member can be genuinely ABSENT.
+    /// Serialising a typed request would emit the member with a null value, which is a different submission
+    /// from one that never named it - and for the import's identifier the distinction is the whole reason
+    /// that member is nullable.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Theory]
+    [InlineData("export", "FileName")]
+    [InlineData("import", "ModuleId")]
+    public async Task ModuleContentOperations_PublishAFieldKeyedProblemDocument(
+        string operation,
+        string expectedKey)
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        (Uri route, string payload) = operation switch
+        {
+            "export" => (ModuleExportRoute(_fixture.Seed.PortalId, created.ModuleId), "{}"),
+            _ => (ModuleImportRoute(_fixture.Seed.PortalId), "{ \"content\": \"<content />\" }"),
+        };
+
+        using var body = new StringContent(payload, Encoding.UTF8, "application/json");
+        using HttpResponseMessage response = await client.PostAsync(route, body);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("errors", out JsonElement errors).Should().BeTrue(
+            "the operation advertises ValidationProblemDetails for 400, so a field-level refusal must "
+            + "publish the per-field map that shape is defined by");
+        errors.ValueKind.Should().Be(JsonValueKind.Object);
+
+        errors.EnumerateObject().Select(field => field.Name).Should().Contain(
+            key => key.Contains(expectedKey, StringComparison.OrdinalIgnoreCase),
+            $"the map must name {expectedKey}, which is the member the request omitted");
+
+        document.RootElement.TryGetProperty("traceId", out JsonElement traceId).Should().BeTrue(
+            "a validation refusal carries the same trace identifier as every other failure in this API");
+        traceId.GetString().Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// An export whose file name is only whitespace is refused at the BOUNDARY, with the member named.
+    /// </summary>
+    /// <remarks>
+    /// The row the presence rule exists for, and the reason it is a predicate rather than
+    /// <c>NotEmpty</c>: FluentValidation treats a run of spaces as a supplied value, so a rule spelled
+    /// <c>NotEmpty</c> would let this submission through the boundary to be refused one layer deeper by a
+    /// plain problem document - which is the drift the validator was added to close. The sibling fact that
+    /// asserts the same request answers 400 with the sentence naming a file name is retained separately: it
+    /// pins the WORDING, which both enforcement points share, while this pins WHICH point answered.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportModule_WithAWhitespaceFileName_IsRefusedAtTheBoundary()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleExportRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new ModuleExportRequest { FileName = "   " },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("errors", out JsonElement errors).Should().BeTrue(
+            "whitespace and blank are one state for this member, so the boundary - not the service - answers");
+
+        errors.EnumerateObject().Select(field => field.Name).Should().Contain(
+            key => key.Contains(nameof(ModuleExportRequest.FileName), StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// A refusal decided by the module service is identified by its own failure code, never by a number.
     /// </summary>
     /// <remarks>
@@ -2059,7 +2795,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ExportModule_WhenNotPortable_IdentifiesTheRefusalByItsNamedCode()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -2156,7 +2892,7 @@ public sealed class ModuleApiTests
         // action nobody can reach would prove nothing. The reachable outcome for the seeded definition is a
         // refusal, and what matters is that the refusal is a problem document rather than a reference to a
         // file the caller would have to collect from somewhere.
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -2180,6 +2916,32 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// Both content-transfer actions declare the same one-mebibyte request ceiling as the server default.
+    /// </summary>
+    /// <remarks>
+    /// The explicit metadata is the contract under test. Without it, a future global-limit change could
+    /// silently make module import/export unbounded or unexpectedly narrower while their public surface still
+    /// appeared unchanged.
+    /// </remarks>
+    [Fact]
+    public void ModuleContentTransfer_DeclaresItsRequestBodyCeiling()
+    {
+        foreach (string actionName in new[] { "ExportAsync", "ImportAsync" })
+        {
+            MethodInfo action = typeof(ModulesController)
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Single(method => method.Name == actionName);
+
+            RequestSizeLimitAttribute limit = action.GetCustomAttribute<RequestSizeLimitAttribute>()
+                ?? throw new InvalidOperationException($"{actionName} declares no request-size limit.");
+
+            ((Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata)limit).MaxRequestBodySize.Should().Be(
+                ServiceCollectionExtensions.MaximumRequestBodyBytes,
+                "module content transfer is explicitly bounded at the same one-mebibyte ceiling as Kestrel");
+        }
+    }
+
+    /// <summary>
     /// A listing publishes the items-plus-total envelope, and the total is never the legacy sentinel.
     /// </summary>
     /// <remarks>
@@ -2195,7 +2957,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListModules_PublishesTheItemsAndTotalEnvelopeWithoutASentinelTotal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // Two are created rather than one, and neither the seed nor a sibling fact is relied on for the
         // second. The collection is shared and this suite's facts do not run in a declared order, so a fact
@@ -2244,6 +3006,110 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// A module sitting on two pages does not widen the window it appears in, and does not shrink the total.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THE LISTING'S WINDOW USED TO BE CUT IN THE WRONG UNIT, and this fact is the end-to-end
+    /// proof that it no longer is. The rows this collection returns are PLACEMENTS - a module placed on two
+    /// pages contributes two - while the window was taken over MODULES, so one module entering a window of
+    /// one brought every placement it had out with it. The published metadata was then patched with
+    /// <c>Math.Max</c> so the envelope's own guards would accept the mismatch: the width came back larger
+    /// than the width asked for, and the total came back as a count of modules although the items were
+    /// placements. Both are now exact.
+    /// </para>
+    /// <para>
+    /// The second placement is written directly with SQL rather than by asking for every page. The
+    /// all-pages switch fans a module out across every content page of the tenant, which would add rows to
+    /// pages that other facts in this shared collection read - so the narrowest possible change is made, on
+    /// one extra page, and it is removed again in a <c>finally</c>. The pane, order and every other
+    /// <c>NOT NULL</c> column are supplied so the row is one the schema would have accepted from the
+    /// application.
+    /// </para>
+    /// <para>
+    /// The total is compared against a WIDE read rather than against a literal, because the collection is
+    /// shared and its size is not known to this fact. What is asserted is the relationship the arithmetic
+    /// depends on: the total counts rows, it does not change when the window narrows, and the window is
+    /// never wider than it was asked to be.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListModules_WithAModuleOnTwoPages_PublishesExactRowMetadata()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabModules]
+                ([TabID], [ModuleID], [PaneName], [ModuleOrder], [CacheTime], [Visibility],
+                 [DisplayTitle], [DisplayPrint], [DisplaySyndicate])
+            VALUES (@tabId, @moduleId, N'ContentPane', 1, 0, 0, 1, 0, 0);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = _fixture.Seed.ChildTabId,
+                ["moduleId"] = created.ModuleId,
+            });
+
+        try
+        {
+            using HttpResponseMessage wide = await client.GetAsync(
+                ModuleListingRoute(_fixture.Seed.PortalId, pageSize: MaximumPageSize));
+
+            wide.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            PagedEnvelope<ModuleListItemDto>? whole = await wide.Content
+                .ReadFromJsonAsync<PagedEnvelope<ModuleListItemDto>>(ApiTestFixture.Json);
+
+            whole.Should().NotBeNull();
+            whole!.Items.Count.Should().BeLessThan(
+                MaximumPageSize,
+                "the widest window the contract admits must still hold the whole collection for the total "
+                + "and the row count to be comparable");
+            whole.TotalCount.Should().Be(
+                whole.Items.Count,
+                "a window wider than the collection holds every row, so the total is the row count");
+
+            whole.Items.Count(row => row.ModuleId == created.ModuleId).Should().Be(
+                2,
+                "the module now sits on two pages, so it contributes two placement rows");
+
+            using HttpResponseMessage narrow = await client.GetAsync(
+                ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 1));
+
+            narrow.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            PagedEnvelope<ModuleListItemDto>? window = await narrow.Content
+                .ReadFromJsonAsync<PagedEnvelope<ModuleListItemDto>>(ApiTestFixture.Json);
+
+            window.Should().NotBeNull();
+            window!.Items.Should().ContainSingle(
+                "a window one row wide returns one row, whatever the module behind it is placed on");
+            window.PageSize.Should().Be(
+                1,
+                "the width published is the width the caller asked for, never one widened to fit an expansion");
+            window.TotalCount.Should().Be(
+                whole.TotalCount,
+                "the total describes the collection, so narrowing the window cannot change it");
+            window.Meta.TotalPages.Should().Be(
+                whole.TotalCount,
+                "every row is its own page at a width of one, which only holds while both figures count rows");
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                "DELETE FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;",
+                new Dictionary<string, object?>
+                {
+                    ["tabId"] = _fixture.Seed.ChildTabId,
+                    ["moduleId"] = created.ModuleId,
+                });
+        }
+    }
+
+    /// <summary>
     /// The listing's title filter matches case-insensitively anywhere in the title.
     /// </summary>
     /// <remarks>
@@ -2261,7 +3127,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ListModules_FilteredByTitle_MatchesAnywhereInTheTitleIgnoringCase()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string marker = Suffix();
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
@@ -2309,7 +3175,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ModuleRequests_EchoTheSuppliedCorrelationIdOnSuccessAndOnRefusal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string supplied = "module-suite-" + Suffix();
 
@@ -2352,7 +3218,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ModuleRequests_WithoutACorrelationId_AreAnsweredWithAGeneratedOne()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 5));
@@ -2377,7 +3243,7 @@ public sealed class ModuleApiTests
     [Fact]
     public async Task ModuleRequests_WithAnUnusableCorrelationId_AreAnsweredWithAReplacementNotARefusal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string overlong = new('c', 200);
 
@@ -2446,7 +3312,7 @@ public sealed class ModuleApiTests
     private async Task<IReadOnlyList<ModuleListItemDto>> ListModulesAsync(HttpClient client, bool includeDeleted)
     {
         using HttpResponseMessage response = await client.GetAsync(new Uri(
-            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/modules"
+            "/api/v1/modules"
                 + $"?pageIndex=0&pageSize=100&includeDeleted={(includeDeleted ? "true" : "false")}",
             UriKind.Relative));
 
@@ -2545,14 +3411,212 @@ public sealed class ModuleApiTests
             });
     }
 
-    /// <summary>Mints a client for the seeded plain member, which holds no permission grant of any kind.</summary>
+    /// <summary>Signs in as the seeded plain member, which holds no permission grant of any kind.</summary>
     /// <returns>An authenticated client with no module or page grants.</returns>
-    private HttpClient MemberClient() => _fixture.CreateClientFor(
-        _fixture.Seed.MemberUserId,
-        IntegrationSeed.MemberUserName,
-        _fixture.Seed.PortalId,
-        isSuperUser: false,
-        roles: [IntegrationSeed.RegisteredUsersRoleName]);
+    private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
+
+    /// <summary>Creates a second tenant and returns its identity, alias and home page.</summary>
+    /// <param name="host">The installation host account.</param>
+    /// <returns>The created tenant facts needed by a cross-tenant module request.</returns>
+    private static async Task<(int PortalId, string Alias, int HomeTabId)> CreateForeignPortalAsync(
+        HttpClient host)
+    {
+        string suffix = Suffix();
+        string alias = "module-tenant-" + suffix + ".local";
+
+        using HttpResponseMessage response = await host.PostAsJsonAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            new
+            {
+                portalName = "Module Isolation " + suffix,
+                portalAlias = alias,
+                homeDirectory = string.Empty,
+                templateFile = "admin.template",
+                isChildPortal = false,
+                administratorFirstName = "Module",
+                administratorLastName = "Administrator",
+                administratorUsername = "module_admin_" + suffix,
+                administratorPassword = ApiTestFixture.KnownPassword,
+                administratorEmail = "module." + suffix + "@example.com",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        JsonElement data = document.RootElement.GetProperty("data");
+
+        return (
+            data.GetProperty("portalId").GetInt32(),
+            alias,
+            data.GetProperty("homeTabId").GetInt32());
+    }
+
+    /// <summary>Inserts a module and its placement in a tenant created for an isolation assertion.</summary>
+    /// <param name="portalId">The owning tenant.</param>
+    /// <param name="tabId">The page that carries the module.</param>
+    /// <returns>The module identifier.</returns>
+    private async Task<int> InsertForeignModuleAsync(int portalId, int tabId)
+    {
+        int moduleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted],
+                 [InheritViewPermissions])
+            VALUES (@moduleDefinitionId, @portalId, N'Cross-tenant permission module', 0, 0, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleDefinitionId"] = _fixture.Seed.ModuleDefinitionId,
+                ["portalId"] = portalId,
+            });
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabModules]
+                ([TabID], [ModuleID], [PaneName], [ModuleOrder], [CacheTime], [Visibility],
+                 [DisplayTitle], [DisplayPrint], [DisplaySyndicate])
+            VALUES (@tabId, @moduleId, N'ContentPane', 1, 0, 0, 1, 0, 0);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = tabId,
+                ["moduleId"] = moduleId,
+            });
+
+        return moduleId;
+    }
+
+    /// <summary>Inserts one host-administration package and returns its definition identifier.</summary>
+    /// <returns>The administrative definition identifier.</returns>
+    private async Task<int> InsertAdministrativeDefinitionAsync()
+    {
+        string suffix = Suffix();
+
+        return await _fixture.Database.ScalarAsync<int>(
+            """
+            DECLARE @desktopModuleId int;
+
+            INSERT INTO [dbo].[DesktopModules]
+                ([FriendlyName], [Description], [Version], [IsPremium], [IsAdmin],
+                 [BusinessControllerClass], [FolderName], [ModuleName], [SupportedFeatures])
+            VALUES
+                (@friendlyName, N'Administrative package exclusion regression', N'01.00.00', 0, 1,
+                 NULL, N'Admin/Regression', @moduleName, 0);
+
+            SET @desktopModuleId = CAST(SCOPE_IDENTITY() AS int);
+
+            INSERT INTO [dbo].[ModuleDefinitions] ([FriendlyName], [DesktopModuleID], [DefaultCacheTime])
+            VALUES (@definitionName, @desktopModuleId, 0);
+
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["friendlyName"] = "Administrative Regression " + suffix,
+                ["moduleName"] = "AdministrativeRegression" + suffix,
+                ["definitionName"] = "Administrative Definition " + suffix,
+            });
+    }
+
+    /// <summary>
+    /// Inserts one placed administrative module carrying a security-owned setting.
+    /// </summary>
+    /// <returns>The administrative module identifier.</returns>
+    private async Task<int> InsertAdministrativeModuleAsync()
+    {
+        int definitionId = await InsertAdministrativeDefinitionAsync();
+        int moduleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted],
+                 [InheritViewPermissions])
+            VALUES (@definitionId, @portalId, N'Administrative settings regression', 0, 0, 0);
+
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["definitionId"] = definitionId,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabModules]
+                ([TabID], [ModuleID], [PaneName], [ModuleOrder], [CacheTime], [Visibility],
+                 [DisplayTitle], [DisplayPrint], [DisplaySyndicate])
+            VALUES (@tabId, @moduleId, N'ContentPane', 1, 0, 0, 1, 0, 0);
+
+            INSERT INTO [dbo].[ModuleSettings] ([ModuleID], [SettingName], [SettingValue])
+            VALUES (@moduleId, N'Security_EmailValidation', N'original-expression');
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = _fixture.Seed.RootTabId,
+                ["moduleId"] = moduleId,
+            });
+
+        return moduleId;
+    }
+
+    /// <summary>Inserts a placed package that declares portable-content support.</summary>
+    /// <returns>The module identifier and stable package name.</returns>
+    private async Task<(int ModuleId, string ModuleName)> InsertPortableModuleAsync()
+    {
+        string suffix = Suffix();
+        string moduleName = "PortableRegression" + suffix;
+        int moduleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            DECLARE @desktopModuleId int;
+            DECLARE @definitionId int;
+
+            INSERT INTO [dbo].[DesktopModules]
+                ([FriendlyName], [Description], [Version], [IsPremium], [IsAdmin],
+                 [BusinessControllerClass], [FolderName], [ModuleName], [SupportedFeatures])
+            VALUES
+                (@friendlyName, N'Portable-content security regression', N'01.00.00', 0, 0,
+                 N'Integration.UnregisteredPortableController', N'Portable/Regression',
+                 @moduleName, 1);
+
+            SET @desktopModuleId = CAST(SCOPE_IDENTITY() AS int);
+
+            INSERT INTO [dbo].[ModuleDefinitions] ([FriendlyName], [DesktopModuleID], [DefaultCacheTime])
+            VALUES (@definitionName, @desktopModuleId, 0);
+
+            SET @definitionId = CAST(SCOPE_IDENTITY() AS int);
+
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted],
+                 [InheritViewPermissions])
+            VALUES (@definitionId, @portalId, N'Portable import regression', 0, 0, 0);
+
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["friendlyName"] = "Portable Regression " + suffix,
+                ["definitionName"] = "Portable Definition " + suffix,
+                ["moduleName"] = moduleName,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabModules]
+                ([TabID], [ModuleID], [PaneName], [ModuleOrder], [CacheTime], [Visibility],
+                 [DisplayTitle], [DisplayPrint], [DisplaySyndicate])
+            VALUES (@tabId, @moduleId, N'ContentPane', 1, 0, 0, 1, 0, 0);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = _fixture.Seed.RootTabId,
+                ["moduleId"] = moduleId,
+            });
+
+        return (moduleId, moduleName);
+    }
 
     /// <summary>Builds a create request with a value for every field the contract constrains.</summary>
     /// <param name="tabId">The page the module is placed on.</param>
@@ -2602,38 +3666,36 @@ public sealed class ModuleApiTests
         return settings!;
     }
 
-    /// <summary>Builds the collection route for a tenant's modules.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the canonical collection route for the resolved tenant's modules.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ModulesRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/modules", UriKind.Relative);
+    private static Uri ModulesRoute(int _) => new("/api/v1/modules", UriKind.Relative);
 
     /// <summary>Builds the item route for one module.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ModuleRoute(int portalId, int moduleId) =>
-        new($"/api/v1/portals/{Route(portalId)}/modules/{Route(moduleId)}", UriKind.Relative);
+    private static Uri ModuleRoute(int _, int moduleId) =>
+        new($"/api/v1/modules/{Route(moduleId)}", UriKind.Relative);
 
     /// <summary>Builds the settings route for one module.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ModuleSettingsRoute(int portalId, int moduleId) =>
-        new($"/api/v1/portals/{Route(portalId)}/modules/{Route(moduleId)}/settings", UriKind.Relative);
+    private static Uri ModuleSettingsRoute(int _, int moduleId) =>
+        new($"/api/v1/modules/{Route(moduleId)}/settings", UriKind.Relative);
 
     /// <summary>Builds the export route for one module.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ModuleExportRoute(int portalId, int moduleId) =>
-        new($"/api/v1/portals/{Route(portalId)}/modules/{Route(moduleId)}/export", UriKind.Relative);
+    private static Uri ModuleExportRoute(int _, int moduleId) =>
+        new($"/api/v1/modules/{Route(moduleId)}/export", UriKind.Relative);
 
-    /// <summary>Builds the import route for a tenant.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the canonical import route for the resolved tenant.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri ModuleImportRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/modules/import", UriKind.Relative);
+    private static Uri ModuleImportRoute(int _) => new("/api/v1/modules/import", UriKind.Relative);
 
     /// <summary>Formats an identifier for a route without picking up the ambient culture.</summary>
     /// <param name="value">The identifier.</param>
@@ -2641,7 +3703,7 @@ public sealed class ModuleApiTests
     private static string Route(int value) => value.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>Addresses the module collection with an explicit page window.</summary>
-    /// <param name="portalId">The tenant whose collection is read.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="pageSize">The width of the window.</param>
     /// <returns>The relative address.</returns>
     /// <remarks>
@@ -2650,9 +3712,9 @@ public sealed class ModuleApiTests
     /// contract documents a zero base; no fact asserts the base itself, for the reason recorded on the
     /// envelope fact.
     /// </remarks>
-    private static Uri ModuleListingRoute(int portalId, int pageSize) => new(
+    private static Uri ModuleListingRoute(int _, int pageSize) => new(
         FormattableString.Invariant(
-            $"/api/v1/portals/{Route(portalId)}/modules?pageIndex=0&pageSize={Route(pageSize)}"),
+            $"/api/v1/modules?pageIndex=0&pageSize={Route(pageSize)}"),
         UriKind.Relative);
 
     /// <summary>Reads the module collection filtered by a title fragment.</summary>
@@ -2661,12 +3723,11 @@ public sealed class ModuleApiTests
     /// <returns>The rows the filter admitted.</returns>
     private async Task<IReadOnlyList<ModuleListItemDto>> SearchModulesAsync(HttpClient client, string query)
     {
-        string portal = Route(_fixture.Seed.PortalId);
         string escaped = Uri.EscapeDataString(query);
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(
             FormattableString.Invariant(
-                $"/api/v1/portals/{portal}/modules?pageIndex=0&pageSize=100&query={escaped}"),
+                $"/api/v1/modules?pageIndex=0&pageSize=100&query={escaped}"),
             UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);

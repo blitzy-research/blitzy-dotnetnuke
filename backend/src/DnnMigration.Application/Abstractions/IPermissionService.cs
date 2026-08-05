@@ -399,7 +399,54 @@ public interface IPermissionService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Removes every module- and page-scoped grant made directly to one user within one portal.
+    /// Decides whether a caller administers one portal.
+    /// </summary>
+    /// <param name="portalId">The portal whose administration is in question.</param>
+    /// <param name="userId">The caller, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="cancellationToken">Token that cancels the reads.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> whose value is the decision. An anonymous
+    /// caller, an unknown caller, an unknown portal and a portal that designates no administrator role all
+    /// answer <see langword="false"/> rather than failing, because each is a legitimate question with a
+    /// negative answer rather than a fault.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS A SEPARATE QUESTION FROM A PERMISSION. Every other member here asks whether a grant
+    /// exists on a resource. This asks about AUTHORITY OVER A TENANT, which the legacy application
+    /// expressed not as a grant but as membership of the role named on the portal's own
+    /// <c>AdministratorRoleId</c> column - and which it used to gate the settings that reach beyond the
+    /// page in front of the caller. A field on a request body can require that authority even though no
+    /// route-reading policy can see the field, which is exactly the case
+    /// <c>IModuleService.UpdateModuleAsync</c> presents, and it is why the question has to be answerable
+    /// from the Application layer rather than only from an authorisation handler.
+    /// </para>
+    /// <para>
+    /// <b>Decided from STORED STATE, never from a claim.</b> A host account is admitted first, because a
+    /// host account is installation-wide and the legacy security test short-circuited on it before
+    /// examining any role. Otherwise the portal's own administrator role identifier is read from the
+    /// portal being asked about - not from the tenant the caller happened to arrive through, which is a
+    /// different question - and the caller's assignments are examined for an ACTIVE membership of exactly
+    /// that role. Every assignment is examined rather than the first, so a duplicated pair cannot hide a
+    /// valid grant behind a lapsed one, and validity is the role's effective and expiry window evaluated
+    /// in coordinated universal time.
+    /// </para>
+    /// <para>
+    /// A portal that designates no administrator role answers <see langword="false"/>: an unset
+    /// designation is a configuration gap, and a gap must never grant. The designation is never widened
+    /// to any other role, and the role is never matched by NAME - the name "Administrators" identifies a
+    /// different row in every portal, so a name-based test is satisfied by an unrelated role in another
+    /// tenant.
+    /// </para>
+    /// </remarks>
+    Task<Result<bool>> IsPortalAdministratorAsync(
+        int portalId,
+        int? userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes every module- and page-scoped grant made directly to one user within one portal, as a
+    /// self-contained operation that commits on its own.
     /// </summary>
     /// <param name="portalId">The portal to clean up within. Grants the user holds in other portals are untouched.</param>
     /// <param name="userId">The user whose direct grants are removed. Grants the user receives through a role are unaffected, because they belong to the role rather than to the user.</param>
@@ -410,17 +457,95 @@ public interface IPermissionService
     /// <c>permission.user_not_found</c> when either identifier names nothing.
     /// </returns>
     /// <remarks>
-    /// Called as part of deleting a user, so a removed account leaves no orphaned grants behind that a
-    /// later account reusing the identifier could inherit. Committed as one unit of work across both
-    /// grant tables. This member consolidates the legacy cascade that
+    /// <para>
+    /// This is the TOP-LEVEL form: it stages the removals, commits them, and then evicts the affected
+    /// cache entries. It is therefore the member to call when revoking a user's own grants is the whole
+    /// of the operation, and the WRONG member to call from inside a larger business operation - use
+    /// <see cref="StageUserPermissionRemovalAsync"/> for that, because a suboperation that commits on
+    /// its own creates a partial-commit boundary inside the operation that encloses it.
+    /// </para>
+    /// <para>
+    /// Both grant tables land together. This member consolidates the legacy cascade that
     /// <c>ModulePermissionController.vb:L218</c> and <c>TabPermissionController.vb:L209</c> performed
     /// separately, and it takes the portal identifier deliberately: those legacy members read it off the
     /// user object they were handed, so a user-only contract would widen the deletion to every portal the
     /// user belongs to.
+    /// </para>
     /// </remarks>
     Task<Result> DeleteUserPermissionsAsync(
         int portalId,
         int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages - and only stages - the removal of every module- and page-scoped grant made directly to one
+    /// user within one portal, leaving the commit to the operation that called it.
+    /// </summary>
+    /// <param name="portalId">The portal to clean up within. Grants the user holds in other portals are untouched.</param>
+    /// <param name="userId">The user whose direct grants are staged for removal. Grants received through a role are unaffected.</param>
+    /// <param name="cancellationToken">Token that cancels the reads this staging performs.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result"/>, including when the user held no direct grants.
+    /// Fails with <c>permission.portal_not_found</c> or <c>permission.user_not_found</c> when either
+    /// identifier names nothing, in which case nothing has been staged.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS MEMBER EXISTS SEPARATELY FROM <see cref="DeleteUserPermissionsAsync"/>. Revoking a user's
+    /// direct grants is one step of deleting the account that holds them, and the enclosing operation also
+    /// removes role assignments, tenant membership, the external credential and the account row. If this
+    /// step committed on its own, a later step failing - or the caller cancelling - would leave the grants
+    /// durably gone while the account survived, which is the one outcome the cascade exists to prevent.
+    /// So the two responsibilities are separated: this member decides WHAT is removed, and the caller
+    /// decides WHEN that becomes durable.
+    /// </para>
+    /// <para>
+    /// AN IMPLEMENTER MUST NOT COMMIT, FLUSH OR OPEN A TRANSACTION HERE, and must not evict a cache entry
+    /// either. Eviction belongs after the commit - evicting before it opens a window in which a concurrent
+    /// reader repopulates the entry from rows that are about to disappear, and discards a valid entry for
+    /// nothing if the enclosing operation is abandoned. The caller performs it by calling
+    /// <see cref="InvalidateUserPermissionCachesAsync"/> once its own commit has succeeded.
+    /// </para>
+    /// <para>
+    /// The removal rule itself is unchanged and is defined in one place only: grants made DIRECTLY to the
+    /// account are removed from both grant tables, and grants the account receives through a role are left
+    /// alone because they belong to the role rather than to the account.
+    /// </para>
+    /// </remarks>
+    Task<Result> StageUserPermissionRemovalAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Evicts the cache entries invalidated by removing a user's direct grants, once the removal has been
+    /// committed.
+    /// </summary>
+    /// <param name="portalId">The portal whose permission entries are evicted.</param>
+    /// <param name="cancellationToken">Token that cancels the read of the portal's pages.</param>
+    /// <returns>A task that completes once every affected entry has been evicted.</returns>
+    /// <remarks>
+    /// <para>
+    /// The companion to <see cref="StageUserPermissionRemovalAsync"/>, for the caller that owned the
+    /// commit. It is separate because it MUST run after that commit: a warm entry would otherwise keep
+    /// answering with grants that no longer exist, and grants are what authorisation is decided from, so
+    /// the staleness is a security matter rather than a display one.
+    /// </para>
+    /// <para>
+    /// MIGRATION: reproduces the two evictions the legacy cascade performed immediately after the same two
+    /// deletes - <c>ModulePermissionController.vb:L220</c> cleared the module-permission entries of every
+    /// page in the portal and <c>TabPermissionController.vb:L211</c> cleared the portal's page-permission
+    /// entry. The page-permission entry is portal-keyed and is evicted directly; the module-permission
+    /// entry is PAGE-keyed, so the portal-wide clear is expressed by naming each of the portal's pages in
+    /// turn. No new cache member is invented for this.
+    /// </para>
+    /// <para>
+    /// Calling it when nothing was staged is harmless: eviction is idempotent and costs at most a read of
+    /// the portal's pages.
+    /// </para>
+    /// </remarks>
+    Task InvalidateUserPermissionCachesAsync(
+        int portalId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -452,11 +577,13 @@ public interface IPermissionService
     /// <summary>
     /// Reads the catalogue definitions that apply to one module placement.
     /// </summary>
+    /// <param name="portalId">The portal whose catalogue is being administered.</param>
     /// <param name="moduleId">The module placement whose applicable definitions are wanted.</param>
     /// <param name="cancellationToken">Token that cancels the read.</param>
     /// <returns>
     /// A task producing a successful <see cref="Result{T}"/> carrying the definitions in a stable order,
-    /// each definition once. An empty sequence is a legitimate answer, never a failure.
+    /// each definition once, or <c>permission.module_not_found</c> when the placement does not belong to
+    /// <paramref name="portalId"/>.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -473,9 +600,11 @@ public interface IPermissionService
     /// reached differently.
     /// </para>
     /// <para>
-    /// A placement identifier naming no module yields the product-wide scope alone rather than an absence:
-    /// the first half of the union contributes nothing and the second still answers, which is what the
-    /// legacy statement did.
+    /// SEC-033: the placement is resolved before the catalogue is read and must belong to the addressed
+    /// portal. A missing placement and one owned by another portal report the same failure, so this read
+    /// cannot be used as a cross-tenant identifier oracle. The legacy statement returned the product-wide
+    /// scope for an unknown identifier, but preserving that quirk at an HTTP boundary would disclose
+    /// metadata for a resource the caller has not proved belongs to the tenant they administer.
     /// </para>
     /// <para>
     /// MIGRATION: catalogue definitions are returned rather than grant rows, which is also what the legacy
@@ -486,20 +615,20 @@ public interface IPermissionService
     /// </para>
     /// </remarks>
     Task<Result<IReadOnlyList<PermissionDto>>> GetModulePermissionDefinitionsAsync(
+        int portalId,
         int moduleId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reads the catalogue definitions that apply to one page.
     /// </summary>
-    /// <param name="tabId">
-    /// The page whose applicable definitions are wanted. Accepted and forwarded, but it does not narrow the
-    /// answer - see the remarks.
-    /// </param>
+    /// <param name="portalId">The portal whose catalogue is being administered.</param>
+    /// <param name="tabId">The page whose applicable definitions are wanted.</param>
     /// <param name="cancellationToken">Token that cancels the read.</param>
     /// <returns>
     /// A task producing a successful <see cref="Result{T}"/> carrying the definitions in a stable order,
-    /// each definition once. An empty sequence is a legitimate answer, never a failure.
+    /// each definition once, or <c>permission.tab_not_found</c> when the page does not belong to
+    /// <paramref name="portalId"/>.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -508,12 +637,10 @@ public interface IPermissionService
     /// above.
     /// </para>
     /// <para>
-    /// MIGRATION: this read IGNORES its page argument. Its terminal procedure body filters on the
-    /// product-wide page scope code and never references the argument, so every page in the installation
-    /// receives the identical catalogue. That is reproduced rather than corrected, because inventing a page
-    /// filter would narrow results the legacy application returned. The parameter is kept because the
-    /// legacy signature declares it and every caller passes it, and because a later product revision could
-    /// make the distinction real.
+    /// SEC-033: the terminal legacy procedure returned the same <c>SYSTEM_TAB</c> definitions for every
+    /// page, but the target still proves that <paramref name="tabId"/> exists in the addressed portal before
+    /// returning that shared set. A missing page and a page owned by another portal report the same failure,
+    /// so the identifier cannot be used to infer another tenant's resources.
     /// </para>
     /// <para>
     /// MIGRATION: as with the module-scoped read, catalogue definitions are returned rather than grant
@@ -521,6 +648,7 @@ public interface IPermissionService
     /// </para>
     /// </remarks>
     Task<Result<IReadOnlyList<PermissionDto>>> GetTabPermissionDefinitionsAsync(
+        int portalId,
         int tabId,
         CancellationToken cancellationToken = default);
 }

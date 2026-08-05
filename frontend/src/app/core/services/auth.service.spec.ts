@@ -31,9 +31,11 @@ const USER: CurrentUser = {
  * envelope-shaped object with no `accessToken`, and the stored session would be a
  * shape-correct blank rather than an error.
  *
- * The metadata companion is deliberately absent. It describes a page, and a token
- * response has none; asserting its absence is asserting a real property of the
- * contract.
+ * The metadata companion is PRESENT AND NULL rather than absent, because that is what
+ * the server writes: it serialises with its ignore condition set to never, so a member
+ * with no value travels as `null` instead of going missing. A token response has no page
+ * to describe, so `null` is the value; flushing the member out altogether would test a
+ * body the server never sends.
  */
 function loginResponse(accessToken: string, refreshToken: string): ApiResponse<LoginResponse> {
   return {
@@ -46,9 +48,24 @@ function loginResponse(accessToken: string, refreshToken: string): ApiResponse<L
       // All three advisory flags are always present on the wire: the API serialises with
       // its ignore condition set to never, so a `false` is transmitted rather than omitted.
       mustUpdateProfile: false,
-      user: USER,
+      user: { ...USER, roles: [], permissions: [] },
     },
+    // Present and null rather than omitted: the API serialises with its ignore condition set
+    // to never, so a response with no page to describe writes the key with a null value.
+    meta: null,
   };
+}
+
+/** Completes the store-backed identity bootstrap that follows every successful token response. */
+function flushCurrentUser(
+  http: HttpTestingController,
+  accessToken: string,
+  user: CurrentUser = USER,
+): void {
+  const request = http.expectOne(AUTH_ENDPOINTS.me);
+  expect(request.request.method).toBe('GET');
+  expect(request.request.headers.get('Authorization')).toBe(`Bearer ${accessToken}`);
+  request.flush({ data: user, meta: null } satisfies ApiResponse<CurrentUser>);
 }
 
 /** A session already in place, so refresh and logout have something to work from. */
@@ -58,6 +75,7 @@ function existingSession(): AuthSession {
     expiresAtUtc: '2000-01-01T00:00:00.000Z',
     refreshToken: 'refresh-old',
     mustChangePassword: false,
+    mustUpdateProfile: false,
     passwordExpiring: false,
     user: USER,
   };
@@ -94,6 +112,7 @@ describe('AuthService', () => {
       expect(request.request.body).toEqual({ username: 'admin', password: 'secret' });
 
       request.flush(loginResponse('access-1', 'refresh-1'));
+      flushCurrentUser(http, 'access-1');
       await pending;
     });
 
@@ -101,6 +120,7 @@ describe('AuthService', () => {
       const pending = firstValueFrom(service.login({ username: 'admin', password: 'secret' }));
 
       http.expectOne(AUTH_ENDPOINTS.login).flush(loginResponse('access-1', 'refresh-1'));
+      flushCurrentUser(http, 'access-1');
 
       expect(await pending).toEqual(USER);
       expect(storage.accessToken()).toBe('access-1');
@@ -167,6 +187,7 @@ describe('AuthService', () => {
       });
 
       request.flush(loginResponse('access-1', 'refresh-1'));
+      flushCurrentUser(http, 'access-1');
       await pending;
     });
 
@@ -177,6 +198,7 @@ describe('AuthService', () => {
       expect(Object.keys(request.request.body as object)).not.toContain('verificationCode');
 
       request.flush(loginResponse('access-1', 'refresh-1'));
+      flushCurrentUser(http, 'access-1');
       await pending;
     });
   });
@@ -206,6 +228,7 @@ describe('AuthService', () => {
       expect(request.request.body).toEqual({ refreshToken: 'refresh-old' });
 
       request.flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(http, 'access-new');
       await pending;
 
       expect(storage.accessToken()).toBe('access-new');
@@ -228,6 +251,7 @@ describe('AuthService', () => {
       expect(requests.length).withContext('one refresh for three callers').toBe(1);
 
       requests[0]!.flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(http, 'access-new');
 
       const sessions = await Promise.all([first, second, third]);
       expect(sessions[0]!.accessToken).toBe('access-new');
@@ -240,6 +264,7 @@ describe('AuthService', () => {
 
       const first = firstValueFrom(service.refresh());
       http.expectOne(AUTH_ENDPOINTS.refresh).flush(loginResponse('access-2', 'refresh-2'));
+      flushCurrentUser(http, 'access-2');
       await first;
 
       const second = firstValueFrom(service.refresh());
@@ -249,6 +274,7 @@ describe('AuthService', () => {
         .toEqual({ refreshToken: 'refresh-2' });
 
       request.flush(loginResponse('access-3', 'refresh-3'));
+      flushCurrentUser(http, 'access-3');
       await second;
     });
 
@@ -283,6 +309,7 @@ describe('AuthService', () => {
       storage.store(existingSession());
       const retry = firstValueFrom(service.refresh());
       http.expectOne(AUTH_ENDPOINTS.refresh).flush(loginResponse('access-4', 'refresh-4'));
+      flushCurrentUser(http, 'access-4');
 
       await retry;
       expect(storage.accessToken()).toBe('access-4');
@@ -345,6 +372,58 @@ describe('AuthService', () => {
 
       expect(service.isAuthenticated()).withContext('a session is stored').toBeTrue();
       expect(service.currentUser()).toEqual(USER);
+    });
+
+    it('makes the blocking profile advisory readable after a sign-in', async () => {
+      // The reason this projection exists. `login` returns the identity, not the session, so
+      // without a re-exposed signal the advisory the server computed would have no reader at
+      // all and the legacy blocking profile-completion prompt would be lost rather than
+      // deferred.
+      expect(service.mustUpdateProfile()).withContext('nothing stored yet').toBeFalse();
+
+      const pending = firstValueFrom(service.login({ username: 'admin', password: 'secret' }));
+      const response = loginResponse('access-1', 'refresh-1');
+
+      http.expectOne(AUTH_ENDPOINTS.login).flush({
+        ...response,
+        data: { ...response.data, mustUpdateProfile: true },
+      });
+
+      // The identity bootstrap the service performs after every successful token response. Without it the
+      // sign-in never completes, so the advisory would be asserted against a half-finished flow.
+      flushCurrentUser(http, 'access-1');
+
+      await pending;
+
+      expect(service.mustUpdateProfile()).toBeTrue();
+    });
+
+    it('keeps the advisory across a renewal, so a refresh does not clear an unmet prompt', async () => {
+      storage.store({ ...existingSession(), mustUpdateProfile: true });
+
+      const pending = firstValueFrom(service.refresh());
+      const response = loginResponse('access-2', 'refresh-2');
+
+      http.expectOne(AUTH_ENDPOINTS.refresh).flush({
+        ...response,
+        data: { ...response.data, mustUpdateProfile: true },
+      });
+
+      flushCurrentUser(http, 'access-2');
+
+      await pending;
+
+      expect(service.mustUpdateProfile()).toBeTrue();
+    });
+
+    it('clears the advisory on sign-out', async () => {
+      storage.store({ ...existingSession(), mustUpdateProfile: true });
+
+      const pending = firstValueFrom(service.logout());
+      http.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      await pending;
+
+      expect(service.mustUpdateProfile()).toBeFalse();
     });
   });
 });

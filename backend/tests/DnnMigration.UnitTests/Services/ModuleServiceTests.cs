@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Reflection;
+using System.Xml;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Module;
@@ -81,7 +82,35 @@ public class ModuleServiceTests
 
     private const string PackageName = "DNN_HTML";
 
+    // MIGRATION: the type attribute of a portability document carries the module name with the legacy
+    //            CleanName set removed - ". ~`!@#$%^&*()-_+={[}]|\:;<,>?/" plus both quotation marks,
+    //            measured from Website/admin/Modules/Export.ascx.vb L204-L218. PackageName contains an
+    //            underscore and FriendlyName a solidus, both members of that set, so the two cleaned
+    //            forms differ visibly from the raw names and a regression is immediately legible.
+    private const string CleanedPackageName = "DNNHTML";
+
+    private const string CleanedFriendlyName = "TextHTML";
+
     private const string PackageVersion = "04.09.00";
+
+    /// <summary>
+    /// The opening tag of an importable document, up to but not including the closing angle bracket, so a
+    /// version attribute can be appended before the element is closed.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L196-L197 read the document's <c>type</c>
+    /// attribute and refused the import unless it named the module's own sanitised name or its sanitised
+    /// friendly name, with "The import file specified is not the correct type for this module". A document
+    /// carrying no type attribute was therefore never importable, so every fact below that expects an import
+    /// to SUCCEED composes its document from this prefix. The refusal itself is asserted on its own, by the
+    /// facts that exist for it, rather than incidentally by facts about something else.
+    /// <para>
+    /// Declared as a <c>const</c> rather than as a helper method because several of these documents are
+    /// <c>[InlineData]</c> arguments, which must be compile-time constants. Const string concatenation is
+    /// evaluated by the compiler, so the composed literal is still a constant.
+    /// </para>
+    /// </remarks>
+    private const string TypedDocumentPrefix = "<content type=\"" + PackageName + "\"";
 
     private const string SiteSettingsDefinitionName = "Site Settings";
 
@@ -91,6 +120,8 @@ public class ModuleServiceTests
 
     private const string PlacementNotFoundCode = "module.placement_not_found";
 
+    private const string ContentTypeMismatchCode = "module.content_type_mismatch";
+
     private const string NotFoundCode = "module.not_found";
 
     private const string DefinitionNotFoundCode = "module.definition_not_found";
@@ -99,17 +130,40 @@ public class ModuleServiceTests
 
     private const string SettingInvalidCode = "module.setting_invalid";
 
+    private const string SettingsProtectedCode = "module.settings_protected";
+
     private const string NotPortableCode = "module.not_portable";
 
     private const string ContentInvalidCode = "module.content_invalid";
 
+    /// <summary>
+    /// The refusal a payload the module cannot represent as XML content produces at export.
+    /// </summary>
+    private const string ExportFailedCode = "module.export_failed";
+
     private const string WideEffectCode = "module.update.wide_effect";
 
     /// <summary>
-    /// The stable audit event name every module record carries, reproducing the legacy
-    /// <c>EventLogType.MODULE_UPDATED</c> written at <c>EventMessageProcessor.vb</c> L69.
+    /// The stable audit event name a module CHANGE carries, reproducing the legacy
+    /// <c>EventLogType.MODULE_UPDATED</c> member declared at <c>EventLogController.vb:L38-L77</c>.
     /// </summary>
     private const string ModuleUpdatedEventName = "MODULE_UPDATED";
+
+    /// <summary>
+    /// The stable audit event name a module EXPORT carries.
+    /// </summary>
+    /// <remarks>
+    /// Net-new, because the legacy export page wrote no audit record at all. It is distinct from the update
+    /// name because an export changes nothing, and recording a read as a change states something untrue in a
+    /// trail whose whole value is that it is believed.
+    /// </remarks>
+    private const string ModuleExportedEventName = "MODULE_EXPORTED";
+
+    /// <summary>
+    /// The stable audit event name a module REMOVAL carries, reproducing the legacy
+    /// <c>EventLogType.MODULE_DELETED</c> the recycle bin raised at <c>RecycleBin.ascx.vb:L156</c>.
+    /// </summary>
+    private const string ModuleDeletedEventName = "MODULE_DELETED";
 
     /// <summary>
     /// Reported when the caller holds no edit grant on the page a module is being placed on, or on the module
@@ -724,19 +778,20 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A paged answer reports a total that counts modules rather than placements, and echoes the window it
-    /// was asked for.
+    /// A windowed answer counts the ROWS it returns and echoes the width it was asked for.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The total is now computed over the tenant's modules in the service rather than returned by the store,
-    /// because the legacy module block of the data provider carries no paging member and none was invented
-    /// on the repository contract. The observable behaviour is unchanged: thirty-one live modules, a request
-    /// for the second page of ten, and a total of thirty-one - even though the emitted rows are placements
-    /// and there are more of them than there are modules on the page.
+    /// The total is computed in the service rather than returned by the store, because the legacy module
+    /// block of the data provider carries no paging member and none was invented on the repository contract.
+    /// Thirty-one live modules, one placement each, a request for the second window of ten: thirty-one rows,
+    /// a total of thirty-one and a width of ten. Every module carrying exactly one placement is what makes
+    /// this fact insensitive to the unit the window is cut in, which is precisely why the sibling fact below
+    /// gives a module two placements - one row per module cannot distinguish the two units, and the defect
+    /// this pair guards against only appears when they differ.
     /// </remarks>
     [Fact]
-    public async Task ListModules_KeepsAModuleTotalWhenAPageWasAsked()
+    public async Task ListModules_CountsTheRowsItReturnsWhenAWindowWasAsked()
     {
         Harness harness = Harness.Ready();
 
@@ -759,6 +814,150 @@ public class ModuleServiceTests
         outcome.Value.PageIndex.Should().Be(1);
         outcome.Value.PageSize.Should().Be(10);
         outcome.Value.Items.Should().HaveCount(10);
+    }
+
+    /// <summary>
+    /// A window narrower than one module's placement count returns exactly the width asked for, and the
+    /// published metadata is exact in the unit of the rows returned.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THIS IS THE FACT THAT WOULD HAVE CAUGHT THE PAGING DEFECT, and it is written with numbers
+    /// chosen so that the old behaviour and the new one cannot both satisfy it. Two modules, three placements
+    /// between them, a window one row wide. The window used to be cut over MODULES while the rows emitted
+    /// were PLACEMENTS, so one module entered the window and every one of its placements came out with it -
+    /// two rows for a window of one. The envelope's own guards refuse a row count above the declared width,
+    /// so the metadata was patched with <c>Math.Max</c> to get past them: the width was reported as two
+    /// although one was asked for, and the total was reported as the MODULE count of two although three rows
+    /// existed. Both figures are now exact, and the item count can no longer exceed the width.
+    /// </para>
+    /// <para>
+    /// The consequence for a caller is what makes this a data-contract defect rather than a cosmetic one:
+    /// <c>totalPages</c> is computed from the total and the width, so patching either made the page count
+    /// depend on WHICH page was asked for. A pager built from the envelope could not enumerate the
+    /// collection, and no assertion on a single page would have revealed it - which is why the second window
+    /// is read below and the two are required to agree about the collection while disagreeing about the rows.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListModules_WhenAModuleSitsOnSeveralPages_PublishesExactRowMetadata()
+    {
+        Harness harness = Harness.Ready();
+
+        Module onTwoPages = StoredModule();
+        onTwoPages.ModuleId = ModuleId;
+        onTwoPages.ModuleTitle = "Module A";
+
+        Module onOnePage = StoredModule();
+        onOnePage.ModuleId = OtherModuleId;
+        onOnePage.ModuleTitle = "Module B";
+
+        harness.PlacementsByModuleId[ModuleId] =
+        [
+            Placement(TabModuleId, TabId),
+            Placement(OtherTabModuleId, SecondTabId),
+        ];
+        harness.PlacementsByModuleId[OtherModuleId] = [Placement(30, TabId)];
+
+        harness.ModulePage = PagedResult<Module>.Unpaged([onTwoPages, onOnePage]);
+
+        Result<PagedResult<ModuleListItemDto>> first = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { PageIndex = 0, PageSize = 1 },
+            null,
+            false,
+            CancellationToken.None);
+
+        first.IsSuccess.Should().BeTrue();
+        first.Value.Items.Should().HaveCount(
+            1,
+            "a window one row wide returns one row, however many placements the module behind it has");
+        first.Value.PageSize.Should().Be(1, "the width published is the width the caller asked for");
+        first.Value.TotalCount.Should().Be(
+            3,
+            "three placements exist across the two modules, and the rows are placements");
+        first.Value.TotalPages.Should().Be(3, "three rows in windows of one is three windows");
+
+        Result<PagedResult<ModuleListItemDto>> second = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { PageIndex = 1, PageSize = 1 },
+            null,
+            false,
+            CancellationToken.None);
+
+        second.Value.Items.Should().HaveCount(1);
+        second.Value.TotalCount.Should().Be(
+            first.Value.TotalCount,
+            "the total describes the collection, so it cannot change with the window asked for");
+        second.Value.TotalPages.Should().Be(
+            first.Value.TotalPages,
+            "a page count that moved between windows would make the collection unenumerable");
+
+        second.Value.Items.Single().TabModuleId.Should().NotBe(
+            first.Value.Items.Single().TabModuleId,
+            "consecutive windows must advance through the rows rather than repeat them");
+    }
+
+    /// <summary>
+    /// Every row of the collection is reachable by walking the windows, with none repeated and none skipped.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The companion of the fact above, and the one that pins the property a pager actually depends on.
+    /// Asserting one window proves the arithmetic of that window; walking every window proves the windows
+    /// PARTITION the collection. Under the withdrawn behaviour this could not hold at any width: the offset
+    /// was applied to modules while the rows were placements, so a module with two placements both shifted
+    /// every later row and inflated the window it appeared in.
+    /// </remarks>
+    [Fact]
+    public async Task ListModules_WindowsPartitionTheRowsExactly()
+    {
+        Harness harness = Harness.Ready();
+
+        Module onTwoPages = StoredModule();
+        onTwoPages.ModuleId = ModuleId;
+        onTwoPages.ModuleTitle = "Module A";
+
+        Module onOnePage = StoredModule();
+        onOnePage.ModuleId = OtherModuleId;
+        onOnePage.ModuleTitle = "Module B";
+
+        harness.PlacementsByModuleId[ModuleId] =
+        [
+            Placement(TabModuleId, TabId),
+            Placement(OtherTabModuleId, SecondTabId),
+        ];
+        harness.PlacementsByModuleId[OtherModuleId] = [Placement(30, TabId)];
+
+        harness.ModulePage = PagedResult<Module>.Unpaged([onTwoPages, onOnePage]);
+
+        Result<PagedResult<ModuleListItemDto>> whole = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            null,
+            false,
+            CancellationToken.None);
+
+        int[] expected = whole.Value.Items.Select(row => row.TabModuleId).ToArray();
+        expected.Should().HaveCount(3);
+
+        var walked = new List<int>();
+        for (int index = 0; index < whole.Value.Items.Count; index++)
+        {
+            Result<PagedResult<ModuleListItemDto>> window = await harness.Service.ListModulesAsync(
+                PortalId,
+                new PagedRequest { PageIndex = index, PageSize = 1 },
+                null,
+                false,
+                CancellationToken.None);
+
+            walked.AddRange(window.Value.Items.Select(row => row.TabModuleId));
+        }
+
+        walked.Should().Equal(
+            expected,
+            "the windows must reproduce the unpaged order exactly, with nothing repeated and nothing lost");
     }
 
     /// <summary>
@@ -1007,6 +1206,28 @@ public class ModuleServiceTests
         outcome.Reason!.Code.Should().Be(DefinitionNotFoundCode);
         outcome.Reason!.Message.Should().Be(
             $"Module definition {ModuleDefinitionId} does not exist or is not available to portal {PortalId}.");
+    }
+
+    /// <summary>
+    /// An administrative package is never portal-placeable, even if an alternate repository implementation
+    /// accidentally includes its definition in the tenant catalogue.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_RefusesADefinitionPublishedByAnAdministrativePackage()
+    {
+        Harness harness = Harness.Ready();
+        harness.Packages[DesktopModuleId]!.IsAdmin = true;
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(DefinitionNotFoundCode);
+        harness.AddedModules.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -1549,11 +1770,21 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A module placed on no page is reported as absent, because there is no placement to amend.
+    /// A module placed on no page is refused as a placement not found, because there is no placement to
+    /// amend.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: THIS USED TO REPORT A BARE ABSENCE and now names the reason. Both answer 404 - the
+    /// <c>not_found</c> token in the code is what the shared status table keys on - so no caller sees a new
+    /// class of failure; what changes is that the document says the module is not placed on the page the
+    /// request named, rather than "the requested resource does not exist", which was indistinguishable from
+    /// the module itself being unknown. The distinction is worth having precisely because the placement is
+    /// now SELECTED by the request: a caller that named the wrong page needs to be told that, and the sibling
+    /// fact below asserts the same answer for a module that is placed, just not there.
+    /// </remarks>
     [Fact]
-    public async Task UpdateModule_ReportsAbsenceWhenTheModuleSitsNowhere()
+    public async Task UpdateModule_RefusesWhenTheModuleSitsNowhere()
     {
         Harness harness = Harness.Ready();
         harness.LookupModule = StoredModule();
@@ -1562,8 +1793,107 @@ public class ModuleServiceTests
         Result<ModuleDetailDto?> outcome = await harness.Service
             .UpdateModuleAsync(PortalId, ModuleId, ValidUpdateRequest(), CancellationToken.None);
 
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PlacementNotFoundCode);
+        outcome.Reason!.Message.Should()
+            .Be($"Module {ModuleId} is not placed on page {TabId} in portal {PortalId}.");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The placement amended is the one on the page the REQUEST names, not the one with the lowest
+    /// identifier.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THIS IS THE FACT THAT WOULD HAVE CAUGHT THE DEFECT. <c>UpdateModuleRequest.TabId</c> is
+    /// documented as required and as the key identifying WHICH placement is being updated, and
+    /// <c>ModuleMappings.ApplyUpdate</c> documents that it deliberately does not assign the value because the
+    /// service resolves the placement first - yet the service resolved the placement with the lowest
+    /// identifier and never read the member. For a module on one page the two agree by accident, which is why
+    /// no existing fact revealed it; this one seeds the module on TWO pages and names the SECOND, so the two
+    /// answers differ.
+    /// </para>
+    /// <para>
+    /// The old behaviour was worse than an ignored field. A caller editing the instance on page two saw its
+    /// submission accepted while page one was silently rewritten, and the response described the placement it
+    /// had not addressed - so the response could not be used to detect the substitution either. Both
+    /// placements are inspected below for that reason: the addressed one must carry the change and the other
+    /// must be untouched, because asserting only the first would pass just as happily if BOTH had been
+    /// written.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_AmendsThePlacementOnThePageTheRequestNames()
+    {
+        Harness harness = Harness.Ready();
+
+        Module module = harness.LookupModule!;
+        TabModule first = module.TabModules.Single();
+        TabModule second = Placement(OtherTabModuleId, SecondTabId);
+        module.TabModules.Add(second);
+
+        first.TabModuleId.Should().BeLessThan(
+            second.TabModuleId,
+            "the withdrawn behaviour picked the lowest identifier, so the addressed placement must not be it");
+
+        // Seeded so the assertion below distinguishes "unchanged" from "cleared". The stored value starts
+        // null on this fixture, and null is also what a cleared column holds, so a fact comparing against the
+        // initial null would pass even if the write had reached the wrong placement.
+        first.IconFile = "first.gif";
+
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.TabId = SecondTabId;
+        request.ModuleTitle = "Renamed on the second page";
+        request.IconFile = "second.gif";
+
+        Result<ModuleDetailDto?> outcome = await harness.Service
+            .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
         outcome.IsSuccess.Should().BeTrue();
-        outcome.Value.Should().BeNull();
+
+        second.IconFile.Should().Be(
+            "second.gif",
+            "the placement on the page the request named is the one that must change");
+        first.IconFile.Should().Be(
+            "first.gif",
+            "the placement the request did not name must be left exactly as it was");
+
+        outcome.Value!.TabModuleId.Should().Be(
+            second.TabModuleId,
+            "the response must describe the placement the caller addressed, or it cannot be used to detect a "
+            + "substitution");
+        outcome.Value!.TabId.Should().Be(SecondTabId);
+    }
+
+    /// <summary>
+    /// A module that exists and is placed, but not on the page named, is refused rather than amended
+    /// elsewhere.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The other half of the selection rule. Falling back to another placement is exactly the behaviour being
+    /// removed, so the fallback's absence is asserted directly: the module has a placement, the request names
+    /// a different page, and nothing is written.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_RefusesAPageTheModuleIsNotPlacedOn()
+    {
+        Harness harness = Harness.Ready();
+
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.TabId = AdminTabId;
+        request.ModuleTitle = "Should not be stored";
+
+        Result<ModuleDetailDto?> outcome = await harness.Service
+            .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PlacementNotFoundCode);
+        harness.LookupModule!.ModuleTitle.Should().Be(
+            ModuleTitle,
+            "a refused selection must leave the module row alone as well as the placement");
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -1609,6 +1939,100 @@ public class ModuleServiceTests
         placement.IconFile.Should().Be("changed.gif");
         placement.Visibility.Should().Be(ModuleVisibility.None);
         placement.DisplayTitle.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Naming a page the module is not placed on is REFUSED, and nothing is moved.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: DIVERGENCE, and a deliberate one. The legacy screen offered a page picker whose change
+    /// performed a move - a new placement appended on the destination, its scoped settings copied and the
+    /// source removed. This endpoint does not reproduce that: <c>UpdateModuleRequest.TabId</c> SELECTS the
+    /// placement being edited, so a value naming another page is a caller error rather than an instruction,
+    /// and the request is refused with <c>module.placement_not_found</c>. Moving a placement is a separate
+    /// operation on a separate contract, and inferring it from an edit is what made an earlier revision
+    /// rewrite whichever placement happened to have the lowest identifier.
+    /// </para>
+    /// <para>
+    /// Asserted as a REFUSAL rather than as a no-op, because a silent no-op would leave the caller believing
+    /// the move had happened. Nothing is added, nothing is removed and nothing is committed.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_WhenTheNamedPageHoldsNoPlacement_RefusesWithoutMovingAnything()
+    {
+        Harness harness = Harness.Ready();
+        TabModule source = harness.LookupModule!.TabModules.Single();
+        source.CacheTime = 120;
+        source.IconFile = "source.gif";
+        harness.PlacementSettingsByTabModuleId[TabModuleId] =
+        [
+            new TabModuleSetting
+            {
+                TabModuleId = TabModuleId,
+                SettingName = "theme",
+                SettingValue = "legacy",
+            },
+        ];
+
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.TabId = SecondTabId;
+        request.CacheTime = 300;
+        request.IconFile = "moved.gif";
+
+        Result<ModuleDetailDto?> outcome = await harness.Service
+            .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PlacementNotFoundCode);
+
+        source.CacheTime.Should().Be(120, "the placement the caller did not address is untouched");
+        source.IconFile.Should().Be("source.gif");
+        harness.AddedPlacements.Should().BeEmpty();
+        harness.RemovedPlacements.Should().BeEmpty();
+        harness.AddedPlacementSettings.Should().BeEmpty();
+        harness.RemovedPlacementSettings.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A selected page owned by another tenant is refused before either row is changed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The refusal is the same one a page of this tenant that holds no placement receives, and deliberately
+    /// so: the selection is resolved by module AND page together, so a page this module is not on and a page
+    /// this portal does not own are the same miss. Answering them identically also keeps the response from
+    /// revealing whether another tenant's page exists.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_WhenTheSelectedPageIsOutsideThePortal_IsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.TabsById[SecondTabId] = new Tab
+        {
+            TabId = SecondTabId,
+            PortalId = OtherPortalId,
+            TabName = "Foreign",
+        };
+
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.TabId = SecondTabId;
+
+        Result<ModuleDetailDto?> outcome = await harness.Service
+            .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PlacementNotFoundCode);
+        harness.AddedPlacements.Should().BeEmpty();
+        harness.RemovedPlacements.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -2207,6 +2631,109 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// Recycling a whole module is recorded under the legacy removal event, after it commits.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy recycle bin audited a module removal as <c>MODULE_DELETED</c>
+    /// (<c>RecycleBin.ascx.vb:L156</c>) and this boundary recorded nothing at all, which left the one
+    /// operation in this service that destroys a caller's work as the only one with no trail. The page that
+    /// audited it is excluded; the deletion it audited is not, and this is where the deletion happens.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteModule_RecordsTheRemovalUnderTheLegacyEventName()
+    {
+        Harness harness = Harness.Ready();
+        Module module = harness.LookupModule!;
+        harness.PlacementsByModuleId[ModuleId] =
+        [
+            module.TabModules.Single(),
+            Placement(OtherTabModuleId, SecondTabId),
+        ];
+
+        Result outcome = await harness.Service
+            .DeleteModuleAsync(PortalId, ModuleId, null, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(ModuleDeletedEventName);
+        record.Outcome.Should().Be(AuditOutcome.Succeeded);
+        record.PortalId.Should().Be(PortalId);
+        record.ResourceId.Should().Be(ModuleId.ToString(CultureInfo.InvariantCulture));
+        record.Properties["Operation"].Should().Be("Recycle");
+        record.Properties["TabModuleId"].Should().BeNull(
+            "no placement was addressed, so there is none to name");
+        record.Properties["AffectedTabCount"].Should().Be("2");
+    }
+
+    /// <summary>
+    /// Withdrawing one placement is recorded as a removal too, and names the placement that went.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The same event, because the same thing happened to a caller's work; the <c>Operation</c> fact is what
+    /// tells the two apart, so an operator reading the trail can see whether the module survived.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteModule_RecordsWhichPlacementWasWithdrawn()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service
+            .DeleteModuleAsync(PortalId, ModuleId, TabModuleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(ModuleDeletedEventName);
+        record.Properties["Operation"].Should().Be("RemovePlacement");
+        record.Properties["TabModuleId"].Should().Be(TabModuleId.ToString(CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// A declared version that is not a plain version string is replaced rather than recorded.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The version is read from an attribute of a CALLER-SUPPLIED document, so nothing about it is validated
+    /// by the request contract or bounded by the schema. Recording it verbatim let a caller put a secret, a
+    /// personal identifier, control text or an unbounded high-cardinality value into the audit trail simply by
+    /// declaring it as a version.
+    /// </para>
+    /// <para>
+    /// It is REPLACED rather than dropped, so the record still says the document declared something and that
+    /// what it declared was not usable - dropping it would make a hostile document indistinguishable from one
+    /// that declared no version at all. And it is replaced rather than stripped of its unwelcome characters,
+    /// because stripping reshapes a hostile value into something that reads as authentic provenance.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ImportModule_ReplacesADeclaredVersionThatIsNotAVersion()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest
+            {
+                ModuleId = ModuleId,
+                Content = $"<content type=\"{PackageName}\" version=\"AKIA-secret; DROP TABLE Modules\">"
+                    + "payload</content>",
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.Properties["Version"].Should().Be("(unusable)");
+        record.Properties.Values
+            .Where(value => value is not null)
+            .Should().NotContain(value => value!.Contains("AKIA-secret", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Reading settings for a module the tenant does not have reports absence.
     /// </summary>
     /// <param name="moduleMissing">Whether the module is missing rather than foreign.</param>
@@ -2278,6 +2805,64 @@ public class ModuleServiceTests
         settings.TabModuleId.Should().Be(TabModuleId);
         settings.ModuleSettings.Should().ContainKey("editor").WhoseValue.Should().Be("rich");
         settings.TabModuleSettings.Should().ContainKey("colour").WhoseValue.Should().Be("red");
+    }
+
+    /// <summary>
+    /// Security-owned names never cross the generic open-key read contract.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetModuleSettings_RedactsSecurityOwnedNames()
+    {
+        Harness harness = Harness.Ready();
+        harness.SettingsByModuleId[ModuleId] =
+        [
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "editor", SettingValue = "rich" },
+            new ModuleSetting
+            {
+                ModuleId = ModuleId,
+                SettingName = "Security_EmailValidation",
+                SettingValue = "sensitive-expression",
+            },
+        ];
+        harness.PlacementSettingsByTabModuleId[TabModuleId] =
+        [
+            new TabModuleSetting
+            {
+                TabModuleId = TabModuleId,
+                SettingName = "Column_Email",
+                SettingValue = bool.TrueString,
+            },
+        ];
+
+        Result<ModuleSettingsDto?> outcome = await harness.Service
+            .GetModuleSettingsAsync(PortalId, ModuleId, null, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.ModuleSettings.Should().ContainSingle().Which.Key.Should().Be("editor");
+        outcome.Value.TabModuleSettings.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Administrative modules are configured only through typed privileged endpoints.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetModuleSettings_RefusesAnAdministrativeModule()
+    {
+        Harness harness = Harness.Ready();
+        harness.Packages[DesktopModuleId]!.IsAdmin = true;
+
+        Result<ModuleSettingsDto?> outcome = await harness.Service
+            .GetModuleSettingsAsync(PortalId, ModuleId, null, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(SettingsProtectedCode);
+        harness.Modules.Verify(
+            repository => repository.GetModuleSettingsAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -2408,6 +2993,74 @@ public class ModuleServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(NotFoundCode);
+    }
+
+    /// <summary>
+    /// Generic module editors cannot alter an administrative module's settings.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateModuleSettings_RefusesAnAdministrativeModule()
+    {
+        Harness harness = Harness.Ready();
+        harness.Packages[DesktopModuleId]!.IsAdmin = true;
+
+        Result outcome = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId,
+            ModuleId,
+            null,
+            new Dictionary<string, string> { ["Security_EmailValidation"] = ".*" },
+            new Dictionary<string, string>(),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(SettingsProtectedCode);
+        harness.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// Security and user-list column namespaces are reserved even on an ordinary content module, and
+    /// omission from a generic replacement cannot erase an existing protected row.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateModuleSettings_RejectsAndPreservesSecurityOwnedNames()
+    {
+        Harness harness = Harness.Ready();
+        var protectedSetting = new ModuleSetting
+        {
+            ModuleId = ModuleId,
+            SettingName = "Security_EmailValidation",
+            SettingValue = "original",
+        };
+        harness.SettingsByModuleId[ModuleId] = [protectedSetting];
+
+        Result rejected = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId,
+            ModuleId,
+            null,
+            new Dictionary<string, string> { ["security_emailvalidation"] = "replacement" },
+            new Dictionary<string, string>(),
+            CancellationToken.None);
+
+        rejected.IsFailure.Should().BeTrue();
+        rejected.Error!.Code.Should().Be(SettingsProtectedCode);
+        protectedSetting.SettingValue.Should().Be("original");
+        harness.RemovedSettings.Should().BeEmpty();
+
+        Result ordinaryReplacement = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId,
+            ModuleId,
+            null,
+            new Dictionary<string, string> { ["editor"] = "rich" },
+            new Dictionary<string, string>(),
+            CancellationToken.None);
+
+        ordinaryReplacement.IsSuccess.Should().BeTrue();
+        harness.RemovedSettings.Should().BeEmpty("generic replacement must preserve protected rows");
+        protectedSetting.SettingValue.Should().Be("original");
     }
 
     /// <summary>
@@ -2999,22 +3652,35 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The exported content is wrapped in a document naming the package and its version, with the
-    /// payload HTML-encoded exactly as the legacy exporter encoded it.
+    /// The exported content is wrapped in the legacy document, declaration and all, with the payload
+    /// embedded verbatim and the type attribute carrying the SANITISED package name.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
+    /// <para>
     /// The literal below is deliberately spelled out rather than computed, because it IS the wire format
-    /// and a computed expectation would agree with whatever the implementation did. Two escapings are
-    /// present and both are intended: the service applies
-    /// <c>WebUtility.HtmlEncode</c> - standing in for <c>ModuleController.vb</c> L244's
-    /// <c>HttpContext.Current.Server.HtmlEncode</c> - turning <c>&lt;</c> into <c>&amp;lt;</c>, and the
-    /// XML writer then escapes that <c>&amp;</c> into <c>&amp;amp;</c>. The legacy exporter avoided the
-    /// second escaping by wrapping the encoded text in a CDATA section, and an XML reader resolves either
-    /// form to the same text, which is why the reader below accepts both.
+    /// and a computed expectation would agree with whatever the implementation did. Every part of it is
+    /// measured against <c>Website/admin/Modules/Export.ascx.vb</c> L157-L165: the declaration, including
+    /// the space before its closing bracket pair; the <c>type</c> attribute holding
+    /// <c>CleanName(objModule.ModuleName)</c>, which is why <c>DNN_HTML</c> appears here as
+    /// <c>DNNHTML</c>; the <c>version</c> attribute; and the module's payload placed between the tags
+    /// exactly as it was handed over.
+    /// </para>
+    /// <para>
+    /// MIGRATION: AN EARLIER REVISION ASSERTED A DOUBLY-ESCAPED PAYLOAD AND A RAW TYPE NAME, and it is
+    /// worth spelling out what that document looked like, because the expectation itself was the record of
+    /// the defect. It read
+    /// <c>&lt;content type="DNN_HTML" version="04.09.00"&gt;&amp;amp;lt;item&amp;amp;gt;...&lt;/content&gt;</c>:
+    /// the service HTML-encoded the payload, turning <c>&lt;</c> into <c>&amp;lt;</c>, and the XML writer
+    /// then escaped that ampersand into <c>&amp;amp;</c>. Any reader but this service recovered
+    /// <c>&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</c> instead of <c>&lt;item&gt;one&lt;/item&gt;</c>,
+    /// and the raw type name would have been refused outright by the legacy importer as naming another
+    /// module. Both came from the PORTAL TEMPLATE writer at <c>ModuleController.vb</c> L244, which is a
+    /// different format with a different reader; neither belongs to this workflow.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task ExportModule_WrapsTheExportedContentInADocument()
+    public async Task ExportModule_WrapsTheExportedContentInTheLegacyDocument()
     {
         Harness harness = Harness.Ready();
         harness.ExportOutcome = Result<string?>.Success("<item>one</item>");
@@ -3027,26 +3693,77 @@ public class ModuleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(
-            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
-            + "&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</content>");
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?>"
+            + $"<content type=\"DNNHTML\" version=\"{PackageVersion}\">"
+            + "<item>one</item></content>");
         harness.BusinessControllers.Verify(
             f => f.ExportModuleContentAsync(BusinessController, ModuleId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
     /// <summary>
-    /// A document this service exports is imported back as the byte-identical payload the module handed
-    /// over, which is what the encode and decode pair exists to guarantee.
+    /// The document this endpoint writes is the one the legacy IMPORTER would have accepted: its type
+    /// attribute is the sanitised module name, so a round trip through the legacy rule succeeds.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The payload is chosen to exercise every character the two escaping layers touch: angle brackets,
-    /// a bare ampersand, an entity reference that must survive as text rather than being resolved, and
-    /// quotation marks.
+    /// The sibling fact above pins the whole document as a literal; this one pins the single property that
+    /// decides interoperability, and pins it against the SANITISER rather than against a spelled-out value.
+    /// The two are complementary: a literal proves what is written today, and this proves the value is
+    /// derived from the module name by the same transformation the legacy importer applies before comparing.
+    /// A package name whose punctuation the sanitiser strips is what makes the distinction observable, which
+    /// is why the seeded name carries an underscore.
+    /// </remarks>
+    [Fact]
+    public async Task ExportModule_NamesTheTypeWithTheSanitisedPackageName()
+    {
+        Harness harness = Harness.Ready();
+        harness.ExportOutcome = Result<string?>.Success("<item>one</item>");
+
+        Result<string> outcome = await harness.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        PackageName.Should().Contain("_", "the sanitiser only becomes observable when there is punctuation");
+
+        outcome.Value.Should().Contain(
+            "type=\"DNNHTML\"",
+            "the legacy importer compares the attribute against CleanName(ModuleName), so writing the raw "
+            + "name makes every document this endpoint produces unreadable by a DotNetNuke 4.x installation");
+        outcome.Value.Should().NotContain(
+            $"type=\"{PackageName}\"",
+            "the raw name is what the withdrawn revision wrote, and it is exactly what the legacy refuses");
+    }
+
+    /// <summary>
+    /// A document this service exports is imported back as the byte-identical payload the module handed
+    /// over.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The payloads exercise the shapes the format has to carry without altering: an element, an entity
+    /// reference that must survive AS a reference rather than being resolved and re-escaped, characters an
+    /// XML writer would have escaped but a verbatim embedding must not touch, and nothing at all. Because
+    /// neither side escapes anything, the guarantee is byte identity rather than a round trip through two
+    /// cancelling transformations.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE PAYLOAD <c>"a &amp; b &lt; c &gt; d"</c> USED TO BE A ROW HERE AND IS NOW ASSERTED AS
+    /// A REFUSAL by the fact below. It is not well-formed XML, so the legacy exporter wrote a corrupt file
+    /// and the legacy importer refused that file with "The file you selected does not contain a valid XML
+    /// structure" - the content was never importable by the workflow this endpoint migrates. It appeared to
+    /// round-trip here only because the withdrawn HTML encode and decode cancelled each other out inside
+    /// this one service. The obligation the portability contract carries is to hand back XML, and a module
+    /// that does not is now told so.
+    /// </para>
     /// </remarks>
     [Theory]
     [InlineData("<item>one</item>")]
-    [InlineData("a & b < c > d")]
     [InlineData("already &amp; encoded &lt;tag&gt;")]
     [InlineData("quotes \" and ' apostrophes")]
     [InlineData("")]
@@ -3087,6 +3804,131 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// A module handing back content that is not well-formed XML is refused, and its content is not quoted
+    /// back in the refusal.
+    /// </summary>
+    /// <param name="payload">Content the composed document cannot carry.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The payload is embedded verbatim, exactly as <c>Website/admin/Modules/Export.ascx.vb</c> L157-L165
+    /// embedded it, so a payload that is not well-formed makes the DOCUMENT not well-formed. The legacy
+    /// wrote that file anyway and its importer refused it afterwards; the composed document is parsed here
+    /// before it is returned, so the same content is refused at the point the operator can act on it.
+    /// </para>
+    /// <para>
+    /// Both rows are faults in the MODULE rather than in the request, which is why the reason token is
+    /// classified as a server fault: the caller asked correctly and can do nothing to fix the answer. The
+    /// bare ampersand is the ordinary case; the C0 control character is the case no escaping in the XML
+    /// specification can represent at all, so it would fail even if the payload were escaped.
+    /// </para>
+    /// <para>
+    /// The message must not quote the payload, and it must not quote the parser's message either, because a
+    /// parser message quotes the fragment it choked on. Export content is module data and may carry the
+    /// portal's users' data, while a failure message is published verbatim as the problem detail.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("a & b < c > d")]
+    [InlineData("\u0001 portal-owned-content-marker")]
+    public async Task ExportModule_WhenTheModuleReturnsContentThatIsNotXml_IsRefused(string payload)
+    {
+        Harness harness = Harness.Ready();
+        harness.ExportOutcome = Result<string?>.Success(payload);
+
+        Result<string> outcome = await harness.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(ExportFailedCode);
+        outcome.Reason!.Message.Should().Be(
+            $"Module {ModuleId} returned content that cannot be represented in an export document.");
+        outcome.Reason!.Message.Should().NotContain("portal-owned-content-marker");
+    }
+
+    /// <summary>
+    /// A document whose type attribute names another module is refused, and one naming this module by
+    /// either of its two accepted names is admitted.
+    /// </summary>
+    /// <param name="declaredType">The value of the document's type attribute.</param>
+    /// <param name="accepted">Whether the import must be admitted.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L196-L197 -
+    /// <c>If strType = CleanName(objModule.ModuleName) Or strType = CleanName(objModule.FriendlyName)</c>,
+    /// otherwise "The import file specified is not the correct type for this module". THIS CHECK WAS
+    /// PROMISED AND NOT PERFORMED: <c>ModuleImportRequest.FileName</c> documents at length that the legacy
+    /// name-based check was deliberately re-sourced onto the type attribute so the refusal would survive,
+    /// and nothing performed it - so a document belonging to another module was imported into this one
+    /// without complaint, handing a module content it could not interpret.
+    /// </para>
+    /// <para>
+    /// The rows cover each accepted spelling and each rejected one. The sanitised module name and the
+    /// sanitised friendly name are the legacy's two accepted values; the RAW module name is accepted as
+    /// well, because sanitising the submitted value too is what keeps documents this endpoint produced
+    /// before the export fix was applied importable - a bounded widening, recorded on the service. A
+    /// different module's name, an empty attribute and an absent attribute are all refused, and the absent
+    /// case is the legacy's own behaviour: <c>GetAttribute</c> returns the empty string for a missing
+    /// attribute, which matched neither name.
+    /// </para>
+    /// <para>
+    /// The comparison is case-SENSITIVE, which is asserted by the lower-cased row. VB's default string
+    /// comparison is binary, so the legacy refused a document whose type differed only in case; admitting
+    /// it here would accept documents the legacy did not.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("DNNHTML", true)]
+    [InlineData(PackageName, true)]
+    [InlineData("TextHTML", true)]
+    [InlineData(FriendlyName, true)]
+    [InlineData("dnnhtml", false)]
+    [InlineData("DNN_Announcements", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public async Task ImportModule_ChecksTheDocumentTypeAgainstTheModulesOwnNames(
+        string? declaredType,
+        bool accepted)
+    {
+        Harness harness = Harness.Ready();
+
+        string attribute = declaredType is null
+            ? string.Empty
+            : FormattableString.Invariant($" {"type"}=\"{declaredType}\"");
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest
+            {
+                ModuleId = ModuleId,
+                Content = FormattableString.Invariant($"<content{attribute}>one</content>"),
+            },
+            CancellationToken.None);
+
+        if (accepted)
+        {
+            outcome.IsSuccess.Should().BeTrue(
+                "the document names this module, by one of the four spellings the check admits");
+            harness.ImportedPayload.Should().Be("one");
+
+            return;
+        }
+
+        outcome.IsFailure.Should().BeTrue(
+            "a document that does not name this module must be refused rather than handed to it");
+        outcome.Reason!.Code.Should().Be(ContentTypeMismatchCode);
+        outcome.Reason!.Message.Should().Contain(
+            "does not match the target module package",
+            "the refusal names the RULE rather than restating the submitted value, which is caller text");
+        harness.ImportedPayload.Should().BeNull("nothing may reach the module once the type is refused");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
     /// A package whose capability field still holds the legacy "not yet determined" sentinel is refused
     /// with a reason, which is what replaces the legacy deferred-import event-queue branch.
     /// </summary>
@@ -3107,7 +3949,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>one</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">one</content>" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3185,7 +4027,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>   </content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">   </content>" },
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
@@ -3221,7 +4063,7 @@ public class ModuleServiceTests
         outcome.IsSuccess.Should().BeTrue();
 
         AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
-        record.EventName.Should().Be(ModuleUpdatedEventName);
+        record.EventName.Should().Be(ModuleExportedEventName);
         record.PortalId.Should().Be(PortalId);
         record.ResourceId.Should().Be(ModuleId.ToString(CultureInfo.InvariantCulture));
         record.Properties["Operation"].Should().Be("Export");
@@ -3234,9 +4076,17 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Importing content records the provenance the contract promises, and again carries no payload.
+    /// Importing content records bounded operational facts and carries neither payload nor caller-authored
+    /// provenance text.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The facts an operator needs are taken from the SERVER wherever they can be - the package's own name
+    /// and installed version, the content type the document was accepted against, the payload length and
+    /// the placement count - and only the document's declared version and the caller's own folder and file
+    /// names come from the request. Those three are recorded under names that say where they came from, so
+    /// a record cannot be read as though the server had vouched for them.
+    /// </remarks>
     [Fact]
     public async Task ImportModule_RecordsTheProvenanceWithoutRecordingTheContent()
     {
@@ -3247,7 +4097,8 @@ public class ModuleServiceTests
             new ModuleImportRequest
             {
                 ModuleId = ModuleId,
-                Content = $"<content version=\"{PackageVersion}\">a-secret-looking-value</content>",
+                Content = TypedDocumentPrefix + FormattableString.Invariant(
+                    $" version=\"{PackageVersion}\">a-secret-looking-value</content>"),
                 Folder = "Portals/0",
                 FileName = "content.xml",
             },
@@ -3261,7 +4112,18 @@ public class ModuleServiceTests
         record.ResourceId.Should().Be(ModuleId.ToString(CultureInfo.InvariantCulture));
         record.Properties["Operation"].Should().Be("Import");
         record.Properties["Version"].Should().Be(PackageVersion);
-        record.Properties["SourceFileName"].Should().Be("content.xml");
+        record.Properties["PayloadLength"].Should().NotBeNull();
+        record.Properties["PlacementCount"].Should().NotBeNull();
+
+        // The caller's own description of where the document came from is NOT recorded. Both facts were
+        // copied verbatim from the request, ModuleImportRequest documents them as accepted-and-unused parity
+        // metadata with no length bound, and nothing validated or read them - so a caller could put a secret,
+        // a personal identifier, control text or an unbounded high-cardinality value into the audit trail by
+        // naming a file that way. The module, the version, the size and the placement count describe what
+        // actually happened; the caller's description describes only what the caller said. The version that
+        // IS recorded is reduced to digits, dots and hyphens within a length bound before it is offered.
+        record.Properties.Should().NotContainKey("SourceFileName");
+        record.Properties.Should().NotContainKey("SourceFolder");
 
         record.Properties.Values
             .Where(value => value is not null)
@@ -3281,7 +4143,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>one</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">one</content>" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3334,22 +4196,32 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A document produced by the LEGACY exporter - HTML-encoded inside a CDATA section - imports to the
-    /// byte-identical original payload.
+    /// A CDATA section is handed on with its delimiters intact, because that is what the legacy importer's
+    /// <c>InnerXml</c> did.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This is the fact that makes the encode and decode pair worth keeping, and it is the interoperability
-    /// case the migration exists to serve: files exported by the running DotNetNuke application must import
-    /// into the replacement. Without the decode the module would receive
-    /// <c>&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</c> - one layer of escaping still attached - and would
-    /// store corrupted content while reporting success, which is the worst available outcome.
-    /// The document literal reproduces the legacy shape exactly: <c>ModuleController.vb</c> L244 encoded the
-    /// payload and the following line wrapped it via <c>XmlUtils.XMLEncode</c>, whose output is a CDATA
-    /// section.
+    /// <para>
+    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L200 passes
+    /// <c>xmlDoc.DocumentElement.InnerXml</c>, and <c>InnerXml</c> returns MARKUP - a CDATA child comes back
+    /// as <c>&lt;![CDATA[...]]&gt;</c>, delimiters and all. The module admin exporter never wrote a CDATA
+    /// section, so this shape did not arise in that workflow and the legacy behaviour for it is simply
+    /// whatever <c>InnerXml</c> yielded. Reproducing it exactly is what makes the payload rule a single rule
+    /// with no branch.
+    /// </para>
+    /// <para>
+    /// MIGRATION: AN EARLIER REVISION OF THIS FACT ASSERTED THAT THE SECTION WAS UNWRAPPED AND HTML-DECODED
+    /// to <c>&lt;item&gt;one&lt;/item&gt;</c>, and it was named for accepting a legacy exporter's document.
+    /// Both were wrong about WHICH legacy exporter: the CDATA-and-encode shape is written by
+    /// <c>ModuleController.vb</c> L244-L246, the PORTAL TEMPLATE writer, whose documents are read by the
+    /// portal template parser and never by the module import screen. Unwrapping it here required a branch on
+    /// whether the content element had child elements, and that branch silently mangled a payload whose own
+    /// markup legitimately contained a CDATA section - a real shape, since module content is arbitrary XML.
+    /// The single verbatim rule replaces it and the divergence is recorded in MIGRATION_NOTES.md.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task ImportModule_AcceptsALegacyCdataDocument()
+    public async Task ImportModule_HandsOnACdataSectionWithItsDelimitersIntact()
     {
         Harness harness = Harness.Ready();
         string? handedToTheModule = null;
@@ -3365,17 +4237,19 @@ public class ModuleServiceTests
                 (_, _, content, _, _, _) => handedToTheModule = content)
             .ReturnsAsync(Result.Success());
 
-        string legacyDocument =
+        string documentWithACdataSection =
             $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
             + "<![CDATA[&lt;item&gt;one&lt;/item&gt;]]></content>";
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = legacyDocument },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = documentWithACdataSection },
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        handedToTheModule.Should().Be("<item>one</item>");
+        handedToTheModule.Should().Be(
+            "<![CDATA[&lt;item&gt;one&lt;/item&gt;]]>",
+            "InnerXml returns markup, so the section arrives at the module exactly as it sat in the document");
     }
 
     /// <summary>
@@ -3478,7 +4352,7 @@ public class ModuleServiceTests
 
         Result omitted = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { Content = "<content>x</content>" },
+            new ModuleImportRequest { Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         omitted.IsFailure.Should().BeTrue();
@@ -3489,7 +4363,7 @@ public class ModuleServiceTests
         // fixture's canonical module is zero, so a successful import here is the proof.
         Result zero = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         zero.IsSuccess.Should().BeTrue();
@@ -3507,7 +4381,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3533,7 +4407,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3563,7 +4437,7 @@ public class ModuleServiceTests
 
         await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         harness.Permissions.Verify(
@@ -3612,7 +4486,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3622,8 +4496,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Content that is not well-formed is refused with the parser's own explanation appended, so an operator
-    /// can see where the document broke.
+    /// Content that is not well-formed is refused with a fixed public explanation while a bounded diagnostic
+    /// is retained in the protected audit channel.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3633,12 +4507,19 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>unclosed" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content type=\"" + CleanedPackageName + "\">unclosed" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(ContentInvalidCode);
-        outcome.Reason!.Message.Should().StartWith("The submitted document is not well-formed XML: ");
+        outcome.Reason!.Message.Should()
+            .Be("The submitted document could not be parsed safely as portable module content.");
+
+        AuditEvent diagnostic = harness.AuditRecords.Should().ContainSingle().Subject;
+        diagnostic.Outcome.Should().Be(AuditOutcome.Denied);
+        diagnostic.FailureCode.Should().Be(ContentInvalidCode);
+        diagnostic.Properties.Should().ContainKey("DiagnosticType").WhoseValue.Should().Be(nameof(XmlException));
+        diagnostic.Properties.Should().NotContainValue(outcome.Reason.Message);
     }
 
     /// <summary>
@@ -3673,10 +4554,172 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<Content>x</Content>" },
+            new ModuleImportRequest
+            {
+                // The ROOT NAME is what varies here; the type attribute must still name this module, because
+                // the two rules are independent and this fact is about the first of them. Its counterpart -
+                // that the type comparison is case-SENSITIVE while this one is not - is asserted by the type
+                // fact, and the asymmetry is deliberate: the legacy compared the root name through an XML
+                // reader and the type attribute with VB's binary string equality.
+                ModuleId = ModuleId,
+                Content = TypedDocumentPrefix.Replace("<content", "<Content", StringComparison.Ordinal)
+                    + ">x</Content>",
+            },
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A portable document must identify the target package, while the legacy definition friendly name is
+    /// retained as the one approved compatibility alias.
+    /// </summary>
+    /// <param name="contentType">The type identifier to submit, or <see langword="null"/> to omit it.</param>
+    /// <param name="accepted">Whether the selected identifier is valid for the target definition.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("FOREIGN_PACKAGE", false)]
+    [InlineData(PackageName, true)]
+    [InlineData(FriendlyName, true)]
+    public async Task ImportModule_ValidatesTheMandatoryContentType(string? contentType, bool accepted)
+    {
+        Harness harness = Harness.Ready();
+        string attribute = contentType is null ? string.Empty : $" type=\"{contentType}\"";
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest
+            {
+                ModuleId = ModuleId,
+                Content = $"<content{attribute}>x</content>",
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().Be(accepted);
+        if (!accepted)
+        {
+            // A document naming the wrong package, or naming none, is a WRONG-FILE refusal and carries its
+            // own reason code, which the published problem-details contract maps to 400. The malformed and
+            // unsafe-document facts below keep module.content_invalid, so the two classes stay separable by
+            // a caller that reads the code rather than the sentence.
+            outcome.Error!.Code.Should().Be(ContentTypeMismatchCode);
+            harness.BusinessControllers.Verify(
+                factory => factory.ImportModuleContentAsync(
+                    It.IsAny<string?>(),
+                    It.IsAny<int>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()),
+                Times.Never);
+        }
+    }
+
+    /// <summary>
+    /// DTDs, external entities and exponential entity declarations are all refused before any module-owned
+    /// code receives content.
+    /// </summary>
+    /// <param name="document">The hostile document to submit.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData("<!DOCTYPE content [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><content type=\"DNN_HTML\">&xxe;</content>")]
+    [InlineData("<!DOCTYPE content [<!ENTITY a \"1234567890\"><!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;\">]><content type=\"DNN_HTML\">&b;</content>")]
+    public async Task ImportModule_RefusesDtdsAndEntityExpansion(string document)
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = document },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(ContentInvalidCode);
+        outcome.Error.Message.Should()
+            .Be("The submitted document could not be parsed safely as portable module content.");
+        harness.ImportedPayload.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Excessive nesting is refused by the streaming validation pass before an object graph is built.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RefusesExcessiveNesting()
+    {
+        Harness harness = Harness.Ready();
+        string opening = string.Concat(Enumerable.Repeat("<item>", 66));
+        string closing = string.Concat(Enumerable.Repeat("</item>", 66));
+        string document = $"<content type=\"{PackageName}\">{opening}x{closing}</content>";
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = document },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(ContentInvalidCode);
+        harness.ImportedPayload.Should().BeNull();
+    }
+
+    /// <summary>A document cannot force the parser to materialise an unbounded number of tiny nodes.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RefusesExcessiveNodeCount()
+    {
+        Harness harness = Harness.Ready();
+        string nodes = string.Concat(Enumerable.Repeat("<item />", 10_001));
+        string document = $"<content type=\"{PackageName}\">{nodes}</content>";
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = document },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(ContentInvalidCode);
+        harness.ImportedPayload.Should().BeNull();
+    }
+
+    /// <summary>A single text node is bounded independently of the whole request-body limit.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RefusesAnOversizedTextNode()
+    {
+        Harness harness = Harness.Ready();
+        string document =
+            $"<content type=\"{PackageName}\">{new string('x', 262_145)}</content>";
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = document },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(ContentInvalidCode);
+        harness.ImportedPayload.Should().BeNull();
+    }
+
+    /// <summary>Namespaces and undeclared root metadata are not accepted as alternate envelope contracts.</summary>
+    /// <param name="document">The unsupported envelope shape.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData("<content xmlns=\"urn:foreign\" type=\"DNN_HTML\">x</content>")]
+    [InlineData("<content type=\"DNN_HTML\" unexpected=\"value\">x</content>")]
+    public async Task ImportModule_RefusesUnexpectedNamespacesAndAttributes(string document)
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = document },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(ContentInvalidCode);
+        harness.ImportedPayload.Should().BeNull();
     }
 
     /// <summary>
@@ -3687,8 +4730,8 @@ public class ModuleServiceTests
     /// <param name="expectedPayload">The payload the controller is measured to receive.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
-    [InlineData("<content><item>one</item><item>two</item></content>", "<item>one</item><item>two</item>")]
-    [InlineData("<content>plain text</content>", "plain text")]
+    [InlineData(TypedDocumentPrefix + "><item>one</item><item>two</item></content>", "<item>one</item><item>two</item>")]
+    [InlineData(TypedDocumentPrefix + ">plain text</content>", "plain text")]
     public async Task ImportModule_PassesTheDocumentsPayloadToTheController(string content, string expectedPayload)
     {
         Harness harness = Harness.Ready();
@@ -3709,9 +4752,9 @@ public class ModuleServiceTests
     /// <param name="expectedVersion">The version the controller is measured to receive.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
-    [InlineData("<content version=\"03.02.00\">x</content>", "03.02.00")]
-    [InlineData("<content version=\"\">x</content>", PackageVersion)]
-    [InlineData("<content>x</content>", PackageVersion)]
+    [InlineData(TypedDocumentPrefix + " version=\"03.02.00\">x</content>", "03.02.00")]
+    [InlineData(TypedDocumentPrefix + " version=\"\">x</content>", PackageVersion)]
+    [InlineData(TypedDocumentPrefix + ">x</content>", PackageVersion)]
     public async Task ImportModule_ResolvesTheContentVersion(string content, string expectedVersion)
     {
         Harness harness = Harness.Ready();
@@ -3740,7 +4783,7 @@ public class ModuleServiceTests
 
         await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         harness.ImportedUserId.Should().Be(expectedUserId);
@@ -3758,7 +4801,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3767,23 +4810,82 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// An advisory the controller attached to its success is carried through to the caller.
+    /// Every state in which no content was restored is a refusal that writes nothing and records nothing.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THIS FACT REPLACES ONE THAT PINNED THE OPPOSITE. The earlier fact asserted that an advisory attached
+    /// to a SUCCESSFUL import outcome was carried through to the caller, and in doing so it pinned the
+    /// defect: this service reads a successful import as licence to commit its unit of work, evict the
+    /// placement caches of every page the module sits on, and write an <c>Operation=Import</c> audit record.
+    /// An installation whose closed controller set does not cover the module's stored controller class
+    /// therefore answered the caller 200 and told the audit trail content had been imported when the module
+    /// had never been asked for anything.
+    /// </para>
+    /// <para>
+    /// The four codes below are the factory's complete "nothing was restored" set and are each declared on
+    /// its contract. They are exercised as data rather than as one representative case because the service's
+    /// obligation is identical for all four and a single case would leave three able to regress silently.
+    /// </para>
+    /// </remarks>
+    /// <param name="code">The factory failure code standing for one way of not restoring content.</param>
     /// <returns>A task representing the assertion.</returns>
-    [Fact]
-    public async Task ImportModule_CarriesTheControllersAdvisoryOnSuccess()
+    [Theory]
+    [InlineData("module.controller.not_specified")]
+    [InlineData("module.controller.not_registered")]
+    [InlineData("module.controller.contract_not_supported")]
+    [InlineData("module.content.not_supplied")]
+    public async Task ImportModule_WhenNothingWasRestored_RefusesAndWritesNothing(string code)
     {
         Harness harness = Harness.Ready();
-        harness.ImportOutcome = Result.Success(
-            new ResultReason("module.controller_unknown", "no controller covers this module."));
+        harness.ImportOutcome = Result.Failure(code, "Nothing was restored.");
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
-        outcome.IsSuccess.Should().BeTrue();
-        outcome.Reason!.Code.Should().Be("module.controller_unknown");
+        outcome.IsFailure.Should().BeTrue(
+            "an import that restored no content is not something a caller may be told succeeded");
+
+        // Forwarded verbatim rather than folded into one code: an operator acts differently on a key no
+        // registration covers, a controller that cannot restore, and a document carrying no content.
+        outcome.Reason!.Code.Should().Be(code);
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.InvalidatedTabIds.Should().BeEmpty(
+            "no cached placement list can have gone stale, because nothing was written");
+        harness.AuditRecords.Should().BeEmpty(
+            "an audit record claiming an import happened is worse than no record at all");
+    }
+
+    /// <summary>
+    /// A successful import carries no advisory, because success now means content arrived.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_OnSuccessCarriesNoAdvisory()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            // The document names the target module's own type. That check was added independently of this
+            // fact and is asserted by its own theory; a document without the attribute is refused, so a
+            // fact about what SUCCESS carries has to submit a document that can succeed.
+            new ModuleImportRequest
+            {
+                ModuleId = ModuleId,
+                Content = TypedDocumentPrefix + ">x</content>",
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Reason.Should().BeNull(
+            "a success qualified by an advisory saying nothing was restored is the ambiguity this path "
+            + "removed; every such state is now a refusal");
     }
 
     /// <summary>
@@ -3802,7 +4904,7 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            new ModuleImportRequest { ModuleId = ModuleId, Content = TypedDocumentPrefix + ">x</content>" },
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
@@ -3810,6 +4912,20 @@ public class ModuleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
         harness.InvalidatedTabIds.Should().BeEquivalentTo(new[] { TabId, SecondTabId });
     }
+
+    /// <summary>
+    /// Wraps a payload in a portability document naming the fixture package's cleaned type.
+    /// </summary>
+    /// <param name="payload">The inner XML the document carries.</param>
+    /// <returns>A document the import path accepts as the correct type for the module under test.</returns>
+    /// <remarks>
+    /// MIGRATION: a document that does NOT name a matching type is refused, exactly as
+    /// <c>Website/admin/Modules/Import.ascx.vb</c> lines 195-205 refused one, so every fixture that expects
+    /// an import to proceed has to carry the attribute. Its absence is a case in its own right and is
+    /// asserted separately rather than left implicit in these fixtures.
+    /// </remarks>
+    private static string ImportDocument(string payload) =>
+        FormattableString.Invariant($"<content type=\"{CleanedPackageName}\">{payload}</content>");
 
     /// <summary>
     /// Builds the module fixture the store returns, bearing the measured identifier seed of zero.
@@ -3872,9 +4988,24 @@ public class ModuleServiceTests
     /// <summary>
     /// Builds an update request that passes every check the service performs.
     /// </summary>
+    /// <remarks>
+    /// The page identifier names the page the module is ALREADY on, so the canonical request is a save in
+    /// place rather than a move. It has to be stated rather than left defaulted: the contract declares the
+    /// member mandatory, page identity seeds at zero so a defaulted integer is a legitimate page rather than
+    /// an absence, and a request that named page zero would therefore ask to move the module to the first
+    /// page of the portal. A fact that means to move the module says so by overriding this member.
+    /// </remarks>
     /// <returns>A well-formed update request.</returns>
     private static UpdateModuleRequest ValidUpdateRequest() => new()
     {
+        // The page the seeded placement sits on, and NOT a value this helper may leave at its default.
+        //
+        // MIGRATION: the page key SELECTS the placement a full replacement addresses, and an omitted member
+        // deserialises to zero, which dbo.Tabs.TabID being IDENTITY(0, 1) makes a real page rather than an
+        // absence. This helper used to omit it, and every fact built on it passed only because the service
+        // ignored the member and amended the placement with the lowest identifier instead. Naming the page
+        // here is what makes those facts assert the behaviour they describe.
+        TabId = TabId,
         ModuleTitle = ModuleTitle,
     };
 
@@ -3967,6 +5098,14 @@ public class ModuleServiceTests
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             GrantEdit(granted: true);
 
+            // Tenant authority answers "administers" by default, for the same reason and with the same
+            // consequence: the wide-effect facts below were written about what a portal administrator's save
+            // does, and that is who the baseline caller now is. It is a SEPARATE default from the edit grant
+            // rather than folded into it, because the two questions are separate - holding an edit grant on
+            // one module says nothing about authority over the tenant - and a fact that flips one while
+            // leaving the other alone is exactly how that separation is proved.
+            AdministerPortal(administers: true);
+
             // The audit sink records what it is handed so the facts below can assert on the trail without
             // reaching a log store. A loose mock would swallow the calls silently; capturing them is what
             // lets a fact prove that a record was written, that it was written only once, and - the rule
@@ -4016,6 +5155,30 @@ public class ModuleServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<bool>.Success(granted));
         }
+
+        /// <summary>
+        /// Sets the answer tenant authority gives for this portal.
+        /// </summary>
+        /// <param name="administers">Whether the caller is to be reported as administering the portal.</param>
+        public void AdministerPortal(bool administers)
+            => Permissions
+                .Setup(permissions => permissions.IsPortalAdministratorAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(administers));
+
+        /// <summary>
+        /// Makes tenant authority unanswerable, as an unreachable store would.
+        /// </summary>
+        /// <param name="code">The failure code the authority question is to report.</param>
+        public void FailPortalAuthority(string code)
+            => Permissions
+                .Setup(permissions => permissions.IsPortalAdministratorAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Failure(code, "The authority question could not be answered."));
 
         public ModuleService Service { get; }
 
@@ -4152,6 +5315,19 @@ public class ModuleServiceTests
                     harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? found)
                         ? (IReadOnlyList<TabModule>)found
                         : Array.Empty<TabModule>());
+            // The set-based placement read the listing uses. Served from the same placement world as every
+            // other placement stub, so the harness describes one reality: the listing asks for many modules
+            // in one call so that its cost cannot grow with the number of modules, and answering from a
+            // separate seam would leave that property untested.
+            harness.Modules
+                .Setup(m => m.GetTabModulesByModuleIdsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<int> moduleIds, CancellationToken _) =>
+                    (IReadOnlyList<TabModule>)moduleIds
+                        .Where(harness.PlacementsByModuleId.ContainsKey)
+                        .SelectMany(moduleId => harness.PlacementsByModuleId[moduleId])
+                        .ToList());
             // The append instruction is resolved by reading the pane it is being appended to, so that read
             // is served from the same placement world every other placement stub serves rather than from a
             // separate seam. Keeping it consistent is what lets a fact seed a pane and then assert the
@@ -4275,6 +5451,16 @@ public class ModuleServiceTests
             harness.Definitions
                 .Setup(d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.DefinitionCatalogue);
+            harness.Definitions
+                .Setup(d => d.GetAdministrativeDefinitionByFriendlyNameAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, string friendlyName, CancellationToken _) =>
+                    harness.DefinitionCatalogue.FirstOrDefault(definition => string.Equals(
+                        definition.FriendlyName,
+                        friendlyName,
+                        StringComparison.OrdinalIgnoreCase)));
             harness.Definitions
                 .Setup(d => d.GetModuleDefinitionByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.LookupDefinition);

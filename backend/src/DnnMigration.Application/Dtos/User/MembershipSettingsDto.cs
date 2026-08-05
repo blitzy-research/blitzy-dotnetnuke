@@ -2,7 +2,7 @@ namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
 /// Typed, wire-facing projection of the membership settings that govern one portal's user
-/// administration experience. Served by <c>GET /api/v1/portals/{portalId}/membership-settings</c> and accepted by the
+/// administration experience. Served by <c>GET /api/v1/users/settings</c> and accepted by the
 /// corresponding update.
 /// </summary>
 /// <remarks>
@@ -194,8 +194,9 @@ public sealed class MembershipSettingsDto
     /// default <c>10</c> (<c>UserModuleBase.vb:L134-L136</c>), legacy label "Users per Page:".
     /// </summary>
     /// <remarks>
-    /// The sole member of the <c>Records_</c> family. Carried as data only: bounds are enforced by
-    /// a request validator under <c>Application/Validation/</c>, never by this contract.
+    /// The sole member of the <c>Records_</c> family. Carried as data only:
+    /// <c>MembershipSettingsDtoValidator</c> requires a positive value no larger than the account
+    /// collection endpoint's page-size ceiling, never this contract.
     /// </remarks>
     public int RecordsPerPage { get; set; } = 10;
 
@@ -285,7 +286,10 @@ public sealed class MembershipSettingsDto
     /// <remarks>
     /// Because an administrator may edit it, the pattern is carried as data and is applied by the
     /// request validators; it is never expressed as a validation attribute on this contract. It is
-    /// a pattern rather than a credential, so it is safe on the wire.
+    /// a pattern rather than a credential, so it is safe on the wire. The membership-settings request
+    /// validator bounds its length and proves that it can be compiled with an execution timeout before
+    /// the value is stored; a malformed expression therefore produces a field-level response rather than
+    /// a later regular-expression exception.
     /// </remarks>
     public string SecurityEmailValidation { get; set; } = DefaultEmailValidationExpression;
 
@@ -338,6 +342,9 @@ public sealed class MembershipSettingsDto
     /// on a background thread (<c>UserSettings.ascx.vb:L175-L182</c>), are service
     /// responsibilities. It is non-nullable and initialised to <see cref="string.Empty"/> because
     /// the legacy application-encoded null string is the empty string rather than a null reference.
+    /// The request validator bounds the raw format to 128 UTF-16 code units, and
+    /// <c>UserService</c> separately checks the token-expanded value against the
+    /// <c>Users.DisplayName</c> width before mutating or saving an account.
     /// </remarks>
     public string SecurityDisplayNameFormat { get; set; } = string.Empty;
 }

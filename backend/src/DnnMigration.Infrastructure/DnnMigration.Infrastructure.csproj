@@ -59,21 +59,28 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
 
     <!--
-      Explicit anti-downgrade pin: without this line the SQL Server provider
-      resolves Microsoft.Data.SqlClient 5.1.7 transitively. It is not redundant —
-      list the package graph with transitive dependencies included and it must
-      report 5.2.3.
+      Explicit direct pin: EF Core 8 permits an older 5.x client, whose identity
+      chain now contains deprecated authentication and JSON packages. The 6.1.6
+      line is the newest stable 6.x release verified against this net8.0
+      solution; keeping the pin direct prevents a future EF patch from
+      reintroducing the deprecated graph.
     -->
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.6" />
+
+    <!--
+      EF Core Design 8.x still resolves Roslyn assets that request
+      System.Collections.Immutable 6.0.0, which NuGet now marks deprecated.
+      Pinning the .NET 8 band lifts that build-time graph without changing the
+      framework target or any runtime API used by this project.
+    -->
+    <PackageReference Include="System.Collections.Immutable" Version="8.0.0" />
 
     <!--
       One-way password hashing, replacing a reversibly-encrypted credential store
-      whose key was committed to the legacy configuration. Existing credentials
-      cannot be verified against a one-way hash and this solution contains no
-      legacy verifier, so the migration path is an ADMINISTRATIVE RESET ONLY.
-      Do not describe it as a re-hash on first successful login: no code path can
-      perform that, because verifying the legacy credential is the very step that
-      is missing.
+      whose key was committed to the legacy configuration. The migration-only
+      LegacyCredentialVerifier performs bounded, opt-in comparison of legacy rows;
+      AuthService immediately replaces an accepted value through this package's
+      one-way BCrypt implementation, with administrative reset as the fallback.
       Security/BcryptPasswordHasher.cs uses this package's ENHANCED hash and
       verify pair, which pre-digests the credential and so removes the plain
       algorithm's 72-byte input-equivalence behaviour; the two halves must always
@@ -84,9 +91,25 @@
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
 
     <!--
-      Database probe behind /health. That endpoint must stay anonymous and
-      reachable: docker-compose gates the frontend service on the API becoming
-      healthy, and the Alpine runtime image probes it with wget rather than curl.
+      The health-check ABSTRACTIONS, which is why this reference is load-bearing
+      even though its own SQL Server check is no longer registered. This project
+      is a plain class library rather than a web project, so it has no framework
+      reference to draw Microsoft.Extensions.Diagnostics.HealthChecks from, and
+      this package is the SOLE route by which IHealthCheck, HealthCheckResult,
+      HealthStatus, AddHealthChecks() and AddCheck<T>() reach
+      HealthChecks/DatabaseHealthCheck.cs and DependencyInjection.cs - verified
+      against the restored dependency graph, not assumed. Removing it does not
+      remove a dead dependency; it breaks the compile.
+
+      AddSqlServer() is deliberately NOT called. It reads the same
+      ConnectionStrings:Default value and opens a connection to the same instance
+      as this project's own probe, so registering both put two connections behind
+      every request to a path that docker-compose, the Alpine image's wget
+      HEALTHCHECK and any orchestrator poll continuously, while distinguishing
+      nothing. The package is retained for the abstractions and remains pinned per
+      AAP section 0.6.1; the endpoint it serves must stay anonymous and reachable,
+      because docker-compose gates the frontend service on the API becoming
+      healthy.
     -->
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.2" />
 
@@ -114,38 +137,36 @@
   </ItemGroup>
 
   <!--
-    ONE friend assembly, and one only: the unit test project.
+    ONE FRIEND ASSEMBLY, NAMED EXPLICITLY, AND NOTHING WIDENED TO PUBLIC FOR A TEST.
 
-    Why it is needed. Security/BcryptPasswordHasher.cs and Security/PermissionEvaluator.cs
-    are the two places in this solution where a credential is turned into a stored digest
-    and where a grant is turned into an access decision. AAP 0.5.1.5 names
-    Infrastructure/Security/*.cs as the source of
-    tests/DnnMigration.UnitTests/Security/{BcryptPasswordHasher,JwtTokenService,
-    PermissionEvaluator}Tests.cs, with "Hash round-trip, token claims, permission
-    resolution" as what those suites are for, and AAP 0.2.1.1 places the
-    permission-evaluator tests in that same project. Both types are internal sealed, so
-    without this item the suites can only assert the shape of the abstractions and a
-    stand-in of their documented behaviour - which is exactly the false-green coverage a
-    review found: the real enhanced-BCrypt pair, the policy and byte-ceiling guards, the
-    malformed-digest handlers, the work-factor replacement signal and the whole
-    allow-and-deny reduction could all regress with a green suite. Proving them needs the
-    concrete types, and the concrete types are here.
+    Everything this layer implements is reachable through a PUBLIC contract - IPasswordHasher,
+    IClock, ICacheService, IHostSettingsService, IPortalContext and IRefreshTokenStore from
+    Domain, ITokenService and IPermissionEvaluator from Application, the nine repository
+    interfaces and IUnitOfWork from Domain - and every one of them is registered by
+    AddInfrastructure. That is the PREFERRED route, and it is the one the integration suites take:
+    DnnMigration.IntegrationTests/Security/ resolves the real password hasher, token service,
+    permission evaluator and refresh-token store from the composed container, which proves the
+    registration as well as the behaviour. Nothing here should be reached by `new` when the
+    container can hand it over.
 
-    What it does NOT weaken, which is the point. The production dependency graph is
-    untouched: Domain still declares zero project references and zero package references,
-    DnnMigration.Application still cannot see this assembly, and an accidental
-    infrastructure dependency in Application or Domain is still a compile error rather
-    than a review comment. That guarantee comes from what the PRODUCTION project files
-    reference, and a test project is not one of them - it sits outside the layered graph
-    as its outermost consumer. AAP Rules T1 and T3 order the four production layers; they
-    say nothing about a test assembly, and reading them as if they did is what left these
-    two components unproven.
+    The grant below exists for the components whose behaviour is asserted WITHOUT a host, from
+    DnnMigration.UnitTests: LoggingAuditSink, LegacyCredentialVerifier, JwtTokenService and
+    DatabaseHealthCheck are each internal sealed and each is covered by a suite that substitutes
+    its collaborators and asserts what it does with them - the audit sink's structured-property
+    discipline, the legacy verifier's format handling, the token service's claim composition and
+    the health check's non-disclosure of connection detail. Those facts need no database, no
+    Kestrel and no policy pipeline, so a host would only slow them down; what they do need is the
+    type. AAP 0.5.1.5 places exactly these Security suites in the unit project, which is why the
+    edge and this grant are both declared rather than worked around.
 
-    Bounds. Add no second friend assembly. In particular DnnMigration.IntegrationTests is
-    deliberately absent: it reaches this layer legitimately through Api and the container,
-    resolving the public registrations, and naming an internal type from there would let
-    an integration test bypass the composition it exists to exercise. And no production
-    project may be added, ever - that is not what this mechanism is for.
+    The production layering guarantee is untouched and is a property of the four PRODUCTION
+    project files, not of this item: Domain declares zero project references, Application cannot
+    see Infrastructure, and either violation remains a compile error. A test project is the
+    outermost consumer of the graph rather than a layer within it.
+
+    The grant names ONE assembly. Do not add a second, do not grant it to a wildcard, and do not
+    widen a type from internal to public to make a test compile - including DnnDbContext, whose
+    internal declaration is what keeps Application away from the model.
   -->
   <ItemGroup>
     <InternalsVisibleTo Include="DnnMigration.UnitTests" />

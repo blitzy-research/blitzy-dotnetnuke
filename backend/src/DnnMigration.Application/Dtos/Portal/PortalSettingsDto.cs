@@ -462,7 +462,7 @@ public sealed class PortalSettingsDto
     // MIGRATION: the payment-processor credential is DELIBERATELY ABSENT, and this comment marks the
     //   position it would otherwise occupy -- immediately after the processor account name, which is
     //   where it sits both in the twenty-seven-argument update signature (PortalController.vb:L1568)
-    //   and in the schema (added as ProcessorPassword nvarchar(50) NULL at
+    //   and in the schema (the legacy column remains ProcessorPassword nvarchar(50) NULL at
     //   01.00.06.SqlDataProvider:L601).
     //
     //   Its omission is a decision, not an oversight: the column is real and the terminal read view

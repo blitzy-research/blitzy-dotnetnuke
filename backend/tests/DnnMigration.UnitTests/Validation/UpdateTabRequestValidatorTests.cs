@@ -61,6 +61,10 @@ public class UpdateTabRequestValidatorTests
     /// </summary>
     private const string TabNameRequiredMessage = "Page Name Is Required";
 
+    private const string UrlNotAllowedMessage =
+        "The link URL must be a numeric page identifier, a fileid=NNN reference, "
+        + "or an absolute HTTP, HTTPS, or mailto URI.";
+
     private const string TabNameProperty = nameof(UpdateTabRequest.TabName);
 
     private readonly UpdateTabRequestValidator _validator = new();
@@ -135,11 +139,14 @@ public class UpdateTabRequestValidatorTests
     [InlineData(nameof(UpdateTabRequest.PageHeadText), 500)]
     [InlineData(nameof(UpdateTabRequest.IconFile), 100)]
     [InlineData(nameof(UpdateTabRequest.Url), 255)]
-    [InlineData(nameof(UpdateTabRequest.SkinSrc), 200)]
-    [InlineData(nameof(UpdateTabRequest.ContainerSrc), 200)]
     public void AnOptionalMember_IsAcceptedAtItsLimit(string property, int limit)
     {
-        ShouldAccept(_validator.Validate(WithText(property, new string('x', limit))));
+        const string absoluteUrlPrefix = "https://example.test/";
+        string value = property == nameof(UpdateTabRequest.Url)
+            ? absoluteUrlPrefix + new string('x', limit - absoluteUrlPrefix.Length)
+            : new string('x', limit);
+
+        ShouldAccept(_validator.Validate(WithText(property, value)));
     }
 
     /// <summary>
@@ -160,8 +167,6 @@ public class UpdateTabRequestValidatorTests
     [InlineData(nameof(UpdateTabRequest.PageHeadText), 500)]
     [InlineData(nameof(UpdateTabRequest.IconFile), 100)]
     [InlineData(nameof(UpdateTabRequest.Url), 255)]
-    [InlineData(nameof(UpdateTabRequest.SkinSrc), 200)]
-    [InlineData(nameof(UpdateTabRequest.ContainerSrc), 200)]
     public void AnOptionalMember_IsRefusedBeyondItsLimit(string property, int limit)
     {
         ShouldNotAccept(_validator.Validate(WithText(property, new string('x', limit + 1))), property);
@@ -182,12 +187,50 @@ public class UpdateTabRequestValidatorTests
     [InlineData(nameof(UpdateTabRequest.PageHeadText))]
     [InlineData(nameof(UpdateTabRequest.IconFile))]
     [InlineData(nameof(UpdateTabRequest.Url))]
-    [InlineData(nameof(UpdateTabRequest.SkinSrc))]
-    [InlineData(nameof(UpdateTabRequest.ContainerSrc))]
     public void AnOptionalMember_IsAcceptedWhenOmittedOrEmpty(string property)
     {
         ShouldAccept(_validator.Validate(WithText(property, null)));
         ShouldAccept(_validator.Validate(WithText(property, string.Empty)));
+    }
+
+    /// <summary>
+    /// Every legitimate persisted link form is admitted without rewriting it.
+    /// </summary>
+    /// <param name="url">Link target under test.</param>
+    [Theory]
+    [InlineData("0")]
+    [InlineData("42")]
+    [InlineData("fileid=0")]
+    [InlineData("FILEID=987")]
+    [InlineData("http://example.test/page")]
+    [InlineData("https://example.test/page?q=1")]
+    [InlineData("mailto:owner@example.test")]
+    public void ASupportedLinkTarget_IsAccepted(string url)
+    {
+        ShouldAccept(_validator.Validate(WithText(nameof(UpdateTabRequest.Url), url)));
+    }
+
+    /// <summary>
+    /// Active, unknown and malformed schemes are refused before they can be stored and returned to a
+    /// navigation consumer.
+    /// </summary>
+    /// <param name="url">Link target under test.</param>
+    [Theory]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("data:text/html,<script>alert(1)</script>")]
+    [InlineData("vbscript:msgbox(1)")]
+    [InlineData("ftp://example.test/file")]
+    [InlineData("relative/path")]
+    [InlineData("~/relative/path")]
+    [InlineData("fileid=")]
+    [InlineData("fileid=abc")]
+    [InlineData("42x")]
+    public void AnUnsupportedLinkTarget_IsRefused(string url)
+    {
+        ShouldReport(
+            _validator.Validate(WithText(nameof(UpdateTabRequest.Url), url)),
+            nameof(UpdateTabRequest.Url),
+            UrlNotAllowedMessage);
     }
 
     /// <summary>
@@ -316,12 +359,6 @@ public class UpdateTabRequestValidatorTests
                 break;
             case nameof(UpdateTabRequest.Url):
                 request.Url = value;
-                break;
-            case nameof(UpdateTabRequest.SkinSrc):
-                request.SkinSrc = value;
-                break;
-            case nameof(UpdateTabRequest.ContainerSrc):
-                request.ContainerSrc = value;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(property), property, "Unhandled member.");

@@ -128,7 +128,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Validates the SHAPE of a module update submitted to
-/// <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}</c>, and nothing beyond shape.
+/// <c>PUT /api/v1/modules/{moduleId}</c>, and nothing beyond shape.
 /// </summary>
 /// <remarks>
 /// <para>

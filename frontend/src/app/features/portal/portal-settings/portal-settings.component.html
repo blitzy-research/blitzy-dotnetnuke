@@ -533,30 +533,45 @@
               </div>
 
               <!--
-                MIGRATION: the response contract carries no stored processor
-                password, so this control is blank on every load and a blank
-                submission leaves the stored secret alone. The legacy screen bound
-                the stored value straight into a password box, which put the
-                secret in the page source of every operator who opened the screen.
+                MIGRATION: the legacy password box is replaced by a managed-secret
+                reference. The response echoes neither the credential nor its
+                reference. Blank means keep, while the checkbox below is the
+                explicit clear operation.
               -->
               <div class="portal-settings__field">
                 <div class="portal-settings__label">
-                  <label [for]="controlId('processorPassword')">Processor Password:</label>
-                  <small class="form-help" [id]="hintId('processorPassword')">{{ hints.processorPassword }}</small>
+                  <label [for]="controlId('processorCredentialReference')">Processor Credential Reference:</label>
+                  <small class="form-help" [id]="hintId('processorCredentialReference')">{{
+                    hints.processorCredentialReference
+                  }}</small>
                 </div>
                 <div class="portal-settings__control">
                   <input
-                    type="password"
-                    autocomplete="new-password"
-                    formControlName="processorPassword"
-                    [id]="controlId('processorPassword')"
+                    type="text"
+                    autocomplete="off"
+                    formControlName="processorCredentialReference"
+                    [id]="controlId('processorCredentialReference')"
                     [maxlength]="limits.processorField"
-                    [attr.aria-describedby]="describedBy('processorPassword')"
-                    [attr.aria-invalid]="messageFor('processorPassword') !== null ? 'true' : null"
+                    [readOnly]="form.controls.clearProcessorCredentialReference.value"
+                    [attr.aria-describedby]="describedBy('processorCredentialReference')"
+                    [attr.aria-invalid]="
+                      messageFor('processorCredentialReference') !== null ? 'true' : null
+                    "
                   />
-                  @if (messageFor('processorPassword'); as message) {
-                    <p class="form-error" [id]="messageId('processorPassword')">{{ message }}</p>
+                  @if (messageFor('processorCredentialReference'); as message) {
+                    <p class="form-error" [id]="messageId('processorCredentialReference')">
+                      {{ message }}
+                    </p>
                   }
+                  <label>
+                    <input
+                      type="checkbox"
+                      formControlName="clearProcessorCredentialReference"
+                      [id]="controlId('clearProcessorCredentialReference')"
+                      (change)="onProcessorReferenceClearChanged()"
+                    />
+                    Clear the stored processor credential reference
+                  </label>
                 </div>
               </div>
             </div>

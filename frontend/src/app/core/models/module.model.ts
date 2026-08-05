@@ -14,28 +14,33 @@
  *   - `ModuleExportRequest`   mirrors `Dtos/Module/ModuleExportRequest.cs` (2 members)
  *   - `ModuleImportRequest`   mirrors `Dtos/Module/ModuleImportRequest.cs` (4 members)
  *
- * `ModuleVisibility` mirrors the API enumeration of the same name. `ModuleSettings`,
- * `MODULE_ALIGNMENT` and `MODULE_VISIBILITY` are the module-settings screen's own vocabulary and are
- * documented individually below.
+ * `ModuleVisibility` mirrors the API enumeration of the same name, and `MODULE_VISIBILITY` is its frozen
+ * lookup map; both are documented individually below.
+ *
+ * The module-settings screen's VIEW MODEL is deliberately NOT here. A screen's shape is not a wire shape,
+ * so it lives with the screen, at
+ * `features/module/module-settings/module-settings.view-model.ts`, together with the adapter that
+ * projects its form state onto {@link UpdateModuleRequest}. Everything declared in THIS file is
+ * transported.
  *
  * The endpoints these contracts serve are, in full:
  *
- *     GET    /api/v1/portals/{portalId}/modules                    -> a page of ModuleListItem
- *     GET    /api/v1/portals/{portalId}/modules/{moduleId}         -> ModuleDetail
- *     POST   /api/v1/portals/{portalId}/modules                    <- CreateModuleRequest
- *     PUT    /api/v1/portals/{portalId}/modules/{moduleId}         <- UpdateModuleRequest
- *     DELETE /api/v1/portals/{portalId}/modules/{moduleId}
- *     GET    /api/v1/portals/{portalId}/modules/{id}/settings      -> ModuleSettingsBag
- *     PUT    /api/v1/portals/{portalId}/modules/{id}/settings      <- ModuleSettingsBag
- *     POST   /api/v1/portals/{portalId}/modules/{id}/export        <- ModuleExportRequest
- *     POST   /api/v1/portals/{portalId}/modules/import             <- ModuleImportRequest
+ *     GET    /api/v1/modules                                      -> a page of ModuleListItem
+ *     GET    /api/v1/modules/{moduleId}                           -> ModuleDetail
+ *     POST   /api/v1/modules                                      <- CreateModuleRequest
+ *     PUT    /api/v1/modules/{moduleId}                           <- UpdateModuleRequest
+ *     DELETE /api/v1/modules/{moduleId}
+ *     GET    /api/v1/modules/{id}/settings                        -> ModuleSettingsBag
+ *     PUT    /api/v1/modules/{id}/settings                        <- ModuleSettingsBag
+ *     POST   /api/v1/modules/{id}/export                          <- ModuleExportRequest
+ *     POST   /api/v1/modules/import                               <- ModuleImportRequest
  *     GET    /api/v1/module-definitions                            -> ModuleDefinition[]
  *     GET    /api/v1/module-definitions/{moduleDefinitionId}       -> ModuleDefinition
  *     GET    /api/v1/module-definitions/desktop-modules/{id}       -> ModuleDefinition[]
  *
- * This file is type-only apart from three declarations that necessarily reach the emitted bundle: the
- * `ModuleVisibility` enumeration and the two frozen lookup maps. It declares no service, no injectable,
- * no component and no runtime behaviour of any kind.
+ * This file is type-only apart from two declarations that necessarily reach the emitted bundle: the
+ * `ModuleVisibility` enumeration and its frozen lookup map. It declares no service, no injectable, no
+ * component and no runtime behaviour of any kind.
  *
  * MIGRATION: ONE LEGACY CLASS BECOMES FOUR TABLES AND SEVERAL CONTRACTS. The legacy
  *   Library/Components/Modules/ModuleInfo.vb was a single class of 58 properties that flattened a join
@@ -108,7 +113,7 @@ import type { PagedResult } from './paged-result.model';
 //   that would claim the billing frequency too and put a member name on the wire where a legacy char(1)
 //   code belongs. The module visibility therefore travels as 0, 1 or 2. This is an ordinary numeric
 //   enumeration and not a constant one: `isolatedModules` is enabled, under which a constant enumeration
-//   is not a sound declaration, so this is one of the three declarations in this file that survive into
+//   is not a sound declaration, so this is one of the two declarations in this file that survive into
 //   the emitted bundle.
 export enum ModuleVisibility {
   /** The placement renders with its container chrome expanded. The legacy default. */
@@ -137,38 +142,7 @@ export const MODULE_VISIBILITY = {
 } as const;
 
 /**
- * The four alignment values the legacy module-settings screen offered.
- *
- * MIGRATION: the empty string is a real, selectable choice rather than an absence.
- *   Website/admin/Modules/modulesettings.ascx declares
- *   `<asp:listitem resourcekey="Not_Specified" value="">Not Specified</asp:listitem>` and
- *   Website/admin/Modules/ModuleSettings.ascx.vb:L345 stored `cboAlign.SelectedItem.Value` verbatim, so
- *   choosing "Not Specified" wrote an empty string to the column. That distinction is preserved: an
- *   empty string records that the operator explicitly declined to specify, which is not the same fact as
- *   the column never having been written.
- *
- * MIGRATION: NO CURRENT MODULE CONTRACT TRANSPORTS AN ALIGNMENT. `dbo.TabModules.Alignment` exists and
- *   the domain model maps it, but none of the eight module contracts mirrored in this file projects it,
- *   so these codes are today the screen's own vocabulary rather than a wire value. They are declared
- *   here, beside the contracts, so that the gap is visible at the boundary instead of being rediscovered
- *   per screen; the corresponding member on `UpdateModuleRequest` records the same finding.
- */
-export const MODULE_ALIGNMENT = {
-  /** The legacy "Not Specified" choice, stored as an empty string. */
-  notSpecified: '',
-  /** Content is aligned to the leading edge. */
-  left: 'left',
-  /** Content is centred. */
-  center: 'center',
-  /** Content is aligned to the trailing edge. */
-  right: 'right',
-} as const;
-
-/** The alignment values, as a union of the four the legacy screen admitted. */
-export type ModuleAlignment = (typeof MODULE_ALIGNMENT)[keyof typeof MODULE_ALIGNMENT];
-
-/**
- * One row of the module listing, as returned by `GET /api/v1/portals/{portalId}/modules`.
+ * One row of the module listing, as returned by `GET /api/v1/modules`.
  *
  * Mirrors `Dtos/Module/ModuleListItemDto.cs`, which carries exactly these thirteen members. The listing
  * is a projection chosen for a grid: it deliberately omits the schedule text, the header and footer
@@ -296,7 +270,7 @@ export interface ModuleListItem {
 }
 
 /**
- * A page of the module listing, as `GET /api/v1/portals/{portalId}/modules` returns it.
+ * A page of the module listing, as `GET /api/v1/modules` returns it.
  *
  * The listing is paged and filtered server-side; the query members - the page index and size, the sort,
  * the optional page filter and whether soft-deleted rows are included - are built by the shared HTTP
@@ -306,7 +280,7 @@ export type ModuleListPage = PagedResult<ModuleListItem>;
 
 /**
  * One placement of one module in full, as returned by
- * `GET /api/v1/portals/{portalId}/modules/{moduleId}` and echoed by the create and update endpoints.
+ * `GET /api/v1/modules/{moduleId}` and echoed by the create and update endpoints.
  *
  * Mirrors `Dtos/Module/ModuleDetailDto.cs`, which carries exactly these twenty-three members. Nine of
  * them are read-only projections drawn from the definition and the installed package behind it - the
@@ -497,7 +471,7 @@ export interface ModuleDetail {
 }
 
 /**
- * The body of `POST /api/v1/portals/{portalId}/modules`, which places a new module on a page.
+ * The body of `POST /api/v1/modules`, which places a new module on a page.
  *
  * Mirrors `Dtos/Module/CreateModuleRequest.cs`, which carries exactly these fourteen members. The
  * portal is named by the route rather than by the body, so it does not appear here.
@@ -517,7 +491,7 @@ export interface CreateModuleRequest {
    * Callers resolve the permitted set from `GET /api/v1/module-definitions`. The identity behind this
    * value seeds at 1, so a real definition identifier is always positive.
    */
-  moduleDefId: number;
+  readonly moduleDefId: number;
 
   /**
    * The page on which to place the module. Required.
@@ -526,7 +500,7 @@ export interface CreateModuleRequest {
    *   only - the module table's own page column was dropped by the upgrade chain. D36 applies: page 0 is
    *   legitimate, so a caller must send the value rather than relying on a falsy check to detect it.
    */
-  tabId: number;
+  readonly tabId: number;
 
   /**
    * The heading for the module, or `null` to leave it unset. Not required. At most 256 characters.
@@ -534,19 +508,19 @@ export interface CreateModuleRequest {
    * The 256-character bound is the column width and is the only bound the server applies; the legacy text
    * box declared a rendered width but no validator.
    */
-  moduleTitle: string | null;
+  readonly moduleTitle: string | null;
 
   /**
    * Whether the module appears in the same position on every page of the portal, which produces one
    * placement row per page. The server defaults this to `false`.
    */
-  allTabs: boolean;
+  readonly allTabs: boolean;
 
   /** Text or markup rendered above the module's content, or `null` for none. No length bound applies. */
-  header: string | null;
+  readonly header: string | null;
 
   /** Text or markup rendered below the module's content, or `null` for none. No length bound applies. */
-  footer: string | null;
+  readonly footer: string | null;
 
   /**
    * The date from which the module is displayed, as an ISO 8601 string, or `null` for no start
@@ -555,14 +529,14 @@ export interface CreateModuleRequest {
    * The server requires only that a supplied value be a date it can store, which is one of the three
    * rules the legacy screen enforced. `null` is the representation of "unset" - never a minimum date.
    */
-  startDate: string | null;
+  readonly startDate: string | null;
 
   /**
    * The date until which the module is displayed, as an ISO 8601 string, or `null` for no end
    * restriction. The same rule, the same sentinel translation and the same caution as
    * {@link CreateModuleRequest.startDate}.
    */
-  endDate: string | null;
+  readonly endDate: string | null;
 
   /**
    * Whether the module takes its View permission from its page instead of carrying its own. The server
@@ -571,7 +545,7 @@ export interface CreateModuleRequest {
    * A FLAG ONLY: the permission entries live behind the permission endpoints and are not part of this
    * body.
    */
-  inheritViewPermissions: boolean;
+  readonly inheritViewPermissions: boolean;
 
   /**
    * The module's position within its pane on the page.
@@ -582,7 +556,7 @@ export interface CreateModuleRequest {
    *   deliberate instruction rather than as an absence marker, so it is spelled out here: send -1 to
    *   append, send a non-negative index to place.
    */
-  moduleOrder: number;
+  readonly moduleOrder: number;
 
   /**
    * How long the module's output may be cached, in seconds. Zero means no caching, which is the server's
@@ -591,14 +565,14 @@ export interface CreateModuleRequest {
    * MIGRATION: this is the per-placement cache period and is a different fact from a definition's
    *   {@link ModuleDefinition.defaultCacheTime}. The two are never coalesced; see that member's note.
    */
-  cacheTime: number;
+  readonly cacheTime: number;
 
   /**
    * The icon displayed with the module's title, or `null` for none. Not required. At most 100 characters.
    *
    * The 100-character bound is the column width. A stored name or relative path, never a resolved URL.
    */
-  iconFile: string | null;
+  readonly iconFile: string | null;
 
   /**
    * How the module is presented on the page.
@@ -608,7 +582,7 @@ export interface CreateModuleRequest {
    *   underlying value type. Renumbering {@link ModuleVisibility} would therefore change the behaviour of
    *   every request that omits this member, which is one more reason the ordinals are written out.
    */
-  visibility: ModuleVisibility;
+  readonly visibility: ModuleVisibility;
 
   /**
    * Whether the module's container is displayed. The server defaults this to `true`.
@@ -617,45 +591,59 @@ export interface CreateModuleRequest {
    *   alone. The legacy markup labelled it "Display Title?" while the authoritative resource wording was
    *   "Display Container?"; the wider meaning is the operative one.
    */
-  displayTitle: boolean;
+  readonly displayTitle: boolean;
 }
 
 /**
- * The body of `PUT /api/v1/portals/{portalId}/modules/{moduleId}`.
+ * The body of `PUT /api/v1/modules/{moduleId}`.
  *
- * Mirrors `Dtos/Module/UpdateModuleRequest.cs`, whose sixteen members are the first group below. The
- * second group holds six placement fields and two instruction flags that the module-settings screen still
- * posts and that the current server contract no longer carries; they are marked deprecated and are
- * documented individually.
+ * Mirrors `Dtos/Module/UpdateModuleRequest.cs` exactly: the server declares SIXTEEN properties and this
+ * contract declares those same sixteen and nothing else.
+ *
+ * MIGRATION: UNDECLARED MEMBERS ARE NOW A REQUEST ERROR, NOT A SILENT NO-OP. The API configures
+ *   `JsonUnmappedMemberHandling.Disallow`, so the six legacy appearance fields and the two former
+ *   instruction aliases that used to live on this interface would produce an HTTP 400 if a caller sent
+ *   them. They are removed rather than retained as deprecated members: a TypeScript declaration must
+ *   describe the body the server accepts, not preserve names whose values can never reach the service.
  *
  * MIGRATION: THIS IS A WHOLE-ROW REPLACEMENT, exactly as the legacy postback was. An omitted nullable
  *   member is not "leave it alone" - the server's projection writes the absent value, clearing the
  *   column. That is deliberate and matches the legacy screen, where an empty text box posted an empty
  *   value; without it an operator could set a header but never remove one.
  *
- * MIGRATION: WHY FOUR MEMBERS OF THE MIRRORED GROUP ARE OPTIONAL. Every other request contract in this
- *   folder declares all of its members required, and this one deviates for exactly four - `tabId`,
- *   `isDeleted`, `setAsDefaultSettings` and `applyToAllModules`. Three of them are genuinely optional:
- *   their own contract documentation states a default of `false`, none is covered by a validation rule,
- *   and the server's ignore condition governs what it WRITES rather than what it requires to READ, so
- *   omitting them is a supported and safe choice whose effect is written on each member. `tabId` is the
- *   exception and is called out on its own member: it is documented as required, no validator enforces
- *   it, and omitting it is NOT safe. The four are optional because the module-settings screen - which
- *   this contract must keep compiling and which is owned elsewhere - does not yet send them; the
- *   optionality is a transitional accommodation, not a statement that the values are unimportant.
+ * MIGRATION: EIGHT MEMBERS WERE REMOVED FROM THIS CONTRACT, and the removal is the point rather than a
+ *   side effect. Six placement fields - `paneName`, `alignment`, `color`, `border`, `displayPrint` and
+ *   `displaySyndicate` - exist as mapped columns on the TabModule entity and were all editable on the
+ *   legacy screen (`Website/admin/Modules/modulesettings.ascx` renders the alignment, colour and border
+ *   inputs and the two display check boxes), but NONE of them is projected onto
+ *   `Dtos/Module/UpdateModuleRequest.cs`, so a value sent for one had no effect whatsoever. Two further
+ *   members, `isDefaultModule` and `allModules`, were superseded spellings of `setAsDefaultSettings` and
+ *   `applyToAllModules`. Declaring any of the eight here gave a caller compile-time permission to send
+ *   values the API silently discards, which is a worse outcome than a compile error: the screen appeared
+ *   to save settings that were never persisted. The projection gap is real and is recorded in
+ *   MIGRATION_NOTES.md; closing it is a server-side projection change, and until then the six values are
+ *   neither rendered nor transported - the module-settings screen omits the controls and the stored
+ *   columns are preserved by not projecting them through the update at all.
+ *
+ * MIGRATION: EXACTLY THREE DEFAULTED MEMBERS REMAIN OPTIONAL: `isDeleted`, `setAsDefaultSettings` and
+ *   `applyToAllModules`. Each defaults to `false`, none has a presence rule, and omission safely declines
+ *   the corresponding state or instruction - the server's ignore condition governs what it WRITES rather
+ *   than what it requires to READ. `tabId` is deliberately NOT in that group. It is a non-nullable `int` on
+ *   the server, so an absent member deserialises to 0, and `dbo.Tabs.TabID` is `IDENTITY(0, 1)`, which
+ *   makes 0 a legitimate page the server cannot tell apart from a caller who said nothing. The service uses
+ *   the value to select the exact placement being edited and returns its `PlacementNotFoundCode`
+ *   (`module.placement_not_found`) when the module is not placed on the named page, so the typed client
+ *   requires callers to identify that page on every update.
  *
  * MIGRATION: D7 - NO DELIMITED PERMISSION OR ROLE STRING APPEARS ON THIS CONTRACT, OR ON ANY OTHER IN
  *   THIS FILE. The legacy module carried four semicolon-delimited display strings - `Permissions`
  *   (ModuleInfo.vb:L473), `AuthorizedRoles` (L627), `AuthorizedEditRoles` (L545) and
  *   `AuthorizedViewRoles` (L554) - each a flattened rendering of the permission table that a caller had to
  *   split, and each ambiguous the moment a role name contained the delimiter. Those strings are
- *   deliberately abandoned rather than reproduced or parsed. The structured replacement is the
- *   `ModulePermission` shape in `./permission.model`, which carries a first-class `roleId`, a nullable
- *   `userId` that distinguishes a user grant from a role grant, and a separate `allowAccess` flag that
- *   makes a DENIAL expressible - something no delimited list of granted names could express. No module
- *   contract carries permission entries at all: this body transports only the
- *   {@link UpdateModuleRequest.inheritViewPermissions} flag, and the entries are administered through the
- *   permission endpoints.
+ *   deliberately abandoned rather than reproduced or parsed. No module contract carries grant entries:
+ *   this body transports only the {@link UpdateModuleRequest.inheritViewPermissions} flag, while the
+ *   current permission API exposes catalogue definitions and server-side policy evaluation rather than a
+ *   grant-management wire shape.
  */
 export interface UpdateModuleRequest {
   // ---------------------------------------------------------------------------------------------------
@@ -663,59 +651,59 @@ export interface UpdateModuleRequest {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * The page this placement is on. Documented as required by the contract it mirrors.
+   * The page this placement is on. Required, matching the non-nullable `int` on the contract it mirrors.
    *
-   * MIGRATION: OMITTING THIS ADDRESSES PAGE ZERO, SILENTLY. No validation rule covers this member -
-   *   deliberately, because `dbo.Tabs.TabID` is `IDENTITY(0, 1)` (01.00.00.SqlDataProvider line 140) and a
-   *   positive-value rule would reject the legitimate page 0. An absent member therefore deserialises to
-   *   the value type's default of 0, which the server cannot tell apart from a caller genuinely naming
-   *   page 0. Send it on every update. It is declared optional only for the transitional reason given in
-   *   the note on this interface, and it is the one member of the four for which omission is unsafe.
+   * MIGRATION: OMITTING THIS WOULD ADDRESS PAGE ZERO, SILENTLY, WHICH IS WHY IT IS REQUIRED. No
+   *   validation rule covers this member - deliberately, because `dbo.Tabs.TabID` is `IDENTITY(0, 1)`
+   *   (01.00.00.SqlDataProvider line 140) and a positive-value rule would reject the legitimate page 0.
+   *   An absent member would therefore deserialise to the value type's default of 0, which the server
+   *   cannot tell apart from a caller genuinely naming page 0, so the mistake would be undetectable on
+   *   both sides. The compiler is the only place the omission can be caught, so it is caught there.
    */
-  tabId?: number;
+  readonly tabId: number;
 
   /** The heading for the module, or `null` to leave it unset. Not required. At most 256 characters. */
-  moduleTitle: string | null;
+  readonly moduleTitle: string | null;
 
   /**
    * Whether the module appears in the same position on every page of the portal, which produces one
    * placement row per page. The server defaults this to `false`.
    */
-  allTabs: boolean;
+  readonly allTabs: boolean;
 
   /** Text or markup rendered above the module's content, or `null` for none. No length bound applies. */
-  header: string | null;
+  readonly header: string | null;
 
   /** Text or markup rendered below the module's content, or `null` for none. No length bound applies. */
-  footer: string | null;
+  readonly footer: string | null;
 
   /**
    * The date from which the module is displayed, as an ISO 8601 string, or `null` for no start
    * restriction. A supplied value need only be a date the server can store.
    */
-  startDate: string | null;
+  readonly startDate: string | null;
 
   /**
    * The date until which the module is displayed, as an ISO 8601 string, or `null` for no end
    * restriction. The same rule and the same sentinel translation as
    * {@link UpdateModuleRequest.startDate}.
    */
-  endDate: string | null;
+  readonly endDate: string | null;
 
   /**
    * Whether the module takes its View permission from its page instead of carrying its own. The server
    * defaults this to `false`. A flag only - see the D7 note on this interface.
    */
-  inheritViewPermissions: boolean;
+  readonly inheritViewPermissions: boolean;
 
   /**
    * Whether the module is in the recycle bin. The server defaults this to `false`.
    *
-   * The soft-delete marker. The column is non-nullable with a stored default of 0, which coincides with
-   * the default of the mirrored value type, so omitting this member leaves a module out of the recycle
-   * bin - the safe outcome, and the reason omission is supported here.
+   * The soft-delete marker. The column is non-nullable with a stored default of 0. It remains required on
+   * this full-replacement request so a caller must preserve the loaded state deliberately rather than
+   * clearing it by omission.
    */
-  isDeleted?: boolean;
+  readonly isDeleted?: boolean;
 
   /**
    * The module's position within its pane on the page.
@@ -723,7 +711,7 @@ export interface UpdateModuleRequest {
    * MIGRATION: -1 APPENDS, AND 0 IS A POSITION - identical to the create contract. The server's default
    *   is -1, which appends at the bottom of the pane; sending 0 explicitly means position zero.
    */
-  moduleOrder: number;
+  readonly moduleOrder: number;
 
   /**
    * How long the module's output may be cached, in seconds. Zero means no caching, which is the server's
@@ -732,22 +720,22 @@ export interface UpdateModuleRequest {
    * MIGRATION: the per-placement cache period, and a DIFFERENT FACT from a definition's
    *   {@link ModuleDefinition.defaultCacheTime}. The two are never merged; see that member's note.
    */
-  cacheTime: number;
+  readonly cacheTime: number;
 
   /**
    * The icon displayed with the module's title, or `null` for none. Not required. At most 100 characters.
    */
-  iconFile: string | null;
+  readonly iconFile: string | null;
 
   /** How the module is presented on the page. Must be a defined code; the server checks that. */
-  visibility: ModuleVisibility;
+  readonly visibility: ModuleVisibility;
 
   /**
    * Whether the module's container is displayed. The server defaults this to `true`.
    *
    * Despite the name, this governs the container rather than the title alone.
    */
-  displayTitle: boolean;
+  readonly displayTitle: boolean;
 
   /**
    * An instruction rather than module state: name this module and its page as the portal's default
@@ -757,7 +745,7 @@ export interface UpdateModuleRequest {
    * the update rather than a column on the module, it must be seeded unset on every form rather than
    * echoed back from the module - echoing a previous instruction would reapply it on the next submission.
    */
-  setAsDefaultSettings?: boolean;
+  readonly setAsDefaultSettings?: boolean;
 
   /**
    * An instruction rather than module state: copy this placement's appearance to every module on every
@@ -765,81 +753,9 @@ export interface UpdateModuleRequest {
    *
    * THE MOST FAR-REACHING MEMBER ON THE MODULE API. Like
    * {@link UpdateModuleRequest.setAsDefaultSettings} it is seeded unset rather than echoed back, and for
-   * the same reason. Omission is safe precisely because the default declines to act.
+   * the same reason. Callers send <code>false</code> explicitly when no portal-wide action is intended.
    */
-  applyToAllModules?: boolean;
-
-  // ---------------------------------------------------------------------------------------------------
-  // Retained for the module-settings screen; NOT carried by the current server contract
-  //
-  // MIGRATION: A PROJECTION GAP, RECORDED RATHER THAN PAPERED OVER. Every member in this group exists as
-  //   a mapped column on the domain placement entity - PaneName, Alignment, Color, Border, DisplayPrint
-  //   and DisplaySyndicate are all declared on the TabModule entity and bound by its entity
-  //   configuration - but none of them is projected onto `Dtos/Module/UpdateModuleRequest.cs`, so the
-  //   server does not read them and a value sent here has no effect. They are declared, optional and
-  //   deprecated, so that the module-settings screen continues to compile against a contract that tells
-  //   the truth about what the server accepts, rather than the contract being widened to imply that these
-  //   values are transported. The legacy screen genuinely edited all eight -
-  //   Website/admin/Modules/modulesettings.ascx renders the alignment, colour and border inputs and the
-  //   two display check boxes - so the gap is a real reduction in the write surface and is reported as
-  //   one, not silently absorbed.
-  // ---------------------------------------------------------------------------------------------------
-
-  /**
-   * Which pane of the page's layout the placement occupies.
-   *
-   * @deprecated Not carried by the current server contract; see the note above this group.
-   */
-  paneName?: string;
-
-  /**
-   * The placement's alignment, one of {@link MODULE_ALIGNMENT}'s values.
-   *
-   * @deprecated Not carried by the current server contract; see the note above this group.
-   */
-  alignment?: string | null;
-
-  /**
-   * The placement's recorded colour. An opaque persisted value, never a style input.
-   *
-   * @deprecated Not carried by the current server contract; see the note above this group.
-   */
-  color?: string | null;
-
-  /**
-   * The placement's border flag: a single digit, or `null` for none.
-   *
-   * @deprecated Not carried by the current server contract; see the note above this group.
-   */
-  border?: string | null;
-
-  /**
-   * Whether the placement offers a print affordance.
-   *
-   * @deprecated Not carried by the current server contract; see the note above this group.
-   */
-  displayPrint?: boolean;
-
-  /**
-   * Whether the placement offers a syndication affordance.
-   *
-   * @deprecated Not carried by the current server contract; see the note above this group.
-   */
-  displaySyndicate?: boolean;
-
-  /**
-   * The former spelling of {@link UpdateModuleRequest.setAsDefaultSettings}.
-   *
-   * @deprecated Renamed on the server contract to `setAsDefaultSettings`; send that member instead.
-   */
-  isDefaultModule?: boolean;
-
-  /**
-   * The former spelling of {@link UpdateModuleRequest.applyToAllModules}.
-   *
-   * @deprecated Renamed on the server contract to `applyToAllModules`; send that member instead.
-   */
-  allModules?: boolean;
+  readonly applyToAllModules?: boolean;
 }
 
 /**
@@ -847,7 +763,7 @@ export interface UpdateModuleRequest {
  *
  * Mirrors `Dtos/Module/ModuleSettingsDto.cs`, which carries exactly these four members. It serves BOTH
  * directions of the same resource: it is the body of
- * `GET /api/v1/portals/{portalId}/modules/{moduleId}/settings` and the body of the matching `PUT`.
+ * `GET /api/v1/modules/{moduleId}/settings` and the body of the matching `PUT`.
  *
  * MIGRATION: THE UNTYPED SETTINGS HASHTABLE BECOMES TWO REAL KEY/VALUE TABLES, AND THE SPLIT IS THE
  *   POINT. The legacy module class carried its settings as a single ambient `Hashtable` in which nothing
@@ -860,11 +776,12 @@ export interface UpdateModuleRequest {
  *   two maps into one would destroy the distinction the schema was migrated to express.
  *
  * MIGRATION: WHY THIS TYPE CARRIES A SUFFIX. Every other contract in this folder drops the backend `Dto`
- *   suffix, which would name this one `ModuleSettings`. That name is taken by the module-settings screen's
- *   own view model, declared at the end of this file and consumed by a screen owned elsewhere, so
- *   reusing it would silently rebind an existing import to a structurally unrelated shape. The suffix
- *   names what the type is - two property bags - and should be retired in favour of the plain name once
- *   that screen is rebuilt against the current contract.
+ *   suffix, which would name this one `ModuleSettings` - a name that reads as "the settings screen's
+ *   state" and would be mistaken for it on sight, when the two are structurally unrelated: this type is
+ *   two string maps, and the screen's state is a flat record of placement fields. The suffix names what
+ *   the type actually is - two property bags - and is retained for that reason rather than to avoid a
+ *   collision. The screen's own view model lives beside the screen, at
+ *   `features/module/module-settings/module-settings.view-model.ts`.
  */
 export interface ModuleSettingsBag {
   /**
@@ -1040,7 +957,7 @@ export interface ModuleDefinition {
 }
 
 /**
- * The body of `POST /api/v1/portals/{portalId}/modules/{moduleId}/export`.
+ * The body of `POST /api/v1/modules/{moduleId}/export`.
  *
  * Mirrors `Dtos/Module/ModuleExportRequest.cs`, which carries exactly these two members. The module is
  * named by the route rather than by the body.
@@ -1060,7 +977,7 @@ export interface ModuleExportRequest {
    *   `string | null` because the contract it mirrors is nullable and rejects a blank value at validation
    *   rather than at binding - which yields a field-level message instead of a malformed-body error.
    */
-  fileName: string | null;
+  readonly fileName: string | null;
 
   /**
    * The portal-relative folder the caller intends the document for, or `null` when it has none.
@@ -1069,11 +986,11 @@ export interface ModuleExportRequest {
    * picker, and is not used to store anything - no path is resolved from it. Sending it changes nothing;
    * it exists so a caller migrating from the legacy screen is not forced to discard the value.
    */
-  folder: string | null;
+  readonly folder: string | null;
 }
 
 /**
- * The body of `POST /api/v1/portals/{portalId}/modules/import`.
+ * The body of `POST /api/v1/modules/import`.
  *
  * Mirrors `Dtos/Module/ModuleImportRequest.cs`, which carries exactly these four members. Note that the
  * module is named by the BODY here rather than by the route, which is why `moduleId` appears below while
@@ -1093,7 +1010,7 @@ export interface ModuleImportRequest {
    *   zero; nullability is what lets the server reject the omission instead of silently importing into the
    *   wrong module. A caller must send a number - `null` exists to be refused, not to be sent.
    */
-  moduleId: number | null;
+  readonly moduleId: number | null;
 
   /**
    * The exported document to load, as text.
@@ -1101,14 +1018,14 @@ export interface ModuleImportRequest {
    * Effectively mandatory: a blank value is refused. The module's own portability behaviour interprets
    * what the document holds; this contract carries it verbatim and makes no claim about its format.
    */
-  content: string | null;
+  readonly content: string | null;
 
   /**
    * The portal-relative folder the document came from, or `null` when the caller has none.
    *
    * ACCEPTED AND DELIBERATELY UNUSED, exactly as on the export contract: it is resolved against nothing.
    */
-  folder: string | null;
+  readonly folder: string | null;
 
   /**
    * The name of the document the content came from, or `null` when the caller has none.
@@ -1117,91 +1034,5 @@ export interface ModuleImportRequest {
    * screen the equivalent value was load-bearing because the server read the file itself; here the content
    * arrives in the body, so the name is descriptive only.
    */
-  fileName: string | null;
-}
-
-/**
- * The state the module-settings screen renders and edits.
- *
- * MIGRATION: THIS IS A SCREEN VIEW MODEL AND NOT THE MIRROR OF ANY SINGLE CONTRACT - read that before
- *   using it. It is retained under its established name because the module-settings screen, which is owned
- *   elsewhere, imports it; rebinding the name would silently change the meaning of an existing import. It
- *   is NOT the mirror of `Dtos/Module/ModuleSettingsDto.cs` - that contract is the key/value
- *   {@link ModuleSettingsBag} - and it is not the mirror of `Dtos/Module/ModuleDetailDto.cs` either:
- *   nineteen of its members correspond to {@link ModuleDetail} members, and six do not appear on any
- *   current module contract at all.
- *
- * MIGRATION: THE SIX MEMBERS WITH NO WIRE COUNTERPART are `paneName`, `alignment`, `color`, `border`,
- *   `displayPrint` and `displaySyndicate`. Each exists as a mapped column on the domain placement entity
- *   and each was editable on the legacy screen, but none is projected onto the module read contract, so no
- *   endpoint supplies a value for it. The same projection gap is recorded on the corresponding members of
- *   {@link UpdateModuleRequest}. They are kept here rather than deleted so the gap stays visible at the
- *   boundary and the screen that depends on them keeps compiling; the corrective work is a backend
- *   projection change, not a frontend one.
- *
- * MIGRATION: THIS TYPE ALSO CARRIES FOUR MEMBERS WHOSE NULLABILITY IS LOOSER THAN THE READ CONTRACT'S -
- *   `cacheTime` and `inheritViewPermissions` are nullable here and non-nullable on {@link ModuleDetail},
- *   and `friendlyName` is non-nullable here and nullable there. That is a second, quieter symptom of the
- *   same drift. New code should consume {@link ModuleDetail}, whose nullability is the contract's; this
- *   type should be retired when the screen is rebuilt against it.
- *
- * @deprecated Prefer {@link ModuleDetail} for the module read contract and {@link ModuleSettingsBag} for
- *   the stored settings resource. Retained for the module-settings screen only.
- */
-export interface ModuleSettings {
-  /** The module's identifier. Zero is a legal value: `dbo.Modules.ModuleID` is `IDENTITY(0,1)`. */
-  readonly moduleId: number;
-  /** This placement's identifier, from `dbo.TabModules.TabModuleID`. */
-  readonly tabModuleId: number;
-  /** The page this placement sits on. */
-  readonly tabId: number;
-  /** The owning tenant, or `null` when the module is host-owned. */
-  readonly portalId: number | null;
-  /** Which definition the module instantiates. Fixed at creation and never editable. */
-  readonly moduleDefId: number;
-  /** The definition's display name, shown read-only. Empty when the name could not be resolved. */
-  readonly friendlyName: string;
-  /** The placement's heading, or `null` to take the definition's name. */
-  readonly moduleTitle: string | null;
-  /** Which pane of the page's layout the placement occupies. No wire counterpart; see the notes above. */
-  readonly paneName: string;
-  /** The placement's position within its pane. */
-  readonly moduleOrder: number;
-  /** Whether the module appears on every page of the tenant. */
-  readonly allTabs: boolean;
-  /** Whether the module is in the recycle bin. */
-  readonly isDeleted: boolean;
-  /** Whether view permissions come from the page rather than from the module. */
-  readonly inheritViewPermissions: boolean | null;
-  /** Markup rendered above the module's content, or `null` for none. */
-  readonly header: string | null;
-  /** Markup rendered below the module's content, or `null` for none. */
-  readonly footer: string | null;
-  /** The instant the module becomes visible, as an ISO 8601 string, or `null` for no start restriction. */
-  readonly startDate: string | null;
-  /** The instant the module stops being visible, as an ISO 8601 string, or `null` for no end restriction. */
-  readonly endDate: string | null;
-  /**
-   * How long this placement's output may be cached, in seconds. Zero disables caching.
-   *
-   * Never conflated with {@link ModuleDefinition.defaultCacheTime}, which is the definition-level default
-   * and a separate fact.
-   */
-  readonly cacheTime: number | null;
-  /** The placement's icon, or `null` for none. */
-  readonly iconFile: string | null;
-  /** The placement's alignment. No wire counterpart; see the notes above. */
-  readonly alignment: string | null;
-  /** The placement's recorded colour, an opaque value. No wire counterpart; see the notes above. */
-  readonly color: string | null;
-  /** The placement's border flag: one digit, or `null`. No wire counterpart; see the notes above. */
-  readonly border: string | null;
-  /** How the placement renders. */
-  readonly visibility: ModuleVisibility;
-  /** Whether the placement shows its container chrome. */
-  readonly displayTitle: boolean;
-  /** Whether the placement offers a print affordance. No wire counterpart; see the notes above. */
-  readonly displayPrint: boolean;
-  /** Whether the placement offers a syndication affordance. No wire counterpart; see the notes above. */
-  readonly displaySyndicate: boolean;
+  readonly fileName: string | null;
 }

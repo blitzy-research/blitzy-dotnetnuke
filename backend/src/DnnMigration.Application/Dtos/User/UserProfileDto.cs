@@ -10,14 +10,13 @@ namespace DnnMigration.Application.Dtos.User;
 /// WHY THERE ARE NO NAMED FIELDS: the nineteen public properties on the legacy
 /// <c>DotNetNuke.Entities.Users.UserProfile</c>
 /// (<c>Library/Components/Users/Profile/UserProfile.vb</c>) are not columns. Fifteen of them
-/// (L103-L461) are one-line accessors of the form <c>Return GetPropertyValue(cSomeName)</c>,
-/// and <c>GetPropertyValue</c> (L507-L517) resolves that name against a collection of portal
-/// property definitions - so the accessor names are seed data, not schema. Two measurements
-/// settle it: the seeded vocabulary is eighteen name constants (L46-L71), so three seeded
-/// names have no accessor at all; and an administrator may add, rename or remove a profile
-/// property at any time, at which point a fixed-field contract is simply wrong. The legacy
-/// screen agrees - <c>Website/admin/Users/Profile.ascx</c> declares a title row, one dynamic
-/// property editor and a save button, with no per-field control in the markup.
+/// (L103-L461) are one-line accessors of the form <c>Return GetPropertyValue(cSomeName)</c>, and
+/// <c>GetPropertyValue</c> (L507-L517) resolves that name against a collection of portal property
+/// definitions, so the accessor names are seed data rather than schema - the seeded vocabulary is
+/// eighteen name constants (L46-L71), three of which have no accessor at all. Decisively, an
+/// administrator may add, rename or remove a profile property at any time, at which point a
+/// fixed-field contract is simply wrong. The legacy screen agrees: profile administration renders
+/// one dynamic property editor with no per-field control in its markup.
 /// </para>
 /// <para>
 /// This type is inert: no behaviour, no validation and no persistence concern. Rules that
@@ -28,13 +27,12 @@ namespace DnnMigration.Application.Dtos.User;
 /// </remarks>
 public sealed class UserProfileDto
 {
-    // DELIBERATELY ABSENT, so a later reader does not restore them believing they were
-    // overlooked: the computed full-name concatenation (UserProfile.vb:L203-L207), because a
-    // data carrier computes nothing and both of its inputs are definition-keyed values an
-    // administrator may remove; the change-tracking flag (L237-L241) and the hydration flag
-    // (L271-L278), both of which the object-relational materialiser makes redundant; and the
-    // pre-generics collection wrapper the legacy collection member was typed as (L329-L336),
-    // whose purpose the Properties member below serves through a read-only generic interface.
+    // DELIBERATELY ABSENT, so a later reader does not restore them believing they were overlooked:
+    // the computed full-name concatenation, because a data carrier computes nothing and both of its
+    // inputs are definition-keyed values an administrator may remove; the change-tracking and
+    // hydration flags, which the object-relational materialiser makes redundant; and the
+    // pre-generics collection wrapper, whose purpose the Properties member below serves through a
+    // read-only generic interface.
 
     /// <summary>
     /// Identifier of the user whose profile this is, from <c>UserProfile.UserID</c>
@@ -56,18 +54,17 @@ public sealed class UserProfileDto
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Ordered rather than keyed, deliberately: a dictionary keyed by definition would suit
-    /// lookup but would discard the display order the embedded definition's view-order member
-    /// establishes, and the dynamic editor this collection feeds groups properties into
-    /// sections and presents them in that order. A consumer wanting keyed access can build it
-    /// from the definition identifier on each entry.
+    /// Ordered rather than keyed, deliberately: a dictionary keyed by definition would suit lookup
+    /// but would discard the display order the embedded definition's view-order member establishes,
+    /// and the dynamic editor this collection feeds groups properties into sections and presents them
+    /// in that order. A consumer wanting keyed access can build it from the definition identifier on
+    /// each entry.
     /// </para>
     /// <para>
-    /// A missing entry and an entry holding an empty value are not the same thing. The legacy
-    /// collection is seeded from the portal's property definitions before any stored value is
-    /// applied, so a freshly initialised profile holds an entry for every defined property. A
-    /// consumer must therefore not read the absence of an entry as an empty value: it means the
-    /// property was not part of the set that was projected.
+    /// A missing entry and an entry holding an empty value are NOT the same thing. The legacy
+    /// collection is seeded from the portal's property definitions before any stored value is applied,
+    /// so a freshly initialised profile holds an entry for every defined property; the absence of an
+    /// entry therefore means the property was not part of the set that was projected.
     /// </para>
     /// </remarks>
     public IReadOnlyList<UserProfileValueDto> Properties { get; set; }
@@ -86,10 +83,10 @@ public sealed class UserProfileDto
 /// </summary>
 /// <remarks>
 /// <para>
-/// Co-located with <see cref="UserProfileDto"/> rather than given a file of its own, because it
-/// has no meaning apart from the contract that carries it and is never served on its own. Maps
-/// to one row of the <c>UserProfile</c> table (created at 03.02.03.SqlDataProvider L1364 in the
-/// templated naming form), whose terminal shape is:
+/// Co-located with <see cref="UserProfileDto"/> rather than given a file of its own, because it has
+/// no meaning apart from the contract that carries it and is never served alone. Maps to one row of
+/// the <c>UserProfile</c> table (created at 03.02.03.SqlDataProvider L1364 in the templated naming
+/// form), whose terminal shape is:
 /// </para>
 /// <code>
 /// ProfileID             int IDENTITY(1,1) NOT NULL   -- primary key, non-clustered
@@ -126,12 +123,12 @@ public sealed class UserProfileValueDto
     /// </summary>
     /// <remarks>
     /// <para>
-    /// DO NOT CAP THIS MEMBER AT 3,750 CHARACTERS. That figure is the width of the narrower of
-    /// the two storage columns, whereas the legacy write procedure declares its value parameter
-    /// as an unbounded text type, so the write path accepted values of any length. A validation
-    /// rule capping input at the storage threshold would reject input the legacy application
-    /// accepted. Any length rule belongs to the validation layer and must come from the
-    /// property's own definition, whose length member is portal-configurable data.
+    /// DO NOT CAP THIS MEMBER AT 3,750 CHARACTERS. That figure is the width of the narrower of the
+    /// two storage columns, whereas the legacy write procedure declares its value parameter as an
+    /// unbounded text type, so the write path accepted values of any length and a rule capping input
+    /// at the storage threshold would reject input the legacy application accepted. Any length rule
+    /// belongs to the validation layer and must come from the property's own definition, whose length
+    /// member is portal-configurable data.
     /// </para>
     /// <para>
     /// No serialisation option that omits empty or default values may be applied to this
@@ -142,22 +139,18 @@ public sealed class UserProfileValueDto
     /// </remarks>
     // MIGRATION: two storage columns, one logical value - and the legacy READ contract already
     // published one. The schema splits a value across PropertyValue (nvarchar(3750)) and
-    // PropertyText (ntext); they are mutually exclusive, and the write procedure chooses
-    // between them by DATALENGTH(@PropertyValue) > 7500, which is 3,750 UTF-16 characters -
-    // exactly the ceiling of the narrower column. The read procedure coalesces them back into
-    // one projected column that it names PropertyValue, and the narrower column never appears
-    // in the read projection at all. Publishing two members here would therefore be a
-    // divergence FROM the legacy behaviour, and would leak a storage-tier decision that
-    // belongs to the repository.
+    // PropertyText (ntext); they are mutually exclusive, the write procedure chooses between them by
+    // DATALENGTH(@PropertyValue) > 7500 (3,750 UTF-16 characters, the narrower column's ceiling),
+    // and the read procedure coalesces them into one projected column named PropertyValue.
+    // Publishing two members here would therefore be a divergence FROM the legacy behaviour, and
+    // would leak a storage-tier decision that belongs to the repository.
     //
-    // MIGRATION: the empty-string sentinel is preserved rather than translated to null, because
-    // it is externally observable in a legacy rule. Null.vb:L70-L74 defines the null string as
-    // "", and ProfileController.vb branches on it to decide whether a required property has
-    // been filled in - "If propertyDefinition.Required And propertyDefinition.PropertyValue =
-    // Null.NullString". The legacy value getter likewise initialises its result to that
-    // sentinel, so an unresolved property yields "" and never a null. Translating it here would
-    // silently change the outcome of the required-property check the validation layer must
-    // reproduce.
+    // MIGRATION: the empty-string sentinel is preserved rather than translated to null, because it
+    // is externally observable in a legacy rule: Null.vb:L70-L74 defines the null string as "", and
+    // ProfileController.vb branches on it to decide whether a required property has been filled in.
+    // The legacy value getter likewise initialises its result to that sentinel, so an unresolved
+    // property yields "" and never a null, and translating it here would silently change the outcome
+    // of the required-property check the validation layer must reproduce.
     public string PropertyValue { get; set; } = string.Empty;
 
     /// <summary>
@@ -198,15 +191,14 @@ public sealed class UserProfileValueDto
     /// server's local clock; attaching an offset here would assert a precision the stored data
     /// does not carry.
     /// </remarks>
-    // MIGRATION: nullable here despite the column being NOT NULL, because the legacy null
-    // contract does not use SQL nulls for dates - Null.vb defines its null date as
-    // DateTime.MinValue, so a row that was never really stamped carries 0001-01-01. Publishing
-    // that verbatim would give a client a value that looks like a real timestamp and sorts
-    // before every genuine one. The sentinel is translated to null on the way out and back on
-    // the way in, and that translation belongs to the mapper: no code on this side may compare
-    // this member against the minimum date. Note the deliberate asymmetry with the value member
-    // above, which keeps its empty-string sentinel - that sentinel is observable in a legacy
-    // rule, whereas the minimum date is observable only as a rendering artefact.
+    // MIGRATION: nullable despite the column being NOT NULL, because the legacy null contract does
+    // not use SQL nulls for dates - Null.vb defines its null date as DateTime.MinValue, so a row that
+    // was never really stamped carries 0001-01-01, which published verbatim would look like a real
+    // timestamp and sort before every genuine one. The sentinel is translated to null on the way out
+    // and back on the way in, and that translation belongs to the mapper: no code on this side may
+    // compare this member against the minimum date. The asymmetry with the value member above is
+    // deliberate - that sentinel is observable in a legacy rule, whereas the minimum date is
+    // observable only as a rendering artefact.
     public DateTime? LastUpdatedDate { get; set; }
 
     /// <summary>
@@ -220,14 +212,14 @@ public sealed class UserProfileValueDto
     /// from a single response instead of a second call plus a client-side join.
     /// </para>
     /// <para>
-    /// Non-nullable, and defaulted to an empty instance. That is schema-faithful rather than
-    /// merely convenient: the definition foreign key is <c>NOT NULL</c> with cascade delete, so
-    /// a stored profile value cannot exist without its definition. Read-only from this
-    /// contract's point of view - definitions are portal-scoped metadata administered through
-    /// their own endpoint, so a value submitted here does not update the definition it carries,
-    /// and the definition identifier above is what a write keys on. The required flag and
-    /// validation expression carried here are data rather than constraints on this contract,
-    /// which is what lets a portal change a rule without a redeployment.
+    /// Non-nullable, and defaulted to an empty instance - schema-faithful rather than merely
+    /// convenient, because the definition foreign key is <c>NOT NULL</c> with cascade delete, so a
+    /// stored profile value cannot exist without its definition. Read-only from this contract's point
+    /// of view: definitions are portal-scoped metadata administered through their own endpoint, so a
+    /// value submitted here does not update the definition it carries, and the definition identifier
+    /// above is what a write keys on. The required flag and validation expression carried here are
+    /// data rather than constraints on this contract, which is what lets a portal change a rule
+    /// without a redeployment.
     /// </para>
     /// </remarks>
     // MIGRATION: the legacy definition class carried a per-user value slot of its own, which

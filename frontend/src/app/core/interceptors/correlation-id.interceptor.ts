@@ -28,11 +28,14 @@ import type { HttpInterceptorFn } from '@angular/common/http';
  *
  * - The response header is the dependable carrier. It is registered before the
  *   server pipeline continues, so it survives every outcome.
- * - `ProblemDetails.traceId` carries this same value only sometimes. The server
- *   derives that member from the ambient trace identifier first and falls back to
- *   the request identifier - which the middleware aligns to this value - only when
- *   no ambient trace is running. So `traceId` matching this header is the common
- *   case, not a guarantee; the header is.
+ * - `ProblemDetails.correlationId` carries this exact value, and it is the member to
+ *   quote in a support report. The server resolves it from the same place it resolves
+ *   the header, so the two agree by construction.
+ * - `ProblemDetails.traceId` is a DIFFERENT identifier and must not be quoted in its
+ *   place. The server derives that member from the ambient trace identifier first and
+ *   falls back to the request identifier - which the middleware aligns to this value -
+ *   only when no ambient trace is running, so it matches this header by coincidence
+ *   rather than by contract.
  *
  * The success-response envelope carries no correlation, trace or request member of
  * its own, so the header is the only place the identifier appears on a successful
@@ -259,9 +262,10 @@ export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
   // logging scope, which is what joins a browser-side observation to the server
   // log lines for the same request. The legacy stack had neither a machine-readable
   // error body to carry such a value nor structured logs to correlate. On an error
-  // response the value also commonly surfaces as `ProblemDetails.traceId`; the
-  // success envelope has no correlation, trace or request member at all, so the
-  // header is the only carrier that is always present.
+  // response the value is also published in the body as `ProblemDetails.correlationId`,
+  // which is what the error interceptor quotes; the success envelope has no
+  // correlation, trace or request member at all, so on a successful response the
+  // header is the only carrier.
 
   // MIGRATION: a caller-supplied header is preserved rather than replaced, which is
   // a deliberate divergence from the simpler "always stamp" reading. Overwriting it

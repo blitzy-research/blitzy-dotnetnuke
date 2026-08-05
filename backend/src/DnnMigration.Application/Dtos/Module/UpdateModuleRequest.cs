@@ -1,9 +1,10 @@
+using System.Text.Json.Serialization;
 using DnnMigration.Domain.Enums;
 
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// The state submitted to <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}</c> to revise a module and the placement it
+/// The state submitted to <c>PUT /api/v1/modules/{moduleId}</c> to revise a module and the placement it
 /// is addressed through. A boundary contract and nothing more: no navigation property, no tracked
 /// state, no behaviour and no domain entity, in either direction.
 /// </summary>
@@ -21,7 +22,7 @@ namespace DnnMigration.Application.Dtos.Module;
 /// </para>
 /// <para>
 /// THE SIBLING SETTINGS ENDPOINT IS DELIBERATELY DIFFERENT AND MUST NOT BE HARMONISED WITH THIS
-/// ONE. <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c> carries <see cref="ModuleSettingsDto"/> and is an
+/// ONE. <c>PUT /api/v1/modules/{moduleId}/settings</c> carries <see cref="ModuleSettingsDto"/> and is an
 /// UPSERT-PER-KEY, because the two legacy settings writers were measured to be plain upserts with
 /// no removal branch at all. This endpoint replaces; that one merges. The divergence is
 /// intentional, and anyone tempted to align them should change neither.
@@ -235,7 +236,8 @@ namespace DnnMigration.Application.Dtos.Module;
 //   loaded a per-definition settings control and called back into it on save, per 5.16. (i)
 //   EXPLICIT MOVE-OR-COPY TARGETS are excluded: the move is expressed by changing TabId and the
 //   copy by AllTabs, and the service derives the operations from the delta, so adding explicit
-//   targets would duplicate intent and create contradictory-input states. (j) Any TAB SHAPE is
+//   targets would duplicate intent and create contradictory-input states. The existing placement
+//   remains the source of its pane, appearance and placement-scoped settings. (j) Any TAB SHAPE is
 //   excluded - no page name and no nested page object; pages are a lookup resolved from the page
 //   list contract. (k) PAGING METADATA is excluded, this being a single-resource write. (l) AUDIT
 //   AND ACTING-USER FIELDS are excluded: measured across the eighty-eight scripts, neither table
@@ -252,10 +254,10 @@ namespace DnnMigration.Application.Dtos.Module;
 //   data rather than absence. (q) No CONCURRENCY TOKEN is invented, per 5.17.
 public sealed class UpdateModuleRequest
 {
-    // --- Placement target: changing this MOVES the module ---
+    // --- Placement target: this SELECTS the placement being updated ---
 
     /// <summary>
-    /// The page this placement is on. Required.
+    /// The page this placement should occupy. Required.
     /// </summary>
     /// <remarks>
     /// This is the placement key, and in the terminal schema it lives on the placement table only:
@@ -268,15 +270,19 @@ public sealed class UpdateModuleRequest
     /// A presence check must be expressed as "this page exists and belongs to the portal", never as
     /// a numeric floor, and never as a comparison against -1.
     /// </remarks>
-    // MIGRATION: 5.11 - CHANGING THIS MEMBER MOVES THE MODULE, AND THE MOVE IS DERIVED FROM THE
-    //   DELTA RATHER THAN COMMANDED EXPLICITLY. The legacy save ended with an ordered sequence of
-    //   side effects: it moved the placement when the selected page differed from the current one,
-    //   copied the module across every content page when the all-pages flag had just been set,
-    //   withdrew it from those pages when the flag had just been cleared, and finally called back
-    //   into the dynamically loaded settings control. The target reproduces the first three by
-    //   comparing the stored state against this request inside the module service - which is
-    //   precisely why no explicit move-or-copy target member exists - and the fourth moved to the
-    //   separate settings endpoint, per 5.16.
+    // MIGRATION: 5.11 - THIS MEMBER SELECTS THE PLACEMENT AND DOES NOT MOVE IT, WHICH IS A
+    //   DELIBERATE REDUCTION AGAINST THE LEGACY SCREEN. The legacy save ended with an ordered
+    //   sequence of side effects: it moved the placement when the selected page differed from the
+    //   current one, copied the module across every content page when the all-pages flag had just
+    //   been set, withdrew it from those pages when the flag had just been cleared, and finally
+    //   called back into the dynamically loaded settings control. The target reproduces the second
+    //   and third inside the module service. It does NOT reproduce the move: this contract carries
+    //   one page identifier, and a move needs two - the placement being edited and the page it
+    //   should end up on - so a delta cannot express one without the service guessing which of the
+    //   two the caller meant. A module not placed on the named page is therefore refused with
+    //   module.placement_not_found rather than silently amending a different placement, and a
+    //   module placed on several pages is edited one placement at a time, by naming its page. The
+    //   fourth side effect moved to the separate settings endpoint, per 5.16.
     //
     // MIGRATION: 5.12 - THE LEGACY UPDATE COULD SKIP THE PLACEMENT WRITE ENTIRELY, AND THE TARGET
     //   CANNOT. The legacy path guarded the WHOLE second half - the placement write, the ordering
@@ -302,6 +308,7 @@ public sealed class UpdateModuleRequest
     //   every portal. Separately, -1 was an "any page" WILDCARD in the legacy query surface - the
     //   all-pages lookup was the single-page lookup passed the integer sentinel - so -1 there meant
     //   "match every page" rather than "no page". Neither value may ever be read as absence.
+    [JsonRequired]
     public int TabId { get; set; }
 
     // --- Module scope: identical on every page the module appears on ---

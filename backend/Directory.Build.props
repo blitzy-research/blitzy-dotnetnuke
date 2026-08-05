@@ -17,6 +17,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+
+    <!--
+      The package graph is part of the reviewed source, not a moving result of
+      whichever transitive versions happen to satisfy the direct references on
+      restore day. Every project therefore owns a packages.lock.json, including
+      Domain (whose empty graph is still an asserted graph), and ordinary restore
+      runs in locked mode. Updating a dependency is a two-step, review-visible
+      operation: change the manifest, then regenerate intentionally with the
+      force-evaluate option and RestoreLockedMode set to false. A restore that
+      would otherwise drift fails with NU1004 instead.
+    -->
 
     <!--
       Exactly two suppressions on top of whatever the SDK and the project already

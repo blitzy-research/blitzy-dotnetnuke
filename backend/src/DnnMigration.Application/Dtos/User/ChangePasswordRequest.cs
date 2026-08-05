@@ -2,7 +2,7 @@ namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
 /// Inbound contract for
-/// <c>POST /api/v1/portals/{portalId}/users/{userId}/password</c>. Carries every
+/// <c>POST /api/v1/users/{userId}/password</c>. Carries every
 /// credential mutation the legacy DotNetNuke password-management screen offered,
 /// and nothing else.
 /// </summary>
@@ -14,7 +14,7 @@ namespace DnnMigration.Application.Dtos.User;
 /// interpolated into an exception message or a validation message. Two obligations
 /// follow for the API layer, and they belong there rather than here: the
 /// request-logging middleware must exclude the body of
-/// <c>POST /api/v1/portals/{portalId}/users/{userId}/password</c> from structured
+/// <c>POST /api/v1/users/{userId}/password</c> from structured
 /// logging, because the
 /// non-functional requirement is structured logging that excludes sensitive data;
 /// and the rate-limiting configuration must cover this route alongside the
@@ -310,19 +310,13 @@ namespace DnnMigration.Application.Dtos.User;
 /// reversible: the membership provider is registered with an encrypted password
 /// format and password retrieval enabled, and the key that decrypts every stored
 /// password is committed to the legacy configuration file in the clear. The target
-/// replaces that with one-way password hashing, and THE TRANSITION FOR EXISTING
-/// CREDENTIALS IS AN ADMINISTRATIVE RESET, AND NOTHING ELSE. A re-hash on the first
-/// successful sign-in - the intent recorded in AAP section 0.7.5.5 - cannot execute
-/// here: no component in this solution verifies a credential held under the legacy
-/// reversible scheme, and that same section forbids building one, so there is no
-/// verification from which a lazy upgrade could follow. Retrieval is NOT carried
-/// forward either: the legacy entry point <c>UserController.GetPassword</c> (L433) has
-/// no target equivalent, by design, and no member of this folder asks for a password
-/// back. Reset IS carried forward, because the same configuration enables password
-/// reset, and the reset flow this type serves is therefore the SOLE migration path for
-/// a pre-existing account rather than a fallback from one - which makes this request
-/// shape load-bearing for the migration rather than incidental to it. Do not conflate
-/// the two flags. One measured caveat: the legacy
+/// replaces that with one-way password hashing. During the explicitly enabled
+/// migration window, the authentication service can verify a bounded legacy
+/// representation and immediately replace it with BCrypt. Reset is carried forward as
+/// the fallback for every row that cannot take that path. Retrieval is NOT carried
+/// forward: the legacy entry point <c>UserController.GetPassword</c> (L433) has no
+/// target equivalent, by design, and no member of this folder asks for a password
+/// back. Do not conflate reset with retrieval. One measured caveat: the legacy
 /// <c>UserController.ResetPassword</c> (L906) is structurally identical to the
 /// retrieval method - both assign to the user's password member and return it as a
 /// string (L915) - so the legacy reset returns generated plaintext to its caller. The
@@ -351,8 +345,8 @@ public sealed class ChangePasswordRequest
 
     /// <summary>
     /// The value of <see cref="Operation"/> that selects the reset-password flow: the
-    /// legacy <c>pnlReset</c> panel, and the sole migration path for a credential stored
-    /// under the legacy reversible scheme, which nothing in this solution can verify.
+    /// legacy <c>pnlReset</c> panel, and the fallback migration path after the bounded
+    /// first-login window or when the owner no longer knows the credential.
     /// </summary>
     /// <remarks>
     /// A request carrying this value must satisfy the portal-administrator policy, which

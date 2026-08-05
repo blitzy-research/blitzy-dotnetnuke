@@ -83,11 +83,10 @@
 //  `..` -> features/user/, `../..` -> features/, `../../..` -> app/,
 //  `../../../..` -> src/. Three levels resolves to the non-existent
 //  src/app/styles/mixins and fails the build with "Can't find stylesheet to
-//  import." Both outcomes were confirmed by compiling a probe at this exact path
-//  rather than inferred, and the verified path table in the header of
-//  src/styles/_mixins.scss publishes the same four-level form for a feature
-//  screen. Sass modules are per-file and never ambient, so this file must load
-//  the partial itself even though the global stylesheet also loads it.
+//  import." The path table in the header of src/styles/_mixins.scss publishes the
+//  same four-level form for a feature screen. Sass modules are per-file and never
+//  ambient, so this file must load the partial itself even though the global
+//  stylesheet also loads it.
 // =============================================================================
 
 @use '../../../../styles/mixins' as mx;
@@ -253,38 +252,24 @@
 //  The inline-level flow is deliberate even though a reader inspecting this button
 //  in a browser will see `display: flex` rather than `inline-flex`. That is not a
 //  discrepancy: an inline-level display on a flex OR grid item is blockified, so
-//  inside the group above the two values are the same computed result. Declaring
-//  the inline form is the more robust of two equivalents, because it is also
-//  correct for a single action rendered outside the group, where the block form
-//  would take the full width of its cell. Measured in a browser rather than
-//  assumed — the same substitution was confirmed on the form toggle below, which
-//  is blockified as a grid item of the host instead of as a flex item.
+//  inside the group above the two values compute the same. Declaring the inline
+//  form is the more robust of two equivalents, because it is also correct for a
+//  single action rendered outside the group, where the block form would take the
+//  full width of its cell.
 //
-//  The flag below is written as a block comment because that is the form the
-//  design-system convention specifies for a review annotation, and because it
-//  reads as a flag rather than as narration. It is a SOURCE annotation and nothing
-//  more: the component-style pipeline was checked and it strips every CSS comment
-//  in both the production and the development configuration, so no annotation of
-//  either form reaches the emitted stylesheet. It is nonetheless deliberately kept
-//  ASCII-only, which is a separate and verified concern — Sass prepends a
-//  `@charset` rule as soon as a PRESERVED comment carries a non-ASCII character,
-//  and that rule is inert inside a component style element and is emitted by no
-//  sibling component stylesheet in this workspace.
-//
-/* BLITZY [A11Y]: the hit-area floor is the eighth spacing step, which resolves to
-   forty pixels, short of the forty-four the WCAG 2.5.5 target-size criterion
-   recommends. The shortfall is a hard consequence of two binding constraints
-   rather than an oversight. The reference design is smaller still: the legacy
-   affordance was a sixteen-pixel image inside a cell padded by four, so roughly
-   twenty-four pixels square, and the design source governs the rendered size.
-   Reaching the recommendation would need either a literal (barred, since every
-   value must resolve to a token) or a new custom property, which cannot be
-   declared here because src/styles/_tokens.scss owns the workspace's only
-   document-root block. The spacing scale tops out at --space-8, so this is the
-   largest compliant value available, and it still enlarges the legacy target by
-   around two thirds. Implemented at the nearest token and flagged for designer
-   review; the correct fix is a target-size token added to the shared
-   vocabulary. */
+//  MIGRATION - DOCUMENTED DIVERGENCE: the hit-area floor is the eighth spacing
+//  step, which resolves to forty pixels, short of the forty-four the WCAG 2.5.5
+//  target-size criterion recommends. The shortfall follows from two binding
+//  constraints rather than an oversight. The reference design is smaller still -
+//  the legacy affordance was a sixteen-pixel image inside a cell padded by four,
+//  roughly twenty-four pixels square - and the design source governs the rendered
+//  size. Reaching the recommendation would need either a literal, which is barred
+//  because every value must resolve to a token, or a new custom property, which
+//  cannot be declared here because src/styles/_tokens.scss owns the workspace's
+//  only document-root block. The spacing scale tops out at --space-8, so this is
+//  the largest compliant value available and it still enlarges the legacy target by
+//  around two thirds. The complete fix is a target-size token added to the shared
+//  vocabulary.
 .profile-definitions__row-action {
   display: inline-flex;
   align-items: center;

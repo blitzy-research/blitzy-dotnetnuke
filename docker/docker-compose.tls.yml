@@ -1,0 +1,91 @@
+# =============================================================================
+# TLS overlay for the DnnMigration topology.
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.tls.yml \
+#                  --env-file docker/.env up -d
+#
+# WHY AN OVERLAY AND NOT AN EDIT. docker/docker-compose.yml is the topology the
+# migration plan supplies verbatim (AAP 0.9.3) and the one the end-to-end
+# validation gate drives: it publishes the API on 8080 so the gate can probe
+# `http://localhost:8080/health` directly, and the front end on 4200 over plain
+# HTTP. That topology is correct for validation and is NOT the production
+# posture. This overlay converts it into the production posture without editing
+# the file the plan freezes, and every difference is one of the four the review
+# asked for:
+#
+#   1. TLS is terminated at the front end. docker/nginx.tls.conf is mounted into
+#      the include directory nginx.conf already scans, and the certificate pair
+#      is mounted read-only beside it.
+#   2. Port 80 keeps listening (the container health probe needs it) and browser
+#      traffic for the deployment's own server name is redirected to 443 by the
+#      mounted block.
+#   3. The API's published port is WITHDRAWN, so the API is reachable only from
+#      the compose network - the front end proxies to it by service name. This
+#      is what "keep the API on an internal network" means here, and it is
+#      exactly why it cannot live in the base file: withdrawing the port would
+#      make the plan's own gate command fail.
+#   4. Forwarded-header trust is switched on and scoped to the compose network,
+#      so the API honours X-Forwarded-Proto and X-Forwarded-For from this proxy
+#      and from nothing else. Without this the API cannot know a request arrived
+#      over TLS, and its rate limiter partitions every caller behind the proxy
+#      into one budget.
+#
+# WHAT THE DEPLOYMENT MUST SUPPLY (in docker/.env, see .env.example):
+#     TLS_CERTIFICATE_DIRECTORY  host directory holding fullchain.pem and
+#                                privkey.pem
+#     FRONTEND_ORIGIN            the https origin the SPA is served from, so the
+#                                API's cross-origin policy admits it
+# and the server_name inside docker/nginx.tls.conf.
+# =============================================================================
+version: '3.8'
+
+services:
+  api:
+    # Withdraws the published port declared in the base file, so Kestrel is reachable
+    # only on the internal network and no bearer credential can bypass the proxy by
+    # addressing it directly.
+    #
+    # MIGRATION: `ports: []` DOES NOT DO THIS, AND THIS FILE PREVIOUSLY CLAIMED IT DID.
+    #   The claim was that `ports` is a "last one wins" key and that an empty sequence
+    #   replaces the base sequence. Measured against the compose in use, list-valued
+    #   service keys MERGE by union, so an empty sequence contributes nothing and the
+    #   base file's 127.0.0.1:8080 publish survived the overlay untouched - the stated
+    #   security property simply did not hold, and nothing failed to say so. The
+    #   compose-spec `!reset` tag is what removes an inherited key; `!override` on the
+    #   front-end below is what REPLACES an inherited list rather than adding to it.
+    #   Both were verified by reading `docker compose config` for the overlaid project:
+    #   api publishes nothing, front end publishes 80 and 443 and not 4200, and the
+    #   base file on its own is unchanged.
+    ports: !reset []
+    environment:
+      # Redirect plain HTTP to HTTPS inside the API as well, so a request that
+      # somehow reaches Kestrel without traversing the proxy is refused rather
+      # than served. The health endpoint is exempt in the pipeline itself, so the
+      # container probe still succeeds over plain HTTP on the loopback address.
+      Https__RedirectEnabled: "true"
+      Https__Port: "443"
+      # Trusted-proxy configuration is deliberately NOT restated here. The base
+      # compose file already names the front-end container's exact address in
+      # Proxy__KnownProxies__0, which is the narrowest trust that works and the
+      # only one that is correct: the compose subnet also contains the network
+      # gateway, and a caller reaching the published API port directly is
+      # source-translated to that gateway - so trusting the subnet would trust a
+      # directly reachable caller as if it were the proxy.
+      # Host filtering: the names this API answers on. Replace with the
+      # deployment's own; the loopback entries keep the container probe working.
+      AllowedHosts: "dnn.example.com;localhost;127.0.0.1"
+      Cors__AllowedOrigins__0: ${FRONTEND_ORIGIN:-https://dnn.example.com}
+
+  frontend:
+    # !override REPLACES the base list - without the tag, 4200:80 from the base file
+    # would remain published alongside these two. See the note on the api service.
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes:
+      # The server block. nginx.conf loads /etc/nginx/tls/*.conf, so mounting it
+      # here is the whole activation step.
+      - ./nginx.tls.conf:/etc/nginx/tls/nginx.tls.conf:ro
+      # The certificate pair, in a directory the *.conf glob cannot match.
+      - ${TLS_CERTIFICATE_DIRECTORY:-./certificates}:/etc/nginx/tls/certificates:ro

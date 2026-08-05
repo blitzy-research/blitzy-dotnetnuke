@@ -1407,9 +1407,11 @@ public class RoleTests
         // request - reinterpreting one particular instant as "unbounded" in the very computation the
         // tenant-administration policy grants on.
         //
-        // Where absence is now recognised is the boundary, in both directions: RoleService reads a
-        // submitted marker as "no bound", and RoleRepository.AddUserRoleAsync/UpdateUserRoleAsync
-        // reproduce Null.GetNull before staging a row. Both are covered by their own tests.
+        // Where absence is now recognised is ONE boundary, and only one: RoleService reads a submitted
+        // marker as "no bound" before either assignment write is staged. The repository deliberately does
+        // NOT repeat the translation - it once did, which meant one rule with two implementations in two
+        // layers - so a marker reaching a write member is refused by the store rather than reinterpreted.
+        // Both facts are covered by their own tests.
         IClock clock = FixedClock();
 
         UserRole marked = new()

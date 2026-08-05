@@ -1,7 +1,7 @@
 // MIGRATION: this controller replaces the READ surface of the three legacy permission controllers and
 // nothing else. Measured against the source rather than estimated: PermissionController.vb is 72 lines
 // with 9 public members, ModulePermissionController.vb is 389 lines with 18, and
-// TabPermissionController.vb is 349 lines with 15 - 42 members, of which FOUR endpoints survive here.
+// TabPermissionController.vb is 349 lines with 15 - 42 members, of which TWO endpoints survive here.
 // The reduction is accounted for rather than trimmed by taste, and each of the five groups below names
 // where the behaviour went so that nothing looks lost when it is merely elsewhere.
 //
@@ -22,34 +22,12 @@
 // below may legitimately return their keys - READ and WRITE are the folder-scope keys - so only the
 // folder-path lookup disappears, not the data.
 //
-// MIGRATION: the five remaining legacy catalogue reads are ALL published here, across four actions.
-// PermissionController.vb:L30 (by identifier), :L34 (by module definition), :L38 (by module), :L47 (by
-// code and key) and :L51 (by page) each returned an untyped ArrayList - or, for L30, a single object -
-// hydrated by reflection through CBO.FillCollection. They map onto the actions below as follows: L34 and
-// L47 are the two composable filters on the catalogue listing, and L30, L38 and L51 are the three
-// identifying reads that follow it.
-//
-// MIGRATION: an earlier revision of this file omitted the module-scoped and page-scoped reads and
-// recorded, as its reason, that "a module or page identifier selects GRANTS rather than catalogue
-// definitions". That reason was wrong, and it is corrected here rather than quietly deleted, because the
-// omission it justified was a real gap in this API's read surface. The terminal procedure bodies were
-// measured directly: GetPermissionsByModuleID (04.05.03) is
-// "SELECT PermissionID, PermissionCode, ModuleDefID, PermissionKey, PermissionName FROM Permission
-// WHERE ModuleDefID = (SELECT ModuleDefID FROM Modules WHERE ModuleID = @ModuleID) OR PermissionCode =
-// 'SYSTEM_MODULE_DEFINITION'", and GetPermissionsByTabID (04.05.03) is the same projection over the same
-// table filtered on PermissionCode = 'SYSTEM_TAB'. Both select from the Permission CATALOGUE table, not
-// from a grant table, and both hydrate PermissionInfo - the catalogue type - which is why
-// PermissionController owns them at all rather than ModulePermissionController or
-// TabPermissionController. So the two reads always belonged here, and the parameter-to-result asymmetry
-// they carry - a module or page identifier in, catalogue definitions out - is the legacy shape and is
-// preserved rather than tidied away.
-//
-// MIGRATION: the page-scoped read IGNORES its own argument. The terminal body never references @TabID;
-// every page receives the identical SYSTEM_TAB catalogue. The parameter is nonetheless kept on the route
-// below, because the legacy signature declares it and because dropping it would make a caller believe
-// the answer is installation-wide when the legacy contract presented it as page-scoped and a later
-// product revision could make it so. The measured behaviour is recorded on the action itself so that
-// nobody reads the implementation as having lost a filter.
+// MIGRATION: the frozen public API publishes the unpaged catalogue and the by-identifier read only.
+// PermissionController.vb:L34 (by module definition) and :L47 (by code and key) remain the composable
+// query filters on the collection; L30 is the member read. The legacy module- and page-keyed catalogue
+// helpers still exist behind IPermissionService for the authorization/application seams that consume
+// them, but exposing `/permissions/modules/{id}` and `/permissions/tabs/{id}` would add public resource
+// identities the AAP does not authorize, so those child routes are deliberately absent.
 //
 // MIGRATION: permission EVALUATION is deliberately absent from this controller. Deciding whether a
 // caller holds a key happens in exactly one place - Infrastructure/Security/PermissionEvaluator.cs,
@@ -59,8 +37,10 @@
 // decision members therefore keep their real callers and lose only their HTTP exposure:
 // HasModulePermissionAsync and HasTabPermissionAsync are consumed by that authorisation handler,
 // GetEffectivePermissionKeysAsync by AuthService and JwtTokenService when access-token claims are
-// minted, and DeleteUserPermissionsAsync by UserService as part of the user-deletion cascade. Nothing
-// is orphaned by their absence here, and no probe endpoint reports one user's reach to another caller.
+// minted, and StageUserPermissionRemovalAsync - together with its post-commit eviction companion - by
+// UserService as part of the user-deletion cascade, which owns the single transaction that cascade
+// commits in. Nothing is orphaned by their absence here, and no probe endpoint reports one user's reach
+// to another caller.
 //
 // MIGRATION: reflection-based provider access is gone. Every legacy member reached its data through
 // DataProvider.Instance(), a reflection-instantiated singleton, and hydrated rows through the
@@ -73,6 +53,7 @@ using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Middleware;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
@@ -91,8 +72,8 @@ namespace DnnMigration.Api.Controllers;
 /// members, including the four that are deliberately not ported and the reason for each.
 /// </para>
 /// <para>
-/// <strong>Asks, never decides.</strong> The single action here poses a question to the application
-/// service and translates the answer into a status code. It applies no filtering, sorting, grouping or
+/// <strong>Asks, never decides.</strong> The two actions here pose questions to the application
+/// service and translate the answers into status codes. They apply no filtering, sorting, grouping or
 /// precedence of its own, so there is no rule expressed here that could drift out of step with the rule
 /// expressed in the evaluator.
 /// </para>
@@ -135,12 +116,6 @@ namespace DnnMigration.Api.Controllers;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/permissions")]
-// The permission catalogue is installation-wide reference data seeded by the upgrade scripts and keyed by
-// module definition, not by portal. This endpoint reads no tenant at all, so there is no tenant for an
-// unresolved host name to have got wrong.
-[TenantOptional(
-    "The permission catalogue is installation-wide reference data keyed by module definition; no tenant is "
-    + "read.")]
 [Authorize(Policy = PolicyNames.PortalAdministrator)]
 [Produces("application/json")]
 public sealed class PermissionsController : ControllerBase
@@ -154,9 +129,12 @@ public sealed class PermissionsController : ControllerBase
     /// <paramref name="permissions"/> is <see langword="null"/>.
     /// </exception>
     /// <remarks>
-    /// One dependency, and it is an application-layer contract. There is no repository, no persistence
-    /// context and no evaluator here: the first two are unreachable from this layer by design and the
-    /// third would duplicate an authority that already exists.
+    /// One dependency, and it is a contract. There is no repository, no persistence context and no evaluator
+    /// here: the first two are unreachable from this layer by design and the third would duplicate an
+    /// authority that already exists. No TENANT holder either, and its absence is the point: both actions
+    /// published here read installation-wide reference data keyed by module definition, so each carries the
+    /// tenant-optional mark and neither has a tenant-owned resource to guard. The resource-scoped catalogue
+    /// helpers that did need one are not published - see the migration note at the top of this file.
     /// </remarks>
     public PermissionsController(IPermissionService permissions)
     {
@@ -256,6 +234,9 @@ public sealed class PermissionsController : ControllerBase
     /// upgrade scripts, so the whole sequence is returned rather than a page of it.
     /// </para>
     /// </remarks>
+    [TenantOptional(
+        "The unscoped permission catalogue is installation-wide reference data keyed by module definition; "
+        + "no tenant resource is read.")]
     [HttpGet]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<string>>), StatusCodes.Status200OK)]
     // BASE ProblemDetails, not ValidationProblemDetails. Both shapes are reachable: the binder names an
@@ -330,6 +311,8 @@ public sealed class PermissionsController : ControllerBase
     // The declared success type is the ENVELOPE, which is what this action actually returns; and every
     // refusal status declares a body, because a status advertised without one forces a client to special-case
     // an endpoint that behaves like all the others.
+    [TenantOptional(
+        "A permission definition is installation-wide reference data and carries no tenant-owned resource.")]
     [HttpGet("{permissionId:int}")]
     [ProducesResponseType(typeof(ApiResponse<PermissionDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
@@ -349,119 +332,4 @@ public sealed class PermissionsController : ControllerBase
         return this.Complete(outcome);
     }
 
-    /// <summary>Reads the catalogue definitions that apply to one module placement.</summary>
-    /// <param name="moduleId">Identifier of the module placement, forwarded exactly as bound.</param>
-    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>The definitions.</returns>
-    /// <response code="200">
-    /// The definitions, as a JSON array. In a product-standard installation this is never empty, because
-    /// the product-wide module scope always contributes entries; an empty array is nonetheless a
-    /// legitimate answer rather than a failure, and means the catalogue itself holds no matching entry.
-    /// </response>
-    /// <response code="400">The identifier could not be bound to its parameter type.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but is not an administrator of the portal this request addresses.
-    /// </response>
-    /// <remarks>
-    /// <para>
-    /// Reproduces <c>PermissionController.GetPermissionsByModuleID(ModuleID)</c>
-    /// (<c>PermissionController.vb:L38</c>). Its terminal procedure body takes a UNION of two sets: the
-    /// catalogue entries declared by the definition THIS PLACEMENT was created from, resolved through the
-    /// module row, together with every entry carrying the product-wide <c>SYSTEM_MODULE_DEFINITION</c>
-    /// scope code. Both halves are reproduced; dropping the second would silently narrow the answer for
-    /// every module in the installation.
-    /// </para>
-    /// <para>
-    /// Distinct from the <c>moduleDefinitionId</c> filter on the listing, and the distinction is worth
-    /// stating because it is easy to lose. That filter takes a DEFINITION identifier and answers with
-    /// exactly that definition's entries. This takes a PLACEMENT identifier, resolves the definition
-    /// behind it, and then widens the answer with the product-wide scope. So this is not the same
-    /// question reached by a different route: it is a deliberately wider one.
-    /// </para>
-    /// <para>
-    /// A placement identifier that names no module is not an error and is not reported as absent. The
-    /// first half of the union contributes nothing and the second still answers, which is exactly what
-    /// the legacy statement did, so the result is the product-wide scope alone.
-    /// </para>
-    /// <para>
-    /// MIGRATION: catalogue DEFINITIONS are returned, never grant rows - and that is what the legacy read
-    /// returned too, measured rather than assumed: the terminal body selects the five catalogue columns
-    /// from the <c>Permission</c> table and the legacy member hydrates <c>PermissionInfo</c>, the
-    /// catalogue type. Which role or account HOLDS a grant is the permission-grid surface, which this
-    /// migration does not replace, and publishing grantees here would be inventing that surface one field
-    /// at a time.
-    /// </para>
-    /// </remarks>
-    [HttpGet("modules/{moduleId:int}")]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<PermissionDto>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<PermissionDto>>>> ListForModuleAsync(
-        int moduleId,
-        CancellationToken cancellationToken)
-    {
-        Result<IReadOnlyList<PermissionDto>> outcome = await _permissions
-            .GetModulePermissionDefinitionsAsync(moduleId, cancellationToken)
-            .ConfigureAwait(false);
-
-        return this.Complete(outcome);
-    }
-
-    /// <summary>Reads the catalogue definitions that apply to one page.</summary>
-    /// <param name="tabId">
-    /// Identifier of the page. Bound and forwarded, but - see the remarks - it does not narrow the answer,
-    /// because the legacy statement this read reproduces does not use it either.
-    /// </param>
-    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>The definitions.</returns>
-    /// <response code="200">
-    /// The definitions, as a JSON array. In a product-standard installation this is never empty, because
-    /// the page scope always contributes entries; an empty array is nonetheless a legitimate answer rather
-    /// than a failure, and means the catalogue itself holds no page-scoped entry.
-    /// </response>
-    /// <response code="400">The identifier could not be bound to its parameter type.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but is not an administrator of the portal this request addresses.
-    /// </response>
-    /// <remarks>
-    /// <para>
-    /// Reproduces <c>PermissionController.GetPermissionsByTabID(TabID)</c>
-    /// (<c>PermissionController.vb:L51</c>), and is the page-scoped counterpart of the module-scoped read
-    /// above. The page identifier is <c>IDENTITY (0, 1)</c> in this schema, so zero addresses a real page
-    /// and no bound test appears here.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this read IGNORES its own page argument, and that is faithful rather than defective. The
-    /// terminal procedure body (04.05.03) filters on the product-wide <c>SYSTEM_TAB</c> scope code and
-    /// never references <c>@TabID</c> at all, so every page receives the identical catalogue. Inventing a
-    /// page filter here would narrow results the legacy application returned. The argument is kept on the
-    /// route because the legacy signature declares it, because every caller passes it, and because
-    /// removing it would present the answer as installation-wide when the contract it reproduces presents
-    /// it as page-scoped - a distinction a later product revision could make real.
-    /// </para>
-    /// <para>
-    /// MIGRATION: as with the module-scoped read, catalogue DEFINITIONS are returned rather than grant
-    /// rows, which is what the legacy member returned - it hydrates <c>PermissionInfo</c> from the
-    /// <c>Permission</c> table. Page grants themselves belong to the permission-grid surface that this
-    /// migration does not replace.
-    /// </para>
-    /// </remarks>
-    [HttpGet("tabs/{tabId:int}")]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<PermissionDto>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<PermissionDto>>>> ListForTabAsync(
-        int tabId,
-        CancellationToken cancellationToken)
-    {
-        Result<IReadOnlyList<PermissionDto>> outcome = await _permissions
-            .GetTabPermissionDefinitionsAsync(tabId, cancellationToken)
-            .ConfigureAwait(false);
-
-        return this.Complete(outcome);
-    }
 }

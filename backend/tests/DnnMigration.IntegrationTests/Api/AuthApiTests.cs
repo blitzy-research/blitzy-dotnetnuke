@@ -1,9 +1,14 @@
 using System.Globalization;
+using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Auth;
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.Enums;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -22,8 +27,7 @@ namespace DnnMigration.IntegrationTests.Api;
 /// suite mints its bearer token directly from the fixture's signing key, which is fast and deliberate but
 /// proves nothing about the sign-in path. The consequence is that everything between the submitted credential
 /// and the issued token - tenant resolution, account resolution, the account-state gates, the hash comparison,
-/// the failed-attempt bookkeeping and the claim resolution that reads roles and permissions out of the
-/// database - is only ever asserted here.
+/// the failed-attempt bookkeeping and the authority-minimised claim set - is only ever asserted here.
 /// </para>
 /// <para>
 /// The gates are asserted in the order the service applies them, because the order is the security property.
@@ -73,6 +77,9 @@ public sealed class AuthApiTests
 
     /// <summary>The cost the hasher writes, which a replaced credential must therefore carry.</summary>
     private const int CurrentWorkFactor = 12;
+
+    /// <summary>A policy-compliant replacement used by the password-remediation flow.</summary>
+    private const string RemediatedPassword = "Remediated!Pass9";
 
     /// <summary>The permit count the dedicated rate-limited host runs with.</summary>
     private const int TightPermitLimit = 2;
@@ -232,7 +239,24 @@ public sealed class AuthApiTests
         issued.User.Username.Should().Be(IntegrationSeed.AdminUserName);
         issued.User.PortalName.Should().Be(IntegrationSeed.PortalName);
         issued.User.IsSuperUser.Should().BeFalse();
-        issued.User.Roles.Should().Contain(IntegrationSeed.AdministratorsRoleName);
+        issued.User.Roles.Should().BeEmpty(
+            "the token response carries stable identity only; mutable authority is loaded through /auth/me");
+
+        JwtSecurityToken accessToken = new JwtSecurityTokenHandler().ReadJwtToken(issued.AccessToken);
+        HashSet<string> allowedClaimTypes =
+        [
+            JwtRegisteredClaimNames.Sub,
+            JwtRegisteredClaimNames.Jti,
+            JwtRegisteredClaimNames.Iat,
+            JwtRegisteredClaimNames.Nbf,
+            JwtRegisteredClaimNames.Exp,
+            JwtRegisteredClaimNames.Iss,
+            JwtRegisteredClaimNames.Aud,
+            DnnClaimTypes.PortalId,
+        ];
+        accessToken.Claims.Select(claim => claim.Type).Should().OnlyContain(
+            claimType => allowedClaimTypes.Contains(claimType),
+            "access tokens carry stable identity and envelope claims only");
 
         // The token is only meaningful if the pipeline accepts it, so it is spent rather than inspected.
         using HttpClient bearer = AuthenticatedClientFactory.Authenticate(
@@ -473,7 +497,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ForALockedAccount_IsGenericToAnAnonymousCaller()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
         await LockAsync(account.Username);
 
@@ -499,13 +523,13 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ForALockedAccount_IsExplicitToAHostCaller()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
         await LockAsync(account.Username);
 
         // Sign-in is anonymous, but it does not refuse a caller that presents a token, and the entitlement
         // test reads that caller. A host-authenticated sign-in attempt is therefore told why.
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await host.PostAsJsonAsync(
             LoginRoute(_fixture.Seed.PortalId),
@@ -527,7 +551,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_WithRepeatedWrongCredentials_LocksTheAccount()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -542,7 +566,7 @@ public sealed class AuthApiTests
             refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         }
 
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage locked = await host.PostAsJsonAsync(
             LoginRoute(_fixture.Seed.PortalId),
@@ -581,7 +605,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ForAnUnapprovedAccount_RequiresTheVerificationCode()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator, authorize: false);
 
         account.IsApproved.Should().BeFalse();
@@ -678,7 +702,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Refresh_ForAnAccountLockedAfterIssue_IsRefusedAndEndsEverySession()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -752,7 +776,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ForAnUnapprovedAccount_NamesTheApprovalOutcomeAndRefusesAWrongCredential()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator, authorize: false);
 
         account.IsApproved.Should().BeFalse();
@@ -848,7 +872,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ReplacesACredentialStoredAtASupersededCost()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         // Enhanced, matching the production hasher, so the only thing that differs from a
@@ -887,12 +911,135 @@ public sealed class AuthApiTests
         again.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    /// <summary>
+    /// A format-2 membership credential is verified once and replaced with BCrypt during the same sign-in.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task Login_WithLegacyEncryptedCredential_ReplacesItWithBcrypt()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        UserDetailDto account = await CreateUserAsync(administrator);
+        (string storedValue, string passwordSalt) = CreateLegacyEncryptedCredential(
+            ApiTestFixture.KnownPassword);
+
+        await WriteStoredCredentialAsync(
+            account.Username,
+            storedValue,
+            PasswordFormat.Encrypted,
+            passwordSalt);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage first = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = account.Username,
+                Password = ApiTestFixture.KnownPassword,
+            },
+            ApiTestFixture.Json);
+
+        first.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the migration verifier is enabled only in the throwaway integration host");
+
+        string? replaced = await ReadStoredHashAsync(account.Username);
+        int format = await ReadStoredFormatAsync(account.Username);
+        string salt = await ReadStoredSaltAsync(account.Username);
+
+        replaced.Should().NotBeNullOrWhiteSpace();
+        replaced.Should().NotBe(storedValue);
+        replaced.Should().StartWith("$2");
+        format.Should().Be((int)PasswordFormat.Hashed);
+        salt.Should().BeEmpty();
+
+        using HttpResponseMessage second = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = account.Username,
+                Password = ApiTestFixture.KnownPassword,
+            },
+            ApiTestFixture.Json);
+
+        second.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the replacement must be a usable current BCrypt representation");
+    }
+
+    /// <summary>
+    /// The migration is AUDITED, and neither the credential nor the deployment key reaches the record.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: TWO REVISIONS WROTE A LEGACY-MIGRATION FACT AND BOTH ARE KEPT, BECAUSE THEY ASSERT
+    /// DIFFERENT HALVES. The fact above proves the STORE changed - the representation, its format
+    /// discriminator and its salt - and that the replacement verifies afterwards. This one proves the TRAIL
+    /// changed: a distinct audit event naming only the former format, with the submitted credential, the
+    /// stored legacy value, its salt and the deployment decryption key all absent from the record. Neither
+    /// fact would notice the other's regression.
+    /// <para>
+    /// The credential is staged with the same helper the fact above uses, rather than with the independently
+    /// produced provider vector this fact was written against. That vector is keyed to its own test key and
+    /// is exercised where it belongs - against the verifier itself, in the unit suite - whereas what is being
+    /// proven here is the end-to-end trail, for which a credential the test host's own key can decrypt is
+    /// the correct input.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Login_MigratingALegacyCredential_RecordsItWithoutDisclosingAnySecret()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        UserDetailDto account = await CreateUserAsync(administrator);
+        (string storedValue, string passwordSalt) = CreateLegacyEncryptedCredential(
+            ApiTestFixture.KnownPassword);
+
+        await WriteStoredCredentialAsync(
+            account.Username,
+            storedValue,
+            PasswordFormat.Encrypted,
+            passwordSalt);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = account.Username,
+                Password = ApiTestFixture.KnownPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        LogRecord audit = RecordedLogs.Snapshot()
+            .Where(record => Equals(
+                record.Properties.GetValueOrDefault("AuditEvent"),
+                AuditEventNames.LegacyCredentialMigrated))
+            .Single(record => Equals(
+                record.Properties.GetValueOrDefault("AuditResourceId"),
+                account.UserId.ToString(CultureInfo.InvariantCulture)));
+
+        // The former format is the whole of the detail, and it is a closed enumeration member rather than a
+        // value the caller shaped. The sink projects each admitted property as its own structured field, so
+        // the assertion names the field rather than parsing a rendered string.
+        audit.Properties["AuditMetadata_PreviousFormat"].Should().Be(
+            PasswordFormat.Encrypted.ToString());
+
+        audit.Message.Should().NotContain(ApiTestFixture.KnownPassword);
+        audit.Message.Should().NotContain(storedValue);
+        audit.Message.Should().NotContain(passwordSalt);
+        audit.Message.Should().NotContain(ApiTestFixture.LegacyCredentialDecryptionKey);
+    }
+
     /// <summary>A successful sign-in is recorded against the account.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task Login_RecordsTheSignIn()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         // A newly created account has never signed in, and the store's "never" sentinel is projected as
@@ -918,8 +1065,83 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// C-03: a required profile property the account has not answered raises the blocking profile advisory on
-    /// sign-in, and the advisory survives a refresh.
+    /// An account marked for a credential change is blocked from the ordinary API surface while authentication
+    /// lifecycle and its own password-remediation route remain available.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The final read uses the original access token after the password was changed. Its signed remediation
+    /// claim is intentionally stale, so the successful read proves the API gate re-evaluates authoritative
+    /// storage on every request rather than treating the claim as the decision.
+    /// </remarks>
+    [Fact]
+    public async Task RequiredPasswordChange_AllowsOnlyAuthenticationAndOwnPasswordRemediation()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        UserDetailDto account = await CreateUserAsync(administrator);
+
+        int affected = await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Users] SET [UpdatePassword] = 1 WHERE [UserID] = @userId;",
+            new Dictionary<string, object?> { ["userId"] = account.UserId });
+
+        affected.Should().Be(1);
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+        LoginResponse issued = await SignInAsync(anonymous, account.Username);
+
+        issued.MustChangePassword.Should().BeTrue();
+        issued.MustUpdateProfile.Should().BeFalse();
+
+        using HttpResponseMessage refreshed = await anonymous.PostAsJsonAsync(
+            RefreshRoute,
+            new RefreshTokenRequest { RefreshToken = issued.RefreshToken },
+            ApiTestFixture.Json);
+
+        refreshed.StatusCode.Should().Be(HttpStatusCode.OK);
+        LoginResponse exchanged = await ReadLoginAsync(refreshed);
+        exchanged.MustChangePassword.Should().BeTrue(
+            "rotation re-evaluates the durable UpdatePassword flag instead of clearing the block");
+
+        using HttpClient bearer = AuthenticatedClientFactory.Authenticate(
+            _fixture.CreateAnonymousClient(),
+            exchanged.AccessToken);
+
+        using HttpResponseMessage ordinary = await bearer.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, account.UserId));
+        ordinary.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "a blocking credential requirement closes every ordinary protected route");
+
+        using HttpResponseMessage authentication = await bearer.GetAsync(MeRoute);
+        authentication.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "authentication lifecycle routes remain available while remediation is outstanding");
+
+        using HttpResponseMessage changed = await bearer.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, account.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = RemediatedPassword,
+                ConfirmPassword = RemediatedPassword,
+            },
+            ApiTestFixture.Json);
+
+        changed.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "the account owner must be able to clear the requirement that is blocking it");
+
+        using HttpResponseMessage afterRemediation = await bearer.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, account.UserId));
+        afterRemediation.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the gate re-reads the cleared UpdatePassword flag instead of trusting the stale token claim");
+    }
+
+    /// <summary>
+    /// C-03: a required profile property the account has not answered raises the blocking profile requirement
+    /// on sign-in, survives refresh and restricts the token until the owner answers it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -927,8 +1149,10 @@ public sealed class AuthApiTests
     /// The legacy gate is <c>UserController.vb</c> L1189-L1193 over
     /// <c>ProfileController.ValidateProfile</c>. Both halves are exercised here through the API: a required
     /// declaration is installed on the tenant, an account with no answer for it signs in, and the flag must be
-    /// raised. It is then cleared by ANSWERING the property, which proves the flag tracks the profile rather
-    /// than being set once at creation.
+    /// raised. The resulting token is refused on an ordinary protected route but remains usable for
+    /// authentication lifecycle and the owner's profile read/write routes. It is then cleared by ANSWERING
+    /// the property through that permitted route, which proves the flag tracks the profile rather than being
+    /// set once at creation.
     /// </para>
     /// <para>
     /// Refresh is asserted as well because the review named both paths. A flag raised only on sign-in would be
@@ -938,7 +1162,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_WhenARequiredProfilePropertyIsUnanswered_RaisesTheProfileAdvisory()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         int definitionId = await _fixture.Database.ScalarAsync<int>(
@@ -946,12 +1170,11 @@ public sealed class AuthApiTests
             INSERT INTO [dbo].[ProfilePropertyDefinition]
                 ([PortalID], [ModuleDefID], [Deleted], [DataType], [DefaultValue], [PropertyCategory],
                  [PropertyName], [Length], [Required], [ValidationExpression], [ViewOrder], [Visible])
-            VALUES (@portalId, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 101, 1);
+            VALUES (NULL, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 101, 1);
             SELECT CAST(SCOPE_IDENTITY() AS int);
             """,
             new Dictionary<string, object?>
             {
-                ["portalId"] = _fixture.Seed.PortalId,
                 ["propertyName"] = FormattableString.Invariant($"Gate{Suffix()}"),
             });
 
@@ -981,18 +1204,53 @@ public sealed class AuthApiTests
             LoginResponse exchanged = await ReadLoginAsync(rotated);
             exchanged.MustUpdateProfile.Should().BeTrue("the advisory is re-evaluated on every rotation");
 
-            // Answering the property clears it, which proves the flag tracks the profile.
-            await _fixture.Database.ExecuteAsync(
-                """
-                INSERT INTO [dbo].[UserProfile]
-                    ([UserID], [PropertyDefinitionID], [PropertyValue], [Visibility], [LastUpdatedDate])
-                VALUES (@userId, @definitionId, 'answered', 2, SYSUTCDATETIME());
-                """,
-                new Dictionary<string, object?>
+            using HttpClient bearer = AuthenticatedClientFactory.Authenticate(
+                _fixture.CreateAnonymousClient(),
+                exchanged.AccessToken);
+
+            using HttpResponseMessage ordinary = await bearer.GetAsync(
+                UserRoute(_fixture.Seed.PortalId, account.UserId));
+            ordinary.StatusCode.Should().Be(
+                HttpStatusCode.Forbidden,
+                "an incomplete required profile blocks the ordinary protected surface");
+
+            using HttpResponseMessage authentication = await bearer.GetAsync(MeRoute);
+            authentication.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the caller must retain access to its authentication lifecycle");
+
+            using HttpResponseMessage profile = await bearer.GetAsync(
+                ProfileRoute(_fixture.Seed.PortalId, account.UserId));
+            profile.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the owner must be able to read the profile it is required to complete");
+
+            using HttpResponseMessage answered = await bearer.PutAsJsonAsync(
+                ProfileRoute(_fixture.Seed.PortalId, account.UserId),
+                new UserProfileDto
                 {
-                    ["userId"] = account.UserId,
-                    ["definitionId"] = definitionId,
-                });
+                    UserId = account.UserId,
+                    Properties =
+                    [
+                        new UserProfileValueDto
+                        {
+                            PropertyDefinitionId = definitionId,
+                            PropertyValue = "answered",
+                            Visibility = 2,
+                        },
+                    ],
+                },
+                ApiTestFixture.Json);
+
+            answered.StatusCode.Should().Be(
+                HttpStatusCode.NoContent,
+                "the permitted profile route must be able to clear the blocking requirement");
+
+            using HttpResponseMessage afterRemediation = await bearer.GetAsync(
+                UserRoute(_fixture.Seed.PortalId, account.UserId));
+            afterRemediation.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the gate re-reads the completed profile instead of trusting the stale token claim");
 
             using HttpResponseMessage again = await client.PostAsJsonAsync(
                 LoginRoute(_fixture.Seed.PortalId),
@@ -1032,12 +1290,11 @@ public sealed class AuthApiTests
             INSERT INTO [dbo].[ProfilePropertyDefinition]
                 ([PortalID], [ModuleDefID], [Deleted], [DataType], [DefaultValue], [PropertyCategory],
                  [PropertyName], [Length], [Required], [ValidationExpression], [ViewOrder], [Visible])
-            VALUES (@portalId, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 102, 1);
+            VALUES (NULL, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 102, 1);
             SELECT CAST(SCOPE_IDENTITY() AS int);
             """,
             new Dictionary<string, object?>
             {
-                ["portalId"] = _fixture.Seed.PortalId,
                 ["propertyName"] = FormattableString.Invariant($"HostGate{Suffix()}"),
             });
 
@@ -1073,7 +1330,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ForAnAccountWithoutACredential_ReturnsUnauthorized()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         await _fixture.Database.ExecuteAsync(
@@ -1103,7 +1360,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Refresh_RotatesThePairAndIssuesAUsableAccessToken()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -1146,7 +1403,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Refresh_WithAReplayedToken_IsRefusedAndRevokesTheAccountsTokens()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -1161,7 +1418,10 @@ public sealed class AuthApiTests
 
         LoginResponse second = await ReadLoginAsync(rotated);
 
-        using HttpResponseMessage replay = await client.PostAsJsonAsync(
+        using HttpClient replayingClient = _fixture.CreateAnonymousClient();
+        replayingClient.DefaultRequestHeaders.UserAgent.ParseAdd("cross-client-replay/1.0");
+
+        using HttpResponseMessage replay = await replayingClient.PostAsJsonAsync(
             RefreshRoute,
             new RefreshTokenRequest { RefreshToken = first.RefreshToken },
             ApiTestFixture.Json);
@@ -1181,28 +1441,18 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// A session may rotate indefinitely without its retained history growing indefinitely, and the
-    /// bound is observable: history older than the retention window is released, so replaying it refuses
-    /// the caller without revoking the family.
+    /// A spent fingerprint remains detectable through the family's absolute lifetime, even after many
+    /// rotations.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// M-14: the defect this pins was uncontrolled growth. Redemption retains the entry it consumed so a
-    /// later replay is recognisable and adds a replacement beside it, and nothing bounded how many times
-    /// a caller could drive that - rotation cadence is chosen by the caller, not by the store - so one
-    /// authenticated session could accumulate one permanently retained entry per exchange until its
-    /// family's absolute ceiling elapsed, days later.
+    /// SEC-039: trimming spent generations to an arbitrary count created a replay-detection gap. The durable
+    /// store now retains each fingerprint until the family expires, while bounded cleanup removes only
+    /// families whose absolute ceiling has passed.
     /// </para>
     /// <para>
-    /// Growth is not directly observable over HTTP, but its remedy is, and this asserts the remedy
-    /// precisely because that is what a caller experiences. The generation redeemed FIRST is far enough
-    /// behind after this many exchanges to have been released, so replaying it is answered as an
-    /// unrecognised token rather than as a detected replay - and therefore does NOT revoke the family,
-    /// which the live token continuing to work demonstrates. Compare
-    /// <see cref="Refresh_WithAReplayedToken_IsRefusedAndRevokesTheAccountsTokens"/>: a replay still
-    /// WITHIN the window is detected and does revoke everything. The two together are the exact trade the
-    /// retention window makes - detection is narrowed to the window where a replay can still matter, and
-    /// redemption is narrowed not at all, since no released entry was redeemable by anyone.
+    /// The generation redeemed first is replayed from a different client after enough exchanges to exceed
+    /// the removed generation window. Recognising it must still revoke the live successor.
     /// </para>
     /// <para>
     /// The account is created for this test alone, because a detected replay would be account-wide.
@@ -1211,15 +1461,15 @@ public sealed class AuthApiTests
     /// <returns>A task representing the test.</returns>
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task Refresh_RepeatedManyTimes_ReleasesHistoryBeyondTheRetentionWindow()
+    public async Task Refresh_RepeatedManyTimes_RetainsReplayDetectionThroughTheFamilyLifetime()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
         LoginResponse first = await SignInAsync(client, account.Username);
 
-        // Comfortably past the window, so the first generation cannot still be retained.
+        // Comfortably past the removed eight-generation window.
         const int Exchanges = 20;
 
         string firstRedeemed = first.RefreshToken;
@@ -1240,7 +1490,10 @@ public sealed class AuthApiTests
             live = (await ReadLoginAsync(rotated)).RefreshToken;
         }
 
-        using HttpResponseMessage staleReplay = await client.PostAsJsonAsync(
+        using HttpClient replayingClient = _fixture.CreateAnonymousClient();
+        replayingClient.DefaultRequestHeaders.UserAgent.ParseAdd("old-generation-replay/1.0");
+
+        using HttpResponseMessage staleReplay = await replayingClient.PostAsJsonAsync(
             RefreshRoute,
             new RefreshTokenRequest { RefreshToken = firstRedeemed },
             ApiTestFixture.Json);
@@ -1252,18 +1505,16 @@ public sealed class AuthApiTests
         string body = await staleReplay.Content.ReadAsStringAsync();
         body.Should().Contain("urn:dnnmigration:error:auth.invalid_refresh_token");
 
-        // The observable proof that the first generation was RELEASED rather than remembered: had it still
-        // been retained, the presentation above would have been recognised as a replay and revoked every
-        // token the account holds, so this exchange would fail.
+        // The observable proof that the old fingerprint was retained: replay detection revokes the live
+        // successor even though many generations separate it from the copied value.
         using HttpResponseMessage afterwards = await client.PostAsJsonAsync(
             RefreshRoute,
             new RefreshTokenRequest { RefreshToken = live },
             ApiTestFixture.Json);
 
         afterwards.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "released history is reported as unrecognised rather than as a replay, so it must not revoke "
-            + "the family the legitimate caller is still using");
+            HttpStatusCode.Unauthorized,
+            "a cross-client replay of any retained generation revokes the account's live families");
     }
 
     /// <summary>A blank refresh token is refused as a token fault, not accepted as an empty exchange.</summary>
@@ -1307,7 +1558,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Logout_RevokesTheRefreshToken()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -1403,7 +1654,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Me_ForTheHostAccount_ReturnsOkWithTheHostFlag()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(MeRoute);
 
@@ -1429,13 +1680,12 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Me_WhenTheAccountNoLongerExists_ReturnsNotFound()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
-        using HttpClient bearer = _fixture.CreateClientFor(
-            account.UserId,
-            account.Username,
-            _fixture.Seed.PortalId);
+        using HttpClient bearer = await _fixture.CreateClientForAsync(
+            account.Username ?? string.Empty,
+            ApiTestFixture.KnownPassword);
 
         using HttpResponseMessage before = await bearer.GetAsync(MeRoute);
         before.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1667,7 +1917,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_WithTheShippedAdministratorCredential_IsAcceptedAndCarriesTheChangeAdvisory()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         await CreateShippedAccountAsync(administrator, ShippedAdministratorAccountName);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -1711,7 +1961,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_WithTheShippedHostCredential_IsAcceptedAndCarriesTheChangeAdvisory()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         await CreateShippedAccountAsync(administrator, ShippedHostAccountName);
         await PromoteToSuperUserAsync(ShippedHostAccountName);
 
@@ -1759,7 +2009,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_ForTwoAccountsSharingOneEmailAddress_AcceptsBoth()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         string shared = "shared.address." + Suffix() + "@example.com";
 
@@ -1810,7 +2060,7 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Auth_PublishesNoCredentialMaterialOnAnyOfItsResponses()
     {
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         // An account of this test's own, because the exchange below rotates a refresh token and a replay of
         // a rotated one withdraws every session the account holds. Using a seeded persona would make another
@@ -1919,7 +2169,7 @@ public sealed class AuthApiTests
             "the fallback policy demands an authenticated caller for anything that declares no "
             + "authorisation of its own, so an anonymous caller cannot probe which addresses exist");
 
-        using HttpClient caller = _fixture.CreateHostClient();
+        using HttpClient caller = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage posted = await caller.PostAsJsonAsync(
             undeclared,
@@ -2316,6 +2566,97 @@ public sealed class AuthApiTests
         affected.Should().Be(1);
     }
 
+    /// <summary>
+    /// SEC-016. Every token-bearing response, and every refusal from the same endpoints, forbids storage by
+    /// any cache.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// An access token and a refresh token are bearer credentials: an intermediate cache that retains the
+    /// response retains the credentials, and a shared cache can then serve one caller's tokens to another.
+    /// The refusals are covered for a related reason - a cached 401 is a cached security decision - and
+    /// because the endpoints that carry tokens must behave identically whatever they answer, or the presence
+    /// of the directive itself becomes a signal.
+    /// </para>
+    /// <para>
+    /// The negative control is what gives the fact meaning: an ordinary resource read must NOT carry the
+    /// directive, or the assertion would pass equally against a change that made the whole API uncacheable.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CredentialEndpoints_ForbidResponseCaching()
+    {
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage issued = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = IntegrationSeed.AdminUserName,
+                Password = ApiTestFixture.KnownPassword,
+            },
+            ApiTestFixture.Json);
+
+        issued.StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertNotCacheable(issued, "a successful sign-in carries an access token and a refresh token");
+
+        LoginResponse pair = await ReadLoginAsync(issued);
+
+        using HttpResponseMessage refused = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = IntegrationSeed.AdminUserName,
+                Password = "definitely-not-the-password",
+            },
+            ApiTestFixture.Json);
+
+        refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        AssertNotCacheable(refused, "a cached refusal is a cached security decision");
+
+        using HttpResponseMessage rotated = await client.PostAsJsonAsync(
+            RefreshRoute,
+            new RefreshTokenRequest { RefreshToken = pair.RefreshToken },
+            ApiTestFixture.Json);
+
+        rotated.StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertNotCacheable(rotated, "rotation issues a fresh pair of bearer credentials");
+
+        using HttpResponseMessage endedSession = await client.PostAsJsonAsync(
+            LogoutRoute,
+            new RefreshTokenRequest { RefreshToken = "not-a-token-that-was-ever-issued" },
+            ApiTestFixture.Json);
+
+        AssertNotCacheable(endedSession, "revocation is addressed with a bearer credential in the body");
+
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage ordinary = await administrator.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}", UriKind.Relative));
+
+        ordinary.StatusCode.Should().Be(HttpStatusCode.OK);
+        ordinary.Headers.CacheControl?.NoStore.Should().NotBe(
+            true,
+            "the directive is applied to credential endpoints only; applying it to every response would make "
+            + "this assertion vacuous");
+    }
+
+    /// <summary>Asserts that one response forbids caching in all three of the vocabularies caches read.</summary>
+    /// <param name="response">The response to inspect.</param>
+    /// <param name="because">Why this response must not be retained.</param>
+    private static void AssertNotCacheable(HttpResponseMessage response, string because)
+    {
+        response.Headers.CacheControl.Should().NotBeNull(because);
+        response.Headers.CacheControl!.NoStore.Should().BeTrue(because);
+        response.Headers.CacheControl.NoCache.Should().BeTrue(because);
+        response.Headers.Pragma.Should().Contain(
+            directive => directive.Name == "no-cache",
+            "some proxies honour only the HTTP/1.0 spelling");
+        response.Content.Headers.Expires.Should().NotBeNull(
+            "a cache that assigns a heuristic freshness lifetime reads this instead");
+    }
+
     /// <summary>Reads the stored credential hash for an account.</summary>
     /// <param name="userName">The account name.</param>
     /// <returns>The stored value, or <see langword="null"/> when no credential row exists.</returns>
@@ -2354,6 +2695,105 @@ public sealed class AuthApiTests
             });
 
         affected.Should().Be(1);
+    }
+
+    /// <summary>Writes a complete legacy membership representation for a migration test.</summary>
+    /// <param name="userName">The account name.</param>
+    /// <param name="storedValue">The encoded legacy representation.</param>
+    /// <param name="format">The persisted legacy format discriminator.</param>
+    /// <param name="passwordSalt">The encoded per-account salt.</param>
+    /// <returns>A task representing the write.</returns>
+    private async Task WriteStoredCredentialAsync(
+        string userName,
+        string storedValue,
+        PasswordFormat format,
+        string passwordSalt)
+    {
+        int affected = await _fixture.Database.ExecuteAsync(
+            """
+            UPDATE am
+            SET am.[Password] = @storedValue,
+                am.[PasswordFormat] = @format,
+                am.[PasswordSalt] = @passwordSalt
+            FROM [dbo].[aspnet_Membership] am
+            INNER JOIN [dbo].[aspnet_Users] au ON au.[UserId] = am.[UserId]
+            WHERE au.[LoweredUserName] = LOWER(@userName);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userName"] = userName,
+                ["storedValue"] = storedValue,
+                ["format"] = (int)format,
+                ["passwordSalt"] = passwordSalt,
+            });
+
+        affected.Should().Be(1);
+    }
+
+    /// <summary>Reads the persisted membership format discriminator.</summary>
+    /// <param name="userName">The account name.</param>
+    /// <returns>The stored integer discriminator.</returns>
+    private Task<int> ReadStoredFormatAsync(string userName) =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COALESCE(MAX(am.[PasswordFormat]), -1)
+            FROM [dbo].[aspnet_Membership] am
+            INNER JOIN [dbo].[aspnet_Users] au ON au.[UserId] = am.[UserId]
+            WHERE au.[LoweredUserName] = LOWER(@userName);
+            """,
+            new Dictionary<string, object?> { ["userName"] = userName });
+
+    /// <summary>Reads the persisted membership salt.</summary>
+    /// <param name="userName">The account name.</param>
+    /// <returns>The stored salt, or the empty string when cleared.</returns>
+    private Task<string> ReadStoredSaltAsync(string userName) =>
+        _fixture.Database.ScalarAsync<string>(
+            """
+            SELECT COALESCE(MAX(am.[PasswordSalt]), N'')
+            FROM [dbo].[aspnet_Membership] am
+            INNER JOIN [dbo].[aspnet_Users] au ON au.[UserId] = am.[UserId]
+            WHERE au.[LoweredUserName] = LOWER(@userName);
+            """,
+            new Dictionary<string, object?> { ["userName"] = userName });
+
+    /// <summary>Builds a synthetic format-2 fixture using the integration host's throwaway key.</summary>
+    /// <param name="password">The fixture credential.</param>
+    /// <returns>The encoded ciphertext and salt.</returns>
+    private static (string StoredValue, string PasswordSalt) CreateLegacyEncryptedCredential(
+        string password)
+    {
+        byte[] key = Convert.FromHexString(ApiTestFixture.LegacyCredentialDecryptionKey);
+        byte[] salt = RandomNumberGenerator.GetBytes(16);
+        byte[] passwordBytes = Encoding.Unicode.GetBytes(password);
+        byte[] plaintext = [];
+        byte[] ciphertext = [];
+
+        try
+        {
+            using TripleDES algorithm = TripleDES.Create();
+            algorithm.Key = key;
+            algorithm.IV = new byte[algorithm.BlockSize / 8];
+            algorithm.Mode = CipherMode.CBC;
+            algorithm.Padding = PaddingMode.PKCS7;
+
+            int prefixLength = algorithm.BlockSize / 8;
+            plaintext = new byte[prefixLength + salt.Length + passwordBytes.Length];
+            RandomNumberGenerator.Fill(plaintext.AsSpan(0, prefixLength));
+            salt.CopyTo(plaintext, prefixLength);
+            passwordBytes.CopyTo(plaintext, prefixLength + salt.Length);
+
+            using ICryptoTransform encryptor = algorithm.CreateEncryptor();
+            ciphertext = encryptor.TransformFinalBlock(plaintext, 0, plaintext.Length);
+            return (Convert.ToBase64String(ciphertext), Convert.ToBase64String(salt));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+            CryptographicOperations.ZeroMemory(salt);
+            CryptographicOperations.ZeroMemory(passwordBytes);
+            CryptographicOperations.ZeroMemory(plaintext);
+            CryptographicOperations.ZeroMemory(ciphertext);
+        }
     }
 
     /// <summary>
@@ -2408,18 +2848,39 @@ public sealed class AuthApiTests
     private static Uri LoginRoute(int portalId) =>
         new($"/api/v1/auth/login?portalId={Route(portalId)}", UriKind.Relative);
 
-    /// <summary>Builds the collection route for a tenant's accounts.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <summary>Builds the canonical account collection route for the resolved tenant.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <returns>A relative route.</returns>
-    private static Uri UsersRoute(int portalId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users", UriKind.Relative);
+    private static Uri UsersRoute(int _) => new("/api/v1/users", UriKind.Relative);
 
     /// <summary>Builds the item route for one account.</summary>
-    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri UserRoute(int portalId, int userId) =>
-        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}", UriKind.Relative);
+    private static Uri UserRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}", UriKind.Relative);
+
+    /// <summary>Builds the account-owner credential-change route.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>A relative route.</returns>
+    /// <remarks>
+    /// FLAT, like <see cref="UserRoute(int, int)"/> beside it, because the account controller is mounted at
+    /// <c>api/v1/users</c> and the tenant comes from the arrival host rather than from a route segment. These
+    /// two builders were left nested when the surrounding suite was flattened, so every request they produced
+    /// matched NO endpoint - and an unmatched request is refused before it can reach an action, which made two
+    /// remediation facts read as authorisation refusals of the very self-service routes they were asserting.
+    /// The portal parameter is kept and discarded so the call sites read the same as their neighbours.
+    /// </remarks>
+    private static Uri PasswordRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/password", UriKind.Relative);
+
+    /// <summary>Builds the account profile route.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>A relative route.</returns>
+    private static Uri ProfileRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/profile", UriKind.Relative);
 
     /// <summary>Formats an identifier for a route without picking up the ambient culture.</summary>
     /// <param name="value">The identifier.</param>

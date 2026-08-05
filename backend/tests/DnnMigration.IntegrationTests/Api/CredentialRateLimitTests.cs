@@ -1,11 +1,14 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Reflection;
 using FluentAssertions;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -71,6 +74,18 @@ public sealed class CredentialRateLimitTests
     /// <summary>The name of the marker attribute, matched by name so no internals need exposing.</summary>
     private const string MarkerAttributeName = "CredentialEndpointAttribute";
 
+    /// <summary>The address the proxied host presents as the connecting peer, and declares as trusted.</summary>
+    /// <remarks>
+    /// A documentation-range address, so it can never coincide with anything the build environment routes.
+    /// </remarks>
+    private const string ProxyAddress = "198.51.100.7";
+
+    /// <summary>The forwarded-address header the proxy in the shipped topology sets.</summary>
+    private const string ForwardedForHeaderName = "X-Forwarded-For";
+
+    /// <summary>Permit count of the profile-write policy.</summary>
+    private const int ProfileWritePermitLimit = 20;
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="CredentialRateLimitTests"/> class.</summary>
@@ -85,7 +100,7 @@ public sealed class CredentialRateLimitTests
     [Fact]
     public async Task CreateUser_IsRateLimited() =>
         await AssertBoundedAsync(new Uri(
-            $"/api/v1/portals/{ApiTestFixture.Route(_fixture.Seed.PortalId)}/users",
+            "/api/v1/users",
             UriKind.Relative));
 
     /// <summary>
@@ -96,8 +111,7 @@ public sealed class CredentialRateLimitTests
     [Fact]
     public async Task ResetPassword_IsRateLimited() =>
         await AssertBoundedAsync(new Uri(
-            $"/api/v1/portals/{ApiTestFixture.Route(_fixture.Seed.PortalId)}"
-                + $"/users/{ApiTestFixture.Route(_fixture.Seed.MemberUserId)}/password-reset",
+            $"/api/v1/users/{ApiTestFixture.Route(_fixture.Seed.MemberUserId)}/password-reset",
             UriKind.Relative));
 
     /// <summary>
@@ -117,8 +131,7 @@ public sealed class CredentialRateLimitTests
     [Fact]
     public async Task ChangePassword_IsStillRateLimited() =>
         await AssertBoundedAsync(new Uri(
-            $"/api/v1/portals/{ApiTestFixture.Route(_fixture.Seed.PortalId)}"
-                + $"/users/{ApiTestFixture.Route(_fixture.Seed.MemberUserId)}/password",
+            $"/api/v1/users/{ApiTestFixture.Route(_fixture.Seed.MemberUserId)}/password",
             UriKind.Relative));
 
     /// <summary>
@@ -151,6 +164,46 @@ public sealed class CredentialRateLimitTests
                     HttpStatusCode.Unauthorized,
                     "a write that handles no credential must not consume the credential budget");
             }
+        }
+    }
+
+    /// <summary>
+    /// Profile replacements have their own bounded budget because an accepted request may evaluate a set of
+    /// tenant-authored regular expressions.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ProfileUpdate_IsRateLimitedOnItsOwnBudget()
+    {
+        using (ApiTestFixture.OverrideEnvironment(_fixture.HostConfiguration()))
+        {
+            await using var host = new TightlyLimitedHost();
+            using HttpClient client = host.CreateClient();
+            // FLAT: the account routes are mounted at api/v1/users and name no portal segment, so the tenant
+            // comes from the arrival host. Addressed with the portal in the path this reached NO endpoint,
+            // and an unmatched request carries no rate-limiting metadata - so the limiter never charged and
+            // every attempt was answered by authentication instead of by the budget under test.
+            var route = new Uri("/api/v1/users/1/profile", UriKind.Relative);
+
+            for (int permitted = 0; permitted < ProfileWritePermitLimit; permitted++)
+            {
+                using HttpResponseMessage allowed = await client.PutAsJsonAsync(
+                    route,
+                    new { properties = Array.Empty<object>() },
+                    ApiTestFixture.Json);
+
+                allowed.StatusCode.Should().Be(
+                    HttpStatusCode.Unauthorized,
+                    "the profile limiter runs before authentication and charges each attempted write");
+            }
+
+            using HttpResponseMessage rejected = await client.PutAsJsonAsync(
+                route,
+                new { properties = Array.Empty<object>() },
+                ApiTestFixture.Json);
+
+            rejected.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+            rejected.Headers.RetryAfter.Should().NotBeNull();
         }
     }
 
@@ -214,6 +267,203 @@ public sealed class CredentialRateLimitTests
         found.Order(StringComparer.Ordinal).Should().Equal(
             expected.Order(StringComparer.Ordinal),
             "an action that hashes a credential must be marked, and an action that does not must not be");
+    }
+
+    /// <summary>
+    /// SEC-022. The caller-description read is bounded by a window OF ITS OWN, so polling it cannot spend the
+    /// budget every other caller needs in order to sign in.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Both halves matter and a single assertion proves neither. Spending the read's whole window and then
+    /// finding sign-in still permitted is what shows the budgets are separate; finding the read itself refused
+    /// once its own window is spent is what shows it is still bounded, so the fix did not simply exempt it.
+    /// One controller-wide declaration produced the coupling this fact rules out.
+    /// </remarks>
+    [Fact]
+    public async Task SessionRead_DoesNotSpendTheCredentialBudget()
+    {
+        using (ApiTestFixture.OverrideEnvironment(TightConfiguration()))
+        {
+            await using var host = new TightlyLimitedHost();
+            using HttpClient client = host.CreateClient();
+
+            var callerDescription = new Uri("/api/v1/auth/me", UriKind.Relative);
+
+            for (int permitted = 0; permitted < TightPermitLimit; permitted++)
+            {
+                using HttpResponseMessage allowed = await client.GetAsync(callerDescription);
+
+                allowed.StatusCode.Should().Be(
+                    HttpStatusCode.Unauthorized,
+                    "the limiter runs before authentication, so an anonymous read is charged and turned away");
+            }
+
+            using HttpResponseMessage readRefused = await client.GetAsync(callerDescription);
+
+            readRefused.StatusCode.Should().Be(
+                HttpStatusCode.TooManyRequests,
+                "the caller-description read must remain bounded: a stolen token would otherwise be free to "
+                + "probe it without limit");
+
+            using HttpResponseMessage signIn = await client.PostAsJsonAsync(
+                new Uri("/api/v1/auth/login", UriKind.Relative),
+                new { username = "nobody", password = "not-a-password" },
+                ApiTestFixture.Json);
+
+            signIn.StatusCode.Should().NotBe(
+                HttpStatusCode.TooManyRequests,
+                "sign-in draws on the credential window, which the caller-description read must not spend");
+        }
+    }
+
+    /// <summary>
+    /// SEC-022. With the deployment's proxy declared, the credential window partitions on the FORWARDED
+    /// client address, so one caller behind the proxy cannot spend every other caller's budget.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the fact the previous suite could not express. Addressed directly, every request already
+    /// arrives from a distinct socket, so a per-address partition looks correct however the forwarded headers
+    /// are treated. Behind a proxy every request arrives from the PROXY's address, and without the forwarded
+    /// headers stage all callers collapse into one partition and therefore one budget - which is a denial of
+    /// service against authentication for everyone, reachable by any one caller.
+    /// </para>
+    /// <para>
+    /// The test server exposes no remote address of its own, so the fixture host below assigns one before the
+    /// application's own pipeline runs and declares that same address as the trusted proxy. That is exactly
+    /// the shipped topology in miniature: one proxy, named explicitly, forwarding the caller's address.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CredentialWindow_PartitionsOnTheForwardedAddress_WhenTheProxyIsTrusted()
+    {
+        Dictionary<string, string?> configuration = TightConfiguration();
+        configuration["Proxy__KnownProxies__0"] = ProxyAddress;
+
+        using (ApiTestFixture.OverrideEnvironment(configuration))
+        {
+            await using var host = new ProxiedHost();
+            using HttpClient client = host.CreateClient();
+
+            var signIn = new Uri("/api/v1/auth/login", UriKind.Relative);
+
+            for (int permitted = 0; permitted < TightPermitLimit; permitted++)
+            {
+                using HttpResponseMessage allowed = await SendAsync(client, signIn, "203.0.113.10");
+                allowed.StatusCode.Should().NotBe(HttpStatusCode.TooManyRequests);
+            }
+
+            using HttpResponseMessage exhausted = await SendAsync(client, signIn, "203.0.113.10");
+            exhausted.StatusCode.Should().Be(
+                HttpStatusCode.TooManyRequests,
+                "the first caller has spent its own budget");
+
+            using HttpResponseMessage other = await SendAsync(client, signIn, "203.0.113.20");
+            other.StatusCode.Should().NotBe(
+                HttpStatusCode.TooManyRequests,
+                "a second caller behind the same proxy holds a budget of its own; without the forwarded "
+                + "headers stage both would share one");
+        }
+    }
+
+    /// <summary>
+    /// SEC-022, the safe default. With NO proxy declared, a forwarded address is ignored, so a caller cannot
+    /// name its own partition and mint itself an unlimited budget.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The forwarded headers stage is not even registered unless the deployment names what it trusts, which is
+    /// what this fact pins. A header honoured from an undeclared hop is worse than one ignored: the value is
+    /// supplied by whoever made the request, so trusting it lets a caller choose a fresh partition per
+    /// request and defeat the window entirely.
+    /// </remarks>
+    [Fact]
+    public async Task CredentialWindow_IgnoresTheForwardedAddress_WhenNoProxyIsTrusted()
+    {
+        using (ApiTestFixture.OverrideEnvironment(TightConfiguration()))
+        {
+            await using var host = new ProxiedHost();
+            using HttpClient client = host.CreateClient();
+
+            var signIn = new Uri("/api/v1/auth/login", UriKind.Relative);
+
+            for (int permitted = 0; permitted < TightPermitLimit; permitted++)
+            {
+                using HttpResponseMessage allowed = await SendAsync(client, signIn, "203.0.113.30");
+                allowed.StatusCode.Should().NotBe(HttpStatusCode.TooManyRequests);
+            }
+
+            using HttpResponseMessage claimingAnotherAddress = await SendAsync(client, signIn, "203.0.113.40");
+
+            claimingAnotherAddress.StatusCode.Should().Be(
+                HttpStatusCode.TooManyRequests,
+                "an undeclared proxy's forwarded address must not be honoured, or a caller could choose its "
+                + "own partition per request");
+        }
+    }
+
+    /// <summary>
+    /// SEC-016. A refusal from the credential limiter is marked non-cacheable, exactly like the token-bearing
+    /// success it stands in for.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the response an action filter cannot reach: the limiter short-circuits the pipeline before any
+    /// action or filter runs, which is why the directive is applied by a pipeline stage placed immediately
+    /// after routing.
+    /// </remarks>
+    [Fact]
+    public async Task CredentialRefusal_IsNotCacheable()
+    {
+        using (ApiTestFixture.OverrideEnvironment(TightConfiguration()))
+        {
+            await using var host = new TightlyLimitedHost();
+            using HttpClient client = host.CreateClient();
+
+            var signIn = new Uri("/api/v1/auth/login", UriKind.Relative);
+
+            for (int permitted = 0; permitted <= TightPermitLimit; permitted++)
+            {
+                using HttpResponseMessage _ = await client.PostAsJsonAsync(
+                    signIn,
+                    new { username = "nobody", password = "not-a-password" },
+                    ApiTestFixture.Json);
+            }
+
+            using HttpResponseMessage refused = await client.PostAsJsonAsync(
+                signIn,
+                new { username = "nobody", password = "not-a-password" },
+                ApiTestFixture.Json);
+
+            refused.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+            refused.Headers.CacheControl.Should().NotBeNull();
+            refused.Headers.CacheControl!.NoStore.Should().BeTrue();
+            refused.Headers.Pragma.Should().Contain(directive => directive.Name == "no-cache");
+        }
+    }
+
+    /// <summary>Sends one request that claims to have been forwarded from <paramref name="clientAddress"/>.</summary>
+    /// <param name="client">The client addressing the proxied host.</param>
+    /// <param name="route">The route to address.</param>
+    /// <param name="clientAddress">The address the proxy claims the caller has.</param>
+    /// <returns>The response, for the caller to assert on and dispose.</returns>
+    private static async Task<HttpResponseMessage> SendAsync(
+        HttpClient client,
+        Uri route,
+        string clientAddress)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, route)
+        {
+            Content = JsonContent.Create(
+                new { username = "nobody", password = "not-a-password" },
+                options: ApiTestFixture.Json),
+        };
+
+        request.Headers.TryAddWithoutValidation(ForwardedForHeaderName, clientAddress);
+
+        return await client.SendAsync(request);
     }
 
     /// <summary>
@@ -281,6 +531,54 @@ public sealed class CredentialRateLimitTests
             ArgumentNullException.ThrowIfNull(builder);
 
             builder.UseEnvironment("Testing");
+        }
+    }
+
+    /// <summary>
+    /// The same host, with a connecting peer address assigned before the application's own pipeline runs.
+    /// </summary>
+    /// <remarks>
+    /// The test server exposes no remote address, and the forwarded-headers stage refuses to promote anything
+    /// unless the peer it can see is one the deployment named - so without this the proxied facts above could
+    /// not distinguish "the header was ignored because the proxy is untrusted" from "there was no peer to
+    /// compare". A startup filter is what makes the assignment possible: filters wrap the application's
+    /// pipeline from the outside, so this runs ahead of every stage the application registers, including the
+    /// forwarded-headers stage that must see it.
+    /// </remarks>
+    private sealed class ProxiedHost : WebApplicationFactory<Program>
+    {
+        /// <inheritdoc />
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+
+            builder.UseEnvironment("Testing");
+            builder.ConfigureServices(services =>
+                services.AddSingleton<IStartupFilter>(new PeerAddressStartupFilter(ProxyAddress)));
+        }
+    }
+
+    /// <summary>Assigns the connecting peer address of every request before the application runs.</summary>
+    /// <param name="peerAddress">The address to present as the connecting peer.</param>
+    private sealed class PeerAddressStartupFilter(string peerAddress) : IStartupFilter
+    {
+        /// <inheritdoc />
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
+        {
+            ArgumentNullException.ThrowIfNull(next);
+
+            IPAddress address = IPAddress.Parse(peerAddress);
+
+            return app =>
+            {
+                app.Use(async (context, continuation) =>
+                {
+                    context.Connection.RemoteIpAddress = address;
+                    await continuation().ConfigureAwait(false);
+                });
+
+                next(app);
+            };
         }
     }
 }

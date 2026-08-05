@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.Role;
 
 /// <summary>
-/// Request contract for <c>PUT /api/v1/portals/{portalId}/role-groups/{roleGroupId}</c>: the writable
+/// Request contract for <c>PUT /api/v1/role-groups/{roleGroupId}</c>: the writable
 /// state of an existing portal-scoped container for security roles.
 /// </summary>
 /// <remarks>

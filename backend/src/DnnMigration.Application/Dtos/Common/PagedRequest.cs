@@ -19,37 +19,27 @@ namespace DnnMigration.Application.Dtos.Common;
 /// back on the reply would create a second place for it to disagree.
 /// </para>
 /// <para>
-/// It is an inert carrier holding no behaviour beyond two derived flags, and it deliberately offers no
-/// helper that would turn it into a query: composing an offset-and-limit read is data-access work
-/// done behind the repository interfaces, and a helper here would drag a persistence dependency into
-/// a layer that must not have one.
-/// </para>
-/// <para>
-/// It also enforces nothing. Bounds belong to a request validator under
+/// It is an inert carrier and enforces nothing. Bounds belong to a request validator under
 /// <c>Application/Validation/</c>, which is why no property below corrects, coerces or clamps what a
 /// caller supplied: a validator cannot report a page size of zero as invalid once a setter has
-/// silently rewritten it to ten. Every property is a plain settable auto-property so that
+/// silently rewritten it to ten. Composing an offset-and-limit read is likewise data-access work done
+/// behind the repository interfaces. Every property is a plain settable auto-property so that
 /// query-string model binding and JSON deserialisation can each populate it, and the binding-source
-/// attribute is declared by the controller on its own parameter rather than by this contract, which
-/// keeps the application layer free of any web-framework reference.
+/// attribute is declared by the controller rather than here, which keeps the application layer free of
+/// any web-framework reference.
 /// </para>
 /// <para>
 /// <b>IT IS DELIBERATELY NOT SEALED, AND EVERY REGISTERED ENDPOINT BINDS A DERIVATION OF IT RATHER
 /// THAN THIS TYPE.</b> The derivations - <see cref="PortalPagedRequest"/>,
 /// <see cref="RolePagedRequest"/>, <see cref="UserPagedRequest"/> and
-/// <see cref="ModulePagedRequest"/> - add no member and change no behaviour. They exist solely to
-/// give each collection a request TYPE of its own, because a type is the only thing a validator
-/// registry dispatches on. While every endpoint bound this one shared type, one validator was
-/// resolved for all of them and the only sortable vocabulary it could apply was the union of every
-/// collection's field names - so a caller could order the account listing by a portal field, receive
-/// <c>200 OK</c>, and be served an order they had not asked for, with nothing in the response to say
-/// the parameter had been discarded. Unsealing this type is what allows each collection's narrow
-/// sortable set to be enforced at the boundary instead of being declared and never consulted.
-/// </para>
-/// <para>
-/// Nothing about that arrangement invites a derivation to add state. A derivation that introduced a
-/// property would be introducing a query parameter, and a query parameter belongs on the action that
-/// declares it; the four that exist are empty and are expected to stay so.
+/// <see cref="ModulePagedRequest"/> - add no member and change no behaviour. They exist solely to give
+/// each collection a request TYPE of its own, because a type is the only thing a validator registry
+/// dispatches on: with one shared type, a single validator serves every endpoint and the only sortable
+/// vocabulary it can apply is the union of every collection's field names, so ordering the account
+/// listing by a portal field would answer <c>200 OK</c> having silently discarded the parameter.
+/// Unsealing is what lets each collection's narrow sortable set be enforced at the boundary. A
+/// derivation that added a property would be adding a query parameter, which belongs on the action
+/// that declares it, so the four are empty and are expected to stay so.
 /// </para>
 /// </remarks>
 // MIGRATION: the legacy "return everything, unpaged" call shape is deliberately NOT reproduced. It

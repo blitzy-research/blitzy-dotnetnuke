@@ -160,49 +160,52 @@
                 Disabled while a request is in flight, which mirrors the component's own
                 refusal to queue a second ordering behind the first.
 
-                BLITZY [A11Y]: THIS BUTTON'S FOCUS RING IS PRESENT BUT INVISIBLE, and the
-                cause is a design-token collision OUTSIDE this file, so it is flagged here
-                rather than worked around in markup. Measured at run time in a real browser:
-                the shared focus ring resolves its colour from the focus-ring token, that
-                token is defined as the primary brand colour, and the heading band's own
-                background is that same primary brand colour - so the ring paints
-                brand-on-brand at a contrast ratio of 1:1. It cannot escape geometrically
-                either: with the shared ring width and offset, the ring's outer box measured
-                fully inside the heading cell's painted box, and a pixel census of the ring
-                annulus found zero ring-distinct pixels. The identical ring IS clearly
-                visible on body rows, because their backdrop is the page surface, which
-                proves the mechanism is sound and isolates the fault to the dark heading
-                band. Anything focusable placed on a primary-coloured surface anywhere in
-                this application has the same defect. Proven to be fixable ONLY outside this
-                file: overriding that one token at run time, changing nothing else, restored
-                a crisp ring while this component's rendered markup stayed byte-identical,
-                and the whole-page pixel diff was confined entirely to the ring annulus.
-                Every focus-ring rule in the application reads the token and none exposes a
-                markup-level hook, so no attribute, class or structural change here could
-                influence the colour. An inline style is forbidden, and repainting the
-                heading band would discard the reversed-on-brand treatment carried over from
-                the legacy grids. Structure is already correct - a real, natively focusable
-                button - so no markup change is warranted or made. WCAG 2.4.7 and 2.4.11.
+                THIS BUTTON'S FOCUS RING IS VISIBLE, and it takes two independent
+                decisions outside this file to keep it that way, both recorded here because
+                this is the element whose ring was measured invisible and the markup is
+                where a later author would look. WCAG 2.4.7 and 2.4.11.
 
-                TWO WARNINGS FOR WHOEVER FIXES THIS, both established by measurement, so the
-                defect is not merely relocated. First: NO SINGLE FLAT RING COLOUR CAN WORK.
-                This component paints four distinct surfaces behind a focusable element - the
-                heading band, the page background, the alternating-row surface and the
-                selected-row tint - and clearing the 3:1 non-text contrast floor on the
-                heading band requires a luminance at or above roughly 0.20 while clearing it
-                on the selected tint requires one at or below roughly 0.18. That window is
-                empty, and an exhaustive search of the colour space confirms the best
-                achievable worst-case is about 2.87:1, short of the floor. Setting the ring
-                to the page background specifically MOVES the failure rather than removing
-                it: it reads 1:1 against every unselected body row. The remedies that do work
-                are a two-tone double ring - the shadow channel is currently unused on both
-                the sort control and the row, so it is free - or re-declaring the token within
-                the dark heading scope only. Second: A NAIVE REGRESSION TEST WILL PASS WHILE
-                THE DEFECT IS LIVE. A body row's own background resolves to transparent, so
-                comparing the ring colour with the element's own background returns
-                "different" and looks correct; the real backdrop is the first opaque ancestor.
-                Any automated guard must resolve the effective painted backdrop or compare
-                rendered pixels.
+                FIRST, THE HEADING BAND IS NOT PAINTED. The stylesheet beside this template
+                carries the measurement: six of the seven legacy record grids wired a
+                heading class that declares no colour at all, so the effective legacy
+                heading background was transparent and there was never a filled band to
+                carry forward. Colouring the heading TEXT with the brand token and painting
+                no surface is therefore both the faithful rendering and the one that leaves
+                this button's ring falling on the page surface, the alternating surface or
+                the selected tint - about 12.6:1, 11.6:1 and 8.2:1 against the ring colour
+                respectively, every one clear of the 3:1 floor for a non-text indicator.
+                Painting the band with the brand token and reversing the text onto it is
+                what must never be done here: the shared ring resolves its colour from that
+                same brand token, so the ring would paint brand-on-brand at 1:1, and it
+                could not escape geometrically either - at the shared width and offset the
+                ring's outer box measured fully inside the heading cell's painted box and a
+                pixel census of the annulus found zero ring-distinct pixels.
+
+                SECOND, THE SHARED RING IS TWO-TONE. Not painting the band fixes THIS
+                element, but it cannot fix the class of defect, because the brand colour is
+                still a painted surface elsewhere in the application - the shell paints the
+                skip link with it - and any focusable element placed on a brand-coloured
+                surface would collide again. The focus-ring mixin therefore bands the
+                outline with a contrasting outer shadow, so one tone is always at maximum
+                contrast against whatever is behind it. Two measurements shaped that choice
+                and both still hold, so neither is a live defect and neither may be
+                discarded. NO SINGLE FLAT RING COLOUR CAN WORK: this component paints four
+                distinct surfaces behind a focusable element - a brand band, were one ever
+                painted, the page background, the alternating-row surface and the
+                selected-row tint - and clearing the 3:1 floor on a brand band requires a
+                luminance at or above roughly 0.20 while clearing it on the selected tint
+                requires one at or below roughly 0.18. That window is empty; an exhaustive
+                search of the colour space put the best achievable worst-case at about
+                2.87:1. Setting the ring to the page background specifically MOVES the
+                failure rather than removing it, reading 1:1 against every unselected body
+                row. And A NAIVE REGRESSION TEST WILL PASS WHILE SUCH A DEFECT IS LIVE: a
+                body row's own background resolves to transparent, so comparing the ring
+                colour with the element's own background returns "different" and looks
+                correct, when the real backdrop is the first opaque ancestor. Any automated
+                guard must resolve the effective painted backdrop or compare rendered pixels.
+
+                Structure needed no change for either decision - a real, natively focusable
+                button is already correct - and none was made.
               -->
               <button
                 class="data-table__sort"

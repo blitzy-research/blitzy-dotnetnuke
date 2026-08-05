@@ -18,7 +18,7 @@ import {
 import type {
   PortalSettings,
   PortalSettingsLookups,
-  UpdatePortalRequest,
+  UpdatePortalSettingsRequest,
 } from '../../../core/models/portal.model';
 import type { SelectOption } from '../../../core/models/select-option.model';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
@@ -78,7 +78,8 @@ interface PortalSettingsFormModel {
   currency: FormControl<string>;
   paymentProcessor: FormControl<string>;
   processorUserId: FormControl<string>;
-  processorPassword: FormControl<string>;
+  processorCredentialReference: FormControl<string>;
+  clearProcessorCredentialReference: FormControl<boolean>;
   administratorId: FormControl<number | null>;
   defaultLanguage: FormControl<string>;
   timeZoneOffset: FormControl<number | null>;
@@ -112,6 +113,26 @@ const PROCESSOR_FIELD_MAX = 50;
 const DEFAULT_LANGUAGE_MAX = 6;
 const HOME_DIRECTORY_MAX = 100;
 const CURRENCY_CODE_LENGTH = 3;
+const DEFAULT_HEADING = 'Site Settings';
+
+/**
+ * Creates the empty lookup collection used before route data has been resolved.
+ *
+ * `withComponentInputBinding()` assigns `undefined` to inputs for which the active
+ * route has no matching parameter, query value or static data. Normalising that
+ * assignment here keeps the directly-routed component total without inventing a
+ * page, administrator or option.
+ */
+function emptyLookups(): PortalSettingsLookups {
+  return {
+    pages: [],
+    administrators: [],
+    currencies: [],
+    paymentProcessors: [],
+    languages: [],
+    timeZones: [],
+  };
+}
 
 /** Length of the `YYYY-MM-DD` prefix of a serialised instant. */
 const DATE_PREFIX_LENGTH = 10;
@@ -135,6 +156,10 @@ const NONE_SPECIFIED = '<None Specified>';
  * did.
  */
 const CURRENCY_LENGTH_MESSAGE = 'Currency must be a three letter code.';
+const PROCESSOR_CREDENTIAL_REFERENCE_MESSAGE =
+  'The processor credential reference must use secret:// followed by a managed-secret identifier.';
+const PROCESSOR_CREDENTIAL_REFERENCE_PATTERN =
+  /^secret:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,40}$/;
 const HOST_FEE_NEGATIVE_MESSAGE = 'Hosting Fee must be zero or greater.';
 const HOST_SPACE_NEGATIVE_MESSAGE = 'Disk Space must be zero or greater.';
 const PAGE_QUOTA_NEGATIVE_MESSAGE = 'Page Quota must be zero or greater.';
@@ -184,13 +209,11 @@ const FIELD_HINTS = {
   currency: 'The Currency used on the site.',
   paymentProcessor: 'The Payment Processor used to handle payments on the site.',
   processorUserId: 'The UserId for the Payment Processor.',
-  // MIGRATION: the second sentence has no legacy counterpart and is added because
-  // the behaviour it describes has none either — the legacy screen bound the
-  // stored password into the box, so "leave it blank" meant "clear it". Here the
-  // response carries no password, so blank has to mean "unchanged", and an
-  // operator who is not told that would reasonably expect the opposite.
-  processorPassword:
-    'User Password for the Payment Processor. Leave blank to keep the stored password.',
+  // MIGRATION: plaintext is replaced by an opaque managed-secret reference. The
+  // reference is never echoed, so a blank field means keep; the adjacent explicit
+  // clear control represents the separate clear operation.
+  processorCredentialReference:
+    'Enter a managed-secret reference using secret://. Leave blank to keep the stored reference.',
   administratorId: 'The Administrator User for the site.',
   defaultLanguage: 'The Default Language for the site.',
   timeZoneOffset: 'The TimeZone for the location of the site.',
@@ -241,6 +264,18 @@ function exactLengthWhenPresent(length: number, message: string): ValidatorFn {
 
     return raw.trim().length === length ? null : { exactLength: message };
   };
+}
+
+/** Accepts an empty keep/clear value or a bounded managed-secret reference. */
+function managedSecretReferenceWhenPresent(control: AbstractControl): ValidationErrors | null {
+  const raw = control.value;
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return null;
+  }
+
+  return PROCESSOR_CREDENTIAL_REFERENCE_PATTERN.test(raw)
+    ? null
+    : { managedSecretReference: PROCESSOR_CREDENTIAL_REFERENCE_MESSAGE };
 }
 
 /**
@@ -314,12 +349,15 @@ function textOrNull(value: string): string | null {
  *
  * THE TWENTY-SIX FIELDS
  *
- * `UpdatePortalRequest` declares twenty-seven properties. One of them, `portalId`,
- * is carried rather than edited. The remaining twenty-six each appear exactly once
- * below, distributed across the eight surviving sections in legacy source order.
+ * `UpdatePortalSettingsRequest` declares twenty-six properties, and each appears
+ * exactly once below, distributed across the eight surviving sections in legacy source order.
  * The count is not a coincidence and it is worth stating: it is the arithmetic
  * that proves no field was dropped in the move from three groups of layout tables
- * to two tabs.
+ * to two tabs. It is also twenty-six rather than twenty-seven because the settings
+ * resource addresses the portal through the route, so `portalId` is carried rather
+ * than edited. The processor reference deliberately uses two controls — value plus
+ * explicit clear intent — to represent the request's keep/replace/clear states
+ * without echoing the held reference.
  *
  * WHOLE-ROW REPLACEMENT
  *
@@ -332,10 +370,10 @@ function textOrNull(value: string): string | null {
  *   group, and populates that group from the loaded settings even when the
  *   operator may not edit it. Omitting it would waive the hosting charge and lift
  *   every quota.
- * - The payment-processor password is the sole exception. The response type
- *   carries no counterpart, so the form cannot pre-populate it; a blank
- *   submission is sent as `null`, which the server reads as "leave the stored
- *   secret alone".
+ * - The payment-processor managed-secret reference is the sole exception. The
+ *   response carries no counterpart, so blank means keep, a checked clear control
+ *   emits the empty-string clear operation, and a non-empty `secret://` value
+ *   replaces the reference. The credential itself never enters the form.
  */
 @Component({
   selector: 'app-portal-settings',
@@ -420,10 +458,14 @@ export class PortalSettingsComponent {
       nonNullable: true,
       validators: [Validators.maxLength(PROCESSOR_FIELD_MAX)],
     }),
-    processorPassword: new FormControl('', {
+    processorCredentialReference: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(PROCESSOR_FIELD_MAX)],
+      validators: [
+        Validators.maxLength(PROCESSOR_FIELD_MAX),
+        managedSecretReferenceWhenPresent,
+      ],
     }),
+    clearProcessorCredentialReference: new FormControl(false, { nonNullable: true }),
     administratorId: new FormControl<number | null>(null, { nonNullable: true }),
     defaultLanguage: new FormControl('', {
       nonNullable: true,
@@ -557,14 +599,10 @@ export class PortalSettingsComponent {
   private hostFieldsEditable = false;
 
   /** The lookup lists last supplied. */
-  private suppliedLookups: PortalSettingsLookups = {
-    pages: [],
-    administrators: [],
-    currencies: [],
-    paymentProcessors: [],
-    languages: [],
-    timeZones: [],
-  };
+  private suppliedLookups: PortalSettingsLookups = emptyLookups();
+
+  /** Backing field for the route-safe screen heading. */
+  private pageHeading = DEFAULT_HEADING;
 
   /** Page options for the four page selectors, including any held value. */
   protected pageOptions: readonly SelectOption<number>[] = [];
@@ -604,8 +642,8 @@ export class PortalSettingsComponent {
 
   /** The lookup lists backing the six select controls. */
   @Input()
-  public set lookups(value: PortalSettingsLookups) {
-    this.suppliedLookups = value;
+  public set lookups(value: PortalSettingsLookups | undefined) {
+    this.suppliedLookups = value ?? emptyLookups();
     this.rebuildOptions();
   }
 
@@ -614,7 +652,16 @@ export class PortalSettingsComponent {
   }
 
   /** Screen title. Defaults to the legacy module title. */
-  @Input() public heading = 'Site Settings';
+  @Input()
+  public set heading(value: string | undefined) {
+    const normalised = value?.trim();
+    this.pageHeading =
+      normalised === undefined || normalised.length === 0 ? DEFAULT_HEADING : normalised;
+  }
+
+  public get heading(): string {
+    return this.pageHeading;
+  }
 
   /** True while the settings are being fetched. */
   @Input({ transform: booleanAttribute }) public loading = false;
@@ -661,7 +708,7 @@ export class PortalSettingsComponent {
   @Input({ transform: booleanAttribute }) public canDelete = false;
 
   /** Emits the composed whole-row request when the form is submitted. */
-  @Output() public readonly save = new EventEmitter<UpdatePortalRequest>();
+  @Output() public readonly save = new EventEmitter<UpdatePortalSettingsRequest>();
 
   /** Emits when the operator abandons the edit. Legacy `cmdCancel`. */
   @Output() public readonly cancel = new EventEmitter<void>();
@@ -817,13 +864,21 @@ export class PortalSettingsComponent {
     this.collapsed.add(section);
   }
 
+  /** Clears and locks the replacement field when the explicit clear operation is selected. */
+  protected onProcessorReferenceClearChanged(): void {
+    if (this.form.controls.clearProcessorCredentialReference.value) {
+      this.form.controls.processorCredentialReference.setValue('');
+      this.form.controls.processorCredentialReference.markAsPristine();
+    }
+  }
+
   /**
    * The validation message for a field, or `null` when there is nothing to say.
    *
    * Nothing is reported until the control has been touched or edited, so a form
-   * opened and not yet used shows no errors. The order of the checks matters: the
-   * bespoke messages are the ones copied from the server validator, so they are
-   * returned before the generic length and range sentences.
+   * opened and not yet used shows no errors. The order of the checks matters:
+   * exact and minimum messages remain field-specific, while maximum length wins
+   * over managed-secret syntax when an overlong value carries both errors.
    */
   protected messageFor(field: keyof PortalSettingsFormModel): string | null {
     const control = this.form.controls[field];
@@ -853,6 +908,11 @@ export class PortalSettingsComponent {
       }
     }
 
+    const managedSecretReference = errors['managedSecretReference'];
+    if (typeof managedSecretReference === 'string') {
+      return managedSecretReference;
+    }
+
     return 'Correct this field and try again.';
   }
 
@@ -863,7 +923,7 @@ export class PortalSettingsComponent {
       return;
     }
 
-    this.save.emit(this.toRequest(this.held.portalId));
+    this.save.emit(this.toRequest());
   }
 
   /** Abandons the edit. Carries no validation, as the legacy button did not. */
@@ -894,11 +954,10 @@ export class PortalSettingsComponent {
    * trimmed and a blank one becomes `null`; numeric fields pass through as they
    * are, so a deliberate zero survives and is not mistaken for an absent value.
    */
-  private toRequest(portalId: number): UpdatePortalRequest {
+  private toRequest(): UpdatePortalSettingsRequest {
     const value = this.form.getRawValue();
 
     return {
-      portalId,
       portalName: textOrNull(value.portalName),
       description: textOrNull(value.description),
       keyWords: textOrNull(value.keyWords),
@@ -915,7 +974,9 @@ export class PortalSettingsComponent {
       currency: textOrNull(value.currency),
       paymentProcessor: textOrNull(value.paymentProcessor),
       processorUserId: textOrNull(value.processorUserId),
-      processorPassword: textOrNull(value.processorPassword),
+      processorCredentialReference: value.clearProcessorCredentialReference
+        ? ''
+        : textOrNull(value.processorCredentialReference),
       administratorId: value.administratorId,
       defaultLanguage: textOrNull(value.defaultLanguage),
       timeZoneOffset: value.timeZoneOffset,
@@ -954,10 +1015,10 @@ export class PortalSettingsComponent {
       currency: source.currency ?? '',
       paymentProcessor: source.paymentProcessor ?? '',
       processorUserId: source.processorUserId ?? '',
-      // Never pre-populated: the response type carries no counterpart, so there
-      // is nothing to write, and a blank submission leaves the stored secret
-      // alone.
-      processorPassword: '',
+      // Never pre-populated: the response carries no reference. Blank means keep,
+      // while the separate boolean makes clear an explicit operation.
+      processorCredentialReference: '',
+      clearProcessorCredentialReference: false,
       administratorId: source.administratorId,
       defaultLanguage: source.defaultLanguage ?? '',
       timeZoneOffset: source.timeZoneOffset,

@@ -3,6 +3,7 @@ using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
 using DnnMigration.Infrastructure;
 using FluentAssertions;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.Configuration;
@@ -80,6 +81,23 @@ public sealed class DnnDbContextTests
         ["Modules"] = 0,
         ["TabModules"] = 1,
         ["Users"] = 1,
+    };
+
+    /// <summary>
+    /// Model relationships that deliberately have no physical foreign-key constraint in the terminal schema.
+    /// </summary>
+    /// <remarks>
+    /// The profile-definition relationship is queryable over its nullable <c>ModuleDefID</c> column but the
+    /// legacy upgrade chain never constrained it. The two permission-role relationships are likewise
+    /// queryable, while their columns must admit the negative pseudo-role identifiers the database uses.
+    /// These relationships therefore stay in the EF model with <c>NoAction</c> but are excluded from the
+    /// physical constraint inventory below.
+    /// </remarks>
+    private static readonly IReadOnlySet<string> ConceptualOnlyForeignKeys = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "FK_ProfilePropertyDefinition_ModuleDefinitions_ModuleDefID",
+        "FK_ModulePermission_Roles_RoleID",
+        "FK_TabPermission_Roles_RoleID",
     };
 
     /// <summary>The twenty-one tables the entity model binds to.</summary>
@@ -450,6 +468,56 @@ public sealed class DnnDbContextTests
     }
 
     /// <summary>
+    /// Every mapped non-primary index has the model's physical name, ordered columns, uniqueness and filter.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is intentionally an inventory comparison rather than a handful of spot checks. The earlier
+    /// embedded schema had thirty-seven indexes against the model's thirty-three: eight existed only in the
+    /// test database, four were absent there, fourteen matching structures carried different names, and three
+    /// unique indexes added filters the terminal schema does not have. Comparing complete ordered metadata
+    /// prevents a CRUD test from passing under an access path or uniqueness rule production never receives.
+    /// </remarks>
+    [Fact]
+    public async Task ProvisionedSchema_IndexesMatchTheMappedTerminalInventory()
+    {
+        IReadOnlyList<IndexMetadata> expected = ReadModelIndexes();
+        IReadOnlyList<IndexMetadata> actual = await ReadDatabaseIndexesAsync();
+
+        expected.Should().HaveCount(33);
+        actual.Should().Equal(
+            expected,
+            "the embedded integration schema must reproduce every mapped terminal index exactly");
+    }
+
+    /// <summary>
+    /// Every physical foreign key has the terminal name, ordered columns, principal and delete action.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The conceptual relationships named by <see cref="ConceptualOnlyForeignKeys"/> are intentionally absent
+    /// from the physical inventory. In particular, neither <c>Permission.ModuleDefID</c> nor
+    /// <c>ProfilePropertyDefinition.ModuleDefID</c> is constrained in the terminal legacy schema. Creating
+    /// either key in tests lets integration CRUD pass under a constraint production does not have.
+    /// </remarks>
+    [Fact]
+    public async Task ProvisionedSchema_ForeignKeysMatchTheTerminalPhysicalInventory()
+    {
+        IReadOnlyList<ForeignKeyMetadata> expected = ReadModelForeignKeys()
+            .Where(foreignKey => !ConceptualOnlyForeignKeys.Contains(foreignKey.Name))
+            .ToList();
+        IReadOnlyList<ForeignKeyMetadata> actual = await ReadDatabaseForeignKeysAsync();
+
+        expected.Should().HaveCount(29);
+        actual.Should().Equal(
+            expected,
+            "the test database must neither invent a foreign key nor omit one the terminal schema enforces");
+        actual.Should().NotContain(
+            foreignKey => foreignKey.Name == "FK_Permission_ModuleDefinitions_ModuleDefID"
+                || foreignKey.Name == "FK_ProfilePropertyDefinition_ModuleDefinitions_ModuleDefID");
+    }
+
+    /// <summary>
     /// The hosting charge is stored as a monetary type, not as text, so no value converter stands between
     /// the decimal property and the column.
     /// </summary>
@@ -557,69 +625,82 @@ public sealed class DnnDbContextTests
             portalId = portal.PortalId;
         }
 
-        // The hosting charge lands in a monetary column as a number, so it round-trips exactly and its
-        // stored form does not depend on the writing server's decimal separator.
-        decimal storedFee = await _fixture.Database.ScalarAsync<decimal>(
-            "SELECT [HostFee] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
-            new Dictionary<string, object?> { ["portalId"] = portalId });
-
-        storedFee.Should().Be(12.5m);
-
-        string storedGuid = await _fixture.Database.ScalarAsync<string>(
-            "SELECT CAST([GUID] AS nvarchar(36)) FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
-            new Dictionary<string, object?> { ["portalId"] = portalId });
-
-        Guid.Parse(storedGuid).Should().Be(identifier);
-
-        string storedDirectory = await _fixture.Database.ScalarAsync<string>(
-            "SELECT [HomeDirectory] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
-            new Dictionary<string, object?> { ["portalId"] = portalId });
-
-        storedDirectory.Should().Be(FormattableString.Invariant($"Portals/{suffix}"));
-
-        int storedOffset = await _fixture.Database.ScalarAsync<int>(
-            "SELECT [TimezoneOffset] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
-            new Dictionary<string, object?> { ["portalId"] = portalId });
-
-        storedOffset.Should().Be(-480);
-
-        using (IServiceScope reading = _fixture.Services.CreateScope())
+        try
         {
-            IPortalRepository portals = reading.ServiceProvider.GetRequiredService<IPortalRepository>();
+            // The hosting charge lands in a monetary column as a number, so it round-trips exactly and its
+            // stored form does not depend on the writing server's decimal separator.
+            decimal storedFee = await _fixture.Database.ScalarAsync<decimal>(
+                "SELECT [HostFee] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+                new Dictionary<string, object?> { ["portalId"] = portalId });
 
-            Portal? reread = await portals.GetByIdAsync(portalId);
+            storedFee.Should().Be(12.5m);
 
-            reread.Should().NotBeNull();
-            reread!.PortalName.Should().Be(FormattableString.Invariant($"Mapping Portal {suffix}"));
-            reread.HostFee.Should().Be(12.5m);
-            reread.HostSpace.Should().Be(256);
-            reread.PortalGuid.Should().Be(identifier);
-            reread.Currency.Should().Be("USD");
-            reread.TimeZoneOffset.Should().Be(-480);
-            reread.PageQuota.Should().Be(25);
-            reread.UserQuota.Should().Be(50);
-            reread.SiteLogHistory.Should().Be(7);
-            reread.UserRegistration.Should().Be(UserRegistrationMode.PublicRegistration);
-            reread.BannerAdvertising.Should().Be(BannerAdvertisingMode.None);
+            string storedGuid = await _fixture.Database.ScalarAsync<string>(
+                "SELECT CAST([GUID] AS nvarchar(36)) FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+                new Dictionary<string, object?> { ["portalId"] = portalId });
+
+            Guid.Parse(storedGuid).Should().Be(identifier);
+
+            string storedDirectory = await _fixture.Database.ScalarAsync<string>(
+                "SELECT [HomeDirectory] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+                new Dictionary<string, object?> { ["portalId"] = portalId });
+
+            storedDirectory.Should().Be(FormattableString.Invariant($"Portals/{suffix}"));
+
+            int storedOffset = await _fixture.Database.ScalarAsync<int>(
+                "SELECT [TimezoneOffset] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+                new Dictionary<string, object?> { ["portalId"] = portalId });
+
+            storedOffset.Should().Be(-480);
+
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IPortalRepository portals = reading.ServiceProvider.GetRequiredService<IPortalRepository>();
+
+                Portal? reread = await portals.GetByIdAsync(portalId);
+
+                reread.Should().NotBeNull();
+                reread!.PortalName.Should().Be(FormattableString.Invariant($"Mapping Portal {suffix}"));
+                reread.HostFee.Should().Be(12.5m);
+                reread.HostSpace.Should().Be(256);
+                reread.PortalGuid.Should().Be(identifier);
+                reread.Currency.Should().Be("USD");
+                reread.TimeZoneOffset.Should().Be(-480);
+                reread.PageQuota.Should().Be(25);
+                reread.UserQuota.Should().Be(50);
+                reread.SiteLogHistory.Should().Be(7);
+                reread.UserRegistration.Should().Be(UserRegistrationMode.PublicRegistration);
+                reread.BannerAdvertising.Should().Be(BannerAdvertisingMode.None);
+            }
+
+            using (IServiceScope removing = _fixture.Services.CreateScope())
+            {
+                IPortalRepository portals = removing.ServiceProvider.GetRequiredService<IPortalRepository>();
+                IUnitOfWork unitOfWork = removing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Portal? doomed = await portals.GetByIdAsync(portalId);
+                doomed.Should().NotBeNull();
+
+                await portals.DeleteAsync(doomed!.PortalId);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            int remaining = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+                new Dictionary<string, object?> { ["portalId"] = portalId });
+
+            remaining.Should().Be(0);
         }
-
-        using (IServiceScope removing = _fixture.Services.CreateScope())
+        finally
         {
-            IPortalRepository portals = removing.ServiceProvider.GetRequiredService<IPortalRepository>();
-            IUnitOfWork unitOfWork = removing.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-            Portal? doomed = await portals.GetByIdAsync(portalId);
-            doomed.Should().NotBeNull();
-
-            await portals.DeleteAsync(doomed!.PortalId);
-            await unitOfWork.SaveChangesAsync();
+            // A SAFETY NET, not the assertion. The removal above is part of what this fact asserts, so it
+            // stays in the body where its outcome is checked; this only covers the case where an assertion
+            // failed BEFORE the removal ran and would otherwise have left an extra tenant in the shared
+            // database for every later fact that counts portals. It is idempotent, so on the ordinary path it
+            // affects nothing, and it asserts nothing, so it can never replace the failure that brought it
+            // here.
+            await EnsurePortalRemovedAsync(portalId);
         }
-
-        int remaining = await _fixture.Database.ScalarAsync<int>(
-            "SELECT COUNT(*) FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
-            new Dictionary<string, object?> { ["portalId"] = portalId });
-
-        remaining.Should().Be(0);
     }
 
     /// <summary>A billing frequency written through the model is stored as its legacy character code.</summary>
@@ -656,35 +737,45 @@ public sealed class DnnDbContextTests
             roleId = role.RoleId;
         }
 
-        string storedBilling = await _fixture.Database.ScalarAsync<string>(
-            "SELECT [BillingFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
-            new Dictionary<string, object?> { ["roleId"] = roleId });
-
-        string storedTrial = await _fixture.Database.ScalarAsync<string>(
-            "SELECT [TrialFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
-            new Dictionary<string, object?> { ["roleId"] = roleId });
-
-        storedBilling.Should().Be("M");
-        storedTrial.Should().Be("W");
-
-        using (IServiceScope reading = _fixture.Services.CreateScope())
+        try
         {
-            IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+            string storedBilling = await _fixture.Database.ScalarAsync<string>(
+                "SELECT [BillingFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?> { ["roleId"] = roleId });
 
-            Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+            string storedTrial = await _fixture.Database.ScalarAsync<string>(
+                "SELECT [TrialFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?> { ["roleId"] = roleId });
 
-            reread.Should().NotBeNull();
-            reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.Month);
-            reread.TrialFrequency.Should().Be(Domain.Enums.BillingFrequency.Week);
-            reread.ServiceFee.Should().Be(9.99m);
-            reread.TrialFee.Should().Be(1.5m);
-            reread.BillingPeriod.Should().Be(3);
-            reread.TrialPeriod.Should().Be(2);
-            reread.IsPublic.Should().BeTrue();
-            reread.AutoAssignment.Should().BeFalse();
+            storedBilling.Should().Be("M");
+            storedTrial.Should().Be("W");
+
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+
+                reread.Should().NotBeNull();
+                reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.Month);
+                reread.TrialFrequency.Should().Be(Domain.Enums.BillingFrequency.Week);
+                reread.ServiceFee.Should().Be(9.99m);
+                reread.TrialFee.Should().Be(1.5m);
+                reread.BillingPeriod.Should().Be(3);
+                reread.TrialPeriod.Should().Be(2);
+                reread.IsPublic.Should().BeTrue();
+                reread.AutoAssignment.Should().BeFalse();
+            }
+
         }
-
-        await RemoveRoleAsync(roleId);
+        finally
+        {
+            // The role is a row in the SHARED seeded tenant, so a failing assertion above must not leave it
+            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one real
+            // failure here into several unrelated ones elsewhere. The removal asserts nothing, so it cannot
+            // displace the failure that brought it here, and it is a no-op when the role is already gone.
+            await RemoveRoleAsync(roleId);
+        }
     }
 
     /// <summary>A role with no frequency leaves the character columns null rather than writing a code.</summary>
@@ -721,25 +812,35 @@ public sealed class DnnDbContextTests
             roleId = role.RoleId;
         }
 
-        int nulls = await _fixture.Database.ScalarAsync<int>(
-            "SELECT CASE WHEN [BillingFrequency] IS NULL AND [TrialFrequency] IS NULL THEN 1 ELSE 0 END "
-            + "FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
-            new Dictionary<string, object?> { ["roleId"] = roleId });
-
-        nulls.Should().Be(1);
-
-        using (IServiceScope reading = _fixture.Services.CreateScope())
+        try
         {
-            IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+            int nulls = await _fixture.Database.ScalarAsync<int>(
+                "SELECT CASE WHEN [BillingFrequency] IS NULL AND [TrialFrequency] IS NULL THEN 1 ELSE 0 END "
+                + "FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?> { ["roleId"] = roleId });
 
-            Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+            nulls.Should().Be(1);
 
-            reread.Should().NotBeNull();
-            reread!.BillingFrequency.Should().BeNull();
-            reread.TrialFrequency.Should().BeNull();
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+
+                reread.Should().NotBeNull();
+                reread!.BillingFrequency.Should().BeNull();
+                reread.TrialFrequency.Should().BeNull();
+            }
+
         }
-
-        await RemoveRoleAsync(roleId);
+        finally
+        {
+            // The role is a row in the SHARED seeded tenant, so a failing assertion above must not leave it
+            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one real
+            // failure here into several unrelated ones elsewhere. The removal asserts nothing, so it cannot
+            // displace the failure that brought it here, and it is a no-op when the role is already gone.
+            await RemoveRoleAsync(roleId);
+        }
     }
 
     /// <summary>
@@ -812,32 +913,42 @@ public sealed class DnnDbContextTests
             roleId = role.RoleId;
         }
 
-        // Planted with a direct statement rather than through the model, because the model cannot express
-        // it - which is the point. Only a legacy row can carry this, so only a legacy row can prove the
-        // read handles it.
-        await _fixture.Database.ExecuteAsync(
-            "UPDATE [dbo].[Roles] SET [BillingFrequency] = @stored, [TrialFrequency] = @stored "
-            + "WHERE [RoleID] = @roleId",
-            new Dictionary<string, object?> { ["stored"] = stored, ["roleId"] = roleId });
-
-        using (IServiceScope reading = _fixture.Services.CreateScope())
+        try
         {
-            IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+            // Planted with a direct statement rather than through the model, because the model cannot express
+            // it - which is the point. Only a legacy row can carry this, so only a legacy row can prove the
+            // read handles it.
+            await _fixture.Database.ExecuteAsync(
+                "UPDATE [dbo].[Roles] SET [BillingFrequency] = @stored, [TrialFrequency] = @stored "
+                + "WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?> { ["stored"] = stored, ["roleId"] = roleId });
 
-            Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            reread.Should().NotBeNull();
+                Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
 
-            reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
-            reread.TrialFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
+                reread.Should().NotBeNull();
 
-            Enum.IsDefined(reread.BillingFrequency!.Value).Should().BeTrue(
-                "an undefined enumeration value reaches the wire and fails there, taking the whole "
-                + "response with it, so it must not be materialised in the first place");
-            Enum.IsDefined(reread.TrialFrequency!.Value).Should().BeTrue();
+                reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
+                reread.TrialFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
+
+                Enum.IsDefined(reread.BillingFrequency!.Value).Should().BeTrue(
+                    "an undefined enumeration value reaches the wire and fails there, taking the whole "
+                    + "response with it, so it must not be materialised in the first place");
+                Enum.IsDefined(reread.TrialFrequency!.Value).Should().BeTrue();
+            }
+
         }
-
-        await RemoveRoleAsync(roleId);
+        finally
+        {
+            // The role is a row in the SHARED seeded tenant, so a failing assertion above must not leave it
+            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one real
+            // failure here into several unrelated ones elsewhere. The removal asserts nothing, so it cannot
+            // displace the failure that brought it here, and it is a no-op when the role is already gone.
+            await RemoveRoleAsync(roleId);
+        }
     }
 
     /// <summary>Every persistence abstraction resolves from the composed host inside a request scope.</summary>
@@ -1195,6 +1306,252 @@ public sealed class DnnDbContextTests
             "the membership store is installed externally and is only ever altered by the legacy chain");
     }
 
+    /// <summary>Projects every non-primary model index into its physical database shape.</summary>
+    /// <returns>The complete ordered index inventory.</returns>
+    private static IReadOnlyList<IndexMetadata> ReadModelIndexes()
+    {
+        var indexes = new List<IndexMetadata>();
+
+        foreach (IEntityType entity in Model.GetEntityTypes())
+        {
+            string tableName = entity.GetTableName()
+                ?? throw new InvalidOperationException(
+                    FormattableString.Invariant($"{entity.ClrType.Name} has no table name."));
+            StoreObjectIdentifier table = StoreObjectIdentifier.Table(tableName, entity.GetSchema());
+
+            foreach (IIndex index in entity.GetIndexes())
+            {
+                string name = index.GetDatabaseName()
+                    ?? throw new InvalidOperationException(
+                        FormattableString.Invariant($"{entity.ClrType.Name} has an unnamed index."));
+                string columns = string.Join(
+                    ",",
+                    index.Properties.Select(property => property.GetColumnName(table)
+                        ?? throw new InvalidOperationException(
+                            FormattableString.Invariant(
+                                $"{entity.ClrType.Name}.{property.Name} has no column name."))));
+
+                indexes.Add(new IndexMetadata(
+                    tableName,
+                    name,
+                    columns,
+                    index.IsUnique,
+                    index.GetFilter()));
+            }
+        }
+
+        return indexes
+            .OrderBy(index => index.Table, StringComparer.Ordinal)
+            .ThenBy(index => index.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>Reads every non-primary index from the provisioned SQL Server catalogue.</summary>
+    /// <returns>The complete ordered index inventory.</returns>
+    private async Task<IReadOnlyList<IndexMetadata>> ReadDatabaseIndexesAsync()
+    {
+        const string query =
+            """
+            SELECT
+                t.[name] AS [TableName],
+                i.[name] AS [IndexName],
+                STRING_AGG(c.[name], N',') WITHIN GROUP (ORDER BY ic.[key_ordinal]) AS [Columns],
+                CAST(i.[is_unique] AS bit) AS [IsUnique],
+                i.[filter_definition] AS [FilterDefinition]
+            FROM sys.indexes AS i
+            INNER JOIN sys.tables AS t ON t.[object_id] = i.[object_id]
+            INNER JOIN sys.schemas AS s ON s.[schema_id] = t.[schema_id]
+            INNER JOIN sys.index_columns AS ic
+                ON ic.[object_id] = i.[object_id]
+                AND ic.[index_id] = i.[index_id]
+                AND ic.[key_ordinal] > 0
+                AND ic.[is_included_column] = 0
+            INNER JOIN sys.columns AS c
+                ON c.[object_id] = ic.[object_id]
+                AND c.[column_id] = ic.[column_id]
+            WHERE s.[name] = N'dbo'
+                AND i.[index_id] > 0
+                AND i.[is_primary_key] = 0
+                AND i.[is_hypothetical] = 0
+            GROUP BY t.[name], i.[name], i.[is_unique], i.[filter_definition]
+            ORDER BY t.[name], i.[name];
+            """;
+
+        var indexes = new List<IndexMetadata>();
+        var mappedTables = MappedTables.ToHashSet(StringComparer.Ordinal);
+
+        await using var connection = new SqlConnection(_fixture.Database.ConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = new SqlCommand(query, connection);
+        await using SqlDataReader reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            string table = reader.GetString(0);
+            if (!mappedTables.Contains(table))
+            {
+                continue;
+            }
+
+            indexes.Add(new IndexMetadata(
+                table,
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetBoolean(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4)));
+        }
+
+        return indexes
+            .OrderBy(index => index.Table, StringComparer.Ordinal)
+            .ThenBy(index => index.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>Projects every model relationship into its physical foreign-key shape.</summary>
+    /// <returns>The complete ordered relationship inventory, including conceptual-only relationships.</returns>
+    private static IReadOnlyList<ForeignKeyMetadata> ReadModelForeignKeys()
+    {
+        var foreignKeys = new List<ForeignKeyMetadata>();
+
+        foreach (IEntityType entity in Model.GetEntityTypes())
+        {
+            string tableName = entity.GetTableName()
+                ?? throw new InvalidOperationException(
+                    FormattableString.Invariant($"{entity.ClrType.Name} has no table name."));
+            StoreObjectIdentifier table = StoreObjectIdentifier.Table(tableName, entity.GetSchema());
+
+            foreach (IForeignKey foreignKey in entity.GetForeignKeys())
+            {
+                IEntityType principal = foreignKey.PrincipalEntityType;
+                string principalTableName = principal.GetTableName()
+                    ?? throw new InvalidOperationException(
+                        FormattableString.Invariant($"{principal.ClrType.Name} has no table name."));
+                StoreObjectIdentifier principalTable =
+                    StoreObjectIdentifier.Table(principalTableName, principal.GetSchema());
+                string name = foreignKey.GetConstraintName()
+                    ?? throw new InvalidOperationException(
+                        FormattableString.Invariant(
+                            $"{entity.ClrType.Name} to {principal.ClrType.Name} has no constraint name."));
+                string columns = string.Join(
+                    ",",
+                    foreignKey.Properties.Select(property => property.GetColumnName(table)
+                        ?? throw new InvalidOperationException(
+                            FormattableString.Invariant(
+                                $"{entity.ClrType.Name}.{property.Name} has no column name."))));
+                string principalColumns = string.Join(
+                    ",",
+                    foreignKey.PrincipalKey.Properties.Select(property => property.GetColumnName(principalTable)
+                        ?? throw new InvalidOperationException(
+                            FormattableString.Invariant(
+                                $"{principal.ClrType.Name}.{property.Name} has no column name."))));
+
+                foreignKeys.Add(new ForeignKeyMetadata(
+                    tableName,
+                    name,
+                    columns,
+                    principalTableName,
+                    principalColumns,
+                    ToReferentialAction(foreignKey.DeleteBehavior)));
+            }
+        }
+
+        return foreignKeys
+            .OrderBy(foreignKey => foreignKey.Table, StringComparer.Ordinal)
+            .ThenBy(foreignKey => foreignKey.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>Reads every foreign key from the provisioned SQL Server catalogue.</summary>
+    /// <returns>The complete ordered physical foreign-key inventory.</returns>
+    private async Task<IReadOnlyList<ForeignKeyMetadata>> ReadDatabaseForeignKeysAsync()
+    {
+        const string query =
+            """
+            SELECT
+                dependentTable.[name] AS [TableName],
+                foreignKey.[name] AS [ForeignKeyName],
+                STRING_AGG(dependentColumn.[name], N',')
+                    WITHIN GROUP (ORDER BY foreignKeyColumn.[constraint_column_id]) AS [Columns],
+                principalTable.[name] AS [PrincipalTableName],
+                STRING_AGG(principalColumn.[name], N',')
+                    WITHIN GROUP (ORDER BY foreignKeyColumn.[constraint_column_id]) AS [PrincipalColumns],
+                foreignKey.[delete_referential_action_desc] AS [DeleteAction]
+            FROM sys.foreign_keys AS foreignKey
+            INNER JOIN sys.foreign_key_columns AS foreignKeyColumn
+                ON foreignKeyColumn.[constraint_object_id] = foreignKey.[object_id]
+            INNER JOIN sys.tables AS dependentTable
+                ON dependentTable.[object_id] = foreignKey.[parent_object_id]
+            INNER JOIN sys.schemas AS dependentSchema
+                ON dependentSchema.[schema_id] = dependentTable.[schema_id]
+            INNER JOIN sys.columns AS dependentColumn
+                ON dependentColumn.[object_id] = foreignKeyColumn.[parent_object_id]
+                AND dependentColumn.[column_id] = foreignKeyColumn.[parent_column_id]
+            INNER JOIN sys.tables AS principalTable
+                ON principalTable.[object_id] = foreignKey.[referenced_object_id]
+            INNER JOIN sys.columns AS principalColumn
+                ON principalColumn.[object_id] = foreignKeyColumn.[referenced_object_id]
+                AND principalColumn.[column_id] = foreignKeyColumn.[referenced_column_id]
+            WHERE dependentSchema.[name] = N'dbo'
+            GROUP BY
+                dependentTable.[name],
+                foreignKey.[name],
+                principalTable.[name],
+                foreignKey.[delete_referential_action_desc]
+            ORDER BY dependentTable.[name], foreignKey.[name];
+            """;
+
+        var foreignKeys = new List<ForeignKeyMetadata>();
+        var mappedTables = MappedTables.ToHashSet(StringComparer.Ordinal);
+
+        await using var connection = new SqlConnection(_fixture.Database.ConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = new SqlCommand(query, connection);
+        await using SqlDataReader reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            string table = reader.GetString(0);
+            if (!mappedTables.Contains(table))
+            {
+                continue;
+            }
+
+            foreignKeys.Add(new ForeignKeyMetadata(
+                table,
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5)));
+        }
+
+        return foreignKeys
+            .OrderBy(foreignKey => foreignKey.Table, StringComparer.Ordinal)
+            .ThenBy(foreignKey => foreignKey.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>Converts an EF delete behaviour to SQL Server's catalogue vocabulary.</summary>
+    /// <param name="deleteBehavior">The configured model behaviour.</param>
+    /// <returns>The corresponding <c>sys.foreign_keys</c> action.</returns>
+    private static string ToReferentialAction(DeleteBehavior deleteBehavior) =>
+        deleteBehavior switch
+        {
+            DeleteBehavior.Cascade => "CASCADE",
+            DeleteBehavior.SetNull => "SET_NULL",
+            DeleteBehavior.NoAction
+                or DeleteBehavior.Restrict
+                or DeleteBehavior.ClientSetNull
+                or DeleteBehavior.ClientCascade
+                or DeleteBehavior.ClientNoAction => "NO_ACTION",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(deleteBehavior),
+                deleteBehavior,
+                "The mapped delete behaviour has no SQL Server catalogue equivalent."),
+        };
+
     /// <summary>Composes the entity model from the production registration, without any database.</summary>
     /// <returns>The composed model.</returns>
     /// <remarks>
@@ -1289,6 +1646,34 @@ public sealed class DnnDbContextTests
 
         return key.Properties.Select(property => property.Name).ToList();
     }
+
+    private sealed record IndexMetadata(
+        string Table,
+        string Name,
+        string Columns,
+        bool IsUnique,
+        string? Filter);
+
+    private sealed record ForeignKeyMetadata(
+        string Table,
+        string Name,
+        string Columns,
+        string PrincipalTable,
+        string PrincipalColumns,
+        string DeleteAction);
+    /// <summary>Ensures a portal created by this suite is gone, whatever else happened.</summary>
+    /// <param name="portalId">The portal to remove.</param>
+    /// <returns>A task that completes when no such row remains.</returns>
+    /// <remarks>
+    /// A direct statement rather than the repository, and deliberately so: this runs on the failure path, where
+    /// the model or the unit of work may be the very thing that is broken, and a cleanup that depends on the
+    /// component under test cannot be relied upon to clean up. The row has no dependents - it was written bare
+    /// by this suite - so one statement is sufficient, and the statement is unconditional so calling it twice
+    /// costs nothing.
+    /// </remarks>
+    private Task EnsurePortalRemovedAsync(int portalId) => _fixture.Database.ExecuteAsync(
+        "DELETE FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+        new Dictionary<string, object?> { ["portalId"] = portalId });
 
     /// <summary>Removes a role created by this suite.</summary>
     /// <param name="roleId">The role to remove.</param>

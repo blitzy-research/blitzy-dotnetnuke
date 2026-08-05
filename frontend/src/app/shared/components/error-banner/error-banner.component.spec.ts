@@ -210,6 +210,32 @@ describe('ErrorBannerComponent', () => {
       expect(fieldMessages()).toEqual(['Too short.', 'Too simple.']);
     });
 
+    it('renders a repeated message once per occurrence rather than collapsing it', () => {
+      // The messages are tracked BY POSITION. Tracking by the text itself makes the
+      // second occurrence of an identical message collide with the first: the
+      // framework treats them as one item, renders a single line, and silently drops
+      // a message the server sent. The legacy source produces exactly this input -
+      // Signup.ascx.vb:L193 appends the identical fragment INSIDE A PER-CHARACTER
+      // LOOP, so one submission with two invalid characters yields the same sentence
+      // twice - which makes the collapse a real data loss rather than a theoretical
+      // one. The sibling form-field component tracks by position for this reason.
+      setProblem({
+        status: 400,
+        errors: { PortalName: ['You Must Enter a Valid Name', 'You Must Enter a Valid Name'] },
+      });
+
+      expect(fieldMessages())
+        .withContext('both occurrences survive')
+        .toEqual(['You Must Enter a Valid Name', 'You Must Enter a Valid Name']);
+      expect(
+        (
+          fixture.debugElement.query(By.css('.error-banner__fields')).nativeElement as HTMLElement
+        ).querySelectorAll('dd').length,
+      )
+        .withContext('two details for one term')
+        .toBe(2);
+    });
+
     it('drops a field whose messages are all blank, so no empty row is rendered', () => {
       setProblem({ status: 400, errors: { PortalName: ['   ', ''] } });
 
@@ -304,8 +330,12 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('states the severity as a word, so colour is never the only cue', () => {
-      // --color-danger measures 4.0:1 on the background, below the 4.5:1 normal text needs,
-      // and its token annotation requires a non-colour cue as well.
+      // The requirement stands on its own footing and does not depend on any contrast
+      // figure: colour must never be the sole carrier of meaning, so the band names its
+      // own severity in words. It was previously justified by the danger colour failing
+      // the text-contrast minimum; the text now resolves to a compliant token and the
+      // word is still required, because a reader who cannot distinguish the hue at all
+      // learns nothing from a compliant red either.
       setProblem({ status: 500 });
 
       expect(severityWord()!.length).toBeGreaterThan(0);
@@ -323,7 +353,7 @@ describe('ErrorBannerComponent', () => {
       setProblem({ status: 500 });
 
       expect(trace()).toBeNull();
-      expect(fixture.componentInstance.hasTraceId()).toBeFalse();
+      expect(fixture.componentInstance.hasSupportReference()).toBeFalse();
     });
 
     it('treats a blank identifier as absent, because it joins nothing to nothing', () => {
@@ -331,7 +361,7 @@ describe('ErrorBannerComponent', () => {
       // absent, so it is tested for explicitly rather than by truthiness.
       setProblem({ status: 500, traceId: '   ' });
 
-      expect(fixture.componentInstance.traceId()).toBeNull();
+      expect(fixture.componentInstance.supportReference()).toBeNull();
       expect(trace()).toBeNull();
     });
 
@@ -438,14 +468,30 @@ describe('ErrorBannerComponent', () => {
       };
     }
 
-    it('paints only the danger band in the error colour', () => {
+    it('paints only the danger band in the error colour, in TWO tokens rather than one', () => {
       // Measured provenance: the legacy renderer gave `RedError` the `NormalRed` heading
       // class - the sole #ff0000 declaration, sitting under the comment "text style used
       // for error messages" - and gave `YellowWarning` the ordinary `Normal` class. The
       // legacy withheld the red for a refusal, and so does this.
-      expect(paintOf(500).color).toBe('rgb(255, 0, 0)');
+      //
+      // THE ROLE IS SPLIT ACROSS TWO TOKENS, and the split is what this test now pins.
+      // rgb(255, 0, 0) is the measured legacy red, and it reads 4.0:1 on the page
+      // background - sufficient for the 3:1 that governs a non-text boundary, and short
+      // of the 4.5:1 that governs the text inside it. So the BORDER keeps the legacy
+      // value and the TEXT resolves to rgb(179, 0, 0), the same hue at a lower lightness,
+      // measured in a browser at 7.20:1 on the page background and 4.70:1 on the least
+      // favourable surface the vocabulary can put behind it. This assertion previously
+      // required the legacy value for BOTH, which is why it had to change: it encoded the
+      // defect rather than the contract. A reader still sees one red family in both
+      // places.
+      expect(paintOf(500).color).toBe('rgb(179, 0, 0)');
       expect(paintOf(500).border).toBe('rgb(255, 0, 0)');
+
+      // Neither red reaches a refusal or a rate-limit band, which is the point the
+      // legacy provenance above establishes.
+      expect(paintOf(403).color).not.toBe('rgb(179, 0, 0)');
       expect(paintOf(403).color).not.toBe('rgb(255, 0, 0)');
+      expect(paintOf(429).color).not.toBe('rgb(179, 0, 0)');
       expect(paintOf(429).color).not.toBe('rgb(255, 0, 0)');
     });
 
@@ -478,9 +524,10 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('shows the severity word as visible text, not as a hidden label', () => {
-      // --color-danger measures 4.0:1 on the background, below the 4.5:1 normal text
-      // needs, so the band must be legible without perceiving the colour. A visually
-      // hidden word would satisfy a screen reader and fail a sighted reader.
+      // The band must be readable without perceiving its colour, which is a
+      // colour-independence requirement rather than a contrast one: a visually hidden
+      // word would satisfy a screen reader and fail a sighted reader who cannot
+      // distinguish the hue. That holds whatever the red measures.
       setProblem({ status: 500 });
 
       const word = fixture.debugElement.query(By.css('.error-banner__severity'))

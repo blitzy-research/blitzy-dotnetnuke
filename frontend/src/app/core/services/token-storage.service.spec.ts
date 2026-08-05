@@ -30,6 +30,7 @@ function sessionExpiringAt(expiresAtUtc: string, accessToken = 'access-1'): Auth
     expiresAtUtc,
     refreshToken: 'refresh-1',
     mustChangePassword: false,
+    mustUpdateProfile: false,
     passwordExpiring: false,
     user: USER,
   };
@@ -201,7 +202,6 @@ describe('TokenStorageService', () => {
         refreshToken: 'refresh-9',
         mustChangePassword: true,
         passwordExpiring: true,
-        // Set on the RESPONSE, deliberately not carried into the session below.
         mustUpdateProfile: true,
         user: USER,
       };
@@ -213,21 +213,23 @@ describe('TokenStorageService', () => {
       expect(session.refreshToken).toBe('refresh-9');
       expect(session.user).toBe(USER);
 
-      // Carried through so a reload does not lose a prompt the caller has not acted on.
+      // All three carried through so a reload does not lose a prompt the caller has not acted
+      // on. The profile advisory is the one that used to be dropped: because sign-in returns
+      // the identity rather than the session, dropping it here left it unreachable by any
+      // caller, which lost the legacy blocking profile-completion prompt rather than deferring
+      // it. See the note on AuthSession in auth.model.ts.
       expect(session.mustChangePassword).toBeTrue();
+      expect(session.mustUpdateProfile).toBeTrue();
       expect(session.passwordExpiring).toBeTrue();
+      expect(session.mustUpdateProfile).toBeTrue();
 
       // The server publishes one expiry representation and no bearer-scheme member, so
-      // neither a relative lifetime nor a refresh-token expiry can reach stored state. The
-      // profile-completeness advisory is absent for a DIFFERENT reason, now that the server
-      // has a producer for it: nothing in this application consumes that advisory, so keeping
-      // it would put a signal into stored state that no screen can act on. See the note on
-      // LoginResponse in auth.model.ts.
+      // neither a relative lifetime nor a refresh-token expiry can reach stored state.
       const keys = Object.keys(session);
       expect(keys).not.toContain('expiresIn');
       expect(keys).not.toContain('tokenType');
       expect(keys).not.toContain('refreshTokenExpiresAtUtc');
-      expect(keys).not.toContain('mustUpdateProfile');
+      expect(keys).toContain('mustUpdateProfile');
     });
 
     it('carries a cleared advisory through as false rather than dropping it', () => {
@@ -238,8 +240,8 @@ describe('TokenStorageService', () => {
         expiresAtUtc: '2100-01-01T00:00:00.000Z',
         refreshToken: 'refresh-10',
         mustChangePassword: false,
-        passwordExpiring: false,
         mustUpdateProfile: false,
+        passwordExpiring: false,
         user: USER,
       };
 
@@ -247,9 +249,54 @@ describe('TokenStorageService', () => {
       const keys = Object.keys(session);
 
       expect(keys).toContain('mustChangePassword');
+      expect(keys).toContain('mustUpdateProfile');
       expect(keys).toContain('passwordExpiring');
+      expect(keys).toContain('mustUpdateProfile');
       expect(session.mustChangePassword).toBeFalse();
+      expect(session.mustUpdateProfile).toBeFalse();
       expect(session.passwordExpiring).toBeFalse();
+      expect(session.mustUpdateProfile).toBeFalse();
+    });
+  });
+
+  describe('mustUpdateProfile', () => {
+    it('reports the stored blocking profile advisory', () => {
+      const service = TestBed.inject(TokenStorageService);
+
+      service.store({
+        accessToken: 'access-11',
+        expiresAtUtc: '2100-01-01T00:00:00.000Z',
+        refreshToken: 'refresh-11',
+        mustChangePassword: false,
+        passwordExpiring: false,
+        mustUpdateProfile: true,
+        user: USER,
+      });
+
+      expect(service.mustUpdateProfile()).toBeTrue();
+    });
+
+    it('reports false when nobody is signed in', () => {
+      // The same answer as "no advisory", which is correct for a gate: an unauthenticated
+      // caller is stopped by the authentication check rather than by this one.
+      expect(TestBed.inject(TokenStorageService).mustUpdateProfile()).toBeFalse();
+    });
+
+    it('reports false once the session is discarded', () => {
+      const service = TestBed.inject(TokenStorageService);
+
+      service.store({
+        accessToken: 'access-12',
+        expiresAtUtc: '2100-01-01T00:00:00.000Z',
+        refreshToken: 'refresh-12',
+        mustChangePassword: false,
+        mustUpdateProfile: false,
+        passwordExpiring: false,
+        user: USER,
+      });
+      service.clear();
+
+      expect(service.mustUpdateProfile()).toBeFalse();
     });
   });
 });

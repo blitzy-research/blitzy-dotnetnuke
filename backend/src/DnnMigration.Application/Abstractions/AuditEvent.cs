@@ -30,12 +30,13 @@ namespace DnnMigration.Application.Abstractions;
 /// members beside it.
 /// </para>
 /// <para>
-/// <b>Nothing sensitive may be placed on an audit event.</b> Not a password, not a password hash, not a
-/// token, not a token digest, not an authorisation header, not a cookie, not a request body and not a
-/// raw exception message. An account name is carried because the legacy audit carried one - it was the
-/// only way to attribute a refused sign-in, where no account identifier exists to record - and because
-/// it is an identifier rather than a secret. <see cref="Properties"/> is for short descriptive facts of
-/// the same kind, and a caller that cannot satisfy itself a value is safe must not add it.
+/// <b>Nothing sensitive or directly identifying may be placed on an audit event.</b> Not a password, not
+/// a password hash, not a token, not a token digest, not an authorisation header, not a cookie, not a
+/// request body, not a raw exception message, and not a person's name, account name, electronic-mail
+/// address, tenant alias or other caller-authored prose. Stable database identifiers are the attribution
+/// mechanism. A refused sign-in that resolves no account is deliberately anonymous in this trail rather
+/// than copying the submitted name into a second, separately retained store. <see cref="Properties"/> is
+/// limited to bounded machine-readable facts, and the sink independently allowlists and validates them.
 /// </para>
 /// <para>
 /// <b>Absence is null, never a sentinel.</b> The legacy record initialised its portal and user
@@ -85,20 +86,6 @@ public sealed record AuditEvent(string EventName)
     public int? ActorUserId { get; init; }
 
     /// <summary>
-    /// Gets the account name the operation was performed under, or <see langword="null"/> when none is
-    /// known.
-    /// </summary>
-    /// <remarks>
-    /// On a refused sign-in this is the name that was SUBMITTED, which is the only attribution
-    /// available when no account matched it - exactly what the legacy site recorded at
-    /// <c>UserController.vb:L76</c>. It is stored as given: the legacy call passed it through a
-    /// script-and-markup input filter because the value was about to be rendered into an HTML admin
-    /// grid, and nothing here renders HTML, so filtering it would corrupt the recorded fact rather than
-    /// protect anything. A sink that renders an event into a markup context owns its own encoding.
-    /// </remarks>
-    public string? ActorUserName { get; init; }
-
-    /// <summary>
     /// Gets the identifier of the account the operation was performed upon, when that differs from
     /// <see cref="ActorUserId"/>.
     /// </summary>
@@ -138,13 +125,32 @@ public sealed record AuditEvent(string EventName)
     public string? FailureCode { get; init; }
 
     /// <summary>
-    /// Gets additional short, non-sensitive descriptive facts about the operation.
+    /// Gets additional short, non-sensitive, machine-readable facts about the operation.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The counterpart to the legacy property list, which recorded values such as the portal alias, the
     /// template file and the child-portal flag alongside a tenant creation
-    /// (<c>PortalController.vb:L1140-L1156</c>). Keys are compared ordinally and are short, stable
-    /// identifiers. The map is never <see langword="null"/>, so a consumer never guards against one.
+    /// (<c>PortalController.vb:L1140-L1156</c>) - deliberately narrowed here so caller-authored names,
+    /// aliases, paths, filenames, descriptions and other prose do not enter the logging store. Keys are
+    /// compared ordinally and are short, stable identifiers. Values are codes, booleans, invariant
+    /// numbers or round-trippable instants. The map is never <see langword="null"/>, so a consumer never
+    /// guards against one.
+    /// </para>
+    /// <para>
+    /// A key is a PROPERTY NAME, not prose. The sink attaches each admitted fact to the record as a
+    /// property of its own so that it can be queried by name, and it admits a key only when that name
+    /// appears on its CLOSED ALLOWLIST - which is stricter than a shape test and is what guarantees no
+    /// caller can introduce a property this application has not reviewed. A key outside the allowlist is
+    /// withheld rather than reshaped, and THE NUMBER WITHHELD IS RECORDED ALONGSIDE THE NUMBER ATTACHED,
+    /// so a caller that supplied one can see that it did.
+    /// </para>
+    /// <para>
+    /// A value is DATA and is kept, but bounded: the sink applies a count ceiling, a length ceiling and
+    /// delimiter/control-character rejection, replacing a value that fails any of them with a fixed
+    /// marker rather than writing part of it. Callers must therefore keep these facts short and
+    /// descriptive, and must not use them to carry a document, a payload or a rendered list.
+    /// </para>
     /// </remarks>
     public IReadOnlyDictionary<string, string?> Properties { get; init; } = NoProperties;
 }

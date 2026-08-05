@@ -1,9 +1,11 @@
 using Asp.Versioning;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
+using DnnMigration.Api.Extensions;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Module;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,13 +22,11 @@ namespace DnnMigration.Api.Controllers;
 /// home directory; they are now explicit calls that carry their content in the request and response.
 /// </para>
 /// <para>
-/// <strong>Every path carries its portal.</strong> The tenant is a route segment rather than something
-/// inferred from the caller's token or from the request host, and that is the tenant-isolation requirement
-/// expressed in the URL: a module identifier alone does not say which portal it belongs to, so a service
-/// that took only the identifier would be one query away from returning another tenant's module. The
-/// authorisation handler reads this same <c>portalId</c> segment and prefers it over the value in the token,
-/// so a caller who tampers with it is checked against the portal they asked for rather than the one they
-/// signed into.
+/// <strong>The canonical module resource is flat and tenant-bound.</strong> Every route begins at
+/// <c>/api/v1/modules</c>; the portal is the tenant resolved from the request host and authenticated
+/// context, not a second resource identity embedded in the path. The controller passes that resolved
+/// identifier into every service call, while the module/page permission handlers resolve the same tenant
+/// before judging the item key carried by the route.
 /// </para>
 /// <para>
 /// <strong>A module and its placement are different rows, and the identity of a module INSTANCE is the pair
@@ -70,14 +70,10 @@ namespace DnnMigration.Api.Controllers;
 /// check at all, so a single explicit policy is the honest replacement for an ambient one.
 /// </para>
 /// <para>
-/// What creation consequently does NOT get is a route-level tenant binding, and that is stated plainly here
-/// rather than left to be inferred. The permission policies bind the caller to the tenant they name; the
-/// fallback requirement creation falls back to establishes only that the caller is authenticated. Its
-/// tenant safety therefore rests entirely on the service: the target page must belong to the portal in the
-/// route, and the edit grant is evaluated against that same portal. The policy answers "may this caller act
-/// in this tenant at all" and the service answers "may it act on this resource"; where only the second is
-/// present, the second is doing both jobs, and a reader deciding whether that is sufficient should know
-/// which of the two is absent.
+/// Creation has no item key in the route for a module policy to inspect, so tenant safety rests on the
+/// resolved context plus the service's page-ownership and edit-permission checks. The service receives the
+/// same portal identifier resolved for the request and verifies that the target page belongs to it before
+/// adding anything.
 /// </para>
 /// </remarks>
 // MIGRATION: H1. THE MODULE INSTANCE IS THE PAIR (ModuleID, TabID), NOT A SINGLE KEY. The legacy read at
@@ -138,10 +134,12 @@ namespace DnnMigration.Api.Controllers;
 //            re-basing them here would put two conventions in one request path.
 [ApiController]
 [ApiVersion("1.0")]
-[Route("api/v{version:apiVersion}/portals/{portalId:int}/modules")]
+[Route("api/v{version:apiVersion}/modules")]
 [Produces("application/json")]
 public sealed class ModulesController : ControllerBase
 {
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
     /// <summary>The media type an exported module payload is returned as.</summary>
     /// <remarks>
     /// The legacy export wrote an XML document to a file in the portal home directory, and the content a
@@ -152,6 +150,7 @@ public sealed class ModulesController : ControllerBase
     private const string ExportContentType = "application/xml";
 
     private readonly IModuleService _modules;
+    private readonly IPortalContextHolder _portalContext;
 
     // NO VALIDATOR IS INJECTED, AND THAT IS THE POINT. Every request contract this controller binds is
     // validated by FluentValidationActionFilter, which is registered once for the whole API, runs before
@@ -161,14 +160,19 @@ public sealed class ModulesController : ControllerBase
     // Adding a validator argument back here would recreate that split.
     /// <summary>Initialises a new instance of the <see cref="ModulesController"/> class.</summary>
     /// <param name="modules">The module service.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="modules"/> is <see langword="null"/>.</exception>
-    public ModulesController(IModuleService modules)
+    /// <param name="portalContext">The tenant resolved from the request host.</param>
+    /// <exception cref="ArgumentNullException">Either dependency is <see langword="null"/>.</exception>
+    public ModulesController(IModuleService modules, IPortalContextHolder portalContext)
     {
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
+        _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
     }
 
+    /// <summary>Returns the tenant resolved for the current request, or <see langword="null"/>.</summary>
+    private int? ResolvePortalId() =>
+        _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
+
     /// <summary>Lists a portal's modules.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="request">Paging and sorting arguments, bound from the query string.</param>
     /// <param name="tabId">Restricts the result to modules placed on one tab.</param>
     /// <param name="includeDeleted">Includes modules that are in the recycle bin.</param>
@@ -187,12 +191,16 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<ModuleListItemDto>>> ListAsync(
-        int portalId,
         [FromQuery] ModulePagedRequest request,
         [FromQuery] int? tabId,
         [FromQuery] bool includeDeleted,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // The paging contract is validated by the globally registered validation filter, which now
         // resolves ModulePagedRequestValidator from this parameter's type and applies the module
         // collection's own sortable set. This action used to invoke IValidator<PagedRequest> by hand,
@@ -210,7 +218,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Retrieves one module.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <param name="tabModuleId">Selects one placement when the module appears on several tabs.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -223,11 +230,15 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<ModuleDetailDto?>>> GetAsync(
-        int portalId,
         int moduleId,
         [FromQuery] int? tabModuleId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result<ModuleDetailDto?> outcome = await _modules
             .GetModuleAsync(portalId, moduleId, tabModuleId, cancellationToken)
             .ConfigureAwait(false);
@@ -236,7 +247,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Creates a module and places it.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="request">The module to create.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The created module, with its address in the location header.</returns>
@@ -247,7 +257,7 @@ public sealed class ModulesController : ControllerBase
     //            as squarely as it forbids a widening. The page a module is placed on arrives in the BODY, so no
     //            route-reading permission policy can reach it either; a Group A policy here would fail closed and
     //            refuse everyone. The edit grant on the target page is therefore evaluated by the service, after
-    //            binding, against the portal named in the route.
+    //            binding, against the portal resolved from the request host.
     //            Stated as a limitation rather than a reassurance: because no policy applies, this action falls
     //            back to the bare authenticated-user requirement, so it is the service's page-belongs-to-portal
     //            check and its grant evaluation that carry the tenant boundary here on their own. That the
@@ -261,10 +271,14 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<ModuleDetailDto>>> CreateAsync(
-        int portalId,
         [FromBody] CreateModuleRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // VALIDATED BY THE GLOBALLY REGISTERED FILTER, NOT HERE. FluentValidationActionFilter runs
         // before every action, resolves a validator from each bound argument's declared type and
         // short-circuits with the same RFC 7807 validation document this call used to build - so the
@@ -280,11 +294,13 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Updates a module.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <param name="request">The new state.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
-    /// <returns>The updated module, or <c>404 Not Found</c> when it does not exist in this portal.</returns>
+    /// <returns>
+    /// The updated module, or <c>404 Not Found</c> when it or the selected page does not exist in this
+    /// portal.
+    /// </returns>
     // MIGRATION: H6. THE FIELD SET IS THE ONE MEASURED AT ModuleSettings.ascx.vb L341-L385, IN THAT ORDER:
     //            title, Alignment (L345), colour, border, icon, CacheTime (L349-L352), TabID, AllTabs,
     //            Visibility (L359-L362), Header, Footer, start and end dates, container,
@@ -309,6 +325,15 @@ public sealed class ModulesController : ControllerBase
     //            this route, so no [Authorize] attribute can express it: the policy on this action admits the
     //            page administrator by design. The service owns the rule and reports a distinct failure reason,
     //            which the shared status table answers with 403 - the status declared below.
+    //
+    // MIGRATION: request.TabId SELECTS THE PLACEMENT THIS UPDATE ADDRESSES; IT DOES NOT MOVE IT.
+    //            ModuleSettings.ascx.vb L398-L408 compared the selected page with the current one and called
+    //            ModuleController.MoveModule, whose implementation copied the placement and its scoped
+    //            settings before deleting the source. That is not reproduced, because this contract carries a
+    //            single page identifier and a move needs two - the placement being edited and its
+    //            destination. The service resolves the placement on the named page and answers
+    //            module.placement_not_found, which the shared status table maps to the 404 declared below,
+    //            when the module does not occupy it. The reduction is recorded in MIGRATION_NOTES.md.
     [HttpPut("{moduleId:int}")]
     [Authorize(Policy = PolicyNames.ModuleEdit)]
     [ProducesResponseType(typeof(ApiResponse<ModuleDetailDto>), StatusCodes.Status200OK)]
@@ -317,11 +342,15 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<ModuleDetailDto?>>> UpdateAsync(
-        int portalId,
         int moduleId,
         [FromBody] UpdateModuleRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         // VALIDATED BY THE GLOBALLY REGISTERED FILTER, NOT HERE. FluentValidationActionFilter runs
         // before every action, resolves a validator from each bound argument's declared type and
         // short-circuits with the same RFC 7807 validation document this call used to build - so the
@@ -337,7 +366,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Deletes a module, or removes one of its placements.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <param name="tabModuleId">Removes only this placement, leaving the module on its other tabs.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -358,11 +386,15 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> DeleteAsync(
-        int portalId,
         int moduleId,
         [FromQuery] int? tabModuleId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _modules
             .DeleteModuleAsync(portalId, moduleId, tabModuleId, cancellationToken)
             .ConfigureAwait(false);
@@ -371,7 +403,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Retrieves a module's settings.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <param name="tabModuleId">Selects one placement when the module appears on several tabs.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -386,18 +417,22 @@ public sealed class ModulesController : ControllerBase
     //            emit null-valued and default-valued members rather than omit them, which is what carries this
     //            distinction across the boundary; nothing is suppressed per action.
     [HttpGet("{moduleId:int}/settings")]
-    [Authorize(Policy = PolicyNames.ModuleView)]
+    [Authorize(Policy = PolicyNames.ModuleEdit)]
     [ProducesResponseType(typeof(ApiResponse<ModuleSettingsDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<ModuleSettingsDto?>>> GetSettingsAsync(
-        int portalId,
         int moduleId,
         [FromQuery] int? tabModuleId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result<ModuleSettingsDto?> outcome = await _modules
             .GetModuleSettingsAsync(portalId, moduleId, tabModuleId, cancellationToken)
             .ConfigureAwait(false);
@@ -406,7 +441,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Replaces a module's settings.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <param name="settings">The settings to store.</param>
     /// <param name="tabModuleId">Selects one placement when the module appears on several tabs.</param>
@@ -426,12 +460,16 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> UpdateSettingsAsync(
-        int portalId,
         int moduleId,
         [FromBody] ModuleSettingsDto settings,
         [FromQuery] int? tabModuleId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         if (settings is null)
         {
             ModelState.AddModelError(string.Empty, "A request body is required and was not supplied.");
@@ -453,7 +491,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Exports a module's content.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="moduleId">The module identifier.</param>
     /// <param name="request">Names the file the caller intends to save the payload as.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -502,6 +539,7 @@ public sealed class ModulesController : ControllerBase
     // success path returns a content result, which no negotiation touches.
     [HttpPost("{moduleId:int}/export")]
     [Authorize(Policy = PolicyNames.ModuleEdit)]
+    [RequestSizeLimit(ServiceCollectionExtensions.MaximumRequestBodyBytes)]
     [ProducesResponseType(typeof(string), StatusCodes.Status200OK, ExportContentType)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -509,11 +547,15 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult> ExportAsync(
-        int portalId,
         int moduleId,
         [FromBody] ModuleExportRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         if (request is null)
         {
             ModelState.AddModelError(string.Empty, "A request body is required and was not supplied.");
@@ -540,7 +582,6 @@ public sealed class ModulesController : ControllerBase
     }
 
     /// <summary>Imports content into a module.</summary>
-    /// <param name="portalId">The portal identifier.</param>
     /// <param name="request">The module to import into, and the content to import.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> when the content has been imported.</returns>
@@ -574,6 +615,7 @@ public sealed class ModulesController : ControllerBase
     //            one here rather than a stated one.
     [HttpPost("import")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [RequestSizeLimit(ServiceCollectionExtensions.MaximumRequestBodyBytes)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -581,10 +623,14 @@ public sealed class ModulesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult> ImportAsync(
-        int portalId,
         [FromBody] ModuleImportRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         if (request is null)
         {
             ModelState.AddModelError(string.Empty, "A request body is required and was not supplied.");

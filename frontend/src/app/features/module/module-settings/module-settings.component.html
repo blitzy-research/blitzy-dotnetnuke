@@ -132,6 +132,24 @@
               <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('security')">
                 <div class="module-settings__fields">
                   <div class="module-settings__field">
+                    <label [for]="controlId('tabId')">
+                      {{ labels['tabId'] }}
+                      <small class="form-help" [id]="hintId('tabId')">{{ hints['tabId'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <select
+                        formControlName="tabId"
+                        [id]="controlId('tabId')"
+                        [attr.aria-describedby]="hintId('tabId')"
+                      >
+                        @for (page of pages; track page.value) {
+                          <option [ngValue]="page.value">{{ page.label }}</option>
+                        }
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
                     <label [for]="controlId('allTabs')">
                       {{ labels['allTabs'] }}
                       <small class="form-help" [id]="hintId('allTabs')">{{ hints['allTabs'] }}</small>
@@ -267,74 +285,8 @@
                   <!-- A choice group's visible name is a <label> with NO for attribute; the group is named
                        through role="radiogroup" + aria-labelledby. Pointing for at the first radio would
                        name the group by side effect and make clicking its title select an option.
-                       [value] rather than [ngValue]: RadioControlValueAccessor writes the bound value
-                       through unchanged, so the stored string survives. -->
-                  <div class="module-settings__field">
-                    <label [id]="labelId('alignment')">
-                      {{ labels['alignment'] }}
-                      <small class="form-help" [id]="hintId('alignment')">{{ hints['alignment'] }}</small>
-                    </label>
-                    <div
-                      class="module-settings__choices"
-                      role="radiogroup"
-                      [attr.aria-labelledby]="labelId('alignment')"
-                      [attr.aria-describedby]="hintId('alignment')"
-                    >
-                      @for (choice of alignmentChoices; track choice.value) {
-                        <label [for]="choiceId('alignment', $index)">
-                          <input
-                            type="radio"
-                            formControlName="alignment"
-                            [id]="choiceId('alignment', $index)"
-                            [value]="choice.value"
-                          />
-                          {{ choice.label }}
-                        </label>
-                      }
-                    </div>
-                  </div>
-
-                  <div class="module-settings__field">
-                    <label [for]="controlId('color')">
-                      {{ labels['color'] }}
-                      <small class="form-help" [id]="hintId('color')">{{ hints['color'] }}</small>
-                    </label>
-                    <div class="module-settings__control">
-                      <!-- Deliberately type="text", not type="color". The column holds whatever the legacy
-                           renderer was given, so a colour picker would refuse values the old site stored. -->
-                      <input
-                        type="text"
-                        formControlName="color"
-                        [id]="controlId('color')"
-                        [maxlength]="limits.color"
-                        [attr.aria-describedby]="hintId('color')"
-                      />
-                    </div>
-                  </div>
-
-                  <div class="module-settings__field">
-                    <label [for]="controlId('border')">
-                      {{ labels['border'] }}
-                      <small class="form-help" [id]="hintId('border')">{{ hints['border'] }}</small>
-                    </label>
-                    <div class="module-settings__control">
-                      <input
-                        type="text"
-                        inputmode="numeric"
-                        formControlName="border"
-                        [id]="controlId('border')"
-                        [maxlength]="limits.border"
-                        [attr.aria-describedby]="hintId('border')"
-                        [attr.aria-invalid]="form.controls.border.touched && form.controls.border.invalid"
-                      />
-                      @if (form.controls.border.touched && form.controls.border.invalid) {
-                        <small class="form-error" role="alert" [id]="messageId('border')">
-                          {{ borderInvalidMessage }}
-                        </small>
-                      }
-                    </div>
-                  </div>
-
+                       [value] rather than [ngValue]: RadioControlValueAccessor writes the numeric enum
+                       value through unchanged. -->
                   <div class="module-settings__field">
                     <label [id]="labelId('visibility')">
                       {{ labels['visibility'] }}
@@ -371,38 +323,6 @@
                         formControlName="displayTitle"
                         [id]="controlId('displayTitle')"
                         [attr.aria-describedby]="hintId('displayTitle')"
-                      />
-                    </div>
-                  </div>
-
-                  <div class="module-settings__field">
-                    <label [for]="controlId('displayPrint')">
-                      {{ labels['displayPrint'] }}
-                      <small class="form-help" [id]="hintId('displayPrint')">{{ hints['displayPrint'] }}</small>
-                    </label>
-                    <div class="module-settings__control">
-                      <input
-                        type="checkbox"
-                        formControlName="displayPrint"
-                        [id]="controlId('displayPrint')"
-                        [attr.aria-describedby]="hintId('displayPrint')"
-                      />
-                    </div>
-                  </div>
-
-                  <div class="module-settings__field">
-                    <label [for]="controlId('displaySyndicate')">
-                      {{ labels['displaySyndicate'] }}
-                      <small class="form-help" [id]="hintId('displaySyndicate')">
-                        {{ hints['displaySyndicate'] }}
-                      </small>
-                    </label>
-                    <div class="module-settings__control">
-                      <input
-                        type="checkbox"
-                        formControlName="displaySyndicate"
-                        [id]="controlId('displaySyndicate')"
-                        [attr.aria-describedby]="hintId('displaySyndicate')"
                       />
                     </div>
                   </div>
@@ -450,33 +370,35 @@
               <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('other')">
                 <div class="module-settings__fields">
                   <div class="module-settings__field">
-                    <label [for]="controlId('isDefaultModule')">
-                      {{ labels['isDefaultModule'] }}
-                      <small class="form-help" [id]="hintId('isDefaultModule')">
-                        {{ hints['isDefaultModule'] }}
+                    <label [for]="controlId('setAsDefaultSettings')">
+                      {{ labels['setAsDefaultSettings'] }}
+                      <small class="form-help" [id]="hintId('setAsDefaultSettings')">
+                        {{ hints['setAsDefaultSettings'] }}
                       </small>
                     </label>
                     <div class="module-settings__control">
                       <input
                         type="checkbox"
-                        formControlName="isDefaultModule"
-                        [id]="controlId('isDefaultModule')"
-                        [attr.aria-describedby]="hintId('isDefaultModule')"
+                        formControlName="setAsDefaultSettings"
+                        [id]="controlId('setAsDefaultSettings')"
+                        [attr.aria-describedby]="hintId('setAsDefaultSettings')"
                       />
                     </div>
                   </div>
 
                   <div class="module-settings__field">
-                    <label [for]="controlId('allModules')">
-                      {{ labels['allModules'] }}
-                      <small class="form-help" [id]="hintId('allModules')">{{ hints['allModules'] }}</small>
+                    <label [for]="controlId('applyToAllModules')">
+                      {{ labels['applyToAllModules'] }}
+                      <small class="form-help" [id]="hintId('applyToAllModules')">
+                        {{ hints['applyToAllModules'] }}
+                      </small>
                     </label>
                     <div class="module-settings__control">
                       <input
                         type="checkbox"
-                        formControlName="allModules"
-                        [id]="controlId('allModules')"
-                        [attr.aria-describedby]="hintId('allModules')"
+                        formControlName="applyToAllModules"
+                        [id]="controlId('applyToAllModules')"
+                        [attr.aria-describedby]="hintId('applyToAllModules')"
                       />
                     </div>
                   </div>

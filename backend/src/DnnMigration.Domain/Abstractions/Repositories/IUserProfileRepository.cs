@@ -60,13 +60,14 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 //            is precisely the shape an entity already expresses, and precisely the shape a
 //            positional argument list expresses worst.
 //
-// MIGRATION: a host-level (portal-independent) property definition was expressed in the legacy row by the Null.NullInteger sentinel -1 in PortalID. The target entity declares int? PortalId and represents it as genuine null, because Portals.PortalID is IDENTITY(-1,1) and -1 is simultaneously a legitimate portal identifier - the legacy Null.IsNull helper could not distinguish the two. Sentinel compatibility, where a contract exposes it, is handled at the DTO and API boundary, never in this signature.
+// MIGRATION: a host-level (portal-independent) property definition was addressed by the legacy Null.NullInteger sentinel -1, which the provider translated to SQL NULL before every scoped read and write. The target entity therefore declares int? PortalId and represents host scope as genuine null. Because Portals.PortalID is IDENTITY(-1,1), -1 is simultaneously a legitimate portal identifier elsewhere in the schema; the repository performs this subsystem-specific translation at its boundary, and DTO mapping restores the externally observable sentinel.
 //
 //            The consequence is a deliberate asymmetry that must not be "corrected" later: the two
 //            portal-scoped readers below take a non-nullable int portalId, because a caller asking
 //            for a portal's definitions necessarily has a portal in hand, while the entity property
-//            they filter on is nullable because a definition need not belong to one. No member below
-//            tests an identifier against -1 or 0 to decide whether it is present.
+//            they filter on is nullable because a definition need not belong to one. The repository
+//            recognises exactly -1 as the legacy host address; no identifier is tested for truthiness
+//            or treated as absent merely because it is non-positive.
 //
 // MIGRATION: ProfilePropertyDefinitionCollection.vb was a pre-generics CollectionBase/DictionaryBase wrapper and produces no target file; IReadOnlyList<ProfilePropertyDefinition> replaces it. CBO.vb, 729 lines of reflection-driven IDataReader hydration, likewise produces no target file - the EF Core materializer replaces both hydration paths.
 //
@@ -190,6 +191,23 @@ public interface IUserProfileRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns one account's profile values whose property definitions belong to the addressed portal.
+    /// </summary>
+    /// <param name="portalId">The portal that must own each returned definition.</param>
+    /// <param name="userId">The account whose values are returned.</param>
+    /// <param name="cancellationToken">Abandons the read.</param>
+    /// <returns>The portal-scoped values, ordered by definition and row identity.</returns>
+    /// <remarks>
+    /// The value table has no portal column; scope is established through the required definition foreign
+    /// key. Callers handling a portal route must use this member rather than the installation-wide overload,
+    /// otherwise updating one tenant's profile can observe and clear another tenant's values.
+    /// </remarks>
+    Task<IReadOnlyList<UserProfileValue>> GetProfileValuesAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Stages a new profile answer for insertion.
     /// </summary>
     /// <param name="profileValue">
@@ -272,6 +290,18 @@ public interface IUserProfileRepository
     /// </remarks>
     Task UpdateProfileValueAsync(
         UserProfileValue profileValue,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages removal of one account's profile values whose definitions belong to one portal.
+    /// </summary>
+    /// <param name="portalId">The portal whose definition-owned values are removed.</param>
+    /// <param name="userId">The account being removed from the portal.</param>
+    /// <param name="cancellationToken">Abandons the read used to stage the removals.</param>
+    /// <returns>A task that completes once matching rows have been staged for deletion.</returns>
+    Task DeleteProfileValuesAsync(
+        int portalId,
+        int userId,
         CancellationToken cancellationToken = default);
 
     // =================================================================================
@@ -393,19 +423,27 @@ public interface IUserProfileRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns one profile property declaration by key.
+    /// Returns one profile property declaration by key within the tenant scope that can address it.
     /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the tenant whose declaration is wanted. The legacy host identifier is translated by
+    /// the repository in exactly the same way as the collection and name reads.
+    /// </param>
     /// <param name="propertyDefinitionId">Identifier of the declaration wanted.</param>
     /// <param name="cancellationToken">Token observed while the read is in flight.</param>
     /// <returns>
-    /// The declaration, or <see langword="null"/> when no declaration carries that identifier.
+    /// The declaration, or <see langword="null"/> when no declaration in the requested scope carries that
+    /// identifier.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L253</c>
-    /// <c>GetPropertyDefinition(ByVal definitionId As Integer) As IDataReader</c>. A reader that a
-    /// caller had to test for emptiness becomes a nullable return, so absence is expressed in the
-    /// type system rather than discovered by draining a cursor.
+    /// MIGRATION: the legacy controller accepted both the definition and portal identifiers
+    /// (<c>ProfileController.vb:L425</c>) and searched the portal-scoped catalogue before falling back to
+    /// the provider's unscoped key lookup. That fallback could reveal another tenant's row on a cache miss.
+    /// The target keeps the controller's tenant-bearing contract and applies the same authoritative scope
+    /// predicate as the list and name reads, preserving tenant isolation rather than reproducing the leak.
+    /// A reader that a caller had to test for emptiness becomes a nullable return, so absence is expressed
+    /// in the type system rather than discovered by draining a cursor.
     /// </para>
     /// <para>
     /// MIGRATION: absence is <see langword="null"/> and nothing else. It is NOT signalled by a
@@ -423,6 +461,7 @@ public interface IUserProfileRepository
     /// </para>
     /// </remarks>
     Task<ProfilePropertyDefinition?> GetDefinitionByIdAsync(
+        int portalId,
         int propertyDefinitionId,
         CancellationToken cancellationToken = default);
 
@@ -460,11 +499,11 @@ public interface IUserProfileRepository
     /// is a non-nullable <see cref="int"/> because a caller asking what a tenant declares necessarily
     /// has a tenant in hand, while <see cref="ProfilePropertyDefinition.PortalId"/> is
     /// <see cref="Nullable{T}"/> because a declaration may be host-level and belong to no tenant at
-    /// all. The legacy row expressed host-level with the <c>Null.NullInteger</c> sentinel -1, which
-    /// was unsound in this schema: <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so -1 is also a
-    /// real tenant, and the legacy <c>Null.IsNull</c> helper could not tell the two apart. The target
-    /// uses genuine <see langword="null"/> for host-level and keeps sentinel compatibility at the
-    /// contract boundary where it is externally observable, never in this signature.
+    /// all. The legacy API addressed host scope with <c>Null.NullInteger</c> -1 and the provider
+    /// translated it to SQL <c>NULL</c>. That convention is hazardous because
+    /// <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so -1 is also a real tenant elsewhere in
+    /// the schema. The target uses genuine <see langword="null"/> on the entity, translates the
+    /// legacy address once in the repository predicate, and restores it only on the DTO boundary.
     /// </para>
     /// </remarks>
     Task<ProfilePropertyDefinition?> GetDefinitionByNameAsync(

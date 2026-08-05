@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using DnnMigration.Application.Abstractions;
@@ -66,8 +67,8 @@ public sealed class AuditTrailContractTests
     }
 
     /// <summary>
-    /// A refused sign-in emits the outcome event, carrying the outcome name, the tenant, the submitted
-    /// account name and no credential.
+    /// A refused sign-in emits the outcome event, carrying the outcome name and tenant without retaining
+    /// the submitted account name or credential.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -78,6 +79,7 @@ public sealed class AuditTrailContractTests
     [Fact]
     public async Task RefusedSignIn_EmitsTheOutcomeEvent()
     {
+        int firstNewRecord = RecordedLogs.Snapshot().Count;
         string attempted = "audit-probe-" + Guid.NewGuid().ToString("N")[..8];
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -90,8 +92,11 @@ public sealed class AuditTrailContractTests
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         LogRecord record = RecordedLogs.Snapshot()
+            .Skip(firstNewRecord)
             .Where(candidate => candidate.EventId == SignInOutcomeEventId)
-            .Single(candidate => candidate.Message.Contains(attempted, StringComparison.Ordinal));
+            .Single(candidate => Equals(
+                candidate.Properties.GetValueOrDefault("AuditEvent"),
+                AuditEventNames.LoginFailure));
 
         record.Level.Should().Be(
             LogEventLevel.Warning,
@@ -105,8 +110,10 @@ public sealed class AuditTrailContractTests
         record.EventName.Should().Be("SignInOutcome");
         record.Properties["AuditEvent"].Should().Be("LOGIN_FAILURE");
         record.Properties["AuditOutcome"]!.ToString().Should().Be("Denied");
-        record.Properties["AuditActorUserName"].Should().Be(attempted);
+        record.Properties["AuditActorUserId"].Should().BeNull();
         record.Properties["AuditPortalId"].Should().Be(_fixture.Seed.PortalId);
+        record.Properties.Should().NotContainKey("AuditActorUserName");
+        record.Message.Should().NotContain(attempted);
 
         record.Message.Should().NotContain(
             "not-the-stored-credential",
@@ -125,6 +132,7 @@ public sealed class AuditTrailContractTests
     [Fact]
     public async Task AcceptedSignIn_EmitsTheOutcomeEventWithTheResolvedAccount()
     {
+        int firstNewRecord = RecordedLogs.Snapshot().Count;
         using HttpClient client = _fixture.CreateAnonymousClient();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -138,13 +146,14 @@ public sealed class AuditTrailContractTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // Located by the submitted name and taken as the LAST such event, because other suites sign the same
-        // seeded administrator in and every one of those attempts is audited too.
+        // Located among records emitted by this request and by the stable account identifier. Submitted
+        // names are not retained by the audit transport.
         LogRecord record = RecordedLogs.Snapshot()
+            .Skip(firstNewRecord)
             .Where(candidate => candidate.EventId == SignInOutcomeEventId)
-            .Last(candidate => Equals(
-                candidate.Properties.GetValueOrDefault("AuditActorUserName"),
-                IntegrationSeed.AdminUserName));
+            .Single(candidate => Equals(
+                candidate.Properties.GetValueOrDefault("AuditActorUserId"),
+                _fixture.Seed.AdminUserId));
 
         record.Level.Should().Be(LogEventLevel.Information);
         record.Properties["AuditOutcome"]!.ToString().Should().Be("Succeeded");
@@ -155,6 +164,8 @@ public sealed class AuditTrailContractTests
         record.Properties["AuditSubjectUserId"].Should().Be(
             _fixture.Seed.AdminUserId,
             "and the subject of a sign-in is the account that signed in");
+        record.Properties.Should().NotContainKey("AuditActorUserName");
+        record.Message.Should().NotContain(IntegrationSeed.AdminUserName);
 
         record.Message.Should().NotContain(
             ApiTestFixture.KnownPassword,
@@ -162,7 +173,8 @@ public sealed class AuditTrailContractTests
     }
 
     /// <summary>
-    /// Installing a tenant emits the installation event, carrying the legacy property set and no credential.
+    /// Installing a tenant emits the installation event with stable identifiers and bounded operational
+    /// metadata, carrying no credential or directly identifying prose.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -173,11 +185,12 @@ public sealed class AuditTrailContractTests
     [Fact]
     public async Task InstallingATenant_EmitsTheInstallationEvent()
     {
+        int firstNewRecord = RecordedLogs.Snapshot().Count;
         string suffix = Guid.NewGuid().ToString("N")[..8];
         string alias = "audit-" + suffix + ".example";
         string password = "Audited-Portal-1!";
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             new Uri("/api/v1/portals", UriKind.Relative),
@@ -199,54 +212,120 @@ public sealed class AuditTrailContractTests
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
+        PortalDetailDto? created = await response.Content.ReadEnvelopeAsync<PortalDetailDto>();
+        created.Should().NotBeNull();
 
-        LogRecord record = RecordedLogs.Snapshot()
-            .Where(candidate => candidate.EventId == PortalInstallationEventId)
-            .Single(candidate => candidate.Message.Contains(alias, StringComparison.Ordinal));
+        // Located by the STRUCTURED resource identifier rather than by a substring of the rendered message.
+        // That is the whole point of the change being asserted below: the facts are properties of the event
+        // now, so the installed tenant identifies its own records exactly, whereas a message search could
+        // only ever match them while the facts were being flattened into the sentence.
+        IReadOnlyList<LogRecord> installation = RecordedLogs.Snapshot()
+            .Skip(firstNewRecord)
+            .Where(candidate => candidate.EventId == PortalInstallationEventId
+                && Equals(
+                    candidate.Properties.GetValueOrDefault("AuditResourceId"),
+                    created!.PortalId.ToString()))
+            .ToList();
+
+        // TWO records, deliberately, and this is the assertion that proves it. The legacy installation
+        // raised HOST_ALERT and nothing else (PortalController.vb:L1140-L1141), while the enumeration's own
+        // accurate member for what happened is PORTAL_CREATED. Emitting only one of the two would silently
+        // break one class of reader: an operator whose saved search or alert is written against HOST_ALERT,
+        // or a reader who wants to know specifically that a tenant appeared. Both are emitted from the same
+        // facts, so neither can drift from the other.
+        installation.Select(candidate => candidate.Properties["AuditEvent"]?.ToString())
+            .Should()
+            .BeEquivalentTo(
+                ["PORTAL_CREATED", "HOST_ALERT"],
+                "both legacy intents of a tenant installation are preserved");
+
+        LogRecord record = installation.Single(candidate =>
+            string.Equals(candidate.Properties["AuditEvent"]?.ToString(), "PORTAL_CREATED", StringComparison.Ordinal));
+
+        LogRecord alert = installation.Single(candidate =>
+            string.Equals(candidate.Properties["AuditEvent"]?.ToString(), "HOST_ALERT", StringComparison.Ordinal));
+
+        alert.Properties["AuditPortalId"].Should().Be(
+            record.Properties["AuditPortalId"],
+            "the two records describe the same installation, not two of them");
+        alert.Properties["AuditPropertyCount"].Should().Be(
+            record.Properties["AuditPropertyCount"],
+            "the alert carries the same facts; only the name differs");
 
         record.Level.Should().Be(LogEventLevel.Information);
         record.EventName.Should().Be("PortalInstalled");
         record.Properties["AuditEvent"].Should().Be("PORTAL_CREATED");
-        record.Properties["AuditPortalId"].Should().NotBeNull();
+        record.Properties["AuditPortalId"].Should().Be(created!.PortalId);
+        record.Properties["AuditSubjectUserId"].Should().Be(created.AdministratorId);
 
-        // MIGRATION: the descriptive facts of one event are carried in the envelope's single detail member,
-        // rendered as a deterministic key=value list, rather than as a property per fact. That is deliberate:
-        // a property bag's destructuring behaviour differs between logging sinks - one writes a structured
-        // map, another calls ToString and records the type name - and an audit trail has to read identically
-        // through every sink. The facts asserted are unchanged; only where they are read from moves.
+        // MIGRATION: DIVERGENCE from the legacy record's shape, and a correction of this suite's own earlier
+        // expectation. The legacy entry held its descriptive facts in ONE column, as a rendered key=value
+        // list, and the first implementation reproduced that shape faithfully - which made every fact
+        // unqueryable: an operator could not ask for IsChildPortal = "False", and any value containing the
+        // separator or the assignment character made the list ambiguous to parse. Each admitted fact is now
+        // attached as a first-class property under an "AuditMetadata_" prefix, so it is addressable by name
+        // and the order it was supplied in is no longer load-bearing.
         //
-        // The home directory is NOT asserted, because the installation event does not carry it and inventing
-        // a producer for it here would assert this suite's own expectation rather than the trail's content.
-        // The administrator's resolved identifier is asserted in its place, which is the fact that makes the
-        // record answer "who can now sign in to this tenant".
-        string detail = record.Properties["AuditProperties"]!.ToString()!;
+        // The descriptive prose the legacy entry carried is NOT asserted, because it is no longer recorded:
+        // the tenant name, its alias and the administrator's name, user name and address are
+        // caller-authored identifiers with their own retention lifecycle, and an audit store is not that
+        // lifecycle. What replaces them is the pair of stable identifiers already asserted above - the
+        // tenant and the administrator account - which is what makes the record answer "who can now sign in
+        // to this tenant" without copying the tenant's own data into a second store.
+        record.Properties["AuditMetadata_IsChildPortal"].Should().Be("False");
+        record.Properties.Should().NotContainKeys(
+            "AuditActorUserName",
+            "AuditProperties",
+            "AuditMetadata_PortalName",
+            "AuditMetadata_PortalAlias",
+            "AuditMetadata_AdministratorUsername",
+            "AuditMetadata_AdministratorEmail");
 
-        detail.Should().Contain("PortalName=Audited Portal " + suffix);
-        detail.Should().Contain("PortalAlias=" + alias);
-        detail.Should().Contain("Description=Installed by the audit contract suite.");
-        detail.Should().Contain("Keywords=audit, contract");
-        detail.Should().Contain("AdministratorUsername=audit_admin_" + suffix);
-        detail.Should().Contain("AdministratorId=");
-        // The two administrator name facts are adjacent in the rendered detail, so finding them rendered
-        // adjacently AND IN ORDER proves the renderer's key order still matches the order they were supplied
-        // in - which a containment test on each one separately cannot show.
-        detail.Should().Contain(
-            "AdministratorFirstName=Grace; AdministratorLastName=Hopper",
-            "the rendered detail proves the facts and their names still line up, which asserting each one on "
-            + "its own cannot show");
-        detail.Should().Contain("IsChildPortal=False");
+        // The two counts are the envelope's own statement about the facts it carries: how many were attached,
+        // and how many were withheld by the admission policy. A withheld fact is the failure mode a property
+        // bag can hide - a key the pipeline refused, silently dropped - so the record reports it rather than
+        // leaving a reader to notice the absence.
+        // MIGRATION: FOUR FACTS, NOT ONE. A second correction widened this record by three admissible
+        // properties - the administrator's numeric key, and presence-only flags for the two free-text members
+        // - so that an auditor can tell WHO can now sign in to the tenant and WHETHER a description and
+        // keywords were asked for, without the caller's own prose reaching the log. The tenant name and alias
+        // that the same correction also recorded are deliberately still absent, for the reason set out
+        // immediately above; the counts below are what would catch either decision drifting.
+        record.Properties["AuditPropertyCount"].Should().Be(
+            4,
+            "the installation event offers exactly four bounded operational facts, and all are admissible");
+        record.Properties["AuditMetadata_IsChildPortal"].Should().Be("False");
+        record.Properties["AuditMetadata_AdministratorId"].Should().Be(
+            created.AdministratorId!.Value.ToString(CultureInfo.InvariantCulture),
+            "the administrator is identified by key, which resolves to the personal data the log omits");
+        record.Properties["AuditMetadata_DescriptionSupplied"].Should().Be("True");
+        record.Properties["AuditMetadata_KeywordsSupplied"].Should().Be("True");
+        record.Properties["AuditPropertyWithheldCount"].Should().Be(
+            0,
+            "no fact of this event may be withheld; a non-zero count means a key stopped being admissible");
 
         // The identifier is the property the legacy entry never carried, which is what made its records
-        // unjoinable to the tenants they described. It is a first-class member of the envelope rather than a
-        // rendered detail, because every event carries it.
-        record.Properties["AuditPortalId"].Should().NotBeNull();
+        // unjoinable to the tenants they described.
         record.Properties["AuditResourceType"].Should().Be("Portal");
         record.Properties["AuditResourceId"].Should().Be(
             record.Properties["AuditPortalId"]!.ToString(),
             "the installed tenant is both the scope the event belongs to and the resource it describes");
+        record.Message.Should().NotContain(alias);
+        record.Message.Should().NotContain("Audited Portal " + suffix);
+        record.Message.Should().NotContain("audit_admin_" + suffix);
+        record.Message.Should().NotContain("Grace");
+        record.Message.Should().NotContain("Hopper");
         record.Message.Should().NotContain(
             password,
             "the legacy already declined to record the administrator's credential even while holding it in "
             + "cleartext, and the audit contract declares no member that could carry one");
+
+        foreach (KeyValuePair<string, object?> property in record.Properties)
+        {
+            property.Value?.ToString().Should().NotContain(
+                password,
+                "no property may carry the credential either, now that the facts are properties rather than "
+                + "one rendered member");
+        }
     }
 }

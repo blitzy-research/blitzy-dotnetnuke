@@ -25,7 +25,7 @@ import { FormFieldComponent } from './form-field.component';
     >
       <input [attr.id]="controlId" type="text" />
       @if (secondControl) {
-        <select aria-label="Frequency">
+        <select>
           <option value="M">Month</option>
         </select>
       }
@@ -177,13 +177,55 @@ describe('FormFieldComponent', () => {
       expect(query('.form-field__control select')).not.toBeNull();
     });
 
-    it('is a group named from the label, so every control in it inherits the field name', () => {
+    it('names the composite group from the visible field label', () => {
       const group = required('.form-field__control');
 
       expect(group.getAttribute('role')).toBe('group');
       expect(group.getAttribute('aria-labelledby')).toBe(
         required('.form-field__label').getAttribute('id'),
       );
+    });
+
+    it('gives every otherwise unnamed projected control its own label reference', () => {
+      host.secondControl = true;
+      fixture.detectChanges();
+
+      const label = required('.form-field__label') as HTMLLabelElement;
+      const input = required('input') as HTMLInputElement;
+      const select = required('select');
+
+      expect(input.labels?.item(0))
+        .withContext('the primary control keeps its native label association')
+        .toBe(label);
+      expect(select.getAttribute('aria-label'))
+        .withContext('the test must not mask the component fallback with an explicit name')
+        .toBeNull();
+      expect(select.getAttribute('aria-labelledby'))
+        .withContext('a group name is not inherited, so the child needs its own reference')
+        .toBe(label.getAttribute('id'));
+    });
+
+    it('updates an owned control reference when the field association changes', () => {
+      host.secondControl = true;
+      fixture.detectChanges();
+
+      host.controlId = 'renamed';
+      fixture.detectChanges();
+
+      expect(required('select').getAttribute('aria-labelledby')).toBe('renamed-label');
+    });
+
+    it('preserves a more specific accessible name supplied by the consumer', () => {
+      host.secondControl = true;
+      fixture.detectChanges();
+
+      const select = required('select');
+      select.setAttribute('aria-label', 'Frequency');
+      select.removeAttribute('aria-labelledby');
+      fixture.detectChanges();
+
+      expect(select.getAttribute('aria-label')).toBe('Frequency');
+      expect(select.hasAttribute('aria-labelledby')).toBeFalse();
     });
 
     it('is not named when there is no label text to name it with', () => {

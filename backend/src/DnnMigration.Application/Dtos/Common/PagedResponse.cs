@@ -90,14 +90,14 @@ namespace DnnMigration.Application.Dtos.Common;
 /// </typeparam>
 /// <remarks>
 /// <para>
-/// STATUS: DECLARED BUT NOT YET ADOPTED. No collection endpoint in <c>Api/Controllers/</c> returns
-/// this envelope today; the paged endpoints return the flat <see cref="PagedResult{T}"/> produced by
-/// the Application layer, which carries the same four facts under its own member names. This type is
-/// the intended convergence point - one deserialisation path per client rather than one per resource,
-/// and a pager renderable without a second request - and its two members are named plainly so they
-/// mirror the client model member for member. Until the convergence is performed for every collection
-/// endpoint at once, together with the client models, nothing here describes a body a caller can
-/// observe.
+/// This is the wire shape of every paged endpoint: <c>{ "items": [...], "meta": {...} }</c>. The API
+/// edge applies it in one place - the shared paging result helper under <c>Api/ErrorHandling/</c>
+/// projects the Application layer's <see cref="PagedResult{T}"/> through
+/// <see cref="From(PagedResult{T})"/> - so the domain paging type never crosses the boundary, there is
+/// one deserialisation path per client rather than one per resource, and a pager is renderable without
+/// a second request. The two members are named plainly so they mirror the client model member for
+/// member. A page is never additionally wrapped in <c>ApiResponse&lt;T&gt;</c>: that would nest two
+/// envelopes and put the row array one level deeper than the contract states.
 /// </para>
 /// <para>
 /// <b>Page indexing is zero-based.</b> A page index of 0 identifies the first page, 1 the second, and

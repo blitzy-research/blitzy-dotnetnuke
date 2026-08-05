@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using DnnMigration.Api.Middleware;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 
 namespace DnnMigration.Api.Filters;
 
@@ -107,9 +109,34 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
     private const int DefaultValidationStatusCode = StatusCodes.Status400BadRequest;
 
     /// <summary>
-    /// Name of the single RFC 7807 extension member this type contributes.
+    /// Name of the W3C trace-context extension member this type contributes.
     /// </summary>
+    /// <remarks>
+    /// Deliberately NOT the support reference a caller quotes. It is the distributed-tracing
+    /// identifier, it changes whenever the ambient activity changes, and it is present only when one
+    /// exists at all - so a client that quoted it would sometimes quote nothing and sometimes quote a
+    /// value that appears in no other record of the request.
+    /// </remarks>
     private const string TraceIdExtensionKey = "traceId";
+
+    /// <summary>
+    /// Name of the extension member carrying the identifier a caller quotes when reporting a problem.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Named separately from <see cref="TraceIdExtensionKey"/> on purpose, because the two answer
+    /// different questions and are not interchangeable: this one is the correlation identifier the
+    /// pipeline validated for the request, and it is the value that appears on the response header, on
+    /// the request envelope in the log and on every audit event the request produced. Quoting it is
+    /// what lets an operator find the request a caller is describing.
+    /// </para>
+    /// <para>
+    /// The client reads this member in preference to the trace identifier, and the two names exist
+    /// side by side rather than one replacing the other so that a consumer already reading the
+    /// framework-shaped <c>traceId</c> keeps working.
+    /// </para>
+    /// </remarks>
+    private const string CorrelationIdExtensionKey = "correlationId";
 
     /// <summary>
     /// Fallback problem-type link, title and detail for each status code this API emits.
@@ -553,16 +580,11 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
         // returns is covered above, and inventing a link for one that is not would publish a URI
         // that documents nothing. Absent is more honest than wrong, and the specification permits it.
 
-        // MIGRATION: traceId is the one extension member added here, and it is
-        // the framework's own value, taken from the ambient diagnostic activity
-        // and falling back to the request's trace identifier. Preserving it keeps
-        // this factory's output indistinguishable from a framework-produced
-        // problem response, which is the whole point of extending the framework's
-        // factory rather than replacing it. No body member is added for the
-        // correlation identifier: that value travels in its own response header,
-        // written by the dedicated pipeline stage and read by the client
-        // interceptor, and duplicating it in the body would create a second
-        // source of truth for one identifier.
+        // MIGRATION: traceId is the framework's own value, taken from the ambient
+        // diagnostic activity and falling back to the request's trace identifier.
+        // Preserving it keeps this factory's output indistinguishable from a
+        // framework-produced problem response, which is the whole point of
+        // extending the framework's factory rather than replacing it.
         string? traceId = Activity.Current?.Id ?? httpContext?.TraceIdentifier;
 
         // MIGRATION: the legacy null contract, defined in
@@ -583,5 +605,74 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
         {
             problemDetails.Extensions[TraceIdExtensionKey] = traceId;
         }
+
+        // MIGRATION: DIVERGENCE, and a correction of the reasoning recorded here before. An earlier
+        // revision added no body member for the correlation identifier, on the grounds that the value
+        // travels in its own response header and that duplicating it in the body would create a second
+        // source of truth. THAT REASONING IS REPLACED RATHER THAN SOFTENED, because the outcome it
+        // produced was worse than the duplication it avoided: the client quotes a reference from the
+        // BODY, so with no correlation member present it quoted traceId instead - an identifier taken
+        // from the ambient diagnostic activity, which is not the value on the header, not the value on
+        // the request envelope in the log, and not the value on the request's audit events. A caller
+        // reporting a problem therefore quoted a reference that appeared in no operator-visible record
+        // of their request, which is the one job a support reference has.
+        //
+        // The two are named separately, so nothing is ambiguous: traceId remains the W3C tracing
+        // identifier, and correlationId is the identifier the pipeline validated for this request. The
+        // header remains the primary channel and the body member is a copy of the SAME value, resolved
+        // from the same place the logging stage resolves it, so the two cannot disagree.
+        string? correlationId = ResolveCorrelationId(httpContext);
+
+        if (correlationId is not null)
+        {
+            problemDetails.Extensions[CorrelationIdExtensionKey] = correlationId;
+        }
+    }
+
+    /// <summary>
+    /// Reads the correlation identifier published for the request being answered.
+    /// </summary>
+    /// <param name="httpContext">The request being answered, which may be absent.</param>
+    /// <returns>
+    /// The identifier the pipeline validated for this request, or <see langword="null"/> when there is
+    /// no request to read one from.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The item published by <see cref="CorrelationIdMiddleware"/> is preferred, because that is the
+    /// value that stage VALIDATED, whereas an inbound header holds whatever the caller sent. The
+    /// response header is consulted second so that a payload built before the item was published still
+    /// carries the identifier the response will carry, and the framework's own request identifier is
+    /// the last resort - the same order, and the same reasoning, as the request-logging stage applies.
+    /// </para>
+    /// <para>
+    /// The constants are referenced rather than their text repeated, so the body member and the header
+    /// cannot drift apart.
+    /// </para>
+    /// </remarks>
+    private static string? ResolveCorrelationId(HttpContext? httpContext)
+    {
+        if (httpContext is null)
+        {
+            return null;
+        }
+
+        // ContainsKey before the indexer: the item dictionary is keyed by object, and probing first is
+        // correct against any implementation of it rather than only the framework's own.
+        if (httpContext.Items.ContainsKey(CorrelationIdMiddleware.ItemKey)
+            && httpContext.Items[CorrelationIdMiddleware.ItemKey] is string published
+            && published.Length > 0)
+        {
+            return published;
+        }
+
+        if (httpContext.Response.Headers.TryGetValue(CorrelationIdMiddleware.HeaderName, out StringValues assigned)
+            && assigned.Count == 1
+            && assigned[0] is { Length: > 0 } header)
+        {
+            return header;
+        }
+
+        return httpContext.TraceIdentifier;
     }
 }

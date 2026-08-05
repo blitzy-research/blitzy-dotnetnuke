@@ -328,17 +328,11 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         // non-alphanumeric characters and :L241 requires no question and answer -- because
         // hardening it here would exclude accounts that are valid today.
         //
-        // MIGRATION: EXISTING CREDENTIALS ARE MIGRATED BY ADMINISTRATIVE RESET, AND BY NOTHING
-        // ELSE. It is not a re-hash on first successful sign-in with administrative reset as a
-        // fallback, and THIS FILE IS PART OF THE PROOF: it maps no
-        // credential column at all, so there is nothing for a legacy verifier to read even if one
-        // existed - and none does, because the hasher verifies BCrypt digests only. A first
-        // successful sign-in against a legacy value is therefore impossible, so such a sequence
-        // could never run. Building one would mean mapping the legacy
-        // reversible material and decrypting it with the key committed at release.config:L89-L93,
-        // which is precisely the arrangement the migration exists to end. Every account that
-        // predates the migration needs an administrative password reset; the reduction is
-        // deliberate and is recorded in MIGRATION_NOTES.md.
+        // MIGRATION: credential migration does not add columns to dbo.Users. The external membership
+        // store remains the source of Password, PasswordFormat and PasswordSalt; MembershipStore reads
+        // those fields for the isolated legacy verifier, and AuthService immediately replaces an
+        // accepted legacy value with BCrypt. Administrative reset remains the fallback. This entity
+        // configuration continues to ignore credential properties because none belongs to dbo.Users.
         builder.Ignore(u => u.PasswordHash);
         builder.Ignore(u => u.PasswordAnswer);
         builder.Ignore(u => u.PasswordQuestion);

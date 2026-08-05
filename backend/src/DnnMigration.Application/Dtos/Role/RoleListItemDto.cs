@@ -4,7 +4,7 @@ namespace DnnMigration.Application.Dtos.Role;
 
 /// <summary>
 /// One row of the security-roles listing served by
-/// <c>GET /api/v1/portals/{portalId}/roles</c>.
+/// <c>GET /api/v1/roles</c>.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -31,6 +31,30 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 public interface IUnitOfWork
 {
     /// <summary>
+    /// Reports whether an explicit transaction opened through
+    /// <see cref="BeginTransactionAsync(TransactionIsolation, CancellationToken)"/> is currently open on
+    /// this unit of work.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY A CALLEE NEEDS TO ASK. A service member that is atomic on its own AND is also one step of a
+    /// larger atomic sequence has to know which of the two it is serving, because opening a second
+    /// transaction is refused rather than nested (see
+    /// <see cref="BeginTransactionAsync(TransactionIsolation, CancellationToken)"/>) and committing its own
+    /// would make its half durable while the caller's remaining steps could still fail. Reading this
+    /// property is how such a member stages its work and defers the commit to whoever owns the
+    /// transaction; when nothing is open it opens and commits one of its own, so its standalone contract
+    /// is unchanged.
+    /// </para>
+    /// <para>
+    /// The value is a property of the unit of work rather than of any transaction handle, deliberately: the
+    /// caller that owns the transaction holds the scope, and a callee must be able to answer the question
+    /// without being handed - and therefore without being able to commit - the scope itself.
+    /// </para>
+    /// </remarks>
+    bool HasActiveTransaction { get; }
+
+    /// <summary>
     /// Atomically persists every change staged since the previous commit.
     /// </summary>
     /// <remarks>
@@ -99,6 +123,29 @@ public interface IUnitOfWork
     /// </para>
     /// </remarks>
     Task<ITransactionScope> BeginTransactionAsync(
+        TransactionIsolation isolation = TransactionIsolation.Default,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Joins the transaction already open on this unit of work, or opens one when the caller is the outermost
+    /// operation.
+    /// </summary>
+    /// <param name="isolation">
+    /// Isolation to use only when a new transaction is required. A joined scope cannot change the isolation
+    /// selected by its owner.
+    /// </param>
+    /// <param name="cancellationToken">Abandons opening a new transaction.</param>
+    /// <returns>
+    /// A scope whose commit and disposal are no-ops when it joined an existing transaction, and which owns a
+    /// real transaction otherwise.
+    /// </returns>
+    /// <remarks>
+    /// This is the composition-safe counterpart to <see cref="BeginTransactionAsync"/>. An application service
+    /// may call another service that independently needs atomic multi-statement behavior; joining preserves
+    /// one outer all-or-nothing boundary instead of either throwing on nesting or committing the inner work
+    /// before the outer operation is complete.
+    /// </remarks>
+    Task<ITransactionScope> JoinOrBeginTransactionAsync(
         TransactionIsolation isolation = TransactionIsolation.Default,
         CancellationToken cancellationToken = default);
 }

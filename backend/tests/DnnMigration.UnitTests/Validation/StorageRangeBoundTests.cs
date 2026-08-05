@@ -346,10 +346,44 @@ public class StorageRangeBoundTests
     }
 
     /// <summary>
+    /// Processor credential updates admit the explicit keep and clear states and require a managed-secret
+    /// reference for replacements.
+    /// </summary>
+    /// <param name="reference">The submitted update value.</param>
+    /// <param name="accepted">Whether the reference satisfies the contract.</param>
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("secret://processor/current", true)]
+    [InlineData("plaintext-password", false)]
+    [InlineData("secret://processor/contains space", false)]
+    [InlineData("secret://processor/abcdefghijklmnopqrstuvwxyz0123456789-extra", false)]
+    public void PortalProcessorCredentialReference_RequiresManagedSecretSyntax(
+        string? reference,
+        bool accepted)
+    {
+        UpdatePortalRequest request = ValidPortalUpdate();
+        request.ProcessorCredentialReference = reference;
+
+        new UpdatePortalRequestValidator().Validate(request).IsValid.Should().Be(
+            accepted,
+            "null keeps, empty clears, and replacements must be bounded secret references");
+    }
+
+    /// <summary>
     /// A module term date outside the stored calendar is refused on both the create and the update path.
     /// </summary>
+    /// <remarks>
+    /// The count is asserted, not merely the presence, and that is the load-bearing half. The create
+    /// validator had registered the identical storage-range rule for each date property THREE TIMES, so one
+    /// unstorable value produced three indistinguishable failures naming the same property - a validation
+    /// response repeating itself for no reason a client could interpret. A containment assertion is blind to
+    /// that, which is why it survived: it passes with one failure and with three. Rule-level cascade stops
+    /// at the first failing validator WITHIN a rule and does nothing about duplicate rule declarations, so
+    /// nothing else in the pipeline collapsed them either.
+    /// </remarks>
     [Fact]
-    public void ModuleTermDates_OutsideTheStoredCalendar_AreRefused()
+    public void ModuleTermDates_OutsideTheStoredCalendar_AreRefusedExactlyOnce()
     {
         ValidationResult created = new CreateModuleRequestValidator().Validate(new CreateModuleRequest
         {
@@ -365,10 +399,114 @@ public class StorageRangeBoundTests
             EndDate = BeforeTheStoredCalendar,
         });
 
-        created.Errors.Should().Contain(
-            failure => failure.PropertyName == nameof(CreateModuleRequest.StartDate));
-        updated.Errors.Should().Contain(
+        created.Errors.Should().ContainSingle(
+            failure => failure.PropertyName == nameof(CreateModuleRequest.StartDate),
+            "one wrong value is one failure; a rule declared more than once reports the same sentence "
+            + "several times under the same property name");
+        updated.Errors.Should().ContainSingle(
             failure => failure.PropertyName == nameof(UpdateModuleRequest.EndDate));
+
+        // The bound is declared for BOTH members on BOTH paths, so the member that was not set here must
+        // report nothing. Pinned so that collapsing the duplicates cannot be mistaken for deleting a rule.
+        created.Errors.Should().NotContain(
+            failure => failure.PropertyName == nameof(CreateModuleRequest.EndDate));
+        updated.Errors.Should().NotContain(
+            failure => failure.PropertyName == nameof(UpdateModuleRequest.StartDate));
+
+        ValidationResult createdEndDate = new CreateModuleRequestValidator().Validate(new CreateModuleRequest
+        {
+            ModuleDefId = 1,
+            TabId = 1,
+            ModuleTitle = "Announcements",
+            EndDate = BeforeTheStoredCalendar,
+        });
+
+        createdEndDate.Errors.Should().ContainSingle(
+            failure => failure.PropertyName == nameof(CreateModuleRequest.EndDate),
+            "the create path bounds the closing term too, and bounds it once");
+    }
+
+    /// <summary>
+    /// One unstorable module term date produces exactly ONE failure, on each write path.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THE CREATE VALIDATOR DECLARED THIS PAIR OF RULES THREE TIMES OVER, so a single unstorable
+    /// date produced three identical failures under one member name. FluentValidation does not deduplicate
+    /// rules that judge the same member with the same predicate, and this project's validation filter records
+    /// every failure into the published error map - so the caller received the same sentence three times and
+    /// could not tell whether three distinct rules had been broken or one had been declared three times.
+    /// </para>
+    /// <para>
+    /// Asserted by COUNT rather than by containment, deliberately: the sibling fact above already proves the
+    /// rule fires, and a containment assertion passes just as happily against three copies as against one.
+    /// The count is what makes a re-duplication visible. Both paths are held to it because the duplication
+    /// existed on only one of them, and a fact written against the offender alone would not stop the other
+    /// from acquiring it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void OneUnstorableModuleTermDate_ProducesExactlyOneFailure()
+    {
+        ValidationResult created = new CreateModuleRequestValidator().Validate(new CreateModuleRequest
+        {
+            ModuleDefId = 1,
+            TabId = 1,
+            ModuleTitle = "Announcements",
+            StartDate = BeforeTheStoredCalendar,
+        });
+
+        ValidationResult updated = new UpdateModuleRequestValidator().Validate(new UpdateModuleRequest
+        {
+            TabId = 1,
+            ModuleTitle = "Announcements",
+            StartDate = BeforeTheStoredCalendar,
+        });
+
+        created.Errors
+            .Count(failure => failure.PropertyName == nameof(CreateModuleRequest.StartDate))
+            .Should().Be(1, "a rule declared twice cannot make a request less valid, only the answer longer");
+
+        updated.Errors
+            .Count(failure => failure.PropertyName == nameof(UpdateModuleRequest.StartDate))
+            .Should().Be(1, "the update path must not acquire the duplication the create path carried");
+    }
+
+    /// <summary>
+    /// Both module term properties carry the storage bound on both paths, and each carries it once.
+    /// </summary>
+    /// <remarks>
+    /// The sibling fact above submits one unstorable date at a time; this one submits both together, so a
+    /// rule that had been declared for one property and duplicated for the other cannot hide behind the
+    /// single-property case. Two failures is the whole expectation: one per property, no more.
+    /// </remarks>
+    [Fact]
+    public void ModuleTermDates_CarryTheStorageBoundOncePerProperty()
+    {
+        ValidationResult created = new CreateModuleRequestValidator().Validate(new CreateModuleRequest
+        {
+            ModuleDefId = 1,
+            TabId = 1,
+            ModuleTitle = "Announcements",
+            StartDate = BeforeTheStoredCalendar,
+            EndDate = BeforeTheStoredCalendar,
+        });
+
+        ValidationResult updated = new UpdateModuleRequestValidator().Validate(new UpdateModuleRequest
+        {
+            TabId = 1,
+            ModuleTitle = "Announcements",
+            StartDate = BeforeTheStoredCalendar,
+            EndDate = BeforeTheStoredCalendar,
+        });
+
+        created.Errors.Should().HaveCount(2);
+        created.Errors.Select(failure => failure.PropertyName).Should().BeEquivalentTo(
+            new[] { nameof(CreateModuleRequest.StartDate), nameof(CreateModuleRequest.EndDate) });
+
+        updated.Errors.Should().HaveCount(2);
+        updated.Errors.Select(failure => failure.PropertyName).Should().BeEquivalentTo(
+            new[] { nameof(UpdateModuleRequest.StartDate), nameof(UpdateModuleRequest.EndDate) });
     }
 
     /// <summary>

@@ -35,6 +35,7 @@ function session(accessToken: string, refreshToken: string): AuthSession {
     expiresAtUtc: '2100-01-01T00:00:00.000Z',
     refreshToken,
     mustChangePassword: false,
+    mustUpdateProfile: false,
     passwordExpiring: false,
     user: USER,
   };
@@ -48,6 +49,10 @@ function session(accessToken: string, refreshToken: string): AuthSession {
  * itself - it delegates the renewal to the auth service, which unwraps - but the fake
  * transport must still answer with the body the real server sends, or the spec proves
  * the retry works against a body that does not exist.
+ *
+ * The metadata companion is present and `null`, matching the wire: the server writes
+ * every declared member, so a response with no page to describe carries the member with
+ * a null value rather than omitting it.
  */
 function loginResponse(accessToken: string, refreshToken: string): ApiResponse<LoginResponse> {
   return {
@@ -62,7 +67,21 @@ function loginResponse(accessToken: string, refreshToken: string): ApiResponse<L
       mustUpdateProfile: false,
       user: USER,
     },
+    // Present and null rather than omitted: the API serialises with its ignore condition set
+    // to never, so a response with no page to describe writes the key with a null value.
+    meta: null,
   };
+}
+
+/** Completes the identity bootstrap performed by AuthService after a successful refresh. */
+function flushCurrentUser(
+  controller: HttpTestingController,
+  accessToken: string,
+): void {
+  const request = controller.expectOne(AUTH_ENDPOINTS.me);
+  expect(request.request.method).toBe('GET');
+  expect(request.request.headers.get(AUTHORIZATION_HEADER)).toBe(`Bearer ${accessToken}`);
+  request.flush({ data: USER, meta: null } satisfies ApiResponse<CurrentUser>);
 }
 
 /** An arbitrary protected endpoint, used wherever the route itself is not the subject. */
@@ -131,6 +150,115 @@ describe('authInterceptor', () => {
       await pending;
     });
 
+    // -----------------------------------------------------------------------------------
+    // CREDENTIAL-EXFILTRATION REGRESSION CASES
+    //
+    // Each URL below was accepted as an API request by the previous textual base test and
+    // therefore received `Authorization: Bearer <token>`. Every one of the first three is a
+    // FOREIGN ORIGIN, so the token was disclosed to whoever served that host; the fourth is
+    // a same-origin path that merely shares a textual prefix with the configured base and
+    // is a different API version. The expectation is deliberately expressed against the
+    // header rather than against the predicate, because the header is the disclosure.
+    // -----------------------------------------------------------------------------------
+
+    const foreignOriginUrls: readonly { readonly url: string; readonly why: string }[] = [
+      {
+        url: 'https://evil.example/api/v1/exfiltrate',
+        why: 'an absolute foreign origin that merely contains the configured base path',
+      },
+      {
+        url: '//evil.example/api/v1/exfiltrate',
+        why: 'a protocol-relative URL that reads as a path but resolves to a foreign host',
+      },
+      {
+        url: 'https://evil.example/x?next=/api/v1/users',
+        why: 'a foreign origin carrying the configured base inside a query parameter',
+      },
+    ];
+
+    for (const { url, why } of foreignOriginUrls) {
+      it(`attaches nothing to ${url}`, async () => {
+        storage.store(session('access-1', 'refresh-1'));
+
+        const pending = firstValueFrom(http.get(url));
+
+        const request = controller.expectOne(url);
+        expect(request.request.headers.has(AUTHORIZATION_HEADER))
+          .withContext(`${why} — the bearer token must never reach it`)
+          .toBeFalse();
+
+        request.flush({});
+        await pending;
+      });
+    }
+
+    it('attaches nothing to a path that only shares a textual prefix with the base', async () => {
+      // `/api/v10` is a different API version, not a descendant of `/api/v1`. A prefix test
+      // admits it; a segment-bounded test does not.
+      storage.store(session('access-1', 'refresh-1'));
+
+      const pending = firstValueFrom(http.get('/api/v10/users'));
+
+      const request = controller.expectOne('/api/v10/users');
+      expect(request.request.headers.has(AUTHORIZATION_HEADER))
+        .withContext('/api/v10 is not inside /api/v1')
+        .toBeFalse();
+
+      request.flush({});
+      await pending;
+    });
+
+    it('still attaches the token to a same-origin absolute API URL', async () => {
+      // The tightened test compares resolved origins, so an API URL written in absolute
+      // form against this document's own origin must keep working. Without this case the
+      // three refusals above could be satisfied by a predicate that refused everything.
+      storage.store(session('access-1', 'refresh-1'));
+
+      const absolute = new URL(PROTECTED_URL, document.baseURI).href;
+
+      const pending = firstValueFrom(http.get(absolute));
+
+      const request = controller.expectOne(absolute);
+      expect(request.request.headers.get(AUTHORIZATION_HEADER)).toBe('Bearer access-1');
+
+      request.flush({});
+      await pending;
+    });
+
+    it('still attaches the token to a relative API URL carrying a query string', async () => {
+      storage.store(session('access-1', 'refresh-1'));
+
+      const withQuery = `${PROTECTED_URL}?pageIndex=0&pageSize=10`;
+
+      const pending = firstValueFrom(http.get(withQuery));
+
+      const request = controller.expectOne(withQuery);
+      expect(request.request.headers.get(AUTHORIZATION_HEADER)).toBe('Bearer access-1');
+
+      request.flush({});
+      await pending;
+    });
+
+    it('treats a foreign URL ending in an anonymous endpoint path as not ours', async () => {
+      // The anonymous-endpoint test previously matched on a path suffix, so any host willing
+      // to serve a path ending in `/auth/login` was classified as this application's own
+      // sign-in endpoint. It is refused as an API request first, so the classification can
+      // no longer be reached from a foreign origin at all.
+      storage.store(session('access-1', 'refresh-1'));
+
+      const foreign = `https://evil.example${new URL(AUTH_ENDPOINTS.login, document.baseURI).pathname}`;
+
+      const pending = firstValueFrom(http.post(foreign, {}));
+
+      const request = controller.expectOne(foreign);
+      expect(request.request.headers.has(AUTHORIZATION_HEADER))
+        .withContext('a foreign origin is never one of our anonymous endpoints')
+        .toBeFalse();
+
+      request.flush({});
+      await pending;
+    });
+
     it('leaves the anonymous authentication endpoints alone', async () => {
       storage.store(session('access-1', 'refresh-1'));
 
@@ -189,6 +317,7 @@ describe('authInterceptor', () => {
       const refresh = controller.expectOne(AUTH_ENDPOINTS.refresh);
       expect(refresh.request.body).toEqual({ refreshToken: 'refresh-old' });
       refresh.flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(controller, 'access-new');
 
       const retry = controller.expectOne(PROTECTED_URL);
       expect(retry.request.headers.get(AUTHORIZATION_HEADER))
@@ -235,6 +364,7 @@ describe('authInterceptor', () => {
         .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
 
       controller.expectOne(AUTH_ENDPOINTS.refresh).flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(controller, 'access-new');
 
       // The retry is refused as well. No further refresh and no further retry may follow.
       controller
@@ -262,6 +392,7 @@ describe('authInterceptor', () => {
         .withContext('a second refresh would present a consumed token and revoke the family')
         .toBe(1);
       refreshes[0]!.flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(controller, 'access-new');
 
       controller.expectOne(apiUrl('portals')).flush({});
       controller.expectOne(apiUrl('users')).flush({});

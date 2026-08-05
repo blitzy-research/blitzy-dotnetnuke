@@ -158,10 +158,7 @@ namespace DnnMigration.Application.Validation;
 //   declares no rule that would reject it.
 
 /// <summary>
-/// Validates the shape of a portal update request submitted to <c>PUT /api/v1/portals/{id}</c>,
-/// replacing the legacy Site Settings screen and the twenty-seven-argument
-/// <c>PortalController.UpdatePortalInfo</c> call at
-/// <c>Library/Components/Portal/PortalController.vb:L1568</c>.
+/// Shared field rules for a request that replaces the editable columns of a portal.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -191,9 +188,10 @@ namespace DnnMigration.Application.Validation;
 /// for this reason, are recorded in the migration notes above the class.
 /// </para>
 /// <para>
-/// <b>No identifier is bound-tested.</b> This request carries no copy of the portal identifier at all,
-/// so no route-versus-body comparison exists to make. Where identifiers do appear -- the administrator
-/// reference and the four page references -- they carry no rule, because
+/// <b>No shared identifier is bound-tested.</b> The settings-specific request carries no copy of the
+/// portal identifier, while <see cref="UpdatePortalRequestValidator"/> adds the route-versus-body rule
+/// for the legacy-compatible request that does. Where identifiers appear in the common member set -- the
+/// administrator reference and the four page references -- they carry no range rule, because
 /// <c>Portals.PortalID</c> seeds at <c>-1</c> and <c>Tabs.TabID</c> seeds at <c>0</c>, making both
 /// values real identifiers even though the legacy contract used <c>-1</c> as its absent marker.
 /// Referential integrity belongs to <c>PortalService</c> and to the database.
@@ -202,12 +200,12 @@ namespace DnnMigration.Application.Validation;
 /// <b>Dependencies: none.</b> The constructor takes no argument. Every rule is a width measured from
 /// the terminal schema, an enumeration-membership assertion, a fixed-point shape rule or a lexical
 /// path rule, so no configuration, clock, repository, options object or file-system access is needed or
-/// acquired. Instances are discovered by the Application layer's assembly scan, which registers
-/// publicly visible validator types only -- which is why this class is <c>public</c> rather than
-/// <c>internal</c>.
+/// acquired. The two concrete validators below are discovered by the Application layer's assembly scan;
+/// this generic base is abstract and therefore cannot be registered or resolved on its own.
 /// </para>
 /// </remarks>
-public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalRequest>
+public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractValidator<TRequest>
+    where TRequest : IPortalSettingsUpdateRequest
 {
     /// <summary>
     /// Terminal width of <c>Portals.PortalName</c>: <c>[nvarchar] (128) NOT NULL</c> at
@@ -247,10 +245,25 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
 
     /// <summary>
     /// Terminal width of the three payment-gateway columns <c>Portals.PaymentProcessor</c>,
-    /// <c>Portals.ProcessorUserId</c> and <c>Portals.ProcessorPassword</c>: all
+    /// <c>Portals.ProcessorUserId</c> and legacy <c>Portals.ProcessorPassword</c>: all
     /// <c>nvarchar(50) NULL</c>, added together at <c>01.00.06.SqlDataProvider:L599-L601</c>.
     /// </summary>
     private const int ProcessorFieldMaximumLength = 50;
+
+    /// <summary>
+    /// Managed-secret reference syntax accepted by the processor credential field.
+    /// </summary>
+    /// <remarks>
+    /// The fixed <c>secret://</c> prefix makes a plaintext password structurally invalid. The suffix is
+    /// deliberately limited to portable identifier/path characters and, together with the column-width
+    /// rule, fits the immutable <c>nvarchar(50)</c> column.
+    /// </remarks>
+    private const string ProcessorCredentialReferencePattern =
+        @"^secret://[A-Za-z0-9][A-Za-z0-9._/-]{0,40}$";
+
+    /// <summary>Caller-safe wording for an invalid managed-secret reference.</summary>
+    private const string ProcessorCredentialReferenceInvalidMessage =
+        "The processor credential reference must use secret:// followed by a managed-secret identifier.";
 
     /// <summary>
     /// Terminal width of <c>Portals.Description</c> and <c>Portals.KeyWords</c>: both
@@ -282,31 +295,6 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
     /// above take. See the migration note beside the rule for why no path-shape rule accompanies it.
     /// </remarks>
     private const int HomeDirectoryMaximumLength = 100;
-
-    /// <summary>
-    /// The key under which <c>Api/Filters/FluentValidationActionFilter.cs</c> publishes the
-    /// <c>portalId</c> route value into the validation context's root data.
-    /// </summary>
-    /// <remarks>
-    /// The filter composes the key by prefixing the route parameter name with <c>Route</c> and
-    /// upper-casing its first character, and it parses a numeric value into an <see cref="int"/> before
-    /// storing it. Spelling the key once, here, is what keeps this rule and that filter from drifting
-    /// apart silently: a mis-spelled key would not fail to compile and would present as a validator
-    /// that silently stopped comparing.
-    /// </remarks>
-    private const string RoutePortalIdKey = "RoutePortalId";
-
-    /// <summary>
-    /// Message reported when the identifier in the body does not name the portal the request path
-    /// addresses.
-    /// </summary>
-    /// <remarks>
-    /// Worded as a statement of the contract rather than as a legacy message, because the legacy screen
-    /// had no counterpart: it took the subject from page state and could not disagree with itself. The
-    /// message names both sources so a caller can tell which value to correct.
-    /// </remarks>
-    private const string PortalIdMismatchMessage =
-        "The portal identifier in the body must match the portal identifier in the request path.";
 
     /// <summary>
     /// Total number of digits permitted in <see cref="UpdatePortalRequest.HostFee"/>, matching the
@@ -381,7 +369,7 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
     /// the terminal schema, an enumeration-membership assertion, a fixed-point shape rule matching the
     /// <c>money</c> column, or a lexical rule over a caller-supplied relative path.
     /// </summary>
-    public UpdatePortalRequestValidator()
+    protected PortalSettingsUpdateRequestValidator()
     {
         // Each rule stops at its own first failure, so one over-long value yields one message rather
         // than a width failure and a shape failure for the same field.
@@ -390,15 +378,6 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
         // The legacy screen rendered every failing validator at once, so every failing field is
         // reported together instead of one per round trip.
         ClassLevelCascadeMode = CascadeMode.Continue;
-
-        // The identity rule. See migration note 5: the route segment is the subject of the write, and
-        // this rule is what forbids the body from naming a different one. It is expressed with the
-        // context-bearing Must overload because the comparand is not on the request - it is the route
-        // value the action filter published - and it stands down when no route context exists so that a
-        // direct caller is not asked to satisfy a comparison that has no other side.
-        RuleFor(request => request.PortalId)
-            .Must((request, portalId, context) => MatchesRoutePortalId(portalId, context))
-            .WithMessage(PortalIdMismatchMessage);
 
         // The only unconditional presence rule in this file. See migration note 3 above: the markup
         // declared none, and the authority is the NOT NULL column combined with the legacy write-side
@@ -434,17 +413,17 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
         RuleFor(request => request.ProcessorUserId)
             .MaximumLength(ProcessorFieldMaximumLength);
 
-        // MIGRATION: the gateway credential is a SECRET travelling through a request body, and the only
-        //   rule this layer can usefully place on it is the column width. What matters as much as the
-        //   rule is what the rule must not do: FluentValidation's default message for a length failure
-        //   interpolates the submitted value's LENGTH but never the value itself, and this rule
-        //   deliberately does not override that message. A validation response is returned to the
-        //   caller and is a plausible thing to log, so a custom message quoting this field would put a
-        //   credential into both. No complexity, minimum-length or confirmation rule is declared
-        //   either: this is a credential the portal presents to a third party, not one it verifies, and
-        //   the legacy screen imposed none.
-        RuleFor(request => request.ProcessorPassword)
+        // MIGRATION: the legacy free-text password is replaced by a managed-secret reference. Null and
+        // empty remain valid because they mean keep and clear respectively; every replacement must carry
+        // the secret:// prefix so a plaintext credential cannot be stored accidentally. Neither message
+        // quotes the submitted value.
+        RuleFor(request => request.ProcessorCredentialReference)
             .MaximumLength(ProcessorFieldMaximumLength);
+
+        RuleFor(request => request.ProcessorCredentialReference)
+            .Matches(ProcessorCredentialReferencePattern)
+            .When(request => !string.IsNullOrEmpty(request.ProcessorCredentialReference))
+            .WithMessage(ProcessorCredentialReferenceInvalidMessage);
 
         // MIGRATION: the two mode members are enumerations on the wire but plain int columns underneath,
         //   and the legacy screen constrained them by RENDERING A LIST rather than by declaring a
@@ -569,6 +548,40 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
         //                     PortalService.
     }
 
+}
+
+/// <summary>
+/// Validates the body of <c>PUT /api/v1/portals/{portalId}</c>.
+/// </summary>
+/// <remarks>
+/// Applies the shared Site Settings rules and additionally requires the body-level portal identifier
+/// retained for legacy contract parity to agree with the route.
+/// </remarks>
+public sealed class UpdatePortalRequestValidator : PortalSettingsUpdateRequestValidator<UpdatePortalRequest>
+{
+    /// <summary>
+    /// The key under which <c>Api/Filters/FluentValidationActionFilter.cs</c> publishes the
+    /// <c>portalId</c> route value into the validation context's root data.
+    /// </summary>
+    private const string RoutePortalIdKey = "RoutePortalId";
+
+    /// <summary>
+    /// Message reported when the identifier in the body does not name the portal the request path
+    /// addresses.
+    /// </summary>
+    private const string PortalIdMismatchMessage =
+        "The portal identifier in the body must match the portal identifier in the request path.";
+
+    /// <summary>Initialises the validator and adds the route-versus-body identity rule.</summary>
+    public UpdatePortalRequestValidator()
+    {
+        // The route segment is the subject of the write. The rule stands down when no route context
+        // exists so direct application-layer callers can validate the DTO without inventing an HTTP path.
+        RuleFor(request => request.PortalId)
+            .Must((request, portalId, context) => MatchesRoutePortalId(portalId, context))
+            .WithMessage(PortalIdMismatchMessage);
+    }
+
     /// <summary>
     /// Reports whether the submitted portal identifier names the portal the request path addresses.
     /// </summary>
@@ -581,22 +594,9 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
     /// <see langword="false"/> only when both are present and they differ.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Absence of a route identifier is reported as acceptable rather than as a failure, and that
-    /// choice is deliberate in both directions. This validator is resolved by type, so it also runs for
-    /// callers that never went through the API layer - an application service composing a request, a
-    /// unit test exercising the rule set - and those callers have no route for the body to disagree
-    /// with. Refusing them would make the contract untestable in isolation and would report a missing
-    /// comparand as a caller error. It is also safe: the only path on which a mismatch could retarget a
-    /// write is the HTTP path, and on that path the filter always publishes the route value, so the
-    /// comparison is always available exactly where it matters.
-    /// </para>
-    /// <para>
-    /// The stored value is compared as an <see cref="int"/> and never as text, because the publishing
-    /// filter parses a numeric route value before storing it and a text comparison would fail on
-    /// insignificant differences such as a leading plus sign. A stored value of some other type is
-    /// treated as absent rather than coerced.
-    /// </para>
+    /// Absence of route context is acceptable because the validator is also used directly in unit and
+    /// application-layer tests. On HTTP requests the global validation filter always publishes a parsed
+    /// integer route value, which is compared numerically rather than as text.
     /// </remarks>
     private static bool MatchesRoutePortalId(int portalId, ValidationContext<UpdatePortalRequest> context)
     {

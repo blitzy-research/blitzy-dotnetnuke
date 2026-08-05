@@ -16,10 +16,11 @@ namespace DnnMigration.Domain.Enums;
 /// The target platform reproduces none of these formats - passwords are hashed one way and there is
 /// no retrieval path - yet this type survives the change because a legacy stored format has to
 /// remain expressible while existing credentials migrate: until a row has been replaced, the system
-/// must still be able to state which legacy format it is held in. The migration path is an
-/// ADMINISTRATIVE RESET, and nothing else: no component in this solution verifies a credential held
-/// under a legacy format, so no lazy re-hash on first sign-in is possible. Once an administrator has
-/// replaced a credential the value held here is purely historical.
+/// must still be able to state which legacy format it is held in. During the explicitly enabled,
+/// secret-backed migration window, the isolated legacy verifier accepts a bounded clear, SHA-1 or
+/// encrypted representation and the sign-in service immediately replaces it with BCrypt. An
+/// administrative reset remains the fallback for a row that cannot be verified or whose owner does
+/// not sign in during that window. Once replaced, the value held here is purely historical.
 /// </para>
 /// </remarks>
 public enum PasswordFormat
@@ -42,7 +43,7 @@ public enum PasswordFormat
     // password retrieval enabled and with a Triple-DES machine key that was itself committed to
     // source control, so any holder of the legacy sources could recover every stored password. The
     // target replaces reversible storage with one-way hashing and exposes no retrieval path at all;
-    // see the remarks on this type for the administrative-reset migration window.
+    // see the remarks on this type for the bounded migration window.
     /// <summary>
     /// Reversible encryption, Triple-DES under the legacy ASP.NET membership provider, and the format
     /// this installation actually used. Retained so that a credential still held in the legacy format

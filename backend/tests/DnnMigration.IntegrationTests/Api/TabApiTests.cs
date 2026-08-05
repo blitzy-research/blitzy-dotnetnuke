@@ -78,7 +78,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_ReturnsOkWithTheSeededHierarchyInNavigationOrder()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
@@ -115,6 +115,7 @@ public sealed class TabApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
+    /// <para>
     /// This pins the answer to a question the listing cannot answer twice: a caller that receives a
     /// filtered listing cannot tell a tenant with no soft-deleted pages from a tenant whose soft-deleted
     /// pages were withheld from it. The page is marked deleted through the write endpoint rather than by a
@@ -124,6 +125,15 @@ public sealed class TabApiTests
     /// tenant in the state every other page this suite creates leaves it in.
     /// The restoring and emptying of soft-deleted pages have no endpoint here, and their absence is asserted
     /// separately - this test is about the LISTING projecting the flag, not about a bin surface existing.
+    /// </para>
+    /// <para>
+    /// THE UNMARKING IS IN A FINALLY BLOCK, and that is not defensive tidiness. The mark is a mutation of the
+    /// SHARED seeded tenant, so a failing assertion between the mark and the unmark would leave a soft-deleted
+    /// page in the tenant every later fact in this collection reads - and the collection is serialised rather
+    /// than isolated, so the contamination outlives this fact and can only produce failures that point
+    /// somewhere else. One genuine failure reported here is worth incomparably more than several downstream
+    /// failures reported in facts that did nothing wrong.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task ListTabs_IncludesASoftDeletedPage()
@@ -131,7 +141,7 @@ public sealed class TabApiTests
         string name = "IRecycled" + Suffix();
         int tabId = await CreateTabAsync(name);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest recycled = NewUpdateRequest(name);
         recycled.IsDeleted = true;
@@ -143,24 +153,36 @@ public sealed class TabApiTests
 
         written.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+        try
+        {
+            using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        List<TabListItemDto> tabs = await ReadListAsync(response);
+            List<TabListItemDto> tabs = await ReadListAsync(response);
 
-        TabListItemDto? listed = tabs.SingleOrDefault(tab => tab.TabId == tabId);
+            TabListItemDto? listed = tabs.SingleOrDefault(tab => tab.TabId == tabId);
 
-        listed.Should().NotBeNull("a recycled page is still a row and the listing is complete by contract");
-        listed!.IsDeleted.Should().BeTrue("the flag travels on the row so the caller owns the filtering");
-        listed.TabName.Should().Be(name);
+            listed.Should().NotBeNull("a recycled page is still a row and the listing is complete by contract");
+            listed!.IsDeleted.Should().BeTrue("the flag travels on the row so the caller owns the filtering");
+            listed.TabName.Should().Be(name);
+        }
+        finally
+        {
+            // Through the endpoint again rather than through the database, so the cached navigation is
+            // invalidated the way production invalidates it. A direct row update here would restore the row
+            // and leave every later reader served from a cache that still remembers the page as deleted,
+            // which is contamination of a subtler kind than the one the finally block exists to prevent.
+            using HttpResponseMessage restored = await client.PutAsJsonAsync(
+                TabRoute(tabId),
+                NewUpdateRequest(name),
+                ApiTestFixture.Json);
 
-        using HttpResponseMessage restored = await client.PutAsJsonAsync(
-            TabRoute(tabId),
-            NewUpdateRequest(name),
-            ApiTestFixture.Json);
-
-        restored.StatusCode.Should().Be(HttpStatusCode.OK);
+            restored.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the shared tenant must be left without a soft-deleted page, so a failure to restore it is "
+                + "itself a result worth reporting");
+        }
     }
 
     /// <summary>The listing requires credentials.</summary>
@@ -195,12 +217,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_AsAnOrdinaryMember_ReturnsForbidden()
     {
-        using HttpClient member = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await member.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
@@ -212,7 +229,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_ForAnUnknownTenant_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(UnknownPortalId));
 
@@ -239,7 +256,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_ForANewTenant_ReturnsOnlyItsHomePage()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         int isolatedPortalId = await CreateIsolatedPortalAsync(client);
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(isolatedPortalId));
@@ -262,7 +279,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_AsHost_ReturnsOkWithDetail()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(_fixture.Seed.ChildTabId));
 
@@ -286,7 +303,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_ForAParentPage_ReportsThatItHasChildren()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(_fixture.Seed.RootTabId));
 
@@ -327,7 +344,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("ITab" + Suffix());
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
 
@@ -345,7 +362,7 @@ public sealed class TabApiTests
         int tabId = await CreateTabAsync("ITab" + Suffix());
         await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
 
@@ -384,7 +401,7 @@ public sealed class TabApiTests
         int tabId = await CreateTabAsync("ITab" + Suffix());
         await GrantAsync(tabId, _fixture.Seed.ModuleViewPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage refused = await client.GetAsync(TabRoute(tabId));
 
@@ -456,7 +473,7 @@ public sealed class TabApiTests
         int tabId = await CreateTabAsync("ITab" + Suffix());
         await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, UnauthenticatedRoleId, allowAccess: true);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
 
@@ -502,7 +519,7 @@ public sealed class TabApiTests
         int tabId = await CreateTabAsync("ITab" + Suffix());
         await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage admitted = await client.GetAsync(TabRoute(tabId));
         admitted.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -525,7 +542,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_WhenUnknown_ReturnsForbiddenEvenForTheHost()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(UnknownTabId));
 
@@ -537,7 +554,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_ForAPageInAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         int isolatedPortalId = await CreateIsolatedPortalAsync(host);
         int foreignTabId = await CreateTabAsync("IForeign" + Suffix(), portalId: isolatedPortalId);
 
@@ -570,7 +587,7 @@ public sealed class TabApiTests
         string originalName = "IBlank" + Suffix();
         int tabId = await CreateTabAsync(originalName);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -611,13 +628,11 @@ public sealed class TabApiTests
     [InlineData("pageHeadText", 500)]
     [InlineData("iconFile", 100)]
     [InlineData("url", 255)]
-    [InlineData("skinSrc", 200)]
-    [InlineData("containerSrc", 200)]
     public async Task UpdateTab_BeyondAColumnWidth_ReturnsValidationProblem(string member, int limit)
     {
         int tabId = await CreateTabAsync("IWide" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // Built as a raw document rather than through the request type, so the test drives the JSON member
         // name the caller actually sends. The name is always present, because it is required.
@@ -642,6 +657,43 @@ public sealed class TabApiTests
     }
 
     /// <summary>
+    /// Active and unknown URI schemes are refused by the API and never reach the stored page.
+    /// </summary>
+    /// <param name="url">Unsafe or unsupported link target.</param>
+    /// <returns>A task representing the test.</returns>
+    [Theory]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("data:text/html,<script>alert(1)</script>")]
+    [InlineData("vbscript:msgbox(1)")]
+    [InlineData("ftp://example.test/file")]
+    public async Task UpdateTab_WithAnUnsupportedLinkScheme_ReturnsBadRequestAndStoresNothing(string url)
+    {
+        int tabId = await CreateTabAsync("IUnsafeUrl" + Suffix());
+
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            new UpdateTabRequest
+            {
+                TabName = "IUnsafeUrlName",
+                Url = url,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+        errors.Keys.Should().Contain(nameof(UpdateTabRequest.Url));
+
+        using HttpResponseMessage read = await client.GetAsync(TabRoute(tabId));
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        TabDetailDto persisted = await ReadDetailAsync(read);
+        persisted.Url.Should().BeNull();
+    }
+
+    /// <summary>
     /// A value exactly at its column width is accepted, so the widths are not off by one.
     /// </summary>
     /// <param name="member">The member to fill.</param>
@@ -661,7 +713,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IAtLimit" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         Dictionary<string, object?> body = new(StringComparer.Ordinal)
         {
@@ -689,7 +741,7 @@ public sealed class TabApiTests
         string renamed = "IRenamed" + Suffix();
         int tabId = await CreateTabAsync("ITab" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest request = new()
         {
@@ -771,7 +823,7 @@ public sealed class TabApiTests
         int firstId = await CreateTabAsync(firstName, tabOrder: seededFirstOrder);
         int secondId = await CreateTabAsync(secondName, tabOrder: seededSecondOrder);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(secondId),
@@ -825,7 +877,7 @@ public sealed class TabApiTests
         int parentId = await CreateTabAsync(parentName);
         int childId = await CreateTabAsync(childName);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest request = NewUpdateRequest(childName);
         request.ParentId = parentId;
@@ -859,7 +911,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("ITab" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -881,7 +933,7 @@ public sealed class TabApiTests
         string name = "ISelf" + Suffix();
         int tabId = await CreateTabAsync(name);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest request = NewUpdateRequest(name);
         request.ParentId = tabId;
@@ -909,7 +961,7 @@ public sealed class TabApiTests
         int ancestorId = await CreateTabAsync(ancestorName);
         int descendantId = await CreateTabAsync("IDesc" + Suffix(), parentId: ancestorId);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest request = NewUpdateRequest(ancestorName);
         request.ParentId = descendantId;
@@ -941,7 +993,7 @@ public sealed class TabApiTests
         string name = "IOrphan" + Suffix();
         int tabId = await CreateTabAsync(name);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest request = NewUpdateRequest(name);
         request.ParentId = UnknownTabId;
@@ -966,7 +1018,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task UpdateTab_WithAParentInAnotherTenant_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         int isolatedPortalId = await CreateIsolatedPortalAsync(client);
         int foreignParentId = await CreateTabAsync("IForeign" + Suffix(), portalId: isolatedPortalId);
@@ -1017,7 +1069,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task UpdateTab_WhenUnknown_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(UnknownTabId),
@@ -1036,7 +1088,7 @@ public sealed class TabApiTests
         int tabId = await CreateTabAsync(name);
         await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage read = await client.GetAsync(TabRoute(tabId));
         read.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1058,7 +1110,7 @@ public sealed class TabApiTests
         int tabId = await CreateTabAsync(name);
         await GrantAsync(tabId, _fixture.Seed.TabEditPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         string renamed = "IEdited" + Suffix();
 
@@ -1092,7 +1144,7 @@ public sealed class TabApiTests
         string original = "ICache" + Suffix();
         int tabId = await CreateTabAsync(original);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage seeded = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -1178,7 +1230,7 @@ public sealed class TabApiTests
     [InlineData("DELETE", "/api/v1/portals/{portalId}/tabs")]
     public async Task Tabs_DeclareNoCreateOrDeleteSurface(string method, string template)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpRequestMessage request = new(new HttpMethod(method), Address(template));
         request.Content = JsonContent.Create(
@@ -1232,7 +1284,7 @@ public sealed class TabApiTests
     [InlineData("DELETE", "/api/v1/portals/{portalId}/tabs/deleted")]
     public async Task Tabs_DeclareNoSurfaceForExcludedPageFeatures(string method, string template)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpRequestMessage request = new(new HttpMethod(method), Address(template));
         request.Content = JsonContent.Create(new { }, options: ApiTestFixture.Json);
@@ -1273,7 +1325,7 @@ public sealed class TabApiTests
         await CreateTabAsync(sharedName);
         int secondTabId = await CreateTabAsync("IOther" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(secondTabId),
@@ -1322,7 +1374,7 @@ public sealed class TabApiTests
             0,
             "the seeded root page must occupy the identity seed for this assertion to be about zero at all");
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(0));
 
@@ -1355,7 +1407,7 @@ public sealed class TabApiTests
             -1,
             "the seeded tenant must occupy the identity seed for this assertion to be about minus one at all");
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(-1));
 
@@ -1382,7 +1434,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_ForATenantIdentifierOfZero_LooksItUpRatherThanDiscardingIt()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(0));
 
@@ -1413,7 +1465,7 @@ public sealed class TabApiTests
     {
         int hostTabId = await CreateTenantlessTabAsync("IHostPage" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(hostTabId));
 
@@ -1454,7 +1506,7 @@ public sealed class TabApiTests
     {
         int hostTabId = await CreateTenantlessTabAsync("IHostPage" + Suffix());
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(hostTabId));
 
@@ -1486,7 +1538,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IEmpty" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         Dictionary<string, object?> body = new(StringComparer.Ordinal)
         {
@@ -1540,7 +1592,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("ISentinelDate" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         Dictionary<string, object?> body = new(StringComparer.Ordinal)
         {
@@ -1583,7 +1635,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("INoDates" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -1610,51 +1662,70 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// Both page routes are served from a host name that matches no configured alias.
+    /// The two page surfaces answer a host name that matches no configured alias DIFFERENTLY, and the
+    /// difference is exactly the declared mark: the collection is refused, the single page is served.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// The tenant-resolution stage sits after authentication and authorisation and is a pass-through for these
-    /// routes: the collection route names its tenant in the address, and the two single-page routes are marked
-    /// as taking their tenant from the caller's signed token. Neither consults the alias table, so neither can
-    /// be refused for a host name that resolves to nothing.
+    /// SEC-006 REWROTE THIS FACT. Both arms used to assert <c>200</c>, on the reasoning that the collection
+    /// route names its tenant in the address and therefore never needs the alias table. Naming a tenant in a
+    /// route is a claim about which one to act on, not evidence of arrival at one, so that arm is now a
+    /// refusal: the collection requires a host name that resolves.
     /// </para>
     /// <para>
-    /// This matters beyond the pass-through itself. It is the reason no substring host can reach another
-    /// tenant's page through this surface: the mechanism the legacy substring predicate widened is not on the
-    /// path at all. Asserting the pass-through is therefore the honest way to state that property, because a
-    /// test that tried to observe alias matching here would be observing something these routes never do.
+    /// THE SECOND ARM IS UNCHANGED, AND IT IS WHY THIS FACT IS WORTH KEEPING AS A PAIR. The single-page routes
+    /// carry the tenant-optional mark, whose stated justification is that they take their tenant from the
+    /// caller's signed token. That mark is DECLARED on the endpoint and inventoried by a test, so the
+    /// exemption is auditable - which is the whole difference between it and the inferred exemption that was
+    /// removed. Asserting the two together is what proves the boundary now follows the mark rather than
+    /// following the shape of the route.
+    /// </para>
+    /// <para>
+    /// The property that no substring host reaches another tenant's page holds through both arms: the
+    /// collection is refused outright, and the single page is decided against the token's own portal, so the
+    /// mechanism the legacy substring predicate widened is on neither path.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task Tabs_AreServedFromAHostNameThatMatchesNoAlias()
+    public async Task Tabs_FromAHostNameThatMatchesNoAlias_RefuseTheCollectionAndServeTheDeclaredExemption()
     {
-        using HttpClient client = _fixture.CreateHostClient("no-such-alias.invalid");
+        using HttpClient client = await _fixture.CreateHostClientAsync("no-such-alias.invalid");
 
         using HttpResponseMessage listed = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
         listed.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "the collection route names its tenant, so no alias has to resolve for it");
+            HttpStatusCode.Forbidden,
+            "the collection carries no tenant-optional mark, so it requires a host name that resolves");
 
         using HttpResponseMessage read = await client.GetAsync(TabRoute(_fixture.Seed.RootTabId));
 
         read.StatusCode.Should().Be(
             HttpStatusCode.OK,
-            "the single-page route takes its tenant from the token, so no alias has to resolve for it either");
+            "the single-page route is marked tenant-optional because it takes its tenant from the token, and "
+            + "a declared exemption is the only exemption that remains");
     }
 
     /// <summary>
-    /// A host name that is a strict substring of a configured alias confers nothing: it serves the tenant the
-    /// request names and reaches no other.
+    /// A host name that is a strict substring of a configured alias confers nothing: it reaches NO tenant at
+    /// all, neither the one that owns the alias nor any other.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
+    /// <para>
     /// The host used here, <c>localhos</c>, is a strict substring of the seeded alias <c>localhost</c>, which
     /// is exactly the shape the legacy predicate matched. The caller is a genuine administrator of the seeded
-    /// tenant, so the first half of the assertion proves the request is not failing for some unrelated reason,
-    /// and the second half proves the substring bought no additional reach.
+    /// tenant, holding a token issued for it, so neither refusal below can be explained by the caller lacking
+    /// authority - the address alone accounts for both.
+    /// </para>
+    /// <para>
+    /// SEC-006: BOTH ARMS ARE NOW REFUSALS, AND THE FIRST ONE CHANGED. It used to assert that the caller's own
+    /// tenant was still served, because a route naming its own portal was exempt from needing a resolved host
+    /// name. That exemption is gone: a <c>portalId</c> segment is a claim about which tenant to act on, not
+    /// evidence of arrival at one, so an unresolvable host name is now refused whichever tenant the route
+    /// names. The property this fact exists to prove is unchanged and strictly stronger - a substring reached
+    /// no other tenant before, and now reaches nothing.
+    /// </para>
     /// </remarks>
     // MIGRATION: the legacy resolver matched `PortalAlias like '%' + @PortalAlias + '%'`
     // (01.00.00.SqlDataProvider:L4582) and then took `min(PortalID)` of whatever matched (L4580). Two defects
@@ -1667,20 +1738,21 @@ public sealed class TabApiTests
     [Fact]
     public async Task Tabs_FromAHostNameThatIsASubstringOfAnAlias_ReachNoOtherTenant()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         int foreignPortalId = await CreateIsolatedPortalAsync(host);
 
-        using HttpClient substringHost = _fixture.CreateTenantClient(
-            ApiTestFixture.TestHost[..^1],
-            _fixture.Seed.PortalId,
-            _fixture.Seed.AdminUserId,
-            IntegrationSeed.AdminUserName);
+        // The credential is presented at the seeded alias and the REQUEST is addressed at the truncated
+        // one, so the caller is unchanged and the host name is the only variable - which is what makes the
+        // refusal below attributable to resolution rather than to who is asking.
+        using HttpClient substringHost = await _fixture.CreateAdministratorClientAsync(
+            ApiTestFixture.TestHost[..^1]);
 
         using HttpResponseMessage own = await substringHost.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
         own.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "the caller administers the tenant the address names, so the request itself is sound");
+            HttpStatusCode.Forbidden,
+            "the address resolves to no tenant, and naming one in the route does not supply the missing "
+            + "arrival tenant even when the caller genuinely administers it");
 
         using HttpResponseMessage foreign = await substringHost.GetAsync(TabsRoute(foreignPortalId));
 
@@ -1709,11 +1781,11 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_ForAPageInAnotherTenant_IsRefusedAndNeverSubstituted()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         int foreignPortalId = await CreateIsolatedPortalAsync(host);
         int foreignTabId = await CreateTabAsync("IForeign" + Suffix(), portalId: foreignPortalId);
 
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await administrator.GetAsync(TabRoute(foreignTabId));
 
@@ -1760,7 +1832,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IProblem" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -1819,7 +1891,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IMediaType" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage defaulted = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -1868,7 +1940,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IRefused" + Suffix());
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
 
@@ -1910,7 +1982,7 @@ public sealed class TabApiTests
     {
         const string Supplied = "tab-round-trip-4d19ae";
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
             new HttpRequestMessage(HttpMethod.Get, TabRoute(_fixture.Seed.RootTabId)),
             Supplied);
@@ -1929,7 +2001,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_GeneratesACorrelationIdWhenTheCallerSuppliesNone()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
@@ -1956,7 +2028,7 @@ public sealed class TabApiTests
     {
         string overlong = new('c', 300);
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
             new HttpRequestMessage(HttpMethod.Get, TabRoute(_fixture.Seed.RootTabId)),
             overlong);
@@ -1987,7 +2059,7 @@ public sealed class TabApiTests
 
         int tabId = await CreateTabAsync("ICorrelated" + Suffix());
 
-        using HttpClient client = MemberClient();
+        using HttpClient client = await MemberClientAsync();
         using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
             new HttpRequestMessage(HttpMethod.Get, TabRoute(tabId)),
             Supplied);
@@ -2022,7 +2094,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_AnswersAnUnpagedEnvelopeWithNoPagingSentinel()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
@@ -2060,7 +2132,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task ListTabs_ReturnsADeterministicOrder()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage first = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
         first.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -2104,7 +2176,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IReserved" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -2146,7 +2218,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IResembles" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
@@ -2187,7 +2259,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IInverted" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         UpdateTabRequest request = NewUpdateRequest("IInverted" + Suffix());
         request.StartDate = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
@@ -2229,7 +2301,7 @@ public sealed class TabApiTests
     {
         int tabId = await CreateTabAsync("IBadDate" + Suffix());
 
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         Dictionary<string, object?> body = new(StringComparer.Ordinal)
         {
@@ -2249,6 +2321,82 @@ public sealed class TabApiTests
         errors.Keys.Should().Contain(
             "$." + member,
             "the member that could not be read has to be named in the per-field dictionary");
+    }
+
+    /// <summary>
+    /// An ordinary edit preserves the stored skin and container tokens instead of blanking them.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: skinning and containers are an explicit exclusion of this migration, so the page-update
+    /// contract carries no member for either column. An earlier revision did carry both and assigned them
+    /// from the request, which had two consequences. It published this endpoint as the supported way to
+    /// change a page's skin - re-admitting the excluded subsystem through the write surface - and, because
+    /// the projection is a WHOLE-ROW replacement rather than a patch, a caller that simply omitted the
+    /// members deserialised them to null and therefore BLANKED an administrator's stored tokens on every
+    /// unrelated edit.
+    /// </para>
+    /// <para>
+    /// The stored values are read back from the database rather than from the response, because the response
+    /// projection and the persistence projection are different code paths and only the second one settles
+    /// what actually survived the write. The page name is asserted changed in the same breath, so a
+    /// projection that had stopped writing ANYTHING could not pass by leaving both columns untouched.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_PreservesTheStoredSkinAndContainerTokens()
+    {
+        string originalName = "IPresrv" + Suffix();
+        int tabId = await CreateTabAsync(originalName);
+
+        const string StoredSkin = "[G]Skins/Default/Measured.ascx";
+        const string StoredContainer = "[G]Containers/Default/Measured.ascx";
+
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Tabs] SET [SkinSrc] = @skinSrc, [ContainerSrc] = @containerSrc "
+            + "WHERE [TabID] = @tabId;",
+            new Dictionary<string, object?>
+            {
+                ["skinSrc"] = StoredSkin,
+                ["containerSrc"] = StoredContainer,
+                ["tabId"] = tabId,
+            });
+
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string renamed = originalName + "R";
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            NewUpdateRequest(renamed),
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string storedName = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [TabName] FROM [dbo].[Tabs] WHERE [TabID] = @tabId;",
+            new Dictionary<string, object?> { ["tabId"] = tabId });
+
+        storedName.Should().Be(
+            renamed,
+            "the edit itself must have been applied, or the preservation below would prove nothing");
+
+        string storedSkin = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [SkinSrc] FROM [dbo].[Tabs] WHERE [TabID] = @tabId;",
+            new Dictionary<string, object?> { ["tabId"] = tabId });
+
+        string storedContainer = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [ContainerSrc] FROM [dbo].[Tabs] WHERE [TabID] = @tabId;",
+            new Dictionary<string, object?> { ["tabId"] = tabId });
+
+        storedSkin.Should().Be(
+            StoredSkin,
+            "the update contract carries no skin member, so an edit that mentions none must leave the "
+            + "stored token exactly as it was rather than writing an absent value over it");
+        storedContainer.Should().Be(
+            StoredContainer,
+            "the container token is preserved on the same footing and for the same reason");
     }
 
     /// <summary>Builds a write request whose fields are all explicit, so nothing is asserted by default.</summary>
@@ -2426,14 +2574,9 @@ public sealed class TabApiTests
             .GetInt32();
     }
 
-    /// <summary>Builds a client for the seeded plain member.</summary>
+    /// <summary>Signs in as the seeded plain member.</summary>
     /// <returns>An authenticated client holding no administrative role.</returns>
-    private HttpClient MemberClient() => _fixture.CreateClientFor(
-        _fixture.Seed.MemberUserId,
-        IntegrationSeed.MemberUserName,
-        _fixture.Seed.PortalId,
-        isSuperUser: false,
-        roles: new[] { IntegrationSeed.RegisteredUsersRoleName });
+    private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
 
     /// <summary>Reads a page listing out of the collection envelope a response carries.</summary>
     /// <param name="response">The response.</param>

@@ -21,8 +21,8 @@ namespace DnnMigration.Application.Dtos.User;
 /// </para>
 /// <para>
 /// <b>This is a RESPONSE contract and nothing binds it.</b> It is returned by every read on
-/// <c>/api/v1/profile-definitions</c> and its portal-nested equivalent, returned as the body of a
-/// successful create or update, and embedded by the user-profile contract so that a rendered
+/// <c>/api/v1/profile-definitions</c>, returned as the body of a successful create or update, and
+/// embedded by the user-profile contract so that a rendered
 /// profile can carry the metadata describing its own fields. It is NOT the payload of any verb:
 /// <c>POST</c> binds <see cref="CreateProfilePropertyDefinitionRequest"/> and <c>PUT</c> binds
 /// <see cref="UpdateProfilePropertyDefinitionRequest"/>, each carrying only the members the

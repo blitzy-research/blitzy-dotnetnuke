@@ -7,7 +7,7 @@ import {
 import type {
   PortalSettings,
   PortalSettingsLookups,
-  UpdatePortalRequest,
+  UpdatePortalSettingsRequest,
 } from '../../../core/models/portal.model';
 import { PortalSettingsComponent } from './portal-settings.component';
 
@@ -223,6 +223,13 @@ describe('PortalSettingsComponent', () => {
       expect((title!.textContent ?? '').trim()).toBe('Contoso Settings');
     });
 
+    it('restores the default when route input binding supplies no heading', () => {
+      setInput('heading', undefined);
+
+      const title = q<HTMLElement>('.page-header__title');
+      expect((title!.textContent ?? '').trim()).toBe('Site Settings');
+    });
+
     it('keeps the title on screen while the settings are being fetched', () => {
       setInput('loading', true);
 
@@ -232,6 +239,12 @@ describe('PortalSettingsComponent', () => {
   });
 
   describe('before any settings arrive', () => {
+    it('treats an absent route-bound lookup collection as empty', () => {
+      expect(() => setInput('lookups', undefined)).not.toThrow();
+      expect(component.lookups.pages).toEqual([]);
+      expect(q('app-empty-state')).not.toBeNull();
+    });
+
     it('shows the empty state and no form', () => {
       expect(q('app-empty-state')).not.toBeNull();
       expect(q('form')).toBeNull();
@@ -489,7 +502,7 @@ describe('PortalSettingsComponent', () => {
       expect(field<HTMLInputElement>('homeDirectory')!.value).toBe('Portals/7');
     });
 
-    it('leaves the payment-processor password blank, because none is returned', () => {
+    it('leaves the managed-secret reference blank and defaults the explicit clear operation off', () => {
       tabs()[1].click();
       fixture.detectChanges();
       toggleFor('Payment Settings')!.click();
@@ -497,8 +510,9 @@ describe('PortalSettingsComponent', () => {
 
       expect(field<HTMLSelectElement>('currency')!.selectedIndex).toBe(1);
       expect(field<HTMLInputElement>('processorUserId')!.value).toBe('merchant-1');
-      expect(field<HTMLInputElement>('processorPassword')!.value).toBe('');
-      expect(field<HTMLInputElement>('processorPassword')!.type).toBe('password');
+      expect(field<HTMLInputElement>('processorCredentialReference')!.value).toBe('');
+      expect(field<HTMLInputElement>('processorCredentialReference')!.type).toBe('text');
+      expect(field<HTMLInputElement>('clearProcessorCredentialReference')!.checked).toBeFalse();
     });
 
     it('narrows the stored instant to a date without shifting it into the local zone', () => {
@@ -663,7 +677,7 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('still submits a locked banner setting unchanged', () => {
-      const emitted: UpdatePortalRequest[] = [];
+      const emitted: UpdatePortalSettingsRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
       setInput('canEditHostFields', false);
@@ -697,7 +711,7 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('is still submitted in full when it is not offered', () => {
-      const emitted: UpdatePortalRequest[] = [];
+      const emitted: UpdatePortalSettingsRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
       setInput('canEditHostFields', false);
@@ -714,7 +728,7 @@ describe('PortalSettingsComponent', () => {
   });
 
   describe('submitting', () => {
-    let emitted: UpdatePortalRequest[];
+    let emitted: UpdatePortalSettingsRequest[];
 
     beforeEach(() => {
       emitted = [];
@@ -723,18 +737,17 @@ describe('PortalSettingsComponent', () => {
       component.save.subscribe((request) => emitted.push(request));
     });
 
-    it('carries the identifier of the site being written', () => {
+    it('does not duplicate the route-owned portal identifier in the settings body', () => {
       submit();
 
       expect(emitted.length).toBe(1);
-      expect(emitted[0].portalId).toBe(7);
+      expect('portalId' in emitted[0]).toBeFalse();
     });
 
-    it('sends all twenty-seven properties, so a whole-row replacement is complete', () => {
+    it('sends all twenty-six editable properties, so a whole-row replacement is complete', () => {
       submit();
 
-      const expected: readonly (keyof UpdatePortalRequest)[] = [
-        'portalId',
+      const expected: readonly (keyof UpdatePortalSettingsRequest)[] = [
         'portalName',
         'logoFile',
         'footerText',
@@ -749,7 +762,7 @@ describe('PortalSettingsComponent', () => {
         'userQuota',
         'paymentProcessor',
         'processorUserId',
-        'processorPassword',
+        'processorCredentialReference',
         'description',
         'keyWords',
         'backgroundFile',
@@ -764,7 +777,7 @@ describe('PortalSettingsComponent', () => {
       ];
 
       expect(Object.keys(emitted[0]).sort()).toEqual([...expected].sort());
-      expect(expected.length).toBe(27);
+      expect(expected.length).toBe(26);
     });
 
     it('trims text and reports a blank field as absent', () => {
@@ -782,21 +795,36 @@ describe('PortalSettingsComponent', () => {
       expect(emitted[0].pageQuota).toBe(0);
     });
 
-    it('sends a blank processor password as absent, leaving the stored secret alone', () => {
+    it('sends a blank processor reference as absent, leaving the stored reference alone', () => {
       submit();
 
-      expect(emitted[0].processorPassword).toBeNull();
+      expect(emitted[0].processorCredentialReference).toBeNull();
     });
 
-    it('sends a typed processor password', () => {
+    it('sends a managed-secret reference as the replace operation', () => {
       tabs()[1].click();
       fixture.detectChanges();
       toggleFor('Payment Settings')!.click();
       fixture.detectChanges();
-      type('processorPassword', 'sekrit');
+      type('processorCredentialReference', 'secret://processor/test');
       submit();
 
-      expect(emitted[0].processorPassword).toBe('sekrit');
+      expect(emitted[0].processorCredentialReference).toBe('secret://processor/test');
+    });
+
+    it('sends an empty string only when the operator explicitly clears the processor reference', () => {
+      tabs()[1].click();
+      fixture.detectChanges();
+      toggleFor('Payment Settings')!.click();
+      fixture.detectChanges();
+      type('processorCredentialReference', 'plaintext-password');
+      field<HTMLInputElement>('clearProcessorCredentialReference')!.click();
+      fixture.detectChanges();
+      submit();
+
+      expect(field<HTMLInputElement>('processorCredentialReference')!.value).toBe('');
+      expect(field<HTMLInputElement>('processorCredentialReference')!.readOnly).toBeTrue();
+      expect(emitted[0].processorCredentialReference).toBe('');
     });
 
     it('keeps a chosen page identifier a number, not a string', () => {
@@ -935,13 +963,25 @@ describe('PortalSettingsComponent', () => {
       toggleFor('Payment Settings')!.click();
       fixture.detectChanges();
       type('processorUserId', 'x'.repeat(51));
-      type('processorPassword', 'x'.repeat(51));
+      type('processorCredentialReference', 'x'.repeat(51));
 
       expect((messageFor('processorUserId')!.textContent ?? '').trim()).toBe(
         'Enter at most 50 characters.',
       );
-      expect((messageFor('processorPassword')!.textContent ?? '').trim()).toBe(
+      expect((messageFor('processorCredentialReference')!.textContent ?? '').trim()).toBe(
         'Enter at most 50 characters.',
+      );
+    });
+
+    it('requires a managed-secret scheme for a replacement processor reference', () => {
+      tabs()[1].click();
+      fixture.detectChanges();
+      toggleFor('Payment Settings')!.click();
+      fixture.detectChanges();
+      type('processorCredentialReference', 'plaintext-password');
+
+      expect((messageFor('processorCredentialReference')!.textContent ?? '').trim()).toBe(
+        'The processor credential reference must use secret:// followed by a managed-secret identifier.',
       );
     });
 
@@ -1088,7 +1128,7 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('keeps that held value selected, so opening and saving cannot change it', () => {
-      const emitted: UpdatePortalRequest[] = [];
+      const emitted: UpdatePortalSettingsRequest[] = [];
       setInput('lookups', lookupsOf({ pages: [{ value: 12, label: 'Home' }] }));
       setInput('settings', settingsOf({ splashTabId: 99 }));
       component.save.subscribe((request) => emitted.push(request));

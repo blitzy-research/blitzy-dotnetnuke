@@ -83,45 +83,24 @@ namespace DnnMigration.Application.Abstractions;
 /// <c>AddInfrastructure(IConfiguration)</c> registers it instead.
 /// </para>
 /// <para>
-/// Lifetime, and the trap that comes with it. The intended registration is a <b>singleton</b>:
-/// signing is stateless and the configuration behind it is fixed for the process lifetime. A
-/// singleton must therefore not capture a scoped dependency - not the database context, not a
-/// repository, not the tenant context, not the caller-identity abstraction. Doing so either pins
-/// one request's state for the life of the process or fails at start-up with a "cannot consume
-/// scoped service from singleton" validation error, and no compiler catches either. Refresh-token
-/// persistence is genuine I/O, so an implementation that needs a store must resolve a scope per
-/// call, or delegate to a store that does, and must hold no scoped instance in a field.
+/// Lifetime. Signing is stateless, but refresh-token persistence is scoped database I/O. The
+/// shipped implementation is therefore registered as <b>scoped</b> alongside
+/// <c>IRefreshTokenStore</c>; it may capture that scoped store and must never be promoted to a
+/// singleton. Scope validation is enabled by the hosted integration fixture so an accidental
+/// singleton-to-scoped dependency fails at startup rather than pinning one request's database
+/// context for the life of the process.
 /// </para>
 /// <para>
-/// Refresh state, and the one thing this contract does <b>not</b> promise about it. Refresh tokens
-/// are server-side state: the implementation records one entry per issued token, holds only a
-/// one-way digest of the value, and treats its own record as authoritative for whether a presented
-/// token may be exchanged. What this contract does not promise is <em>where</em> that state lives
-/// or how long it survives, because that is a property of the deployment rather than of the
-/// abstraction. The implementation shipped in this solution keeps the state in the process, which
-/// has two consequences a deployment must plan around: a restart discards every outstanding refresh
-/// token, so every caller signs in again; and two replicas do not see each other's state, so a
-/// token issued by one cannot be exchanged at the other and a revocation performed on one does not
-/// reach the other. That implementation is therefore suitable for a single-instance deployment
-/// only. A deployment that needs either property supplies a durable, shared implementation of these
-/// four members in its place — nothing on this surface changes when it does, which is what makes
-/// the substitution possible. This contract must never be read, or restated, as promising durable
-/// storage outright: that would be false of the implementation which satisfies it, and stating a
-/// deployment requirement as a delivered guarantee is the more dangerous of the two mistakes,
-/// because it stops anyone planning for it.
+/// Refresh state is durable and shared. The implementation records only SHA-256 digests and the
+/// minimal subject in <c>DnnMigration.RefreshTokens</c>, an additive application-owned table
+/// created by the operator-run script under Infrastructure/Persistence/Scripts. A restart therefore
+/// preserves outstanding sessions, and replicas observe the same issue, rotation and revocation
+/// state. The legacy <c>dbo</c> objects remain untouched.
 /// </para>
 /// <para>
-/// Why the narrower statement is the correct one rather than a concession. This solution's own
-/// deployment descriptor, <c>docker/docker-compose.yml</c>, declares a single API service with no
-/// replica or scale declaration of any kind, so rotation held in the process <em>is</em> rotation
-/// suitable for the deployment being targeted. Making it durable would mean persisting token state,
-/// and the only persistence this solution has is the existing SQL Server schema, which it is
-/// forbidden to alter: the plan's data-model rule holds the schema immutable, its twenty-one-entity
-/// inventory contains no token or credential entity, and its configuration inventory contains no
-/// mapping for one. A durable store therefore cannot be built here without breaking the rule that
-/// governs the whole migration, which is why the contract is made accurate instead of the
-/// implementation being made to promise something it may not deliver. Supplying that durable store
-/// is a deployment decision with its own persistence, not a gap in this layer.
+/// Rule T4 is preserved by ownership and deployment mechanics: no migration or application startup
+/// creates, alters or drops a legacy table. The refresh schema is separate, additive and explicit;
+/// deployments apply its idempotent script before enabling token issuance.
 /// </para>
 /// <para>
 /// Session length is bounded absolutely, not by idleness. A refresh token family receives one
@@ -143,14 +122,11 @@ namespace DnnMigration.Application.Abstractions;
 /// abstraction rather than from the ambient system clock, so expiry and rotation stay testable.
 /// </para>
 /// <para>
-/// What the access token asserts. The emitted token states, at minimum, the subject identifier,
-/// the sign-in name, the portal identifier, the super-user flag, one entry per role name and one
-/// entry per permission key. That is precisely the set of facts <see cref="ICurrentUser"/>
-/// projects at the Api edge, and that projection is their only consumer - which is why the
-/// parameters of <see cref="IssueTokensAsync"/> mirror it member for member. The role entries
-/// derive from the <c>Roles</c>, <c>UserRoles</c> and <c>RoleGroups</c> tables, read by the
-/// caller through the domain layer's role repository; this service performs no such read and must
-/// never invent, filter, deduplicate or re-order what it is handed.
+/// What the access token asserts. The emitted token contains only the subject identifier, portal
+/// identifier, token identifier and the standard issuer, audience and time claims. User names,
+/// host authority, roles, permission keys and profile data are deliberately absent because each can
+/// change independently of the token lifetime. The server re-reads authority for protected
+/// operations, and clients load their display snapshot through <c>GET /auth/me</c>.
 /// </para>
 /// <para>
 /// Rotation. A refresh token is <b>single-use</b>. Exchanging one through
@@ -158,22 +134,17 @@ namespace DnnMigration.Application.Abstractions;
 /// the presented value as used in the same atomic unit of work that writes its successor, so that
 /// two concurrent presentations of one value cannot both succeed. A refresh token that is
 /// unknown, already used, revoked or past its absolute expiry is refused - never honoured "just
-/// this once". Because the rotated access token is minted afresh, a role or permission change
-/// takes effect at the next exchange rather than at the next sign-in; an implementation must
-/// re-read the caller's current roles, permission keys and host-level flag for the new token rather
-/// than copying the entries of the token being replaced.
+/// this once". AuthService performs every fallible tenant, account, approval, lockout and advisory
+/// read before it asks this contract to consume the token, so a dependency failure cannot spend the
+/// caller's only usable value without returning its successor.
 /// </para>
 /// <para>
 /// What rotation may change, and what it may never change. Exchanging a token proves possession of
 /// something issued to one caller in one tenant, and nothing about that proof can license
 /// describing the successor as belonging to anybody else. The subject identifier, the portal
-/// identifier and the sign-in name are therefore taken from the implementation's own record of the
-/// token being exchanged, never from anything the caller supplies alongside it - and there is no
-/// parameter on <see cref="RefreshAsync"/> through which they could be supplied, which is the point.
-/// The three mutable authority facts are the opposite case: they must be re-read, and re-read from
-/// authoritative storage rather than from anything the request carried. An implementation that
-/// forwarded role names arriving on the wire would hand a caller whatever authority it cared to
-/// name, and no check inside a token store could detect it.
+/// identifier are therefore taken from the durable store's own record of the token being exchanged,
+/// never from anything the caller supplies alongside it. No mutable authority or display field is
+/// accepted by this contract, so none can be copied from the request or persisted with the family.
 /// </para>
 /// <para>
 /// Why no read-or-validate member exists. Inspecting or validating an access token is
@@ -226,10 +197,9 @@ public interface ITokenService
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Called by the sign-in service at the end of a successful sign-in, and by any
-    /// administrative flow that must hand a caller a new pair. Every fact the emitted token
-    /// asserts arrives as a parameter, which is what keeps this member free of repository access
-    /// and therefore safe to implement in a singleton.
+    /// Called by the sign-in service at the end of a successful sign-in. The access token carries
+    /// only the account, tenant, token identifier and time/envelope claims needed to authenticate a
+    /// request; mutable authority is re-read by server-side policies.
     /// </para>
     /// <para>
     /// No entity crosses this boundary. There is no overload accepting a user, role or portal
@@ -265,27 +235,6 @@ public interface ITokenService
     /// middleware and asserted verbatim. The column seeds at -1, so -1 identifies a real tenant
     /// here and must not be treated as a missing value.
     /// </param>
-    /// <param name="userName">
-    /// Sign-in name of the caller, asserted verbatim so that the Api edge can project it without
-    /// a further lookup. Trimming, casing and canonicalisation are the sign-in service's
-    /// responsibility and must not be applied here.
-    /// </param>
-    /// <param name="isSuperUser">
-    /// <see langword="true"/> when the caller is a host-level super-user. Asserted as its own
-    /// entry rather than inferred from a role name, because the legacy authorisation checks
-    /// short-circuit on this flag independently of role membership.
-    /// </param>
-    /// <param name="roles">
-    /// Names of the roles the caller currently holds, already resolved by the caller from the
-    /// <c>Roles</c>, <c>UserRoles</c> and <c>RoleGroups</c> tables. Pass an empty collection - not
-    /// <see langword="null"/> - when the caller holds none.
-    /// </param>
-    /// <param name="permissionKeys">
-    /// Permission keys the caller currently holds, already resolved by the caller. Pass an empty
-    /// collection - not <see langword="null"/> - when the caller holds none. These entries inform
-    /// the client which affordances to render; they never replace the server-side authorisation
-    /// policy, which re-evaluates permissions on every request.
-    /// </param>
     /// <param name="cancellationToken">
     /// Token used to abandon the refresh-token write if the caller's request is abandoned first.
     /// </param>
@@ -303,10 +252,6 @@ public interface ITokenService
     Task<Result<LoginResponse>> IssueTokensAsync(
         int userId,
         int portalId,
-        string userName,
-        bool isSuperUser,
-        IReadOnlyList<string> roles,
-        IReadOnlyList<string> permissionKeys,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -321,14 +266,9 @@ public interface ITokenService
     /// same value cannot both be honoured.
     /// </para>
     /// <para>
-    /// The new access token is minted from the caller's <em>current</em> roles, permission keys and
-    /// host-level flag, re-read from authoritative storage for this exchange, not copied from the
-    /// token being replaced and not taken from anything the request carried. A role granted or
-    /// withdrawn since the last exchange therefore takes effect within one access-token lifetime
-    /// instead of persisting until the caller signs in again. Because the implementation is a
-    /// singleton, that re-read must happen through a scope resolved for this call. The identifier the
-    /// authority is read for is the one recorded against the presented token, which the
-    /// implementation knows and this member's caller does not have to supply - and cannot.
+    /// The replacement access token repeats only the minimal account and tenant identity recorded by
+    /// the durable store. Roles, permission keys, names and host authority are deliberately absent
+    /// from the token and are re-read by the server or by the explicit current-user endpoint.
     /// </para>
     /// <para>
     /// The exchange does not extend the session. The successor's own deadline is the one fixed when
@@ -367,6 +307,10 @@ public interface ITokenService
     /// must never be logged. Compared against the stored one-way hash rather than against a stored
     /// clear-text value.
     /// </param>
+    /// <param name="clientBinding">
+    /// A bounded server-observed client fingerprint. It is used only to keep a near-simultaneous
+    /// retry from revoking the family while still treating a replay from another client as theft.
+    /// </param>
     /// <param name="cancellationToken">
     /// Token used to abandon the store reads and writes if the caller's request is abandoned first.
     /// </param>
@@ -389,6 +333,7 @@ public interface ITokenService
     /// </returns>
     Task<Result<LoginResponse>> RefreshAsync(
         string refreshToken,
+        string clientBinding,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -509,14 +454,13 @@ public interface ITokenService
 /// abstraction both sides already depend on, removes the opportunity.
 /// </para>
 /// <para>
-/// The three registered names are spelled here rather than taken from a token library so that the wire
+/// The registered names are spelled here rather than taken from a token library so that the wire
 /// format is fixed by this contract and does not shift when a library renames its own constants between
 /// major versions - which the underlying library has done.
 /// </para>
 /// <para>
-/// Roles are deliberately absent from this list. They are emitted under the framework's own role claim
-/// type so that <c>[Authorize(Roles = ...)]</c>, <c>RequireRole</c> and every framework role check work
-/// with no mapping step; introducing a bespoke role claim name here would break all three.
+/// Mutable roles, permissions, names and host flags are deliberately absent. Server-side authorization
+/// re-reads those facts from authoritative storage instead of trusting a token snapshot.
 /// </para>
 /// </remarks>
 public static class DnnClaimTypes
@@ -527,27 +471,9 @@ public static class DnnClaimTypes
     /// </remarks>
     public const string PortalId = "portal_id";
 
-    /// <summary>Whether the account is an installation-wide superuser.</summary>
-    /// <remarks>
-    /// Informational only. It reports what the account is; it never settles an access-control question,
-    /// which is decided server-side on every request.
-    /// </remarks>
-    public const string SuperUser = "is_superuser";
-
-    /// <summary>One permission key the caller holds.</summary>
-    /// <remarks>
-    /// Emitted once per key, never as a delimited list. MIGRATION: the legacy representation was a single
-    /// semicolon-delimited string built with a leading delimiter, which is why every legacy consumer had
-    /// to guard an empty first element.
-    /// </remarks>
-    public const string Permission = "permission";
-
     /// <summary>The token's subject - the authenticated account's identifier.</summary>
     public const string Subject = "sub";
 
     /// <summary>A unique identifier for one particular token.</summary>
     public const string JwtId = "jti";
-
-    /// <summary>The caller's sign-in name.</summary>
-    public const string UniqueName = "unique_name";
 }

@@ -113,7 +113,7 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// <c>Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx</c>.
 /// </para>
 /// </remarks>
-public sealed class UpdatePortalRequest
+public sealed class UpdatePortalRequest : IPortalSettingsUpdateRequest
 {
     // MIGRATION: the legacy UpdatePortalInfo is a VB Sub, not a Function -- it returns nothing at
     //   all (PortalController.vb:L1568), and its body simply forwards the twenty-seven arguments to
@@ -761,7 +761,7 @@ public sealed class UpdatePortalRequest
     /// signature order is authoritative for this request and is the order used below.
     /// </para>
     /// <para>
-    /// This is an identifier rather than a secret, so unlike <see cref="ProcessorPassword"/> it may be
+    /// This is an identifier rather than a secret, so unlike <see cref="ProcessorCredentialReference"/> it may be
     /// returned by a response contract. Measured rules: none -- the legacy screen declared no
     /// validator on the control. An empty string may arrive where a modern reader would expect
     /// <c>null</c>.
@@ -769,54 +769,43 @@ public sealed class UpdatePortalRequest
     /// </remarks>
     public string? ProcessorUserId { get; set; }
 
-    // MIGRATION: the payment-processor credential is accepted inbound but is NEVER echoed back, and
-    //   that is a deliberate refusal to reproduce two measured legacy exposures.
+    // MIGRATION: argument 16 no longer accepts the payment-processor credential itself. The immutable
+    //   ProcessorPassword column is too narrow for safe envelope ciphertext, so it carries only a
+    //   managed-secret reference using the bounded secret:// scheme.
     //
-    //     PortalInfo.vb:L261 decorates this member with an XML element attribute, so the legacy
-    //       system wrote the plain credential into portal template exports.
+    //     PortalInfo.vb:L261 decorates the legacy password with an XML element attribute, so the
+    //       system wrote the plaintext credential into portal template exports.
     //     SiteSettings.ascx.vb:L756-L758 assigned the submitted credential back into the rendered
-    //       HTML value attribute of the text box, so it was also served back to the browser in the
-    //       page markup.
+    //       password box, so it was also served back to the browser in page markup.
     //
-    //   Neither is carried forward. No response contract in this migration declares this member, so
-    //   the credential travels in one direction only, and the structured-logging requirement forbids
-    //   recording it: it must never appear in a log event, a diagnostic message or a problem detail.
-    //   This is not an opportunistic fix of the legacy exporter -- that code is annotated and left
-    //   alone -- it is a decision not to reproduce a credential leak in a NEW contract.
+    //   Neither is carried forward. No response contract declares the reference and no application
+    //   contract accepts plaintext. The referenced value remains wholly inside the deployment's secret
+    //   manager and must never appear in a log event, diagnostic message or problem detail.
     //
-    //   Null-versus-blank semantics, stated honestly. The replaced signature is a Sub with no
-    //   optional parameters, and the legacy code-behind passed the text box contents directly
-    //   (SiteSettings.ascx.vb:L778), so a blank or omitted value OVERWROTE the stored credential with
-    //   an empty string -- it CLEARED it. If PortalService instead adopts "null means leave
-    //   unchanged", that is a behavioural divergence from the legacy path and requires its own
-    //   migration note IN THE SERVICE. This property implements neither policy and remains inert;
-    //   the service is the single place the semantics are decided.
+    //   The request has an explicit three-state contract: null keeps the current reference, an empty
+    //   string clears it, and a non-empty secret:// value replaces it. This intentionally removes the
+    //   legacy requirement to echo an existing credential merely to avoid clearing it.
 
     /// <summary>
-    /// Gets or sets the credential presented to the payment processor. Write-only: it is accepted
-    /// here and is never returned by any response contract, and it must never be logged.
+    /// Gets or sets the managed-secret reference for the payment processor.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Legacy argument 16, <c>ProcessorPassword</c>, typed <c>String</c>, supplied by the
-    /// <c>txtPassword</c> text box and labelled "Processor Password:" by the resource file. It is
-    /// argument sixteen of the replaced signature and therefore belongs to this request under the
-    /// rule that the member set is preserved exactly; it follows <see cref="ProcessorUserId"/>, not
-    /// the reverse.
+    /// Replaces legacy argument 16, <c>ProcessorPassword</c>, while preserving its position after
+    /// <see cref="ProcessorUserId"/>. The value is an opaque <c>secret://</c> reference, never the
+    /// referenced credential.
     /// </para>
     /// <para>
-    /// See the migration note above for the two legacy exposures that are deliberately not reproduced
-    /// and for the null-versus-blank semantics, which the service decides and documents. No attribute
-    /// of any kind is declared on this member -- the transport, redaction and logging policies are
-    /// configured at the API layer.
+    /// <see langword="null"/> means keep, an empty string means clear, and a non-empty value means
+    /// replace. No response DTO carries the reference. No attribute is declared here; the validator
+    /// owns the bounded reference syntax and the service/mapping boundary owns the three-state update.
     /// </para>
     /// <para>
-    /// Measured rules: none. The legacy screen declared no validator on the control and imposed no
-    /// complexity, length or confirmation requirement, because this is a credential the portal
-    /// presents to a third party rather than one it verifies.
+    /// The terminal column remains <c>nvarchar(50)</c>. The new reference syntax is deliberately
+    /// narrower than the legacy free-text password field so plaintext cannot be stored accidentally.
     /// </para>
     /// </remarks>
-    public string? ProcessorPassword { get; set; }
+    public string? ProcessorCredentialReference { get; set; }
 
     /// <summary>
     /// Gets or sets the descriptive summary of the portal, used as page metadata.

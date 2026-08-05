@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
-/// Request contract for <c>PUT /api/v1/portals/{portalId}/profile-definitions/{propertyDefinitionId}</c>:
+/// Request contract for <c>PUT /api/v1/profile-definitions/{propertyDefinitionId}</c>:
 /// the writable state of an existing profile property declaration.
 /// </summary>
 /// <remarks>

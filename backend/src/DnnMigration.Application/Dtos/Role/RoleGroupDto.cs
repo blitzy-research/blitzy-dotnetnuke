@@ -29,7 +29,7 @@ namespace DnnMigration.Application.Dtos.Role;
 /// <para>
 /// <b>This type is a RESPONSE shape only, and it must not be bound as a request
 /// body.</b> It was previously bound by both write actions on the
-/// <c>/api/v1/portals/{portalId}/role-groups</c> resource, on the reasoning that
+/// <c>/api/v1/role-groups</c> resource, on the reasoning that
 /// the legacy editor posted the same fields whether it was inserting or updating
 /// (<c>EditGroups.ascx.vb</c> lines 107 to 111). That reasoning overlooked which of
 /// those fields came from an INPUT: the group's identifier and its owning portal

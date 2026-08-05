@@ -132,14 +132,11 @@
 // anywhere in this solution. Note that RESET is a different flag (L240) and IS carried forward.
 
 // MIGRATION 12 of 18 - NO CURRENT-PASSWORD VERIFICATION HERE. Whether the supplied current password
-// matches the stored digest is an infrastructure concern reached through the application service. The
-// transition for credentials that predate the migration is an ADMINISTRATIVE RESET and nothing else:
-// it must not be described as a re-hash on first successful login with reset as a fallback. That is the
-// intent AAP 0.7.5.5 records, but its primary branch is a path no code in this
-// solution can perform, because nothing verifies a credential held under the legacy reversible scheme
-// and nothing may, per that same section. This file performs no digest work either way, touches no
-// repository and runs no asynchronous rule. Its only dependency is the bound password policy, taken
-// as an already-bound PasswordPolicyOptions instance, taken directly rather than through IOptions<T>.
+// matches a BCrypt digest or an enabled legacy representation is an infrastructure concern
+// orchestrated by the authentication service. An accepted legacy representation is immediately
+// replaced with BCrypt; administrative reset remains the fallback. This validator performs no
+// credential work either way, touches no repository and runs no asynchronous rule. Its only
+// dependency is the already-bound PasswordPolicyOptions instance.
 
 // MIGRATION 13 of 18 - NO IDENTIFIER BOUND TEST, AND NONE IS POSSIBLE HERE ANYWAY. The request carries
 // no identifier at all: the target user is route-sourced and the portal is resolved from the

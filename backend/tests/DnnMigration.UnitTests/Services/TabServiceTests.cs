@@ -125,6 +125,69 @@ public class TabServiceTests
     }
 
     /// <summary>
+    /// The five portal-designated system pages always remain linkable, matching the disabled checkbox on
+    /// the legacy editor.
+    /// </summary>
+    /// <param name="specialPageRole">Portal column that designates the page.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("Splash")]
+    [InlineData("Home")]
+    [InlineData("Login")]
+    [InlineData("User")]
+    public async Task UpdateTab_ForASpecialPage_ForcesDisableLinkOff(string specialPageRole)
+    {
+        Harness harness = Harness.Ready();
+        var portal = new Portal
+        {
+            PortalId = PortalId,
+            PortalName = "Measured Portal",
+        };
+
+        switch (specialPageRole)
+        {
+            case "Admin":
+                portal.AdminTabId = TabId;
+                break;
+            case "Splash":
+                portal.SplashTabId = TabId;
+                break;
+            case "Home":
+                portal.HomeTabId = TabId;
+                break;
+            case "Login":
+                portal.LoginTabId = TabId;
+                break;
+            case "User":
+                portal.UserTabId = TabId;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(specialPageRole),
+                    specialPageRole,
+                    "Unknown special-page role.");
+        }
+
+        harness.Portals
+            .Setup(repository => repository.GetByIdAsync(
+                PortalId,
+                false,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(portal);
+
+        UpdateTabRequest request = ValidRequest();
+        request.DisableLink = true;
+
+        Result<TabDetailDto> outcome = await harness.Service
+            .UpdateTabAsync(TabId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.StoredTab!.DisableLink.Should().BeFalse();
+        outcome.Value.DisableLink.Should().BeFalse();
+    }
+
+    /// <summary>
     /// A committed page update records the legacy TAB_UPDATED event with the tenant, the page and the acting
     /// account, and carries no free-text field.
     /// </summary>
@@ -158,10 +221,9 @@ public class TabServiceTests
         record.Outcome.Should().Be(AuditOutcome.Succeeded);
         record.PortalId.Should().Be(PortalId);
         record.ActorUserId.Should().Be(11);
-        record.ActorUserName.Should().Be("admin");
         record.ResourceType.Should().Be("Tab");
         record.ResourceId.Should().Be("4");
-        record.Properties["TabName"].Should().Be(TabName);
+        record.Properties.Should().NotContainKey("TabName");
 
         record.Properties.Should().NotContainKey("Description");
         record.Properties.Should().NotContainKey("Keywords");
@@ -169,16 +231,15 @@ public class TabServiceTests
     }
 
     /// <summary>
-    /// A rename carries the former name, and an unchanged name does not.
+    /// A page change retains neither the current nor the former caller-authored name.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// A record naming only the new value cannot answer "what was this page called yesterday", which is the
-    /// question a rename raises. Recording the former name only when it actually changed keeps the record from
-    /// asserting a rename that did not happen.
+    /// The page identifier is the durable attribution. Copying either name into the independently retained
+    /// logging store would create a second access, retention and deletion lifecycle for caller-authored text.
     /// </remarks>
     [Fact]
-    public async Task UpdateTab_CarriesTheFormerNameOnlyWhenItChanged()
+    public async Task UpdateTab_DoesNotRetainCurrentOrFormerNames()
     {
         Harness renamed = Harness.Ready();
 
@@ -188,15 +249,15 @@ public class TabServiceTests
         await renamed.Service.UpdateTabAsync(TabId, renaming, CancellationToken.None);
 
         AuditEvent renameRecord = renamed.AuditRecords.Should().ContainSingle().Subject;
-        renameRecord.Properties["TabName"].Should().Be("Renamed Page");
-        renameRecord.Properties["PreviousTabName"].Should().Be(TabName);
+        renameRecord.Properties.Should().NotContainKey("TabName");
+        renameRecord.Properties.Should().NotContainKey("PreviousTabName");
 
         Harness unchanged = Harness.Ready();
 
         await unchanged.Service.UpdateTabAsync(TabId, ValidRequest(), CancellationToken.None);
 
         AuditEvent unchangedRecord = unchanged.AuditRecords.Should().ContainSingle().Subject;
-        unchangedRecord.Properties["TabName"].Should().Be(TabName);
+        unchangedRecord.Properties.Should().NotContainKey("TabName");
         unchangedRecord.Properties.Should().NotContainKey("PreviousTabName");
     }
 
@@ -215,7 +276,6 @@ public class TabServiceTests
 
         AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
         record.ActorUserId.Should().BeNull();
-        record.ActorUserName.Should().BeNull();
     }
 
     /// <summary>

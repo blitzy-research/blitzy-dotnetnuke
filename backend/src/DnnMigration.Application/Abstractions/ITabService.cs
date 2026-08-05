@@ -1,133 +1,70 @@
 // MIGRATION: This contract is DELIBERATELY NARROW, and that is its single most
 // important property. The legacy page controller,
 // Library/Components/Tabs/TabController.vb, is 1,302 lines and exposes 34 public
-// members, measured directly. Exactly three of those concerns survive here.
-// The migration plan fixes the API surface for pages as "deliberately narrow:
-// GET /api/v1/portals/{id}/tabs and GET/PUT /api/v1/tabs/{id} only", and three
-// independent facts corroborate that the narrowness is intentional rather than an
-// omission: the planned data-transfer folder for pages holds exactly three types
-// and contains no create request; the planned client application declares feature
-// folders for portals, modules, users, roles and authentication but NONE for
-// pages; and the twenty-five-route client route table contains no page route at
-// all. Pages exist in this migration only because module placement, page
-// permissions and portal navigation are inseparable from them, and they are
-// consumed as a LOOKUP by the module screens.
+// members; exactly three of those concerns survive here, mirroring the three page
+// endpoints this migration exposes - GET /api/v1/portals/{id}/tabs and
+// GET/PUT /api/v1/tabs/{id}, and nothing else. Pages are a SUPPORTING aggregate:
+// they are present only because module placement, page permissions and portal
+// navigation are inseparable from them, and they are consumed as a LOOKUP by the
+// module screens. The page transfer folder accordingly holds three types and no
+// create request, and the client application declares no page feature area and no
+// page route.
 //
-// MIGRATION: Do not "complete" this surface. Adding a create, delete, copy,
-// recycle-bin, restore, serialise, deserialise, count, path-lookup or
-// design-propagation member would contradict the plan, not extend it. "The legacy
-// controller had it" is explicitly NOT a justification: the 31 members omitted
-// below were each considered and each rejected for a reason recorded here. A new
-// member requires a named endpoint in the migration plan first.
+// MIGRATION: Do not "complete" this surface. "The legacy controller had it" is
+// explicitly NOT a justification; a new member requires a named endpoint in the
+// migration plan first. Each of the 31 omitted members is absent for a stated
+// reason: create, delete, copy and recycle-bin/restore have no endpoint, and the
+// static DeleteTab is doubly disqualified because it accepted the legacy per-request
+// portal composite that an immutable request-scoped tenant context replaces;
+// portal-template XML serialisation is scoped to the portal service and only as far
+// as parsing requires, which is why no XML type crosses this contract in either
+// direction and this file imports no XML namespace; design propagation dies with the
+// excluded skinning and container subsystem; permission propagation belongs to the
+// permission service, which keeps this contract free of any access-control decision;
+// cache-shaped reads returning a keyed or entity-valued map have no target shape;
+// and GetTabCount, GetTabByTabPath and GetTabByName are either answered by what
+// survives - the complete sequence supplies the count, and the path is a field on
+// every list row - or existed solely to serve the excluded create path.
 //
 // MIGRATION: FOUR legacy update members collapse into the single update member
-// declared below. They are UpdateTab at L780; UpdateTabOrder at L816;
-// UpdateTabOrder at L1287, a five-argument positional variant; and
-// UpdatePortalTabOrder at L550, a SEVEN-argument positional signature whose tail
-// argument is an optional Boolean defaulted to False. A seven-argument positional
-// signature is itself the defect, so the replacement is not a defaulted argument
-// and not a set of overloads: the ordering inputs the legacy signature carried
-// positionally - parent, level, order and visibility - become named properties on
-// a single request object, and the legacy optional tail argument becomes an
-// explicit property on that same request rather than an implicit default a caller
-// cannot see. Ordering is therefore always stated, never inferred.
+// declared below - UpdateTab at L780, UpdateTabOrder at L816, the five-argument
+// positional UpdateTabOrder at L1287, and UpdatePortalTabOrder at L550, a
+// SEVEN-argument positional signature whose tail argument is an optional Boolean
+// defaulted to False. That signature is itself the defect, so the replacement is
+// neither a defaulted argument nor a set of overloads: the ordering inputs it
+// carried positionally - parent, level, order and visibility - become named
+// properties on one request object, and the optional tail becomes an explicit
+// property rather than a default the caller cannot see. Ordering is therefore always
+// stated, never inferred. The plan cites L243 as a second optional-argument site,
+// but MoveTab there is Private and reached only from UpdatePortalTabOrder, so no
+// public move or reorder member is invented to honour the citation - sibling
+// renumbering, level recalculation and cycle rejection stay INSIDE the implementing
+// service, which is where they belong.
 //
-// MIGRATION: The migration plan cites two optional-argument conversion sites for
-// the legacy page controller, at L243 and L550. Direct measurement refines that:
-// only L550 is public. The member at L243, MoveTab, is declared Private and is
-// invoked solely from inside the body of UpdatePortalTabOrder, at L636, L708 and
-// L746. It therefore never appeared on any public contract and cannot be a
-// contract-level conversion. This is REPORTED as a refinement, not corrected: the
-// plan's binding directive is unchanged, and no public move or reorder member is
-// invented here to honour the citation. The tree-reordering behaviour that member
-// implements - sibling renumbering, level recalculation and cycle rejection - is
-// preserved INSIDE the implementing service, which is where it belongs.
-//
-// MIGRATION: NINE legacy members performed portal-template XML serialisation and
-// are not ported: DeserializePanes at L984; five DeserializeTab overloads at
-// L1009, L1013, L1017, L1021 and L1025; and three SerializeTab overloads at
-// L1141, L1153 and L1166. They traded in the framework XML node and document
-// types, the legacy hash table type and legacy entity types. Portal-template
-// handling is scoped by the migration plan to the portal service and only as far
-// as template parsing requires, so no XML type appears on this contract in either
-// direction. That is also why this file imports no XML namespace.
-//
-// MIGRATION: CopyDesignToChildren at L375 is not ported. It propagated a skin
-// source and a container source down a page subtree, and the migration plan
-// excludes DotNetNuke skinning and containers entirely, together with every
-// container and skin object. There is no target concept for it to serve.
-//
-// MIGRATION: CopyPermissionsToChildren at L387 is not ported HERE. Page
-// permissions are the permission service's responsibility, and the legacy
-// permission collection wrapper it accepted produces no target type at all,
-// being superseded by read-only generic collections. Splitting permissions away
-// from page metadata is deliberate: it keeps this contract free of any
-// access-control decision.
-//
-// MIGRATION: AddTab at L326 and L330, DeleteTab at L446, the static DeleteTab at
-// L936 and CopyTab at L414 are not ported. No create, delete or copy endpoint for
-// pages exists in the migration plan, and the planned data-transfer folder
-// accordingly declares no create request. The static overload at L936 is doubly
-// disqualified: it accepted the legacy per-request portal composite as an
-// argument, and that ambient composite is replaced by an immutable request-scoped
-// tenant context owned by the domain layer. Soft-delete and recycle-bin
-// semantics, which the legacy recycle-bin screen provided, likewise have no
-// endpoint in the plan.
-//
-// MIGRATION: The legacy single-page reader at L467 took a third argument that
-// bypassed the cache. No equivalent flag crosses this contract. Caching is the
-// implementing service's internal concern, expressed through the domain layer's
-// cache abstraction; the legacy controller contains 12 measured cache call sites,
-// at L60, L63, L370, L382, L409, L456, L529, L532, L536, L543, L1113 and L1128,
-// and all 12 are absorbed there. A caller cannot and must not steer caching.
-//
-// MIGRATION: Two legacy members returned keyed maps used purely as cache
-// structures and are not ported: GetTabsByPortal at L528, which returned a map of
-// legacy entities keyed by identifier, and the static GetTabPathDictionary at
-// L1111, which returned a path-to-identifier map. Neither a keyed map nor an
-// entity-valued collection appears on this surface. Every legacy member that
-// returned the framework's untyped, non-generic list type - GetAllTabs at L459
-// and L463, GetTabs at L516, GetTabsByParentId at L524 and L1282 - is served
-// instead by a single read-only, strongly typed sequence.
+// MIGRATION: caching is the implementing service's internal concern, expressed
+// through the domain layer's cache abstraction, which absorbs the 12 cache call
+// sites measured in the legacy controller. The legacy single-page reader at L467
+// took a third argument that bypassed the cache; no equivalent flag crosses this
+// contract, and a caller cannot and must not steer caching.
 //
 // MIGRATION: Numeric sentinels do NOT cross this contract; absence is carried by
-// nullable types. The legacy null contract used minus one as its integer
-// sentinel, but that value collides with real data twice over in this schema.
-// Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider
-// declares Tabs.TabID as IDENTITY (0, 1) at L140, so ZERO is a legitimate,
-// persisted page identifier and the first page ever created carries it; and it
-// declares Portals.PortalID as IDENTITY (-1, 1) at L77, so minus one is
-// simultaneously the legacy "absent" marker AND a real portal identifier - it is
-// that column's seed and first generated value, while the shipped default portal
-// row is inserted explicitly with PortalID zero, so both are real keys.
-// Roles.RoleID at L115 and Modules.ModuleID at L221 also seed at zero.
-// Consequently a root-level page's parent is null, never minus one and never
-// zero, and no member here accepts or returns a magic number meaning "absent".
-// The legacy reordering routine's local markers of minus one and minus two are
-// loop bookkeeping inside one method body, never contract values, and are not
-// reproduced. An implementer or consumer that treats zero as "unset" reintroduces
-// precisely the defect this paragraph exists to prevent.
+// nullable types, because the legacy minus-one sentinel collides with real data
+// twice over in this schema: 01.00.00.SqlDataProvider declares Tabs.TabID as
+// IDENTITY (0, 1) at L140, so ZERO is a legitimate persisted page identifier, and
+// Portals.PortalID as IDENTITY (-1, 1) at L77, so minus one is simultaneously the
+// legacy "absent" marker AND a real portal identifier. Roles.RoleID and
+// Modules.ModuleID also seed at zero. A root-level page's parent is therefore null,
+// never minus one and never zero; treating zero as "unset" reintroduces precisely
+// the defect this paragraph exists to prevent.
 //
 // MIGRATION: The page list is returned as a read-only sequence and is NOT paged.
-// Pages form a navigation tree that the module screens consume as a lookup, so a
-// partial answer is the wrong answer: a parent-page picker built from page one of
-// a paged response silently omits candidates, and a tree flattened into rows
-// cannot be split across pages without severing parents from their children. The
-// per-row parent, level, order and has-children fields are only coherent over the
-// complete set. The migration plan reinforces this by naming the endpoint with no
-// paging query argument and by declaring no paging request among the three
-// planned page transfer types, in contrast to portals and users, which do get
-// paged contracts.
-//
-// MIGRATION: Three further legacy read members are deliberately absent.
-// GetTabCount at L512 is omitted because a bare count member invites a caller to
-// make a decision that belongs in the service layer, and because the complete
-// sequence returned below already answers it. GetTabByTabPath at L1101 is omitted
-// because no endpoint or screen in the migration plan resolves a page by path;
-// the path is carried as a field on the list rows instead. GetTabByName at L504
-// and L508 is omitted because identity-based retrieval is what the planned
-// endpoint exposes, and the name-scoped lookup those overloads provided existed
-// to serve the create path, which is itself excluded.
+// Pages form a navigation tree consumed as a lookup, so a partial answer is the
+// wrong answer: a parent-page picker built from page one of a paged response
+// silently omits candidates, and a tree flattened into rows cannot be split across
+// pages without severing parents from their children. The per-row parent, level,
+// order and has-children fields are only coherent over the complete set, so the
+// endpoint carries no paging query argument and the page transfer types declare no
+// paging request, in contrast to portals and users.
 
 using DnnMigration.Application.Dtos.Tab;
 using DnnMigration.Domain.Common;
@@ -141,74 +78,47 @@ namespace DnnMigration.Application.Abstractions;
 /// <remarks>
 /// <para>
 /// <b>This surface is deliberately narrow, and must stay that way.</b> It declares
-/// exactly three members, mirroring the only three page endpoints the migration
-/// plan defines: list the pages of one portal, read one page, and update one page.
-/// The legacy page controller it replaces
-/// (<c>Library/Components/Tabs/TabController.vb</c>) exposes 34 public members, and
-/// 31 of them are intentionally not represented here. The header comments in this
-/// file record, member by member and line by line, which legacy member went where
-/// and why. Read them before proposing an addition: every omission is a decision,
-/// not a gap.
-/// </para>
-/// <para>
-/// <b>Why pages are in scope at all.</b> The page aggregate is a <em>supporting</em>
-/// aggregate in this migration. It is present because module placement, page
-/// permissions and portal navigation are inseparable from it - the permission
-/// tables are keyed by page identifier - and because the module administration
-/// screens consume pages as a lookup when a module has to be placed. It is not
-/// present to provide page administration in its own right, which is why there is
-/// no page feature area and no page route in the planned client application.
-/// </para>
-/// <para>
-/// <b>What this contract deliberately does not do.</b> It creates, deletes, copies
-/// and restores nothing; it propagates no skin or container design; it serialises
-/// and deserialises no portal template; it exposes no bare count and no
-/// path-resolution lookup; and it settles no permission question. Page permissions
-/// belong to the permission service, and the legacy page-permission collection
-/// wrapper has no target type. Nothing here answers "may the caller do this?" -
-/// that is an access-control decision, adjudicated by the authorisation policy in
-/// the API layer and the permission evaluator in the infrastructure layer.
+/// exactly three members - list the pages of one portal, read one page, update one
+/// page - and settles no permission question: page permissions belong to the
+/// permission service, and "may the caller do this?" is adjudicated by the
+/// authorisation policy in the API layer and the permission evaluator in the
+/// infrastructure layer. It creates, deletes, copies and restores nothing, exposes
+/// no bare count and no path lookup, propagates no skin or container design, and
+/// serialises no portal template. The file header records which of the legacy page
+/// controller's 34 public members went where and why; read it before proposing an
+/// addition, because every omission is a decision rather than a gap.
 /// </para>
 /// <para>
 /// <b>Absence is nullable, never a magic number.</b> No member accepts or returns a
 /// sentinel integer standing for "missing". This matters more for pages than
-/// anywhere else in the migration, because a root-level page genuinely has no
-/// parent while <c>0</c> is simultaneously a real, persisted page identifier:
-/// <c>Tabs.TabID</c> is declared <c>IDENTITY(0, 1)</c>. The legacy
-/// <c>Null.NullInteger</c> sentinel of <c>-1</c> is equally unusable, because
-/// <c>Portals.PortalID</c> is declared <c>IDENTITY(-1, 1)</c> and <c>-1</c> is
-/// therefore a real portal identifier as well as the legacy "absent" marker. Never
-/// compare an identifier against <c>0</c>, <c>-1</c>, <c>-2</c>, <c>default</c> or
-/// <c>int.MinValue</c> to decide whether it is present; test the nullable value
-/// with <c>is null</c>.
+/// anywhere else in the migration: a root-level page genuinely has no parent, while
+/// <c>0</c> is a real persisted page identifier because <c>Tabs.TabID</c> is
+/// declared <c>IDENTITY(0, 1)</c>, and <c>-1</c> is a real portal identifier as well
+/// as the legacy <c>Null.NullInteger</c> marker because <c>Portals.PortalID</c> is
+/// declared <c>IDENTITY(-1, 1)</c>. Test a nullable value with <c>is null</c>; never
+/// compare an identifier against <c>0</c>, <c>-1</c>, <c>default</c> or
+/// <c>int.MinValue</c> to decide whether it is present.
 /// </para>
 /// <para>
 /// <b>Expected failure is returned, never thrown.</b> Every member reports outcomes
-/// through <see cref="Result{T}"/>. An expected, caller-handleable failure - a
+/// through <see cref="Result{T}"/>: an expected, caller-handleable failure - a
 /// missing page, a parent that would create a cycle - arrives as a failed result
-/// carrying a stable reason code, and each member documents the codes it may
-/// produce. Genuinely unexpected conditions are left to surface as exceptions and
-/// are translated once, at the API edge, into a problem-details response. The
-/// reason codes named on each member are part of this contract precisely because
+/// carrying a stable reason code, while genuinely unexpected conditions surface as
+/// exceptions and are translated once, at the API edge, into a problem-details
+/// response. The reason codes named on each member are part of this contract because
 /// the API layer maps them onto HTTP status codes; renaming one silently is a
 /// breaking change.
 /// </para>
 /// <para>
-/// <b>Asynchronous throughout.</b> Every member performs input and output, so every
-/// member returns a task, carries the <c>Async</c> suffix, and accepts a
-/// cancellation token as its final argument. No member blocks, and no member uses
-/// an out-parameter or a ref-parameter - the legacy mutate-and-report-status idiom
-/// is replaced entirely by the returned result.
-/// </para>
-/// <para>
-/// <b>Registration and lifetime.</b> The application layer's <c>AddApplication()</c>
-/// extension registers this abstraction with a scoped lifetime, as one of exactly
-/// seven application services. The implementation is <c>Services/TabService.cs</c>,
-/// which reaches persistence only through the domain layer's page repository
-/// abstraction and commits through the unit of work; it never sees a database
-/// context. All tree-reordering logic - sibling renumbering, level recalculation
-/// and cycle rejection - lives inside that implementation and is never delegated to
-/// a caller.
+/// <b>Asynchronous, scoped, and free of out-parameters.</b> Every member performs
+/// input and output, so every member returns a task, carries the <c>Async</c>
+/// suffix and takes a cancellation token as its final argument; the legacy
+/// mutate-and-report-status idiom is replaced entirely by the returned result.
+/// <c>AddApplication()</c> registers this abstraction with a scoped lifetime, and
+/// the implementation (<c>Services/TabService.cs</c>) reaches persistence only
+/// through the domain layer's page repository abstraction and commits through the
+/// unit of work, never seeing a database context. All tree recomputation lives
+/// inside it and is never delegated to a caller.
 /// </para>
 /// </remarks>
 public interface ITabService
@@ -228,58 +138,43 @@ public interface ITabService
     /// sequence of transfer objects.
     /// </para>
     /// <para>
-    /// <b>The answer is complete and unpaged, by design.</b> The sequence carries
-    /// every page of the portal, so a caller can build the whole navigation tree
-    /// from one response. Each row carries its own parent, level, order and
-    /// has-children fields, which is what makes the flat shape sufficient: the tree
-    /// is reconstructed client-side without further requests. This is strictly more
-    /// capable than the legacy per-parent query it replaces, which required one
-    /// round trip per branch.
+    /// <b>The answer is complete and unpaged, by design.</b> Each row carries its own
+    /// parent, level, order and has-children fields, which is what makes the flat
+    /// shape sufficient: the whole navigation tree is reconstructed client-side from
+    /// one response, where the legacy per-parent query needed one round trip per
+    /// branch.
     /// </para>
     /// <para>
-    /// <b>Why there is no parent filter.</b> A nullable parent argument was
-    /// considered and rejected as ambiguous: <c>null</c> cannot distinguish "apply
-    /// no filter" from "return only root pages, whose parent is null", and
-    /// disambiguating it would need either a forbidden magic number or an extra
-    /// argument widening a surface that is deliberately narrow. Because every row
-    /// already carries its parent, filtering by parent is a trivial client-side
-    /// projection over a complete answer.
+    /// <b>Why there is no parent filter.</b> A nullable parent argument is ambiguous:
+    /// <c>null</c> cannot distinguish "apply no filter" from "return only root pages,
+    /// whose parent is null", and disambiguating it would need either a forbidden
+    /// magic number or an extra argument widening a deliberately narrow surface.
+    /// Because every row already carries its parent, filtering by parent is a trivial
+    /// client-side projection over a complete answer.
     /// </para>
     /// <para>
     /// <b>Pages in the recycle bin are included, and no filter suppresses them.</b>
-    /// "Every page" is literal. The terminal legacy read this member replaces -
-    /// <c>GetTabs</c> as rewritten at <c>04.04.00.SqlDataProvider</c> L440-L448,
-    /// selecting every column of <c>vw_Tabs</c> under a portal predicate alone, over
-    /// a view whose terminal definition at <c>04.05.04.SqlDataProvider</c> carries no
-    /// deletion predicate either - returns soft-deleted rows and projects
-    /// <c>IsDeleted</c> as one of its columns. It projects that flag precisely so the
-    /// reader decides, and the legacy readers did decide differently: the
-    /// page-management grid hid recycled pages while the recycle-bin screen listed
-    /// nothing else. Both were call-site policy over one complete read. This contract
-    /// therefore returns the complete read and carries <c>IsDeleted</c> on every row,
-    /// which is the same argument made just above for declining a parent filter.
-    /// Hard-coding either legacy screen's policy here would contradict the
-    /// completeness this member promises, would put the recycle-bin view of the data
-    /// out of reach of the only page listing this migration exposes, and would do so
-    /// silently - a caller cannot distinguish a portal with no recycled pages from a
-    /// portal whose recycled pages were removed on its behalf. No boolean argument is
-    /// added for it: the deliberately narrow surface stated above still applies, and a
-    /// filter over a field every row already carries earns nothing.
-    /// </para>
-    /// <para>
-    /// A portal that exists but has no pages is a <em>success</em> carrying an empty
-    /// sequence. It is never reported as a failure, and the returned sequence is
-    /// never <see langword="null"/>.
+    /// "Every page" is literal, and it matches the terminal legacy read this member
+    /// replaces: <c>GetTabs</c> as rewritten at <c>04.04.00.SqlDataProvider</c>
+    /// L440-L448 selects every column of <c>vw_Tabs</c> under a portal predicate
+    /// alone, over a view whose terminal definition carries no deletion predicate
+    /// either, so it returns soft-deleted rows and projects <c>IsDeleted</c> for the
+    /// reader to act on. The legacy readers did act differently - the page-management
+    /// grid hid recycled pages while the recycle-bin screen listed nothing else - so
+    /// suppression was always call-site policy over one complete read. Hard-coding
+    /// either policy here would contradict the completeness this member promises and
+    /// would put recycled pages out of reach of the only page listing this migration
+    /// exposes, silently: a caller could not distinguish a portal with no recycled
+    /// pages from one whose recycled pages were removed on its behalf. No boolean
+    /// argument is added either, for the same reason a parent filter is declined.
     /// </para>
     /// </remarks>
     /// <param name="portalId">
     /// Identifier of the portal whose pages are requested, taken from the route.
     /// Every value is meaningful: <c>Portals.PortalID</c> is declared
-    /// <c>IDENTITY(-1, 1)</c>, so the seed and first generated value is <c>-1</c>,
-    /// while the shipped default portal row is inserted explicitly with
-    /// <c>PortalID</c> <c>0</c>. Both are real portal identifiers, and neither may
-    /// be treated as "unspecified" - even though <c>-1</c> is also the legacy
-    /// absent-integer marker.
+    /// <c>IDENTITY(-1, 1)</c> and the shipped default portal row is inserted
+    /// explicitly with <c>PortalID</c> <c>0</c>, so both <c>-1</c> and <c>0</c> are
+    /// real portal identifiers and neither may be treated as "unspecified".
     /// </param>
     /// <param name="cancellationToken">Token observed while the read is in flight.</param>
     /// <returns>
@@ -287,7 +182,8 @@ public interface ITabService
     /// possibly an empty sequence, never <see langword="null"/> - or a failed
     /// result carrying the reason code <c>tab.portal_not_found</c> when no portal
     /// bears <paramref name="portalId"/>, which the API layer maps to
-    /// <c>404 Not Found</c>. An empty portal is deliberately not this failure.
+    /// <c>404 Not Found</c>. A portal that exists but has no pages is deliberately a
+    /// success carrying an empty sequence, never this failure.
     /// </returns>
     Task<Result<IReadOnlyList<TabListItemDto>>> GetTabsAsync(int portalId, CancellationToken cancellationToken = default);
 
@@ -300,8 +196,8 @@ public interface ITabService
     /// Serves <c>GET /api/v1/tabs/{id}</c>. This member replaces four legacy read
     /// members: the two <c>GetTab</c> overloads (L467, L1270) and the two
     /// <c>GetTabByName</c> overloads (L504, L508). Name-scoped retrieval is not
-    /// carried forward, because the planned endpoint is identity-based and the
-    /// name-scoped overloads existed to support the excluded create path.
+    /// carried forward, because the endpoint is identity-based and the name-scoped
+    /// overloads existed to support the excluded create path.
     /// </para>
     /// <para>
     /// <b>Absent is a success, not a failure.</b> A page that does not exist yields
@@ -313,17 +209,14 @@ public interface ITabService
     /// is that no failure reason is fabricated to describe an ordinary miss.
     /// </para>
     /// <para>
-    /// <b>No cache argument.</b> The legacy reader at L467 accepted a third argument
-    /// that bypassed the cache. It is not reproduced. Caching is entirely internal to
-    /// the implementation, which absorbs the 12 cache call sites measured in the
-    /// legacy controller, and a caller has no way to steer it.
-    /// </para>
-    /// <para>
-    /// <b>No portal argument, and this is not an ambient-context shortcut.</b> A page
-    /// identifier is globally unique, the planned route is not portal-scoped, and the
-    /// returned detail shape itself carries the owning portal identifier - so the
-    /// caller learns the tenant from the response rather than having to assert it in
-    /// the request. Nothing here is inferred from request-scoped state.
+    /// <b>Neither a cache argument nor a portal argument, and neither omission is an
+    /// ambient-context shortcut.</b> The legacy reader at L467 accepted a third
+    /// argument that bypassed the cache; caching is entirely internal to the
+    /// implementation and a caller has no way to steer it. A page identifier is
+    /// globally unique, the route <c>GET /api/v1/tabs/{id}</c> is not portal-scoped,
+    /// and the returned detail shape carries the owning portal identifier - so the
+    /// caller learns the tenant from the response rather than asserting it in the
+    /// request, and nothing here is inferred from request-scoped state.
     /// </para>
     /// </remarks>
     /// <param name="tabId">
@@ -356,20 +249,17 @@ public interface ITabService
     /// </para>
     /// <para>
     /// <b>Ordering travels as request properties, not as positional arguments.</b>
-    /// The legacy seven-argument signature carried parent, level, order and
-    /// visibility positionally and ended in an optional Boolean defaulted to
-    /// <see langword="false"/>, so a caller could not see what it was accepting. All
-    /// of those inputs are now named properties on <paramref name="request"/>,
-    /// including the one that was the implicit optional tail. Ordering is always
-    /// stated explicitly.
+    /// Parent, level, order and visibility - which the legacy seven-argument
+    /// signature carried positionally, ending in an optional Boolean the caller could
+    /// not see - are all named properties on <paramref name="request"/>, including
+    /// that implicit tail. Ordering is always stated explicitly.
     /// </para>
     /// <para>
     /// <b>Tree recomputation belongs to the implementation.</b> Sibling renumbering,
     /// level recalculation and cycle rejection all happen inside the implementing
-    /// service. No part of that computation is handed to a caller: this member never
-    /// returns a page sequence for a controller to renumber, and it never accepts
-    /// pre-computed sibling orders. The legacy private reordering helper embodied
-    /// exactly this logic and stays internal.
+    /// service; no part of that computation is handed to a caller. This member never
+    /// returns a page sequence for a controller to renumber and never accepts
+    /// pre-computed sibling orders.
     /// </para>
     /// <para>
     /// <b>A documented divergence in cycle handling.</b> The legacy page-management

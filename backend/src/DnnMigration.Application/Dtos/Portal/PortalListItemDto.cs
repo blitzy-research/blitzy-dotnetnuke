@@ -24,12 +24,12 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// </para>
 /// <para>
 /// <b>Paging lives on the envelope, never on the row.</b> A page is returned as
-/// <c>PagedResult&lt;PortalListItemDto&gt;</c>, which is what the controller serialises today: it
-/// carries the rows together with the total, the page index and the page size. The shared
-/// <c>PagedResponse&lt;PortalListItemDto&gt;</c> under <c>Dtos/Common/</c> expresses the same four
-/// facts and is declared for a later convergence, but no controller returns it yet. Either way none
-/// of the paging facts is restated on the row: two copies of one fact on a single response give a
-/// pager two sources of truth and no way to choose between them.
+/// <c>PagedResponse&lt;PortalListItemDto&gt;</c>, so the wire shape is
+/// <c>{ "items": [...], "meta": {...} }</c>: the rows under <c>items</c>, and the total, page index
+/// and page size under <c>meta</c>. The API edge projects the Application layer's
+/// <c>PagedResult&lt;PortalListItemDto&gt;</c> into it, so the domain paging type never crosses the
+/// boundary. None of the paging facts is restated on the row: two copies of one fact on a single
+/// response give a pager two sources of truth and no way to choose between them.
 /// </para>
 /// <para>
 /// <b>The page index is zero-based</b>, so index 0 addresses the first page. That is the shipped data
@@ -216,15 +216,24 @@ public sealed class PortalListItemDto
     /// </remarks>
     // MIGRATION: a plain settable value, on the same reasoning as the member tally above. The legacy
     // member was declared on PortalInfo.vb line 320, guarded on a negative marker in the backing field
-    // (line 322) and constructed a controller to issue the query in its getter (lines 323 and 324).
-    // The replacement is supplied from outside by PortalService, which awaits the portal repository's
-    // page-counting member (CountPagesAsync). It is likewise absent from vw_Portals, never negative on
-    // the wire, and never seeded with the legacy marker.
+    // (line 322) and constructed a controller to issue the query in its getter (lines 323 and 324),
+    // which resolved to TabController.GetTabCount(PortalID). The replacement is supplied from outside by
+    // PortalService, which awaits the portal repository's page-counting member (CountPagesAsync). It is
+    // likewise absent from vw_Portals and is never seeded with the legacy marker.
+    //
+    // MIGRATION: the value CAN be negative on the wire, and that is preserved legacy arithmetic. The
+    // terminal GetTabCount (04.04.00.SqlDataProvider lines 511 to 527) is SELECT COUNT(*) - 1 with the
+    // portal's administration page and its direct children excluded, so a portal that records no
+    // administration page yields 0 - 1 and the legacy grid displayed minus one. Clamping it here would
+    // report a figure the legacy application never showed. It is NOT the legacy Null.NullInteger
+    // sentinel and must not be read as "unknown".
     //
     // MIGRATION: note that this generation of the product deletes pages softly, by flagging the row
     // rather than removing it, so whether a soft-deleted page is counted is a decision the counting
-    // query makes. The tally is reported exactly as that query produces it and this contract asserts
-    // no interpretation of its own, which is what keeps the displayed figure equal to the legacy one.
+    // query makes - and the legacy answer is that it IS counted, because GetTabCount states no
+    // soft-delete condition at all. The tally is reported exactly as that query produces it and this
+    // contract asserts no interpretation of its own, which is what keeps the displayed figure equal to
+    // the legacy one.
     //
     // MIGRATION: reported as a settable value even though the legacy declaration is often described as
     // read-only. Direct measurement contradicts that description: both legacy tallies expose a setter,

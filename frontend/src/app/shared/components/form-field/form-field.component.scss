@@ -43,9 +43,18 @@
 // The marker is separated from the label text by a token-based inset rather than by a
 // space character in the markup. A literal space would be collapsed by the template
 // compiler and could not be adjusted.
+//
+// MIGRATION: the marker is TEXT - a glyph rendered in the label's own type size - so
+// it resolves to --color-danger-text rather than to --color-danger. The plain red
+// measures 4.0:1 on the page background, below the 4.5:1 minimum that governs text of
+// this size; the darker member of the same hue measures 7.20:1 and reads as the same
+// colour. --color-danger is now reserved for borders and indicators, where 4.0:1
+// clears the 3:1 floor that actually applies. The glyph is not the sole indicator in
+// any case: .form-field__required-text states the requirement in words for a reader
+// who cannot see it, and the control itself carries the programmatic attribute.
 .form-field__required {
   margin-inline-start: var(--space-1);
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 
 // The word that gives the marker glyph a meaning for a reader who cannot see it. The
@@ -132,12 +141,20 @@
 }
 
 // MIGRATION: the legacy validators rendered their messages in the error colour at
-// body size. The colour is the measured legacy error value carried across as a token.
+// body size, and this is the one place the colour is deliberately NOT the measured
+// legacy value. A validation message is small text - the size ramp puts it a step
+// below body copy - and the measured legacy red reads 4.0:1 on the page background
+// against a 4.5:1 minimum, so reproducing it would leave the one sentence a reader
+// most needs to read as the least readable thing on the screen. It resolves to
+// --color-danger-text instead: the same hue at a lower lightness, 7.20:1 on the page
+// background and 6.21:1 on the neutral surface, so the message reads as the same red
+// and is legible. --color-danger keeps the roles where 4.0:1 is sufficient, namely
+// borders and non-text indicators.
 // Bold weight is a net addition, so the message is distinguishable from the help text
 // directly above it without introducing a second colour.
 .form-field__error {
   margin: 0;
-  color: var(--color-danger);
+  color: var(--color-danger-text);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-base);

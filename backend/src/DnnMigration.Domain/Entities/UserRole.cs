@@ -302,10 +302,11 @@ public sealed class UserRole : Entity<int>
     /// membership <c>DataProvider/SqlDataProvider.vb</c> lines 280-286). Independently of that, both
     /// columns are SQL Server <c>datetime</c>, whose range begins at 1753-01-01: the value 0001-01-01
     /// is not merely absent from them, it is unstorable, and an attempt to write it is refused by the
-    /// database. So no stored row can produce it, and the target write boundary reproduces
-    /// <c>GetNull</c> explicitly - <c>RoleRepository.AddUserRoleAsync</c> and
-    /// <c>UpdateUserRoleAsync</c>, the two members that stand in for those two legacy members,
-    /// normalise the marker to <see langword="null"/> before anything is staged.
+    /// database. So no stored row can produce it, and the target reproduces <c>GetNull</c> explicitly
+    /// one layer higher - <c>RoleService.NormalizeLegacyDateMarker</c>, reached from
+    /// <c>DeriveAssignmentDates</c>, reads a submitted marker as absence before either assignment write
+    /// is staged. It lives there rather than in the repository because interpreting a bound is a
+    /// subscription rule, and one rule with two implementations is worse than either alone.
     /// </para>
     /// <para>
     /// And it was harmful, because the allowance is indistinguishable from a genuine bound in the

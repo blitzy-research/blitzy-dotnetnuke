@@ -13,26 +13,17 @@
 // screen above it returns or mails a stored password. Under a one-way digest that is impossible
 // rather than forbidden, which is the entire point of the change.
 //
-// MIGRATION: CREDENTIALS ALREADY PRESENT IN THE DATABASE ARE MIGRATED BY ADMINISTRATIVE RESET, AND
-// BY NOTHING ELSE. A one-way digest cannot be derived from a value held under the legacy reversible
-// scheme, and this class verifies BCrypt digests only - it holds no legacy verifier, and the target
-// maps no legacy credential column, so nothing anywhere in this solution can check a submitted
-// password against a legacy stored value. Every pre-existing account therefore requires an
-// administrative password reset before its owner can sign in, and that is a DELIBERATE FUNCTIONAL
-// REDUCTION recorded in MIGRATION_NOTES.md rather than a gap.
-//
-// This class does NOT upgrade rows lazily, and no comment here or elsewhere may claim that it does -
-// there is no re-hash of the plaintext an owner supplies on a first successful sign-in against a
-// legacy value, because a first successful sign-in against a legacy value is impossible without a
-// legacy verifier and none exists. Implementing
-// one would require reading the legacy reversible material, decrypting it with the key committed at
-// Website/release.config:L91-L92, and re-encrypting on success - a design that reintroduces exactly
-// the reversibility this class exists to remove, and one the AAP's scope does not include.
+// MIGRATION: this class verifies and generates only BCrypt representations. The separate
+// LegacyCredentialVerifier performs the bounded, opt-in comparison of clear, SHA-1 and encrypted
+// membership rows and returns only a boolean outcome. AuthService then calls this class to create the
+// immediate BCrypt replacement. Administrative reset remains the fallback; no plaintext retrieval
+// or general-purpose decryption operation is introduced.
 //
 // MIGRATION: NeedsRehash serves the remaining, genuinely supported upgrade: raising the cost of a
 // digest this class produced itself. It reports whether a stored BCrypt digest was computed below
-// the current work factor, so a caller that has ALREADY verified a password successfully can
-// re-hash it at the current cost. It is not, and never was, a legacy-credential detector.
+// the current work factor, so a caller that has ALREADY verified a BCrypt password successfully can
+// re-hash it at the current cost. It is not a legacy-credential detector; legacy acceptance forces
+// replacement independently of this predicate.
 //
 // MIGRATION: HASHING AND VERIFICATION BOTH USE BCRYPT.NET'S ENHANCED PAIR, AND THE TWO CAN NEVER
 // DIVERGE BECAUSE NEITHER IS CALLED ANYWHERE ELSE. Plain BCrypt ignores every byte of its input past
@@ -393,8 +384,8 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     /// This member exists to support ONE upgrade: raising the cost of a digest
     /// <see cref="Hash(string)"/> produced. It is not a legacy-credential detector, and a
     /// <see langword="true"/> answer must never be read as an invitation to accept a credential that
-    /// <see cref="Verify(string, string)"/> rejected. Legacy credentials are migrated by
-    /// administrative reset only, for the reasons set out at the head of this file.
+    /// <see cref="Verify(string, string)"/> rejected. Legacy detection belongs to
+    /// <see cref="ILegacyCredentialVerifier"/> and never to this method.
     /// </para>
     /// <para>
     /// An unparseable value therefore answers <see langword="false"/>, which is a CHANGE from an
@@ -430,10 +421,10 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
         // leaving the code asserting the same thing would have left the misleading claim in the one
         // place a reader trusts most.
         //
-        // Answering "no" costs nothing operationally. An account whose stored value cannot be parsed
-        // cannot sign in either way - Verify rejects it - so it requires an administrative reset
-        // whatever this member says, and saying "nothing to upgrade" is simply the truthful
-        // description of a value this scheme did not produce.
+        // Answering "no" costs nothing operationally. AuthService learns that a legacy representation was
+        // accepted from the separate bounded verifier and replaces it directly through Hash; it never asks
+        // this member to infer that fact from an unparseable value. "Nothing for this method to upgrade" is
+        // simply the truthful description of a value this scheme did not produce.
         //
         // The handled set deliberately mirrors Verify's AND now agrees with it on the answer, so the
         // two members can never disagree about which stored values this implementation understands:

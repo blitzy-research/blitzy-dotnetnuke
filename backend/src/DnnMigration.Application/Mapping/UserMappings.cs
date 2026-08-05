@@ -13,13 +13,11 @@ namespace DnnMigration.Application.Mapping;
 // passwordFormat="Encrypted" alongside enablePasswordRetrieval="true". Anyone holding a checkout
 // could therefore recover every stored password. The target replaces that arrangement with
 // one-way BCrypt hashing and does NOT carry password retrieval forward to any endpoint or screen.
-// AN EXISTING CREDENTIAL IS MADE USABLE BY AN ADMINISTRATIVE RESET AND BY NOTHING ELSE - through
-// ChangePasswordRequest with Operation "reset", which is the one flow that writes a replacement
-// hash without first verifying the value being replaced. An earlier revision of this note described
-// a re-hash on first successful login with reset as the fallback, and that path cannot exist,
-// because verifying a legacy value is the step it would have to begin with and no component here can
-// perform it. The key values themselves are deliberately not reproduced here - only the line numbers
-// that hold them - so this file adds no new copy of a secret.
+// An existing credential is made usable either by the authentication service's bounded, opt-in
+// legacy verification followed by immediate BCrypt replacement, or by the administrative reset
+// fallback. This mapping layer participates in neither path and never projects credential material.
+// The key values themselves are deliberately not reproduced here - only the line numbers that hold
+// them - so this file adds no new copy of a secret.
 //
 // The six rules that follow, which every future edit to this file must preserve:
 //
@@ -174,6 +172,11 @@ namespace DnnMigration.Application.Mapping;
 /// </remarks>
 public static class UserMappings
 {
+    /// <summary>
+    /// The legacy integral sentinel translated to SQL <c>NULL</c> by profile-definition provider methods.
+    /// </summary>
+    private const int LegacyHostPortalId = -1;
+
     /// <summary>
     /// Projects an account onto the row shape the account list renders.
     /// </summary>
@@ -346,8 +349,8 @@ public static class UserMappings
         {
             PropertyDefinitionId = definition.PropertyDefinitionId,
 
-            // MIGRATION: the two encodings of "host-level" meet here, and this is the only place
-            // they are allowed to. 03.03.03 lines 77-83 made ProfilePropertyDefinition.PortalID
+            // MIGRATION: the two encodings of "host-level" meet only in this mapping layer.
+            // 03.03.03 lines 77-83 made ProfilePropertyDefinition.PortalID
             // nullable and migrated the rows holding the legacy -1 with
             // "SET PortalId = NULL WHERE PortalId = -1", so the entity carries int? and the domain
             // never restores the sentinel. The contract, by its own deliberate decision recorded on
@@ -355,10 +358,10 @@ public static class UserMappings
             // encoding because -1 is what the legacy class published to its consumers, and
             // Rule T7 preserves an externally observable sentinel at the boundary rather than
             // letting serialisation turn it into an absent value. Translating between the two is
-            // therefore a mapping concern, and this is the mapping. It is one-way: the inbound path
-            // never folds a -1 back into a null, because a route-supplied portal id of -1 addresses
-            // the genuine portal that Portals.PortalID's IDENTITY(-1, 1) seed creates.
-            PortalId = definition.PortalId ?? -1,
+            // therefore a mapping concern, and this is its outbound half. ToNewDefinition applies
+            // the inverse translation on creation because the legacy provider wrapped the same value
+            // with GetNull.
+            PortalId = definition.PortalId ?? LegacyHostPortalId,
 
             ModuleDefId = definition.ModuleDefinitionId,
             DataType = definition.DataType,
@@ -577,12 +580,12 @@ public static class UserMappings
 
         var definition = new ProfilePropertyDefinition
         {
-            // MIGRATION: assigned straight through, deliberately. The portal identifier here is a
-            // resolved tenant scope taken from the route, not a sentinel, and -1 is a real portal
-            // because Portals.PortalID is IDENTITY(-1, 1). Folding -1 into the null that the
-            // terminal schema uses for host-level ownership would silently reassign the definition
-            // away from the portal the caller named.
-            PortalId = portalId,
+            // MIGRATION: this subsystem is one of the measured places where the collision between a real
+            // portal key and Null.NullInteger is observable. AddPropertyDefinition passed PortalId through
+            // GetNull (SqlDataProvider.vb:L1021), so -1 reached SQL as NULL and created a host-level
+            // declaration. The target performs the same boundary translation explicitly; ordinary portal
+            // identifiers remain unchanged.
+            PortalId = portalId == LegacyHostPortalId ? null : portalId,
             ModuleDefinitionId = request.ModuleDefId,
 
             // MIGRATION: a definition is born live. IsDeleted is moved by a deletion, never by a

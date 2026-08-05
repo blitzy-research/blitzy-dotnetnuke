@@ -28,12 +28,16 @@ namespace DnnMigration.Application.Validation;
 // was wrong, because there was no way to submit it. A page with no name cannot be selected in a navigation
 // menu or a page list, so accepting one produces a page an operator can create and then not find.
 //
-// MIGRATION: four widths have NO counterpart in the markup and are taken from the schema alone, because the
-// legacy screen edited them through pickers and drop-downs rather than free-text boxes - so the column bound
-// was the only bound there was, and it is the only bound imposed here: IconFile 100, Url 255, SkinSrc 200 and
-// ContainerSrc 200. TabPath is 255 in the schema and is deliberately NOT validated, because the update
-// contract does not carry it: it is composed by the service from the ancestry, so a rule here would judge a
-// value no caller can submit.
+// MIGRATION: two widths have NO counterpart in the markup and are taken from the schema alone, because the
+// legacy screen edited them through pickers rather than free-text boxes - so the column bound was the only
+// bound there was, and it is the only bound imposed here: IconFile 100 and Url 255. TabPath is 255 in the
+// schema and is deliberately NOT validated, because the update contract does not carry it: it is composed by
+// the service from the ancestry, so a rule here would judge a value no caller can submit.
+//
+// MIGRATION: THE SKIN AND CONTAINER WIDTHS ARE GONE BECAUSE THE MEMBERS ARE. Both were validated here at 200
+// characters while the contract carried them; the contract no longer does, because skinning and containers
+// are an explicit exclusion of this migration and a writable member is not an inert one. A rule cannot
+// outlive the member it judges - it would name a field no caller can submit and no action can bind.
 //
 // MIGRATION: NO RULE IS PLACED ON ParentId, AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN AN OMISSION.
 // Tabs.TabID is IDENTITY(0,1), so ZERO IS A LEGITIMATE PAGE and a NotEmpty rule - which rejects default(int)
@@ -116,6 +120,14 @@ public class UpdateTabRequestValidator : AbstractValidator<UpdateTabRequest>
         "The link URL must be a single line and must not contain control characters.";
 
     /// <summary>
+    /// The wording reported when a link target is not one of the persisted forms the page system
+    /// understands.
+    /// </summary>
+    private const string UrlNotAllowedMessage =
+        "The link URL must be a numeric page identifier, a fileid=NNN reference, "
+        + "or an absolute HTTP, HTTPS, or mailto URI.";
+
+    /// <summary>
     /// The wording reported when a submitted date falls outside the range the column can hold.
     /// </summary>
     /// <remarks>
@@ -125,7 +137,7 @@ public class UpdateTabRequestValidator : AbstractValidator<UpdateTabRequest>
         + FormattableString.Invariant($"{SqlServerRange.MaximumDateTime:yyyy-MM-dd}, which is the range the stored column can hold.");
 
     // Measured maxima. The first five are declared BOTH in the markup and in the terminal schema and agree
-    // in every case; the last four exist only in the schema, for the reason recorded in the file header.
+    // in every case; the last two exist only in the schema, for the reason recorded in the file header.
     private const int TabNameMaximumLength = 50;
     private const int TitleMaximumLength = 200;
     private const int DescriptionMaximumLength = 500;
@@ -133,8 +145,6 @@ public class UpdateTabRequestValidator : AbstractValidator<UpdateTabRequest>
     private const int PageHeadTextMaximumLength = 500;
     private const int IconFileMaximumLength = 100;
     private const int UrlMaximumLength = 255;
-    private const int SkinSrcMaximumLength = 200;
-    private const int ContainerSrcMaximumLength = 200;
 
     /// <summary>
     /// Declares the rule set.
@@ -174,21 +184,18 @@ public class UpdateTabRequestValidator : AbstractValidator<UpdateTabRequest>
             .Must(IconReferenceRules.IsContained)
             .WithMessage(IconReferenceRules.NotContainedMessage);
 
-        // The link target is bounded by its column width and by being a single line, and by NOTHING else.
-        // No format, scheme or containment rule is applied, and that restraint is deliberate: the legacy
-        // form applied no format validation, and the value legitimately takes three unrelated shapes - an
-        // absolute URL, a "fileid=NNN" token and a numeric page reference - so a containment rule of the kind
-        // the icon reference carries would refuse every absolute URL outright.
+        // The link target is a small tagged union, not arbitrary text: a numeric page reference, a
+        // fileid=NNN token, or an absolute URI using one of the schemes the page renderer supports. The
+        // positive allowlist is required because this value is stored and later returned to navigation
+        // consumers; accepting any syntactically valid scheme would make javascript:, data: and equivalent
+        // active content persistent. Legacy Globals.AddHTTP made an unrecognised value inert by prefixing
+        // HTTP, so rejecting it here preserves that safety property without rewriting caller input.
         RuleFor(request => request.Url)
             .MaximumLength(UrlMaximumLength)
             .Must(BeASingleLine)
-            .WithMessage(UrlNotSingleLineMessage);
-
-        RuleFor(request => request.SkinSrc)
-            .MaximumLength(SkinSrcMaximumLength);
-
-        RuleFor(request => request.ContainerSrc)
-            .MaximumLength(ContainerSrcMaximumLength);
+            .WithMessage(UrlNotSingleLineMessage)
+            .Must(BeAnAllowedLinkTarget)
+            .WithMessage(UrlNotAllowedMessage);
 
         // REPRESENTABILITY, NOT A BUSINESS RULE, and the distinction is the whole justification. The CLR
         // date type begins nearly eight centuries before the column does, so a date the type accepts can
@@ -229,6 +236,69 @@ public class UpdateTabRequestValidator : AbstractValidator<UpdateTabRequest>
         foreach (char character in value)
         {
             if (char.IsControl(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Determines whether a submitted link uses one of the page system's supported persisted forms.
+    /// </summary>
+    /// <param name="value">The submitted value, which may be <see langword="null"/>.</param>
+    /// <returns>
+    /// <see langword="true"/> for an absent value, an ASCII-decimal page identifier, a
+    /// <c>fileid=NNN</c> token, or an absolute HTTP, HTTPS or mailto URI; otherwise
+    /// <see langword="false"/>.
+    /// </returns>
+    private static bool BeAnAllowedLinkTarget(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return true;
+        }
+
+        if (ContainsOnlyAsciiDigits(value))
+        {
+            return true;
+        }
+
+        const string fileReferencePrefix = "fileid=";
+        if (value.StartsWith(fileReferencePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return ContainsOnlyAsciiDigits(value[fileReferencePrefix.Length..]);
+        }
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
+        {
+            return false;
+        }
+
+        if (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(uri.Host);
+        }
+
+        return string.Equals(uri.Scheme, Uri.UriSchemeMailto, StringComparison.OrdinalIgnoreCase)
+            && value.Length > Uri.UriSchemeMailto.Length + 1;
+    }
+
+    /// <summary>Reports whether a non-empty value contains ASCII decimal digits only.</summary>
+    /// <param name="value">Value to inspect.</param>
+    /// <returns><see langword="true"/> when every character is between <c>0</c> and <c>9</c>.</returns>
+    private static bool ContainsOnlyAsciiDigits(string value)
+    {
+        if (value.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (char character in value)
+        {
+            if (!char.IsAsciiDigit(character))
             {
                 return false;
             }

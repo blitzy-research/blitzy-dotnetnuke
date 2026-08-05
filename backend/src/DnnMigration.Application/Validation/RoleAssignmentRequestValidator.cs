@@ -6,7 +6,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Field rules for <see cref="RoleAssignmentRequest"/>, the body of
-/// <c>POST /api/v1/portals/{portalId}/roles/{roleId}/users</c>.
+/// <c>POST /api/v1/roles/{roleId}/users</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -30,7 +30,8 @@ namespace DnnMigration.Application.Validation;
 /// membership is not already present. Every one of those is a question about stored state and an
 /// expected failure owned by <c>Application/Services/RoleService.cs</c> - and the tenant questions in
 /// particular are a cross-tenant boundary that a field rule could not enforce even in principle,
-/// because the portal arrives in the route and this type never sees it. It also computes no dates: a
+/// because the portal arrives through the resolved request context and this type never sees it. It also
+/// computes no dates: a
 /// null expiry means "derive one from the role's trial and billing terms", and that derivation is the
 /// service's.
 /// </para>

@@ -335,9 +335,10 @@ public interface IModuleDefinitionRepository
     /// ported rule - the rule itself is unchanged.
     /// </para>
     /// <para>
-    /// Availability carries the same disjunction as
-    /// <see cref="GetDesktopModulesByPortalIdAsync"/>: a definition is placeable when its package
-    /// is not premium, or when a <see cref="PortalDesktopModule"/> grant exists for the pair.
+    /// Availability carries the same rule as <see cref="GetDesktopModulesByPortalIdAsync"/>: an
+    /// administrative package is never placeable in portal content, and a remaining definition is
+    /// available when its package is not premium or when a <see cref="PortalDesktopModule"/> grant
+    /// exists for the pair.
     /// </para>
     /// <para>
     /// A null portal is not a sentinel and not a wildcard over rows; it states that the question
@@ -355,6 +356,27 @@ public interface IModuleDefinitionRepository
     /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
     /// <returns>The matching definitions, or an empty list when none matches.</returns>
     Task<IReadOnlyList<ModuleDefinition>> GetModuleDefinitionsByPortalIdAsync(int? portalId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns one administrative definition that is instantiated in a portal, matched by friendly name.
+    /// </summary>
+    /// <param name="portalId">The portal whose administrative module instance must own the definition.</param>
+    /// <param name="friendlyName">The administrative definition's friendly name, matched exactly.</param>
+    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <returns>
+    /// The matching definition, or <see langword="null"/> when the portal has no live instance of an
+    /// administrative package publishing that name.
+    /// </returns>
+    /// <remarks>
+    /// SEC-007: this is the explicit privileged counterpart to the placeable catalogue above. Membership
+    /// settings live on the administrative <c>User Accounts</c> module, while ordinary portal module
+    /// creation must never be offered administrative packages. Keeping the lookup separate makes the
+    /// privilege boundary part of the contract instead of a caller-side filter that can be forgotten.
+    /// </remarks>
+    Task<ModuleDefinition?> GetAdministrativeDefinitionByFriendlyNameAsync(
+        int portalId,
+        string friendlyName,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Returns the definition with the given identity, or <see langword="null"/> when no definition

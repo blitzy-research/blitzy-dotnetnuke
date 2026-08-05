@@ -19,17 +19,13 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// </para>
 /// <para>
 /// Legacy source of truth: the fifteen-argument signature and its body from
-/// <c>Library/Components/Portal/PortalController.vb</c>; the call site and the origin of every
-/// argument from <c>Website/admin/Portal/Signup.ascx.vb:L274</c>; the field set, maximum lengths and
-/// validators from <c>Website/admin/Portal/signup.ascx</c>; and the label and message wording from the
-/// screen's own resource file.
-/// </para>
-/// <para>
-/// This type declares no rule and enforces none. Every rule measured on the legacy screen is
-/// documented on the property it governs so that <c>Application/Validation/CreatePortalRequestValidator.cs</c>
-/// can reproduce the legacy rule set exactly - seven of the eight required-field validators on that
-/// screen guard a property below, and the eighth guards a browser-only confirmation control that was
-/// never submitted.
+/// <c>Library/Components/Portal/PortalController.vb</c>; the call site and the origin of every argument
+/// from <c>Website/admin/Portal/Signup.ascx.vb:L274</c>; and the field set, maximum lengths, validators
+/// and message wording from <c>Website/admin/Portal/signup.ascx</c> and its resource file. This type
+/// declares no rule and enforces none: every measured rule is documented on the property it governs so
+/// that <c>Application/Validation/CreatePortalRequestValidator.cs</c> reproduces the legacy rule set
+/// exactly - seven of the eight required-field validators on that screen guard a property below, and
+/// the eighth guards a browser-only confirmation control that was never submitted.
 /// </para>
 /// <para>
 /// Empty strings. The legacy null contract represents an absent string as the empty string rather than
@@ -41,15 +37,14 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// </remarks>
 public sealed class CreatePortalRequest
 {
-    // MIGRATION: the legacy CreatePortal returned an Integer and signalled failure by returning a
-    // negative sentinel identifier (PortalController.vb:L969, tested at L990 and again by the
-    // code-behind at Signup.ascx.vb:L276 and L280). That same negative value is the legacy
-    // absent-integer sentinel AND the IDENTITY seed of the Portals primary key, so it is a real,
-    // addressable PortalID rather than a marker of absence - the shipped default portal occupies the
-    // very next value, zero - and a legacy caller could not tell a failed creation from a successfully
-    // located portal. The replacement is a Result<PortalDetailDto> carrying success, value and failure
-    // reason as distinct data. Nothing on this request encodes an outcome, and no property here treats
-    // any particular numeric or string value as meaning "absent".
+    // MIGRATION: the legacy CreatePortal returned an Integer and signalled failure with a NEGATIVE
+    // sentinel identifier (PortalController.vb:L969, tested at L990 and at Signup.ascx.vb:L276, L280).
+    // That same value is both the legacy absent-integer sentinel AND the IDENTITY seed of the Portals
+    // primary key - a real, addressable PortalID, with the shipped default portal at the very next
+    // value, zero - so a legacy caller could not tell a failed creation from a successfully located
+    // portal. The replacement is a Result<PortalDetailDto> carrying success, value and failure reason as
+    // distinct data. Nothing on this request encodes an outcome, and no property treats any particular
+    // numeric or string value as meaning "absent".
 
     /// <summary>
     /// Gets or sets the display name of the new portal.
@@ -62,23 +57,22 @@ public sealed class CreatePortalRequest
     /// </remarks>
     public string? PortalName { get; set; }
 
-    // MIGRATION: two documented behavioural differences attach to the alias, and neither is
-    // implemented on this request.
+    // MIGRATION: two documented behavioural differences attach to the alias, and neither is implemented
+    // on this request.
     //
-    //   Casing is not preserved, and that is legacy behaviour retained rather than introduced.
-    //   PortalAliasController.vb lower-cases the alias on every write (L31 and L97) and keys its
-    //   lookups by the lower-cased value (L52 and L76); the signup screen lower-cased the field even
-    //   earlier (Signup.ascx.vb:L183) and stripped a leading scheme (L184). The permitted character
-    //   set is itself lower-case only, which makes the conversion lossless in practice. Normalisation
-    //   is service behaviour; this property records only that a caller cannot rely on its own casing
-    //   surviving.
+    //   CASING IS NOT PRESERVED, which is legacy behaviour retained rather than introduced.
+    //   PortalAliasController.vb lower-cases the alias on every write (L31, L97) and keys its lookups by
+    //   the lower-cased value (L52, L76); the signup screen lower-cased the field even earlier
+    //   (Signup.ascx.vb:L183) and stripped a leading scheme (L184). The permitted character set is
+    //   itself lower-case only, which makes the conversion lossless in practice. Normalisation is
+    //   service behaviour; this property records only that a caller cannot rely on its own casing.
     //
-    //   Alias resolution changes from substring to exact match, and this one IS a deliberate
-    //   divergence. The legacy tenant-resolution procedure selected min(PortalID) with
-    //   "where PortalAlias like '%' + @PortalAlias + '%'" (01.00.00.SqlDataProvider:L4569-L4600), so
-    //   an alias that is a substring of another portal's alias resolved to the wrong tenant - a
-    //   multi-tenant isolation defect. The portal-alias resolution middleware is required to resolve
-    //   by exact match instead. Nothing here promises or implies pattern, partial or wildcard matching.
+    //   ALIAS RESOLUTION CHANGES FROM SUBSTRING TO EXACT MATCH, and this one IS a deliberate divergence.
+    //   The legacy tenant-resolution procedure selected min(PortalID) with "where PortalAlias like '%' +
+    //   @PortalAlias + '%'" (01.00.00.SqlDataProvider:L4569-L4600), so an alias that was a substring of
+    //   another portal's resolved to the wrong tenant - a multi-tenant isolation defect. The resolution
+    //   middleware matches exactly instead, and nothing here implies pattern, partial or wildcard
+    //   matching.
 
     /// <summary>
     /// Gets or sets the HTTP alias through which the new portal is addressed.
@@ -137,23 +131,21 @@ public sealed class CreatePortalRequest
     /// the baseline schema, renamed later in the upgrade chain.
     /// </para>
     /// <para>
-    /// An omitted value is meaningful, not merely missing. The legacy screen pre-filled the box with
-    /// the literal placeholder <c>Portals/[PortalID]</c> and sent the empty string when the user left
-    /// it untouched (<c>Signup.ascx.vb:L245-L249</c>); the service then substituted
+    /// An omitted value is MEANINGFUL, not merely missing. The legacy screen pre-filled the box with the
+    /// literal placeholder <c>Portals/[PortalID]</c> and sent the empty string when the user left it
+    /// untouched (<c>Signup.ascx.vb:L245-L249</c>); the service then substituted
     /// <c>"Portals/" + PortalID</c> (<c>PortalController.vb:L991-L992</c>), which cannot be evaluated
     /// before the portal has an identifier. This is one place where the empty-string sentinel is
     /// behaviourally load-bearing, so the service must treat <see langword="null"/>, the empty string
-    /// and the literal placeholder text alike as a request for the server-side default. This property
+    /// and the literal placeholder text alike as a request for the server-side default; this property
     /// performs no defaulting.
     /// </para>
     /// <para>
-    /// Only the portal-relative directory belongs here; the legacy code mapped it onto a physical path
-    /// through the excluded Globals module, whose replacement is the hosting environment's own
-    /// content-root path. No mapped or absolute path is accepted from a caller.
-    /// </para>
-    /// <para>
-    /// Measured validation rules: maximum length 100, no validator declared. The screen reported an
-    /// unusable folder after the fact with "The Home Folder you specified is not valid."
+    /// Only the portal-RELATIVE directory belongs here: the legacy code mapped it onto a physical path
+    /// through the excluded Globals module, whose replacement is the hosting environment's content-root
+    /// path, and no mapped or absolute path is accepted from a caller. Measured validation rules:
+    /// maximum length 100, no validator declared; the screen reported an unusable folder after the fact
+    /// with "The Home Folder you specified is not valid."
     /// </para>
     /// </remarks>
     public string? HomeDirectory { get; set; }
@@ -208,40 +200,31 @@ public sealed class CreatePortalRequest
     public bool IsChildPortal { get; set; }
 
     // MIGRATION: three of the fifteen legacy arguments are absent because the measured call site at
-    // Website/admin/Portal/Signup.ascx.vb:L274 shows the code-behind computing them rather than
-    // reading them from a control. Each is a server physical path, and each must be derived inside the
-    // portal service from the hosting environment.
-    //
-    //   Argument 9, TemplatePath - the physical directory holding the installation's portal templates,
-    //   concatenated with TemplateFile to open a file on disk (PortalController.vb:L1064, L1075). It
-    //   came from the excluded Globals module, whose path members are replaced by the hosting
-    //   environment's content-root path. Only the template's name is accepted, on TemplateFile above.
-    //
-    //   Argument 13, ServerPath - the path to the root of the application. Excluded unconditionally on
-    //   two independent grounds: it was never caller input, and accepting a server filesystem path
-    //   over HTTP is a path-traversal and information-disclosure hazard.
-    //
-    //   Argument 14, ChildPath - the path to the child portal folder, used directly with
-    //   Directory.Exists, Directory.CreateDirectory and File.Copy (PortalController.vb:L1042-L1049).
-    //   It is fully determined by ServerPath and PortalAlias, so a caller supplying it could neither
-    //   add information nor be trusted with it.
-    //
-    // No compensating property is added for any of the three. Where a caller's intent was expressed at
-    // all, it survives as PortalAlias and IsChildPortal.
+    // Website/admin/Portal/Signup.ascx.vb:L274 shows the code-behind COMPUTING them rather than reading
+    // them from a control. Each is a server physical path, and each must be derived inside the portal
+    // service from the hosting environment. Argument 9, TemplatePath, was the physical directory holding
+    // the installation's templates, concatenated with TemplateFile to open a file on disk
+    // (PortalController.vb:L1064, L1075) - it came from the excluded Globals module, and only the
+    // template's NAME is accepted here. Argument 13, ServerPath, was the application root, excluded on
+    // two independent grounds: it was never caller input, and accepting a server filesystem path over
+    // HTTP is a path-traversal and information-disclosure hazard. Argument 14, ChildPath, was used
+    // directly with Directory.Exists, Directory.CreateDirectory and File.Copy
+    // (PortalController.vb:L1042-L1049) and is fully determined by ServerPath and PortalAlias, so a
+    // caller supplying it could neither add information nor be trusted with it. No compensating property
+    // is added: where a caller's intent was expressed at all, it survives as PortalAlias and
+    // IsChildPortal.
 
     // MIGRATION: legacy arguments 2 to 6 were named FirstName, LastName, Username, Password and Email,
-    // and each is renamed below with an Administrator prefix. None of them is a Portals column: the
-    // legacy parameter documentation describes all five as the "Portal Administrator's"
-    // (PortalController.vb:L956-L960) and the body assigns them to a UserInfo instance and its
-    // Membership and Profile members before passing it to UserController.CreateUser
-    // (L1000-L1013). The schema agrees - two case-insensitive searches across all eighty-eight upgrade
-    // scripts, covering the bare, owner-qualified, bracketed and templated object-name forms, find no
-    // Email column on Portals in any CREATE TABLE or ALTER TABLE statement; Email reaches a
-    // portal-shaped result only through the terminal vw_Portals view, which left outer joins Users on
-    // the portal's administrator identifier. The prefix therefore states what the bare legacy names
-    // concealed: these five values create the portal's first user, its administrator. They are kept
-    // flat rather than nested in a sub-object so the wire contract maps one-to-one onto the client
-    // model.
+    // and each is renamed below with an Administrator prefix, because NONE of them is a Portals column.
+    // The legacy parameter documentation describes all five as the "Portal Administrator's"
+    // (PortalController.vb:L956-L960) and the body assigns them to a UserInfo instance and its Membership
+    // and Profile members before passing it to UserController.CreateUser (L1000-L1013). The schema
+    // agrees: a case-insensitive search of all eighty-eight upgrade scripts across the four object-name
+    // forms finds no Email column on Portals in any CREATE TABLE or ALTER TABLE, and Email reaches a
+    // portal-shaped result only through the terminal vw_Portals view, which left outer joins Users on the
+    // portal's administrator identifier. The prefix states what the bare legacy names concealed: these
+    // five values create the portal's first user. They are kept flat rather than nested so the wire
+    // contract maps one-to-one onto the client model.
 
     /// <summary>
     /// Gets or sets the given name of the initial administrator user created together with the portal.
@@ -317,12 +300,11 @@ public sealed class CreatePortalRequest
     /// </remarks>
     public string? AdministratorPassword { get; set; }
 
-    // MIGRATION: the legacy screen paired the password box with a confirmation box and compared the
-    // two before postback, reporting "The Password Values Entered Do Not Match." on mismatch. That
-    // second box is absent from this request by design: it was never one of the fifteen arguments and
-    // was never persisted, existing only to compare two browser inputs. The equivalent check belongs
-    // to a cross-field validator on the client portal form, where both values are already present.
-    // Transmitting a password twice would widen its exposure without adding any safety.
+    // MIGRATION: the legacy screen's password CONFIRMATION box is absent by design - it was never one
+    // of the fifteen arguments and was never persisted, existing only to compare two browser inputs
+    // ("The Password Values Entered Do Not Match."). The equivalent check belongs to a cross-field
+    // validator on the client form, where both values are already present; transmitting a password twice
+    // would widen its exposure without adding any safety.
 
     /// <summary>
     /// Gets or sets the electronic mail address of the initial administrator user created together
@@ -350,16 +332,15 @@ public sealed class CreatePortalRequest
     /// two users of the same portal could share an address and existing data may already do so.
     /// </para>
     /// <para>
-    /// The type is a plain nullable string rather than a domain value object, for three measured
-    /// reasons. A value-object wrapper exposing a <c>Value</c> member and forbidding a custom converter
-    /// would oblige a client to post a nested object, breaking the client model and the
-    /// integration-test assertions. Its factory raises a domain exception on malformed input, and a
-    /// request contract must not raise while being deserialised - a malformed address has to surface as
-    /// a validation failure. And the legacy pattern such a wrapper would encode
-    /// (<c>Library/Components/Shared/Globals.vb:L132</c>) caps the top-level domain at four letters, so
-    /// addresses under longer modern top-level domains fail it, as do some addresses the legacy
-    /// installer itself wrote. Validation is declared once, in the validator, where it can be relaxed
-    /// for legacy data without changing this contract.
+    /// The type is a plain nullable string rather than a domain value object, for three measured reasons:
+    /// a wrapper exposing a <c>Value</c> member would oblige a client to post a nested object, breaking
+    /// the client model and the integration-test assertions; its factory raises a domain exception on
+    /// malformed input, whereas a request contract must not raise while being deserialised, because a
+    /// malformed address has to surface as a validation failure; and the legacy pattern such a wrapper
+    /// would encode (<c>Library/Components/Shared/Globals.vb:L132</c>) caps the top-level domain at four
+    /// letters, so addresses under longer modern top-level domains fail it, as do some the legacy
+    /// installer itself wrote. Validation is declared once, in the validator, where it can be relaxed for
+    /// legacy data without changing this contract.
     /// </para>
     /// </remarks>
     public string? AdministratorEmail { get; set; }

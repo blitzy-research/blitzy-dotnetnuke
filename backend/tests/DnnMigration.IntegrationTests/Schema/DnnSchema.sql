@@ -227,11 +227,12 @@ CREATE TABLE [dbo].[Permission] (
     [ModuleDefID] int NOT NULL,
     [PermissionKey] varchar(20) NOT NULL,
     [PermissionName] varchar(50) NOT NULL,
-    CONSTRAINT [PK_Permission] PRIMARY KEY ([PermissionID]),
-    CONSTRAINT [FK_Permission_ModuleDefinitions_ModuleDefID] FOREIGN KEY ([ModuleDefID]) REFERENCES [dbo].[ModuleDefinitions] ([ModuleDefID])
+    CONSTRAINT [PK_Permission] PRIMARY KEY ([PermissionID])
 );
 GO
 
+-- ModuleDefID is deliberately not a physical foreign key. System-level permission rows store -1,
+-- and the terminal upgrade chain never constrains the column to ModuleDefinitions.
 
 CREATE TABLE [dbo].[ProfilePropertyDefinition] (
     [PropertyDefinitionID] int NOT NULL IDENTITY,
@@ -248,11 +249,12 @@ CREATE TABLE [dbo].[ProfilePropertyDefinition] (
     [ViewOrder] int NOT NULL,
     [Visible] bit NOT NULL,
     CONSTRAINT [PK_ProfilePropertyDefinition] PRIMARY KEY ([PropertyDefinitionID]),
-    CONSTRAINT [FK_ProfilePropertyDefinition_ModuleDefinitions_ModuleDefID] FOREIGN KEY ([ModuleDefID]) REFERENCES [dbo].[ModuleDefinitions] ([ModuleDefID]),
     CONSTRAINT [FK_ProfilePropertyDefinition_Portals] FOREIGN KEY ([PortalID]) REFERENCES [dbo].[Portals] ([PortalID]) ON DELETE CASCADE
 );
 GO
 
+-- ModuleDefID is an unenforced optional reference in the terminal schema. Only PortalID carries a
+-- physical foreign key on this table.
 
 CREATE TABLE [dbo].[Roles] (
     [RoleID] int NOT NULL IDENTITY(0, 1),
@@ -415,7 +417,7 @@ CREATE UNIQUE INDEX [IX_DesktopModules_ModuleName] ON [dbo].[DesktopModules] ([M
 GO
 
 
-CREATE UNIQUE INDEX [IX_ModuleControls] ON [dbo].[ModuleControls] ([ModuleDefID], [ControlKey], [ControlSrc]) WHERE [ModuleDefID] IS NOT NULL AND [ControlKey] IS NOT NULL AND [ControlSrc] IS NOT NULL;
+CREATE UNIQUE INDEX [IX_ModuleControls] ON [dbo].[ModuleControls] ([ModuleDefID], [ControlKey], [ControlSrc]);
 GO
 
 
@@ -423,31 +425,31 @@ CREATE UNIQUE INDEX [IX_ModuleDefinitions] ON [dbo].[ModuleDefinitions] ([Friend
 GO
 
 
-CREATE INDEX [IX_ModuleDefinitions_DesktopModuleID] ON [dbo].[ModuleDefinitions] ([DesktopModuleID]);
+CREATE INDEX [IX_ModuleDefinitions_1] ON [dbo].[ModuleDefinitions] ([DesktopModuleID]);
 GO
 
 
-CREATE UNIQUE INDEX [IX_ModulePermission] ON [dbo].[ModulePermission] ([ModuleID], [PermissionID], [RoleID], [UserID]) WHERE [RoleID] IS NOT NULL AND [UserID] IS NOT NULL;
+CREATE UNIQUE INDEX [IX_ModulePermission] ON [dbo].[ModulePermission] ([ModuleID], [PermissionID], [RoleID], [UserID]);
 GO
 
 
-CREATE INDEX [IX_ModulePermission_PermissionID] ON [dbo].[ModulePermission] ([PermissionID]);
+CREATE INDEX [IX_ModulePermission_Modules] ON [dbo].[ModulePermission] ([ModuleID]);
 GO
 
 
-CREATE INDEX [IX_ModulePermission_RoleID] ON [dbo].[ModulePermission] ([RoleID]);
+CREATE INDEX [IX_ModulePermission_Permission] ON [dbo].[ModulePermission] ([PermissionID]);
 GO
 
 
-CREATE INDEX [IX_ModulePermission_UserID] ON [dbo].[ModulePermission] ([UserID]);
+CREATE INDEX [IX_ModulePermission_Roles] ON [dbo].[ModulePermission] ([RoleID]);
 GO
 
 
-CREATE INDEX [IX_Modules_ModuleDefID] ON [dbo].[Modules] ([ModuleDefID]);
+CREATE INDEX [IX_ModulePermission_Users] ON [dbo].[ModulePermission] ([UserID]);
 GO
 
 
-CREATE INDEX [IX_Modules_PortalID] ON [dbo].[Modules] ([PortalID]);
+CREATE INDEX [IX_Modules] ON [dbo].[Modules] ([ModuleDefID]);
 GO
 
 
@@ -455,15 +457,7 @@ CREATE UNIQUE INDEX [IX_Permission] ON [dbo].[Permission] ([PermissionCode], [Mo
 GO
 
 
-CREATE INDEX [IX_Permission_ModuleDefID] ON [dbo].[Permission] ([ModuleDefID]);
-GO
-
-
 CREATE UNIQUE INDEX [IX_PortalAlias] ON [dbo].[PortalAlias] ([HTTPAlias]);
-GO
-
-
-CREATE INDEX [IX_PortalAlias_PortalID] ON [dbo].[PortalAlias] ([PortalID]);
 GO
 
 
@@ -471,15 +465,7 @@ CREATE UNIQUE INDEX [IX_PortalDesktopModules] ON [dbo].[PortalDesktopModules] ([
 GO
 
 
-CREATE INDEX [IX_PortalDesktopModules_DesktopModuleID] ON [dbo].[PortalDesktopModules] ([DesktopModuleID]);
-GO
-
-
 CREATE UNIQUE INDEX [IX_ProfilePropertyDefinition] ON [dbo].[ProfilePropertyDefinition] ([PortalID], [ModuleDefID], [PropertyName]);
-GO
-
-
-CREATE INDEX [IX_ProfilePropertyDefinition_ModuleDefID] ON [dbo].[ProfilePropertyDefinition] ([ModuleDefID]);
 GO
 
 
@@ -491,11 +477,11 @@ CREATE UNIQUE INDEX [IX_RoleGroupName] ON [dbo].[RoleGroups] ([PortalID], [RoleG
 GO
 
 
-CREATE UNIQUE INDEX [IX_RoleName] ON [dbo].[Roles] ([PortalID], [RoleName]) WHERE [PortalID] IS NOT NULL;
+CREATE UNIQUE INDEX [IX_RoleName] ON [dbo].[Roles] ([PortalID], [RoleName]);
 GO
 
 
-CREATE INDEX [IX_Roles_RoleGroupID] ON [dbo].[Roles] ([RoleGroupID]);
+CREATE INDEX [IX_Roles] ON [dbo].[Roles] ([BillingFrequency]);
 GO
 
 
@@ -503,55 +489,53 @@ CREATE UNIQUE INDEX [IX_TabModules] ON [dbo].[TabModules] ([TabID], [ModuleID]);
 GO
 
 
-CREATE INDEX [IX_TabModules_ModuleID] ON [dbo].[TabModules] ([ModuleID]);
+CREATE UNIQUE INDEX [IX_TabPermission] ON [dbo].[TabPermission] ([TabID], [PermissionID], [RoleID], [UserID]);
 GO
 
 
-CREATE UNIQUE INDEX [IX_TabPermission] ON [dbo].[TabPermission] ([TabID], [PermissionID], [RoleID], [UserID]) WHERE [RoleID] IS NOT NULL AND [UserID] IS NOT NULL;
+CREATE INDEX [IX_TabPermission_Permission] ON [dbo].[TabPermission] ([PermissionID]);
 GO
 
 
-CREATE INDEX [IX_TabPermission_PermissionID] ON [dbo].[TabPermission] ([PermissionID]);
+CREATE INDEX [IX_TabPermission_Roles] ON [dbo].[TabPermission] ([RoleID]);
 GO
 
 
-CREATE INDEX [IX_TabPermission_RoleID] ON [dbo].[TabPermission] ([RoleID]);
+CREATE INDEX [IX_TabPermission_Tabs] ON [dbo].[TabPermission] ([TabID]);
 GO
 
 
-CREATE INDEX [IX_TabPermission_UserID] ON [dbo].[TabPermission] ([UserID]);
+CREATE INDEX [IX_TabPermission_Users] ON [dbo].[TabPermission] ([UserID]);
 GO
 
 
-CREATE INDEX [IX_Tabs_ParentId] ON [dbo].[Tabs] ([ParentId]);
+CREATE INDEX [IX_Tabs_1] ON [dbo].[Tabs] ([PortalID]);
 GO
 
 
-CREATE INDEX [IX_Tabs_PortalID] ON [dbo].[Tabs] ([PortalID]);
+CREATE INDEX [IX_Tabs_2] ON [dbo].[Tabs] ([ParentId]);
 GO
 
 
-CREATE INDEX [IX_UserPortals_PortalId] ON [dbo].[UserPortals] ([PortalId]);
+CREATE INDEX [IX_UserPortals] ON [dbo].[UserPortals] ([PortalId]);
 GO
 
 
-CREATE INDEX [IX_UserProfile_PropertyDefinitionID] ON [dbo].[UserProfile] ([PropertyDefinitionID]);
+CREATE INDEX [IX_UserPortals_1] ON [dbo].[UserPortals] ([UserId]);
 GO
 
 
-CREATE INDEX [IX_UserProfile_UserID] ON [dbo].[UserProfile] ([UserID]);
+CREATE INDEX [IX_UserProfile] ON [dbo].[UserProfile] ([UserID]);
 GO
 
 
-CREATE INDEX [IX_UserRoles_RoleID] ON [dbo].[UserRoles] ([RoleID]);
+CREATE INDEX [IX_UserRoles] ON [dbo].[UserRoles] ([RoleID]);
 GO
 
 
-CREATE INDEX [IX_UserRoles_UserID] ON [dbo].[UserRoles] ([UserID]);
+CREATE INDEX [IX_UserRoles_1] ON [dbo].[UserRoles] ([UserID]);
 GO
 
 
 CREATE UNIQUE INDEX [IX_Users] ON [dbo].[Users] ([Username]);
 GO
-
-

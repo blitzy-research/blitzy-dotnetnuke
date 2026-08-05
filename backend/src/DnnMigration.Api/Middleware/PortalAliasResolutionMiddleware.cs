@@ -145,25 +145,25 @@ public sealed class PortalAliasResolutionMiddleware
     private const string ProblemContentType = "application/problem+json";
 
     private readonly RequestDelegate _next;
-    private readonly ILogger<PortalAliasResolutionMiddleware> _logger;
 
     /// <summary>
     /// Initialises the middleware.
     /// </summary>
     /// <param name="next">The next component in the pipeline.</param>
-    /// <param name="logger">Records why a request was refused, for the operator who must fix it.</param>
     /// <exception cref="ArgumentNullException">
-    /// Thrown when either argument is <see langword="null"/>.
+    /// Thrown when <paramref name="next"/> is <see langword="null"/>.
     /// </exception>
-    public PortalAliasResolutionMiddleware(
-        RequestDelegate next,
-        ILogger<PortalAliasResolutionMiddleware> logger)
+    /// <remarks>
+    /// This stage takes no logger of its own any more. It reports nothing: diagnosing an unresolvable host is
+    /// owned by the pre-routing stage, which sees every request whether or not authorisation later refuses it,
+    /// and this stage's remaining job is the refusal alone. Its rendering of that diagnosis is still declared
+    /// here, as <see cref="LogUnresolved"/>, so one component owns the wording.
+    /// </remarks>
+    public PortalAliasResolutionMiddleware(RequestDelegate next)
     {
         ArgumentNullException.ThrowIfNull(next);
-        ArgumentNullException.ThrowIfNull(logger);
 
         _next = next;
-        _logger = logger;
     }
 
     /// <summary>
@@ -266,8 +266,14 @@ public sealed class PortalAliasResolutionMiddleware
 
         if (!outcome.IsSuccess)
         {
-            LogUnresolved(address, outcome);
-
+            // SEC-030: THE DIAGNOSIS IS NOT WRITTEN HERE, AND THAT IS THE FIX. This stage is ordered after
+            // authorisation by the mandated pipeline order (AAP 0.5.1.4), so any request that authorisation
+            // refuses never reaches it - and an unresolvable host is exactly the condition most likely to
+            // cause that refusal. Diagnosing it from here therefore lost the entry precisely when an operator
+            // needed it. TenantPathBaseMiddleware, which runs before routing and resolves the tenant for every
+            // request, writes it instead: the population and the diagnosis are both before authorisation, and
+            // only the endpoint-specific REFUSAL below remains after routing, because it needs the matched
+            // endpoint's metadata to know whether this endpoint requires a tenant at all.
             if (RequiresResolvedTenant(context))
             {
                 await WriteTenantUnresolvedAsync(context, problemDetailsFactory).ConfigureAwait(false);
@@ -291,22 +297,29 @@ public sealed class PortalAliasResolutionMiddleware
     /// would tell a caller probing for addresses that the host is unconfigured.
     /// </para>
     /// <para>
-    /// A <c>portalId</c> ROUTE VALUE IS INTRINSIC PROOF. The route value is set by route matching alone - it
-    /// cannot be supplied through the query string or a header - so its presence means the tenant arrives by a
-    /// means other than the host name. It is not trusted as an authorisation decision: the portal-administrator
-    /// policy verifies administration of that exact portal against stored role membership, and every service
-    /// verifies that the record it acts on belongs to it.
+    /// SEC: A <c>portalId</c> ROUTE VALUE IS NOT AN EXEMPTION, and it used to be one. The reasoning was that a
+    /// route naming its own tenant needs no host name to identify one - which is true of ROUTING and false of
+    /// SECURITY. A route value is chosen by the caller, so exempting every route that carries one meant every
+    /// tenant-scoped route in the API could be addressed from a host name that named a different tenant, or no
+    /// tenant at all, and the arrival tenant was then never compared with anything. The tenant a caller
+    /// arrived through is one of the three identities a tenant-scoped decision has to reconcile
+    /// (<c>Authorization/PortalAdministrationEvaluator.IsTenantBoundAsync</c> reconciles all three), and an
+    /// unresolvable one cannot be reconciled with anything - so a request that needs a tenant and has no
+    /// resolvable one is refused here regardless of what its route says.
+    /// </para>
+    /// <para>
+    /// THE ONE EXEMPTION IS THE DECLARED ONE. <see cref="TenantOptionalAttribute"/> marks the endpoints that
+    /// genuinely read no tenant - sign-in, which must be reachable from an unconfigured host so an operator can
+    /// obtain a session; the alias endpoints that repair the very configuration that failed; and
+    /// installation-wide reference data. Each mark carries a written justification and the inventory of marks
+    /// is pinned by a test, so an exemption cannot be added without review. That is what an exemption should
+    /// look like: named, justified and enumerated - not implied by the shape of a route.
     /// </para>
     /// </remarks>
     private static bool RequiresResolvedTenant(HttpContext context)
     {
         Endpoint? endpoint = context.GetEndpoint();
         if (endpoint is null)
-        {
-            return false;
-        }
-
-        if (context.Request.RouteValues.ContainsKey(PortalRouteValueKey))
         {
             return false;
         }
@@ -413,14 +426,24 @@ public sealed class PortalAliasResolutionMiddleware
     /// who needs the distinction reads it here.
     /// </para>
     /// </remarks>
+    /// <param name="logger">
+    /// The logger of the stage that observed the failure. SEC-030: the observing stage supplies its own logger
+    /// rather than this type holding one, because the stage that DIAGNOSES an unresolved tenant - the
+    /// pre-routing stage that populates it, which runs before authorisation - is not the stage that REFUSES
+    /// one. Declaring the wording here and passing the logger in keeps a single vocabulary for the condition
+    /// while letting the log entry carry the category of whichever stage actually saw it.
+    /// </param>
     /// <param name="address">
     /// The host name and path that failed to resolve, for the log only. The path is included because a child
     /// portal is identified by it, so an operator diagnosing an unreachable child needs to see the whole
     /// address that was probed rather than only its host.
     /// </param>
     /// <param name="outcome">The failed resolution outcome.</param>
-    private void LogUnresolved(string address, Result outcome)
+    internal static void LogUnresolved(ILogger logger, string address, Result outcome)
     {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(outcome);
+
         string reasonCode = outcome.Reason?.Code ?? "PORTAL_ALIAS_UNRESOLVED";
 
         bool unknownHost = string.Equals(
@@ -433,7 +456,7 @@ public sealed class PortalAliasResolutionMiddleware
         // operator needs in order to correct the alias configuration.
         if (unknownHost)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "The host name {RequestHost} does not identify a configured portal, so this request " +
                 "continues with no tenant. Reason code {ReasonCode}.",
                 address,
@@ -442,7 +465,7 @@ public sealed class PortalAliasResolutionMiddleware
             return;
         }
 
-        _logger.LogError(
+        logger.LogError(
             "The tenant for host name {RequestHost} could not be resolved, so this request continues with " +
             "no tenant. Reason code {ReasonCode}. Detail: {ReasonMessage}. This is an installation " +
             "configuration defect and every request to this host will be unable to reach tenant-scoped " +

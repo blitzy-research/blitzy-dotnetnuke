@@ -1,1725 +1,806 @@
-// MIGRATION: FormsAuthentication.SignOut has no stateless counterpart, so logout now means
-// access-token expiry plus a client-side discard, backed by server-side revocation of
-// the presented refresh token's whole family — which is what this file provides.
-//
-// MIGRATION: The measured legacy site is Library/Components/Security/PortalSecurity.vb:L77-L95.
-// Its SignOut calls System.Web.Security.FormsAuthentication.SignOut() at L79, blanks
-// the "language" and "authentication" cookies at L82 and L85, and back-dates the
-// "portalaliasid" and "portalroles" cookies by thirty years at L88-L94. Read that list
-// again and note what is absent from it: every statement targets the response, so the
-// legacy sign-off invalidated NOTHING on the server. A ticket already copied from the
-// browser stayed valid for the whole of its remaining window, because the only thing
-// that sign-off could reach was the copy it asked the browser to drop. Family
-// revocation below is therefore added strengthening rather than a translation, and
-// nothing in the legacy tree was removed to make room for it.
-//
-// MIGRATION: The credential this replaces is the forms ticket established at
-// Library/Components/Users/UserController.vb:L1024-L1055 — SetAuthCookie at L1033,
-// with an optional long-lived variant at L1036-L1052 driven by the
-// PersistentCookieTimeout setting at Website/release.config:L51. That ticket was a
-// bearer credential with no rotation and no server-side record, so a single capture
-// yielded unlimited reuse until it elapsed. Single-use rotation with replay detection
-// is the replacement.
-//
-// MIGRATION: DIVERGENCE, reversible protection to a one-way digest. The legacy ticket was
-// protected by a reversible cipher whose key was held in source control, so anything
-// holding both the stored material and that key could recover a usable ticket. This
-// store keeps only a one-way digest of each token, never the token, so a dump of its
-// state cannot be turned back into a credential. The same file's Encrypt and Decrypt
-// pair (PortalSecurity.vb:L138 and L175, CreateEncryptor at L161 and CreateDecryptor
-// at L209) is the reversible idiom being retired; no equivalent appears here, by
-// design.
-//
-// MIGRATION: The secure-generation lineage is genuine and worth naming: PortalSecurity.CreateKey
-// at L564-L571 already drew from a cryptographic generator and rendered the bytes as
-// hex through BytesToHexString at L585-L594. That intent is preserved. Only the
-// mechanism moves on — the obsolete generator type gives way to the modern static
-// factory, and hex gives way to unpadded URL-safe Base64, which carries the same
-// entropy in fewer characters and travels safely in a header, a body or a query
-// string.
-//
-// MIGRATION: There is no legacy refresh mechanism to port. DotNetNuke 4.9.0 renewed access by
-// sliding the forms ticket configured at Website/release.config:L146-L147, so the
-// browser never held a token, never learned when its own window closed and never
-// called a renewal endpoint. Every rotation, replay and revocation rule below is new
-// behaviour introduced by this migration, documented as such, and traceable to no
-// predecessor.
-//
-// MIGRATION: The ByRef status channel is gone. Library/Components/Users/UserController.vb:L1110
-// and L1132 reported their result by mutating a caller-supplied status argument. Every
-// operation here reports its result through an immutable return value instead, so no
-// member below takes a by-reference argument of any kind.
-
+using System.Data;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-
 using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Enums;
-
+using DnnMigration.Infrastructure.Persistence;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Infrastructure.Security;
 
 /// <summary>
-/// Holds the server-side state that lets a refresh token be redeemed exactly once, hands back a
-/// replacement on each redemption, detects the replay of a token that was already redeemed, and
-/// revokes a whole token family on logout.
+/// SQL-backed refresh-token store with atomic single-use rotation, family revocation and bounded
+/// same-client concurrent-use grace.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Implementation, not a contract. This type is deliberately <see langword="internal"/> and is
-/// reached only as <see cref="IRefreshTokenStore"/>, resolved from the container by
-/// <c>AddInfrastructure</c>. Keeping it invisible is what stops a caller depending on the storage
-/// medium, the locking strategy or the retention policy of whichever implementation is registered,
-/// and it is why the contract types it exchanges live in the Domain layer while the bookkeeping
-/// below does not.
+/// MIGRATION: legacy FormsAuthentication sign-out had no server-side session record. The target
+/// keeps refresh state durably in the target-owned <c>DnnMigration.RefreshTokens</c> table while
+/// access-token sign-out remains expiry plus client-side discard. Only SHA-256 token digests and
+/// minimal identity/lifecycle fields are stored; raw refresh tokens are returned once and retained
+/// nowhere.
 /// </para>
 /// <para>
-/// Visible on the contract is only what a caller legitimately needs: the subject snapshot, the three
-/// result types and the outcome vocabulary. None of those may be surfaced further — written into a
-/// wire DTO or minted into a token claim — for the reason recorded on the outcome enumeration itself.
-/// Family identifiers, generation counters and token digests never appear on the contract at all;
-/// they are bookkeeping a caller can neither read nor supply.
-/// </para>
-/// <para>
-/// Lifetime and injected dependencies. Registered as a singleton, because the state below must
-/// outlive the request that created it: a token issued during one request is redeemed during a
-/// later one. That lifetime is why the two constructor parameters are the only ones permitted —
-/// both are themselves singletons. A per-request dependency captured here would be held past the
-/// end of its own scope, so this type takes no persistence context, no repository, no cache, no
-/// request-context accessor and no logging dependency, and it resolves nothing dynamically.
-/// Because it holds no logging dependency it cannot log, which is the point: a store of
-/// credentials is the last place a stray diagnostic line should be able to appear.
-/// </para>
-/// <para>
-/// What is stored, and what is deliberately not. Each entry keeps a one-way digest of the token,
-/// an immutable snapshot of the non-secret facts needed to re-mint an access token, an absolute
-/// expiry instant, a family identifier, a generation number and two lifecycle flags. The token
-/// itself is never stored, so it exists only as the return value handed to the caller once. No
-/// access token, no credential and no signing material is read, derived or retained here. Exactly
-/// two settings are read from the options, both of them lifetimes and neither of them secret:
-/// <see cref="JwtOptions.RefreshTokenExpirationDays"/>, which becomes each token's own sliding
-/// expiry, and <see cref="JwtOptions.RefreshTokenAbsoluteExpirationDays"/>, which becomes the
-/// per-family ceiling described below. Every other member of the options is ignored here.
-/// </para>
-/// <para>
-/// Synchronisation. Every read and every mutation happens inside a single <c>lock</c> over one
-/// private gate object. That gate guards all of the mutable state, which is five members rather
-/// than two: the digest-keyed record dictionary, the family-to-digest-list dictionary, the
-/// user-to-family-set dictionary, the creation-order family queue that makes pruning ordered, and
-/// the counter from which the next family identifier is drawn. All five are ordinary,
-/// non-thread-safe collections precisely because the gate — not the collection — is the
-/// synchronisation mechanism. That is a deliberate choice over a
-/// lock-free collection: family rotation has to re-check a token's state and then, only if that
-/// check passed, consume it and insert its replacement, and a sequence of individually atomic
-/// operations gives no guarantee across the sequence. With one gate the whole transition is
-/// atomic by construction and can be verified by reading it, which matters more here than shaving
-/// a lock acquisition. Critical sections contain no I/O and no callback, so they are bounded and
-/// cannot deadlock.
-/// </para>
-/// <para>
-/// Synchronous by design. Every operation is a bounded in-memory state transition that performs
-/// no I/O, so the solution-wide rule that I/O-bound members must be awaitable does not apply, and
-/// nothing here is dispatched to a thread pool. The awaitable public contract, together with
-/// cancellation, belongs to <c>JwtTokenService</c>.
-/// </para>
-/// <para>
-/// Durability. State lives in the process, so restarting the API invalidates every outstanding
-/// refresh token and every caller simply signs in again; access tokens already issued remain valid
-/// until they elapse, exactly as they would anyway. A deployment that needs revocation to survive a
-/// restart, or to be shared across replicas, replaces this type with a durable implementation of the
-/// same operations.
-/// </para>
-/// <para>
-/// Retention, and why it can be bounded without weakening replay detection. Two things are retained
-/// for different reasons and for different lengths of time. A <em>live</em> entry keeps the snapshot
-/// needed to re-mint an access token. A <em>spent</em> entry — redeemed, revoked or expired — keeps
-/// only its family, its generation and its two lifecycle flags, because all that is still wanted
-/// from it is the ability to recognise a later presentation as a replay rather than as an unknown
-/// token. The snapshot is therefore discarded the moment an entry stops being redeemable, which is
-/// what stops a sign-in name, a role list and a permission list being held for the life of the
-/// process after they have ceased to be useful. Whole families are then dropped once their absolute
-/// ceiling has passed, and at that point nothing is lost: every generation in such a family is
-/// already refused on expiry, so the distinction between "already used" and "unknown" no longer
-/// changes any outcome. That is only true because the ceiling exists — without it a family in
-/// continuous use never became prunable, which is why bounded retention and the absolute ceiling are
-/// one design rather than two.
-/// </para>
-/// <para>
-/// Capacity. Total entries are capped, and issuing refuses rather than growing without limit once
-/// the cap is reached and pruning has failed to recover room. An unbounded in-memory store reachable
-/// from an unauthenticated endpoint is a denial-of-service lever; refusing to issue degrades sign-in
-/// while the process stays healthy, whereas exhausting memory takes the whole API down. No cleanup
-/// timer and no background worker is introduced: pruning happens opportunistically inside operations
-/// that already hold the gate, so it adds no thread and no unsynchronised access.
-/// </para>
-/// <para>
-/// Two ceilings, not one. Each token carries its own sliding expiry, and each <em>family</em>
-/// carries an absolute ceiling fixed when the family was created. Rotation issues a replacement with
-/// a fresh sliding expiry but copies the ceiling forward untouched, so a session cannot be extended
-/// indefinitely by continuous use — which is what
-/// <c>Application/Abstractions/ITokenService.cs</c> requires of any implementation. Reaching the
-/// ceiling is not a revocation and not an error: it means the caller must authenticate again, which
-/// is the only point at which a credential, an approval state and a lockout state are re-examined.
-/// </para>
-/// <para>
-/// Indexed by user, as well as by digest and family. Revoking every token a user holds is a required
-/// operation — the response to a detected replay and to an administrative credential reset — so the
-/// families belonging to a user are indexed rather than discovered by scanning. Without that index
-/// the operation would either be unavailable or cost a walk of the entire store.
-/// </para>
-/// <para>
-/// Value-neutral failures. Every rejection reports one of a small, fixed set of outcomes and
-/// nothing else. No message names a user, a portal, a family or another token, and no failure
-/// path reveals whether two pieces of presented material are related. Material that cannot be one
-/// of this store's tokens is refused without being hashed at all.
+/// The table is provisioned explicitly by the operator-run script under
+/// <c>Persistence/Scripts</c>. Application startup never creates, alters or migrates a production
+/// schema, and no legacy DotNetNuke object is modified.
 /// </para>
 /// </remarks>
 internal sealed class RefreshTokenStore : IRefreshTokenStore
 {
-    /// <summary>
-    /// Number of random bytes behind every refresh token: 32 bytes, that is 256 bits of entropy.
-    /// </summary>
-    /// <remarks>
-    /// Two hundred and fifty-six bits is the floor, not a target to be trimmed. It also matches
-    /// the digest width used below, so neither step is the weaker of the two. Guessing a token is
-    /// therefore not a viable attack, which is what allows the lookup below to be a plain
-    /// dictionary probe.
-    /// </remarks>
-    private const int TokenByteLength = 32;
+    private const int TokenEntropyBytes = 32;
+    private const int DigestLength = 32;
+    private const int ExpiredPruneBatchSize = 500;
+    private const int ConcurrentUseGraceSeconds = 5;
+    private const string TableName = "[DnnMigration].[RefreshTokens]";
 
-    /// <summary>
-    /// Character length of the unpadded URL-safe Base64 encoding of <see cref="TokenByteLength"/>
-    /// bytes.
-    /// </summary>
-    /// <remarks>
-    /// Derived arithmetic rather than a transcribed constant: Base64 carries six bits per
-    /// character, so the unpadded length is the number of bits rounded up to the next whole
-    /// character. For 32 bytes that evaluates to 43. Keeping it derived means changing
-    /// <see cref="TokenByteLength"/> cannot leave a stale length behind.
-    /// </remarks>
-    private const int TokenCharacterLength = ((TokenByteLength * 8) + 5) / 6;
+    private static readonly TimeSpan ConcurrentUseGrace =
+        TimeSpan.FromSeconds(ConcurrentUseGraceSeconds);
 
-    /// <summary>
-    /// Generation number carried by the first token of a family.
-    /// </summary>
-    private const int FirstGeneration = 0;
-
-    /// <summary>
-    /// Largest number of entries — live and spent together — that the store will hold.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A cap rather than a target. It exists so that an in-memory store reachable from an
-    /// unauthenticated endpoint cannot be grown without limit, and it is deliberately generous: at
-    /// one entry per sign-in and per rotation, a hundred thousand entries is far beyond what any
-    /// single process serves within one absolute ceiling, so a deployment behaving normally never
-    /// approaches it. Reaching it therefore indicates either an attack or a ceiling configured so
-    /// long that pruning cannot keep up, and in both cases refusing to issue is the safer outcome
-    /// than consuming the host's memory.
-    /// </para>
-    /// <para>
-    /// Spent entries count towards it. They are small, but they are exactly what an attacker
-    /// accumulates by rotating in a loop, so excluding them would leave the cap trivially evadable.
-    /// </para>
-    /// </remarks>
-    private const int MaximumStoredEntries = 100_000;
-
-    /// <summary>
-    /// Largest number of generations - the live one plus its retained history - that one family keeps.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// M-14: this bound is what makes a rotating session cost a FIXED amount of memory instead of an
-    /// amount proportional to how often it rotates. An earlier revision had no such bound and stated
-    /// that growth along the rotation path was "bounded by the ceiling divided by the rotation cadence,
-    /// per authenticated session". The premise was wrong, and the way it was wrong matters: nothing
-    /// bounds the cadence. Rotation is driven by the caller, so the caller chooses it, and a single
-    /// authenticated session redeeming in a tight loop added one permanently retained entry per
-    /// exchange - every one of them surviving until the family's absolute ceiling elapsed, which is
-    /// measured in days. One account could therefore consume the host's memory, which is precisely the
-    /// uncontrolled-consumption defect the bound closes.
-    /// </para>
-    /// <para>
-    /// THE SAME DEFECT IS REACHED WITHOUT ANY ABUSE AT ALL, and the arithmetic is worth recording
-    /// because it shows <see cref="MaximumStoredEntries"/> could never have held the line on its own. A
-    /// client rotates when its sixty-minute access token lapses and a family's ceiling is thirty days,
-    /// so one continuously rotating session accumulated about <b>720</b> entries; a hundred thousand
-    /// divided by 720 is about <b>139</b>, so fewer than a hundred and forty ordinary long-lived
-    /// sessions were enough to fill the store, after which <see cref="Issue"/> refused EVERY new
-    /// sign-in in the installation. The store-wide cap is a backstop against exhaustion; this bound is
-    /// what stops rotation reaching it.
-    /// </para>
-    /// <para>
-    /// Why a retention window rather than a limit on how many times a family may rotate: a rotation
-    /// limit would eventually end a session that had done nothing wrong, and any limit high enough to
-    /// avoid that is high enough to leave the consumption problem standing. A window bounds the cost
-    /// without bounding the behaviour - a well-behaved session may rotate indefinitely and never grow
-    /// past this many entries, because each exchange releases the oldest history as it adds the new
-    /// generation.
-    /// </para>
-    /// <para>
-    /// Why eight. A retained generation exists solely to recognise a replay, and a replay is a race:
-    /// the copy is presented while it is still worth presenting, which is within a generation or two of
-    /// being redeemed. Once the legitimate client has rotated past it, the copy is refused by every
-    /// path whether history remembers it or not. Eight is therefore several times the window in which
-    /// detection can matter, with headroom for a client holding concurrent requests, and it is the
-    /// exact and only cost of the trade recorded below. THIS IS THE ONE RETENTION BOUND IN THIS STORE:
-    /// a second, looser per-family bound counted only spent generations against sixty-four and could
-    /// therefore never bind behind this one, so it is not carried alongside it - two retention rules
-    /// that can disagree about the same family are a liability, and the tighter of the two subsumes the
-    /// looser exactly.
-    /// </para>
-    /// <para>
-    /// What the trade costs: a replay of material older than this many generations is reported as
-    /// <see cref="RefreshTokenOutcome.Unknown"/> rather than as
-    /// <see cref="RefreshTokenOutcome.AlreadyUsed"/>, so it refuses the caller without also revoking
-    /// the family. Detection is narrowed, never redemption - no evicted entry was redeemable, so
-    /// nothing that could have been used is being forgotten, and the family-wide revocation that a
-    /// recent replay still triggers is a leak signal rather than a gate.
-    /// </para>
-    /// </remarks>
-    private const int RetainedGenerationsPerFamily = 8;
-
-    /// <summary>
-    /// Largest configured refresh lifetime, in days, that this store will accept for either the
-    /// sliding lifetime or the absolute family ceiling.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A POLICY bound, and deliberately not a representational one. Deferring instead to the
-    /// interval type's own limit - on the reasoning that the constructor need only refuse a setting
-    /// it cannot convert - would refuse nothing in practice, because that limit is over ten million
-    /// days: a deployment could configure an absolute ceiling of a century and the store would
-    /// accept it, which turns the one setting that is supposed to end a session into a setting that
-    /// never does. Two guarantees are derived from the ceiling - how long a family stays redeemable,
-    /// and how long a family that has passed its deadline is retained so a late presentation is still
-    /// recognised as a replay - so an unbounded value removes both while appearing to configure them.
-    /// </para>
-    /// <para>
-    /// One year is chosen because it is the point past which a renewable session is a permanent
-    /// credential in all but name, and because it is far above any lifetime a deployment has cause to
-    /// set: the shipped configuration is thirty days. It bounds BOTH settings the constructor reads.
-    /// </para>
-    /// <para>
-    /// IT IS NOW A BACKSTOP FOR BOTH RATHER THAN THE OPERATIVE LIMIT FOR EITHER, and the change is worth
-    /// recording because this remark previously described the absolute ceiling as "the setting with no
-    /// bound of its own in JwtOptions". It has one:
-    /// <see cref="JwtOptions.MaximumRefreshTokenAbsoluteExpirationDays"/> is thirty days and is enforced
-    /// by <see cref="JwtOptions.Validate"/>, alongside
-    /// <see cref="JwtOptions.MaximumRefreshTokenExpirationDays"/> for the sliding lifetime. A deployment
-    /// that configures a year is therefore refused at start-up rather than accepted here, and this figure
-    /// applies only to a store constructed directly - in a test, or by a future caller that bypasses the
-    /// bound options - where no start-up validation has run. Keeping it is deliberate: a limit that is
-    /// unreachable through the normal path is exactly what a backstop is.
-    /// </para>
-    /// </remarks>
-    private const int MaximumLifetimeDays = 365;
-
-    /// <summary>
-    /// Largest number of SPENT generations retained per family for replay detection. Older spent
-    /// generations are forgotten as rotation moves past them.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This bound exists because <see cref="MaximumStoredEntries"/> alone did not hold, and the
-    /// arithmetic that shows why is worth recording rather than restating the intention. Rotation
-    /// retains the entry it consumed and adds a replacement beside it, so a family grows by one entry
-    /// per exchange, and it never refuses on capacity - deliberately, because refusing to rotate
-    /// destroys a live session. Under the shipped configuration a client rotates when its
-    /// sixty-minute access token lapses and a family's ceiling is thirty days, so one continuously
-    /// rotating session accumulates about <b>720</b> entries. A hundred thousand entries divided by
-    /// 720 is about <b>139</b>: fewer than a hundred and forty long-lived sessions were enough to
-    /// fill the store, after which <see cref="Issue"/> refuses EVERY new sign-in in the installation.
-    /// A single authenticated account rotating in a loop reached the same state far faster. The
-    /// earlier reasoning that a hundred thousand entries is "far beyond what any single process
-    /// serves within one absolute ceiling" was therefore quantitatively wrong for the configuration
-    /// this solution ships.
-    /// </para>
-    /// <para>
-    /// <b>Why bound the family rather than refuse the rotation.</b> Refusing a rotation on capacity
-    /// would convert a memory bound into a denial of the very sessions the bound exists to protect,
-    /// and that judgement was correct and is kept. Bounding retention instead makes a family cost at
-    /// most this many entries plus its one live generation, whatever its cadence and however long it
-    /// lives, so rotation can no longer grow the store without limit and the cap becomes reachable
-    /// only by a genuinely large number of distinct sign-ins - which are themselves rate limited at
-    /// the API edge.
-    /// </para>
-    /// <para>
-    /// <b>The cost, stated plainly.</b> Forgetting a spent generation means a replay of that
-    /// particular value classifies as <see cref="RefreshTokenOutcome.Unknown"/> rather than
-    /// <see cref="RefreshTokenOutcome.AlreadyUsed"/>, so it is still REFUSED but no longer escalates
-    /// to family-wide revocation. That escalation is a leak signal rather than a gate: the replayed
-    /// value is spent and unusable either way. The value chosen keeps the signal for the case that
-    /// matters - a copied token is replayed while it is still recent - because sixty-four generations
-    /// is more than two and a half days of history at the shipped hourly cadence, and proportionally
-    /// longer for any client that rotates less eagerly. Trimming takes the OLDEST spent generations
-    /// first for exactly this reason.
-    /// </para>
-    /// </remarks>
-    private const int MaximumRetainedSpentGenerationsPerFamily = 64;
-
-    /// <summary>
-    /// The single gate guarding every piece of mutable state on this type:
-    /// <see cref="_recordsByDigest"/>, <see cref="_digestsByFamily"/>,
-    /// <see cref="_familiesByUser"/>, <see cref="_familiesInCreationOrder"/> and
-    /// <see cref="_lastFamilyId"/>, together with the lifecycle flags of every stored entry.
-    /// </summary>
-    /// <remarks>
-    /// One gate for all mutable state, held for the whole of each operation. Two gates, or a
-    /// lock-free collection, would permit a rotation to interleave with a revocation of the same
-    /// family and leave the family in a state neither operation intended.
-    /// </remarks>
-    private readonly object _gate = new();
-
-    /// <summary>
-    /// Stored entries keyed by the one-way digest of their token.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The key is the digest, so the token itself appears nowhere in this dictionary — neither as
-    /// a key nor on a value. Ordinal comparison is used because the key is fixed-case hexadecimal
-    /// and its interpretation must not vary with the culture the process happens to be running
-    /// under.
-    /// </para>
-    /// <para>
-    /// Holds both redeemable and spent entries, and the difference is visible on the entry rather
-    /// than in which dictionary it sits: a spent one has discarded its snapshot and kept its family,
-    /// generation and flags. Keeping one dictionary is what lets a replay be recognised by a single
-    /// probe, with no possibility of the two containers disagreeing about a digest.
-    /// </para>
-    /// </remarks>
-    private readonly Dictionary<string, RefreshTokenRecord> _recordsByDigest =
-        new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// Digests of every generation ever issued in a family, keyed by family identifier.
-    /// </summary>
-    /// <remarks>
-    /// This index is what makes revocation a family-wide operation rather than a single-token
-    /// one. Without it, revoking a family would mean scanning every entry in the store; with it,
-    /// the cost is proportional to that one family's length. Within a family's life, entries are
-    /// appended and never removed, so a replay detected against an early generation still reaches
-    /// the newest one; a family is removed only as a whole, and only once its absolute ceiling has
-    /// passed and every generation in it is refused on expiry regardless.
-    /// </remarks>
-    private readonly Dictionary<long, List<string>> _digestsByFamily = new();
-
-    /// <summary>
-    /// Identifiers of every family belonging to a user, keyed by that user's numeric key.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This index is what makes user-wide revocation possible at all. It backs two required
-    /// behaviours: the response to a detected replay, which must end every session the user holds
-    /// rather than only the family that was replayed, and the response to an administrative
-    /// credential reset. Without it, either operation would have to walk every entry in the store.
-    /// </para>
-    /// <para>
-    /// A set rather than a list, because a family is registered once per sign-in and a set makes
-    /// re-registration harmless. Note what is <em>not</em> stored: the key is the user's numeric
-    /// identifier only. No sign-in name, no role and no permission appears in this index, so it
-    /// carries no personal data even while a family is live.
-    /// </para>
-    /// </remarks>
-    private readonly Dictionary<int, HashSet<long>> _familiesByUser = new();
-
-    /// <summary>
-    /// Family identifiers in the order their families were created, oldest first.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This is what makes pruning cheap. Every family's ceiling is its creation instant plus one
-    /// constant interval, so families reach their ceilings in exactly the order they were created —
-    /// which means the oldest family is always the next to become prunable, and pruning never has to
-    /// search for candidates or scan the store. Entries leave the front, so the cost is proportional
-    /// to what is actually removed rather than to what is held.
-    /// </para>
-    /// <para>
-    /// The ordering property depends on the ceiling interval being fixed for the process lifetime,
-    /// which is why that interval is copied once at construction rather than re-read per operation.
-    /// A ceiling that could change mid-flight would break the order and silently make pruning miss
-    /// families.
-    /// </para>
-    /// </remarks>
-    private readonly Queue<long> _familiesInCreationOrder = new();
-
-    /// <summary>
-    /// Supplies the present instant. The only sanctioned source of time in this type.
-    /// </summary>
+    private readonly string _connectionString;
     private readonly IClock _clock;
+    private readonly TimeSpan _slidingLifetime;
+    private readonly TimeSpan _familyLifetime;
 
-    /// <summary>
-    /// How long a newly issued or newly rotated refresh token remains redeemable.
-    /// </summary>
-    /// <remarks>
-    /// Copied and validated once at construction rather than read per operation. A singleton that
-    /// re-read a reconfigured lifetime mid-flight would issue expiries that could not be compared
-    /// with those already handed over, so the value is fixed for the life of the process.
-    /// </remarks>
-    private readonly TimeSpan _refreshTokenLifetime;
-
-    /// <summary>
-    /// How long a refresh-token family remains redeemable in total, measured from the sign-in that
-    /// created it and never extended by rotation.
-    /// </summary>
-    /// <remarks>
-    /// Copied and validated once at construction, for the same reason as the sliding lifetime: a
-    /// singleton that re-read a reconfigured ceiling mid-flight would stamp ceilings that could not
-    /// be compared with those already recorded. This is the bound that makes rotation unable to
-    /// extend a session indefinitely.
-    /// </remarks>
-    private readonly TimeSpan _refreshTokenAbsoluteLifetime;
-
-    /// <summary>
-    /// Highest family identifier issued so far. Mutated only under <see cref="_gate"/>.
-    /// </summary>
-    /// <remarks>
-    /// A monotonic counter, deliberately not a random or globally unique value. A family
-    /// identifier is an internal correlation key that never leaves this type and is never
-    /// presented to or accepted from a caller, so it needs no unpredictability — and using
-    /// generated entropy for it would blur the line between an identifier and a credential, which
-    /// is precisely the confusion this file exists to avoid. Numbering starts at 1, leaving 0 as
-    /// a value no family ever has.
-    /// </remarks>
-    private long _lastFamilyId;
-
-    /// <summary>
-    /// Initialises the store, validating and copying the configured refresh lifetime.
-    /// </summary>
-    /// <param name="clock">Supplies the present instant, in Coordinated Universal Time.</param>
-    /// <param name="jwtOptions">
-    /// Carries the bound <see cref="JwtOptions"/>. Only
-    /// <see cref="JwtOptions.RefreshTokenExpirationDays"/> and
-    /// <see cref="JwtOptions.RefreshTokenAbsoluteExpirationDays"/> are read; every other member is
-    /// ignored here, so no credential material is touched by this type.
-    /// </param>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="clock"/> or <paramref name="jwtOptions"/> is <see langword="null"/>.
-    /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Either configured lifetime is not a positive number of days or exceeds the policy ceiling of
-    /// <see cref="MaximumLifetimeDays"/> days, or the absolute ceiling is shorter than the per-token
-    /// lifetime.
-    /// </exception>
-    /// <remarks>
-    /// Failing here fails at startup, while the host can still refuse to serve traffic. A
-    /// non-positive lifetime would make every issued token expire at or before the instant it was
-    /// created, so a refresh could never succeed and the fault would surface as a puzzling
-    /// authentication failure much later. Both messages name the offending setting and its
-    /// supplied value, and nothing else: neither reproduces a token or any credential material.
-    /// </remarks>
-    public RefreshTokenStore(IClock clock, IOptions<JwtOptions> jwtOptions)
+    /// <summary>Initialises a new instance of the <see cref="RefreshTokenStore"/> class.</summary>
+    /// <param name="context">Supplies the configured SQL Server connection string.</param>
+    /// <param name="clock">UTC clock used for every lifecycle decision.</param>
+    /// <param name="jwtOptions">Validated access and refresh-token options.</param>
+    /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
+    /// <exception cref="OptionsValidationException">The token lifetimes are invalid.</exception>
+    /// <exception cref="InvalidOperationException">No database connection string is configured.</exception>
+    public RefreshTokenStore(
+        DnnDbContext context,
+        IClock clock,
+        IOptions<JwtOptions> jwtOptions)
     {
+        ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(jwtOptions);
 
-        var lifetimeDays = jwtOptions.Value.RefreshTokenExpirationDays;
-        var settingName =
-            $"{JwtOptions.SectionName}:{nameof(JwtOptions.RefreshTokenExpirationDays)}";
-
-        if (lifetimeDays <= 0)
+        IReadOnlyList<string> failures = jwtOptions.Value.Validate();
+        if (failures.Count != 0)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(jwtOptions),
-                lifetimeDays,
-                $"{settingName} must be a positive number of days.");
+            throw new OptionsValidationException(
+                JwtOptions.SectionName,
+                typeof(JwtOptions),
+                failures);
         }
 
-        if (lifetimeDays > MaximumLifetimeDays)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(jwtOptions),
-                lifetimeDays,
-                $"{settingName} must not exceed {MaximumLifetimeDays} days.");
-        }
-
-        var ceilingDays = jwtOptions.Value.RefreshTokenAbsoluteExpirationDays;
-        var ceilingSettingName =
-            $"{JwtOptions.SectionName}:{nameof(JwtOptions.RefreshTokenAbsoluteExpirationDays)}";
-
-        if (ceilingDays <= 0)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(jwtOptions),
-                ceilingDays,
-                $"{ceilingSettingName} must be a positive number of days.");
-        }
-
-        if (ceilingDays > MaximumLifetimeDays)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(jwtOptions),
-                ceilingDays,
-                $"{ceilingSettingName} must not exceed {MaximumLifetimeDays} days.");
-        }
-
-        // A ceiling below the sliding lifetime would clamp every token to the ceiling and make the
-        // sliding setting unreachable, so the pair is refused together rather than silently
-        // reinterpreted. The application layer's options validator reports the same disagreement at
-        // start-up; this check is the backstop for a store constructed directly.
-        if (ceilingDays < lifetimeDays)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(jwtOptions),
-                ceilingDays,
-                $"{ceilingSettingName} must not be less than {settingName}, which is "
-                + $"{lifetimeDays} day(s).");
-        }
-
+        _connectionString = context.Database.GetConnectionString()
+            ?? throw new InvalidOperationException(
+                "The durable refresh-token store requires ConnectionStrings:Default.");
         _clock = clock;
-        _refreshTokenLifetime = TimeSpan.FromDays(lifetimeDays);
-        _refreshTokenAbsoluteLifetime = TimeSpan.FromDays(ceilingDays);
+        _slidingLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenExpirationDays);
+        _familyLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenAbsoluteExpirationDays);
     }
 
-    /// <summary>
-    /// Issues the first refresh token of a new family, for a caller who has just authenticated.
-    /// </summary>
-    /// <param name="subject">
-    /// The non-secret facts to be re-minted into an access token when this token, or any later
-    /// generation of its family, is redeemed.
-    /// </param>
-    /// <returns>
-    /// On success, the raw token — handed over exactly once and never stored — together with its
-    /// absolute expiry and the snapshot recorded against it. On refusal,
-    /// <see cref="RefreshTokenOutcome.CapacityExhausted"/> and no token, which is the one way this
-    /// operation can decline: the store is full and pruning recovered no room.
-    /// </returns>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="subject"/> is <see langword="null"/>.
-    /// </exception>
-    /// <remarks>
-    /// A rejected sign-in must never reach this method; issuing a token is the consequence of a
-    /// verified credential, and verifying one is not this type's concern. The present instant is
-    /// read once and used for the whole operation, so the expiry recorded here is measured from a
-    /// single point in time rather than from two readings that could straddle a boundary.
-    /// </remarks>
-    public RefreshTokenIssueResult Issue(RefreshTokenSubject subject)
+    /// <inheritdoc />
+    public async Task<RefreshTokenIssueResult> IssueAsync(
+        RefreshTokenSubject subject,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(subject);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var issuedAtUtc = _clock.UtcNow;
+        DateTime now = Utc(_clock.UtcNow);
+        DateTime familyExpiresAtUtc = now.Add(_familyLifetime);
+        DateTime expiresAtUtc = Earlier(now.Add(_slidingLifetime), familyExpiresAtUtc);
+        TokenMaterial token = CreateToken();
 
-        // A new family's ceiling is fixed here, once, and every generation of the family will carry
-        // this same instant forward unchanged. The token's own expiry is the earlier of its sliding
-        // window and that ceiling, so the very first token of a family whose ceiling is shorter than
-        // the sliding lifetime is already bounded correctly.
-        var familyExpiresAtUtc = AddAbsoluteLifetime(issuedAtUtc);
-        var expiresAtUtc = Earlier(AddLifetime(issuedAtUtc), familyExpiresAtUtc);
-
-        lock (_gate)
+        try
         {
-            // Prune before testing capacity, so a store full of families that have passed their
-            // ceiling admits a new sign-in instead of refusing one.
-            Prune(issuedAtUtc);
+            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using SqlTransaction transaction = (SqlTransaction)await connection
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false);
 
-            if (_recordsByDigest.Count >= MaximumStoredEntries)
+            await PruneExpiredAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
+
+            await using SqlCommand command = Command(
+                connection,
+                transaction,
+                $"""
+                INSERT INTO {TableName}
+                    ([TokenDigest], [FamilyId], [Generation], [UserId], [PortalId],
+                     [CreatedAtUtc], [ExpiresAtUtc], [FamilyExpiresAtUtc],
+                     [ConsumedAtUtc], [ConsumedClientDigest], [RevokedAtUtc])
+                VALUES
+                    (@digest, @familyId, 0, @userId, @portalId,
+                     @now, @expires, @familyExpires, NULL, NULL, NULL);
+                """);
+            Binary(command, "@digest", token.Digest);
+            command.Parameters.Add(new SqlParameter("@familyId", SqlDbType.UniqueIdentifier)
             {
-                return RefreshTokenIssueResult.Failed(RefreshTokenOutcome.CapacityExhausted);
-            }
+                Value = Guid.NewGuid(),
+            });
+            command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
+            {
+                Value = subject.UserId,
+            });
+            command.Parameters.Add(new SqlParameter("@portalId", SqlDbType.Int)
+            {
+                Value = subject.PortalId,
+            });
+            DateTimeParameter(command, "@now", now);
+            DateTimeParameter(command, "@expires", expiresAtUtc);
+            DateTimeParameter(command, "@familyExpires", familyExpiresAtUtc);
 
-            // Numbering under the gate is what makes the identifier unique; a counter incremented
-            // anywhere else could hand the same family to two concurrent sign-ins.
-            var familyId = ++_lastFamilyId;
-            var rawToken = CreateAndStore(
-                familyId,
-                FirstGeneration,
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            return RefreshTokenIssueResult.Succeeded(
+                token.RawToken,
                 expiresAtUtc,
-                familyExpiresAtUtc,
                 subject);
-
-            // Registering the family against its owner is what makes user-wide revocation reachable
-            // later. It happens inside the same gated step that created the family, so a family can
-            // never exist unindexed.
-            if (!_familiesByUser.TryGetValue(subject.UserId, out var userFamilies))
-            {
-                userFamilies = [];
-                _familiesByUser[subject.UserId] = userFamilies;
-            }
-
-            userFamilies.Add(familyId);
-            _familiesInCreationOrder.Enqueue(familyId);
-
-            return RefreshTokenIssueResult.Succeeded(rawToken, expiresAtUtc, subject);
         }
-    }
-
-    /// <summary>
-    /// Reports the current state of presented material and, when it is redeemable, the immutable
-    /// snapshot recorded against it. Changes nothing.
-    /// </summary>
-    /// <param name="refreshToken">The refresh token a caller has presented.</param>
-    /// <returns>
-    /// An outcome distinguishing unknown, revoked, already-redeemed and expired material from
-    /// material that is currently redeemable, carrying the snapshot and expiry only in that last
-    /// case.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// This exists so a caller can read the recorded subject <em>before</em> doing any awaitable
-    /// work of its own — re-checking that the user still holds the roles the snapshot claims, for
-    /// instance — and then supply an updated snapshot to <see cref="Rotate"/>.
-    /// </para>
-    /// <para>
-    /// A successful reading authorises nothing. It is a point-in-time observation, and by the
-    /// moment the caller acts on it the token may already have been redeemed or revoked by a
-    /// concurrent request. <see cref="Rotate"/> therefore repeats every one of these checks
-    /// inside the same lock that performs the rotation, and it is that re-check — never this one
-    /// — that decides whether a replacement is issued.
-    /// </para>
-    /// </remarks>
-    public RefreshTokenInspection Inspect(string refreshToken)
-    {
-        var digest = ComputeLookupKey(refreshToken);
-        if (digest is null)
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
         {
-            return RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown);
+            return RefreshTokenIssueResult.Failed(RefreshTokenOutcome.StoreUnavailable);
         }
-
-        var asOfUtc = _clock.UtcNow;
-
-        lock (_gate)
+        finally
         {
-            var stored = _recordsByDigest.GetValueOrDefault(digest);
-            var outcome = Classify(stored, asOfUtc);
-
-            // L-05: an entry past its own expiry can never be redeemed again, so the snapshot it still
-            // holds - the sign-in name, the role list and the permission keys - has no remaining purpose
-            // and is released here. Redemption already did exactly this; inspection did not, which meant
-            // whether an abandoned session's personal data was retained until its family was pruned
-            // depended on which of the two operations the caller happened to have called. Reading is the
-            // more common of the two and, for a session nobody returns to, often the ONLY one, so the
-            // gap covered the majority case. The entry itself is kept: its family, generation and flags
-            // are what recognise a later replay, and those carry no personal data.
-            if (stored is not null && outcome == RefreshTokenOutcome.Expired)
-            {
-                stored.DiscardSubject();
-            }
-
-            // The property pattern, rather than a null-forgiving operator, is what makes the
-            // released-snapshot case safe by construction: a redeemable entry always still holds its
-            // snapshot, so this test can never fail for a genuinely redeemable entry, and if it ever
-            // did the reading would report a refusal instead of dereferencing nothing.
-            // A refusal reports the owner when the entry was found, so the caller can answer a replay
-            // account-wide. The owner key outlives the snapshot on the entry precisely for this.
-            return stored is { Subject: not null } && outcome == RefreshTokenOutcome.Succeeded
-                ? RefreshTokenInspection.Succeeded(stored.Subject, stored.ExpiresAtUtc)
-                : RefreshTokenInspection.Failed(outcome, stored?.OwnerUserId);
-        }
-    }
-
-    /// <summary>
-    /// Redeems presented material exactly once, consuming it and issuing a single replacement in
-    /// the same family; or, if it was already redeemed, revokes the entire family as a replay.
-    /// </summary>
-    /// <param name="refreshToken">The refresh token a caller has presented.</param>
-    /// <param name="subject">
-    /// The snapshot to record against the replacement. Supplying it here — rather than copying
-    /// the snapshot forward — is what lets a caller refresh the roles and permission keys it will
-    /// mint into the next access token.
-    /// </param>
-    /// <returns>
-    /// On success, the replacement token with its own absolute expiry and the supplied snapshot;
-    /// otherwise the outcome that refused the redemption, and no token.
-    /// </returns>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="subject"/> is <see langword="null"/>.
-    /// </exception>
-    /// <remarks>
-    /// <para>
-    /// One lock covers the whole transition: the re-check, the consumption of the presented token
-    /// and the insertion of its replacement. Two callers racing to redeem the same token
-    /// therefore produce exactly one success — the loser finds the token already consumed and is
-    /// treated as a replay — so a family can never acquire two live children from one redemption.
-    /// </para>
-    /// <para>
-    /// The replacement receives a fresh sliding expiry measured from this redemption rather than
-    /// the remaining window of the token it replaces, so the per-token bound limits how long a token
-    /// may sit unused. It does <em>not</em> receive a fresh ceiling: the family's absolute expiry is
-    /// copied forward untouched, so continuous use cannot extend a session past it. Both bounds are
-    /// therefore in force at once, and the replacement expires at whichever comes first.
-    /// </para>
-    /// <para>
-    /// Re-presenting a token that was already redeemed revokes every family the owning user holds,
-    /// not just the family presented. A replay establishes that a token has been copied but not
-    /// which of the user's sessions the copy came from, so ending one family would leave a
-    /// second copied family working.
-    /// </para>
-    /// <para>
-    /// Because each generation carries its own expiry, an early generation can be past its expiry
-    /// while a later one is still live. Replaying such a token is still a genuine replay against
-    /// a live child, which is exactly why the classification below settles the already-redeemed
-    /// case before the expired one.
-    /// </para>
-    /// </remarks>
-    public RefreshTokenRotationResult Rotate(string refreshToken, RefreshTokenSubject subject)
-    {
-        ArgumentNullException.ThrowIfNull(subject);
-
-        var digest = ComputeLookupKey(refreshToken);
-        if (digest is null)
-        {
-            return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown);
-        }
-
-        var asOfUtc = _clock.UtcNow;
-
-        lock (_gate)
-        {
-            // Rotation prunes as well as issuing, because rotation is the operation that actually
-            // grows a long-lived session: the redeemed entry is retained for replay detection and a
-            // replacement is added beside it, so a session left rotating adds an entry each time
-            // while creating no new family.
-            //
-            // M-14: rotation is bounded two ways, and the ordering below is deliberate. First the
-            // family's retained history is trimmed to RetainedGenerationsPerFamily, which is what makes
-            // a rotating session's cost fixed rather than proportional to its rotation count. Then the
-            // store-wide cap is honoured here as it is on issuing, because an earlier revision exempted
-            // this path on the stated grounds that growth was "bounded by the ceiling divided by the
-            // rotation cadence" - a bound that does not exist, since the caller sets the cadence. The
-            // exemption was quantitatively wrong as well as structurally wrong: under the shipped
-            // configuration one continuously rotating session accumulated about 720 entries, so roughly
-            // 139 ordinary sessions filled the store and every new sign-in in the installation was then
-            // refused. RetainedGenerationsPerFamily records that arithmetic.
-            //
-            // The concern that exemption was protecting is real and is preserved: refusing to issue
-            // declines a new session, which signing in again recovers, whereas refusing to rotate ends a
-            // live one. Two things keep that from happening to an innocent session. The trim runs first,
-            // so a session is never refused for space it was about to release; and a refusal leaves the
-            // presented token unconsumed and the family untouched, so it is a retryable condition rather
-            // than a lost session. With the window in place, rotation reaches a steady state where it
-            // adds nothing at all, so this cap can effectively only be met through genuine exhaustion by
-            // new families - which issuing already governs - and declining is then the safer outcome.
-            Prune(asOfUtc);
-
-            var stored = _recordsByDigest.GetValueOrDefault(digest);
-            var outcome = Classify(stored, asOfUtc);
-
-            if (stored is null || outcome != RefreshTokenOutcome.Succeeded)
-            {
-                // Replay. Material that was already redeemed can only have been presented
-                // again by something holding a copy of it, so the family is treated as
-                // compromised: every generation is revoked, including the live replacement the
-                // legitimate caller is holding. Ending both sessions is the correct trade — the
-                // alternative is leaving an attacker with a working credential.
-                if (stored is not null && outcome == RefreshTokenOutcome.AlreadyUsed)
-                {
-                    // Every family the user holds, not merely the family that was replayed. A
-                    // replay says a token has been copied; it says nothing about which of that
-                    // user's sessions the copy came from, so ending only this one would leave an
-                    // attacker holding whichever other family it also copied. This is the behaviour
-                    // ITokenService.RefreshAsync requires of an implementation, and the owner key
-                    // survives on the entry precisely so it is still available here after the
-                    // snapshot has been discarded.
-                    RevokeAllForUserCore(stored.OwnerUserId);
-                }
-
-                // An entry that has passed its own expiry can never be redeemed again, so the
-                // snapshot it still holds is dead weight. Releasing it here rather than waiting for
-                // the family to be pruned shortens how long an abandoned session's sign-in name and
-                // role list are retained.
-                if (stored is not null && outcome == RefreshTokenOutcome.Expired)
-                {
-                    stored.DiscardSubject();
-                }
-
-                return RefreshTokenRotationResult.Failed(outcome);
-            }
-
-            // MIGRATION: the presented token and the supplied subject must describe the SAME user.
-            // The caller re-reads the user's roles and permission keys before every rotation, so a
-            // privilege change takes effect on the next rotation instead of persisting for the life
-            // of the family; but that re-read is authority the caller holds for ITS OWN principal, so
-            // pairing it with a token issued to somebody else would mint a replacement carrying one
-            // user's identity and another's privileges. Presenting a mismatched pair is a defect in
-            // the calling code rather than a bad submission - the caller must read the user recorded
-            // against the token first - so it is thrown rather than reported as a failed outcome,
-            // and it is checked before the record is consumed so a rejected attempt leaves the
-            // family untouched.
-            if (subject.UserId != stored.OwnerUserId)
-            {
-                throw new InvalidOperationException(
-                    "The supplied subject does not belong to the user the presented refresh token "
-                    + "was issued to. Re-read the caller's roles and permission keys for the user "
-                    + "recorded against the token before redeeming it.");
-            }
-
-            // Trimmed BEFORE capacity is judged and before anything is consumed, so that the space this
-            // family is about to release is already released when the cap is tested, and so that a
-            // refusal below leaves the family exactly as it was found.
-            TrimFamilyHistory(stored.FamilyId);
-
-            if (_recordsByDigest.Count >= MaximumStoredEntries)
-            {
-                // Deliberately NOT accompanied by revoking the family. The presented token is still
-                // unconsumed and still live, so a caller that meets a transient exhaustion can redeem it
-                // once space frees; revoking here would turn a passing capacity event into permanent
-                // session loss for a caller that did nothing wrong, and it would not deny an attacker
-                // anything, since a family at its retention window adds no entries to begin with.
-                return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.CapacityExhausted);
-            }
-
-            stored.MarkConsumed();
-
-            // The consumed entry keeps its family, generation and flags — enough to recognise a
-            // later replay — and drops the snapshot it no longer needs. See the retention paragraph
-            // at the head of this file.
-            stored.DiscardSubject();
-
-            // The replacement inherits the family's ceiling verbatim. This single line is what stops
-            // rotation extending a session without limit: the sliding window restarts, the ceiling
-            // does not move.
-            var familyExpiresAtUtc = stored.FamilyExpiresAtUtc;
-            var expiresAtUtc = Earlier(AddLifetime(asOfUtc), familyExpiresAtUtc);
-            var replacement = CreateAndStore(
-                stored.FamilyId,
-                stored.Generation + 1,
-                expiresAtUtc,
-                familyExpiresAtUtc,
-                subject);
-
-            // Applied AFTER the replacement is stored, so the live generation is present in the
-            // family while the trim runs and can never be the entry chosen for removal. Doing it
-            // before would leave the trim looking at a family whose only unspent generation had not
-            // been created yet.
-            TrimSpentGenerations(stored.FamilyId);
-
-            // The replacement's entry is already in place by this point, so the token is never
-            // returned to a caller before it can be redeemed.
-            return RefreshTokenRotationResult.Succeeded(replacement, expiresAtUtc, subject);
-        }
-    }
-
-    /// <summary>
-    /// Revokes every generation in the family of the presented material, ending the session it
-    /// belongs to.
-    /// </summary>
-    /// <param name="refreshToken">The refresh token a caller has presented.</param>
-    /// <returns>
-    /// <see cref="RefreshTokenOutcome.Succeeded"/> when at least one generation was revoked by
-    /// this call, <see cref="RefreshTokenOutcome.AlreadyRevoked"/> when the family was already
-    /// fully revoked, and <see cref="RefreshTokenOutcome.Unknown"/> when the material is not
-    /// recognised.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// The whole family is revoked, never a single generation. Revoking only the presented token
-    /// would leave the replacement handed back at the previous redemption fully usable, so logout
-    /// would not end the session — it would merely skip a generation.
-    /// </para>
-    /// <para>
-    /// The presented token's own state is deliberately not a precondition. An expired or
-    /// already-consumed token still identifies its family, and that family may well contain a
-    /// live child, so a caller signing off with stale material in hand still gets the session
-    /// ended. Repeating the call is harmless: the second attempt finds nothing left to change and
-    /// reports that distinctly rather than pretending to have acted. For the same reason this is
-    /// the one operation that reads no clock — expiry has no bearing on whether revocation should
-    /// proceed.
-    /// </para>
-    /// <para>
-    /// Only refresh state is revoked. There is no register of blocked access tokens here and none
-    /// should be added: an access token is validated by its signature and its own expiry, so
-    /// consulting server-side state on every request would give up the statelessness that is the
-    /// reason for issuing one. That is the trade recorded at the head of this file — a signed-off
-    /// caller's access token stays valid until it elapses, and the client discards it.
-    /// </para>
-    /// </remarks>
-    public RefreshTokenOutcome Revoke(string refreshToken)
-    {
-        var digest = ComputeLookupKey(refreshToken);
-        if (digest is null)
-        {
-            return RefreshTokenOutcome.Unknown;
-        }
-
-        lock (_gate)
-        {
-            var stored = _recordsByDigest.GetValueOrDefault(digest);
-            if (stored is null)
-            {
-                return RefreshTokenOutcome.Unknown;
-            }
-
-            return RevokeFamily(stored.FamilyId)
-                ? RefreshTokenOutcome.Succeeded
-                : RefreshTokenOutcome.AlreadyRevoked;
+            CryptographicOperations.ZeroMemory(token.Digest);
         }
     }
 
     /// <inheritdoc />
-    public RefreshTokenOutcome RevokeAllForUser(int userId)
+    public async Task<RefreshTokenInspection> InspectAsync(
+        string refreshToken,
+        string clientBinding,
+        CancellationToken cancellationToken = default)
     {
-        lock (_gate)
-        {
-            // Whether the user is known to this store is decided before anything is revoked, so that
-            // "holds no family" and "held families, all already revoked" stay distinguishable. Doing
-            // it afterwards could not tell them apart, because both leave nothing changed.
-            if (!_familiesByUser.ContainsKey(userId))
-            {
-                return RefreshTokenOutcome.Unknown;
-            }
+        ArgumentNullException.ThrowIfNull(refreshToken);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientBinding);
+        cancellationToken.ThrowIfCancellationRequested();
 
-            return RevokeAllForUserCore(userId)
-                ? RefreshTokenOutcome.Succeeded
-                : RefreshTokenOutcome.AlreadyRevoked;
-        }
-    }
-
-    /// <summary>
-    /// Classifies a stored entry, or its absence, against a captured instant.
-    /// </summary>
-    /// <param name="stored">The entry found for a digest, or <see langword="null"/>.</param>
-    /// <param name="asOfUtc">The instant the surrounding operation captured.</param>
-    /// <returns>The single outcome that describes the entry's state.</returns>
-    /// <remarks>
-    /// <para>
-    /// The arms are ordered, and the order carries meaning. An explicit revocation is reported
-    /// first, because it is the most specific statement that can be made about an entry and
-    /// because reporting it first makes repeated revocation idempotent instead of re-revoking a
-    /// family on every subsequent attempt.
-    /// </para>
-    /// <para>
-    /// The already-redeemed arm deliberately precedes the expired one. Every rotation stamps a
-    /// fresh expiry — bounded by the family's ceiling, but fresh — so a family's earliest generation
-    /// may be long past its own expiry while its newest is still live, and a replay of that earliest
-    /// generation is therefore a real signal about a live credential. Testing expiry first would
-    /// classify it as merely expired and forfeit the user-wide revocation that the signal calls for.
-    /// Expired material still never yields a replacement, so nothing is weakened by the ordering —
-    /// only the replay detection is strengthened.
-    /// </para>
-    /// <para>
-    /// Once a family's ceiling has passed, this reading reports expiry for every one of its
-    /// generations, because each generation's own expiry is capped at that ceiling. That is what makes
-    /// the family safe to discard at the ceiling: from then on the redeemed-versus-unknown distinction
-    /// cannot change any outcome, since both are refusals and neither yields a replacement.
-    /// </para>
-    /// <para>
-    /// Expiry is exclusive of its own instant: an entry whose expiry equals the captured instant
-    /// is treated as expired, so the boundary fails closed.
-    /// </para>
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>: it reads lifecycle flags that a
-    /// concurrent operation may be mutating.
-    /// </para>
-    /// </remarks>
-    private static RefreshTokenOutcome Classify(RefreshTokenRecord? stored, DateTime asOfUtc) =>
-        stored switch
+        if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            null => RefreshTokenOutcome.Unknown,
-            { IsRevoked: true } => RefreshTokenOutcome.Revoked,
-            { IsConsumed: true } => RefreshTokenOutcome.AlreadyUsed,
-            _ when stored.ExpiresAtUtc <= asOfUtc => RefreshTokenOutcome.Expired,
-            _ => RefreshTokenOutcome.Succeeded,
-        };
-
-    /// <summary>
-    /// Revokes every generation of one family.
-    /// </summary>
-    /// <param name="familyId">The family to revoke.</param>
-    /// <returns>
-    /// <see langword="true"/> when this call changed at least one generation from unrevoked to
-    /// revoked; <see langword="false"/> when the family is unknown or was already fully revoked.
-    /// </returns>
-    /// <remarks>
-    /// Reporting whether anything actually changed is what lets <see cref="Revoke"/> distinguish
-    /// a revocation it performed from one that had already happened, without any caller having to
-    /// inspect internal state to determine it. Expiry is not consulted: revoking an entry that
-    /// has already expired costs nothing and keeps the family's state uniform.
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>.
-    /// </para>
-    /// </remarks>
-    private bool RevokeFamily(long familyId)
-    {
-        var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
-        if (familyDigests is null)
-        {
-            return false;
+            return RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown);
         }
 
-        var revokedAny = false;
-
-        foreach (var familyDigest in familyDigests)
-        {
-            var member = _recordsByDigest.GetValueOrDefault(familyDigest);
-            if (member is null || member.IsRevoked)
-            {
-                continue;
-            }
-
-            member.MarkRevoked();
-
-            // A revoked entry can never be redeemed, so its snapshot is released at the same moment
-            // it becomes unusable. Logout and administrative reset both reach this line.
-            member.DiscardSubject();
-            revokedAny = true;
-        }
-
-        return revokedAny;
-    }
-
-    /// <summary>
-    /// Revokes every family belonging to one user, ending every session that user holds.
-    /// </summary>
-    /// <param name="userId">Numeric key of the user whose families are to be revoked.</param>
-    /// <returns>
-    /// <see langword="true"/> when this call changed at least one generation from unrevoked to
-    /// revoked; <see langword="false"/> when the user holds no family, or every family was already
-    /// fully revoked.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// Two callers require this, and neither is a convenience. A detected replay must end every
-    /// session the user holds, because a replay proves a token was copied without revealing which
-    /// session the copy came from. An administrative credential reset must do the same, or the reset
-    /// would leave an existing session renewable by whoever prompted the reset.
-    /// </para>
-    /// <para>
-    /// Idempotent by construction: it reports whether anything changed rather than whether anything
-    /// was found, so calling it for a user with no families succeeds and reports no change. The
-    /// families are read through the user index rather than by scanning, and the index is not
-    /// modified here — a revoked family stays indexed until its ceiling passes, so a replay against
-    /// one of its generations is still recognised as a replay rather than as an unknown token.
-    /// </para>
-    /// <para>
-    /// The numeric key is used exactly as supplied. Both zero and negative one are legitimate account
-    /// keys in this schema, so neither is treated as meaning "no user"; a key that belongs to nobody
-    /// simply matches no family.
-    /// </para>
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>. The public
-    /// <see cref="RevokeAllForUser(int)"/> takes the gate and delegates here.
-    /// </para>
-    /// </remarks>
-    private bool RevokeAllForUserCore(int userId)
-    {
-        var userFamilies = _familiesByUser.GetValueOrDefault(userId);
-        if (userFamilies is null)
-        {
-            return false;
-        }
-
-        var revokedAny = false;
-
-        foreach (var familyId in userFamilies)
-        {
-            // Deliberately not short-circuited on the first success: every family must be revoked,
-            // so the accumulated flag is combined rather than used to stop the walk.
-            revokedAny |= RevokeFamily(familyId);
-        }
-
-        return revokedAny;
-    }
-
-    /// <summary>
-    /// Releases one family's oldest non-redeemable generations, keeping its retained history within
-    /// <see cref="RetainedGenerationsPerFamily"/>.
-    /// </summary>
-    /// <param name="familyId">The family whose history is being trimmed.</param>
-    /// <remarks>
-    /// <para>
-    /// M-14: this is the whole of what bounds a rotating session's footprint. Redemption retains the
-    /// entry it consumed so a later replay is recognisable, and adds a replacement beside it, so without
-    /// this a session that rotated often enough held one entry per exchange until its family's ceiling
-    /// elapsed. Trimming here converts that into a steady state: past the window, each exchange releases
-    /// as much as it adds.
-    /// </para>
-    /// <para>
-    /// Only entries that can no longer be redeemed are released - consumed, revoked, or already gone.
-    /// A redeemable entry is skipped wherever it appears, so this can never end a session or invalidate
-    /// material a caller is holding, which is why it is safe to run on the redemption path itself.
-    /// </para>
-    /// <para>
-    /// A family always keeps at least its live generation, because this runs while the presented token
-    /// is still unconsumed and the window is greater than one. That matters beyond tidiness: an empty
-    /// family reports no ceiling and would be treated as unconditionally prunable by
-    /// <see cref="Prune"/>, so emptying one here would drop a live session's family from both indexes.
-    /// </para>
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>: it mutates the entry store and the family index.
-    /// </para>
-    /// </remarks>
-    private void TrimFamilyHistory(long familyId)
-    {
-        var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
-        if (familyDigests is null || familyDigests.Count <= RetainedGenerationsPerFamily)
-        {
-            return;
-        }
-
-        var removable = familyDigests.Count - RetainedGenerationsPerFamily;
-        var removed = 0;
-        var index = 0;
-
-        // The list is in generation order, so walking from the front releases the oldest history first
-        // and leaves the most recent generations - the only ones a replay could plausibly present - in
-        // place.
-        while (index < familyDigests.Count && removed < removable)
-        {
-            var candidate = familyDigests[index];
-            var member = _recordsByDigest.GetValueOrDefault(candidate);
-
-            // Only history is released. An entry that could still be redeemed is passed over wherever it
-            // sits in the order, so trimming can never end a live session or discard the generation the
-            // legitimate caller is holding. A digest whose record has already gone is dropped from the
-            // index too, so the index cannot outlive what it points at.
-            if (member is null || member.IsConsumed || member.IsRevoked)
-            {
-                _recordsByDigest.Remove(candidate);
-                familyDigests.RemoveAt(index);
-                removed++;
-                continue;
-            }
-
-            index++;
-        }
-    }
-
-    /// <summary>
-    /// Discards every family whose absolute ceiling has passed, releasing its entries, its family
-    /// index and its place in the user index.
-    /// </summary>
-    /// <param name="asOfUtc">The instant the surrounding operation captured.</param>
-    /// <remarks>
-    /// <para>
-    /// Pruning at the ceiling — and only at the ceiling — is what makes bounded retention safe.
-    /// Every generation of such a family is already refused on expiry, so forgetting it cannot turn
-    /// a rejection into an acceptance; the single observable consequence is that a much later
-    /// presentation of one of its tokens is reported as unknown rather than as already used, and
-    /// both are refusals. Removing an entry any earlier than that WOULD be a security regression,
-    /// because it would make a replay of a redeemed token indistinguishable from an unknown one
-    /// while the rest of its family was still live.
-    /// </para>
-    /// <para>
-    /// The walk stops at the first family that has not reached its ceiling, which is correct because
-    /// the queue is in creation order and every ceiling is one fixed interval after its creation. No
-    /// full scan of the store happens here, and the work done is proportional to the number of
-    /// families actually removed.
-    /// </para>
-    /// <para>
-    /// A family whose entries have all somehow gone is still dequeued and still cleaned out of both
-    /// indexes, so a missing record cannot leave the queue stuck at its front and stall pruning
-    /// permanently.
-    /// </para>
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>: it mutates every container.
-    /// </para>
-    /// </remarks>
-    private void Prune(DateTime asOfUtc)
-    {
-        while (_familiesInCreationOrder.TryPeek(out var familyId))
-        {
-            var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
-
-            // The ceiling is read from any surviving generation, because every generation of a
-            // family carries the same one. A family with no surviving generation is treated as
-            // prunable so the queue can always make progress.
-            var ceilingUtc = FindFamilyCeiling(familyDigests);
-            if (ceilingUtc > asOfUtc)
-            {
-                break;
-            }
-
-            _familiesInCreationOrder.Dequeue();
-
-            if (familyDigests is not null)
-            {
-                foreach (var familyDigest in familyDigests)
-                {
-                    _recordsByDigest.Remove(familyDigest);
-                }
-
-                _digestsByFamily.Remove(familyId);
-            }
-
-            RemoveFamilyFromUserIndex(familyId);
-        }
-    }
-
-    /// <summary>
-    /// Reports the absolute ceiling shared by a family's generations, or the earliest representable
-    /// instant when the family has no surviving generation.
-    /// </summary>
-    /// <param name="familyDigests">Digests of the family's generations, or <see langword="null"/>.</param>
-    /// <returns>The family's ceiling, or <see cref="DateTime.MinValue"/> when it has none left.</returns>
-    /// <remarks>
-    /// Returning the earliest representable instant for an empty family is what makes such a family
-    /// unconditionally prunable, which is the behaviour <see cref="Prune"/> depends on to keep making
-    /// progress. Must be called while holding <see cref="_gate"/>.
-    /// </remarks>
-    private DateTime FindFamilyCeiling(List<string>? familyDigests)
-    {
-        if (familyDigests is null)
-        {
-            return DateTime.MinValue;
-        }
-
-        foreach (var familyDigest in familyDigests)
-        {
-            var member = _recordsByDigest.GetValueOrDefault(familyDigest);
-            if (member is not null)
-            {
-                return member.FamilyExpiresAtUtc;
-            }
-        }
-
-        return DateTime.MinValue;
-    }
-
-    /// <summary>
-    /// Removes one family from the per-user index, and removes the user's entry entirely once it
-    /// holds no families.
-    /// </summary>
-    /// <param name="familyId">The family to remove.</param>
-    /// <remarks>
-    /// Dropping the user's entry when its last family goes is what keeps the index from accumulating
-    /// one permanent entry per account that ever signed in. The search is over users rather than
-    /// direct, because a family identifier does not carry its owner; the index is small — one entry
-    /// per user with a live or recently expired family — and this runs only while a family is
-    /// actually being discarded. Must be called while holding <see cref="_gate"/>.
-    /// </remarks>
-    private void RemoveFamilyFromUserIndex(long familyId)
-    {
-        foreach (var (userId, userFamilies) in _familiesByUser)
-        {
-            if (!userFamilies.Remove(familyId))
-            {
-                continue;
-            }
-
-            if (userFamilies.Count == 0)
-            {
-                _familiesByUser.Remove(userId);
-            }
-
-            return;
-        }
-    }
-
-    /// <summary>
-    /// Creates one fresh token, records its digest against a new entry, and returns the raw
-    /// token.
-    /// </summary>
-    /// <param name="familyId">The family the new entry belongs to.</param>
-    /// <param name="generation">The new entry's generation number within that family.</param>
-    /// <param name="expiresAtUtc">The absolute instant after which the new token is
-    /// expired.</param>
-    /// <param name="familyExpiresAtUtc">The ceiling shared by every generation of the family, carried
-    /// forward unchanged rather than recalculated.</param>
-    /// <param name="subject">The snapshot recorded against the new entry.</param>
-    /// <returns>
-    /// The raw token, which the caller returns onward exactly once. It is not retained here.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// The loop regenerates on a digest that is already present rather than overwriting the entry
-    /// that holds it. Overwriting would silently invalidate an unrelated caller's token, and —
-    /// worse — would erase a redeemed entry that replay detection depends on. At 256 bits the
-    /// loop is not expected to iterate in the lifetime of any deployment; it exists so that the
-    /// impossible case is handled correctly rather than assumed away.
-    /// </para>
-    /// <para>
-    /// Generation is a 64-bit counter, so incrementing it cannot overflow within any physically
-    /// realisable number of rotations, and no saturating guard is needed on the caller's
-    /// increment.
-    /// </para>
-    /// <para>
-    /// The family ceiling is supplied rather than computed here, and that is the whole mechanism by
-    /// which rotation cannot extend a session without end: a rotation passes forward the ceiling it
-    /// read from the entry it is replacing, so every generation of a family records the same one and
-    /// no generation can move it. Recording it per entry rather than in a separate family table also
-    /// means the two can never disagree, and that pruning can recover a family's ceiling from any
-    /// surviving generation.
-    /// </para>
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>: it both probes and mutates both
-    /// dictionaries, and generating the token inside the gate is what makes the probe and the
-    /// insertion one indivisible step. Generation and digesting are pure in-memory work measured
-    /// in microseconds, so holding the gate across them costs nothing worth reclaiming.
-    /// </para>
-    /// </remarks>
-    private string CreateAndStore(
-        long familyId,
-        long generation,
-        DateTime expiresAtUtc,
-        DateTime familyExpiresAtUtc,
-        RefreshTokenSubject subject)
-    {
-        string rawToken;
-        string digest;
-
-        do
-        {
-            rawToken = CreateRawToken();
-            digest = ComputeDigest(rawToken);
-        }
-        while (_recordsByDigest.ContainsKey(digest));
-
-        _recordsByDigest.Add(
-            digest,
-            new RefreshTokenRecord(
-                familyId,
-                generation,
-                expiresAtUtc,
-                familyExpiresAtUtc,
-                subject));
-
-        var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
-        if (familyDigests is null)
-        {
-            familyDigests = new List<string>();
-            _digestsByFamily[familyId] = familyDigests;
-        }
-
-        familyDigests.Add(digest);
-
-        return rawToken;
-    }
-
-    /// <summary>
-    /// Forgets a family's oldest spent generations once more than
-    /// <see cref="MaximumRetainedSpentGenerationsPerFamily"/> of them are being retained.
-    /// </summary>
-    /// <param name="familyId">The family whose retained history is to be bounded.</param>
-    /// <remarks>
-    /// <para>
-    /// This is the bound that stops rotation growing the store without limit; the reasoning, the
-    /// arithmetic and the security cost are all recorded on
-    /// <see cref="MaximumRetainedSpentGenerationsPerFamily"/> and are not repeated here.
-    /// </para>
-    /// <para>
-    /// <b>Only spent generations are candidates.</b> An entry that is neither consumed nor revoked is
-    /// redeemable, and removing one would silently destroy a live session - so the test is on the
-    /// entry's own flags rather than on its position in the family. Nothing here relies on the live
-    /// generation being last: a family under revocation has every generation flagged, and a family
-    /// mid-rotation has exactly one that is not.
-    /// </para>
-    /// <para>
-    /// <b>Oldest first.</b> The family's digest list is append-ordered, so walking it from the front
-    /// is walking the family in generation order, and the generations forgotten are always the ones
-    /// whose replay is least likely to still be in flight.
-    /// </para>
-    /// <para>
-    /// <b>Both indexes stay consistent.</b> A digest removed from the record dictionary is removed
-    /// from the family list in the same pass, so no family list can come to name a digest the store no
-    /// longer holds. The family itself is never emptied: the live generation is not a candidate, and
-    /// the retained remainder is left in place, so pruning can still recover the family's ceiling from
-    /// a surviving generation. The per-user family index is untouched, because trimming removes
-    /// generations and never a family.
-    /// </para>
-    /// <para>
-    /// Must be called while holding <see cref="_gate"/>: it mutates both dictionaries.
-    /// </para>
-    /// </remarks>
-    private void TrimSpentGenerations(long familyId)
-    {
-        var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
-        if (familyDigests is null)
-        {
-            return;
-        }
-
-        var spentCount = 0;
-        foreach (var familyDigest in familyDigests)
-        {
-            var member = _recordsByDigest.GetValueOrDefault(familyDigest);
-            if (member is not null && (member.IsConsumed || member.IsRevoked))
-            {
-                spentCount++;
-            }
-        }
-
-        var surplus = spentCount - MaximumRetainedSpentGenerationsPerFamily;
-        if (surplus <= 0)
-        {
-            return;
-        }
-
-        // A single pass from the front, removing exactly the surplus. RemoveAll is not used because
-        // the predicate would have to carry a mutable counter, and a counting predicate inside a
-        // removal is precisely the kind of construct whose behaviour depends on an enumeration order
-        // the method does not promise.
-        var index = 0;
-        while (index < familyDigests.Count && surplus > 0)
-        {
-            var familyDigest = familyDigests[index];
-            var member = _recordsByDigest.GetValueOrDefault(familyDigest);
-
-            if (member is null || member.IsConsumed || member.IsRevoked)
-            {
-                _recordsByDigest.Remove(familyDigest);
-                familyDigests.RemoveAt(index);
-                surplus--;
-
-                // The list has shifted down onto this index, so it is not advanced.
-                continue;
-            }
-
-            index++;
-        }
-    }
-
-    /// <summary>
-    /// Draws <see cref="TokenByteLength"/> bytes from the platform's cryptographic generator and
-    /// renders them as an unpadded, URL-safe Base64 string.
-    /// </summary>
-    /// <returns>An opaque, transport-safe token of <see cref="TokenCharacterLength"/>
-    /// characters.</returns>
-    /// <remarks>
-    /// <para>
-    /// The generator is the platform's cryptographic one. A general-purpose pseudo-random source
-    /// would be seeded predictably enough to make tokens guessable, and is never acceptable for
-    /// credential material; nor is a globally unique identifier, which encodes version and
-    /// variant bits and so carries well below its nominal width in unpredictability.
-    /// </para>
-    /// <para>
-    /// The encoding substitutes the two Base64 characters that require escaping in a URL and
-    /// drops the padding, leaving an alphabet of letters, digits, hyphen and underscore. Such a
-    /// value survives a header, a JSON body and a query string without further encoding, and it
-    /// is opaque: it carries no identifier, no timestamp and no structure a holder could parse or
-    /// forge. The transformation uses only base-class-library members, and the entropy buffer is
-    /// cleared as soon as it has been encoded so that one copy of the material leaves memory
-    /// immediately instead of waiting for collection.
-    /// </para>
-    /// </remarks>
-    private static string CreateRawToken()
-    {
-        var entropy = RandomNumberGenerator.GetBytes(TokenByteLength);
+        byte[] digest = Digest(refreshToken);
+        byte[] clientDigest = Digest(clientBinding);
+        DateTime now = Utc(_clock.UtcNow);
 
         try
         {
-            return Convert.ToBase64String(entropy)
-                .Replace('+', '-')
-                .Replace('/', '_')
-                .TrimEnd('=');
+            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using SqlTransaction transaction = (SqlTransaction)await connection
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false);
+
+            StoredToken? stored = await ReadForUpdateAsync(
+                    connection,
+                    transaction,
+                    digest,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (stored is null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown);
+            }
+
+            RefreshTokenOutcome outcome = Classify(stored, clientDigest, now);
+            if (outcome == RefreshTokenOutcome.AlreadyUsed)
+            {
+                await RevokeAllForUserCoreAsync(
+                        connection,
+                        transaction,
+                        stored.UserId,
+                        now,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            return outcome == RefreshTokenOutcome.Succeeded
+                ? RefreshTokenInspection.Succeeded(
+                    new RefreshTokenSubject(stored.UserId, stored.PortalId),
+                    stored.ExpiresAtUtc)
+                : RefreshTokenInspection.Failed(outcome, stored.UserId);
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            return RefreshTokenInspection.Failed(RefreshTokenOutcome.StoreUnavailable);
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(entropy);
+            CryptographicOperations.ZeroMemory(digest);
+            CryptographicOperations.ZeroMemory(clientDigest);
         }
     }
 
-    /// <summary>
-    /// Derives the deterministic one-way digest that a token is stored under.
-    /// </summary>
-    /// <param name="token">The raw token to digest.</param>
-    /// <returns>The digest, rendered as fixed-case hexadecimal.</returns>
-    /// <remarks>
-    /// SHA-256 over the token's textual bytes, which makes the digest of a presented token
-    /// identical to the digest computed when it was issued. Deliberately unsalted and uniterated:
-    /// those defences exist to slow down guessing a low-entropy secret, and this input is 256
-    /// uniformly random bits, so there is nothing to guess and a per-entry salt would only make
-    /// the value unusable as a lookup key. Being one-way is the property that matters — the
-    /// digest cannot be turned back into the token, so the stored state is not a credential.
-    /// </remarks>
-    private static string ComputeDigest(string token) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
-
-    /// <summary>
-    /// Converts presented material into the key it would be stored under, or reports that it
-    /// cannot be one of this store's tokens.
-    /// </summary>
-    /// <param name="presentedToken">The material a caller presented.</param>
-    /// <returns>
-    /// The lookup key, or <see langword="null"/> when the material is absent, empty or not the
-    /// length this store issues.
-    /// </returns>
-    /// <remarks>
-    /// Absent and empty material are treated identically and refused, matching the contract
-    /// stated on the refresh request DTO. The length test is not validation for its own sake:
-    /// every token this store issues has exactly one length, so anything else cannot match an
-    /// entry, and rejecting it before digesting means an anonymous caller cannot make the process
-    /// hash arbitrarily large input. The rejection is value-neutral — every non-matching shape
-    /// produces the same unknown outcome, so nothing is revealed about what a real token looks
-    /// like beyond its length, which a legitimate holder already knows.
-    /// </remarks>
-    private static string? ComputeLookupKey(string presentedToken) =>
-        string.IsNullOrEmpty(presentedToken) || presentedToken.Length != TokenCharacterLength
-            ? null
-            : ComputeDigest(presentedToken);
-
-    /// <summary>
-    /// Adds the configured refresh lifetime to an instant, saturating rather than overflowing.
-    /// </summary>
-    /// <param name="instant">The instant to measure from, in Coordinated Universal Time.</param>
-    /// <returns>The absolute expiry instant, in Coordinated Universal Time.</returns>
-    /// <remarks>
-    /// The constructor already refuses a lifetime too large to represent as an interval, so the
-    /// only remaining edge is an instant so late that adding the lifetime would leave the
-    /// representable range. Saturating at the maximum instant keeps that case from faulting a
-    /// request that has done nothing wrong, and a token expiring at the end of representable time
-    /// is indistinguishable in practice from one expiring a few days from now. The saturated
-    /// value is stamped as Coordinated Universal Time so that every expiry this type records has
-    /// the same kind, regardless of which branch produced it.
-    /// </remarks>
-    private DateTime AddLifetime(DateTime instant)
+    /// <inheritdoc />
+    public async Task<RefreshTokenRotationResult> RotateAsync(
+        string refreshToken,
+        string clientBinding,
+        CancellationToken cancellationToken = default)
     {
-        var headroom = DateTime.MaxValue - instant;
+        ArgumentNullException.ThrowIfNull(refreshToken);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientBinding);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return _refreshTokenLifetime < headroom
-            ? instant + _refreshTokenLifetime
-            : DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc);
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown);
+        }
+
+        byte[] digest = Digest(refreshToken);
+        byte[] clientDigest = Digest(clientBinding);
+        DateTime now = Utc(_clock.UtcNow);
+
+        try
+        {
+            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using SqlTransaction transaction = (SqlTransaction)await connection
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false);
+
+            StoredToken? stored = await ReadForUpdateAsync(
+                    connection,
+                    transaction,
+                    digest,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (stored is null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown);
+            }
+
+            RefreshTokenOutcome outcome = Classify(stored, clientDigest, now);
+            if (outcome != RefreshTokenOutcome.Succeeded)
+            {
+                if (outcome == RefreshTokenOutcome.AlreadyUsed)
+                {
+                    await RevokeAllForUserCoreAsync(
+                            connection,
+                            transaction,
+                            stored.UserId,
+                            now,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return RefreshTokenRotationResult.Failed(outcome);
+            }
+
+            TokenMaterial replacement = CreateToken();
+            try
+            {
+                await MarkConsumedAsync(
+                        connection,
+                        transaction,
+                        digest,
+                        clientDigest,
+                        now,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                DateTime replacementExpiresAtUtc = Earlier(
+                    now.Add(_slidingLifetime),
+                    stored.FamilyExpiresAtUtc);
+
+                await InsertReplacementAsync(
+                        connection,
+                        transaction,
+                        replacement.Digest,
+                        stored,
+                        now,
+                        replacementExpiresAtUtc,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                await PruneExpiredAsync(connection, transaction, now, cancellationToken)
+                    .ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                RefreshTokenSubject subject = new(stored.UserId, stored.PortalId);
+                return RefreshTokenRotationResult.Succeeded(
+                    replacement.RawToken,
+                    replacementExpiresAtUtc,
+                    subject);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(replacement.Digest);
+            }
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.StoreUnavailable);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+            CryptographicOperations.ZeroMemory(clientDigest);
+        }
     }
 
-    /// <summary>
-    /// Adds the configured absolute family lifetime to an instant, saturating rather than
-    /// overflowing.
-    /// </summary>
-    /// <param name="instant">The instant a family was created, in Coordinated Universal Time.</param>
-    /// <returns>The family's ceiling instant, in Coordinated Universal Time.</returns>
-    /// <remarks>
-    /// Separate from the sliding calculation because the two intervals answer different questions and
-    /// must be able to differ: one bounds how long a single token stays redeemable, the other bounds
-    /// how long the session it belongs to may be renewed for. Saturation and the stamped kind follow
-    /// the same reasoning set down on the sliding calculation, so a family created at the very end of
-    /// representable time yields a ceiling rather than a fault.
-    /// </remarks>
-    private DateTime AddAbsoluteLifetime(DateTime instant)
+    /// <inheritdoc />
+    public async Task<RefreshTokenOutcome> RevokeAsync(
+        string refreshToken,
+        CancellationToken cancellationToken = default)
     {
-        var headroom = DateTime.MaxValue - instant;
+        ArgumentNullException.ThrowIfNull(refreshToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return _refreshTokenAbsoluteLifetime < headroom
-            ? instant + _refreshTokenAbsoluteLifetime
-            : DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc);
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            return RefreshTokenOutcome.Unknown;
+        }
+
+        byte[] digest = Digest(refreshToken);
+        DateTime now = Utc(_clock.UtcNow);
+
+        try
+        {
+            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using SqlTransaction transaction = (SqlTransaction)await connection
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false);
+
+            StoredToken? stored = await ReadForUpdateAsync(
+                    connection,
+                    transaction,
+                    digest,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (stored is null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return RefreshTokenOutcome.Unknown;
+            }
+
+            int changed = await RevokeFamilyCoreAsync(
+                    connection,
+                    transaction,
+                    stored.FamilyId,
+                    now,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return changed == 0
+                ? RefreshTokenOutcome.AlreadyRevoked
+                : RefreshTokenOutcome.Succeeded;
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            return RefreshTokenOutcome.StoreUnavailable;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
     }
 
-    /// <summary>
-    /// Reports the earlier of two instants.
-    /// </summary>
-    /// <param name="first">The first instant to compare.</param>
-    /// <param name="second">The second instant to compare.</param>
-    /// <returns>Whichever of the two comes first.</returns>
-    /// <remarks>
-    /// Every expiry this store records is the earlier of the sliding expiry and the family ceiling,
-    /// so that the two bounds compose instead of competing: a token stops being redeemable when
-    /// either has passed, and the ceiling therefore cannot be overrun by a rotation that happens to
-    /// arrive shortly before it. Reading it as a named comparison rather than as a conditional at
-    /// each call site is what keeps the rule visibly identical at issue and at rotation.
-    /// </remarks>
-    private static DateTime Earlier(DateTime first, DateTime second) =>
-        first <= second ? first : second;
-
-    /// <summary>
-    /// One stored refresh token: its family, its generation, its expiry, the snapshot recorded
-    /// against it, and its lifecycle flags.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Nested and private, so an instance cannot be handed to a caller even accidentally: callers
-    /// receive the immutable result types declared alongside
-    /// <see cref="IRefreshTokenStore"/> instead. Notice what the type does not declare — there is
-    /// no token field and no digest field. The digest lives only as the key of the dictionary this
-    /// entry sits in and as an entry in the family index, and the token itself is never written
-    /// down anywhere.
-    /// </para>
-    /// <para>
-    /// Everything identifying is immutable; only the two lifecycle flags and the snapshot change,
-    /// all three change in one direction only, and all three change exclusively under the enclosing
-    /// store's gate. A flag that could be cleared would let revoked material become usable again and
-    /// a snapshot that could be restored would defeat the point of releasing it, so no transition
-    /// here has an inverse.
-    /// </para>
-    /// </remarks>
-    private sealed class RefreshTokenRecord
+    /// <inheritdoc />
+    public async Task<RefreshTokenOutcome> RevokeAllForUserAsync(
+        int userId,
+        CancellationToken cancellationToken = default)
     {
-        public RefreshTokenRecord(
-            long familyId,
-            long generation,
+        cancellationToken.ThrowIfCancellationRequested();
+        DateTime now = Utc(_clock.UtcNow);
+
+        try
+        {
+            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using SqlTransaction transaction = (SqlTransaction)await connection
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false);
+
+            int known = await CountForUserAsync(
+                    connection,
+                    transaction,
+                    userId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (known == 0)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return RefreshTokenOutcome.Unknown;
+            }
+
+            int changed = await RevokeAllForUserCoreAsync(
+                    connection,
+                    transaction,
+                    userId,
+                    now,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return changed == 0
+                ? RefreshTokenOutcome.AlreadyRevoked
+                : RefreshTokenOutcome.Succeeded;
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            return RefreshTokenOutcome.StoreUnavailable;
+        }
+    }
+
+    private static RefreshTokenOutcome Classify(
+        StoredToken stored,
+        ReadOnlySpan<byte> clientDigest,
+        DateTime now)
+    {
+        if (stored.RevokedAtUtc is not null)
+        {
+            return RefreshTokenOutcome.Revoked;
+        }
+
+        if (stored.FamilyExpiresAtUtc <= now)
+        {
+            return RefreshTokenOutcome.Expired;
+        }
+
+        if (stored.ConsumedAtUtc is not null)
+        {
+            if (stored.ConsumedClientDigest is not null
+                && now >= stored.ConsumedAtUtc.Value
+                && now - stored.ConsumedAtUtc.Value <= ConcurrentUseGrace
+                && CryptographicOperations.FixedTimeEquals(
+                    stored.ConsumedClientDigest,
+                    clientDigest))
+            {
+                return RefreshTokenOutcome.ConcurrentUse;
+            }
+
+            // A consumed fingerprint remains a replay signal until the family's absolute ceiling,
+            // even after that generation's own sliding expiry. Checking the per-generation expiry
+            // first would recreate the detection gap SEC-039 removed.
+            return RefreshTokenOutcome.AlreadyUsed;
+        }
+
+        return stored.ExpiresAtUtc <= now
+            ? RefreshTokenOutcome.Expired
+            : RefreshTokenOutcome.Succeeded;
+    }
+
+    private async Task<SqlConnection> OpenAsync(CancellationToken cancellationToken)
+    {
+        SqlConnection connection = new(_connectionString);
+
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<StoredToken?> ReadForUpdateAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        byte[] digest,
+        CancellationToken cancellationToken)
+    {
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            SELECT [FamilyId], [Generation], [UserId], [PortalId],
+                   [ExpiresAtUtc], [FamilyExpiresAtUtc], [ConsumedAtUtc],
+                   [ConsumedClientDigest], [RevokedAtUtc]
+            FROM {TableName} WITH (UPDLOCK, HOLDLOCK)
+            WHERE [TokenDigest] = @digest;
+            """);
+        Binary(command, "@digest", digest);
+
+        await using SqlDataReader reader = await command
+            .ExecuteReaderAsync(CommandBehavior.SingleRow, cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return new StoredToken(
+            reader.GetGuid(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            Utc(reader.GetDateTime(4)),
+            Utc(reader.GetDateTime(5)),
+            reader.IsDBNull(6) ? null : Utc(reader.GetDateTime(6)),
+            reader.IsDBNull(7) ? null : reader.GetFieldValue<byte[]>(7),
+            reader.IsDBNull(8) ? null : Utc(reader.GetDateTime(8)));
+    }
+
+    private static async Task MarkConsumedAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        byte[] digest,
+        byte[] clientDigest,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            UPDATE {TableName}
+            SET [ConsumedAtUtc] = @now,
+                [ConsumedClientDigest] = @clientDigest
+            WHERE [TokenDigest] = @digest
+              AND [ConsumedAtUtc] IS NULL
+              AND [RevokedAtUtc] IS NULL;
+            """);
+        Binary(command, "@digest", digest);
+        Binary(command, "@clientDigest", clientDigest);
+        DateTimeParameter(command, "@now", now);
+
+        int changed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        if (changed != 1)
+        {
+            throw new InvalidOperationException(
+                "The refresh-token row changed after it was locked for rotation.");
+        }
+    }
+
+    private static async Task InsertReplacementAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        byte[] replacementDigest,
+        StoredToken stored,
+        DateTime now,
+        DateTime expiresAtUtc,
+        CancellationToken cancellationToken)
+    {
+        if (stored.Generation == int.MaxValue)
+        {
+            throw new InvalidOperationException(
+                "The refresh-token family exhausted its generation counter.");
+        }
+
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            INSERT INTO {TableName}
+                ([TokenDigest], [FamilyId], [Generation], [UserId], [PortalId],
+                 [CreatedAtUtc], [ExpiresAtUtc], [FamilyExpiresAtUtc],
+                 [ConsumedAtUtc], [ConsumedClientDigest], [RevokedAtUtc])
+            VALUES
+                (@digest, @familyId, @generation, @userId, @portalId,
+                 @now, @expires, @familyExpires, NULL, NULL, NULL);
+            """);
+        Binary(command, "@digest", replacementDigest);
+        command.Parameters.Add(new SqlParameter("@familyId", SqlDbType.UniqueIdentifier)
+        {
+            Value = stored.FamilyId,
+        });
+        command.Parameters.Add(new SqlParameter("@generation", SqlDbType.Int)
+        {
+            Value = checked(stored.Generation + 1),
+        });
+        command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
+        {
+            Value = stored.UserId,
+        });
+        command.Parameters.Add(new SqlParameter("@portalId", SqlDbType.Int)
+        {
+            Value = stored.PortalId,
+        });
+        DateTimeParameter(command, "@now", now);
+        DateTimeParameter(command, "@expires", expiresAtUtc);
+        DateTimeParameter(command, "@familyExpires", stored.FamilyExpiresAtUtc);
+
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> RevokeFamilyCoreAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        Guid familyId,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            UPDATE {TableName}
+            SET [RevokedAtUtc] = @now
+            WHERE [FamilyId] = @familyId
+              AND [RevokedAtUtc] IS NULL;
+            """);
+        command.Parameters.Add(new SqlParameter("@familyId", SqlDbType.UniqueIdentifier)
+        {
+            Value = familyId,
+        });
+        DateTimeParameter(command, "@now", now);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> RevokeAllForUserCoreAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        int userId,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            UPDATE {TableName}
+            SET [RevokedAtUtc] = @now
+            WHERE [UserId] = @userId
+              AND [RevokedAtUtc] IS NULL;
+            """);
+        command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
+        {
+            Value = userId,
+        });
+        DateTimeParameter(command, "@now", now);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> CountForUserAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        int userId,
+        CancellationToken cancellationToken)
+    {
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            SELECT COUNT_BIG(*)
+            FROM {TableName} WITH (UPDLOCK, HOLDLOCK)
+            WHERE [UserId] = @userId;
+            """);
+        command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
+        {
+            Value = userId,
+        });
+
+        object? count = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        long value = count is null or DBNull ? 0 : Convert.ToInt64(count, CultureInfo.InvariantCulture);
+        return value > int.MaxValue ? int.MaxValue : (int)value;
+    }
+
+    private static async Task PruneExpiredAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        await using SqlCommand command = Command(
+            connection,
+            transaction,
+            $"""
+            DELETE TOP ({ExpiredPruneBatchSize})
+            FROM {TableName}
+            WHERE [FamilyExpiresAtUtc] <= @now;
+            """);
+        DateTimeParameter(command, "@now", now);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static SqlCommand Command(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        string commandText)
+    {
+        SqlCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = commandText;
+        return command;
+    }
+
+    private static void Binary(SqlCommand command, string name, byte[] value)
+    {
+        command.Parameters.Add(new SqlParameter(name, SqlDbType.Binary, DigestLength)
+        {
+            Value = value,
+        });
+    }
+
+    private static void DateTimeParameter(SqlCommand command, string name, DateTime value)
+    {
+        command.Parameters.Add(new SqlParameter(name, SqlDbType.DateTime2)
+        {
+            Value = value,
+        });
+    }
+
+    private static TokenMaterial CreateToken()
+    {
+        byte[] random = RandomNumberGenerator.GetBytes(TokenEntropyBytes);
+        try
+        {
+            string raw = Convert.ToBase64String(random)
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+            return new TokenMaterial(raw, Digest(raw));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(random);
+        }
+    }
+
+    private static byte[] Digest(string value)
+    {
+        byte[] source = Encoding.UTF8.GetBytes(value);
+        try
+        {
+            return SHA256.HashData(source);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(source);
+        }
+    }
+
+    private static DateTime Earlier(DateTime left, DateTime right) => left <= right ? left : right;
+
+    private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc
+        ? value
+        : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+
+    private readonly record struct TokenMaterial(string RawToken, byte[] Digest);
+
+    private sealed class StoredToken
+    {
+        public StoredToken(
+            Guid familyId,
+            int generation,
+            int userId,
+            int portalId,
             DateTime expiresAtUtc,
             DateTime familyExpiresAtUtc,
-            RefreshTokenSubject subject)
+            DateTime? consumedAtUtc,
+            byte[]? consumedClientDigest,
+            DateTime? revokedAtUtc)
         {
             FamilyId = familyId;
             Generation = generation;
+            UserId = userId;
+            PortalId = portalId;
             ExpiresAtUtc = expiresAtUtc;
             FamilyExpiresAtUtc = familyExpiresAtUtc;
-
-            // Copied out of the snapshot rather than read through it, because the snapshot is
-            // released once this entry can no longer be redeemed while the owner must outlive it:
-            // user-wide revocation and the per-user index both need to know whose entry this is long
-            // after there is any reason to remember who they are.
-            OwnerUserId = subject.UserId;
-            Subject = subject;
+            ConsumedAtUtc = consumedAtUtc;
+            ConsumedClientDigest = consumedClientDigest;
+            RevokedAtUtc = revokedAtUtc;
         }
 
-        /// <summary>Gets the family this entry belongs to. Revocation applies to all of
-        /// it.</summary>
-        public long FamilyId { get; }
+        public Guid FamilyId { get; }
 
-        /// <summary>Gets this entry's position in its family, counted from zero.</summary>
-        public long Generation { get; }
+        public int Generation { get; }
 
-        /// <summary>Gets the absolute instant at and after which this entry is expired.</summary>
+        public int UserId { get; }
+
+        public int PortalId { get; }
+
         public DateTime ExpiresAtUtc { get; }
 
-        /// <summary>
-        /// Gets the instant at and after which every generation of this entry's family is expired,
-        /// whatever their own expiries say.
-        /// </summary>
-        /// <remarks>
-        /// Identical across every generation of one family and never recalculated, so a rotation
-        /// carries it forward instead of renewing it. This is the bound that stops a continuously
-        /// rotated session from lasting for ever, and it is also the instant at which the family
-        /// becomes safe to forget.
-        /// </remarks>
         public DateTime FamilyExpiresAtUtc { get; }
 
-        /// <summary>
-        /// Gets the numeric key of the account this entry belongs to.
-        /// </summary>
-        /// <remarks>
-        /// Held separately from the snapshot precisely so that it survives the snapshot's release. A
-        /// numeric key is not personal information on its own, whereas the sign-in name and role list
-        /// in the snapshot are, which is why one is kept for the entry's whole life and the other is
-        /// discarded as soon as it can no longer be needed.
-        /// </remarks>
-        public int OwnerUserId { get; }
+        public DateTime? ConsumedAtUtc { get; }
 
-        /// <summary>
-        /// Gets the immutable non-secret snapshot recorded against this entry, or
-        /// <see langword="null"/> once the entry can no longer be redeemed and the snapshot has been
-        /// released.
-        /// </summary>
-        /// <remarks>
-        /// A redeemable entry always holds its snapshot, so a reading that finds nothing here is
-        /// reporting an entry that is spent, revoked or expired — never one that should have been
-        /// honoured.
-        /// </remarks>
-        public RefreshTokenSubject? Subject { get; private set; }
+        public byte[]? ConsumedClientDigest { get; }
 
-        /// <summary>
-        /// Gets a value indicating whether this entry has already been redeemed. A second
-        /// presentation of redeemed material is a replay.
-        /// </summary>
-        public bool IsConsumed { get; private set; }
-
-        /// <summary>
-        /// Gets a value indicating whether this entry has been revoked, whether by a sign-off or
-        /// by the family-wide revocation that follows a detected replay.
-        /// </summary>
-        public bool IsRevoked { get; private set; }
-
-        /// <summary>Marks this entry redeemed. Call only while holding the store's
-        /// gate.</summary>
-        public void MarkConsumed() => IsConsumed = true;
-
-        /// <summary>Marks this entry revoked. Call only while holding the store's gate.</summary>
-        public void MarkRevoked() => IsRevoked = true;
-
-        /// <summary>
-        /// Releases the snapshot recorded against this entry. Call only while holding the store's
-        /// gate, and only once the entry can no longer be redeemed.
-        /// </summary>
-        /// <remarks>
-        /// Retaining a sign-in name and a role list for an entry that can never be honoured again
-        /// serves nothing and lengthens how long personal information sits in memory, so redemption,
-        /// revocation and expiry all release it at the moment they make the entry unusable. What the
-        /// entry keeps afterwards — family, generation, owner key, the two flags and the two expiries
-        /// — is exactly what replay detection, revocation and pruning still need, and no more. The
-        /// operation is deliberately idempotent so that a second revocation of an already-released
-        /// entry is not an error.
-        /// </remarks>
-        public void DiscardSubject() => Subject = null;
+        public DateTime? RevokedAtUtc { get; }
     }
 }

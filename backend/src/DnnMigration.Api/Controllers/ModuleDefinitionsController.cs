@@ -140,7 +140,6 @@ namespace DnnMigration.Api.Controllers;
 [Produces("application/json")]
 public sealed class ModuleDefinitionsController : ControllerBase
 {
-    /// <summary>The catalogue reader this controller delegates to.</summary>
     /// <summary>
     /// Failure code carried as the problem type when the request reached this action without a tenant.
     /// </summary>
@@ -151,6 +150,7 @@ public sealed class ModuleDefinitionsController : ControllerBase
     /// </remarks>
     private const string TenantUnresolvedCode = "portal.tenant_unresolved";
 
+    /// <summary>The catalogue reader this controller delegates to.</summary>
     private readonly IModuleService _modules;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -250,14 +250,11 @@ public sealed class ModuleDefinitionsController : ControllerBase
         // throws rather than returning a placeholder - a placeholder tenant would be silently wrong
         // instead of loudly absent.
         //
-        // THIS GUARD IS DEFENCE IN DEPTH AND IS EXPECTED TO BE UNREACHABLE. An earlier revision of this
-        // comment claimed the class-level policy had already refused an unresolved host, which was not
-        // true: that policy is anchored to the portal named in the route, this route names none, and a
-        // host account passes it from any host name whatsoever. What does refuse first is the tenant
-        // resolution middleware, because this action carries no tenant-optional mark and its route has no
-        // portalId segment - so a request that reaches here has a resolved tenant. The guard stays because
-        // the alternative to an unreachable refusal is an InvalidOperationException from the holder, and a
-        // 500 is a worse answer than a 403 for a condition that is not the caller's fault.
+        // WHAT REFUSES FIRST DEPENDS ON THE CALLER. The tenant-resolution middleware records an unresolved
+        // host and continues. A portal administrator is then refused by the class policy; a host account
+        // passes that policy because host authority is installation-wide and is refused by this guard. The
+        // guard stays because the alternative is an InvalidOperationException from the holder, and a 500 is
+        // a worse answer than a 403 for a condition that is not the caller's fault.
         //
         // The refusal is produced through the shared problem-details path rather than by Forbid(), and with
         // the same failure code the middleware uses. A controller's Forbid() does NOT pass through the

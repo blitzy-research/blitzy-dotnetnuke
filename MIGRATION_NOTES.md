@@ -769,7 +769,7 @@ terminal `UpdateRole` procedure omits the column from its assignment list
 its portal-scoped uniqueness guard on the **insert** branch alone
 (`:L251-L257`, with no equivalent at `:L259-L261`).
 
-**Target behaviour.** `PUT /api/v1/portals/{portalId}/roles/{roleId}` carries a
+**Target behaviour.** `PUT /api/v1/roles/{roleId}` carries a
 required `roleName` and applies it, so a role can be renamed. The same
 portal-scoped uniqueness read the legacy insert branch performed is applied on this
 path, **excluding the role being edited**, and a collision is reported as
@@ -893,42 +893,347 @@ policy and had none.
 
 **Target behaviour, and three decisions.**
 
-- **The allowed-origin list defaults to empty, and credentials are never
-  enabled.** The containerised topology still needs no cross-origin access: the
-  supplied `docker/nginx.conf` proxies `/api/` to the API service, so the browser
-  addresses the API through the same origin that served the application. A named
-  policy exists for the development case; permissive origins combined with
-  credentials are refused outright, because that combination is the standard way
-  a cross-origin policy becomes a vulnerability.
-- **A forwarded host header is deliberately not honoured.** Tenant resolution
-  reads the request host, so trusting a caller-supplied forwarded host would let a
-  caller select which tenant to be served - a direct cross-tenant hazard. The
-  forwarded protocol and client address are handled separately from the host for
-  exactly this reason.
-- **HTTPS redirection is off by default and HSTS is on outside development.**
-  Redirection is deliberately configuration-gated with a default of **off**,
-  because the container health probe requests `/health` over plain HTTP inside the
-  container network: with redirection on, the probe receives a redirect to a port
-  that is not listening, the container is marked unhealthy, and the frontend
-  service - which waits on `service_healthy` - never starts. Transport security is
-  the reverse proxy's responsibility in this topology, and HSTS is emitted so a
-  browser will not downgrade.
+- **The shipped allowed-origin list contains exactly
+  `http://localhost:4200`, and credentials are never enabled.** That explicit
+  local-development origin is declared in `appsettings.json`; compose supplies
+  the same value by default and a deployment may replace it with its own exact
+  origin. If configuration deliberately clears the list, the registered policy
+  contains no origins and therefore refuses every cross-origin caller. The
+  containerised topology still needs no cross-origin access:
+  `docker/nginx.conf` proxies `/api/` to the API service, so the browser
+  addresses the API through the same origin that served the application.
+- **The forwarded protocol and client address ARE honoured; the forwarded host is
+  not.** TLS terminates at the browser-facing edge and the API is reached over
+  plain HTTP on an internal network, so the caller's address and the scheme the
+  browser actually used arrive as headers rather than as properties of the
+  connection. `UseForwardedHeaders()` is therefore installed in the pipeline
+  immediately after the exception handler - ahead of transport security, the
+  correlation and request-logging stages, and the credential rate limiter, each of
+  which reads one of those two values. Without it the limiter partitions every
+  caller behind the proxy into one shared budget, so a single caller can exhaust
+  the credential allowance for everybody, and the transport check cannot see that a
+  request reached the edge in clear text. The forwarded **host** is excluded from
+  the honoured set, because tenant resolution reads the request host and trusting a
+  caller-supplied forwarded host would let a caller select which tenant to be
+  served - a direct cross-tenant hazard. `docker/nginx.conf` sets that host itself,
+  from `$http_host`, so the port survives into the alias lookup.
+  **Trust is explicit and narrow.** With no configuration the framework trusts the
+  loopback address alone, which inside a container means the headers are ignored
+  and the stage is inert, so `appsettings.Production.json` supplies
+  `Proxy:KnownNetworks` as the address range a container runtime allocates its
+  bridge networks from (`172.16.0.0/12`) and the hop limit stays at one. A
+  deployment on a named network, an overlay network, or an orchestrator that
+  assigns addresses from elsewhere replaces that entry with its own; the narrower
+  it is, the less a caller reaching the API directly can claim. A deployment that
+  publishes the API port to the public internet should stop doing so - the proxy is
+  the only intended path - because a directly reachable caller appears as the
+  bridge gateway and would then fall inside the trusted range.
+- **HTTPS redirection is enforced in production, with two named exemptions, and
+  HSTS is on outside development.** The redirect is branched rather than blanket:
+  it is withheld from the anonymous `/health` endpoint, which answers a container
+  health probe over plain HTTP before any credential exists and which the compose
+  topology waits on before starting the frontend, and from a loopback-addressed
+  request, which never traverses a network and so has nothing for a redirect to
+  protect - the same carve-out the framework's own strict transport security makes
+  by default. Every other request, meaning every request addressed by a real host
+  name, must arrive over HTTPS or be redirected until it does; that is what makes a
+  directly reachable plain-HTTP API port unusable for credentials rather than
+  merely discouraged. The target port is configured (`Https:Port`, default 443)
+  because the redirection stage otherwise cannot build a target authority and
+  **logs once and forwards the request unchanged** - a transport control that
+  silently does nothing. The status code is the framework default 307 rather than a
+  permanent redirect, so a deployment that has to answer over plain HTTP again
+  during a certificate replacement is not left unreachable by cached answers.
+- **Transport security that is switched off outside development is announced at
+  startup.** A deployment serving production traffic with neither redirection here
+  nor a TLS-terminating proxy in front carries credentials in clear text while every
+  probe still answers 200, so the composition logs a warning on every start rather
+  than failing to start - refusing would make the correct proxied deployment
+  impossible.
 
-**Operational consequence.** A deployment that terminates TLS at the API rather
-than at a proxy must enable redirection explicitly *and* adjust the health probe.
-A deployment that serves the SPA from a different origin than the API must add
-that origin to the allowed list. The base configuration file names exactly one
-origin, the local development origin `http://localhost:4200`, and no other; the
-shipped container topology overrides even that from the compose file, and the
-policy never enables credentials, so the wildcard-plus-credentials combination is
-unreachable from configuration at all.
+**Operational consequence.** Browser traffic is HTTPS-only, and a deployment
+reached at a real host name **must** provide TLS at the edge - either by fronting
+the SPA container with a TLS-terminating ingress, or by mounting a server fragment
+into `/etc/nginx/transport-policy/` that adds a TLS listener and certificate paths
+to the shipped nginx server. Without either, every browser request is answered
+with a redirect the browser cannot satisfy, which is the intended loud failure
+rather than a silent downgrade to clear text. Certificates are never committed and
+never baked into an image. A deployment that terminates TLS *at the API* instead
+must additionally keep the health endpoint reachable over plain HTTP, which the
+pipeline's exemption already guarantees. A deployment that serves the SPA from a
+different origin than the API must add that origin to the allowed list. The base
+configuration file names exactly one origin, the local development origin
+`http://localhost:4200`, and no other; the shipped container topology overrides
+even that from the compose file, and the policy never enables credentials, so the
+wildcard-plus-credentials combination is unreachable from configuration at all.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Api/Extensions/CorsExtensions.cs`,
 `backend/src/DnnMigration.Api/Extensions/ApplicationBuilderExtensions.cs`,
-`backend/src/DnnMigration.Api/appsettings.Production.json`. The base
-`appsettings.json` is strict RFC 8259 and therefore carries no inline annotation;
-its contract is recorded under *Configuration and options* instead.
+`backend/src/DnnMigration.Api/Extensions/ServiceCollectionExtensions.cs`,
+`docker/docker-compose.yml`, `docker/nginx.conf`,
+`docker/nginx.tls.conf.example`, `docker/.env.example`. The base
+`appsettings.json` and `appsettings.Production.json` are strict RFC 8259 and
+therefore carry no inline annotation; their contract is recorded under
+*Configuration and options* instead.
+
+**Proved by.** `backend/tests/DnnMigration.IntegrationTests/Api/TransportSecurityTests.cs`
+- a cleartext API request is redirected, the health probe is not, a request
+forwarded as https by a trusted hop is served rather than redirected, and the same
+header from an untrusted hop is ignored.
+
+### Content-security headers, and the TLS termination the proxy can now perform
+
+**Legacy behaviour.** The legacy application emitted no security response headers
+of any kind. There was no content security policy, no framing policy and no
+transport policy, because ASP.NET 2.0 shipped none and the application added none.
+
+**Target behaviour.** `docker/nginx.conf` - which AAP 0.9.6 makes the home of the
+"content-security headers" requirement - now emits five response headers on every
+response, on the document, on the static assets and on the SPA fallback alike:
+`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+**`Content-Security-Policy`** and **`Strict-Transport-Security`**. Four points are
+worth recording:
+
+- **The policy is written to the bundle this image actually serves.**
+  `script-src 'self'` with no `'unsafe-inline'` and no `'unsafe-eval'`, because the
+  Angular production build emits external hashed bundles and no inline script -
+  that directive is what stops an injected `<script>` from executing.
+  `style-src 'self' 'unsafe-inline'` is unavoidable and measured rather than
+  assumed: Angular injects component styles as inline `<style>` elements at run
+  time, so a policy without it renders the application unstyled. Inline *style* is
+  a far narrower concession than inline *script*, and it is confined to that one
+  directive. `connect-src 'self'` is sufficient only because the production
+  `apiBaseUrl` is the relative `/api/v1` proxied by this same origin.
+- **Transport security is emitted only over TLS.** The header is meaningless on a
+  plain-HTTP response, so its value is mapped from `$scheme` and nginx omits an
+  `add_header` whose value is empty. The same configuration is therefore correct
+  both for the plain-HTTP listener gate 7 probes and for a TLS server, and
+  mounting a certificate is what starts the policy. `preload` is deliberately
+  excluded: it commits an entire domain, including sibling hosts, and that is an
+  operator's decision about a domain rather than a container's about itself.
+- **Both values are declared once, in `map` directives, and referenced.** nginx's
+  inheritance rule makes an `add_header` inside a `location` *replace* the
+  server-level set, so every location that sets a header of its own must restate
+  the others; restating a policy string by hand three times is how three copies
+  drift apart.
+- **TLS can now be terminated in the delivered proxy.** The `http` block ends with
+  `include /etc/nginx/tls.d/*.conf;`. A wildcard include matching nothing is not an
+  error, so the shipped image starts with no certificate - which is what keeps the
+  plain-HTTP gate working - and the *same image* serves HTTPS the moment a
+  deployment mounts `docker/nginx.tls.conf.example` alongside a certificate and
+  key. A `listen 443 ssl` directive naming an absent certificate makes nginx fail
+  to **start**, not to serve, which is why the TLS server is a mounted file rather
+  than a block in the main configuration. No certificate, key or passphrase is
+  committed to this repository.
+
+**What is deliberately still absent.** No cross-origin response header, because
+every request is same-origin through the proxy; no rate limiting, which belongs to
+the API; no health location, because the API's probe is anonymous on its own port
+and is probed directly.
+
+### The permitted delta from the supplied container examples
+
+**The conflict, stated plainly.** AAP 0.9.3 says the four supplied container
+artefacts are reproduced *verbatim* except for the two name placeholders. AAP
+0.9.6 separately assigns non-functional requirements to two of those files that
+their supplied text does not express - content-security headers to
+`docker/nginx.conf`, and a hardened transport posture to the topology - and the
+supplied runtime base cannot start this application unchanged. Both statements
+cannot be literally true at once. Rather than leave that for a reader to
+discover, the delta is **closed and itemised**, in each file's own header and
+here.
+
+**`docker/api.Dockerfile`.** Everything the example specifies is present and
+unchanged: both Alpine bases, the UID 1000 non-root account,
+`ASPNETCORE_URLS=http://+:8080`, `EXPOSE 8080`, the wget `HEALTHCHECK` against
+`/health`, and `ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"]`. Three additions:
+`apk add icu-libs icu-data-full` paired with
+`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false`, without which
+`Microsoft.Data.SqlClient` cannot open a connection and the container fails its
+own health probe; build-stage layer ordering that restores before copying sources,
+which changes cache efficiency and nothing else; and a `chown` of `/app` before the
+account switch, without which the published output is unreadable to the account the
+example itself mandates.
+
+**`docker/nginx.conf`.** Everything the inventory names is present and unchanged:
+`worker_connections 1024`, the SPA fallback, the `/api/` proxy with its six
+forwarded headers, and the one-year immutable asset policy. Four additions: the
+security headers required by 0.9.6; the optional TLS include; an access-log format
+that omits the query string and the caller's metadata; and the `events` block, the
+`mime.types` include and the IPv6 listener, each required for nginx to start or to
+serve correctly in this image.
+
+**`docker/docker-compose.yml`.** The two services, their images, the health
+condition and the SPA's `4200:80` publication are unchanged. Two additions, both
+security-motivated and both annotated in the file: the API port is published on the
+**loopback interface** rather than on every interface, and `Https__RedirectEnabled`
+is set to `false` **explicitly**, because the API now enforces HTTPS by default and
+this topology is plain HTTP by gate-7 mandate. The opt-out is visible in the
+topology that needs it instead of being the shipped default for every deployment.
+
+**`docker/nginx.tls.conf.example`.** A new file, not a modified one. It is the
+mountable TLS server block described above, and it is what makes "terminate TLS in
+the delivered proxy" a configuration change rather than a code change.
+
+**Deployment configuration is never baked into an image.** The connection string,
+the signing key, the permitted browser origin, the trusted-proxy list and the
+transport switches all arrive as environment variables from compose or from the
+orchestrator. That division is what keeps every tracked file free of secrets while
+still letting a deployment be configured.
+
+### What may reach a log: exception objects, provider errors, personal data and control characters
+
+**Legacy behaviour.** The legacy application's audit trail wrote a portal name, a
+user name, a user identifier and an event type into an `EventLog` table, and its
+exception plumbing lived at HTTP-module and page level. There was no request log,
+no readiness probe and no redaction of any kind.
+
+**Four defects are closed here, and each one had the same shape: a value that was
+carefully kept out of one log reached another one anyway.**
+
+- **The request log no longer receives the exception object.** `RequestLoggingMiddleware`
+  used to pass the escaped exception to the logger, which records its message, the
+  message of every inner exception and the stack trace. A message is not always
+  authored text - a provider quotes the statement or the connection it failed on, an
+  argument fault quotes the value that was rejected, a serialisation fault quotes the
+  payload - so the highest-volume log the application writes could carry a
+  connection string, a bound credential or one tenant's data. `GlobalExceptionHandler`
+  already logs the same failure through an allow-list that admits type names and
+  stack traces and drops every message, so passing the object added no information
+  and defeated that redaction from a second call site. The entry now carries a
+  `FailureType` property holding the exception TYPE CHAIN only, computed from
+  `Type.FullName` and nothing else, bounded at five positions. The stack trace is
+  deliberately not repeated: the global handler records it once.
+- **The readiness probe no longer carries the provider exception, and no longer
+  reports cancellation as a dependency failure.** `DatabaseHealthCheck` attached the
+  raised exception to its unhealthy result on the stated ground that the
+  infrastructure could then log it privately - but "privately" was not a property of
+  the result: the health-check infrastructure logs that exception, messages and all,
+  and a connection failure's message routinely quotes the server, the database, the
+  login and the network error underneath. That published deployment topology and
+  account names through the one endpoint that answers anonymously and is polled
+  several times a minute for the life of the deployment. The result now carries fixed
+  authored text and no exception, and the probe writes the sanitized TYPE CHAIN
+  itself - which is the part that distinguishes a login failure from a
+  name-resolution failure from a timeout. Separately, the single `catch (Exception)`
+  swallowed `OperationCanceledException`, so a probe deadline, a disconnected caller
+  or a **graceful shutdown** was reported as "the database is unavailable": the last
+  verdict a stopping application published blamed its store for a fault that had not
+  occurred, and a report produced by abandoning the attempt says nothing about the
+  store in any case. Cancellation of the supplied token now propagates, which is also
+  what the health-check contract asks of a check that is given a token. A
+  cancellation raised for any other reason - a provider's own internal timeout - is a
+  genuine fault and is still reported.
+- **The tenant-installation audit no longer copies personal data or caller free text
+  into the general log.** The record carried the administrator's first name, last
+  name, user name and email address, plus the caller's description and keywords. Two
+  problems followed. Personal data was copied into a store chosen for diagnostics
+  rather than records management, whose retention this codebase does not control and
+  which a subject-access or erasure request cannot reach; and the two free-text
+  members were caller-shaped, bounded in length by the validators but not in content.
+  What is recorded now is the portal identifier and name, the alias, whether it is a
+  child portal, the administrator's USER IDENTIFIER, and whether each free-text
+  member was supplied. The identifier is the stable key that resolves to the name and
+  address in the store whenever an operator legitimately needs them, which is the
+  difference between a record that points at a person and a record that copies them;
+  the event's own subject identifier carries it too, so "who can now sign in to this
+  tenant" remains answerable. An audit trail that legally requires personal data
+  belongs in a dedicated, access-controlled store with its own retention policy, and
+  adding one is a deployment decision rather than a side effect of porting a legacy
+  entry.
+- **No rendered property can break out of its own line.** `LoggingAuditSink` renders
+  an event's properties as a `key=value` list, and rendering to text is the moment a
+  control character stops being data and becomes structure: a value carrying a
+  carriage return and a line feed produces something a reader, a log shipper and a
+  detection rule all parse as an additional, forged record. Every key and every value
+  is now passed through a sanitiser that replaces each control character with a
+  visible placeholder. The test is `char.IsControl` rather than a list of newline
+  characters, because a vertical tab, a form feed, a NEL and the ANSI escape that
+  repaints a terminal are all controls and a hand-written list would age badly.
+  Characters are replaced rather than removed so that two different submitted values
+  cannot render identically, and printable text is left exactly as submitted - this
+  is a sanitiser, not an encoder, because a record whose text no longer matches what
+  was submitted is a record an auditor cannot rely on. Fixing it at the renderer is
+  what makes it true for every property of every event, rather than for the call
+  sites somebody remembered.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Api/Middleware/RequestLoggingMiddleware.cs`,
+`backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`,
+`backend/src/DnnMigration.Infrastructure/Services/LoggingAuditSink.cs`,
+`backend/src/DnnMigration.Application/Services/PortalService.cs`.
+
+**Proved by.**
+`backend/tests/DnnMigration.UnitTests/Security/AuditLogRenderingTests.cs`,
+`backend/tests/DnnMigration.UnitTests/Security/DatabaseHealthCheckTests.cs`,
+`backend/tests/DnnMigration.UnitTests/Services/PortalServiceTests.cs` and
+`backend/tests/DnnMigration.IntegrationTests/Api/AuditTrailContractTests.cs`, the
+last of which reads what the configured sink actually recorded and asserts that
+none of the withheld values appears in it.
+
+### A content security policy is served to the browser, and the production build was changed so its script directive needs no exception
+
+**Legacy behaviour.** None. The legacy portal predates the content security policy
+entirely and emitted no response-header security policy of any kind.
+
+**Target behaviour.** `docker/nginx.conf` emits this policy on the document, on
+every hashed static asset and on proxied API responses:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none';
+frame-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
+```
+
+It is defined once, in an `http`-context map, and referenced by variable from all
+three header sets - because nginx **replaces** rather than merges an `add_header`
+set in a location, so a location declaring a `Cache-Control` of its own must repeat
+every security header, and three literal copies of a long policy string are three
+copies that can drift. A map also always resolves to its default, so the header
+cannot vanish through a phase-ordering mistake, which an unset `set` variable
+could.
+
+**Why `script-src` carries no exception, and what that cost.** The Angular
+production build enables critical-CSS inlining by default, and that optimisation
+emits two things into the document: an inline `<style>` block, and
+`<link rel="stylesheet" … media="print" onload="this.media='all'">` - an inline
+event-handler attribute, which a content security policy governs under `script-src`.
+Under `script-src 'self'` that handler is blocked, the deferred stylesheet never
+becomes `media="all"`, and the application renders with only its critical styles
+**while still returning 200** - a failure a status-code probe cannot see. The two
+alternatives were `script-src 'unsafe-inline'`, which defeats the directive
+entirely, and `'unsafe-hashes'` plus a SHA-256 of a builder-generated attribute,
+which couples the proxy configuration to an Angular implementation detail and
+degrades silently if the builder's text ever changes. Instead
+`frontend/angular.json` disables the optimisation for the production configuration
+(`optimization.styles.inlineCritical: false`), which removes both artefacts:
+the built document now contains zero inline `<style>` elements and zero inline
+handlers, so the script directive needs no exception at all. The cost is one
+first-paint optimisation on an internal administration console.
+
+**The one exception, and why it is unavoidable.** `style-src` permits
+`'unsafe-inline'`. Angular injects each component's styles at run time as a
+`<style>` element, which a content security policy counts as an inline stylesheet;
+without the exception every component loses its styling. Removing it requires a
+per-response nonce threaded into the document and the framework's nonce attribute,
+which needs a templated index document this image does not serve. Inline style
+cannot execute script, so the exception does not weaken the script directive.
+
+**`upgrade-insecure-requests` is deliberately absent.** It would rewrite every
+subresource request of a plain-HTTP document to HTTPS, which on the exempted
+loopback path means rewriting them to a port nothing is listening on. The redirect
+described above is the right tool for that job and already applies.
+
+**Verified, not assumed.** The policy was checked against the real bundle in a
+browser: it is delivered in enforcing mode, the console is silent, and every module
+chunk and the stylesheet load with status 200 while the application renders fully
+styled. A positive control confirmed the policy actually blocks - an injected
+inline script, an off-origin script, a string-compiled timer and an off-origin
+fetch were each refused, while the application's own same-origin API call reached
+the network.
+
+**Annotated in code at.** `docker/nginx.conf`, `frontend/angular.json`.
 
 ### Rate limiting on credential endpoints, as the compensating control for the removed CAPTCHA
 
@@ -990,6 +1295,72 @@ distinguished one tenant from another.
 **Why the differences are deliberate.** Each turns a configuration mistake that
 would previously have produced quiet, wrong behaviour into a loud startup
 failure.
+
+### CORRECTION: the bounded first-login legacy credential migration is implemented
+
+**This entry supersedes two earlier corrections in this append-only record.** The sections titled
+“Correction: the credential migration path is an administrative reset” and “Clarification: a stored
+credential IS replaced on sign-in when its work factor is superseded” accurately described an
+intermediate implementation that had no legacy verifier. They no longer describe the delivered
+system. The frozen action plan requires **re-hash on first successful legacy login, with
+administrative reset as fallback**, and that primary path now exists.
+
+**Delivered path.** The credential read now carries the membership row’s stored representation,
+`PasswordFormat` discriminator and `PasswordSalt`. `AuthService` first performs one current-cost
+BCrypt comparison on every structurally valid attempt, using the existing unmatchable decoy for a
+legacy row so that the transition does not reintroduce an account-timing oracle. If the stored value
+is not BCrypt, `ILegacyPasswordVerifier` may verify the submitted credential. A successful legacy
+answer is replaced immediately through `IPasswordHasher.Hash` and
+`IUserRepository.SetPasswordHashAsync`; the row is rewritten as format `Hashed` with an empty
+external salt because BCrypt embeds its own. The caller receives the ordinary successful login and
+the next login uses only BCrypt.
+
+**Compatibility is isolated and expires.** The legacy verifier is a separate Infrastructure
+singleton rather than a branch on the permanent BCrypt hasher. It is disabled by default and
+requires three deployment settings to be supplied together: an enable switch, an absolute UTC
+deadline and the legacy decryption key. The key has no functional default and is supplied through
+the deployment secret store; it appears in no tracked application settings file, compose value, log,
+audit event, exception message or response. The deadline is absolute rather than relative to process
+start, so restarting the API cannot renew the window. Disabled, expired, malformed and unsupported
+states fail closed. After the deadline, or when a row cannot be verified, the existing
+administrator-reset operation remains the fallback.
+
+**Legacy formats covered.** The bridge recognises the three persisted ordinals retained in
+`PasswordFormat`: clear text for the earliest schema, salted SHA-1 for the one-way membership
+format, and the installation’s encrypted membership format. The encrypted compatibility shape was
+validated independently against `System.Web.Security.SqlMembershipProvider` in a Mono 6.12 runtime:
+the provider prepends a random eight-byte IV and encrypts the sixteen-byte salt plus UTF-16LE
+credential bytes using Triple-DES/CBC with PKCS7 padding. The verification-only implementation is
+confined to the expiring bridge; no target write uses any legacy format and password readback remains
+impossible.
+
+**Failure and audit behaviour.** A successful replacement emits
+`LEGACY_CREDENTIAL_MIGRATED` with the tenant, account and former format only. It never records the
+submitted password, stored value, salt, BCrypt replacement or deployment key. A transient failure to
+store the replacement does not turn a credential already proved correct into a refusal; it emits the
+closed `LegacyCredentialMigrationFailed` security diagnostic so an operator can act before the
+deadline. Administrative reset remains enabled for exactly that contingency.
+
+**Configuration and container contract.** `appsettings.json` declares the migration section disabled
+with an empty key and no deadline. `docker-compose.yml` maps the three optional environment variables,
+and `docker/.env.example` documents how to source the key from a managed secret store without
+committing it. Startup validation requires a zero-offset deadline and the exact hexadecimal key
+shape and rejects a cryptographically weak key before serving traffic.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Abstractions/Services/ILegacyPasswordVerifier.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Services/IPasswordHasher.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IUserRepository.cs`,
+`backend/src/DnnMigration.Application/Options/LegacyCredentialMigrationOptions.cs`,
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/LegacyPasswordVerifier.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/MembershipStore.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/UserRepository.cs`,
+`backend/src/DnnMigration.Api/Extensions/ServiceCollectionExtensions.cs`,
+`backend/src/DnnMigration.Api/appsettings.json`,
+`docker/docker-compose.yml`,
+`docker/.env.example`.
 
 **Operational consequence.** A deployment accepting genuinely large payloads
 must raise the ceiling deliberately. A deployment whose portal path format lacks
@@ -1204,15 +1575,13 @@ comment. Adding a dependency therefore requires declaring its pattern in the sam
 commit - intended friction, because that is the moment a new package identity gets
 reviewed.
 
-**What that does not cover, stated rather than implied.** It does not govern the
-restore performed inside the API container image. `docker/api.Dockerfile` is
-reproduced verbatim from the requirements: it copies only the build props, the
-solution file and the six project files before running `dotnet restore`, and the
-later publish step suppresses restore entirely. No repository-root file is present
-at the moment packages are resolved there, and the Dockerfile is not ours to
-change. The mitigating fact is that the .NET SDK Alpine image ships with the same
-single public source as its only feed, so the container restore already has the
-narrow feed set; what it lacks is the mapping.
+**The production restore now carries the same controls.**
+`docker/api.Dockerfile` copies `NuGet.Config`, all six manifests and all six
+`packages.lock.json` files before its restore layer, and runs the solution-wide
+restore with the repository configuration and locked mode explicitly selected.
+The later publish still suppresses restore. A package identity outside the
+source map, a changed transitive version or a manifest/lock mismatch therefore
+fails the container build instead of silently changing the production graph.
 
 **Target behaviour - advisories are deliberately not build gates.** Neither the
 npm nor the NuGet audit is wired into the build, and the reason is specific rather
@@ -1510,6 +1879,24 @@ DotNetNuke CAPTCHA server control on.
   advertise a control to the administration screen that cannot be applied. The
   compensating control for the removed CAPTCHA is the credential rate limiting
   recorded above.
+- **Writes are now bounded and tenant-checked before they reach the settings
+  rows.** The legacy property editor supplied only the declared discriminator
+  choices but performed no server-side range check, page-size bound, pattern
+  compilation check or tenant check on the three redirect page identifiers. The
+  target validator closes the three discriminator sets, requires a page size
+  from 1 through 100, bounds the raw display-name format at 128 UTF-16 code units,
+  and bounds and compiles the email expression under a timeout. The application
+  service resolves each non-null redirect page and accepts it only when its
+  `PortalId` equals the route portal. No sign-based shortcut is used: page key 0
+  is real, an explicitly supplied -1 is looked up rather than treated as absent,
+  and `null` alone means that no redirect is configured.
+- **Token expansion is checked before an account row is mutated or committed.**
+  A short format such as two `[USERNAME]` tokens can expand beyond the
+  `nvarchar(128)` `Users.DisplayName` column even though the raw format itself is
+  within 128 characters. The account update path now computes the prospective
+  value first and returns a field-level failure when it exceeds 128 UTF-16 code
+  units, preventing the predictable provider exception and HTTP 500 the
+  unguarded path produced.
 
 **A legacy asymmetry preserved rather than tidied.** The profile default
 visibility *setting* defaults to administrators-only while the stored
@@ -1517,7 +1904,9 @@ profile-value visibility *column* defaults to everyone. That asymmetry is legacy
 behaviour and is reproduced, not reconciled.
 
 **Annotated in code at.**
-`backend/src/DnnMigration.Application/Dtos/User/MembershipSettingsDto.cs`.
+`backend/src/DnnMigration.Application/Dtos/User/MembershipSettingsDto.cs`,
+`backend/src/DnnMigration.Application/Validation/MembershipSettingsDtoValidator.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`.
 
 ### A removal that changed nothing no longer reports success
 
@@ -1550,6 +1939,70 @@ arguments alone.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Application/Abstractions/IRoleService.cs`.
+
+### Module settings: six placement values are edited but not transported, and two member spellings are retired
+
+**Legacy behaviour.** The legacy module-settings screen edited and persisted six
+placement values in addition to the ones the modern update contract carries.
+`Website/admin/Modules/modulesettings.ascx` renders the pane selector, the
+alignment choice, the colour and border inputs and the print and syndication check
+boxes, and `Website/admin/Modules/ModuleSettings.ascx.vb:L345` stored
+`cboAlign.SelectedItem.Value` verbatim, so the "Not Specified" choice was written
+as an empty string rather than as an absence. All six round-tripped through the
+postback and reached the database.
+
+**Target behaviour.** `PaneName`, `Alignment`, `Color`, `Border`, `DisplayPrint`
+and `DisplaySyndicate` are all **mapped columns on the `TabModule` entity** and are
+all **absent from `Dtos/Module/UpdateModuleRequest.cs`**, whose surface is exactly
+sixteen properties. The client contract now declares those same sixteen and nothing
+else. The six values remain **form-only state**: the module-settings screen reads
+and renders them through its own view model at
+`frontend/src/app/features/module/module-settings/module-settings.view-model.ts`,
+and the adapter in that file drops them when it composes the request. The empty
+string for "Not Specified" is still preserved in the form's own state, so the
+distinction the legacy screen recorded is not lost client-side; it simply has
+nowhere to go on the wire.
+
+**Why the difference is deliberate.** The client contract previously declared all
+six as optional, deprecated members. That gave every caller **compile-time
+permission to send values the API discards**, which is a worse failure than a
+compile error: the screen appeared to save settings that were never persisted, and
+nothing in either stack reported the loss. Narrowing the contract to what the
+server actually reads makes the projection gap visible at the boundary instead of
+at a support desk. Closing the gap properly is a **server-side projection change**
+— adding the six properties to the update contract and its service — and is not
+attempted here, because widening a request contract to carry values the server
+ignores would reintroduce exactly the defect being removed.
+
+**Two member spellings retired at the same time.** `isDefaultModule` and
+`allModules` were superseded spellings of `setAsDefaultSettings` and
+`applyToAllModules`. Both old names were declared alongside the new ones and the
+screen was emitting the **old** pair, so the two instruction flags the server reads
+were never populated: naming a module as the portal default and applying its
+appearance to every module both silently did nothing. The adapter now maps the form
+controls — which keep their legacy names, because that is what the template and its
+labels say — onto the members the server reads.
+
+**One further correction on the same surface.** `tabId` was optional on the client
+contract while the server declares it as a non-nullable `int`. An omitted member
+deserialises to `0`, and `dbo.Tabs.TabID` is `IDENTITY(0, 1)`
+(`01.00.00.SqlDataProvider:L140`), so `0` is a legitimate page the server cannot
+distinguish from a caller who said nothing. It is now **required**, and the screen
+supplies it from the state it was seeded with. `isDeleted` is supplied the same way
+and for a related reason: the update is a whole-row replacement, so omitting the
+recycle-bin flag would clear it as a side effect of saving an unrelated field.
+
+**Operational consequence.** An operator editing a module's pane, alignment,
+colour, border, print or syndication affordance sees the value they chose, and it is
+not saved. That was already true before this change; what changes is that the
+contract no longer implies otherwise. The two instruction check boxes now take
+effect, where previously they did not.
+
+**Annotated in code at.**
+`frontend/src/app/core/models/module.model.ts` (the `UpdateModuleRequest` contract
+note) and
+`frontend/src/app/features/module/module-settings/module-settings.view-model.ts`
+(the view model, the form-state shape and the adapter that crosses the boundary).
 
 ## Domain enumerations
 ### `PermissionKey` — permission keys are strings, and the member name is the value
@@ -2718,14 +3171,14 @@ be a setting that could not be honoured. Any authenticated response for which ca
 worthwhile can carry its own cache headers at its own endpoint, which is a decision visible at
 the endpoint rather than a global mode.
 
-### The base configuration file is strict RFC 8259, declares both secrets as empty strings, and omits two sections on purpose
+### The base configuration file is strict RFC 8259, declares both secrets as empty strings, and omits one section on purpose
 
 **Target behaviour.** `backend/src/DnnMigration.Api/appsettings.json` is strict JSON - no
 comments, no trailing commas, no byte-order mark, LF endings, two-space indentation, one trailing
-newline - and holds eleven sections: `ConnectionStrings`, `Jwt`, `PasswordPolicy`, `Cors`,
-`RateLimiting`, `Caching`, `Portal`, `Swagger`, `Https`, `Serilog` and `AllowedHosts`. Every key
-in it binds to a real consumer and every settable property of the four options classes has
-exactly one key: `Jwt` six, `PasswordPolicy` eight, `Portal` four, `Caching` one. The two
+newline - and holds twelve sections: `ConnectionStrings`, `Jwt`, `PasswordPolicy`, `Cors`,
+`RateLimiting`, `Caching`, `Portal`, `Swagger`, `Https`, `Proxy`, `Serilog` and `AllowedHosts`.
+Every key in it binds to a real consumer and every settable property of the four options classes
+has exactly one key: `Jwt` six, `PasswordPolicy` eight, `Portal` four, `Caching` one. The two
 environment overlays keep the release-versus-development twin-file convention the legacy
 `release.config` and `development.config` pair established, and every section they declare also
 exists in the base.
@@ -2741,13 +3194,31 @@ the legacy installation committed the 3DES key that decrypted every stored passw
 validation key), and the point of declaring these two as empty is that the same mistake cannot be
 made by editing this file.
 
-**Two sections are deliberately absent.** There is no framework `Logging` section: `Program.cs`
+**One section is deliberately absent.** There is no framework `Logging` section: `Program.cs`
 installs Serilog as the logging provider and reads its levels and sinks from the `Serilog`
 section, and the framework's `LoggerFilterOptions` are not consulted once that happens, so a
-`Logging:LogLevel` block would look like it controls log levels while controlling nothing. There
-is no `Proxy` section either: `Proxy:KnownProxies` and `Proxy:KnownNetworks` are read, but both
-fall back to an empty list, and the addresses of a deployment's own proxies are the definition of
-an environment-specific value, so the base file leaves them to the deployment that knows them.
+`Logging:LogLevel` block would look like it controls log levels while controlling nothing.
+
+**The `Proxy` section is declared with both lists EMPTY.** `Proxy:KnownProxies` and
+`Proxy:KnownNetworks` are read by the forwarded-header registration, and an empty list means the
+framework's default trust - the loopback address alone - stands, which inside a container is this
+process itself. The addresses of a deployment's own proxies are the definition of an
+environment-specific value, so the base file declares the two keys and supplies neither: the keys
+are discoverable where every other key is, and the value is left to the deployment that knows it.
+The production overlay supplies `Proxy:KnownNetworks` for the shipped container topology; see the
+forwarded-headers section above for why an empty list there would leave the pipeline stage inert
+rather than merely unconfigured.
+
+**The `Https` section carries two keys, and they are useless apart.**
+`Https:RedirectEnabled` decides whether the pipeline installs the redirection stage, and
+`Https:Port` (default 443) is the port that stage redirects to. The stage resolves its target port
+from these options, then from the host's own configuration, then from a single HTTPS address the
+server is listening on - and this process listens on plain HTTP only, so the last of those can
+never succeed. When none of them yields a port the stage logs once and forwards the request
+unchanged, so without `Https:Port` a deployment could switch redirection on, see no error, and
+still serve every request in clear text. 443 is also the only value for which the framework builds
+an authority with no port at all (`https://host/path` rather than `https://host:443/path`), so the
+redirect a browser follows is the address an operator published.
 
 **Why strict JSON rather than the commented form the framework tolerates.** The .NET
 configuration provider does skip `//` comments, so a commented file works at run time; nothing
@@ -2763,10 +3234,13 @@ search.
 
 **Legacy behaviour.** `Website/release.config` and `Website/development.config` are the same
 444-line and 442-line file differing in only six places, and exactly two of those six carry
-meaning. `Website/development.config:L89` hard-codes
-`validationKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902"` where the release file at `:L90` sets
-`validationKey="AutoGenerate,IsolateApps"`; both then share
-`decryptionKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902F8D923AC"` with `decryption="3DES"`
+meaning. `Website/development.config:L89` commits validation material identified only by the
+non-secret fingerprint
+`sha256:64b7990f63e537b28824e35321b5339db436427ff46755f7de36e484169519f4`; the release
+setting at `:L90` has fingerprint
+`sha256:da4916cea319caa4c6fddecf69a434cdfbceb5ea6fc280922a7eca7b3293afe4`. Both files
+reference the same 3DES decryption material, identified only by fingerprint
+`sha256:4886c93e723fe42dc604e4cca065708c304f05308a17cc6aa2af9d40204a64ac`
 (`development.config:L90-L91`), which combined with `passwordFormat="Encrypted"` and
 `enablePasswordRetrieval="true"` (`release.config:L239-L245`) decrypts every stored password. The
 development file is therefore the *more* exposed of the two: it commits the signing key as well as
@@ -2839,7 +3313,7 @@ simultaneously holding the whole ASP.NET Core namespace above `Debug`, since a S
 applies to the longest matching prefix. Neither appears in the production overlay, and neither may
 be copied into it.
 
-### The production overlay re-asserts two hardened values and declares nothing else, and its global level stays at `Information` so the audit trail survives
+### The production overlay enforces the transport, re-asserts two hardened log levels, and keeps its global level at `Information` so the audit trail survives
 
 **Legacy behaviour.** `Website/release.config` is the release half of the twin-file pair, and it is
 the half that shipped. It committed the 3DES key that decrypted every stored password - the
@@ -2850,13 +3324,14 @@ and an attachable database file (`:L24-L26`), `enablePasswordRetrieval="true"` a
 `objectQualifier=""` with `databaseOwner="dbo"` (`:L345-L355`). Nothing in it was
 environment-supplied: the release configuration *was* the secret store.
 
-**Target behaviour.** `backend/src/DnnMigration.Api/appsettings.Production.json` is fourteen lines
-and declares two sections:
+**Target behaviour.** `backend/src/DnnMigration.Api/appsettings.Production.json` declares two
+sections:
 
 ```json
 {
   "Https": {
-    "RedirectEnabled": false
+    "RedirectEnabled": true,
+    "Port": 443
   },
   "Serilog": {
     "MinimumLevel": {
@@ -2870,10 +3345,13 @@ and declares two sections:
 }
 ```
 
-Both sections exist in the base file with these same values, and that is the point rather than an
-oversight: this overlay changes nothing, it *pins* the two settings whose accidental relaxation is
-most costly, and it is layered after the base so a value left behind in the base cannot follow the
-build into production. `docker/docker-compose.yml:L26` and `docker/api.Dockerfile:L70` both set
+Both sections exist in the base file, and the overlay does two distinct jobs. It *pins* the
+logging levels whose accidental relaxation is most costly, restating values the base already
+holds so a value left behind in the base cannot follow the build into production. And it
+*changes* the one transport decision only a real deployment can make: browser traffic becomes
+HTTPS-only, on the port the edge terminates TLS on. Both are explained at length in the two
+subsections below.
+`docker/docker-compose.yml:L26` and `docker/api.Dockerfile:L70` both set
 `ASPNETCORE_ENVIRONMENT=Production`, so this file is live in every containerised deployment.
 
 **No secret appears, and neither secret key appears at all.** There is no `ConnectionStrings`
@@ -2883,7 +3361,7 @@ as `""` and both are startup-validated, so the only supply route is the environm
 `:L29` sets `Jwt__Secret` from `${JWT_SECRET}`, both templated in `docker/.env.example` and read
 from the git-ignored `docker/.env`. Verified in both directions against the published Release
 build: with the two variables supplied the host reported `Hosting environment: Production` and
-answered `/health` with `200 Healthy`, and with `ConnectionStrings__Default` removed it aborted
+answered `/health/ready` with `200 Healthy`, and with `ConnectionStrings__Default` removed it aborted
 before binding a port, raising `InvalidOperationException` from
 `DnnMigration.Infrastructure.DependencyInjection.ReadConnectionString` and naming both spellings
 of the key. `TrustServerCertificate=True` is absent for the reason set out in the next section.
@@ -2915,20 +3393,49 @@ running container: four `Information`-level lifetime events were recorded, zero
 `Database.Command` events, and no connection string, database password or signing key appeared
 anywhere in the log.
 
-**Why `Https:RedirectEnabled` is restated even though the base already sets it false.** This is the
-one key in the file whose accidental change is an outage rather than a disclosure.
-`Extensions/ApplicationBuilderExtensions.cs:L125` installs HTTPS redirection when it is true, and
-both health probes reach this process over plain HTTP - `docker-compose.yml:L40` uses
-`wget --spider http://127.0.0.1:8080/health` and `docker/nginx.conf:L74` proxies `/health` to
-`http://api:8080/health`. A redirect answers the probe with a 307 to a port nothing is listening
-on, the API never reports healthy, and because the frontend service declares
-`depends_on: condition: service_healthy` (`:L57-L59`) it never starts at all. Verified end to end:
-`docker compose up -d` reported the API `Healthy`, the frontend started, and both
-`curl -f http://localhost:8080/health` and `curl -f http://localhost:4200` returned 200. Strict
-transport security is unaffected and needs no key, since that stage ignores requests that did not
-arrive over HTTPS and ignores loopback hosts.
+**Why `Https:RedirectEnabled` is set to true here and left false in the base.** This is the one key
+in the file whose careless handling is an outage rather than a disclosure, in either direction:
+left false, browser credentials and bearer tokens cross a network in clear text; applied without a
+branch, the container's own health probe is answered with a redirect and the whole deployment stops
+coming up. Both are avoided at once. `Extensions/ApplicationBuilderExtensions.cs` installs the
+redirection stage behind `UseWhen(TransportSecurityApplies, …)`, and that predicate withholds the
+redirect from exactly two classes of request: the anonymous `/health` endpoint, and a
+loopback-addressed request. The compose health check uses
+`wget --spider http://127.0.0.1:8080/health` over plain HTTP, and the frontend service declares
+`depends_on: condition: service_healthy`, so answering that probe with a 307 would leave the API
+permanently unhealthy and the frontend permanently unstarted. The loopback exemption is the same
+carve-out the framework's own strict transport security makes by default - such a request never
+leaves the machine that issued it - and it is also what keeps the shipped topology usable, because
+nginx forwards the browser's own host, which on that topology is a loopback address.
 
-**Four sections are deliberately absent, on one standard.** A key nothing reads is worse than no
+Verified end to end in the running containers: `docker compose up -d` reported both services
+`healthy`; `curl -f http://localhost:8080/health` and `curl -f http://localhost:4200` both returned
+200; signing in through the proxy at `http://localhost:4200/api/v1/auth/login` returned 200 with an
+access token and `GET /api/v1/auth/me` resolved the tenant; and the same API addressed directly
+with a public host name over plain HTTP was answered `307 Location: https://…`, which is the
+plain-HTTP bypass being closed. On the Kestrel host the near-miss path `/healthz` was still
+enforced, confirming the exemption is an equality test rather than a prefix test, and an untrusted
+`X-Forwarded-Proto: https` was ignored rather than believed. Strict transport security needs no key
+of its own, since that stage ignores requests that did not arrive over HTTPS and ignores loopback
+hosts.
+
+**Why this overlay names NO trusted proxy, and where the trust is named instead.** The
+forwarded-header stage trusts nothing a deployment has not named
+(`Extensions/ServiceCollectionExtensions.cs`, `AddForwardedHeaders`), and naming a hop is a
+DEPLOYMENT fact rather than a build-time one - which is why it is configured where the topology is
+described. `docker/docker-compose.yml` names the front-end container's exact address in
+`Proxy__KnownProxies__0`, and that is the narrowest trust that works. An earlier revision of this
+overlay instead trusted the whole `172.16.0.0/12` range that a container runtime allocates bridge
+networks from, and that entry is WITHDRAWN: the compose subnet also contains the network gateway,
+and a caller reaching the API's *published* port directly is source-translated to that gateway, so
+the range trusted a directly reachable caller exactly as if it were the proxy - letting it name its
+own forwarded address and therefore choose its own rate-limit partition. Trusting nothing at all was
+the other alternative and is also worse: every caller behind the proxy then shares one credential
+budget, so one caller can lock out everybody. Naming the single proxy address avoids both. A
+deployment on its own network replaces that one value; a deployment that publishes the API port
+should stop publishing it, or bind it to the loopback interface, so the proxy is the only path.
+
+**Three sections are deliberately absent, on one standard.** A key nothing reads is worse than no
 key, and it is applied here without exception. There is no `Logging` section, for the reason given
 two sections above - `Program.cs:L32-L35` installs Serilog through `UseSerilog` and reads levels
 from the `Serilog` section, so a `Logging:LogLevel` block would appear to hold the
@@ -2939,13 +3446,12 @@ the environment name alone, so the key has no observable effect outside developm
 judgement the development overlay records. There is no `Swagger` section: the base already
 disables the console and the reader falls back to false when the key is missing, so restating it
 bought nothing that `Https:RedirectEnabled` does not already demonstrate the value of, and the
-production overlay is not the place to accumulate inert re-assertions. There is no `Proxy`
-section: `Extensions/ServiceCollectionExtensions.cs:L490-L540` trusts nothing a deployment has not
-named, and the address of a reverse proxy inside a container network is not knowable when this file
-is written - declaring a wider trust than a deployment operates would let a caller choose its own
-rate-limit partition. No `Kestrel`, `Urls` or port key appears either: the image fixes
-`ASPNETCORE_URLS=http://+:8080` and runs as the unprivileged `appuser`, which cannot bind a port
-below 1024, and request limits are set in code rather than configuration.
+production overlay is not the place to accumulate inert re-assertions. No `Proxy` section appears
+here, for the reason given above: the trusted hop is named by the topology that operates it. No
+`Kestrel`, `Urls` or port key appears either: the image fixes `ASPNETCORE_URLS=http://+:8080` and
+runs as the unprivileged `appuser`, which cannot bind a port below 1024, and request limits are set
+in code rather than configuration. `Https:Port` IS declared, and it is the one addition to the base:
+the redirect stage needs a target authority, and 443 is the port the edge terminates TLS on.
 
 **And nothing here can touch the schema.** No `EnsureCreated`, `AutoMigrate`,
 `RunMigrationsOnStartup` or migration key of any kind is present, and no code path exists that one
@@ -2969,7 +3475,7 @@ instance - and the commented alternative at `:L30` is `Server=(local);Database=D
 The .NET Framework 2.0 SQL client did not encrypt by default, so no certificate was validated and
 no setting existed to relax.
 
-**Target behaviour.** `Microsoft.Data.SqlClient` 5.2.3, which `DnnMigration.Infrastructure` pins,
+**Target behaviour.** `Microsoft.Data.SqlClient` 6.1.6, which `DnnMigration.Infrastructure` pins,
 defaults `Encrypt` to `True`, so the client validates the server certificate unless told otherwise.
 A developer running SQL Server locally with a self-signed certificate may add
 `TrustServerCertificate=True` to the `ConnectionStrings__Default` value they export, and that is the
@@ -2993,6 +3499,759 @@ means the startup guard in `AddInfrastructure` names both `ConnectionStrings:Def
 `ConnectionStrings__Default` and stops, which is a better first experience than a driver-level login
 failure.
 
+## Code-review security corrections completed on August 5, 2026
+
+This section records the coordinated corrections made after the original migration notes were
+written. Where an earlier paragraph conflicts with this section, this section is authoritative.
+
+### Transport security, proxy trust and the frozen validation topology
+
+AAP 0.9.3 fixes `docker/docker-compose.yml` as the plain-HTTP validation topology: the API is
+published on port 8080 so the prescribed health probe can address it directly, and the SPA is
+published on port 4200. Production transport requirements are therefore applied by the additive
+`docker/docker-compose.tls.yml` and `docker/nginx.tls.conf` overlay rather than by weakening or
+rewriting that frozen gate:
+
+- nginx terminates TLS 1.2 or 1.3, redirects browser traffic for the deployment host from port 80
+  to 443, mounts the certificate and key read-only, and publishes the SPA on ports 80 and 443;
+- the API's host port is withdrawn, leaving Kestrel reachable only on the compose network;
+- `Https__RedirectEnabled=true` and `Https__Port=443` protect any browser-facing request that
+  reaches Kestrel without the proxy, while `/health` remains exempt so the loopback container
+  probe still works;
+- `Proxy__KnownNetworks__0=172.16.0.0/12` makes forwarded protocol and client-address headers
+  authoritative only when they came from the compose network. With no configured trusted proxy
+  or network, forwarded headers are not processed at all.
+
+The base production overlay deliberately leaves `Https:RedirectEnabled` false because the base
+compose file is the plain validation topology. Outside development the API emits HSTS on requests
+it knows arrived securely and writes one startup warning when neither application redirection nor
+the documented TLS proxy posture is active.
+
+### Proxy response headers, CSP and Angular output are one contract
+
+`docker/nginx.conf` now emits `Content-Security-Policy`, `X-Content-Type-Options`,
+`X-Frame-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy`,
+`X-Permitted-Cross-Domain-Policies` and `Permissions-Policy` on the document, static-asset and TLS
+paths. HSTS is non-empty only on HTTPS.
+
+The CSP intentionally permits scripts only from the serving origin and carries no
+`script-src 'unsafe-inline'`. The Angular production builder therefore sets
+`optimization.styles.inlineCritical=false`; enabling critical-style inlining would silently make
+the generated document depend on an inline-style exception at build time. `style-src` still carries
+the narrower inline-style allowance required by Angular's component styling, but executable inline
+content remains prohibited. The proxy policy and `frontend/angular.json` must be reviewed together.
+
+### Proxy and application request logs no longer retain request data
+
+The nginx access format records the request method and the original path with everything from the
+first question mark removed. It never records query values. The error log remains at `warn` because
+nginx controls its own failure format. Both paths are standard container streams; retention and
+read access are therefore properties of the deployment's log collector, and a deployment with a
+retention obligation must configure it there.
+
+`RequestLoggingMiddleware` records the matched route template rather than the raw path, a boolean
+stating whether a query was present rather than its value, and a bounded failure type rather than
+the exception object. Bodies, headers, credentials, bearer tokens, account names, addresses and
+free-form exception messages are absent. The correlation identifier links that redacted completion
+record to the protected diagnostic channel.
+
+### Credential responses are never cacheable, including refusals
+
+`CredentialCacheControlMiddleware` runs immediately after routing and before rate limiting,
+authentication and authorisation. Every endpoint marked as credential-bearing therefore receives
+`Cache-Control: no-store`, `Pragma: no-cache` and `Expires: 0` on successful token responses and on
+429, 401, 403 or validation responses that short-circuit before the action.
+
+The caller-description read, `GET /api/v1/auth/me`, no longer spends the credential-write budget.
+It uses the separate `session-read` policy and the `session-read-window:` partition-key prefix.
+Login, refresh and sign-out remain under the credential window and process-wide concurrency bound,
+so polling the current-user projection cannot lock legitimate clients out of signing in and a
+credential flood cannot consume the projection's own read allowance.
+
+### Host filtering is restrictive by default
+
+The shipped `AllowedHosts` value is exactly `localhost;127.0.0.1;[::1]`. That is suitable for the
+validation topology and refuses an unrecognised host before tenant resolution. A deployment serving
+a real DNS name must add that exact name, as the TLS overlay demonstrates; failing to do so produces
+an intentional HTTP 400 rather than silently accepting an arbitrary Host header.
+
+### Administrative module definitions and generic settings are separate privilege surfaces
+
+The portal-placeable module-definition catalogue excludes every definition whose desktop-module
+package has `IsAdmin=true`, and `CreateModuleAsync` independently repeats that check before writing.
+The privileged `GetAdministrativeDefinitionByFriendlyNameAsync` repository member exists only for
+the application workflow that must locate the administrative User Accounts package; it is not
+published through the ordinary catalogue.
+
+Raw module settings require `ModuleEdit` or portal administration. The generic projection omits
+`Security_*` and `Column_*` keys, and generic replacement refuses security-owned modules and reserved
+keys with `module.settings_protected`; omission never deletes a protected row. Module import uses an
+`XmlReader` with DTD processing prohibited, no resolver, zero entity expansion, bounded document
+size and bounded nesting, then requires the payload's type attribute to match the target package.
+
+### Account creation, deletion and profile work are tenant-scoped and atomic
+
+`IUnitOfWork.JoinOrBeginTransactionAsync` lets account workflows join a caller-owned transaction or
+start exactly one transaction of their own. Account creation now enlists the user, portal
+membership, profile and external membership credential write in that transaction. The former
+best-effort compensation path has been removed because it could not undo every already-committed
+write. Account deletion likewise performs the profile, grant, role, portal-membership, credential
+and final account changes under one transaction without nested commits.
+
+`IUserProfileRepository.GetProfileValuesAsync(portalId, userId, ...)` and
+`DeleteProfileValuesAsync(portalId, userId, ...)` bind profile values to definitions owned by the
+addressed portal. A foreign definition identifier is refused, and removing a portal membership
+removes only that portal's values.
+
+Tenant-authored validation expressions are accepted at a maximum of 512 characters even though the
+unchanged legacy column can hold 2,000. Evaluation uses `RegexOptions.NonBacktracking`, a 50 ms
+timeout and a bounded cache. This is a write-bound security narrowing, not a schema change.
+
+`RestrictedSessionMiddleware` re-reads the account's mandatory-password and mandatory-profile state
+after authentication and permits only endpoints explicitly marked `[RemediationAllowed]` until the
+condition is corrected. The marker bypasses no endpoint policy. `IUserService.IsEmailValidAsync`
+centralises `Security_EmailValidation`, and sign-in additionally enforces
+`RequireValidProfile`/`RequireValidProfileAtLogin`.
+
+User-list rows honour the portal's `Column_*` settings. Fields whose columns are disabled are removed
+from the projection rather than merely hidden in Angular, so tenant-configured PII minimisation is
+enforced at the API boundary.
+
+### Portal references and processor credentials fail closed
+
+The CLR property formerly named `Portal.ProcessorPassword` is now
+`Portal.ProcessorCredentialReference` while Fluent mapping still targets the immutable legacy
+`ProcessorPassword` column. New values must be bounded `secret://` managed-secret references; the
+credential itself is never accepted, returned or logged.
+
+The update contract has explicit keep/replace/clear semantics: `null` keeps the stored reference, a
+non-empty `secret://...` value replaces it, and the empty string clears it. A pre-existing plaintext
+value is not silently retained and fails with `portal.processor_reference_invalid` until an operator
+replaces or clears it.
+
+Before mapping or saving, the service proves that `AdministratorId` is a member of the addressed
+portal and that every configured tab reference belongs to that portal. Failures use
+`portal.administrator_invalid` and `portal.tab_reference_invalid`. The reference checks, secret
+decision and update execute under a serializable transaction so the validated relationships cannot
+change between validation and commit.
+
+### Legacy credential, refresh-token and audit corrections remain authoritative
+
+The existing sections **Security correction: legacy credential cut-over, durable refresh state and
+minimal claims** and **Security correction: minimised audit data, structured metadata and delivery
+health** remain part of this document unchanged. They are the authoritative record for bounded
+legacy verification with immediate BCrypt replacement, SQL-backed refresh rotation, minimal access
+token claims, audit-data minimisation, structured metadata and degraded audit-pipeline health.
+
+### Reproducible restore and current dependency verification
+
+Every backend project now owns a committed `packages.lock.json`, including the package-free Domain
+project. `Directory.Build.props` enables lock-file generation and locked mode globally.
+`docker/api.Dockerfile` copies the repository `NuGet.Config`, all six manifests and all six lock
+files before restoring with the explicit repository configuration and locked mode. A clean
+solution restore and the API image restore both succeeded in locked mode.
+
+The authoritative NuGet checks were rerun on **August 5, 2026** against nuget.org with transitive
+packages included:
+
+- vulnerability inventory: **zero**;
+- deprecation inventory: the only remaining deprecated identity is the test-only `xunit` 2.9.3
+  family (`xunit`, `xunit.assert`, `xunit.core`, `xunit.extensibility.core` and
+  `xunit.extensibility.execution`) in the two test projects;
+- outdated inventory: newer versions exist across the graph, predominantly .NET 9/10 or other
+  framework-major lines outside the frozen net8.0 plan. An outdated result without an advisory or
+  deprecation is not silently treated as compatible with the AAP's exact version pins.
+
+The runtime-relevant deprecated graph was removed by moving `Microsoft.Data.SqlClient` from 5.2.3
+to 6.1.6 and pinning `System.Collections.Immutable` 8.0.0. The container test harness moved from
+`Testcontainers.MsSql` 3.10.0 to 4.13.0; its new `BouncyCastle.Cryptography` transitive identity is
+explicitly source-mapped. The obsolete parameterless `MsSqlBuilder` call was replaced with
+`new MsSqlBuilder(ContainerImage)`. The full 841-test integration suite passed both against the
+configured SQL Server and with `DNN_TEST_SQLSERVER` removed so that Testcontainers provisioned its
+own SQL Server.
+
+The xUnit deprecation is a bounded accepted residual, not a runtime dependency. The AAP pins the
+2.9.3 test framework, and controlled `xunit.v3` trials produced 194 warnings-as-errors and contract
+errors across the established test surface, including its changed `IAsyncLifetime` shape. Rewriting
+thousands of verified tests as an incidental package update would violate the frozen plan and
+obscure the security changes those tests protect. No vulnerability was reported for xUnit 2.9.3;
+its migration belongs in a dedicated test-platform change with its own review.
+
+### Base-image and produced-image CVE disposition
+
+Both Microsoft base tags were pulled afresh on August 5, 2026. The resolved amd64 digests were:
+
+- SDK build stage: `mcr.microsoft.com/dotnet/sdk@sha256:5f12aa62868b69dcb41de9cd7f8759822f7d1f56c3b31908048ad65df0981e67`;
+- ASP.NET runtime stage:
+  `mcr.microsoft.com/dotnet/aspnet@sha256:b02ab6637e02dfe07d4205d557cbce7e2ab0e4a1d7d1285868b4f31eed20bd10`.
+
+The ASP.NET runtime base and the produced `dnnmigration-api` image each reported **zero
+vulnerabilities**. The SDK base scanner reported build-stage-only entries, which were evaluated
+rather than copied into the release verdict:
+
+- its NuGet defense-in-depth advisory is a scanner false positive for this SDK; Microsoft's
+  advisory identifies .NET SDK 8.0.420 as patched and the image contains 8.0.423;
+- its MSBuild spoofing advisory is likewise superseded by the vendor's patched .NET 8 SDK floor of
+  8.0.410; this image contains 8.0.423, and the scanner keyed on an internal file-version branch;
+- `System.Security.Cryptography.Xml` findings occur in bundled `dotnet-format`, F# and PowerShell
+  tool payloads. The Docker build invokes none of those tools and the multi-stage copy excludes
+  them from the runtime image;
+- curl/libcurl findings occur only in the SDK stage. The Dockerfile invokes neither curl nor git,
+  and neither package is copied into the runtime stage.
+
+The release decision is therefore based on the produced image, not on unused files in a discarded
+builder filesystem. Re-run both the NuGet and image scans whenever a lock file, base-image digest or
+direct dependency changes.
+
+### CORS documentation correction
+
+The earlier statement that the allowed-origin list “defaults to empty” was stale. The shipped base
+configuration explicitly contains only `http://localhost:4200`; compose supplies the same default,
+and the TLS overlay replaces it with the deployment's HTTPS origin. Clearing the list remains
+fail-closed because the named policy is still registered with no permitted origins. Credential
+support is never enabled.
+
+## Security correction: minimised audit data, structured metadata and delivery health
+
+The legacy event log copied account names, tenant names, aliases, administrator names and electronic-mail
+addresses, role names, page names, filenames and other free text into a store with a retention lifecycle
+separate from the records those values described. The target audit contract no longer does that. It records
+stable portal, actor, subject and resource identifiers, the preserved event name and outcome, a stable failure
+code, and a closed set of bounded machine-readable metadata. Unknown metadata keys are discarded. Values over
+128 characters, values carrying control characters, and values carrying the former `key=value; ...`
+delimiters are replaced by the fixed scalar `rejected`. Metadata is emitted as individual structured logger
+properties instead of one flattened string, so a value can neither forge another field nor amplify a record
+without a hard ceiling. Unknown-account sign-in attempts are intentionally anonymous in the audit trail; the
+request correlation and credential-rate controls remain the mechanisms for grouping those probes.
+
+**Purpose.** These records exist only to investigate authentication outcomes, privileged administrative
+mutations and security-control failures, and to reconcile a committed change with the stable database
+identifiers it affected. They are not application analytics, a user-profile mirror, a search index or a
+general change log. Adding a descriptive value because it might be convenient later is not an audit purpose
+and is prohibited by the sink allowlist.
+
+**Access.** The application exposes no audit-reading endpoint. Records leave through the configured Serilog
+pipeline, so production access must be restricted at that sink to the security and operations roles that
+investigate incidents or administer the service. Application administrators do not receive access merely
+because they can mutate a portal. Export, forwarding and backup permissions must be no broader than the sink's
+read permission, and raw console access in the orchestrator is audit access for this purpose.
+
+**Retention and deletion.** The application does not own the external logging provider and therefore cannot
+enforce its lifecycle in code. A production deployment must configure an explicit maximum retention at the
+sink; the baseline is 90 days unless a documented legal, contractual or incident-response requirement sets a
+different period. Expiry must cover searchable indexes, exports and backups rather than only the active view.
+Where a deletion obligation applies to the remaining pseudonymous account identifiers, the operator must purge
+records addressed by `AuditActorUserId` and `AuditSubjectUserId` from every retained copy. A deployment that
+leaves retention at an orchestrator or vendor default has not completed this control.
+
+**Delivery failure.** `IAuditSink.Record` still never fails the business operation after it has committed.
+Instead, a failed logger call increments a saturating process-local counter, emits the closed
+`AuditRecordNotWritten` security diagnostic using only tenant/account identifiers and the exception type name,
+and changes the named `audit-pipeline` health check to `Degraded`. The anonymous health document exposes the
+named status but not the exception or counter data. A restart clears the process-local count; the external
+monitoring system must retain and alert on the degraded observation across restarts.
+
+## Security correction: legacy credential cut-over, durable refresh state and minimal claims
+
+### Republished machine-key material has been removed
+
+Two duplicated sections in this document previously copied the legacy validation and decryption
+values into a second tracked file. They now identify the historical material only by non-secret
+SHA-256 fingerprints:
+
+- development validation material:
+  `sha256:64b7990f63e537b28824e35321b5339db436427ff46755f7de36e484169519f4`;
+- release validation setting:
+  `sha256:da4916cea319caa4c6fddecf69a434cdfbceb5ea6fc280922a7eca7b3293afe4`;
+- shared 3DES decryption material:
+  `sha256:4886c93e723fe42dc604e4cca065708c304f05308a17cc6aa2af9d40204a64ac`.
+
+No tracked modern configuration or test fixture contains the material. Its historical disclosure
+means it must be treated as compromised: any surviving legacy deployment must rotate its machine
+key, and every remaining format-2 credential must be migrated or administratively reset. Repository
+history and the frozen read-only legacy configuration remain sensitive records; never copy their
+values into a ticket, log, sample, test or deployment manifest.
+
+### The first successful legacy sign-in now performs the bounded BCrypt cut-over
+
+This entry supersedes both the earlier “administrative reset is the only path” correction and every
+source comment that repeated it. The primary AAP 0.7.5.5 path now exists:
+
+- `MembershipStore` reads the external membership row's stored value, `PasswordFormat` and
+  `PasswordSalt`; no entity or EF migration owns those legacy objects.
+- `ILegacyCredentialVerifier` is implemented by a migration-only verifier that is disabled by
+  default, accepts configuration only through `LegacyCredentials:*`, bounds every input, supports
+  legacy clear, SHA-1 and encrypted rows, performs fixed-time comparisons, and clears temporary
+  cryptographic buffers.
+- The verifier returns only whether a recognised legacy representation matched. It exposes no
+  plaintext recovery or general decryption operation.
+- `AuthService` still performs one current-cost BCrypt comparison for every structurally valid
+  request, pairing legacy rows with the hasher's decoy so migration does not recreate the account
+  timing oracle.
+- On the first accepted legacy presentation, `AuthService` hashes the submitted credential with the
+  current BCrypt implementation and immediately replaces the legacy value through
+  `SetPasswordHashAsync` before issuing tokens.
+- Administrative reset remains the fallback for disabled migration, malformed or unverifiable rows,
+  and accounts whose owners do not sign in before the migration window closes.
+
+The migration secret is supplied only by an environment-backed secret while legacy rows remain.
+After cut-over, disable the verifier, remove that secret and reset any residual legacy credentials.
+
+### Refresh-token state is durable, shared and consumed only after fallible reads
+
+The process-local singleton store has been removed. `IRefreshTokenStore` and `ITokenService` are
+scoped asynchronous services backed by the additive application-owned table
+`DnnMigration.RefreshTokens`. Production applies
+`backend/src/DnnMigration.Infrastructure/Persistence/Scripts/CreateRefreshTokenStore.sql`
+explicitly; application startup and EF migrations do not create or alter any legacy object.
+
+Only SHA-256 token and client-binding digests are stored. Issue, inspect, rotation and revocation
+are shared across restarts and replicas. Rotation runs under a serializable transaction with update
+locks; a bounded five-second same-client retry is classified as concurrent use without revoking the
+account, while a replay from another client revokes every family for that account. Spent
+fingerprints remain until the family's absolute expiry rather than being trimmed to a generation
+count, and expired cleanup is bounded to 500 rows per operation.
+
+`AuthService.RefreshAsync` first performs a non-consuming inspection, then completes every tenant,
+account, credential-state, advisory and profile read, and only then requests the atomic rotation.
+A dependency failure therefore cannot consume the caller's usable token without returning its
+successor.
+
+### Access tokens carry identity, not mutable authority
+
+The custom claim vocabulary is now exactly `sub`, `portal_id` and `jti`; user names, host status,
+roles and permission keys are absent. Server-side authorization re-reads authoritative state, and
+the Angular client follows login and refresh with `GET /api/v1/auth/me` to obtain its display and
+affordance snapshot. The token service accepts only account ID, portal ID and cancellation on issue,
+and opaque refresh material plus the server-observed client binding on rotation.
+
+## API checkpoint review closure — contract changes made explicit
+
+The corrections below were made while closing the final sixteen findings on the HTTP API
+checkpoint. They supersede any earlier description of a permissive request body, an implicit module
+placement, module-level paging, a read-only portal-settings resource or duplicate public route
+families.
+
+### Unknown JSON request members are refused across the whole API
+
+**Earlier target behaviour.** `System.Text.Json` silently discarded properties a request contract
+did not declare. The module-settings client consequently sent `isDefaultModule` and `allModules`
+while the server accepted `setAsDefaultSettings` and `applyToAllModules`; both far-reaching
+instructions vanished, six additional unsupported fields vanished with them, and the request still
+answered successfully.
+
+**Target behaviour.** MVC deserialisation uses
+`JsonUnmappedMemberHandling.Disallow` for every request body. An undeclared member is a model-state
+failure and produces the same field-keyed `ValidationProblemDetails` shape as any other invalid
+request. The setting is global because hand-maintained client/server mirrors exist throughout the
+API; limiting it to the module request would leave the identical silent-loss trap on every other
+contract.
+
+**Operational consequence.** A client compiled against an obsolete or wider request shape receives
+`400` instead of a partial success. Response serialisation is unaffected.
+
+### A module update names the exact page placement it changes
+
+**Earlier target behaviour.** `UpdateModuleRequest.tabId` was optional on the client and unread by
+the service. When a module appeared on several pages, the service selected the placement with the
+lowest `TabModuleId`, so an edit submitted for one page could rewrite another page and return a
+description of the placement the caller had not addressed.
+
+**Target behaviour.** `tabId` is required and is used for an exact module-and-page lookup. A module
+that is not placed on the named page is refused with `module.placement_not_found`; there is no
+fallback to another placement. The two instruction members use the names accepted by the server and
+shown by the legacy screen: `setAsDefaultSettings` and `applyToAllModules`.
+
+**A deliberate surface reduction.** The update request and the Angular module-settings view no
+longer expose `paneName`, `alignment`, `color`, `border`, `displayPrint` or
+`displaySyndicate`. Those six values belong to Web Forms pane layout, server-side rendering or the
+excluded syndication surface. They also had no create-contract or read-contract counterpart, so
+accepting them only on update would have been write-without-read-back. Their stored columns are not
+dropped and an ordinary update leaves them unchanged. The now-unused client-only
+`MODULE_ALIGNMENT` vocabulary is removed with the controls that consumed it.
+
+### Module listing pages the placement rows it returns
+
+**Earlier target behaviour.** The service paged modules and then expanded each module into one row
+per page placement. A page could therefore return more rows than its requested size, while
+`totalCount` and `pageSize` were fabricated with `Math.Max` to make the metadata appear large
+enough for the expanded result.
+
+**Target behaviour.** Filtering and ordering still identify the eligible modules, but paging is
+applied after expansion to the placement-row projection — the same unit carried in `items`.
+`totalCount` is the exact number of placement rows, `pageSize` is the requested size, and adjacent
+pages neither overlap nor skip a placement.
+
+**Operational consequence.** A module placed on several pages consumes several positions in the
+result set. That is a contract correction: the paging metadata now describes the rows the caller
+actually receives rather than a different upstream entity.
+
+### Portal settings are a writable projection of the portal row
+
+**Earlier target behaviour.** `GET /api/v1/portals/{portalId}/settings` existed, but the matching
+update operation did not. The Angular settings screen could display the legacy Site Settings field
+set without having an AAP-authorized endpoint that persisted it.
+
+**Target behaviour.** `PUT /api/v1/portals/{portalId}/settings` accepts the twenty-six editable
+settings fields and returns the updated `PortalSettingsDto`. The portal identifier remains
+route-owned and the immutable portal GUID is absent from the body. The operation uses the same
+measured Site Settings validation rules, host-only-field guard, administrator-retention invariant,
+mapping and cache invalidation as the full portal update.
+
+There is still no `PortalSettings` table. Both verbs project columns on the `Portals` row; the
+legacy `PortalSettings` class was a request-lifetime composite rather than a persisted aggregate.
+
+**Processor credential semantics.** The processor credential is accepted only inbound and is never
+returned, so the settings resource carries `ProcessorCredentialReference` rather than a password box.
+Because no response echoes it, the request carries the three states explicitly: `null` keeps the
+stored reference, the empty string clears it, and a non-empty value must be a `secret://`
+managed-secret reference. The Angular screen represents the clear operation as its own control, so
+two visually identical submissions cannot act differently.
+
+### Each operation has one canonical public route
+
+**Target route families.** Modules and accounts are flat:
+`/api/v1/modules` and `/api/v1/users`; membership policy is
+`/api/v1/users/settings`. Roles, role groups and profile definitions are likewise exposed only at
+`/api/v1/roles`, `/api/v1/role-groups` and `/api/v1/profile-definitions`. These controllers
+resolve the tenant from the request host through the scoped portal context rather than accepting a
+second portal identity in the path.
+
+Portal aliases are the deliberate exception because an alias is owned by a portal:
+`/api/v1/portals/{portalId}/aliases`. Page listing remains portal-owned for the same reason. The
+permission API is only the read-only catalogue at `/api/v1/permissions` and
+`/api/v1/permissions/{permissionId}`.
+
+**Withdrawn duplicate identities.** The following public families no longer exist:
+portal-nested modules, users, roles, role groups and profile definitions; host-wide
+`/api/v1/portal-aliases`; and the module- and page-scoped permission child reads. They were not
+compatibility aliases: OpenAPI exposed each as a separate operation, so generated clients had to
+guess which resource identity was authoritative.
+
+**Unresolved tenant behaviour.** A flat tenant-dependent route addressed through a host with no
+matching alias is refused with `403 portal.tenant_unresolved`; it is never defaulted to portal zero
+or minus one. Runtime validation pins every canonical collection at `200` for a resolved tenant and
+every withdrawn family at `404`.
+
+### Page updates preserve stored skin and container tokens
+
+**Earlier target behaviour.** `UpdateTabRequest` exposed `skinSrc` and `containerSrc`. Because the
+mapping was a whole-row replacement, simply omitting either optional JSON member deserialised it as
+null and erased the stored token during an unrelated page edit.
+
+**Target behaviour.** Neither member is writable. The mapper never assigns the two columns, so their
+stored values survive a page update byte-for-byte. Both remain on the read-only page-detail
+projection, which keeps existing configuration observable without reintroducing the excluded
+skinning and container-management surface.
+
+### Login verification-code absence has one type on both clients
+
+The optional verification code is `string | null` in the Angular request and `string?` in the
+.NET request. Omission, null and the empty string all mean that no code was supplied, matching the
+legacy empty-string sentinel and the hidden-by-default verification control. This is a type
+alignment only; the verification-required and invalid-code outcomes are unchanged.
+
+### Request completion logs no longer receive exception objects
+
+**Earlier target behaviour.** The request-logging middleware passed the caught exception to
+Serilog after rethrowing it, while the global exception handler also logged the failure. That wrote
+the same failure twice and allowed exception messages — including provider or parser text quoting
+submitted values — through the generic completion log.
+
+**Target behaviour.** The completion event records a bounded chain of exception **type names** in
+`FailureType`, with no messages, stack or exception object. The global exception handler remains
+the single owner of detailed failure diagnostics, joined to the request by the correlation
+identifier. Successful requests record the fixed value `none`.
+
+### Profile-definition host scope follows the legacy `-1`-to-`NULL` translation on every read
+
+**Legacy behaviour.** Profile-property definitions expose the sharpest collision in the old null
+table. `Portals.PortalID` starts at `-1`, but the core provider also passed that value through
+`GetNull` on `AddPropertyDefinition`, `GetPropertyDefinitionByName` and
+`GetPropertyDefinitionsByPortal`
+(`Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L1021,L1039,L1042`).
+`Null.GetNull` converted it to `DBNull`, so those operations wrote or matched only rows whose
+`ProfilePropertyDefinition.PortalID` was SQL `NULL`. The controller's single-item method first
+searched that scoped catalogue, then fell back to an unscoped identifier lookup on a miss
+(`Library/Components/Users/Profile/ProfileController.vb:L425-L439`), which could reveal another
+tenant's declaration.
+
+**Target behaviour.** `UserProfileRepository.DefinitionsInPortalScope` is the single predicate for
+collection, name and identifier reads. A caller naming `-1` reaches only SQL-null host
+declarations; it does not also reach a row physically storing `-1`, and every other identifier
+matches exactly. `UserMappings.ToNewDefinition` applies the same translation before a create is
+staged, while `UserMappings.ToDto` restores `-1` at the response boundary. The old unscoped
+single-item fallback is deliberately not reproduced because it violates the migration's tenant
+isolation requirement. Integration coverage stores both encodings simultaneously and proves that
+all three read shapes return the same scope.
+
+### Blocking credential and profile remediation is durable, server-enforced and fails closed
+
+**Legacy behaviour.** The post-credential status values for an administrator-forced password
+change, an expired password and an incomplete required profile were blocking UI states:
+`Website/admin/Authentication/Login.ascx.vb` sent the caller to an interstitial or profile step and
+did not expose the ordinary application surface. The two shipped-default-credential outcomes were
+different: they promoted an already-successful sign-in status, so forcing a change was an intent
+carried only by that one response and was not persisted as account state.
+
+**Target behaviour.** `MustChangePassword` and `MustUpdateProfile` are no longer client-only
+advisories. Login and refresh responses retain both values. The ACCESS TOKEN CARRIES NEITHER: it carries
+identity only, per the minimal-claims correction recorded above, so no remediation flag can outlive
+the request that read it. Enforcement is therefore entirely server-side and always current - a
+restricted-session stage in the pipeline and an authorization handler both re-evaluate the account
+and tenant from authoritative storage on every protected request. While
+either requirement remains active, only authentication lifecycle operations and the account
+owner's matching password or profile remediation route are admitted; every ordinary protected
+route is forbidden.
+
+**Shipped-default credentials become durable remediation.** A successful login with one of the
+credentials distributed with the product now sets `Users.UpdatePassword` before the token pair is
+issued. The password-change workflow already clears that flag, so the requirement survives access
+token expiry, refresh rotation and a new process until the credential is actually replaced. This is
+a deliberate strengthening over the ephemeral legacy success-with-caveat status and is necessary
+because the raw submitted credential is unavailable on later requests.
+
+**Profile-state failure now fails closed.** An earlier target revision treated a failed
+required-profile evaluation as "no advisory" and issued an unrestricted session. That behaviour is
+not preserved: once profile completion is an authorization input, an unreadable store provides no
+evidence that the requirement is satisfied. Login is therefore refused, refresh rotation is ended,
+and a protected request is forbidden when the current state cannot be evaluated. The outward
+failure names no profile definition or stored value.
+
+**Why no claim carries the decision, and why none carries the state either.** A claim would let the
+client choose its remediation experience without a further call, but it becomes stale the moment an
+administrator imposes a requirement or the caller completes one, and a token lives for minutes. The
+state is therefore reported on the login and refresh RESPONSES - which the client reads once, at the
+moment it must choose a screen - and re-read from storage on every protected request. A response
+value cannot preserve a cleared block or bypass a newly imposed one, because nothing consults it
+after the redirect it caused.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Dtos/Auth/AuthenticationRemediationState.cs`,
+`backend/src/DnnMigration.Application/Dtos/Auth/LoginResponse.cs`,
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IAuthService.cs`,
+`backend/src/DnnMigration.Api/Authorization/RemediationAuthorizationHandler.cs`,
+`backend/src/DnnMigration.Api/Authorization/AllowDuringRemediationAttribute.cs`,
+`backend/src/DnnMigration.Api/Controllers/AuthController.cs`,
+`backend/src/DnnMigration.Api/Controllers/UsersController.cs`,
+`frontend/src/app/core/models/auth.model.ts`.
+
+
+### Liveness and readiness are separate contracts
+
+**Legacy behaviour.** `Website/KeepAlive.aspx` proved only that the IIS worker could answer a
+request. It did not test SQL Server or gate another process.
+
+**Target behaviour.** `/health` is retained as the backward-compatible liveness address, and
+`/health/live` is the stricter view that executes no registered check whatsoever. `/health` keeps
+every probe that is NOT tagged as a readiness signal - today the audit-delivery probe - so a monitor
+pinned to it still learns that the audit transport has failed, while neither view can be held down
+by a database outage. `/health/ready` selects only checks tagged `ready`;
+it names the custom database connection probe and the SQL Server package probe and returns an
+unhealthy result when either cannot serve. All three publish the same non-secret JSON shape and
+remain anonymous, uncached, unthrottled and exempt from HTTPS redirection.
+
+**Operational consequence.** The image's own health check and the compose condition stay on
+`/health`, because the validation topology declares no database service and the store it reaches is
+external: gating the front end on readiness there would hold it back for a reason unrelated to the
+API's ability to serve it. An orchestrator that provisions the store alongside the API points its
+readiness probe at `/health/ready` instead, and a process supervisor may use either liveness path
+without restarting a healthy process merely because SQL Server is temporarily unavailable.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/DependencyInjection.cs`,
+`backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`,
+`backend/src/DnnMigration.Api/Extensions/ApplicationBuilderExtensions.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Api/HealthCheckTests.cs`,
+`docker/api.Dockerfile`,
+`docker/docker-compose.yml`.
+
+### Module content transfer is explicitly bounded at one mebibyte
+
+**Legacy behaviour.** The Web Forms import page read an uploaded XML document without a
+feature-specific byte ceiling in the application code.
+
+**Target behaviour.** Both module export and import actions declare a one-mebibyte request-size
+limit explicitly, matching Kestrel's global administration-API ceiling. Export requests are small,
+but naming the same bound on both content-transfer operations prevents a later global-limit change
+from silently widening one or narrowing the other.
+
+**Operational consequence.** An import document whose JSON request body exceeds one mebibyte is
+rejected while the server is reading it, before model binding or XML parsing allocates further
+state. Increasing the limit is an explicit endpoint contract change rather than an incidental
+server configuration edit.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Api/Controllers/ModulesController.cs`,
+`backend/src/DnnMigration.Api/Extensions/ServiceCollectionExtensions.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Api/ModuleApiTests.cs`.
+### Frontend API classification and wire-contract corrections
+
+**Bearer tokens are attached only after URL parsing, exact-origin comparison and a
+segment-bounded path match.** The production API base is the relative `/api/v1`,
+resolved against `document.baseURI`; the development base is the configured
+absolute API origin. A request is now classified as API traffic only when its
+resolved origin exactly equals the configured origin and its path is either
+`/api/v1` or begins `/api/v1/`. The former substring test accepted any hostile
+absolute URL containing that text and also confused `/api/v10` with version 1,
+which could disclose both the current bearer token and a rotated token after a
+401. Query strings and fragments do not influence the decision.
+
+**The Angular module-update request now mirrors the C# request exactly.** It has
+the same sixteen required members, in the same order after camel-casing.
+`tabId` is a required member and the three
+administrator-intent members — `isDeleted`, `setAsDefaultSettings` and
+`applyToAllModules` — are declared optional, because the server supplies a
+documented default for each when it is absent; the module-settings component
+nevertheless sends all four, taking the first two from its loaded state and
+mapping the two intent controls to the server spellings through a shared
+projection helper rather than composing the body inline. Six
+legacy presentation-only placement values — pane name, alignment, colour,
+border, print and syndication flags — remain local screen state and are absent
+from the wire request, rather than being advertised as fields the server
+silently ignores.
+
+**The frontend permission model publishes only shapes the API produces.** The
+persisted four-key vocabulary and the five-member catalogue definition remain.
+The former `ModulePermission` and `TabPermission` interfaces are removed because
+no endpoint returns those grant rows and no production consumer used them.
+Legacy module/page grant entities and their role/user discrimination remain
+authoritative server-side concerns; a client grant type will be introduced only
+with a matching endpoint, DTO and consumer rather than in anticipation of one.
+
+**Annotated and verified in.**
+`frontend/src/app/core/config/api-endpoints.ts`,
+`frontend/src/app/core/config/api-endpoints.spec.ts`,
+`frontend/src/app/core/models/module.model.ts`,
+`frontend/src/app/core/models/permission.model.ts`,
+`frontend/src/app/core/models/tab.model.ts`,
+`frontend/src/app/features/module/module-settings/module-settings.component.ts`,
+`frontend/src/app/features/module/module-settings/module-settings.component.spec.ts`.
+
+### FINAL credential-migration status: first-login re-hash is active behind a bounded secret-backed window
+
+This final entry supersedes the older administrative-reset-only clarification and the later
+work-factor-only clarification above. The complete delivered behavior is documented in the section
+“CORRECTION: the bounded first-login legacy credential migration is implemented”: legacy membership
+rows can be verified during an explicitly enabled absolute UTC window, are replaced immediately with
+BCrypt on success, and emit a credential-migration audit event containing no secret material.
+Administrative reset remains the fallback after the deadline, for unsupported or damaged rows, and
+for owners who no longer know the credential. Password retrieval remains absent everywhere.
+
+
+### Where two independent corrections disagreed, and what survives
+
+Several corrections were produced independently against the same code, and in a handful of places
+they reached opposite conclusions. Each is settled here so the tree and its notes agree.
+
+**The submitted page on a module update SELECTS the placement; it does not move it.** One correction
+read `UpdateModuleRequest.TabId` as the legacy page picker and assigned it to the placement, gating the
+change on portal administration and validating the destination page. That reading is withdrawn. The
+service resolves the placement BY the submitted page and refuses a request naming a page the module
+does not occupy, so a page identifier cannot also be a destination: one member cannot be both. What is
+kept from that correction is its authority gate — changing the all-pages flag, naming the module as the
+portal default, or rewriting every module's appearance now requires portal administration rather than
+a page-scoped grant — and its requirement that the caller hold the edit grant on the page whose
+placement is being edited. Moving a module between pages is consequently not available through this
+contract and would need a second member naming the destination.
+
+**One bounded legacy-credential verifier, with an absolute deadline.** Two corrections each introduced
+a verifier, an options section and a test suite for the same first-login bridge. The verifier that
+survives is the one whose options are internal to the infrastructure project beside the code that
+consumes the deployment key, extended with the other's absolute UTC deadline, its clock-driven window
+test and its Triple-DES weak-key refusal. Start-up now refuses an enabled window with no deadline, a
+deadline carrying a non-zero offset, a malformed key, or a degenerate key, and the window closes at the
+configured instant whatever the process does afterwards. The configuration section is
+`LegacyCredentials`; the parallel `LegacyCredentialMigration` section is withdrawn, and compose passes
+the surviving names.
+
+**The tenant name and alias stay out of the audit properties.** One correction narrowed the
+portal-installation record to remove the administrator's personal data and the caller's free text while
+keeping the tenant name and alias; the other removed those as well. The narrower set survives, because
+the record's envelope already carries the tenant key and both values are caller-supplied text bounded
+in length and not in content. The presence-only flags for the two free-text members and the
+administrator's numeric key are kept from the wider set, and the sink's key allowlist admits exactly
+the properties the services now record.
+
+**Audit values are refused, not repaired.** One correction rendered every property into text and
+replaced control characters with a placeholder. The sink that survives never renders properties into a
+line at all: it admits only allowlisted keys, bounds each value, and replaces a value containing a
+control character or a separator with a fixed scalar, counting any key outside the vocabulary as
+withheld. The property being protected is the same — no submitted text can forge a second record — and
+the assertions that proved it were re-pointed rather than removed.
+
+**Membership-settings bounds are declared on the write shape.** A validator declared on the read
+projection could never run, because no endpoint binds that shape. Its bounds — the closed display,
+visibility and control vocabularies, the page-size range, the display-name width and the compilable
+email expression — are enforced on the update request and asserted against the validator the pipeline
+actually resolves.
+
+**The composed topology terminates TLS at an overlay, not from compose secrets.** Two corrections
+described incompatible transports for the front-end container. One mounted a certificate pair as
+read-only compose secrets, terminated TLS inside the container and published it on 4443; the other
+kept the base topology on plain HTTP for the two loopback probes the acceptance gates issue and moved
+TLS into an overlay that mounts a server block and a certificate directory. The overlay survives,
+because it is what the shipped `docker/nginx.conf` actually implements: that file declares one
+plain-HTTP server plus two wildcard includes that match no file in the image, and it reads no
+`/run/secrets` path anywhere. Two fragments of the withdrawn design had nonetheless survived in
+`docker/docker-compose.yml` — a service-level `secrets:` reference and a `4443:443` publish — and
+because no top-level `secrets:` key declared them, **the compose project would not parse at all**:
+both `docker compose build` and `docker compose up` refused it, with and without the overlay, so the
+container gates could not run. Both fragments are withdrawn rather than completed: declaring the
+secrets would have delivered files nothing reads and, since the declaration named them with the
+required-variable form, would have made the base topology refuse to start unless a deployment supplied
+certificates it does not need. TLS is now activated one way — `docker compose -f
+docker/docker-compose.yml -f docker/docker-compose.tls.yml` — and the header comments, the README
+verification commands and the mount path named in `nginx.conf` were each corrected to the measured
+behaviour: `http://localhost:4200` and `http://localhost:8080/health` both answer 200, not a redirect,
+because both address a loopback authority that every transport stage here exempts.
+
+**The two transport edges return different redirect codes, deliberately.** The proxy answers a
+plain-HTTP request for a non-loopback host with 307 and the API's own transport stage answers with 308;
+a comment in the proxy configuration claimed the two agreed, which was never true. Both codes preserve
+the method and the body, so the difference is cacheability alone, and the two edges do not face the same
+caller: the proxy's answer is cached by real browsers and by every intermediary on the path, where
+reversibility during a certificate replacement is worth having, while the API's stage is a
+defence-in-depth backstop on the private container network that no browser addresses, where permanence
+is the honest description of a perimeter that terminates TLS and carries no cache blast radius. The
+claim of agreement is removed and the reason for the split is stated at both edges.
+
+**The TLS overlay was activated and measured, and three further disagreements only appear when it is.**
+The overlay is the one supported way to terminate TLS in the front-end container, so it was brought up
+against a generated certificate rather than reasoned about. Three defects surfaced, each the product of
+two revisions naming the same thing differently, and each invisible to every build, unit, integration
+and browser suite:
+
+- *The mounted server block named a variable that does not exist, and nginx refused to start.*
+  `docker/nginx.tls.conf` carried `$csp`, from a revision whose policy variable is now
+  `$content_security_policy`, so nginx exited with `unknown "csp" variable` and the container restarted
+  in a loop. The same file wrote its own strict-transport-security value — two years, with `preload` —
+  where the main configuration resolves `$hsts_policy` to one year without preload and states why:
+  preload is not reversible on any useful timescale and binds every subdomain. Both values now come from
+  the declared variables, which is the principle the main configuration states for itself.
+  `docker/nginx.tls.conf.example` named a `$strict_transport_security` that likewise does not exist and
+  is corrected the same way.
+- *Mounting a TLS block silently made the container report unhealthy for its whole life.* The
+  http-level include that loads a mounted block sits above the main server, and nginx makes the first
+  server listening on an address the default for it — so the mounted block's own port-80 redirect
+  server became the catch-all for port 80 and answered the container's own health probe with a redirect
+  to HTTPS, which the probe could not verify. The main plain-HTTP server is now the explicit
+  `default_server`, which makes the probe independent of include order and of whatever a deployment
+  mounts. Measured: the front-end container reports healthy in six seconds with TLS active, and the
+  plain-HTTP base topology behaves exactly as before.
+- *The overlay's stated security property did not hold.* It withdrew the API's published port with
+  `ports: []`, on the stated ground that a list-valued key is "last one wins" in an overlay. It is not:
+  list-valued service keys merge by union, so the empty sequence contributed nothing and the API stayed
+  published on the host. The compose-spec `!reset` tag removes an inherited key and `!override` replaces
+  an inherited list; with those, the overlaid project publishes nothing for the API and 80 and 443 for
+  the front end, and the base project is unchanged. Verified by reading the resolved configuration and
+  by failing to reach the API on the host port while the SPA answered over TLS.
+
+The redirect in the mounted block is also aligned to 307. Its own note argued only against 301, on the
+ground that 308 preserves the method and body — which 307 does equally — so the cacheability argument
+decides it, and the two files are the same browser-facing edge answering the same class of request.
+
 ### The local launch profile binds 8080, not the 5000 the prior guide documents, and no IIS profile is carried forward
 
 **Legacy behaviour.** There was no launch profile, because there was nothing to launch. The legacy
@@ -3014,9 +4273,11 @@ decisive reason is `frontend/src/environments/environment.development.ts:L25`, w
 front of it. A local API on any other port answers the development front end with a refused
 connection, and no build step, unit test or linter reports it. The same number is fixed everywhere
 else it appears: `docker/api.Dockerfile:L69` sets `ASPNETCORE_URLS=http://+:8080` and `:L73` exposes
-8080, `docker/nginx.conf:L61` proxies `/api/` to `http://api:8080/api/`, `docker-compose.yml:L24`
-publishes `8080:8080`, and the end-to-end gate probes `http://localhost:8080/health`. Keeping the
-local port equal to the container port also keeps the profile honest about a constraint the
+8080, `docker/nginx.conf:L145` proxies `/api/` to `http://api:8080/api/`, and
+`docker-compose.yml:L22-L23` exposes 8080 only to the private compose network. The image and compose
+health checks probe `http://127.0.0.1:8080/health` from inside that container rather than
+publishing Kestrel on the host. Keeping the local port equal to the container port also keeps the
+profile honest about a constraint the
 container enforces: `docker/api.Dockerfile:L39` creates `appuser` with `adduser -D -u 1000 appuser`
 and `:L63` switches to it, and an unprivileged process cannot bind a port below 1024, so no profile
 here may nominate one. `docs/project-guide.md` is a prior-run planning artefact and is reference
@@ -3306,8 +4567,8 @@ single object across both operations and chose between them by testing the ident
 against `-1` at L42, L68 and L113, saving through the branch at L107-L111. One shape
 therefore served as request and response because the screen never left the server.
 
-**Target behaviour.** `POST /api/v1/portals/{portalId}/role-groups` binds
-`CreateRoleGroupRequest` and `PUT .../role-groups/{roleGroupId}` binds
+**Target behaviour.** `POST /api/v1/role-groups` binds
+`CreateRoleGroupRequest` and `PUT /api/v1/role-groups/{roleGroupId}` binds
 `UpdateRoleGroupRequest`. Each declares exactly two members - `RoleGroupName` and
 `Description` - and `RoleGroupDto` is now returned and never bound. Two validators
 replace the single one that governed the projection, both reading the shared widths
@@ -3328,10 +4589,10 @@ route about, on any path, including paths nobody has written yet.
 is an `IDENTITY` column and the portal key is set on insert from the procedure's own
 tenant argument. The two request contracts are exactly that member set.
 
-**Consequence for callers.** None that breaks an existing one. No unmapped-member
-handling is configured, so a caller still sending the wider projection has its surplus
-members ignored exactly as before rather than refused - the change removes a false
-promise from the published schema without narrowing what the endpoint tolerates.
+**Consequence for callers.** A caller still sending the wider projection is now
+refused with a field-keyed `400`. The API globally disallows unmapped JSON members, so
+a surplus identifier cannot be silently discarded while the response reports success.
+The change removes the false promise from the schema and makes drift visible at runtime.
 
 ### Profile-definition writes bind two different contracts, because the two procedures write different columns
 
@@ -3340,9 +4601,9 @@ object through a reflective property editor and chose between adding and updatin
 testing the identifier against the null-integer sentinel at L449, calling the add path
 at L451 and the update path at L459.
 
-**Target behaviour.** `POST /api/v1/portals/{portalId}/profile-definitions` binds
+**Target behaviour.** `POST /api/v1/profile-definitions` binds
 `CreateProfilePropertyDefinitionRequest`, carrying ten members;
-`PUT .../profile-definitions/{propertyDefinitionId}` binds
+`PUT /api/v1/profile-definitions/{propertyDefinitionId}` binds
 `UpdateProfilePropertyDefinitionRequest`, carrying nine.
 `ProfilePropertyDefinitionDto` is returned by every read and by both successful
 writes, and is bound by nothing. Two validators replace the single one that governed
@@ -3451,7 +4712,7 @@ membership - and that assertion was wrong; it is recorded here so that nobody re
 **Legacy behaviour.** `SecurityRoles.ascx.vb:L246` bound `GetUserRolesByRoleName` to a grid that rendered
 the account and sorted on what it rendered, with no page-size or field bound of any kind.
 
-**Target behaviour.** `GET /api/v1/portals/{portalId}/roles/{roleId}/users` binds its own
+**Target behaviour.** `GET /api/v1/roles/{roleId}/users` binds its own
 `RoleUserPagedRequest`, whose validator applies the ten-name role-membership sortable set. `CreatedDate`,
 `LastLoginDate` and `IsApproved` are accepted where they were previously refused.
 
@@ -3800,35 +5061,21 @@ delivered read is explicit, total and culture-invariant: an absent, blank or
 unparseable setting applies the default rather than faulting a sign-in over a mistyped
 configuration row.
 
-**GAP REPORTED: the profile advisory is not evaluated.** The legacy condition at
-`UserController.vb:L1189-L1193` combined a per-tenant setting,
-`Security_RequireValidProfileAtLogin`, with the completeness check at
-`ProfileController.vb:L305-L319`. That setting is not tenant configuration in the
-schema sense — it is a module setting on the tenant's User Accounts module instance,
-reached through `UserModuleBase.GetSetting` over `UserController.GetUserSettings` — and
-both it and the profile-property definitions the check reads belong to the
-account-administration vertical rather than to sign-in. Evaluating them in the sign-in
-service would place a profile rule and two further reads on the anonymous credential
-path and would give the completeness rule a second implementation.
+**Target behaviour.** The legacy condition at `UserController.vb:L1189-L1193`
+combined the tenant's `Security_RequireValidProfileAtLogin` membership setting with
+the completeness check at `ProfileController.vb:L305-L319`. That rule now has one
+authoritative implementation:
+`IUserService.RequiresProfileCompletionAsync` reads the setting and the portal-scoped
+required profile-property definitions, then compares them with the account's values.
+The sign-in and refresh paths ask that service for the result after credentials have
+been accepted rather than duplicating profile policy inside authentication.
 
-**Superseded: the flag now has an authoritative producer.** This entry described the tree
-while `MustUpdateProfile` was carried and never set. The rule has since been implemented
-ONCE, as `IUserService.RequiresProfileCompletionAsync` in the account-administration
-vertical that owns the profile-property definitions and reads the tenant's
-`Security_RequireValidProfileAtLogin` membership setting, and the sign-in service asks it
-the question rather than re-deriving the answer. Both objections above are answered rather
-than overridden: the rule still has exactly one implementation, and the two extra reads land
-on an **already-authenticated** path, after the credential has been accepted, never on the
-anonymous one. A read that fails is treated as "no advisory", so an advisory outage can
-never become a sign-in outage. **Operational consequence:** an installation that relied on
-being sent to a profile-completion step at sign-in now receives the advisory on the wire;
-this application does not yet render a step for it, and the profile screens remain reachable
-and enforce their own required-field rules.
-path and would give the completeness rule a second implementation. The
-`MustUpdateProfile` flag is therefore carried by the response contract and left unset
-by the sign-in service. **Operational consequence:** an installation that relied on
-being sent to a profile-completion step at sign-in is not sent there; the profile
-screens remain reachable and enforce their own required-field rules.
+**Blocking consequence.** `MustUpdateProfile` is emitted in the response and access
+token, re-evaluated on refresh, and enforced by the remediation authorization handler.
+While it remains true, only the account owner's profile read/update endpoints and the
+explicit authentication/remediation routes are available; unrelated protected API
+operations are refused. The Angular session model carries the same flag, so the
+client-side state no longer contradicts the server-enforced contract.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Application/Services/AuthService.cs`,
@@ -4409,6 +5656,22 @@ input. The redaction is of messages specifically, not of diagnostic detail gener
 entry remains actionable. A route template is also strictly better than a path for aggregation,
 because every request to one operation reports the same value.
 
+**And the exception handler is the ONLY owner of exception diagnostics.** The
+request-logging stage sits outside the handler, so a failure passes through it first. It
+records the failure's **type name and nothing else** - no exception object is handed to
+the logger there. Passing one would have the framework render the message, every inner
+message and the whole stack trace into the request log, ahead of and in addition to the
+allowlisted description above: the redaction would be defeated in the one log that is
+highest-volume, longest-retained and most widely readable, and the same failure would be
+recorded twice. The two entries share a correlation identifier, which is how a reader
+moves from the type name in the request log to the bounded description in the handler's
+entry. Verified by driving a failure whose message named a server, a database and a
+login: the request-log entry carried the exception type, a null exception object, and
+neither the message nor any stack frame.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/ErrorHandling/GlobalExceptionHandler.cs`,
+`backend/src/DnnMigration.Api/Middleware/RequestLoggingMiddleware.cs`.
+
 ### The API version segment is mandatory
 
 **Legacy behaviour.** Versioning was configured to read the version from the URL path and
@@ -4438,7 +5701,8 @@ reads.
 
 **Why.** Some endpoints must be reachable without a token, and the document said the opposite of
 the contract for every one of them. Sign-in and refresh are called precisely when the caller has
-no token yet, and `/health` is probed by the container orchestrator with no credential at all.
+no token yet, and the health views are probed by the container's own health check and by any
+orchestrator in front of it with no credential at all.
 The interactive console also sent an `Authorization` header where none belongs.
 
 **Note on the direction of the test.** The filter tests for the ABSENCE of `IAllowAnonymous`
@@ -4517,10 +5781,13 @@ at once means one restart reveals all of them instead of one per restart. And a 
 that lives in the repository is the same defect the legacy password store had; declining to
 commit one, even for convenience, is the whole point of moving away from it.
 
-**Note on transport security.** No HTTPS redirection is configured. TLS terminates at the reverse
-proxy, and the container health check probes the API over plain HTTP on the internal network, so
-a redirect would break it. `UseForwardedHeaders` is configured instead, so the application sees
-the original scheme and caller address from the headers the proxy sends.
+**Note on transport security.** TLS terminates at the browser-facing edge, and the container
+health check probes the API over plain HTTP on the internal network, so the API listens on plain
+HTTP by design. `UseForwardedHeaders` is installed so the application sees the original scheme and
+caller address from the headers the proxy sends, and from trusted hops only. HTTPS redirection is
+then enforced on top of that in the production overlay, branched so that the plain-HTTP health
+probe and any loopback-addressed request are never answered with a redirect - the two cases in
+which a redirect would break the deployment rather than protect it.
 
 **Note on the portal-alias resolution stage.** Its position in the pipeline is documented and
 deliberately left empty rather than filled with a stub, because the stage is not yet part of the
@@ -5259,65 +6526,143 @@ scope, and doing so on the request path of an API whose clients are a single-pag
 than crawled pages. Request-level observability is met instead by structured logging with a correlation
 identifier, which is retained.
 
-### The health document publishes four fixed members and then per-probe detail
+### The health documents publish exactly four fixed members; probe detail stays in logs
 
 **Legacy behaviour.** `Website/KeepAlive.aspx` was the nearest analogue: a page that returned
 successfully if the application could serve a request. It ran no dependency check and reported nothing
 about the database.
 
 **Target behaviour.** `GET /health` is anonymous, uncached, and answers a JSON document whose first four
-members are the published contract — `status`, `timestamp`, `version`, `serviceName` — followed by
-`totalDurationMs` and a `checks` array naming each registered probe with its own status and duration, and
-its description where the probe supplies one. `serviceName` and `version` are read from the running
-assembly rather than written as literals, so they cannot drift from the assembly the container image
-starts. Measured:
+and only four members are the published contract — `status`, `timestamp`, `version`, `serviceName`.
+`serviceName` and `version` are read from the running assembly rather than written as literals, so they
+cannot drift from the assembly the container image starts. Measured:
 
 ```json
 {"status":"Healthy","timestamp":"2026-08-04T12:34:44.08+00:00","version":"1.0.0.0",
- "serviceName":"DnnMigration.Api","totalDurationMs":1.38,
- "checks":[{"name":"database","status":"Healthy","durationMs":0.09,
-            "description":"Database connectivity is available."},
-           {"name":"sqlserver","status":"Healthy","durationMs":1.25}]}
+ "serviceName":"DnnMigration.Api"}
 ```
 
-**Why the difference is deliberate.** The four fixed members are what `docs/project-guide.md` publishes
-to operators, so an operator or monitor that reads only those is served identically by the document and
-by the documentation. The per-probe array is additive and exists because two probes run against the same
-database: a bare status word reports that something is wrong without saying which probe said so, and
-that distinction is the whole diagnostic value of the endpoint. What is deliberately **absent** matters
-as much: no exception, no probe data dictionary and no connection string, because this endpoint is
-anonymous and a failed database probe's exception message routinely carries the server, the database and
-sometimes the login. The endpoint must also stay anonymous and unthrottled — the image's `HEALTHCHECK`
-probes it with `wget --spider` before any credential exists, and the front-end service is held back by
-`condition: service_healthy` until it answers.
+**Where the diagnostic detail went.** Each completed health evaluation writes one structured log entry
+containing the total duration and a bounded summary of every registered probe. That preserves the
+operator-facing distinction the aggregate status word cannot draw — the database probe reports "not
+configured" and "unavailable" differently, and those send an operator to the container's environment and
+to the instance respectively — without expanding an anonymous wire contract. No probe exception, data
+dictionary or connection string is logged.
 
-### HTTPS redirection is deliberately not enabled
+**One database probe, not two.** An earlier revision registered two — this solution's own connection open
+plus the health-check package's `AddSqlServer` — and justified the pair by claiming they answered different
+questions. They did not: both read `ConnectionStrings:Default` and both opened a connection to the instance
+it names, so the second could disagree with the first only by being flaky, and neither exercises the entity
+model. Whether the model agrees with the schema it maps is settled by the integration suite. Because the
+readiness view runs every readiness-tagged check on every request, and that view is re-polled for the life
+of the container, the duplicate cost a second connection on every poll while distinguishing nothing. It is
+withdrawn. The `AspNetCore.HealthChecks.SqlServer` package reference is **kept**: it is the only route by
+which the health-check abstractions reach a class library that references no web framework, so removing it
+would break the build rather than drop a dead dependency.
+
+**Why the difference is deliberate.** `docs/project-guide.md`, the container probe and the acceptance
+gate define the four-member body. Publishing probe names and timings in an anonymous endpoint widened
+that contract and disclosed deployment detail to every caller. The endpoint must also stay anonymous and
+unthrottled — the image's `HEALTHCHECK` probes it with `wget --spider` before any credential exists, and
+the front-end service is held back by `condition: service_healthy` until it answers.
+
+### A cancelled probe is not a database outage
+
+**Legacy behaviour.** Not applicable; the legacy analogue ran no dependency check, so it had
+nothing to cancel.
+
+**Target behaviour.** The database probe reports `Unhealthy` when the connection string is
+absent and when opening a connection fails, and it **propagates** an
+`OperationCanceledException` raised while the supplied cancellation token is cancelled instead
+of converting it into a verdict.
+
+**Why the difference is deliberate.** That token is cancelled by the probe's own deadline
+elapsing, by the caller disconnecting, or by the host shutting down — none of which says
+anything whatever about whether the instance is reachable. Absorbing it would answer a rolling
+restart with "the database is unavailable" and put a dependency outage that never happened into
+the record of every deployment, which is precisely the diagnosis an on-call engineer would then
+chase. The `when (cancellationToken.IsCancellationRequested)` guard is what makes this correct
+rather than merely well intentioned: the SQL provider raises the *same* exception type for an
+internal command timeout while the token is still live, and that is a genuine connectivity
+failure which must still be reported `Unhealthy`. Testing the token distinguishes the two;
+testing the type alone cannot. Rethrowing is safe for the endpoint, because the health
+infrastructure treats a cancelled check as cancellation of the whole report rather than as a
+fault — and by definition nobody is still waiting for the answer. Verified across all four
+paths: reachable reports healthy, an absent connection string and an unreachable instance both
+report unhealthy with their fixed descriptions, and a pre-cancelled token propagates.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`.
+
+### HTTPS redirection is enforced in-process, exempting only the health endpoint and loopback addresses
 
 **Legacy behaviour.** Transport security was configured at the web server.
 
-**Target behaviour.** The host does not perform in-process HTTPS redirection.
+**Target behaviour.** The host performs in-process HTTPS redirection wherever
+`Https:RedirectEnabled` is set — which the production overlay does — for every request
+except the anonymous `/health` endpoint and any request addressed to a loopback host.
 
-**Why the difference is deliberate.** TLS terminates at the reverse proxy in the
-delivered topology, so the API receives plain HTTP on its container port by design.
-In-process redirection would answer the container's own health probe — which calls
-`http://127.0.0.1:8080/health` — with a redirect to a port nothing listens on,
-making the container permanently unhealthy and, through the compose dependency
-condition, preventing the front end from ever starting. Enforcement belongs at the
-proxy, which is where the certificate is.
+**Why the difference is deliberate.** TLS terminates at the browser-facing edge in the
+delivered topology, so the API receives plain HTTP on its container port by design, and
+that is exactly why the API cannot simply trust its own connection: the scheme the
+browser used arrives as a forwarded header. Enforcing here as well as at the edge is
+what closes the plain-HTTP path to a directly reachable API port, so a caller that
+bypasses the proxy cannot send a credential or a bearer token in clear text. The two
+exemptions are what make enforcement safe rather than destructive. Redirecting the
+health endpoint would answer the container's own probe — which calls
+`http://127.0.0.1:8080/health` — with a redirect to a port nothing listens on, making
+the container permanently unhealthy and, through the compose dependency condition,
+preventing the front end from ever starting; no compiler, analyser or unit test reports
+that. Redirecting a loopback-addressed request would protect nothing, because such a
+request never leaves the machine that issued it, and it is the same carve-out the
+framework's own strict transport security makes by default. The redirect target port is
+configured rather than discovered, because the stage otherwise logs once and forwards
+the request unchanged — a transport control that silently does nothing.
 
-### The forwarded-for header is deliberately not honoured
+### The forwarded-for header IS honoured, from named hops only, and the forwarded host is not
 
-**Legacy behaviour.** Not applicable; there was no rate limiting to partition.
+`GET /health/live` answers the same four-member document and is the one view that executes no
+registered check at all, so it reports the process itself and nothing else. `GET /health/ready`
+answers the same shape from the readiness-tagged probes. All three are anonymous, uncached and
+exempt from transport redirection.
 
-**Target behaviour.** Forwarded headers are processed for scheme and host, but the
-authentication rate limiter partitions by the real socket address rather than by a
-client-supplied forwarded-for value.
 
-**Why the difference is deliberate.** A forwarded-for header is caller-controlled.
-Partitioning a rate limit by it means an attacker changes one header per request and
-the limit never applies to them, while a legitimate caller behind a shared proxy is
-throttled on someone else's behalf. Partitioning by the socket address cannot be
-spoofed by the caller.
+**Legacy behaviour.** Not applicable; there was no rate limiting to partition, and IIS
+terminated TLS in the same process that ran the pages, so the caller's address and the
+request's scheme were already properties of the connection.
+
+**Target behaviour.** `UseForwardedHeaders()` processes the forwarded address and the
+forwarded scheme, with a hop limit of one, from hops the deployment has explicitly named
+in `Proxy:KnownProxies` or `Proxy:KnownNetworks` — and from nowhere else. The forwarded
+**host** is excluded. The authentication rate limiter therefore partitions by the
+caller's real address as reported by the trusted proxy, rather than collapsing every
+caller behind that proxy into one shared budget.
+
+**Why the difference is deliberate, and why the trust boundary is where it is.** A
+forwarded-for header is caller-controlled, so honouring one from a hop the deployment
+does not operate would let an attacker change a header per request and escape the limit
+entirely. The framework's default is to trust the loopback address alone, which inside a
+container means nothing is trusted, so a deployment must name its own proxies — the
+narrower the entry, the less a directly reachable caller can claim. Refusing to honour
+them at all was the alternative and is worse: every caller behind the proxy then shares
+one credential budget, so a single caller can exhaust the sign-in allowance for
+everybody. Measured on the running host: 30 sign-in attempts claiming one forwarded
+address were admitted and the 31st refused, an attempt claiming a different forwarded
+address was admitted with a fresh budget, and an untrusted caller's forwarded scheme was
+ignored rather than believed. The forwarded host stays excluded because tenant
+resolution reads the request host, so accepting a forwarded one would let a caller
+behind a trusted proxy choose which tenant serves it — a cross-tenant escalation
+reachable from a header. `docker/nginx.conf` sets that host itself from `$http_host`.
+
+**Where the trust is named, and why it is one address rather than a subnet.**
+`UseForwardedHeaders` runs immediately inside the exception handler and before correlation,
+request logging and rate limiting, so every later stage sees one settled client address. The
+shipped Compose topology gives nginx the fixed address `172.28.0.10` and names exactly that
+address through `Proxy__KnownProxies__0`. The surrounding subnet is deliberately not trusted:
+the API service publishes its own port, so a caller reaching that port directly is
+source-translated to the network gateway, which is a same-subnet address. Trusting the subnet
+would therefore trust a directly reachable caller as if it were the proxy.
+
 
 ## Authorisation
 
@@ -5384,85 +6729,57 @@ meaning of a persisted value and would make a module's own declaration disagree 
 what the database holds. Search itself is deferred by the system boundaries; when it
 arrives, the declarations are already correct.
 
-### Module content crosses the boundary as an escaped document, and four legacy habits around it do not survive
+### Module-admin content crosses the boundary as verbatim inner XML, not portal-template escaped text
 
-**Legacy behaviour.** Content transfer was assembled inline in
-`Library/Components/Modules/ModuleController.vb`. Export (`AddContent`, `L226`-`L254`) escaped the
-module's payload with `HttpContext.Current.Server.HtmlEncode` at `L244` and wrapped it in a
-`content` element carrying `type` and `version` attributes. Import (`L410`-`L441`) reversed that
-with `HttpContext.Current.Server.HtmlDecode` at `L428`, having first stripped a CDATA wrapper by
-**fixed-offset arithmetic** — `strcontent.Substring(9, strcontent.Length - 12)` at `L413`.
+**Legacy authority.** The module administration screens, not the portal-template helper, define
+this contract. `Website/admin/Modules/Export.ascx.vb:L157-L165` concatenated an XML declaration,
+a `<content type="..." version="...">` start tag, the module controller's payload **verbatim**,
+and the closing tag. `Website/admin/Modules/Import.ascx.vb:L196-L200` checked the `type`
+attribute and passed `xmlDoc.DocumentElement.InnerXml` to the module controller with no HTML
+decoding.
 
-**Target behaviour, and what changed with it.** The element and attribute names are preserved
-exactly, so a document written by a DotNetNuke 4.x installation imports here unchanged and a
-document written here stays readable by the legacy importer. Four habits around them do not carry
-over:
+**What an earlier target revision got wrong.** It copied the portal-template path from
+`Library/Components/Modules/ModuleController.vb:L226-L254,L410-L441`, where the writer
+`HtmlEncode`d content and the reader later `HtmlDecode`d it after a fixed-offset CDATA strip.
+That is a different document format. Applying the pair to the module-admin route corrupted
+entity references, removed CDATA delimiters and made two wrong transformations appear to cancel
+when the target exported and re-imported its own document.
 
-- **The escaping no longer reaches through the request pipeline.** A framework-agnostic helper
-  performs the same escaping in both directions. An Application-layer service cannot reference a
-  web framework and must not acquire an ambient request context to do string work; only 8 of the
-  84 in-scope legacy files touched `System.Web` at all, and the target injects an HTTP accessor in
-  exactly one piece of API middleware.
-- **The fixed-offset CDATA strip is gone.** An XML reader already resolves a CDATA section to its
-  text, so counting characters has nothing left to strip — and counting them was fragile, since
-  the offsets silently corrupt any document whose wrapper is not byte-for-byte what the legacy
-  exporter emitted. A payload that is itself markup is now handed on **as markup and not
-  unescaped**, because it was never escaped and unescaping it would corrupt an entity reference it
-  legitimately contains.
-- **Empty content is a payload, not an absence.** `L234` guarded the append with
-  `If Content <> ""` and, when a module returned the empty string, appended **no element at all** —
-  so the portal template came out silently short of one module's content with no record that
-  anything had been dropped. `Null.NullString` is the empty string rather than null
-  (`Library/Components/Shared/Null.vb:L71`-`L75`), which is exactly why the legacy check could not
-  tell "this module has nothing to say" from "this column was null". The document is now always
-  written, so a caller can see that the module was asked and answered with nothing. Whitespace is
-  carried through unaltered for the same reason — significance the module decides is not filtered
-  by a reader's default.
-- **An import is attributed to the caller.** The legacy tree attributed the same operation to two
-  different people depending on the entry point: `L433` passed `objportal.AdministratorId`, the
-  tenant's administrator regardless of who was signed in, while
-  `Website/admin/Modules/Import.ascx.vb:L200` passed the current user. The administrator variant
-  recorded a change against someone who had not made it. The two are unified onto the caller,
-  which is the only identity true in both cases and the party whose grant on the module was
-  actually verified. An unattributed caller is recorded as the legacy integer sentinel `-1` rather
-  than as `0`, because account identifiers seed low in this schema and `0` risks naming a real
-  account.
+**Target behaviour.** Export now composes the module-admin document exactly as the legacy screen
+did, placing the payload between the tags without escaping it. Import preserves whitespace,
+checks the root and the sanitised `type` attribute against the module package and friendly names,
+and reconstructs the root's inner XML from its child nodes. Markup remains markup, escaped entity
+references remain escaped, and a CDATA section reaches the business controller **with its
+delimiters intact**, matching `InnerXml`.
 
-**One preserved legacy loss, annotated rather than repaired.** A carriage return in the payload
-comes back as a line feed. The XML specification requires a reader to normalise every line ending,
-inside a CDATA section too, so the legacy path lost it at precisely the same point — this is
-inherited behaviour, not new. Preserving it would need the return written as a character
-reference, which would make documents this service writes unreadable by the legacy importer. It is
-therefore recorded and left alone.
+**One explicit strengthening.** The composed export is parsed before it is returned. If a module
+returns content that cannot form a well-formed XML document — including a C0 control character
+that XML cannot represent — the operation reports `module.export_failed` instead of returning a
+file the matching importer cannot read. The legacy screen could write such a file and discover
+the defect only on import; the target refuses it at the boundary that produced it, without
+publishing the module content or the parser's quoting message.
 
-**Also not reproduced: the deferred-import event queue.** `L422` tested the stored capability field
-against the integer sentinel `-1` and, on a match, called `CreateEventQueueMessage` at `L426` to
-park the payload for replay after an application restart — necessary only because the legacy
-discovered a module's capabilities by late-binding its controller at run time, which was impossible
-during the request that installed it. That queue subsystem is excluded from this migration
-wholesale, and no replacement queue is introduced. Nothing is lost, because the condition the
-branch waited for cannot arise: capabilities come from a closed registration map fixed at start-up,
-so a capability is either registered or it is not and waiting changes nothing. The sentinel is
-still interpreted rather than ignored — it reports the package as not portable — so the caller
-receives a refusal they can act on instead of a success that quietly deferred.
+**Preserved and deliberate details.** Whitespace-only content is retained. XML line-ending
+normalisation still changes a carriage return to a line feed, as the legacy XML reader did.
+Imports are attributed to the actual caller rather than unconditionally to the portal
+administrator, and an unidentified caller uses the legacy `-1` sentinel rather than risking a
+real low-seeded account identifier. The excluded deferred-import queue is not recreated; an
+undetermined or non-portable module is refused explicitly.
 
-**Operational consequence.** Legacy export files remain importable. An export of empty content now
-produces a document where it previously produced silence. An import that would have been queued is
-now refused with a reason naming the cause, and the retry is the caller's to make once the package
-is fully installed.
+**Operational consequence.** Correct legacy module-admin export files remain importable. Files
+produced by the withdrawn escaped revision may need to be regenerated because their payload was
+not the legacy module-admin representation. A document whose `type` names another module is
+refused before its content reaches the controller.
 
 **Annotated in code at.**
-`backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Application/Services/ModuleService.cs` and
 `backend/src/DnnMigration.Application/Abstractions/IModuleBusinessControllerFactory.cs`.
-Guarded in
-`backend/tests/DnnMigration.UnitTests/Application/ModuleServiceTests.cs` by
-`ImportModule_UnescapesThePayloadWithoutAnAmbientRequestContext`,
-`ImportModule_WithAMarkupPayload_HandsItOnWithoutUnescapingIt`,
-`ImportModule_AcceptsALegacyDocumentWrittenWithACdataSection`,
-`ExportModule_WithEmptyOrWhitespaceContent_StillProducesADocument`,
-`ImportModule_AttributesTheWriteToTheCallerRatherThanThePortalAdministrator`,
-`ImportModule_WithAnUnattributedCaller_RecordsTheLegacySentinelRatherThanZero` and
-`ImportModule_WithUndeterminedCapabilities_RefusesInsteadOfDeferringToAQueue`.
+Guarded by `ExportModule_WrapsTheExportedContentInTheLegacyDocument`,
+`ExportThenImportModule_ReturnsThePayloadUnchanged`,
+`ExportModule_WhenTheModuleReturnsContentThatIsNotXml_IsRefused`,
+`ImportModule_HandsOnACdataSectionWithItsDelimitersIntact`,
+`ImportModule_ChecksTheDocumentTypeAgainstTheModulesOwnNames` and the surrounding export/import
+service tests.
 
 ### Content upgrade takes one version per call
 
@@ -5784,29 +7101,48 @@ the template, and a bound value is not parsed as HTML — which is precisely wha
 of these strings being usable as an injection vector. Losing two spans of bold is the price
 of that guarantee, and it is paid knowingly.
 
-### The module "Move To Page" affordance and the container selector are not carried across
+### The module page picker SELECTS the placement being edited; it no longer moves one, and the container selector is absent
 
 **Legacy behaviour.** The module settings screen offered a page-move affordance and a
-container selector.
+container selector. `ModuleSettings.ascx.vb:L398-L408` compared the selected page with the
+current one and called `ModuleController.MoveModule`, which copied the placement and its
+placement-scoped settings to the destination page and then deleted the source.
 
-**Target behaviour.** Neither is present.
+**Target behaviour.** The page picker is present and still sends `tabId` on the module update
+request, but the value SELECTS which placement the update addresses. The service resolves the
+placement on the named page and refuses with `module.placement_not_found` — answered as 404 —
+when the module does not occupy it. A module placed on several pages is therefore edited one
+placement at a time, by naming its page. No placement is copied, and none is deleted. The
+container selector remains absent.
 
-**Why the difference is deliberate.** The page-move affordance has no endpoint in the
-agreed API inventory, and adding one would be a new capability rather than a migrated one.
-The container selector addresses a skin object, and skinning is out of scope by the system
-boundaries.
+**Why the shape differs.** The update contract carries ONE page identifier and a move needs
+two: the placement being edited and the page it should end up on. A single member cannot be
+both without the service guessing which the caller meant, and guessing is what produced the
+defect this shape exists to remove — an earlier revision resolved the placement with the
+lowest key and ignored the submitted page entirely, so a caller editing the instance on page
+four silently rewrote page one. Selecting on the submitted page fixes that; deriving a move
+from a delta cannot be layered on top of it, because after the selection the two values are
+equal by construction. Reinstating the affordance means adding a destination member, which is
+a contract change rather than a frontend one. The container selector addresses a skin object,
+and skinning is out of scope by the system boundaries.
 
-**Operational consequence.** The stored container value is preserved untouched on every
-update rather than being cleared, so nothing is lost by the affordance's absence.
+**Operational consequence.** An operator who picks a page the module does not occupy receives
+a 404 naming the reason rather than an apparently successful save that amended a different
+placement. Moving an instance between pages is not available through this API; the legacy
+wording on the picker is preserved for recognisability, and the reduction is recorded here.
+The stored container value is preserved untouched on every update rather than being cleared.
 
 ## Deployment
 
-### The delivered API container cannot open a database connection as built
+### The API Alpine image installs ICU and can open SQL Server connections
 
 **What was found.** Running the composed topology end to end, the API container answers
-`503` on `/health` for its entire life, and because the front-end service depends on the
-API being healthy, the front end never starts. The cause is not the connection string, the
-network or the database: `Microsoft.Data.SqlClient` throws
+`503` on `/health/ready` for its entire life when the stock Alpine runtime is used unchanged,
+and every request that touches the store fails. The container's own probe reads the liveness
+view, so docker reports it healthy and the front-end service starts against an API that cannot
+serve a single store-backed request — a silent failure rather than a blocked start-up.
+The cause is not the connection string, the network or the database:
+`Microsoft.Data.SqlClient` throws
 `System.NotSupportedException: Globalization Invariant Mode is not supported` inside
 `SqlConnection.TryOpen`, **before any socket is opened**.
 
@@ -5816,27 +7152,21 @@ network or the database: `Microsoft.Data.SqlClient` throws
 ICU. The 5.x client library deliberately refuses to open a connection in that mode rather
 than risk locale-dependent behaviour.
 
-**The remedy, which is two lines.** In the runtime stage of `docker/api.Dockerfile`:
+**The applied remedy.** The runtime stage of `docker/api.Dockerfile` installs:
 `RUN apk add --no-cache icu-libs icu-data-full` and
-`ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false`. This was proved by building a throwaway
-image with exactly those two lines, outside the repository so that no delivered container
-artefact was modified; with them the container becomes healthy and every end-to-end
-assertion passes.
+`ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false`. The pair is inseparable: disabling
+invariant mode without installing ICU makes the runtime fail fast at startup, while
+installing ICU and leaving invariant mode enabled leaves SqlClient refusing the connection.
 
-**Why the remedy is not applied.** The four container artefacts are frozen verbatim by the
-migration plan's preserved-example directive, whose only sanctioned substitution is the two
-name placeholders. Three in-scope alternatives were each tried and rejected on measured
-grounds: disabling invariant globalisation in the project file converts the `503` into a
-boot crash, because the runtime then demands an ICU library the image does not contain;
-shipping an application-local ICU package adds a dependency outside the frozen dependency
-inventory; and abandoning `Microsoft.Data.SqlClient` contradicts the migration's own
-data-access goal.
+**Why the preserved example is extended.** The example's Alpine base and the required
+SqlClient version cannot operate together without ICU. Applying the two production
+prerequisites is therefore necessary to satisfy the container validation gates; leaving the
+image verbatim would deliver a topology that starts, reports healthy and then fails every
+store-backed request.
 
-**What an operator must do.** Apply the two lines above to the runtime stage before
-deploying, or run the API on a glibc-based runtime image. Everything else in the topology
-is correct: both images build, the entry point and the copied output path are both proven
-correct against real builds, the proxy configuration resolves, and the health endpoint
-itself is anonymous and reachable.
+**Verified outcome.** Both images build, the API reaches SQL Server, `/health/ready` reports
+healthy, compose starts the frontend, the HTTP ingress redirects to TLS and the HTTPS SPA
+loads successfully.
 
 ## Test environment
 
@@ -5912,7 +7242,7 @@ types from the upgrade chain under
 `Website/Providers/DataProviders/SqlDataProvider/`.
 
 **Target:** `public sealed class CreateRoleRequest` with exactly thirteen properties, posted to
-`POST /api/v1/portals/{portalId}/roles`.
+`POST /api/v1/roles`.
 
 **Thirteen properties, derived from the screen rather than the entity.** `RoleName`,
 `Description`, `ServiceFee`, `BillingPeriod`, `BillingFrequency`, `TrialFee`, `TrialPeriod`,
@@ -6719,9 +8049,9 @@ from the literal legacy code path is the dead store's disappearance, and nothing
 
 ### The other divergences this contract carries
 
-`RoleId` and `PortalId` are both absent. Both arrive in the route
-`PUT /api/v1/portals/{portalId}/roles/{roleId}`, which makes the route authoritative: a value that
-does not exist cannot contradict it, so no reconciliation check is needed. The legacy screen carried
+`RoleId` and `PortalId` are both absent. The role arrives in the route
+`PUT /api/v1/roles/{roleId}`, while the portal is resolved from the addressed alias; a value that
+does not exist cannot contradict either source, so no reconciliation check is needed. The legacy screen carried
 a role identifier only because one postback served both creating and editing, overloading the value
 minus one as its add-versus-edit switch at lines 131 and 251; distinct routed endpoints remove that
 ambiguity. Accepting either would be an identity-tampering vector and, for the portal, a cross-tenant
@@ -7476,6 +8806,35 @@ never seen the legacy screen. The tally is read and judged inside the service; n
 member reports a portal count, so the decision cannot migrate into a controller.
 Asserted by `DeletePortal_RefusesToRemoveTheLastRemainingTenant`.
 
+### Portal deletion removes final-member accounts but never deletes a host account
+
+**Legacy behaviour.** `PortalController.DeletePortalInfo` called
+`UserController.DeleteUsers(portalId, notify:=False, deleteAdmin:=True)` before removing the
+portal. For each returned row, `AspNetMembershipProvider.DeleteUser` removed the portal's role
+assignments and then read `vw_Users` by username with a null portal filter. Because that view
+returns one row per portal membership, the second `Read()` decided the branch: one row meant the
+current portal was the account's final membership, so the global `Users` row and the
+`aspnet_Membership` credential were deleted; a second row meant only the current
+`UserPortals` row was deleted. The bulk listing did not exclude super users, so a host account
+whose only membership was the deleted portal could be removed globally as an unintended side
+effect.
+
+**Target behaviour.** `PortalService.DeletePortalAsync` performs the same membership-count
+decision inside its existing serialisable transaction. Multi-portal accounts lose only the
+expiring membership. Ordinary final-membership accounts have their direct module and page grants,
+credential, global account row and refresh-token families removed before the portal transaction
+commits; an unavailable credential or token store refuses the whole database removal rather than
+publishing a tenant with unreachable identity rows. The account enumeration deliberately does not
+populate approval or lockout snapshots from the external membership store, because those facts are
+irrelevant to removal and must not make the relational cleanup unreadable.
+
+Host accounts are the deliberate divergence: portal deletion removes their membership row but
+never their global account, credential or sessions, even when that row is their only tenancy.
+Deleting the installation's host operator would lock administrators out of every remaining portal,
+so the unsafe legacy side effect is not reproduced. A portal's ordinary administrator is **not**
+protected by this rule: the legacy caller passed `deleteAdmin:=True`, the tenant is disappearing,
+and an administrator with no other membership is removed like every other final member.
+
 ### The seven installation defaults invert their guard
 
 **Legacy behaviour.** The private two-argument `CreatePortal` at
@@ -7856,8 +9215,10 @@ identifier is byte-identical across the migration filename, the designer filenam
 earlier `20260802072256` stamp is gone, and it had to go: two files declaring the same
 `partial class InitialCreate` with `Up` and `Down` in one namespace is a duplicate-member
 compile error, so the superseded migration was removed and the companion designer renamed with
-its attribute retargeted — a single-line change that preserves `BuildTargetModel` verbatim and
-leaves `DnnDbContextModelSnapshot` untouched. Re-stamping is safe precisely because the bodies
+its attribute retargeted — a single-line change that preserves `BuildTargetModel` verbatim and,
+**as a re-stamp specifically**, leaves `DnnDbContextModelSnapshot` untouched; the snapshot is
+regenerated by the separate correction described above, not by this one. Re-stamping is safe
+precisely because the bodies
 are empty and nothing applies migrations on its own: no `Migrate`, `MigrateAsync` or
 `EnsureCreated` call exists anywhere in the source, so a database that already carries the
 earlier history row is unaffected until an operator runs `dotnet ef database update`
@@ -7866,16 +9227,9 @@ deliberately, and when they do the only statement issued is the guarded history 
 **Annotated in code at.**
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.cs`,
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.Designer.cs`,
-**empty**, and the migration identifier is preserved exactly, so an existing
-`__EFMigrationsHistory` row stays valid and no schema statement of any kind can reach a
-database from this work. The migration exists to seed migration history as a baseline, never
-to create or alter a table — the schema depends on externally installed `aspnet_*` membership
-objects that the eighty-eight scripts only ever `ALTER`, so a generated create-migration could
-not reproduce the terminal schema even in principle.
-
-**Annotated in code at.**
-`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260802072256_InitialCreate.Designer.cs`,
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/DnnDbContextModelSnapshot.cs`.
+Those three files are the whole of the migration tree; the superseded `20260802072256` designer
+named by an earlier revision of this entry no longer exists and must not be looked for.
 
 ### Sign-in proves the credential before it approves anything
 
@@ -7956,42 +9310,23 @@ against.
 `ProfileController.vb` lines 305-319). The gate was a property of a Web Forms control instance,
 not of any schema-backed configuration.
 
-**Target behaviour, as finally delivered.** The sign-in reply carried a `mustUpdateProfile`
-member that **nothing produced** — no code path ever set it, so every reply reported the same
-value regardless of the account's profile. That was the defect. It is closed by giving the
-member a producer rather than by deleting the member: `IUserService.RequiresProfileCompletionAsync`
-reads the tenant's `Security_RequireValidProfileAtLogin` membership setting and then walks the
+**Target behaviour, as finally delivered.** `IUserService.RequiresProfileCompletionAsync`
+reads the tenant's `Security_RequireValidProfileAtLogin` membership setting and walks the
 tenant's required profile-property definitions against the caller's stored values, exactly as
-`ProfileController.vb` lines 305-319 did, and the sign-in service assigns the flag from it on
-both the sign-in and the renewal path.
+`ProfileController.vb` lines 305-319 did. Sign-in and refresh both re-evaluate the result,
+`JwtTokenService` emits it as the `must_update_profile` boolean claim and the response carries
+`mustUpdateProfile`.
 
-**Why implementation rather than removal.** An intermediate revision of this file recorded the
-opposite decision, and the reasoning that produced it was sound at the time: a field that always
-reports the same value is worse than an absent field, because a client cannot tell "your profile
-is complete" from "nobody implemented this". What changed is that the gate turned out to be
-readable after all — it is a membership setting this migration already surfaces, not the Web
-Forms control property the earlier reading assumed — so the choice was no longer between a false
-signal and an absent one. The member is carried **only** because that producer now exists and is
-authoritative.
+**Blocking enforcement.** The API's remediation authorization handler reads the authoritative
+stored state on every protected request. While profile remediation is required it permits only
+the account owner's profile read/update endpoints and authentication/remediation routes; every
+unrelated protected operation is refused. Refresh does not preserve a stale decision: it
+recomputes the state before issuing the next access token.
 
-**The client deliberately does not carry it, and that is a scope decision rather than the earlier
-absence-of-producer one.** Nothing in this application consumes the advisory: the legacy flow sent
-this one case to a **different** step rather than to the credential interstitial, and no such step
-exists here. Keeping it in stored session state would put a signal there that no screen can act
-on. An extra property on the wire is ignored, so nothing is lost, and adding it is a one-line
-change on the day a profile-completion step is built. Profile completeness also remains fully
-**Target behaviour.** The sign-in reply carried a `mustUpdateProfile` member that **nothing
-produced** — no code path ever set it, so every reply reported the same value regardless of the
-account's profile. The member is **removed** rather than left in place, and the corresponding
-members are removed from the client-side session model and its derivation as well, so the two
-ends of the contract still agree.
-
-**Why removal rather than implementation.** The gate's authority is a Web Forms control
-setting, and the control model is out of scope; there is no configuration in this migration to
-read it from, and inventing one would be inventing policy. A field that always reports the same
-value is worse than an absent field, because a client cannot tell the difference between "your
-profile is complete" and "nobody implemented this". Profile completeness remains fully
-observable through the profile endpoints.
+**Client contract.** The Angular authentication response and stored session both carry
+`mustUpdateProfile`, so route guards and future remediation presentation consume the same state
+the server enforces. The signal is no longer client-only and no contradictory removal decision
+remains.
 
 **Annotated in code at.** `backend/src/DnnMigration.Application/Dtos/Auth/LoginResponse.cs`,
 `backend/src/DnnMigration.Application/Services/AuthService.cs`,
@@ -8233,12 +9568,19 @@ portal-creation audit note, and the tenant-resolution note.
 ### The wire contract: every payload-bearing response is now enveloped
 
 **What changed.** A response that carries a payload now always carries it inside one of
-two envelopes. A single record is `{ "data": ... }`; a page is
+two envelopes. A single record is `{ "data": ..., "meta": null }`; a page is
 `{ "items": [...], "meta": { "pageIndex", "pageSize", "totalCount", "totalPages" } }`.
 Both shapes were declared by the application layer from the outset and **neither had a
 single consumer**: collection endpoints were serialising the domain paging type
 directly, so a domain type *was* the public contract and a change to the domain model
 would have been a breaking API change.
+
+**The scalar `meta` member is written, not omitted.** The API's serializer deliberately
+writes default values, and `ApiResponse<T>.Meta` carries no per-member null-omission
+condition. The client contract therefore declares `meta: ApiMeta | null`, required and
+nullable, rather than an optional non-null member. Problem-details members follow a
+different rule: the framework type carries its own per-member null-omission attributes,
+so an absent `instance` is not written and remains optional on the client.
 
 **A page is not double-wrapped.** The paging projection is returned as itself, not placed
 inside the single-record envelope. Two levels of wrapping would make a client unwrap twice
@@ -8597,6 +9939,35 @@ dates, so an end date before a start date was storable. That omission is reprodu
 deliberately and pinned by a test: correcting it would be an unrequested behavioural
 change to a rule the legacy application did not have.
 
+### Page links use a positive allowlist, and special pages cannot disable their link
+
+**Legacy behaviour.** The page editor's URL control produced three useful stored forms: a
+numeric page identifier, a `fileid=NNN` reference, or an external URI. The helper
+`Globals.AddHTTP` prefixed an unrecognised value with HTTP unless it already contained
+`mailto:`, `://`, `~` or a UNC marker. A string such as `javascript:alert(1)` therefore did
+not remain an active JavaScript URI; it became an inert HTTP-prefixed value. Separately,
+`ManageTabs.ascx.vb` disabled the `DisableLink` checkbox for the portal's administration,
+splash, home, login and user pages, and the save path consequently left the stored flag at
+`False` for each of those five roles.
+
+**Target behaviour.** The request validator accepts only an ASCII-decimal page identifier, a
+case-insensitive `fileid=NNN` token, or an absolute HTTP, HTTPS or mailto URI. Active schemes
+such as `javascript:`, `data:` and `vbscript:`, unknown schemes and malformed tokens are
+refused rather than rewritten, so no active value can be persisted and returned to a
+navigation consumer. `TabService` loads the owning portal and forces `DisableLink` to false
+when the edited page occupies any of the five special-page roles. The mapper still copies the
+request value mechanically; the stateful portal rule belongs to the service.
+
+### Page header text is raw markup and requires an explicit rendering policy
+
+`Tabs.PageHeadText` remains a verbatim, administrator-authored value for functional parity
+with the legacy "Page Header Tags" field. Neither the request contract, mapper nor response
+projection parses, sanitises or escapes it. That does **not** make it safe to inject into a
+document head: a consumer may render it as markup only behind an explicit, narrowly-scoped
+sanitisation and element/attribute allowlist policy at the rendering boundary. Without such a
+policy it must be treated as untrusted text. Authorisation controls who may store the value;
+it is not a substitute for output sanitisation.
+
 ### Paged responses carry the wire envelope, and three derived members are no longer sent
 
 **Legacy behaviour.** Paging was a control-level concern with no wire contract.
@@ -8932,19 +10303,27 @@ refused for space it was about to release, and a refusal leaves the presented to
 family untouched - a retryable condition rather than a lost session. With the window in force rotation
 reaches a steady state in which it adds nothing at all, so the cap can effectively only be met through
 genuine exhaustion by new families, which issuing already governs.
-**What it does now.** A family retains at most sixty-four spent generations. Older spent generations
-are forgotten as rotation moves past them, oldest first, so a family costs at most sixty-five entries
-whatever its cadence and however long it lives. Rotation still never refuses, and the live generation
-is never a candidate for removal - the test is the entry's own spent flag, not its position.
+
+**The looser sixty-four-generation cap has been removed from the code as well as from the description.**
+An earlier paragraph here described it as current: "a family retains at most sixty-four spent
+generations". It never did, and could not. The eight-generation trim runs first on every rotation and a
+rotation then adds exactly one generation, so a family holds at most nine entries of which at most eight
+are spent - a surplus over sixty-four was unreachable by construction. The second pass therefore walked
+the family on every rotation, counted its spent generations, and returned having removed nothing. Both
+the constant and the pass are gone, so the eight-generation window is the sole retention bound in the
+code and in this document alike. Two retention rules that can disagree about the same family are a
+liability even when one of them is unreachable, because a later change to either figure silently decides
+which one governs.
 
 **The cost, stated plainly.** A replay of a forgotten generation classifies as unrecognised rather
 than as already-used, so it is still refused but no longer escalates to revoking the account's
 sessions. That escalation is a leak signal rather than a gate: the forgotten value is spent and
-unusable either way. Sixty-four generations is more than two and a half days of history at the shipped
-hourly cadence and proportionally longer for a client that rotates less eagerly, so the signal is kept
-for the case that matters - a copied token replayed while it is still recent. Trimming oldest-first is
-what preserves that. The accepted trade is that this reduction is far smaller than the alternative,
-which was an installation that could be talked out of accepting any new sign-in at all.
+unusable either way. Eight generations is several times the window in which a replay can matter at all -
+once the legitimate client has rotated past a copied value, every path refuses it whether history
+remembers it or not - so the signal is kept for the case that matters, a copied token replayed while it
+is still recent, and Trimming oldest-first is what preserves that. The accepted trade is that this
+reduction is far smaller than the alternative, which was an installation that could be talked out of
+accepting any new sign-in at all.
 
 ## Correction: the lazy credential upgrade was claimed in nine places, and one of them was the code
 
@@ -9228,7 +10607,7 @@ it selects - 2.1.12 is the first unaffected 2.1.x. The integration test project 
 pins `SQLitePCLRaw.bundle_e_sqlite3` to 2.1.12. The bundle is pinned rather than
 `lib.e_sqlite3` alone so that core, provider and lib all move together and the native family
 cannot skew across versions. This is the same manoeuvre the approved dependency set already
-performs for `Microsoft.Data.SqlClient` 5.2.3, and for the same reason: a transitive package
+performs for `Microsoft.Data.SqlClient` 6.1.6, and for the same reason: a transitive package
 resolves to a version with a known problem, and a direct reference is the only mechanism
 that moves it.
 
@@ -9389,29 +10768,28 @@ surface and missed on another. A test asserts the identity across all three path
 **Annotated in code at.** `backend/src/DnnMigration.Application/Validation/IconReferenceRules.cs`,
 `backend/src/DnnMigration.Application/Validation/RoleTermsRules.cs`.
 
-## A single alias may be addressed with or without its tenant, and the absence is a mode
+## A single alias is addressed only through its owning portal
 
 **Legacy behaviour.** `PortalAliasController.vb:L63` read an alias by its surrogate key alone, and the
 administration screen that used it was reachable only by a host account.
 
-**The defect that was fixed, and the one that fixing it introduced.** `dbo.PortalAlias.PortalAliasID`
-is `IDENTITY (1, 1)`, so it is unique across the installation and therefore **guessable across
-tenants**: a read or write keyed by it alone let a caller authorised over one portal reach any alias in
-the installation by counting upwards, and renaming an alias re-points tenant resolution itself. The
-owning tenant is therefore supplied by the route and compared against the stored row before anything is
-reported or written, and a mismatch reads as not-found rather than as a refusal so the member cannot
-become an oracle for which keys exist elsewhere. Making the tenant **mandatory**, however, broke the
-three single-alias routes that deliberately name no tenant because they are reached only by a host
-account, whose authority is installation-wide. Two of the three still compiled while binding the tenant
-to the model binder's default of **zero** — and zero is a real portal, because `dbo.Portals.PortalID` is
-`IDENTITY (-1, 1)` — so alias update and delete would have reported not-found for every alias outside
-that one portal, on the one surface that exists to repair a broken binding.
+**What an earlier target revision exposed.** `dbo.PortalAlias.PortalAliasID` is
+`IDENTITY (1, 1)`, so it is unique across the installation and therefore **guessable across
+tenants**. The first correction added portal-nested routes but retained a second host-wide
+`/portal-aliases` family, making the tenant optional in the public contract. That produced two public
+identities for the same read, update and delete and made generated clients choose which one was
+authoritative.
 
-**What it does now.** The tenant is optional on those three members. Supplying it scopes the operation
-and is what every portal-nested route does; omitting it declares installation-wide authority, which the
-host-administrator policy establishes before the member is reached. The comparison is applied whenever a
-tenant is named, so the cross-tenant protection is in force on exactly the routes where the
-vulnerability existed. This is the same idiom the flat alias listing already used for the same reason.
+**What it does now.** The public API exposes only
+`/api/v1/portals/{portalId}/aliases` and
+`/api/v1/portals/{portalId}/aliases/{portalAliasId}`. The route always supplies the owning tenant,
+and the service compares it against the stored row before anything is reported or written. A mismatch
+reads as not-found rather than as a refusal so the operation does not become an oracle for which
+surrogate keys exist in another tenant. There is no host-wide list or by-key route.
+
+**Operational consequence.** A host administrator uses the same portal-owned resource identity as
+every other caller; installation-wide authority does not create a second alias address. Portal zero
+and portal minus one remain valid route values and are never treated as absence.
 
 **Annotated in code at.** `backend/src/DnnMigration.Application/Abstractions/IPortalService.cs`,
 `backend/src/DnnMigration.Application/Services/PortalService.cs`,
@@ -10380,10 +11758,13 @@ endpoint and screen semantics rather than as candidates for line-by-line transla
 
 **Legacy behaviour.** `Website/release.config` and `Website/development.config` are the same
 444-line and 442-line file differing in only six places, and exactly two of those six carry
-meaning. `Website/development.config:L89` hard-codes
-`validationKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902"` where the release file at `:L90` sets
-`validationKey="AutoGenerate,IsolateApps"`; both then share
-`decryptionKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902F8D923AC"` with `decryption="3DES"`
+meaning. `Website/development.config:L89` commits validation material identified only by the
+non-secret fingerprint
+`sha256:64b7990f63e537b28824e35321b5339db436427ff46755f7de36e484169519f4`; the release
+setting at `:L90` has fingerprint
+`sha256:da4916cea319caa4c6fddecf69a434cdfbceb5ea6fc280922a7eca7b3293afe4`. Both files
+reference the same 3DES decryption material, identified only by fingerprint
+`sha256:4886c93e723fe42dc604e4cca065708c304f05308a17cc6aa2af9d40204a64ac`
 (`development.config:L90-L91`), which combined with `passwordFormat="Encrypted"` and
 `enablePasswordRetrieval="true"` (`release.config:L239-L245`) decrypts every stored password. The
 development file is therefore the *more* exposed of the two: it commits the signing key as well as
@@ -10465,7 +11846,7 @@ instance - and the commented alternative at `:L30` is `Server=(local);Database=D
 The .NET Framework 2.0 SQL client did not encrypt by default, so no certificate was validated and
 no setting existed to relax.
 
-**Target behaviour.** `Microsoft.Data.SqlClient` 5.2.3, which `DnnMigration.Infrastructure` pins,
+**Target behaviour.** `Microsoft.Data.SqlClient` 6.1.6, which `DnnMigration.Infrastructure` pins,
 defaults `Encrypt` to `True`, so the client validates the server certificate unless told otherwise.
 A developer running SQL Server locally with a self-signed certificate may add
 `TrustServerCertificate=True` to the `ConnectionStrings__Default` value they export, and that is the
@@ -10488,3 +11869,510 @@ the only edit that would make it work is the one edit that must never be made. L
 means the startup guard in `AddInfrastructure` names both `ConnectionStrings:Default` and
 `ConnectionStrings__Default` and stops, which is a better first experience than a driver-level login
 failure.
+
+## Observability remediation: the audit vocabulary, the five events nothing can raise, and three values withdrawn from the trail
+
+### The tenant installation records both legacy intents, not the tidier one
+
+`PortalController.vb:L1140-L1141` assigns `objEventLogInfo.LogTypeKey =
+...EventLogType.HOST_ALERT.ToString` — twice, byte-identically, which is a legacy defect recorded
+elsewhere in these notes — and the record is written at `:L1157`. `HOST_ALERT` is therefore the only
+type the legacy installation ever raised.
+
+The first implementation emitted `PORTAL_CREATED` alone, reasoning that the legacy typing was the
+coarser of the two members available in the same enumeration and that the accurate one should win.
+**That reasoning is replaced rather than softened.** It is a judgement about legacy intent, and
+acting on it silently detached every operator search and alert already written against `HOST_ALERT`
+— precisely the breakage this vocabulary is preserved verbatim to prevent. It also, in passing,
+introduced the false claim into `AuditEventNames.cs` that `HOST_ALERT` belonged to the excluded
+host-administration surface, which is how a legacy audit site came to be counted as out of scope
+when its one in-scope producer sits in `PortalService.CreatePortalAsync`.
+
+`CreatePortalAsync` now records **both** names for one installation, built from the same facts by
+changing only the name, so the two records cannot drift apart or describe different events. Both
+share the `PortalInstalled` event identifier, so an alert rule addressing the family by number sees
+every installation rather than whichever half of the pair it happened to match.
+
+### Five legacy events have no producer, and their absence is a decision
+
+`TAB_CREATED` (`ManageTabs.ascx.vb:L315`), `TAB_DELETED` (`RecycleBin.ascx.vb:L205`),
+`TAB_SENT_TO_RECYCLE_BIN` (`TabController.vb:L840` and `:L952`), `TAB_RESTORED`
+(`RecycleBin.ascx.vb:L280`) and `MODULE_RESTORED` (`RecycleBin.ascx.vb:L392`) are legacy audit sites
+that this migration cannot raise, because none of the operations they describe exists here to raise
+them from. The page surface is *deliberately* narrow — the migration plan specifies `GET
+/api/v1/portals/{id}/tabs` and `GET`/`PUT /api/v1/tabs/{id}` and nothing else, so a page can be read
+and updated but never created or removed — and the recycle-bin surface the other four belong to is
+excluded along with the rest of the Web Forms administration pages.
+
+Publishing a name that nothing can raise would be a placeholder, so none of the five is published in
+`AuditEventNames`. Each is named in that file's header instead, with its legacy site, so the absence
+reads as a recorded decision rather than as an oversight, and each becomes raisable in the same
+change that adds the operation it describes.
+
+### A module removal is audited; an export is no longer audited as a change
+
+`RecycleBin.ascx.vb:L156` audited a module removal as `MODULE_DELETED`. The page is excluded; the
+deletion it audited is not, and `ModuleService.DeleteModuleAsync` is where the deletion now happens —
+so that boundary, previously the only write in the service with no trail at all, records
+`MODULE_DELETED` after its commit. The `Operation` fact distinguishes recycling the whole module from
+withdrawing one placement, and the legacy soft-delete-then-purge distinction is not reproduced
+because there is one removal operation.
+
+Three further corrections travel with it. The module service no longer declares its own event-name
+constant citing `EventMessageProcessor.vb:L69` — an excluded file — as the provenance of a name that
+was always a member of the in-scope enumeration; the name comes from `AuditEventNames` like every
+other. The caller now names the operation instead of the helper assuming it, because one name for
+four operations meant a settings change, a content import, an export and a deletion were all
+recorded as `MODULE_UPDATED`. And an **export** is recorded as `MODULE_EXPORTED`, a net-new name with
+no legacy counterpart because `Website/admin/Modules/Export.ascx.vb` contains no `AddLog` call at
+all: an export changes nothing, so recording it as an update asserted something untrue in a trail
+whose entire value is that it is believed. Reading a module's content out of the system is worth
+auditing on its own terms, so the operation keeps its record and gets an honest name.
+
+### The import trail withdraws the caller's file description and bounds the document's version
+
+`ModuleImportRequest` documents `Folder` and `FileName` as accepted-and-deliberately-unused parity
+metadata, with **no length bound preserved** and no interpretation as a path. Both were nevertheless
+copied verbatim into the import audit record, which meant nothing validated them, nothing read them,
+and a caller could place a secret, a personal identifier, control text or an unbounded
+high-cardinality value into the audit trail simply by naming a file that way. Neither is recorded any
+more. The trail loses nothing an operator can act on: the module, the declared version, the payload
+size and the placement count describe what actually happened, whereas the caller's own description of
+where the document came from describes only what the caller said.
+
+The declared version *is* still recorded, because it is the one provenance fact that identifies the
+content — but it is read from an attribute of a caller-supplied document, so it is bounded to
+thirty-two characters and allowlisted to digits, dots and hyphens first. A value that fails is
+replaced by `(unusable)` rather than dropped, so the record still says the document declared
+something and that what it declared was not usable; dropping it would make a hostile document
+indistinguishable from one that declared no version at all. It is replaced rather than stripped of
+its unwelcome characters, because stripping reshapes a hostile value into something that reads as
+authentic provenance.
+
+### Audit facts are properties now, and a lost record is no longer silent
+
+The legacy record held its descriptive facts in one `nvarchar` column as a rendered list, and the
+first implementation reproduced that shape — which made every fact unqueryable: an operator could not
+ask for `Operation = "Import"`, and any value containing the separator or the assignment character
+made the list ambiguous to parse. Each admitted fact is now attached to the event as a first-class
+property under an `Audit` prefix, so it is addressable by name. The configured console sink formats
+every property as a JSON field, so nothing an operator reads is lost by removing the rendered list.
+
+Admission is bounded, because these facts originate in caller and document input: at most
+thirty-two per record, keys must be short plain identifiers or they are withheld rather than
+reshaped, values are truncated at two hundred and fifty-six characters with a visible marker,
+a value carrying control characters is replaced wholesale, and a key that would collide with a name
+the record's own template occupies is withheld — because a logging pipeline resolves that collision
+by keeping whichever value arrived first, so the fact would vanish while the record still claimed to
+carry it. Every record therefore reports two counts: how many facts were attached, and how many were
+withheld.
+
+The sink still never throws — the operation it describes has already been committed, so failing the
+request to complain about the note taken of it would be worse than the note being missing — but the
+failure is no longer discarded. An audit trail whose losses are invisible is worse than one that is
+absent, because it is believed: a gap reads as "the operation did not happen". The loss is reported
+on a channel that cannot depend on the one that failed — a diagnostic event source and a monotonic
+counter, both from the base class library. Serilog's own self-diagnostic channel would have been the
+obvious choice and is unavailable: the persistence project references no logging library at all, by
+design, and adding one to report a logging failure would be the wrong trade.
+
+## Observability remediation: the health endpoint answers two questions, bounds each probe, and stops attributing a cancellation to the database
+
+There is no legacy predecessor for any of this. The nearest analogue in the legacy tree is
+`Website/KeepAlive.aspx`, which exists to stop an idle worker process being recycled rather than to
+report a dependency's condition, so nothing below is a preserved behaviour — all of it is net-new
+behaviour being corrected against its own stated contract.
+
+### The `ready` tag was load-bearing in the design and inert in the code
+
+`DatabaseHealthCheck` was authored against an explicit instruction: the anonymous `/health` endpoint
+is the **liveness** view and must exclude `ready`-tagged checks so that it stays healthy while no
+database is guaranteed to exist, and readiness must be surfaced separately. Both probes were duly
+registered with the `ready` tag — and nothing ever read it. A single unpredicated endpoint ran every
+registered check, which made the tag decorative and made the delivered behaviour the exact opposite
+of the documented one.
+
+That is not a cosmetic gap. `docker/api.Dockerfile` probes `/health` from inside the image, and
+`docker/docker-compose.yml` holds the front-end service back with `condition: service_healthy` until
+that probe succeeds — while the same compose file declares **no database service at all**. The store
+is external by design. A liveness view that opened a database connection therefore reported the
+container unhealthy for a reason that has nothing to do with whether it can answer, and held the
+front end back behind it, while every individual probe was reporting the truth.
+
+`/health` now selects only registrations that do **not** carry the `ready` tag, and a companion
+`/health/ready` selects only those that do. Both are anonymous, both are written by the same writer,
+and both therefore emit one document shape rather than two — an orchestrator's readiness probe
+carries no credential either, so a readiness path behind authentication would report the instance
+permanently unready.
+
+**The container artefacts are deliberately unchanged.** They already probe `/health`, and that is
+precisely the alignment: the address depended upon from outside this codebase is the one that no
+longer requires a reachable store. Point an orchestrator's readiness probe at `/health/ready`.
+
+The liveness view runs only probes that reach nothing external, and the assertion that guards it is
+written as the absence of the named database probe rather than as an empty list — so registering a
+further genuine liveness probe later, one that depends on nothing external, does not fail a test that
+has no business forbidding it.
+
+### Each probe is bounded, and the bound is derived from the container's own budget
+
+The registration carried no timeout, so a probe blocked on an unreachable store was bounded only by
+whatever the client library's own connect timeout happened to be — fifteen seconds by default, against
+a container health check that allows five.
+
+The readiness probe now carries a two-second timeout. Two seconds is chosen so the bound holds on the
+pessimistic reading as well as the observed one: even when a second probe was registered beside it and
+the two ran strictly one after the other, four seconds still landed inside the container's five-second
+budget — and that duplicate has since been withdrawn, so one timeout is the whole of the budget spent.
+Measured against an unreachable store, the readiness aggregate answered 503 in **2.03 seconds** with
+the probe reporting 2.00. Either way an unreachable store now produces a reported 503 instead of a
+probe that does not return.
+
+### A cancellation is no longer reported as a database outage
+
+The check caught every exception and answered "Database connectivity is unavailable." That sentence
+was also what a caller reported when the health infrastructure's own timeout fired, and when the
+request was abandoned by whoever made it — three distinct conditions collapsed into one message
+naming the wrong cause, which sends an operator to inspect a database that was never the problem.
+
+`OperationCanceledException` is now rethrown when the supplied token is the cancelled one. This is
+deliberate and it is the only correct choice available: the health infrastructure holds the timeout
+it imposed, so it is the only party that can tell its own timeout from a caller's abandonment, and it
+can only do that if the cancellation reaches it. Every other failure still answers rather than
+raising, because a dependency outage must stay readable as a 503 with a report rather than surfacing
+as an unhandled fault.
+
+The correction is visible in the answer. Against an unreachable store the readiness document now
+reports the database entry as `"A timeout occurred while running check."` — which is the health
+infrastructure's own wording, produced only because the cancellation reached it. The same condition
+previously read "Database connectivity is unavailable", naming a cause that had not been established.
+
+### The failure's identity is reported; the provider's exception is not
+
+The unhealthy result attached the raw provider exception. Nothing in the delivered response writer
+serialises an exception, so this leaked nothing today — but the value was one configuration change
+away from being rendered, and a SQL client exception's message routinely carries the server name, the
+database name, the login name and the shape of the failing statement. Publishing that on an endpoint
+whose entire purpose is to be reachable without a credential is not a risk worth holding open on the
+strength of the current writer's behaviour.
+
+No exception is attached now. In its place the result carries a single bounded data entry naming the
+failure's **type** — `SqlException`, `InvalidOperationException`, `TimeoutException` — which is the
+part an operator actually triages on and which cannot carry a value from the connection string or the
+statement. The response writer still emits no data dictionary, so this is available to a diagnostic
+sink and to a test without widening the anonymous contract.
+
+## Review remediation: eleven findings, and the six behavioural differences that closing them introduced
+
+**Why this is one entry.** Every difference below was introduced while closing a single code review
+that returned eleven findings across the backend closure milestone — one critical, four major, three
+minor and three informational. They are recorded together because they were decided together, and
+because five of the six are cases where a *delivered* behaviour was measured against its legacy
+authority and found to disagree with it. None is a silent absorption, and each one is annotated at the
+call site as well as here.
+
+### Removing an account is one transaction, so a partial removal is no longer reachable
+
+**Legacy behaviour.** `UserController.vb:L200` removed an account by issuing its writes one after
+another with no transaction around them at all — two permission-table deletes reached through
+`ModulePermissionController.vb:L218` and `TabPermissionController.vb:L209`, then the role assignments,
+the portal membership, the credential and the account row. A failure part-way through left the
+database in whatever state it had reached.
+
+**What it did.** The delivered account service opened no transaction either, and the permission
+cleanup it called opened and committed one **of its own**. The two facts combined into a defect
+neither had alone: a failure after the grant cleanup returned — most concretely a refusal from the
+external credential store — left the grants committed and gone while the account they belonged to
+remained. `IUnitOfWork.BeginTransactionAsync` refuses to nest, so the account service could not
+simply wrap the sequence; the inner commit had to be removed first.
+
+**Target behaviour.** The permission contract now declares the removal in two halves: a **stage-only**
+member that writes nothing and is contractually forbidden from committing, flushing, opening a
+transaction or evicting a cache entry, and a separate post-commit member that performs the eviction.
+The account service opens exactly one transaction spanning the grant staging, the role assignments,
+the portal membership, the credential-store delete and the account row, commits once, and only then
+touches the cache and the audit trail. The credential store borrows the same connection and enlists
+in that transaction, so the external write is inside the boundary rather than beside it. The
+standalone top-level permission-removal operation keeps its own single commit and is unaffected.
+
+**Why it matters.** The behavioural difference is that a failure now leaves the account exactly as it
+was. That is a divergence from the legacy, which had no such guarantee, and it is the one the
+migration exists to make.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Application/Services/PermissionService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IPermissionService.cs`.
+
+### The role subscription engine exists once, in the Application layer, and the store now refuses the legacy absent-date marker
+
+**Legacy behaviour.** `RoleController.vb` computed a subscription's effective and expiry dates from
+the role's billing frequency and trial terms, using `Microsoft.VisualBasic.DateAdd` over the stored
+`char(1)` codes `D`, `W`, `M` and `Y` (`RoleController.vb:L494-L547`), and decided whether cancelling a
+paid subscription expired the assignment or deleted it.
+
+**What it did.** Those rules were implemented **twice** — once in `RoleService`, where they belong, and
+once again inside `RoleRepository`, which had been given an `IClock` in order to run them. The two
+copies agreed, which is exactly the condition under which duplication is invisible: they would have
+continued to agree until one was amended, and then disagreed on precisely the case that prompted the
+amendment. AAP Rule T2 places no business logic above the Application layer, so the repository copy
+was the one to go.
+
+**Target behaviour.** `RoleRepository` is scoped queries and staging only. It persists whatever final
+values it is handed, records the six frequency codes as data it does not interpret, and no longer
+takes a clock. `RoleService` owns marker normalisation, the clearing of a past effective date, expiry
+derivation and the expire-versus-delete decision, on every write path.
+
+**Why it matters, and what it changed for a caller.** The removed repository copy had also been
+quietly translating the legacy absent-date marker — `Date.MinValue`, which SQL Server's `datetime`
+cannot hold — into a null. With the duplicate gone, a marker that reaches the store is refused by the
+store, loudly, instead of being reinterpreted. That is strictly better and it is asserted rather than
+assumed: the integration suite pins the refusal, so the Application-layer translation is demonstrably
+necessary rather than merely tidy. A real past expiry still persists verbatim, so back-dated
+cancellation remains reachable.
+
+**A superseded instruction.** The per-file specification for `RoleRepository.cs` had *mandated* the
+repository-side engine. It is superseded by AAP Rule T2 and by this review; the note is recorded so
+that a later reader comparing the two does not restore the duplicate on the strength of the narrower
+document.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Repositories/RoleRepository.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IRoleRepository.cs`,
+`backend/src/DnnMigration.Domain/Entities/UserRole.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/Configurations/UserRoleConfiguration.cs`.
+
+### A portal's page tally is the terminal `GetTabCount`, which counts recycled pages and can answer minus one
+
+**Legacy behaviour.** The page figure the portal grid displayed came from `GetTabCount`
+(`04.04.00.SqlDataProvider:L511-L527`), reached through `PortalInfo.Pages`. Its terminal form is
+`SELECT COUNT(*) - 1 ... WHERE PortalID = @PortalID AND TabID <> @AdminTabId AND (ParentId <>
+@AdminTabId OR ParentId IS NULL)`. Three of its properties are counter-intuitive and all three are
+load-bearing: it carries **no** deleted-row condition, so a page in the recycle bin is counted; it
+excludes only the administration page and its **direct** children, so an administration
+*grandchild* is counted; and it subtracts one unconditionally, so a portal with no administration
+page recorded answers **minus one**.
+
+**What it did.** Both portal-repository members counted every page that was not deleted, which
+disagreed with the procedure on all three points at once — and the batched member was compared in
+test only against the equally wrong single member, so the two agreed with each other and with neither
+authority.
+
+**Target behaviour.** Both members reproduce the procedure. The exclusion predicate is stated **once**
+and shared by the single and batched paths, so they cannot drift apart again, and the minus-one tally
+is a named constant documented as arithmetic rather than as the legacy integer sentinel — the two are
+easy to confuse here, because `-1` is simultaneously `Null.NullInteger` and a real `PortalID` under
+`IDENTITY(-1,1)`.
+
+**Why it matters.** A recycled page occupying a portal's page allowance is what the legacy displayed,
+so an operator reading the new grid sees the number they have always seen. The response contract's
+former claim that the figure is never negative on the wire was false and is corrected.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Repositories/PortalRepository.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IPortalRepository.cs`,
+`backend/src/DnnMigration.Application/Dtos/Portal/PortalListItemDto.cs`.
+
+### Module portability uses the standalone admin format, so no escaping layer sits over the payload
+
+**Legacy behaviour.** Two different legacy paths write a `<content>` document and they do **not** agree.
+`Website/admin/Modules/Export.ascx.vb:L157-L164` — the standalone admin screen — concatenated what
+the module returned **directly** between the tags, with `type` holding `CleanName(ModuleName)`, and its
+counterpart `Import.ascx.vb:L200` handed `DocumentElement.InnerXml` straight back with no decoding
+step of any kind. `ModuleController.vb:L244` and `L428` HTML-encoded and later decoded the payload,
+because that path was embedding module content inside a **portal template** — a different document
+with a different reader.
+
+**What it did.** The delivered service applied the portal-template pair to the standalone endpoints,
+and additionally let the XML writer escape the already-escaped text a second time, so `<` left as
+`&amp;lt;`. Nothing legacy either produced or consumed that shape: a legacy export file failed to
+round-trip through it, and a document it wrote was unreadable by the legacy importer. It also wrote
+the **raw** module name into `type` where the legacy wrote the cleaned name, and never checked the
+attribute at all.
+
+**Target behaviour.** Four differences, each reproducing the standalone pair.
+
+- The payload is spliced as inner XML on export and read back as the root's inner XML on import, with
+  no encode and no decode. An element child arrives as markup, a text child arrives with the three
+  XML-significant characters escaped, and a **CDATA section arrives as a CDATA section** rather than
+  being resolved to text — which is what `InnerXml` did, and what makes a module's own export
+  round-trip byte for byte.
+- `type` carries the cleaned module name, using the character set measured from `Export.ascx.vb:L204-L218`
+  — the period, the space, and `` ~`!@#$%^&*()-_+={[}]|\:;<,>?/ `` followed by `Chr(34)` and `Chr(39)`,
+  the two quotation marks the legacy literal appended by character code.
+- The declared type is **enforced**, accepting the cleaned module name or the cleaned friendly name
+  exactly as `Import.ascx.vb:L195-L205` accepted either, and refusing anything else. Without it a
+  document exported from one module type could be loaded into a module of another, whose portability
+  behaviour would then be handed content it cannot interpret. The legacy sourced this refusal from the
+  file **name** as well as the attribute; the target has no shared file system, so the name-based half
+  has nothing to test and the attribute-based half is what survives. The comparison is widened to
+  case-insensitive: every document either exporter writes carries the exact cleaned name, so no correct
+  document is affected, while a hand-edited file differing only in case is admitted rather than refused
+  with a message an operator cannot act on.
+- A payload the module hands back that is **not well-formed XML content** is refused, where the legacy
+  exporter concatenated it regardless and wrote a file its own importer then rejected as invalid. The
+  portability contract is an XML fragment, so this is a defect in the module; the refusal is reported
+  as a server fault, because the request was correct and nothing the caller changes makes it succeed.
+  The module's own text is never echoed in the message.
+
+**One preserved legacy loss.** A carriage return inside a payload becomes a line feed. The XML
+specification requires a reader to normalise every line ending, inside a CDATA section too, so the
+legacy path lost it at exactly the same point. Preserving it would need a character reference that
+would make documents this service writes unreadable by the legacy importer, so the behaviour is
+annotated and left alone.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IModuleService.cs`.
+
+### Import provenance on the audit trail is bounded and normalised, never verbatim
+
+**What it did.** The import audit event recorded the document's declared version and the caller's
+submitted folder and file names **raw**. `ModuleImportRequest` deliberately carries no validator and
+therefore no length bound of any kind — a label the caller merely names is not something the request
+should refuse over — so those three values were unbounded caller-controlled text entering a retained
+structured log. That is two hazards at once (CWE-532 and CWE-400): a metadata field becomes a channel
+for moving text into an operator-readable store, and one bounded request becomes an arbitrarily large
+log event.
+
+**Target behaviour.** The bound lives at the **audit boundary**, where the hazard is, and not on the
+wire contract, so no request is ever refused for the length of a label nothing resolves. Every fact
+that can be server-derived is taken from the server instead of the caller — the package's own name and
+installed version, the cleaned content type the import was accepted against, the payload length and
+the placement count. The three request-derived values are capped, have their control characters
+replaced by single spaces so a submitted newline cannot forge what reads as a separate entry, and are
+named so a reader cannot mistake them for facts the server vouched for. Truncation is **announced**
+with a trailing marker: a shortened value that read as complete would let an operator draw a
+conclusion the record does not support. Whitespace-only input is recorded as absent, because the
+legacy absent-string sentinel was itself the empty string. The payload is still never recorded — only
+its length.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Application/Dtos/Module/ModuleImportRequest.cs`.
+
+### The readiness probe propagates the caller's own cancellation instead of calling it an outage
+
+**What it did.** The database probe caught every exception and answered `Unhealthy`, cancellation
+included. Answering "unhealthy" to a probe that was **abandoned** states a fact about the database
+that no attempt established: the attempt did not fail, it stopped being wanted. Both the container
+`HEALTHCHECK` and the compose dependency read this signal, so a probe deadline or a host shutdown
+could be recorded by whatever was watching as a database failure — and the cancellation contract was
+broken, because the infrastructure that supplies the token distinguishes "we stopped asking" from "we
+asked and the answer was no" by whether cancellation surfaces.
+
+**Target behaviour.** An exception filter rethrows when the supplied token has been cancelled, ahead
+of the verdict. The filter reads nothing but the token, which is the whole of the discrimination: a
+driver-level connect timeout is cancellation-**shaped** yet leaves the token unsignalled, so it is
+still an unreachable instance and still reported as unhealthy. Cancellation is now the only way this
+method faults, and that is deliberate — an escaping fault of any other kind would break the endpoint
+and take the frontend that waits on it down with it.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`.
+## Review remediation: two accessibility corrections in the design vocabulary
+
+Both entries below record a deliberate divergence from the values this project's own design plan
+specifies, and both were measured in a real browser before and after the change rather than argued
+from the token table. The plan's stated precedence is design-system compliance first, visual
+continuity with the legacy portal second, accessibility third — and neither change disturbs that
+order, because in both cases the plan's own accessibility requirement is what is being satisfied and
+the token vocabulary is where the plan says a remedy belongs.
+
+### An eleventh colour token, because danger TEXT and a danger BORDER are not one role
+
+**Legacy behaviour.** The measured legacy error colour is pure red. It occurs five times in
+`Website/Portals/_default/default.css`, and the legacy stylesheet's own comment describes the class
+that carries it as the text style used for error messages, so the legacy application really did
+render error text in it. The design plan's colour table maps that value to a single token and
+characterises it as "validation and error text".
+
+**Target behaviour.** The value is unchanged and the token keeping it is unchanged; what changes is
+that it no longer carries text. Pure red measures **4.00:1** on the page background. That clears the
+3:1 threshold that governs a non-text UI component — a border, a rule, an indicator — and misses the
+4.5:1 minimum that governs normal text, and bold weight is no mitigation below 18.66px. The three
+places that rendered danger text in it each carried a standing accessibility flag stating, verbatim,
+that the remedy belonged in the token rather than at the point of use. The token layer now supplies
+it:
+
+- `--color-danger` keeps the measured legacy red and is reserved for borders and indicators, where
+  4.00:1 is sufficient. Its five remaining consumers are all boundaries.
+- `--color-danger-text` is a new eleventh member of a vocabulary the token file declares closed. It
+  is the same hue at a lower lightness, and it is admitted on accessibility grounds rather than on
+  legacy-fidelity grounds — the only such admission, and the token file's closed-count annotation
+  records that the ground is deliberately not extensible.
+
+Measured in Chrome with the effective painted backdrop resolved by walking the ancestor chain rather
+than reading the element's own transparent background: **7.20:1** on the page background, **6.21:1**
+on the neutral surface, **6.86:1** on the informational hint surface and **4.70:1** on the selected
+tint. All four clear 4.5:1, so the token is safe on any surface the vocabulary can put behind danger
+text rather than only on white. A darker-but-less-dark candidate was measured first and rejected: it
+reads 4.23:1 on the selected tint, which would have relocated the defect onto selected rows instead
+of removing it.
+
+**What a reader sees.** The same red family in the same places. The banner keeps a pure-red border
+around darker-red text — measured as exactly 1px of pure red with the darker ink inside it — and the
+required marker and validation message read as red at a legible weight. The compensating non-colour
+cues are retained rather than retired: the banner still names its severity in words, and the required
+marker still carries its own visually hidden text.
+
+**One consequence for the test suite.** A component spec asserted that the danger band's text colour
+WAS the legacy red. That assertion encoded the defect rather than the contract, so it now pins the
+split: the border is the legacy red and the text is the compliant token. Two neighbouring specs
+justified their non-colour cue by citing the old contrast figure; the cue is still required and the
+justification now rests on colour-independence, which does not depend on any ratio.
+
+### A two-tone focus ring, because the ring colour is also a painted surface
+
+**Legacy behaviour.** None to preserve. The legacy stylesheets declare no focus rule of any kind, so
+focus was whatever the 2005-era browser drew by default, and the target's focus indicator is a
+net-new addition rather than a translation.
+
+**Target behaviour.** The shared focus-ring mixin emitted a single-toned outline resolving to the
+brand colour. The brand colour is also a painted surface in this system — the shell fills the skip
+link with it — so any focusable element on a brand-filled surface painted brand-on-brand. The record
+grid carried a standing flag for exactly that collision, measured at **1.00:1** with a pixel census of
+the ring annulus finding zero ring-distinct pixels, and it established by exhaustive search that **no
+single flat ring colour can resolve it**: clearing the 3:1 non-text floor on a brand band needs a
+luminance at or above roughly 0.20 while clearing it on the selected tint needs one at or below
+roughly 0.18, an empty window whose best achievable worst-case is about 2.87:1. Setting the ring to
+the page background moves the failure rather than removing it, reading 1:1 against every unselected
+row.
+
+The mixin now emits an outline PLUS an outset shadow of a new `--focus-ring-contrast-color`, which
+resolves to the page background. Every geometric term is composed from the existing focus tokens —
+the spread is offset plus two ring widths — so retuning the width or the offset keeps all three bands
+consistent. Because a shadow is painted beneath the element's background while an outline is painted
+above it, the result is three concentric bands: contrast, ring, contrast.
+
+Measured in Chrome by scanning rendered pixels outward from the control edge on three axes, on a
+control sitting on the brand surface: white 2px, navy 2px, white 2px, then the brand surface. The
+indicator reads **12.61:1** against its own band and the band reads 12.61:1 against the brand
+surface, where the outline alone would have been 1.00:1. On the light surfaces that make up almost
+the whole application the bands are indistinguishable from the backdrop they replace — the inner band
+occupies the gap the offset already left transparent and the outer band lands on a surface it matches
+to within 1.13:1 — so there is **no visible change** anywhere the ring already worked. Confirmed on
+the running application across every focusable element on two routes, with the layout unchanged
+before and after focus across 56 measured rectangle fields, and confirmed still gated to keyboard
+focus: a real mouse click yields no ring at all.
+
+**In forced-colours mode** the user agent drops the shadow and keeps the outline, which is the
+correct degradation — the backdrop is forced there too, so the collision the second tone answers
+cannot arise. The shadow is additive and the outline remains the load-bearing indicator.
+
+**The one suppression, and a defect it exposed.** A record-grid row turns its ring inward, because
+rows sit in a region that scrolls and a region that scrolls in one axis clips in both, so an outward
+band would be cut off exactly when it matters and would paint over the neighbouring rows besides. The
+row rule had always been authored as a nested `&:focus-visible`, which compiles to a two-token
+selector — and browser measurement showed it had **never applied**: the base focus rule's
+`[tabindex]:not([tabindex='-1']):focus-visible` arm and the global table convention's
+`tbody > tr[aria-selected]:focus-visible` both out-specify it, and every row matches all three. The
+inward offset was therefore silently inert long before a second tone existed, and adding one would
+have painted a band that the container clipped away on the left and right edges of every row and on
+the bottom edge of the last. The correction is now a compound top-level rule naming the clipping
+ancestor, which out-specifies both aggressors on the type-selector count and therefore wins from any
+position in the sheet — proven by re-running the cascade with the correction placed first and every
+competitor after it. Measured after the fix: a focused row changes **7548 pixels inside its own
+border box and exactly zero outside it**, the inward band is 100% continuous along the top and
+99.68% along the bottom with the shortfall being antialiasing of the container's own corner radius,
+and the three controls that must keep the outward ring still have it.

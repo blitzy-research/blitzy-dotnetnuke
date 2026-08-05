@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.Role;
 
 /// <summary>
-/// Request contract for <c>POST /api/v1/portals/{portalId}/role-groups</c>: the two values that
+/// Request contract for <c>POST /api/v1/role-groups</c>: the two values that
 /// declare a new portal-scoped container for security roles.
 /// </summary>
 /// <remarks>
@@ -29,8 +29,8 @@ namespace DnnMigration.Application.Dtos.Role;
 /// precisely why the HTTP method rather than a sentinel distinguishes a create from an update: the
 /// legacy screen overloaded the identifier value minus one as its add-versus-edit switch
 /// (<c>EditGroups.ascx.vb</c> L42, L68 and L113), and the migrated design has two routed endpoints
-/// instead. The portal arrives in the route and is resolved once per request; accepting it in the body
-/// as well would give the tenant a second, contradictable source of truth, which is the one value a
+/// instead. The portal arrives through the resolved request context; accepting it in the body as well
+/// would give the tenant a second, contradictable source of truth, which is the one value a
 /// multi-tenant write must never let a caller restate.
 /// </para>
 /// <para>

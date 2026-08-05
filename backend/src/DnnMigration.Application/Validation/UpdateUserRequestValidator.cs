@@ -6,7 +6,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Declarative validator for <see cref="UpdateUserRequest"/>, the inbound contract of
-/// <c>PUT /api/v1/portals/{portalId}/users/{userId}</c>.
+/// <c>PUT /api/v1/users/{userId}</c>.
 /// </summary>
 /// <remarks>
 /// <para>

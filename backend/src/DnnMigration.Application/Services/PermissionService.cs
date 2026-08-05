@@ -90,12 +90,21 @@
 //   simplification: a deleted account's grants would keep being served from a warm entry, which is a
 //   stale-authorisation defect rather than a stale-listing one.
 //
-//   The CATALOGUE reads are cached here, and that is a net addition rather than a translation: the
-//   catalogue controller carried no cache site at all (PermissionController.vb, 0 DataCache references,
-//   measured). It is nevertheless the one thing in this file that is safe to cache and worth caching -
-//   installation-wide reference data seeded by the upgrade scripts, with no write member anywhere in
-//   this solution, and consumed by no access decision. The legacy timeout-times-multiplier idiom and its
-//   not-positive bypass are reproduced exactly, so a multiplier of zero genuinely reaches the store.
+//   The two SCOPED CATALOGUE reads are cached here, and that is a net addition rather than a translation:
+//   the catalogue controller carried no cache site at all (PermissionController.vb, 0 DataCache
+//   references, measured). They are nevertheless the one thing in this file that is safe to cache and
+//   worth caching - installation-wide reference data seeded by the upgrade scripts, with no write member
+//   anywhere in this solution, and consumed by no access decision. The legacy timeout-times-multiplier
+//   idiom and its not-positive bypass are reproduced exactly, so a multiplier of zero genuinely reaches
+//   the store.
+//
+//   WHAT IS CACHED IS BOUNDED IN THE NUMBER OF ENTRIES IT CAN EVER CREATE, which is a condition rather
+//   than a detail: an entry is keyed by a module DEFINITION - so every module of an installation collapses
+//   onto the definitions it has installed - or by a single installation-wide key for the page-scoped
+//   answer, whose read ignores the page it is given. The FILTERED key listing is not cached at all,
+//   because its dimensions are a free-text scope code and an unvalidated identifier, which no key scheme
+//   can bound and which no token can render unambiguously - any token is itself a legal scope code. Both
+//   decisions are recorded at their members.
 //
 // MIGRATION: only PROJECTIONS are cached, never entities, and that is forced rather than stylistic. The
 // permission repository issues no no-tracking query, so every entity it returns is attached to the
@@ -198,45 +207,45 @@ public sealed class PermissionService : IPermissionService
     private const int CatalogueCacheTimeOutMinutes = 20;
 
     /// <summary>
-    /// Cache key format for the filtered catalogue key listing.
+    /// Cache key format for the module-scoped catalogue definitions, keyed by the MODULE DEFINITION the
+    /// answer actually depends on rather than by the module that was asked about.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// MIGRATION: a NEW key family, and deliberately not one of the two legacy permission families. The
     /// legacy keys <c>ModulePermissions{0}</c> (tab-keyed) and <c>TabPermissions{0}</c> (portal-keyed)
     /// held GRANT ROW SETS, and this contract exposes no grant-set read at all - the grant-management
     /// surface is deliberately absent - so neither key has a counterpart read here to attach to. Writing
     /// a catalogue projection under a grant key would both misdescribe the entry and collide with the
-    /// grant invalidation that <c>ICacheService</c> targets at those exact names. The three filters are
-    /// part of the key because they select different answers; absent filters are rendered as a fixed
-    /// token so that "no filter" cannot collide with a filter value.
+    /// grant invalidation that <c>ICacheService</c> targets at those exact names.
+    /// </para>
+    /// <para>
+    /// THE DIMENSION IS THE DEFINITION, NOT THE MODULE, and that substitution is what bounds this key
+    /// space. The read behind it selects the entries of the module's own definition together with every
+    /// entry carrying the product-wide definition scope code, so two modules sharing a definition have
+    /// the same answer by construction and every module of an installation collapses onto the handful of
+    /// definitions it has installed. Keying by module instead admitted one entry per identifier a caller
+    /// chose to name, which is unbounded growth bought with well-formed requests. The tenant guard on
+    /// the member itself bounds the space a second time and from the other direction: an identifier that
+    /// names no module of the portal is REFUSED before any key is formed, so it earns no entry at all.
+    /// </para>
     /// </remarks>
-    private const string CatalogueKeysCacheKeyFormat = "PermissionCatalogueKeys|{0}|{1}|{2}";
+    private const string ModuleDefinitionsCacheKeyFormat = "PermissionDefinitionsByModuleDefinition|{0}";
 
     /// <summary>
-    /// Cache key format for the module-scoped catalogue definitions, keyed by module placement.
-    /// </summary>
-    private const string ModuleDefinitionsCacheKeyFormat = "PermissionDefinitionsByModule|{0}";
-
-    /// <summary>
-    /// Cache key format for the page-scoped catalogue definitions, keyed by page.
-    /// </summary>
-    /// <remarks>
-    /// The page identifier is part of the key even though the read behind it ignores the argument, because
-    /// keying without it would serve one page's answer for another if a later product revision made the
-    /// distinction real. The entries are a handful of rows each, so the duplication costs nothing.
-    /// </remarks>
-    private const string TabDefinitionsCacheKeyFormat = "PermissionDefinitionsByTab|{0}";
-
-    /// <summary>
-    /// Token standing in for an absent filter inside a cache key.
+    /// Cache key for the page-scoped catalogue definitions, which are installation-wide.
     /// </summary>
     /// <remarks>
-    /// A fixed word rather than an empty string, so that "no scope code supplied" and "a scope code that
-    /// is the empty string" cannot produce the same key. The latter is refused before it reaches the
-    /// cache, but a key scheme that relies on a validation elsewhere to stay unambiguous is one
-    /// refactoring away from being wrong.
+    /// ONE ENTRY, WITH NO PAGE DIMENSION, and that is a measurement rather than a simplification: the
+    /// terminal page-scoped catalogue statement filters on the product-wide page scope code and never
+    /// references its page argument at all, so every page receives the same rows and the repository
+    /// documents that it accepts the argument unused. Keying by page therefore stored one identical copy
+    /// per page identifier a caller happened to name - unbounded in the number of keys and constant in
+    /// the number of distinct answers. The tenant check on the member is unaffected by the collapse: it
+    /// happens before this key is used and refuses a page the portal does not own. If a later revision ever makes the page distinction real, this key
+    /// must regain the dimension in the same change that makes the read use it.
     /// </remarks>
-    private const string AbsentFilterToken = "*";
+    private const string TabDefinitionsCacheKey = "PermissionDefinitionsByTab|all";
 
     /// <summary>
     /// Every permission key the schema can hold, which is the enumeration itself.
@@ -256,6 +265,17 @@ public sealed class PermissionService : IPermissionService
     private readonly IModuleRepository _modules;
     private readonly ITabRepository _tabs;
     private readonly IUserRepository _users;
+
+    /// <summary>
+    /// Role assignments, read only to answer whether a caller administers a portal.
+    /// </summary>
+    /// <remarks>
+    /// The assignment-shaped read is the one that carries the validity window, which the name-shaped read
+    /// on <see cref="IUserRepository"/> does not, and the window is what distinguishes an active
+    /// administrator from a lapsed one.
+    /// </remarks>
+    private readonly IRoleRepository _roles;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICacheService _cache;
     private readonly IClock _clock;
@@ -278,6 +298,11 @@ public sealed class PermissionService : IPermissionService
     /// <param name="modules">Module existence and, for the inherit-view rule, module placement.</param>
     /// <param name="tabs">Page existence.</param>
     /// <param name="users">Caller resolution and the caller's role names.</param>
+    /// <param name="roles">
+    /// The caller's role ASSIGNMENTS, read only by the portal-administration test. The assignment carries
+    /// the effective and expiry window that decides whether a membership is currently active, which the
+    /// name-shaped read on <paramref name="users"/> does not.
+    /// </param>
     /// <param name="unitOfWork">
     /// The commit boundary. Required rather than optional: the only mutating member here removes rows
     /// from two grant tables, and the contract promises that removal lands as one unit.
@@ -300,6 +325,7 @@ public sealed class PermissionService : IPermissionService
         IModuleRepository modules,
         ITabRepository tabs,
         IUserRepository users,
+        IRoleRepository roles,
         IUnitOfWork unitOfWork,
         ICacheService cache,
         IClock clock,
@@ -312,11 +338,95 @@ public sealed class PermissionService : IPermissionService
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
         _users = users ?? throw new ArgumentNullException(nameof(users));
+        _roles = roles ?? throw new ArgumentNullException(nameof(roles));
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _portalOptions = portalOptions ?? throw new ArgumentNullException(nameof(portalOptions));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this reproduces the authority test the legacy administration screens performed
+    /// imperatively in their own code-behinds - <c>ModuleSettings.ascx.vb:L214-L219</c> and
+    /// <c>:L332-L338</c> disabled four controls outright "for tab administrators", who "can only manage
+    /// their own tab" - and it reproduces it from the same stored facts: the portal's own
+    /// <c>AdministratorRoleId</c> column and the caller's <c>UserRoles</c> assignments. The legacy test
+    /// itself read a role NAME off ambient portal state; naming is deliberately not used here, because
+    /// "Administrators" identifies a different row in every portal and a name-based test is satisfied by
+    /// an unrelated role in another tenant.
+    /// </para>
+    /// <para>
+    /// The ordering is the legacy ordering. <c>PortalSecurity.vb:L123</c> short-circuits on the host
+    /// account before it examines any role, so a host account is admitted here without a membership of
+    /// the portal at all - which is what makes host administration of any tenant work.
+    /// </para>
+    /// <para>
+    /// The role designated by the portal is read from the portal NAMED IN THE ARGUMENT rather than from
+    /// the resolved tenant snapshot, because "does this caller administer portal X" and "does this caller
+    /// administer the tenant they arrived through" are different questions and only the first is being
+    /// asked. Every assignment is examined rather than the first, so a duplicated pair cannot hide a valid
+    /// grant behind a lapsed one, and validity is <c>UserRole.GetStatus</c> - the role's effective and
+    /// expiry window, with the legacy absent-date marker read as unbounded - evaluated against the
+    /// injected clock in coordinated universal time.
+    /// </para>
+    /// <para>
+    /// Nothing here fails. An anonymous caller, an unknown account, an unknown portal and a portal with no
+    /// designated administrator role are all legitimate questions whose answer is "no", and reporting them
+    /// as failures would force every caller to distinguish "not permitted" from "could not tell" when the
+    /// two have the same consequence. It is also why an unset designation cannot grant: a configuration
+    /// gap answers false rather than being widened to another role.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<bool>> IsPortalAdministratorAsync(
+        int portalId,
+        int? userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId is not int callerId)
+        {
+            return Result<bool>.Success(false);
+        }
+
+        // The host account is resolved without a portal scope, exactly as ResolveCallerAsync does, because
+        // a host account belongs to no tenant and a portal-scoped read would not find it.
+        User? account = await _users.GetAsync(portalId, callerId, cancellationToken).ConfigureAwait(false)
+            ?? await _users.GetAsync(portalId: null, callerId, cancellationToken).ConfigureAwait(false);
+
+        if (account is null)
+        {
+            return Result<bool>.Success(false);
+        }
+
+        if (account.IsSuperUser)
+        {
+            return Result<bool>.Success(true);
+        }
+
+        // Aliases are not requested: the administrator role identifier is a column on the portal row, and
+        // loading the alias collection to read it would fetch rows this question never looks at.
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (portal?.AdministratorRoleId is not int administratorRoleId)
+        {
+            return Result<bool>.Success(false);
+        }
+
+        DateTime asOfUtc = _clock.UtcNow;
+
+        IReadOnlyList<UserRole> assignments = await _roles
+            .GetUserRolesAsync(portalId, callerId, cancellationToken)
+            .ConfigureAwait(false);
+
+        bool administers = assignments.Any(assignment =>
+            assignment.RoleId == administratorRoleId
+            && assignment.GetStatus(asOfUtc) == RoleStatus.Active);
+
+        return Result<bool>.Success(administers);
     }
 
     /// <inheritdoc />
@@ -393,28 +503,38 @@ public sealed class PermissionService : IPermissionService
                     $"Module definition {definitionId} cannot name a row; identifiers start at {LowestModuleDefinitionId}."));
         }
 
-        // The projection rather than the rows is what goes into the cache, and the normalisation happens
-        // on the way in rather than on the way out, so a warm read returns the same sequence a cold one
-        // does without re-deriving it. MIGRATION: Permission.PermissionKey is the closed PermissionKey
-        // enumeration, whose member NAME is the stored and wire value, so the projection is ToString()
-        // rather than a lookup and it can only ever yield VIEW, EDIT, READ or WRITE. Normalise still
-        // runs: it de-duplicates the catalogue and imposes the ordinal ordering the contract promises,
-        // and it is the same treatment the grant-derived answers below receive, which do arrive as
-        // arbitrary column text.
-        string cacheKey = string.Format(
-            CultureInfo.InvariantCulture,
-            CatalogueKeysCacheKeyFormat,
-            permissionCode ?? AbsentFilterToken,
-            moduleDefinitionId?.ToString(CultureInfo.InvariantCulture) ?? AbsentFilterToken,
-            permissionKey?.ToString() ?? AbsentFilterToken);
-
-        IReadOnlyList<string> catalogueKeys = await ReadThroughCacheAsync(
-                cacheKey,
-                async token => Normalise(
-                    await ReadCatalogueKeysAsync(permissionCode, moduleDefinitionId, permissionKey, token)
-                        .ConfigureAwait(false)),
-                cancellationToken)
-            .ConfigureAwait(false);
+        // THIS ANSWER IS DELIBERATELY NOT CACHED, and the reason is the shape of its key space rather than
+        // the cost of the read. An entry for this member would have to be dimensioned by all three filters,
+        // and two of the three are chosen freely by the caller: the scope code is FREE TEXT - the column it
+        // matches is free text, and an installation may carry a code this codebase has never seen - and the
+        // definition identifier is an arbitrary integer that nothing here proves names a row. A cache keyed
+        // on those admits as many entries as a caller cares to invent, each held for the whole lifetime, so
+        // one caller could grow the shared store and its key registry without limit while breaking no rule.
+        //
+        // The two escapes were both rejected. Validating the dimensions first would buy a bounded key space
+        // with a round trip per call on the very path the cache existed to spare. Rendering an absent filter
+        // as a token cannot make the key unambiguous either: any token is itself a legal scope code, so
+        // "?permissionCode=<token>" and "no code supplied" produced the SAME key, and whichever request
+        // warmed the entry first then answered both - a filtered request served the unfiltered catalogue, or
+        // the reverse. That was a real defect and not a hypothetical one.
+        //
+        // Nothing is lost by reading through. The unfiltered shape touches no store at all - the catalogue
+        // of keys IS the closed enumeration - the definition-scoped shape is one indexed read of a handful
+        // of rows, and the code-scoped shape is at most one indexed read per candidate key over the same
+        // small table. MIGRATION: the legacy catalogue controller carried NO cache site whatsoever
+        // (PermissionController.vb, zero DataCache references, measured), so caching here was a net addition
+        // rather than a ported behaviour, and withdrawing it restores the legacy read pattern rather than
+        // regressing from it. The two definition reads below ARE cached, because their key spaces are
+        // canonical and bounded.
+        //
+        // MIGRATION: Permission.PermissionKey is the closed PermissionKey enumeration, whose member NAME is
+        // the stored and wire value, so the projection is ToString() rather than a lookup and it can only
+        // ever yield VIEW, EDIT, READ or WRITE. Normalise still runs: it de-duplicates the catalogue and
+        // imposes the ordinal ordering the contract promises, and it is the same treatment the grant-derived
+        // answers below receive, which do arrive as arbitrary column text.
+        IReadOnlyList<string> catalogueKeys = Normalise(
+            await ReadCatalogueKeysAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
+                .ConfigureAwait(false));
 
         return Result<IReadOnlyList<string>>.Success(catalogueKeys);
     }
@@ -536,8 +656,14 @@ public sealed class PermissionService : IPermissionService
                 // When the caller named a page as well as a module it has named a PLACEMENT, and the
                 // inherited view key is then decided from that page alone. Naming both is the precise
                 // question; naming only the module is the collective one. See the contract remarks.
+                //
+                // The placements are read here, in the one branch that needs them, and handed to the
+                // decision - the same single-read discipline the decision member's own callers follow.
+                IReadOnlyList<TabModule> placements =
+                    await ReadPlacementsAsync(module, cancellationToken).ConfigureAwait(false);
+
                 if (await InheritedViewGrantedAsync(
-                        module,
+                        placements,
                         tabId,
                         placementTabModuleId: null,
                         userId,
@@ -613,10 +739,24 @@ public sealed class PermissionService : IPermissionService
         // failure codes for this member - the module being absent and the key being undefined - so a
         // contradiction has no code to report under, and a denial is the closed default this whole area
         // falls back to. It also matches what the inherited branch already did for the same condition.
-        if (await AddressesDisagreeAsync(module, placementTabId, placementTabModuleId, cancellationToken)
-            .ConfigureAwait(false))
+        //
+        // THE PLACEMENTS ARE READ AT MOST ONCE PER CALL, and that is why they are held here rather than
+        // fetched by each of the two members that need them. Reconciling the addresses and deciding an
+        // inherited view are two questions over the SAME set, so an earlier revision asked the store for it
+        // twice on the one request shape that reaches both - a caller naming a placement and asking about
+        // VIEW on a module that inherits it. The read stays LAZY, so a shape that needs no placement still
+        // makes no placement read: only a fully addressed pair, or the inherited-view branch below, brings
+        // the set into being.
+        IReadOnlyList<TabModule>? placements = null;
+
+        if (placementTabId is int namedTabId && placementTabModuleId is int namedTabModuleId)
         {
-            return Result<bool>.Success(false);
+            placements = await ReadPlacementsAsync(module, cancellationToken).ConfigureAwait(false);
+
+            if (AddressesDisagree(placements, namedTabId, namedTabModuleId))
+            {
+                return Result<bool>.Success(false);
+            }
         }
 
         CallerIdentity caller = await ResolveCallerAsync(portalId, userId, cancellationToken)
@@ -634,8 +774,12 @@ public sealed class PermissionService : IPermissionService
 
         if (permissionKey == PermissionKey.VIEW && module.InheritViewPermissions == true)
         {
+            // Reuses the set the reconciliation above already read when both addresses were named, and
+            // reads it here only when they were not.
+            placements ??= await ReadPlacementsAsync(module, cancellationToken).ConfigureAwait(false);
+
             bool inherited = await InheritedViewGrantedAsync(
-                    module,
+                    placements,
                     placementTabId,
                     placementTabModuleId,
                     userId,
@@ -704,9 +848,78 @@ public sealed class PermissionService : IPermissionService
     /// <inheritdoc />
     /// <remarks>
     /// <para>
+    /// THE SELF-CONTAINED FORM, for the caller whose whole operation is "revoke this account's own
+    /// grants". It performs no removal reasoning of its own: it delegates to
+    /// <see cref="StageUserPermissionRemovalAsync"/>, commits once, and then evicts through
+    /// <see cref="InvalidateUserPermissionCachesAsync"/>. Every rule about WHICH rows go therefore has
+    /// exactly one home, and the two entry points cannot drift apart.
+    /// </para>
+    /// <para>
+    /// It is deliberately NOT the member the account-deletion cascade calls. That cascade owns a
+    /// transaction spanning several writes, and a suboperation committing inside it would make the whole
+    /// sequence partially durable - which is why the staging member exists and why this one is documented
+    /// as top-level-only.
+    /// </para>
+    /// </remarks>
+    public async Task<Result> DeleteUserPermissionsAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        // STAGING AND ORCHESTRATION ARE SEPARATE, AND THIS MEMBER IS THE ORCHESTRATION HALF. It decides
+        // nothing about WHICH rows go - that rule lives once, below, in the staging member - and owns only
+        // the commit and the eviction that follow. The split exists because this same removal is one step
+        // of deleting the account that holds the grants, and a suboperation that commits on its own turns
+        // the enclosing operation into a sequence of independently durable parts: a later step failing
+        // would leave the grants gone and the account intact, with no way back.
+        Result staged = await StageUserPermissionRemovalAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (staged.IsFailure)
+        {
+            return staged;
+        }
+
+        // BOTH TABLES OR NEITHER, IN ONE COMMIT AND WITHOUT AN EXPLICIT TRANSACTION. Both removals are
+        // STAGED against the one scoped change tracker - IPermissionRepository documents them as staging
+        // members, and neither issues a statement of its own - so a single SaveChangesAsync applies them
+        // indivisibly. That is exactly the guarantee IUnitOfWork.SaveChangesAsync makes ("an implementer
+        // must apply the whole batch or none of it"), which is why no scope is opened here: a transaction
+        // spanning one commit adds nothing, and opening one would make this member unusable inside a larger
+        // operation, since the unit of work refuses a nested scope rather than silently ignoring it.
+        //
+        // MIGRATION: the legacy pair WAS a pair of independently durable statements. The provider declared
+        // transaction members at Library/Components/Providers/Data/DataProvider.vb:L70-L74 and the two
+        // cleanups - ModulePermissionController.vb:L218 and TabPermissionController.vb:L209 - never invoked
+        // them, so a failure between the two left the account's module grants removed and its page grants
+        // intact, the half-cleaned state in which a later account reusing the identifier inherits what was
+        // left behind. Making them atomic is a documented divergence rather than an opportunistic tidy-up:
+        // it is the unit-of-work boundary AAP section 0.4.3 requires of this layer. The legacy behaviour is
+        // annotated rather than reproduced, because reproducing it would mean writing a known half-failure
+        // into new code.
+        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // Ordered after the commit, deliberately, and delegated to the member the enclosing-operation
+        // caller also uses, so the two paths cannot evict different things.
+        await InvalidateUserPermissionCachesAsync(portalId, cancellationToken).ConfigureAwait(false);
+
+        return Result.Success();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
     /// Only grants made directly to the account are removed. Grants the account receives through a role
     /// belong to the role rather than to the account, so removing them would strip every other holder of
-    /// that role as well.
+    /// that role as well. This is the single definition of "this account's own grants"; the top-level
+    /// member above delegates to it rather than restating it.
+    /// </para>
+    /// <para>
+    /// NOTHING IS COMMITTED, FLUSHED OR EVICTED HERE. Both repository members stage against the scoped
+    /// change tracker, so the rows disappear only when the caller's own commit runs - which is what lets
+    /// this removal join a larger unit of work and be abandoned with it. No transaction is opened either:
+    /// the unit of work refuses a nested scope, so a scope taken here would fault the enclosing operation
+    /// outright.
     /// </para>
     /// <para>
     /// MIGRATION: the removal spans both grant tables and is therefore two repository calls, one per
@@ -723,7 +936,7 @@ public sealed class PermissionService : IPermissionService
     /// portal the account belongs to.
     /// </para>
     /// </remarks>
-    public async Task<Result> DeleteUserPermissionsAsync(
+    public async Task<Result> StageUserPermissionRemovalAsync(
         int portalId,
         int userId,
         CancellationToken cancellationToken = default)
@@ -745,62 +958,47 @@ public sealed class PermissionService : IPermissionService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        // BOTH TABLES OR NEITHER. The two removals are wrapped in one transaction because the contract
-        // promises they land as one unit, and because they genuinely cannot be expressed as a single commit:
-        // each repository member issues a set-based delete that reaches the store when it is called rather
-        // than when changes are flushed, so without an enclosing transaction they are two independently
-        // durable statements. A failure between them would then leave the account's module grants removed
-        // and its page grants intact - the half-cleaned state the interface remarks say must not occur,
-        // where a later account reusing the identifier inherits what was left behind.
-        //
-        // MIGRATION: the legacy pair was exactly that unprotected sequence. The provider declared
-        // transaction members at Library/Components/Providers/Data/DataProvider.vb:L70-L74 and the two
-        // cleanups - ModulePermissionController.vb:L218 and TabPermissionController.vb:L209 - never invoked
-        // them, so each statement committed on its own. Consolidating them is a documented divergence
-        // rather than an opportunistic tidy-up: it is the unit-of-work boundary AAP section 0.4.3 requires
-        // of this layer, and the abstraction's own contract names a multi-statement sequence of this shape
-        // as its reason to exist. The legacy behaviour is annotated rather than reproduced, because
-        // reproducing it would mean writing a known half-failure into new code.
-        //
-        // Disposal rolls back when no commit was taken, so every failure path - including a cancellation
-        // observed between the two removals - is correct without a compensation routine.
-        await using (ITransactionScope transaction = await _unitOfWork
-            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
-            .ConfigureAwait(false))
-        {
-            await _permissions.DeleteModulePermissionsByUserIdAsync(portalId, userId, cancellationToken)
-                .ConfigureAwait(false);
+        // Both guards are ahead of both stagings, so a refusal leaves the change tracker exactly as it was
+        // and the caller's own unit of work is unaffected by having asked.
+        await _permissions.DeleteModulePermissionsByUserIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
 
-            await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
-                .ConfigureAwait(false);
+        await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
 
-            // Flushed inside the transaction as well as committed with it. The two removals above are
-            // set-based and need no flush of their own, but anything the request staged before reaching
-            // here belongs to the same logical operation, and leaving it for a later commit outside this
-            // transaction would put it beyond the rollback that protects these two.
-            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return Result.Success();
+    }
 
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        // MIGRATION: the eviction the legacy cleanup performed and an earlier revision of this service
-        // dropped. ModulePermissionController.vb:L220 cleared the module-permission entries of every tab in
-        // the portal and TabPermissionController.vb:L211 cleared the portal's page-permission entry, both
-        // immediately after the same two deletes. Dropping them was not a simplification: a warm entry
-        // would keep answering with grants that no longer exist, and grants are what authorisation is
-        // decided from, so the staleness is a security matter rather than a display one.
-        //
-        // MIGRATION: this is also where the cache-key mismatch between the two families is resolved. The
-        // page-permission entry is portal-keyed, so it is evicted directly. The module-permission entry is
-        // TAB-keyed, so the portal-wide clear the legacy code performed is expressed by naming each of the
-        // portal's pages in turn - which is precisely the breadth ICacheService documents these narrow
-        // members as replacing, and precisely what the legacy code did internally: its private
-        // ClearPermissionCache(moduleId) at ModulePermissionController.vb:L62-L66 resolved the module in
-        // order to clear by its owning TabID. No new cache member is invented for this.
-        //
-        // Ordered after the commit, deliberately. Evicting before it would open a window in which a
-        // concurrent reader repopulates the entry from rows the transaction is about to remove - and, if
-        // the transaction then rolled back, would have discarded a valid entry for nothing.
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the eviction the legacy cleanup performed and an earlier revision of this service
+    /// dropped. <c>ModulePermissionController.vb:L220</c> cleared the module-permission entries of every
+    /// tab in the portal and <c>TabPermissionController.vb:L211</c> cleared the portal's page-permission
+    /// entry, both immediately after the same two deletes. Dropping them was not a simplification: a warm
+    /// entry would keep answering with grants that no longer exist, and grants are what authorisation is
+    /// decided from, so the staleness is a security matter rather than a display one.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is also where the cache-key mismatch between the two families is resolved. The
+    /// page-permission entry is portal-keyed, so it is evicted directly. The module-permission entry is
+    /// TAB-keyed, so the portal-wide clear the legacy code performed is expressed by naming each of the
+    /// portal's pages in turn - which is precisely the breadth <c>ICacheService</c> documents these narrow
+    /// members as replacing, and precisely what the legacy code did internally: its private
+    /// <c>ClearPermissionCache(moduleId)</c> at <c>ModulePermissionController.vb:L62-L66</c> resolved the
+    /// module in order to clear by its owning TabID. No new cache member is invented for this.
+    /// </para>
+    /// <para>
+    /// It is the CALLER'S responsibility to reach here only after its commit has succeeded. Evicting before
+    /// the commit would open a window in which a concurrent reader repopulates the entry from rows that are
+    /// about to be removed - and would have discarded a valid entry for nothing if the operation were then
+    /// abandoned.
+    /// </para>
+    /// </remarks>
+    public async Task InvalidateUserPermissionCachesAsync(
+        int portalId,
+        CancellationToken cancellationToken = default)
+    {
         _cache.InvalidateTabPermissions(portalId);
 
         IReadOnlyList<Tab> portalTabs = await _tabs
@@ -811,8 +1009,6 @@ public sealed class PermissionService : IPermissionService
         {
             _cache.InvalidateModulePermissions(tab.TabId);
         }
-
-        return Result.Success();
     }
 
     /// <summary>
@@ -917,18 +1113,22 @@ public sealed class PermissionService : IPermissionService
     /// <summary>
     /// Decides whether the two forms of addressing a module placement contradict each other.
     /// </summary>
-    /// <param name="module">The module, with its placements loaded when the entity carried them.</param>
-    /// <param name="placementTabId">The page the caller named, or <see langword="null"/> when it named none.</param>
-    /// <param name="placementTabModuleId">
-    /// The placement the caller named by its own key, or <see langword="null"/> when it named none.
+    /// <param name="placements">
+    /// The module's placements, already read by the caller. Passing the materialised set rather than the
+    /// module is what keeps one request from reading it twice.
     /// </param>
-    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <param name="placementTabId">The page the caller named.</param>
+    /// <param name="placementTabModuleId">The placement the caller named by its own key.</param>
     /// <returns>
-    /// <see langword="true"/> when both forms were supplied and the named placement does not sit on the
-    /// named page, which is the contradiction the contract refuses. <see langword="false"/> whenever fewer
-    /// than both were supplied, because one form alone cannot contradict anything.
+    /// <see langword="true"/> when the named placement does not sit on the named page, which is the
+    /// contradiction the contract refuses.
     /// </returns>
     /// <remarks>
+    /// <para>
+    /// Called only when BOTH forms were supplied - one form alone cannot contradict anything - so the
+    /// presence test lives at the call site, where it also decides whether the placements need reading at
+    /// all.
+    /// </para>
     /// <para>
     /// A placement key that names nothing this module occupies is NOT reported as a contradiction here, and
     /// the distinction is deliberate. That condition is an unoccupied placement rather than two
@@ -938,31 +1138,20 @@ public sealed class PermissionService : IPermissionService
     /// well would give one condition two owners.
     /// </para>
     /// <para>
-    /// The placements come from the loaded collection when the entity carried one and from the store
-    /// otherwise, which is the same source the inherited-view decision uses, so reconciling the addresses
-    /// costs no round trip that the decision was not already going to make. Both zero and minus one are
-    /// genuine page identifiers in this schema, so the comparison is a real comparison and not a sentinel
-    /// test.
+    /// Both zero and minus one are genuine page identifiers in this schema, so the comparison is a real
+    /// comparison and not a sentinel test. No store is reached from here at all, which is why the member is
+    /// synchronous: it decides over a set it is handed.
     /// </para>
     /// </remarks>
-    private async Task<bool> AddressesDisagreeAsync(
-        Module module,
-        int? placementTabId,
-        int? placementTabModuleId,
-        CancellationToken cancellationToken)
+    private static bool AddressesDisagree(
+        IReadOnlyList<TabModule> placements,
+        int placementTabId,
+        int placementTabModuleId)
     {
-        if (placementTabId is not int namedTabId || placementTabModuleId is not int namedTabModuleId)
-        {
-            return false;
-        }
-
-        IReadOnlyList<TabModule> placements = await ReadPlacementsAsync(module, cancellationToken)
-            .ConfigureAwait(false);
-
         TabModule? addressed = placements
-            .FirstOrDefault(placement => placement.TabModuleId == namedTabModuleId);
+            .FirstOrDefault(placement => placement.TabModuleId == placementTabModuleId);
 
-        return addressed is not null && addressed.TabId != namedTabId;
+        return addressed is not null && addressed.TabId != placementTabId;
     }
 
     /// <summary>
@@ -990,7 +1179,10 @@ public sealed class PermissionService : IPermissionService
     /// Decides whether a module configured to inherit its view permission is viewable by the caller, at the
     /// placement the caller addressed or - when none was addressed - at every placement it occupies.
     /// </summary>
-    /// <param name="module">The module, with its placements loaded.</param>
+    /// <param name="placements">
+    /// The module's placements, already read by the caller. The set is passed in rather than read here so
+    /// that a request needing both this decision and the address reconciliation above reads it once.
+    /// </param>
     /// <param name="placementTabId">
     /// The page the module is being addressed on, or <see langword="null"/> when the caller named none.
     /// </param>
@@ -1043,22 +1235,19 @@ public sealed class PermissionService : IPermissionService
     /// its pages and has no pages inherits nothing, and must not thereby become visible to everyone.
     /// </para>
     /// <para>
-    /// The placements are read only when the entity did not arrive with them loaded, and the addressed case
-    /// tests membership against the same collection, so naming a placement costs no extra round trip. Either
-    /// branch stops at the first page that settles the outcome.
+    /// The placements arrive already read, and the addressed case tests membership against that same
+    /// collection, so naming a placement costs no round trip of its own. Either branch stops at the first
+    /// page that settles the outcome.
     /// </para>
     /// </remarks>
     private async Task<bool> InheritedViewGrantedAsync(
-        Module module,
+        IReadOnlyList<TabModule> placements,
         int? placementTabId,
         int? placementTabModuleId,
         int? userId,
         IReadOnlyCollection<string> roleNames,
         CancellationToken cancellationToken)
     {
-        IReadOnlyList<TabModule> placements = await ReadPlacementsAsync(module, cancellationToken)
-            .ConfigureAwait(false);
-
         if (placementTabModuleId is int addressedTabModuleId)
         {
             // Addressed by the placement's own key, which is the precise form: a module may be placed on one
@@ -1286,14 +1475,45 @@ public sealed class PermissionService : IPermissionService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The module is resolved first, and it is resolved twice over: for the tenant check and then for the
+    /// cache. SEC-033 - a module that does not exist, or exists in another portal, is refused with
+    /// <c>module.not_found</c> before the cache is consulted, so no entry can be reached through a
+    /// neighbouring tenant's identifier. The read behind this member then depends only on the module's
+    /// DEFINITION, so the definition is what the entry is keyed by: modules sharing a definition share one
+    /// entry, and the key space is consequently bounded by the installation's definition catalogue instead
+    /// of by the identifiers callers choose to name. The read itself is unchanged and is still issued
+    /// against the module identifier, so the repository's own predicate - the module's definition unioned
+    /// with the product-wide definition scope - continues to decide the answer.
+    /// </remarks>
     public async Task<Result<IReadOnlyList<PermissionDto>>> GetModulePermissionDefinitionsAsync(
+        int portalId,
         int moduleId,
         CancellationToken cancellationToken = default)
     {
+        Module? module = await _modules
+            .GetByIdAsync(moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (module is null || !BelongsToPortal(module.PortalId, portalId))
+        {
+            return Result<IReadOnlyList<PermissionDto>>.Failure(
+                ModuleNotFoundCode,
+                FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
+        }
+
+        // SEC-033 and the key space in one step. The identifier is checked against the tenant BEFORE the
+        // cache is consulted, so an identifier belonging to another portal is refused rather than answered
+        // from an entry, and the entry itself is then keyed by the module's DEFINITION rather than by the
+        // module - the read below depends on nothing else, so modules sharing a definition share one entry
+        // and the key space is bounded by the installation's definition catalogue instead of by the
+        // identifiers callers name. The tenant is not a key component and does not need to be: the refusal
+        // above is what isolates the tenants, and the rows themselves are product-wide definition metadata
+        // rather than tenant data.
         string cacheKey = string.Format(
             CultureInfo.InvariantCulture,
             ModuleDefinitionsCacheKeyFormat,
-            moduleId);
+            module.ModuleDefinitionId);
 
         IReadOnlyList<PermissionDto> definitions = await ReadThroughCacheAsync(
                 cacheKey,
@@ -1306,17 +1526,32 @@ public sealed class PermissionService : IPermissionService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The page is resolved first and for the tenant check alone - SEC-033 - so a page that does not exist,
+    /// or exists in another portal, is refused with <c>tab.not_found</c> rather than answered. The answer
+    /// itself is then cached under ONE key for the whole installation, because the read behind it is
+    /// page-independent by measurement: the terminal statement selects the entries carrying the product-wide
+    /// page scope code and never references the page it was given. The page argument is still passed to the
+    /// repository, which owns that measurement and documents it; what changes here is only that one answer
+    /// is stored once rather than copied under every page identifier a caller names.
+    /// </remarks>
     public async Task<Result<IReadOnlyList<PermissionDto>>> GetTabPermissionDefinitionsAsync(
+        int portalId,
         int tabId,
         CancellationToken cancellationToken = default)
     {
-        string cacheKey = string.Format(
-            CultureInfo.InvariantCulture,
-            TabDefinitionsCacheKeyFormat,
-            tabId);
+        Tab? tab = await _tabs
+            .GetByIdAsync(tabId, cancellationToken)
+            .ConfigureAwait(false);
 
+        if (tab is null || !BelongsToPortal(tab.PortalId, portalId))
+        {
+            return Result<IReadOnlyList<PermissionDto>>.Failure(
+                TabNotFoundCode,
+                FormattableString.Invariant($"Page {tabId} does not exist in portal {portalId}."));
+        }
         IReadOnlyList<PermissionDto> definitions = await ReadThroughCacheAsync(
-                cacheKey,
+                TabDefinitionsCacheKey,
                 async token => Project(
                     await _permissions.GetByTabIdAsync(tabId, token).ConfigureAwait(false)),
                 cancellationToken)
@@ -1345,14 +1580,23 @@ public sealed class PermissionService : IPermissionService
     /// configuration asked for none of them.
     /// </para>
     /// <para>
-    /// Only the three catalogue reads come through here. The effective-key and decision members
-    /// deliberately do not, and that is a security judgement rather than an oversight: their answers are
-    /// caller-dimensioned, and this contract exposes no grant mutation from which such an entry could be
-    /// invalidated, so a warm entry would outlive a grant change with no hook able to clear it. The
-    /// catalogue carries neither property - it is installation-wide and this solution declares no write
-    /// member for it, the three legacy catalogue writers at <c>PermissionController.vb</c> L55, L59 and
-    /// L63 being deliberately unported - so an entry can only ever go stale against a module
-    /// installation, which is out of scope, and expiry alone is sufficient.
+    /// Only the two SCOPED catalogue reads come through here - the module-scoped definitions and the
+    /// page-scoped definitions - and each is keyed by a dimension that is canonical and bounded: the
+    /// definition a module belongs to, and a single installation-wide key for the page-scoped answer whose
+    /// read is page-independent. That bound is the condition on caching anything here at all. The filtered
+    /// key listing is deliberately NOT cached, because its dimensions include free text and an unvalidated
+    /// identifier and therefore cannot be bounded without a round trip that would defeat the cache; the
+    /// reasoning is recorded at that member.
+    /// </para>
+    /// <para>
+    /// The effective-key and decision members deliberately do not come through here either, and that is a
+    /// security judgement rather than an oversight: their answers are caller-dimensioned, and this contract
+    /// exposes no grant mutation from which such an entry could be invalidated, so a warm entry would
+    /// outlive a grant change with no hook able to clear it. The catalogue carries neither property - it is
+    /// installation-wide and this solution declares no write member for it, the three legacy catalogue
+    /// writers at <c>PermissionController.vb</c> L55, L59 and L63 being deliberately unported - so an entry
+    /// can only ever go stale against a module installation, which is out of scope, and expiry alone is
+    /// sufficient.
     /// </para>
     /// </remarks>
     private async Task<T> ReadThroughCacheAsync<T>(

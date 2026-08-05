@@ -1,4 +1,5 @@
 using DnnMigration.Application.Dtos.Auth;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 
 namespace DnnMigration.Application.Abstractions;
@@ -66,8 +67,8 @@ namespace DnnMigration.Application.Abstractions;
 // mail subsystem it used is excluded from this migration, so nothing could be delivered. A member that
 // must not disclose whether an account exists, cannot transmit a credential and cannot send a
 // notification would report success unconditionally while doing nothing, which is worse than its
-// absence because it reads as a working feature. Administrative reset through the account
-// administration contract is the supported path, and this is a documented functional reduction.
+// absence because it reads as a working feature. Bounded first-login migration and administrative
+// reset are the supported credential-transition paths; neither is password recovery or readback.
 
 // MIGRATION: the authenticated-event model is not reproduced. UserUserControlBase.vb:L59-L65
 // declared seven user-lifecycle events, and the sign-in screen raised one at Login.ascx.vb:L193 by
@@ -284,23 +285,19 @@ public interface IAuthService
     /// the same outcome by either order.
     /// </para>
     /// <para>
-    /// <b>The work-factor upgrade obligation, which is NOT a legacy-credential migration.</b> After a
-    /// <em>successful</em> verification the implementation must ask the domain hashing abstraction
-    /// whether the stored value is outdated and, if it is, replace it with a current hash inside the
-    /// same operation. "Outdated" means one thing only: produced by this scheme at a cost lower than
-    /// the one now configured. The upgrade is entirely transparent to the caller - it changes no part
-    /// of this signature, adds nothing to the response, and is neither a member, a flag nor a reason
-    /// code.
+    /// <b>The two replacement obligations.</b> After a successful current-scheme verification the
+    /// implementation asks the domain hashing abstraction whether the stored value's work factor is
+    /// outdated and replaces it when needed. Separately, a legacy representation may be verified through
+    /// the deployment-secret-backed compatibility abstraction only while its absolute deadline remains
+    /// open, and that successful answer requires an immediate BCrypt replacement in the same login.
+    /// Both replacements are transparent to the caller.
     /// </para>
     /// <para>
-    /// It rescues no legacy credential, and the distinction is load-bearing rather than pedantic. A
-    /// value held under the legacy reversible scheme cannot be verified here at all, so the
-    /// successful verification this upgrade depends upon can never occur for one; there is no
-    /// sequence of events in which a legacy value reaches the upgrade. <b>An administrative reset,
-    /// owned by the account-administration contract, is the only path by which a pre-existing
-    /// credential becomes usable</b>, and it is the whole path rather than a fallback behind a lazy
-    /// upgrade. Reading it as a fallback is what leads an operator to skip the resets that every
-    /// pre-existing account actually requires.
+    /// The separation is load-bearing. <see cref="IPasswordHasher"/> remains BCrypt-only and permanently
+    /// contains no reversible capability; <see cref="ILegacyCredentialVerifier"/> is the bounded bridge and
+    /// cannot mint or persist a credential. Administrative reset, owned by the account-administration
+    /// contract, remains the fallback after the deadline, for an unsupported representation, or when the
+    /// owner no longer knows the credential.
     /// </para>
     /// <para>
     /// <b>The effective legacy verdict, preserved for reference.</b> The legacy screen computed
@@ -388,21 +385,11 @@ public interface IAuthService
     // first makes the guessable code insufficient on its own, while the composition itself is
     // preserved for the parity reason given above.
 
-    // MIGRATION: the re-hash performed on a successful sign-in is a WORK-FACTOR UPGRADE, not the
-    // credential-migration path, and an earlier revision of this annotation said otherwise. It read
-    // "the re-hash on first successful sign-in is the credential-migration path ... so a correct
-    // credential is re-hashed and persisted within the same sign-in, and an account whose stored value
-    // cannot be verified at all is left to administrative reset", which describes a two-tier scheme
-    // this solution does not and cannot have: the legacy value was reversibly encrypted, the hashing
-    // abstraction recognises BCrypt digests only and holds no legacy verifier, and no entity maps a
-    // legacy credential column - so no legacy value is ever the subject of a successful verification,
-    // and the tier the annotation called the main path could never execute.
-    //
-    // What remains is true and narrow: a value THIS scheme produced is re-hashed at the current cost
-    // once that cost has been raised, within the same sign-in that verified it, and nothing about it is
-    // observable to the caller - no member, no response field, no reason code. Every pre-existing
-    // account requires an administrative reset, which is the whole migration path rather than a
-    // fallback, and is recorded as a deliberate functional reduction in MIGRATION_NOTES.md.
+    // MIGRATION: an accepted sign-in can require either of two replacement writes. A current BCrypt
+    // value is re-hashed when its work factor is superseded. A bounded legacy clear, SHA-1 or encrypted
+    // value is checked by the isolated, opt-in ILegacyCredentialVerifier and is always replaced with
+    // BCrypt when accepted. Neither path exposes credential material or changes the response shape;
+    // administrative reset remains the fallback for every legacy row that cannot be verified.
 
     // MIGRATION: the three approval outcomes keep their legacy identities but not their legacy
     // wording. Login.ascx.vb:L168-L185 selected between the resource keys EnterCode, InvalidCode and
@@ -495,6 +482,28 @@ public interface IAuthService
     // either. What survives is the revocation of the refresh token; the access token lapses at its
     // own expiry and the client discards it.
     Task<Result> LogoutAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Re-evaluates the blocking credential and profile work for one authenticated account from current
+    /// stored state.
+    /// </summary>
+    /// <param name="portalId">Tenant the session is scoped to.</param>
+    /// <param name="userId">Authenticated account identifier.</param>
+    /// <param name="cancellationToken">Token observed while account policy and profile state are read.</param>
+    /// <returns>
+    /// A successful outcome carrying the current remediation state, or a failed outcome when the tenant,
+    /// membership or required policy state cannot be resolved.
+    /// </returns>
+    /// <remarks>
+    /// Called by the API authorisation gate on protected requests. Login and rotation apply the same
+    /// authoritative evaluation inside their existing workflows before a pair leaves the server. The
+    /// access-token claims are signed guidance for the client; this read is the enforcement point, so
+    /// imposing or clearing remediation takes effect without waiting for an existing access token to expire.
+    /// </remarks>
+    Task<Result<AuthenticationRemediationState>> EvaluateRemediationAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Describes the caller of the current request to itself, resolving the identity the caller's

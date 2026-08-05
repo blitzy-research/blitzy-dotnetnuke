@@ -17,14 +17,11 @@
 // MIGRATION: the legacy credential store was reversible - the membership provider was registered with
 // passwordFormat="Encrypted" and enablePasswordRetrieval="true" at Website/release.config:L236-L246,
 // with the key that decrypts every stored credential committed to source control at L89-L93. The
-// target hashes one way through the domain-owned hashing abstraction, so a legacy credential cannot be
-// verified against a stored hash at all. THE MIGRATION PATH IS THEREFORE THE ADMINISTRATIVE RESET ON
-// THIS SERVICE, AND IT IS THE WHOLE PATH RATHER THAN A FALLBACK. An earlier revision of this note
-// attributed the path to a re-hash on the first successful sign-in in the authentication service and
-// cast the reset as a fallback for accounts that never sign in again; that is not achievable, because
-// re-hashing needs a plaintext proven against the stored value and the stored value cannot be checked.
-// What the authentication service does upgrade on sign-in is the cost of a value this scheme already
-// produced - a working credential made stronger, never a legacy one recovered.
+// target hashes one way through the domain-owned hashing abstraction. During an explicitly enabled
+// migration window, the authentication service uses an isolated verifier to check the bounded legacy
+// membership representation and immediately replaces an accepted value with BCrypt. Administrative
+// reset on this service remains the fallback for unverifiable rows and for accounts that do not sign
+// in before that verifier is disabled.
 //
 // MIGRATION: the legacy password policy is preserved verbatim rather than tightened - minimum length
 // seven, no required non-alphanumeric characters, no question-and-answer requirement and electronic
@@ -99,6 +96,7 @@
 // whose result could differ from the legacy one are itemised in MIGRATION_NOTES.md. This is also why the
 // nine code-behinds are treated as reference inputs for endpoint and screen semantics rather than as
 // candidates for line-by-line translation.
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using DnnMigration.Application.Abstractions;
@@ -133,6 +131,13 @@ namespace DnnMigration.Application.Services;
 /// </remarks>
 public sealed class UserService : IUserService
 {
+    /// <summary>Resource kind published on an audit record describing an account.</summary>
+    /// <remarks>
+    /// Spelled as the domain entity's own type name, so a reader of the trail can go from a record
+    /// straight to the type that produced it.
+    /// </remarks>
+    private const string UserResourceType = "User";
+
     /// <summary>
     /// Reported when more than one search filter is supplied, or when only one half of the
     /// profile-property pair is supplied.
@@ -146,13 +151,6 @@ public sealed class UserService : IUserService
     /// failure, is reported as one - leaving a client unable to tell a request it must correct from a write
     /// another caller won and which is worth retrying.
     /// </remarks>
-    /// <summary>Resource kind published on an audit record describing an account.</summary>
-    /// <remarks>
-    /// Spelled as the domain entity's own type name, so a reader of the trail can go from a record
-    /// straight to the type that produced it.
-    /// </remarks>
-    private const string UserResourceType = "User";
-
     private const string ListFilterInvalidCode = "user.list.filter-invalid";
 
     /// <summary>
@@ -363,6 +361,39 @@ public sealed class UserService : IUserService
     /// </summary>
     private const string MembershipSettingsSourceMissingCode = "user.membership-settings.source-missing";
 
+    /// <summary>Reported when a membership redirect names a page outside the addressed portal.</summary>
+    private const string MembershipRedirectInvalidCode = "user.membership-settings.redirect-invalid";
+
+    /// <summary>
+    /// Reported when a submitted membership setting is outside its legal range or width, or when the
+    /// electronic-mail validation expression cannot be compiled.
+    /// </summary>
+    /// <remarks>
+    /// The Api edge maps a code ending in a bare noun to 400, which is the answer a caller that submitted an
+    /// out-of-range value deserves; the declarative validator answers the same condition with a field-level
+    /// problem document when the request came through the pipeline.
+    /// </remarks>
+    private const string MembershipSettingsInvalidCode = "user.membership-settings.invalid";
+
+    /// <summary>
+    /// Reported when a membership-settings redirect member names a page the tenant does not own.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: a second revision reported the same condition as <c>redirect.not-found</c> from a helper
+    /// that took the READ projection. That helper could never run - no endpoint binds the read shape - so the
+    /// code it reported was unreachable and both are withdrawn in favour of this one. Missing pages, host
+    /// pages and pages owned by another tenant deliberately share this single answer, so that a caller cannot
+    /// use the settings surface to enumerate another tenant's page keys. Its de-duplication of repeated page
+    /// identifiers was worth keeping and is grafted onto the surviving check.
+    /// </remarks>
+    private const string MembershipSettingsRedirectNotInPortalCode =
+        "user.membership-settings.redirect_not_in_portal";
+
+    /// <summary>
+    /// Reported when the configured display-name format expands beyond the stored account column.
+    /// </summary>
+    private const string DisplayNameTooLongCode = "user.display-name.too-long";
+
     /// <summary>
     /// Reported when a submitted profile set names a property the tenant does not define.
     /// </summary>
@@ -382,6 +413,19 @@ public sealed class UserService : IUserService
     /// Reported when a value fails the validation expression its definition declares.
     /// </summary>
     private const string ProfilePropertyValidationFailedCode = "user.profile.property-validation-failed";
+
+    /// <summary>Reported when one profile submission repeats a property definition identifier.</summary>
+    private const string ProfileDuplicatePropertyCode = "user.profile.duplicate-property";
+
+    /// <summary>Reported when a profile submission exceeds the bounded amount of per-property work.</summary>
+    private const string ProfileTooManyPropertiesCode = "user.profile.too-many-properties";
+
+    /// <summary>Reported when a profile value carries an unsupported visibility discriminator.</summary>
+    private const string ProfileVisibilityInvalidCode = "user.profile.visibility-invalid";
+
+    /// <summary>Reported when a tenant-authored validation expression is malformed or exceeds safety bounds.</summary>
+    private const string ProfileDefinitionExpressionInvalidCode =
+        "profile-definition.validation-expression-invalid";
 
     /// <summary>
     /// Reported when the tenant already declares a profile property of the submitted name.
@@ -415,11 +459,30 @@ public sealed class UserService : IUserService
     /// </summary>
     private const int ProfileValueColumnLength = 3750;
 
+    /// <summary>Maximum number of profile values one request may validate and reconcile.</summary>
+    private const int ProfilePropertySubmissionMaximum = 64;
+
+    /// <summary>Maximum length accepted for tenant-authored regular expressions.</summary>
+    private const int ValidationExpressionMaximumLength = 512;
+
+    /// <summary>Maximum number of compiled tenant expressions retained process-wide.</summary>
+    private const int ValidationExpressionCacheMaximum = 1024;
+
     /// <summary>
     /// Number of accounts above which the legacy membership settings defaulted the account picker to a
     /// free-text control rather than a drop-down (UserModuleBase.vb:L178).
     /// </summary>
     private const int LargeTenantAccountThreshold = 1000;
+
+    /// <summary>
+    /// Terminal width of <c>dbo.Users.DisplayName</c>.
+    /// </summary>
+    /// <remarks>
+    /// Measured as <c>nvarchar(128)</c> in both the terminal DDL and
+    /// <c>UserConfiguration</c>. <see cref="string.Length"/> counts UTF-16 code units, which is the
+    /// same unit SQL Server uses for this column's declared length.
+    /// </remarks>
+    private const int DisplayNameMaximumLength = 128;
 
     /// <summary>
     /// Legacy integer sentinel meaning "no page selected" in the three redirect settings.
@@ -433,7 +496,13 @@ public sealed class UserService : IUserService
     /// A profile property's validation expression is tenant data rather than code, so a pathological
     /// expression must not be able to occupy a request thread indefinitely.
     /// </remarks>
-    private static readonly TimeSpan ValidationExpressionTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ValidationExpressionTimeout = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Bounded cache of validated regular-expression objects, keyed by the exact stored expression.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, Regex> ValidationExpressionCache =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Profile property names the legacy account grid composed its address column from, in the order it
@@ -454,6 +523,7 @@ public sealed class UserService : IUserService
     private readonly IPortalRepository _portals;
     private readonly IModuleRepository _modules;
     private readonly IModuleDefinitionRepository _definitions;
+    private readonly ITabRepository _tabs;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IClock _clock;
@@ -480,6 +550,12 @@ public sealed class UserService : IUserService
     /// <param name="portals">Tenant existence, the designated administrator and the account count.</param>
     /// <param name="modules">Module settings persistence, where membership settings are stored.</param>
     /// <param name="definitions">Definition lookups, used to locate the settings source module.</param>
+    /// <param name="tabs">
+    /// Page lookups. Present for exactly one obligation: the three redirect members of the tenant's
+    /// membership settings name pages, and the legacy screen edited them with a picker bound to the
+    /// portal's own pages, so a write has to be able to prove that a submitted page belongs to the tenant.
+    /// Nothing else in this service reads pages.
+    /// </param>
     /// <param name="unitOfWork">The single commit point for every write below.</param>
     /// <param name="passwordHasher">One-way credential hashing and verification.</param>
     /// <param name="clock">The clock every timestamp is taken from.</param>
@@ -509,6 +585,7 @@ public sealed class UserService : IUserService
         IPortalRepository portals,
         IModuleRepository modules,
         IModuleDefinitionRepository definitions,
+        ITabRepository tabs,
         IUnitOfWork unitOfWork,
         IPasswordHasher passwordHasher,
         IClock clock,
@@ -526,6 +603,7 @@ public sealed class UserService : IUserService
         _portals = portals ?? throw new ArgumentNullException(nameof(portals));
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _definitions = definitions ?? throw new ArgumentNullException(nameof(definitions));
+        _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _passwordHasher = passwordHasher ?? throw new ArgumentNullException(nameof(passwordHasher));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -543,7 +621,7 @@ public sealed class UserService : IUserService
     /// <param name="eventName">The stable event name, from <see cref="AuditEventNames"/>.</param>
     /// <param name="portalId">The tenant the change was made within.</param>
     /// <param name="subjectUserId">The account the change was made against.</param>
-    /// <param name="properties">Short, non-sensitive descriptive facts about the change.</param>
+    /// <param name="properties">Short, non-sensitive machine-readable facts about the change.</param>
     /// <remarks>
     /// <para>
     /// Called only after the change has been committed. The acting account comes from the credential, and
@@ -566,7 +644,6 @@ public sealed class UserService : IUserService
         {
             PortalId = portalId,
             ActorUserId = _currentUser.UserId,
-            ActorUserName = _currentUser.UserName,
             SubjectUserId = subjectUserId,
             ResourceType = UserResourceType,
             ResourceId = subjectUserId.ToString(CultureInfo.InvariantCulture),
@@ -668,6 +745,10 @@ public sealed class UserService : IUserService
                 "Only one of the account name, electronic-mail and profile property filters may be supplied.");
         }
 
+        MembershipSettingsDto visibility =
+            await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false)
+            ?? new MembershipSettingsDto();
+
         IReadOnlyList<ProfilePropertyDefinition> definitions =
             await _profiles.GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
                 .ConfigureAwait(false);
@@ -714,20 +795,25 @@ public sealed class UserService : IUserService
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var addressPropertyIds = new List<int>(AddressProfilePropertyNames.Length);
-        foreach (string propertyName in AddressProfilePropertyNames)
+        if (visibility.ColumnAddress)
         {
-            ProfilePropertyDefinition? part = definitions.FirstOrDefault(candidate =>
-                string.Equals(candidate.PropertyName, propertyName, StringComparison.OrdinalIgnoreCase));
-
-            if (part is not null)
+            foreach (string propertyName in AddressProfilePropertyNames)
             {
-                addressPropertyIds.Add(part.PropertyDefinitionId);
+                ProfilePropertyDefinition? part = definitions.FirstOrDefault(candidate =>
+                    string.Equals(candidate.PropertyName, propertyName, StringComparison.OrdinalIgnoreCase));
+
+                if (part is not null)
+                {
+                    addressPropertyIds.Add(part.PropertyDefinitionId);
+                }
             }
         }
 
-        int? telephonePropertyId = definitions.FirstOrDefault(candidate =>
-            string.Equals(candidate.PropertyName, TelephoneProfilePropertyName, StringComparison.OrdinalIgnoreCase))
-            ?.PropertyDefinitionId;
+        int? telephonePropertyId = visibility.ColumnTelephone
+            ? definitions.FirstOrDefault(candidate =>
+                string.Equals(candidate.PropertyName, TelephoneProfilePropertyName, StringComparison.OrdinalIgnoreCase))
+                ?.PropertyDefinitionId
+            : null;
 
         var rows = new List<UserListItemDto>(matches.Items.Count);
         foreach (User account in matches.Items)
@@ -738,7 +824,9 @@ public sealed class UserService : IUserService
             if (addressPropertyIds.Count > 0 || telephonePropertyId is not null)
             {
                 IReadOnlyList<UserProfileValue> values =
-                    await _profiles.GetProfileValuesAsync(account.UserId, cancellationToken).ConfigureAwait(false);
+                    await _profiles
+                        .GetProfileValuesAsync(portalId, account.UserId, cancellationToken)
+                        .ConfigureAwait(false);
 
                 address = ComposeAddress(values, addressPropertyIds);
 
@@ -749,7 +837,9 @@ public sealed class UserService : IUserService
                 }
             }
 
-            rows.Add(UserMappings.ToListItem(account, portalId, address, telephone));
+            UserListItemDto row = UserMappings.ToListItem(account, portalId, address, telephone);
+            ApplyUserListVisibility(row, visibility);
+            rows.Add(row);
         }
 
         return Result<PagedResult<UserListItemDto>>.Success(
@@ -796,10 +886,14 @@ public sealed class UserService : IUserService
     /// same commit.
     /// </para>
     /// <para>
-    /// The credential is written afterwards, because the credential store is the external
-    /// <c>aspnet_*</c> membership store whose members are immediate by contract rather than staged. A
-    /// failure there is compensated by removing everything the first commit wrote, so the two steps are
-    /// atomic in effect.
+    /// The credential is written after the first flush because its foreign key needs the generated account
+    /// identifier, which the store only assigns while the insert runs. Both writes nevertheless remain inside
+    /// one explicit transaction and one commit, and the membership store enlists its command on the context's
+    /// current transaction, so the pair is genuinely atomic rather than atomic "in effect": a failed
+    /// credential write rolls the account, portal membership and role assignments back, and there is no
+    /// window in which an account exists without the credential that makes it usable. An earlier revision
+    /// committed the account first and undid it with an in-process compensation routine, which could itself
+    /// fail - and could not run at all if the process was terminated - leaving an unusable account behind.
     /// </para>
     /// <para>
     /// MIGRATION: the legacy screen could create an account with a generated credential and mail it to
@@ -829,6 +923,15 @@ public sealed class UserService : IUserService
             return Result<UserDetailDto>.Failure(
                 CreateInvalidEmailCode,
                 "An electronic-mail address is required.");
+        }
+
+        Result<bool> validEmail = await IsEmailValidAsync(portalId, request.Email, cancellationToken)
+            .ConfigureAwait(false);
+        if (validEmail.IsFailure || !validEmail.Value)
+        {
+            return Result<UserDetailDto>.Failure(
+                CreateInvalidEmailCode,
+                "The electronic-mail address does not satisfy this portal's validation rule.");
         }
 
         if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
@@ -924,34 +1027,41 @@ public sealed class UserService : IUserService
             account.UserRoles.Add(new UserRole { RoleId = role.RoleId });
         }
 
-        _users.Add(account);
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
-        try
+        await using (ITransactionScope transaction = await _unitOfWork
+            .JoinOrBeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false))
         {
-            bool created = await _users.CreateCredentialAsync(
-                account.UserId,
-                _passwordHasher.Hash(credential),
-                request.Authorize,
-                now,
-                cancellationToken).ConfigureAwait(false);
+            _users.Add(account);
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-            if (!created)
+            try
             {
-                await CompensateFailedCreationAsync(account, cancellationToken).ConfigureAwait(false);
-                return Result<UserDetailDto>.Failure(
-                    CreateDuplicateUsernameCode,
-                    FormattableString.Invariant(
-                        $"The credential store already holds a credential for account name \"{request.Username}\"."));
+                bool created = await _users.CreateCredentialAsync(
+                    account.UserId,
+                    _passwordHasher.Hash(credential),
+                    request.Authorize,
+                    now,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (!created)
+                {
+                    return Result<UserDetailDto>.Failure(
+                        CreateDuplicateUsernameCode,
+                        FormattableString.Invariant(
+                            $"The credential store already holds a credential for account name \"{request.Username}\"."));
+                }
             }
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            await CompensateFailedCreationAsync(account, CancellationToken.None).ConfigureAwait(false);
-            return Result<UserDetailDto>.Failure(
-                CreateProviderErrorCode,
-                FormattableString.Invariant(
-                    $"The credential store could not be written: {exception.GetType().Name}."));
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return Result<UserDetailDto>.Failure(
+                    CreateProviderErrorCode,
+                    FormattableString.Invariant(
+                        $"The credential store could not be written: {exception.GetType().Name}."));
+            }
+
+            // The one point at which the account becomes visible to anything else. Both the account row
+            // and its credential are published here, together.
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // The membership facts live in the external credential store and are projections rather than
@@ -965,15 +1075,14 @@ public sealed class UserService : IUserService
         _cache.InvalidateUser(portalId, account.Username);
 
         // MIGRATION: reproduces the legacy USER_CREATED audit entry (EventLogController.vb:L39). Recorded
-        // only once the credential store has accepted the credential, so an account whose creation was
-        // compensated away above never produces a record.
+        // only after the commit, so an account whose creation was rolled back - because the credential store
+        // refused it or was unreachable - never produces a record.
         RecordAudit(
             AuditEventNames.UserCreated,
             portalId,
             account.UserId,
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["Username"] = account.Username,
                 ["Approved"] = request.Authorize.ToString(CultureInfo.InvariantCulture),
             });
 
@@ -1005,14 +1114,51 @@ public sealed class UserService : IUserService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        UserMappings.ApplyUpdate(account, request);
+        Result<bool> validEmail = await IsEmailValidAsync(portalId, request.Email, cancellationToken)
+            .ConfigureAwait(false);
+        if (validEmail.IsFailure || !validEmail.Value)
+        {
+            return Result<UserDetailDto>.Failure(
+                CreateInvalidEmailCode,
+                "The electronic-mail address does not satisfy this portal's validation rule.");
+        }
 
+        // MIGRATION: THE PROJECTION USED TO RUN HERE AND NOW RUNS AFTER THE GUARDS, and the duplicate was a
+        // genuine defect rather than a redundancy. Two revisions each placed a call to the projection: one
+        // immediately after the address check, one below every state-dependent guard. Both survived a
+        // combination, so the aggregate was mutated BEFORE the display-name width guard could refuse - and a
+        // refusal that has already mutated a tracked entity depends on nobody calling SaveChanges afterwards,
+        // which this method cannot guarantee for its callers. The later call is the correct one and is kept;
+        // this position now performs no write at all.
         MembershipSettingsDto? settings =
             await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
+        string? formattedDisplayName = null;
         if (settings is not null && !string.IsNullOrWhiteSpace(settings.SecurityDisplayNameFormat))
         {
-            account.DisplayName = FormatDisplayName(settings.SecurityDisplayNameFormat, account);
+            formattedDisplayName = FormatDisplayName(
+                settings.SecurityDisplayNameFormat,
+                account.UserId,
+                request.FirstName,
+                request.LastName,
+                account.Username);
+
+            if (formattedDisplayName.Length > DisplayNameMaximumLength)
+            {
+                return Result<UserDetailDto>.Failure(
+                    DisplayNameTooLongCode,
+                    FormattableString.Invariant(
+                        $"The tenant's display-name format produces {formattedDisplayName.Length} characters for account {userId}; the stored limit is {DisplayNameMaximumLength}."));
+            }
+        }
+
+        // Apply the request only after every state-dependent guard has passed. Besides avoiding a database
+        // write, this keeps an expected refusal from leaving a tracked aggregate mutated in a caller that
+        // continues using the same unit-of-work scope.
+        UserMappings.ApplyUpdate(account, request);
+        if (formattedDisplayName is not null)
+        {
+            account.DisplayName = formattedDisplayName;
         }
 
         Portal? portal = await _portals
@@ -1054,10 +1200,27 @@ public sealed class UserService : IUserService
     /// destroy that tenant's data.
     /// </para>
     /// <para>
+    /// THE WHOLE CASCADE IS ONE TRANSACTION, AND THAT IS THE MOST IMPORTANT PROPERTY THIS MEMBER HAS. Five
+    /// writes make up a deletion - the account's direct permission grants, its role assignments, its tenant
+    /// membership, its credential in the external membership store, and the account row - and they cannot
+    /// be one <c>SaveChanges</c> because the credential lives in a store that no entity maps and is written
+    /// through its own statement. So an explicit scope encloses all five, every one of them lands or none
+    /// does, and disposal without a commit rolls the batch back. Without it, a failure or a cancellation
+    /// part way through leaves an account whose grants and assignments are already gone - the state no
+    /// administrative screen can see and no later deletion revisits - while the reply may even say the
+    /// account was left intact.
+    /// </para>
+    /// <para>
     /// The permission grants keyed by the account are removed first, reproducing the three cleanup
-    /// procedures UserController.vb:L200 invoked before deleting the account. That removal is immediate by
-    /// repository contract rather than staged, which the contract documents, so it is ordered ahead of the
-    /// commit exactly as the legacy sequence was.
+    /// procedures UserController.vb:L200 invoked before deleting the account. They are STAGED, through the
+    /// permission contract's stage-only member, so they join the single commit below rather than becoming
+    /// durable on their own; the ordering matches the legacy sequence, but the durability does not, and
+    /// deliberately so. Every step of the cascade - the grant removal, the role assignments, the tenant
+    /// membership, the account row and the external credential - is staged or issued inside the ONE explicit
+    /// transaction opened here and committed once, so the all-or-nothing promise this contract makes is a
+    /// property of the code rather than of the order in which the steps happen to appear. An earlier revision
+    /// let the grant removal commit on its own, which meant a later credential-store failure reported failure
+    /// over an account that was intact but stripped of every grant it held.
     /// </para>
     /// <para>
     /// Both protections are enforced here rather than exposed as switches. The legacy delete let its
@@ -1113,89 +1276,132 @@ public sealed class UserService : IUserService
             return Result.Failure(sessions);
         }
 
-        // MIGRATION: the legacy cascade removed the account's direct grants from both grant tables
-        // through two separate provider members - DeleteModulePermissionsByUserID, reached from
-        // ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
-        // TabPermissionController.vb:L209 - and each terminal procedure joins its own grant table to its
-        // own owning table so the delete is bounded to this portal. Both are still issued, and for the
-        // same reason the legacy code issued both: a grant left behind on either table would outlive the
-        // account that held it and a later account reusing the identifier would inherit it.
-        //
-        // THE CASCADE IS ORCHESTRATED THROUGH THE PERMISSION CONTRACT, NOT THROUGH THE GRANT REPOSITORY.
-        // The two tables are one concern and the rule bounding the removal to DIRECT grants - grants
-        // reaching the account through a role belong to the role, so removing them would strip every
-        // other holder of that role - is permission knowledge rather than account knowledge. Consolidating
-        // it behind the one member that owns it keeps a single definition of "this account's own grants";
-        // issuing the two table deletes from here would put a second copy of that rule in a service whose
-        // subject is accounts, free to drift from the first. The account identifier crosses the boundary
-        // as an int: the legacy members took the account OBJECT and read the portal off it, which is
-        // precisely why a caller could widen the removal to every portal the account belonged to.
-        //
-        // The removal is staged rather than committed, so it joins the single commit below and an account
-        // whose deletion is abandoned further down keeps its grants.
-        Result cascade = await _permissions
-            .DeleteUserPermissionsAsync(portalId, userId, cancellationToken)
-            .ConfigureAwait(false);
-
-        // A refusal is propagated rather than discarded. Nothing has been committed at this point, so
-        // reporting the reason leaves the account whole; swallowing it would commit an account removal
-        // whose grants were still in place, which is the one outcome the cascade exists to prevent.
-        if (cascade.IsFailure)
-        {
-            return cascade;
-        }
-
-        IReadOnlyList<UserRole> assignments = await _roles
-            .GetUserRolesAsync(portalId, userId, cancellationToken)
-            .ConfigureAwait(false);
-
-        foreach (UserRole assignment in assignments)
-        {
-            await _roles
-                .DeleteUserRoleAsync(assignment.UserId, assignment.RoleId, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        UserPortal? membership = await _users
-            .GetMembershipAsync(portalId, userId, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (membership is not null)
-        {
-            _users.RemoveMembership(membership);
-        }
-
         bool holdsAnotherMembership = account.UserPortals
             .Any(candidate => candidate.PortalId != portalId);
 
-        if (!holdsAnotherMembership)
+        // ONE SCOPE AROUND THE WHOLE CASCADE. Five writes follow - the account's direct grants, its role
+        // assignments, its tenant membership, its credential in the external membership store, and the
+        // account row - and they cannot be expressed as a single SaveChanges because the credential lives
+        // outside the mapped model and is written through its own statement. So they are enclosed here, and
+        // the commit at the end of the block is the only point at which any of them becomes durable.
+        //
+        // Disposal rolls back when no commit was taken, which is what makes every failure path below - an
+        // unreachable membership store, a concurrency conflict raised by the commit, a cancellation observed
+        // between two steps - correct without a compensation routine. The membership store enlists in this
+        // scope because it borrows the same connection, so the credential removal is inside the boundary
+        // rather than beside it.
+        //
+        // The default isolation is correct: this sequence is atomic-or-nothing but depends on nothing it
+        // read staying unchanged. The account's own concurrency token protects the account row, and the
+        // guards above are refusals rather than check-then-write decisions.
+        await using (ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false))
         {
-            // THE ANSWER IS READ, WHICH IT PREVIOUSLY WAS NOT. This is the one write in the cascade that
-            // leaves the external membership store, and it is the one whose failure matters most: the account
-            // row is about to be removed, so a credential left behind becomes an orphan that no
-            // administrative screen can reach and no later deletion will revisit, while the deletion itself
-            // reported success. Discarding the answer made an unreachable membership store look exactly like
-            // a completed removal.
+            // MIGRATION: the legacy cascade removed the account's direct grants from both grant tables
+            // through two separate provider members - DeleteModulePermissionsByUserID, reached from
+            // ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
+            // TabPermissionController.vb:L209 - and each terminal procedure joins its own grant table to its
+            // own owning table so the delete is bounded to this portal. Both are still issued, and for the
+            // same reason the legacy code issued both: a grant left behind on either table would outlive the
+            // account that held it and a later account reusing the identifier would inherit it.
             //
-            // Refusing here is safe precisely because nothing has been committed. Every removal above is
-            // tracked or issued inside this unit of work and the commit is still ahead, so abandoning now
-            // leaves the account whole rather than partly dismantled, and the caller is told the truth. The
-            // reason token ends in store_unavailable, so the Api edge answers 503 and a caller may retry.
-            if (!await _users.DeleteCredentialAsync(userId, cancellationToken).ConfigureAwait(false))
+            // THE CASCADE IS ORCHESTRATED THROUGH THE PERMISSION CONTRACT, NOT THROUGH THE GRANT REPOSITORY.
+            // The two tables are one concern and the rule bounding the removal to DIRECT grants - grants
+            // reaching the account through a role belong to the role, so removing them would strip every
+            // other holder of that role - is permission knowledge rather than account knowledge. Consolidating
+            // it behind the one member that owns it keeps a single definition of "this account's own grants";
+            // issuing the two table deletes from here would put a second copy of that rule in a service whose
+            // subject is accounts, free to drift from the first. The account identifier crosses the boundary
+            // as an int: the legacy members took the account OBJECT and read the portal off it, which is
+            // precisely why a caller could widen the removal to every portal the account belonged to.
+            //
+            // THE STAGE-ONLY MEMBER IS THE ONE CALLED, AND THE DISTINCTION IS THE WHOLE POINT. Its top-level
+            // sibling commits and evicts on its own, which inside this scope would be a second, inner
+            // commit boundary: the grants would become durable ahead of everything below them, so a credential
+            // removal that failed - or a cancellation - would leave an account intact but stripped of its
+            // grants, and this method would report that the account had been left alone. Staging instead
+            // means the removal joins the single commit below and an abandoned deletion keeps its grants.
+            // Cache eviction is deferred to the same contract's eviction member, after the commit.
+            Result cascade = await _permissions
+                .StageUserPermissionRemovalAsync(portalId, userId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // A refusal is propagated rather than discarded. Nothing has been committed at this point, so
+            // reporting the reason leaves the account whole; swallowing it would commit an account removal
+            // whose grants were still in place, which is the one outcome the cascade exists to prevent.
+            // Returning here disposes the scope without committing, which rolls the batch back.
+            if (cascade.IsFailure)
             {
-                return Result.Failure(
-                    CredentialRemovalFailedCode,
-                    FormattableString.Invariant($"The credential held by account {userId} could not be removed.")
-                    + " The account was left intact rather than deleted without it. Try again.");
+                return cascade;
             }
 
-            _users.Remove(account);
+            IReadOnlyList<UserRole> assignments = await _roles
+                .GetUserRolesAsync(portalId, userId, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (UserRole assignment in assignments)
+            {
+                await _roles
+                    .DeleteUserRoleAsync(assignment.UserId, assignment.RoleId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            // SEC-013: profile rows have no PortalID of their own. Their tenant ownership is carried by the
+            // required definition foreign key, so portal removal must stage precisely the values whose
+            // definitions belong to this portal before the membership is removed.
+            await _profiles.DeleteProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
+
+            UserPortal? membership = await _users
+                .GetMembershipAsync(portalId, userId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (membership is not null)
+            {
+                _users.RemoveMembership(membership);
+            }
+
+            if (!holdsAnotherMembership)
+            {
+                // THE ANSWER IS READ, WHICH IT PREVIOUSLY WAS NOT. This is the one write in the cascade that
+                // leaves the external membership store, and it is the one whose failure matters most: the account
+                // row is about to be removed, so a credential left behind becomes an orphan that no
+                // administrative screen can reach and no later deletion will revisit, while the deletion itself
+                // reported success. Discarding the answer made an unreachable membership store look exactly like
+                // a completed removal.
+                //
+                // Refusing here is safe precisely because nothing has been committed. Every removal above is
+                // tracked or issued inside this transaction and the commit is still ahead, so abandoning now
+                // leaves the account whole rather than partly dismantled, and the caller is told the truth. The
+                // reason token ends in store_unavailable, so the Api edge answers 503 and a caller may retry.
+                if (!await _users.DeleteCredentialAsync(userId, cancellationToken).ConfigureAwait(false))
+                {
+                    return Result.Failure(
+                        CredentialRemovalFailedCode,
+                        FormattableString.Invariant($"The credential held by account {userId} could not be removed.")
+                        + " The account was left intact rather than deleted without it. Try again.");
+                }
+
+                _users.Remove(account);
+            }
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
+        // Everything below runs only once the batch is durable, so no eviction and no audit record can
+        // describe a deletion that did not happen.
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateUser(portalId, account.Username);
+
+        // The grant-cache eviction the permission contract owns, deferred to here because this method owned
+        // the commit. Evicting inside the scope would have discarded warm entries for a batch that might
+        // still have rolled back, and would have opened a window for a concurrent reader to repopulate them
+        // from rows the transaction was about to remove.
+        await _permissions
+            .InvalidateUserPermissionCachesAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
 
         // MIGRATION: reproduces the legacy USER_DELETED audit entry, whose one measured call site is
         // UserController.vb:L240 - AddLog("Username", objUser.Username, _portalSettings, objUser.UserID,
@@ -1209,7 +1415,6 @@ public sealed class UserService : IUserService
             account.UserId,
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["Username"] = account.Username,
                 ["AccountRemoved"] = (!holdsAnotherMembership).ToString(CultureInfo.InvariantCulture),
             });
 
@@ -1276,12 +1481,12 @@ public sealed class UserService : IUserService
     /// deployment that has disabled reset cannot be probed for which accounts exist.
     /// </para>
     /// <para>
-    /// MIGRATION: this member owns the whole of the credential migration path. Legacy credentials were held
-    /// reversibly and cannot be verified against a one-way hash, so an administrative reset is the only way a
-    /// pre-existing account regains access. The shipped default keeps reset ENABLED, which is faithful:
+    /// MIGRATION: this member owns the fallback half of credential migration. AuthService owns the primary
+    /// first-login path through the bounded legacy verifier; an administrative reset remains necessary after
+    /// that deadline, for an unsupported representation, or when the owner no longer knows the credential.
+    /// The shipped default keeps reset ENABLED, which is faithful:
     /// <c>Website/release.config</c> L240 registers the legacy provider with
-    /// <c>enablePasswordReset="true"</c>. Disabling it by default would be an unrequested behavioural change
-    /// that locked every pre-migration account out permanently.
+    /// <c>enablePasswordReset="true"</c>.
     /// </para>
     /// <para>
     /// The new credential is never returned. The legacy reset assigned the provider's answer onto the account
@@ -1429,7 +1634,7 @@ public sealed class UserService : IUserService
             return Result.Failure(weakCredential);
         }
 
-        (bool exists, string? storedHash, _, _) = await _users
+        (bool exists, string? storedHash, _, _, _, _) = await _users
             .GetCredentialStateAsync(userId, cancellationToken)
             .ConfigureAwait(false);
 
@@ -1519,7 +1724,7 @@ public sealed class UserService : IUserService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        (bool exists, _, _, bool isLockedOut) = await _users
+        (bool exists, _, _, _, _, bool isLockedOut) = await _users
             .GetCredentialStateAsync(userId, cancellationToken)
             .ConfigureAwait(false);
 
@@ -1576,7 +1781,7 @@ public sealed class UserService : IUserService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        (bool exists, _, bool storedApproval, _) = await _users
+        (bool exists, _, _, _, bool storedApproval, _) = await _users
             .GetCredentialStateAsync(userId, cancellationToken)
             .ConfigureAwait(false);
 
@@ -1679,14 +1884,59 @@ public sealed class UserService : IUserService
     /// Every setting is written as a module setting against the tenant's account module instance, which
     /// is precisely where the legacy screen wrote them (UserSettings.ascx.vb:L183). Absence of that
     /// module is a legitimate answer to a read and an impossibility for a write, which is why this member
-    /// reports it and the read above does not.
+    /// reports it and the read above does not. Each non-null redirect is resolved before any setting is
+    /// staged and must belong to the same tenant. Identifier zero is resolved normally because it is the
+    /// first real page key; the legacy <c>-1</c> absence sentinel has already become
+    /// <see langword="null"/> at this boundary and is likewise treated as an identifier if a caller sends
+    /// it explicitly.
     /// </remarks>
     public async Task<Result> UpdateMembershipSettingsAsync(
         int portalId,
-        MembershipSettingsDto settings,
+        UpdateMembershipSettingsRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(request);
+
+        // THE SERVICE'S OWN COPY OF THE FIELD RULES, and the duplication is deliberate for the same reason
+        // it is on the module-settings write: the declarative validator answers a caller that came through
+        // the API pipeline with a field-level 400, and this member is reachable from callers that did not.
+        // The two must agree, so both are annotated as a pair.
+        if (ValidateMembershipSettings(request) is ResultReason invalid)
+        {
+            return Result.Failure(invalid);
+        }
+
+        // PAGE OWNERSHIP, which no field rule can decide. The legacy screen offered a picker bound to the
+        // portal's own pages (UserSettings.ascx.vb:L80-L82), so a redirect target outside the tenant was
+        // never selectable; here it arrives as an integer and has to be proved. Absence is null and only
+        // null - the page identity seeds at zero, so zero is a legitimate page and a non-positive test would
+        // reject the first page of every portal.
+        var checkedPages = new HashSet<int>();
+        foreach ((string member, int? tabId) in new[]
+        {
+            (nameof(UpdateMembershipSettingsRequest.RedirectAfterLogin), request.RedirectAfterLogin),
+            (nameof(UpdateMembershipSettingsRequest.RedirectAfterRegistration), request.RedirectAfterRegistration),
+            (nameof(UpdateMembershipSettingsRequest.RedirectAfterLogout), request.RedirectAfterLogout),
+        })
+        {
+            // A repeated identifier is read ONCE. The three members may legitimately name the same page -
+            // an installation that sends every outcome to one landing page is ordinary - and asking the
+            // repository the same question again adds I/O without adding information.
+            if (tabId is not { } wanted || !checkedPages.Add(wanted))
+            {
+                continue;
+            }
+
+            Tab? page = await _tabs.GetByIdAsync(wanted, cancellationToken).ConfigureAwait(false);
+
+            if (page is null || page.PortalId != portalId)
+            {
+                return Result.Failure(
+                    MembershipSettingsRedirectNotInPortalCode,
+                    FormattableString.Invariant(
+                        $"{member} names page {wanted}, which does not belong to portal {portalId}."));
+            }
+        }
 
         Module? source = await FindMembershipSettingsSourceAsync(portalId, cancellationToken).ConfigureAwait(false);
         if (source is null)
@@ -1697,10 +1947,22 @@ public sealed class UserService : IUserService
                     $"Portal {portalId} has no \"{MembershipSettingsDto.UserAccountsModuleDefinitionName}\" module instance to store membership settings against."));
         }
 
+        if (string.IsNullOrWhiteSpace(request.SecurityEmailValidation))
+        {
+            return Result.Failure(
+                ProfileDefinitionExpressionInvalidCode,
+                "The electronic-mail validation expression must not be empty.");
+        }
+
+        if (ValidateStoredExpression(request.SecurityEmailValidation) is ResultReason invalidExpression)
+        {
+            return Result.Failure(invalidExpression);
+        }
+
         IReadOnlyList<ModuleSetting> stored =
             await _modules.GetModuleSettingsAsync(source.ModuleId, cancellationToken).ConfigureAwait(false);
 
-        foreach (KeyValuePair<string, string> setting in ProjectMembershipSettings(settings))
+        foreach (KeyValuePair<string, string> setting in ProjectMembershipSettings(request))
         {
             await UpsertModuleSettingAsync(stored, source.ModuleId, setting.Key, setting.Value, cancellationToken)
                 .ConfigureAwait(false);
@@ -1711,6 +1973,44 @@ public sealed class UserService : IUserService
         _cache.InvalidateProfileDefinitions(portalId);
 
         return Result.Success();
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<bool>> IsEmailValidAsync(
+        int portalId,
+        string email,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return Result<bool>.Success(false);
+        }
+
+        MembershipSettingsDto settings =
+            await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false)
+            ?? new MembershipSettingsDto();
+
+        if (string.IsNullOrWhiteSpace(settings.SecurityEmailValidation))
+        {
+            return Result<bool>.Success(false);
+        }
+
+        Result<Regex> expression = GetValidationExpression(settings.SecurityEmailValidation);
+        if (expression.IsFailure)
+        {
+            return Result<bool>.Failure(expression.Error!);
+        }
+
+        try
+        {
+            return Result<bool>.Success(expression.Value.IsMatch(email));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return Result<bool>.Failure(
+                ProfileDefinitionExpressionInvalidCode,
+                "The portal's electronic-mail validation rule could not be applied safely.");
+        }
     }
 
     /// <inheritdoc />
@@ -1749,8 +2049,9 @@ public sealed class UserService : IUserService
 
         // An absent settings source yields the key's own default, which is true; a present source yields
         // whatever it stores.
-        bool required = settings?.SecurityRequireValidProfileAtLogin
-            ?? MembershipSettingsDto.DefaultRequireValidProfileAtLogin;
+        bool required = settings is null
+            ? MembershipSettingsDto.DefaultRequireValidProfileAtLogin
+            : settings.SecurityRequireValidProfile || settings.SecurityRequireValidProfileAtLogin;
 
         if (!required)
         {
@@ -1770,7 +2071,7 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<UserProfileValue> stored =
-            await _profiles.GetProfileValuesAsync(userId, cancellationToken).ConfigureAwait(false);
+            await _profiles.GetProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
 
         var answers = new Dictionary<int, string?>(stored.Count);
         foreach (UserProfileValue value in stored)
@@ -1814,7 +2115,7 @@ public sealed class UserService : IUserService
             .ConfigureAwait(false);
 
         IReadOnlyList<UserProfileValue> values =
-            await _profiles.GetProfileValuesAsync(userId, cancellationToken).ConfigureAwait(false);
+            await _profiles.GetProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
 
         int defaultVisibility =
             await ReadProfileDefaultVisibilityAsync(portalId, cancellationToken).ConfigureAwait(false);
@@ -1850,6 +2151,19 @@ public sealed class UserService : IUserService
     {
         ArgumentNullException.ThrowIfNull(profile);
 
+        if (profile.Properties is null)
+        {
+            return Result.Failure(ProfileUnknownPropertyCode, "The profile properties collection is required.");
+        }
+
+        if (profile.Properties.Count > ProfilePropertySubmissionMaximum)
+        {
+            return Result.Failure(
+                ProfileTooManyPropertiesCode,
+                FormattableString.Invariant(
+                    $"A profile may contain no more than {ProfilePropertySubmissionMaximum} submitted properties."));
+        }
+
         User? account = await _users.GetAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
         if (account is null)
         {
@@ -1871,6 +2185,35 @@ public sealed class UserService : IUserService
         var submitted = new Dictionary<int, UserProfileValueDto>(profile.Properties.Count);
         foreach (UserProfileValueDto property in profile.Properties)
         {
+            if (property is null)
+            {
+                return Result.Failure(ProfileUnknownPropertyCode, "A profile property entry must not be null.");
+            }
+
+            if (property.PropertyValue is null)
+            {
+                return Result.Failure(
+                    ProfilePropertyValidationFailedCode,
+                    FormattableString.Invariant(
+                        $"Profile property {property.PropertyDefinitionId} must carry a value; use an empty string to clear it."));
+            }
+
+            if (property.Visibility is < 0 or > 2)
+            {
+                return Result.Failure(
+                    ProfileVisibilityInvalidCode,
+                    FormattableString.Invariant(
+                        $"Profile property {property.PropertyDefinitionId} has an unsupported visibility."));
+            }
+
+            if (submitted.ContainsKey(property.PropertyDefinitionId))
+            {
+                return Result.Failure(
+                    ProfileDuplicatePropertyCode,
+                    FormattableString.Invariant(
+                        $"Profile property {property.PropertyDefinitionId} was submitted more than once."));
+            }
+
             if (!byDefinitionId.TryGetValue(property.PropertyDefinitionId, out ProfilePropertyDefinition? definition))
             {
                 return Result.Failure(
@@ -1905,7 +2248,7 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<UserProfileValue> stored =
-            await _profiles.GetProfileValuesAsync(userId, cancellationToken).ConfigureAwait(false);
+            await _profiles.GetProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
 
         DateTime now = _clock.UtcNow;
         var retained = new HashSet<int>();
@@ -2012,14 +2355,13 @@ public sealed class UserService : IUserService
         CancellationToken cancellationToken = default)
     {
         ProfilePropertyDefinition? definition = await _profiles
-            .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
+            .GetDefinitionByIdAsync(portalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        // MIGRATION: PortalId is int? because 03.03.03 lines 77-83 made the column nullable and
-        // migrated the legacy host-level -1 to NULL. The lifted comparison therefore also reads a
-        // host-level definition as an absence for a portal-scoped request, which is the honest
-        // answer: such a definition belongs to no single portal.
-        if (definition is null || definition.PortalId != portalId || definition.IsDeleted)
+        // The repository has already applied the same portal predicate used by the collection read,
+        // including the legacy -1-to-NULL host translation. This layer decides only whether a scoped row
+        // that exists is still live.
+        if (definition is null || definition.IsDeleted)
         {
             // The contract declares absence as a null value on a non-nullable type parameter.
             return Result<ProfilePropertyDefinitionDto?>.Success(null);
@@ -2049,6 +2391,11 @@ public sealed class UserService : IUserService
         if (string.IsNullOrWhiteSpace(request.PropertyName))
         {
             throw new DomainException("A profile property name is required.");
+        }
+
+        if (ValidateStoredExpression(request.ValidationExpression) is ResultReason invalidExpression)
+        {
+            return Result<ProfilePropertyDefinitionDto>.Failure(invalidExpression);
         }
 
         // MIGRATION: the duplicate test reads the declaration rather than asking for a boolean,
@@ -2090,7 +2437,7 @@ public sealed class UserService : IUserService
         ArgumentNullException.ThrowIfNull(request);
 
         ProfilePropertyDefinition? stored = await _profiles
-            .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
+            .GetDefinitionByIdAsync(portalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         // MIGRATION: A WITHDRAWN DECLARATION IS ABSENT TO THIS MEMBER TOO, and it previously was not.
@@ -2108,7 +2455,7 @@ public sealed class UserService : IUserService
         // create withdrawn rows - but the existing DotNetNuke database does, which is the whole premise of
         // mapping to an unaltered schema. Rows carrying Deleted are exactly the legacy data this member will
         // meet first.
-        if (stored is null || stored.PortalId != portalId || stored.IsDeleted)
+        if (stored is null || stored.IsDeleted)
         {
             return Result<ProfilePropertyDefinitionDto>.Failure(
                 ProfileDefinitionNotFoundCode,
@@ -2119,6 +2466,11 @@ public sealed class UserService : IUserService
         if (string.IsNullOrWhiteSpace(request.PropertyName))
         {
             throw new DomainException("A profile property name is required.");
+        }
+
+        if (ValidateStoredExpression(request.ValidationExpression) is ResultReason invalidExpression)
+        {
+            return Result<ProfilePropertyDefinitionDto>.Failure(invalidExpression);
         }
 
         // MIGRATION: the same read-the-row test as on create, except that here the declaration being
@@ -2184,7 +2536,7 @@ public sealed class UserService : IUserService
         CancellationToken cancellationToken = default)
     {
         ProfilePropertyDefinition? definition = await _profiles
-            .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
+            .GetDefinitionByIdAsync(portalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         // MIGRATION: A WITHDRAWN DECLARATION IS ABSENT TO THIS MEMBER TOO, matching the single read, the
@@ -2194,7 +2546,7 @@ public sealed class UserService : IUserService
         // declaration the most destructive one available. Reporting absence instead is both consistent with
         // every read and the safer of the two answers: the caller asked to remove something this API says
         // does not exist, and it now says so before any answer is destroyed.
-        if (definition is null || definition.PortalId != portalId || definition.IsDeleted)
+        if (definition is null || definition.IsDeleted)
         {
             return Result.Failure(
                 ProfileDefinitionNotFoundCode,
@@ -2312,11 +2664,9 @@ public sealed class UserService : IUserService
     /// but may not administer it must be prevented from choosing reset.
     /// </para>
     /// <para>
-    /// THE AUTHORITY IS READ FROM STORED STATE, NOT FROM THE CALLER'S CLAIMS. <c>ICurrentUser</c> reports what
-    /// the token said, and its super-user flag and role list are documented as informational for exactly this
-    /// reason: they were minted at sign-in and cannot observe an account demoted, or a role assignment lapsed,
-    /// since. Only the account key and tenant are taken from the token - the caller's identity is the one thing
-    /// the token is authoritative about - and everything that confers authority is read from the database.
+    /// THE AUTHORITY IS READ FROM STORED STATE, NOT FROM THE CALLER'S CLAIMS. The authority-minimised token
+    /// carries only the account and tenant identifiers; <c>ICurrentUser</c>'s compatibility host and role
+    /// members are neutral. Everything that confers authority is read from the database.
     /// </para>
     /// <para>
     /// AN UNAUTHENTICATED OR UNIDENTIFIABLE CALLER IS REFUSED BOTH OPERATIONS. Reaching this member without an
@@ -2523,30 +2873,61 @@ public sealed class UserService : IUserService
     }
 
     /// <summary>
-    /// Reverses everything the first commit of a failed creation wrote.
+    /// Applies the tenant's configured user-list visibility to one projected row.
     /// </summary>
-    /// <param name="account">The account whose creation failed.</param>
-    /// <param name="cancellationToken">Token observed for cancellation.</param>
-    /// <returns>A task that completes once the reversal is committed.</returns>
-    private async Task CompensateFailedCreationAsync(User account, CancellationToken cancellationToken)
+    /// <param name="row">The row to minimise.</param>
+    /// <param name="settings">The tenant's typed membership settings.</param>
+    /// <remarks>
+    /// Username remains present because the legacy grid made it unconditionally visible. Every other
+    /// configurable column is replaced with its contract's absent value before the row crosses the API
+    /// boundary, so a client cannot recover hidden PII by ignoring presentation settings.
+    /// </remarks>
+    private static void ApplyUserListVisibility(UserListItemDto row, MembershipSettingsDto settings)
     {
-        foreach (UserRole assignment in account.UserRoles.ToList())
+        if (!settings.ColumnFirstName)
         {
-            // The account key is read from the account rather than from the assignment, so the
-            // reversal does not depend on the dependent's foreign key having been populated by the
-            // commit that is being reversed.
-            await _roles
-                .DeleteUserRoleAsync(account.UserId, assignment.RoleId, cancellationToken)
-                .ConfigureAwait(false);
+            row.FirstName = string.Empty;
         }
 
-        foreach (UserPortal membership in account.UserPortals.ToList())
+        if (!settings.ColumnLastName)
         {
-            _users.RemoveMembership(membership);
+            row.LastName = string.Empty;
         }
 
-        _users.Remove(account);
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (!settings.ColumnDisplayName)
+        {
+            row.DisplayName = string.Empty;
+        }
+
+        if (!settings.ColumnAddress)
+        {
+            row.Address = null;
+        }
+
+        if (!settings.ColumnTelephone)
+        {
+            row.Telephone = null;
+        }
+
+        if (!settings.ColumnEmail)
+        {
+            row.Email = string.Empty;
+        }
+
+        if (!settings.ColumnCreatedDate)
+        {
+            row.CreatedDate = null;
+        }
+
+        if (!settings.ColumnLastLogin)
+        {
+            row.LastLoginDate = null;
+        }
+
+        if (!settings.ColumnAuthorized)
+        {
+            row.IsApproved = false;
+        }
     }
 
     /// <summary>
@@ -2645,18 +3026,28 @@ public sealed class UserService : IUserService
     /// Applies the tenant's display-name format to an account.
     /// </summary>
     /// <param name="format">The configured format, carrying the legacy tokens.</param>
-    /// <param name="account">The account whose values fill the tokens.</param>
+    /// <param name="userId">The account identifier substituted for <c>[USERID]</c>.</param>
+    /// <param name="firstName">The submitted given name substituted for <c>[FIRSTNAME]</c>.</param>
+    /// <param name="lastName">The submitted family name substituted for <c>[LASTNAME]</c>.</param>
+    /// <param name="username">The immutable account name substituted for <c>[USERNAME]</c>.</param>
     /// <returns>The formatted display name.</returns>
     /// <remarks>
     /// The four tokens and their substitution order are taken verbatim from
-    /// <c>UserInfo.UpdateDisplayName</c> (UserInfo.vb:L358-L368).
+    /// <c>UserInfo.UpdateDisplayName</c> (UserInfo.vb:L358-L368). Submitted values are supplied directly
+    /// rather than read from a tracked entity so the caller can check the computed width before mutating
+    /// that entity.
     /// </remarks>
-    private static string FormatDisplayName(string format, User account)
+    private static string FormatDisplayName(
+        string format,
+        int userId,
+        string? firstName,
+        string? lastName,
+        string? username)
         => format
-            .Replace("[USERID]", account.UserId.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-            .Replace("[FIRSTNAME]", account.FirstName, StringComparison.Ordinal)
-            .Replace("[LASTNAME]", account.LastName, StringComparison.Ordinal)
-            .Replace("[USERNAME]", account.Username, StringComparison.Ordinal);
+            .Replace("[USERID]", userId.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("[FIRSTNAME]", firstName ?? string.Empty, StringComparison.Ordinal)
+            .Replace("[LASTNAME]", lastName ?? string.Empty, StringComparison.Ordinal)
+            .Replace("[USERNAME]", username ?? string.Empty, StringComparison.Ordinal);
 
     /// <summary>
     /// Concatenates the address parts an account holds, in the legacy order.
@@ -2724,16 +3115,20 @@ public sealed class UserService : IUserService
     /// The legacy reader located this module by definition name and then read ordinary module settings
     /// against it, so the settings a tenant-wide screen edits have always been module settings on a
     /// well-known module instance rather than rows in a settings table of their own.
+    /// <para>
+    /// SEC-007: <c>User Accounts</c> is an administrative package and is deliberately absent from the
+    /// portal-placeable definition catalogue. The repository exposes a separately named privileged lookup
+    /// so this security-settings path cannot accidentally widen the catalogue used by module creation.
+    /// </para>
     /// </remarks>
     private async Task<Module?> FindMembershipSettingsSourceAsync(int portalId, CancellationToken cancellationToken)
     {
-        IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
-
-        ModuleDefinition? accounts = definitions.FirstOrDefault(candidate => string.Equals(
-            candidate.FriendlyName,
-            MembershipSettingsDto.UserAccountsModuleDefinitionName,
-            StringComparison.OrdinalIgnoreCase));
+        ModuleDefinition? accounts = await _definitions
+            .GetAdministrativeDefinitionByFriendlyNameAsync(
+                portalId,
+                MembershipSettingsDto.UserAccountsModuleDefinitionName,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         if (accounts is null)
         {
@@ -2854,11 +3249,118 @@ public sealed class UserService : IUserService
     }
 
     /// <summary>
+    /// Applies this service's own copy of the membership-settings field rules.
+    /// </summary>
+    /// <param name="request">The submitted settings.</param>
+    /// <returns>The reason the settings are refused, or <see langword="null"/> when they are acceptable.</returns>
+    /// <remarks>
+    /// Deliberately duplicates <c>UpdateMembershipSettingsRequestValidator</c> rather than trusting it. The
+    /// validator is the authority for the message a caller sees, because it can name the offending member as
+    /// a field; this guard is what makes the rules hold for a caller that reached the service without the
+    /// pipeline in front of it. Both sites are annotated so a change to either is visibly a change to a pair.
+    /// The page-ownership rule is NOT duplicated here - it lives only here, because it needs a data read.
+    /// </remarks>
+    private static ResultReason? ValidateMembershipSettings(UpdateMembershipSettingsRequest request)
+    {
+        if (request.DisplayMode is < 0 or > UpdateMembershipSettingsRequestValidator.MaximumDisplayMode)
+        {
+            return new ResultReason(
+                MembershipSettingsInvalidCode,
+                UpdateMembershipSettingsRequestValidator.DisplayModeOutOfRangeMessage);
+        }
+
+        if (request.ProfileDefaultVisibility
+            is < 0 or > UpdateMembershipSettingsRequestValidator.MaximumProfileVisibility)
+        {
+            return new ResultReason(
+                MembershipSettingsInvalidCode,
+                UpdateMembershipSettingsRequestValidator.ProfileVisibilityOutOfRangeMessage);
+        }
+
+        if (request.SecurityUsersControl
+            is < 0 or > UpdateMembershipSettingsRequestValidator.MaximumUsersControl)
+        {
+            return new ResultReason(
+                MembershipSettingsInvalidCode,
+                UpdateMembershipSettingsRequestValidator.UsersControlOutOfRangeMessage);
+        }
+
+        if (request.RecordsPerPage < UpdateMembershipSettingsRequestValidator.MinimumRecordsPerPage
+            || request.RecordsPerPage > UpdateMembershipSettingsRequestValidator.MaximumRecordsPerPage)
+        {
+            return new ResultReason(
+                MembershipSettingsInvalidCode,
+                UpdateMembershipSettingsRequestValidator.RecordsPerPageOutOfRangeMessage);
+        }
+
+        if ((request.SecurityDisplayNameFormat?.Length ?? 0)
+                > UpdateMembershipSettingsRequestValidator.MaximumSettingValueLength
+            || (request.SecurityEmailValidation?.Length ?? 0)
+                > UpdateMembershipSettingsRequestValidator.MaximumSettingValueLength)
+        {
+            return new ResultReason(
+                MembershipSettingsInvalidCode,
+                UpdateMembershipSettingsRequestValidator.SettingValueTooLongMessage);
+        }
+
+        // The stored expression is the one setting that is later EXECUTED, by the registration and profile
+        // validators, so an expression that cannot be compiled must never reach the store: every subsequent
+        // submission would then fail inside a validator with no field to name.
+        if (!IsUsableExpression(request.SecurityEmailValidation))
+        {
+            return new ResultReason(
+                MembershipSettingsInvalidCode,
+                UpdateMembershipSettingsRequestValidator.EmailExpressionUnusableMessage);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Determines whether a submitted pattern can be compiled and applied as a regular expression.
+    /// </summary>
+    /// <param name="pattern">The submitted pattern.</param>
+    /// <returns><see langword="true"/> when the pattern is usable.</returns>
+    /// <remarks>
+    /// The timeout is the validator's, so the two cannot diverge, and it bounds the probe match as well as
+    /// the compilation - a pattern with catastrophic backtracking compiles instantly and then runs away on
+    /// input, so compiling alone would not detect it.
+    /// </remarks>
+    private static bool IsUsableExpression(string? pattern)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            return false;
+        }
+
+        try
+        {
+            var expression = new Regex(
+                pattern,
+                RegexOptions.None,
+                UpdateMembershipSettingsRequestValidator.ExpressionCompilationTimeout);
+
+            _ = expression.IsMatch("probe.address@example.com");
+
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Projects membership settings back into the setting names the legacy screen wrote.
     /// </summary>
     /// <param name="settings">The submitted settings.</param>
     /// <returns>The name and value of every setting to store.</returns>
-    private static IReadOnlyDictionary<string, string> ProjectMembershipSettings(MembershipSettingsDto settings)
+    private static IReadOnlyDictionary<string, string> ProjectMembershipSettings(
+        UpdateMembershipSettingsRequest settings)
         => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Column_FirstName"] = WriteBoolean(settings.ColumnFirstName),
@@ -2949,22 +3451,22 @@ public sealed class UserService : IUserService
             return null;
         }
 
+        Result<Regex> expression = GetValidationExpression(definition.ValidationExpression);
+        if (expression.IsFailure)
+        {
+            return new ResultReason(
+                ProfilePropertyValidationFailedCode,
+                FormattableString.Invariant(
+                    $"The validation rule declared for profile property \"{definition.PropertyName}\" could not be applied."));
+        }
+
         try
         {
-            if (!Regex.IsMatch(
-                    value,
-                    definition.ValidationExpression,
-                    RegexOptions.CultureInvariant,
-                    ValidationExpressionTimeout))
+            if (!expression.Value.IsMatch(value))
             {
                 return new ResultReason(ProfilePropertyValidationFailedCode, FormattableString.Invariant(
                     $"Profile property \"{definition.PropertyName}\" does not match the format it requires."));
             }
-        }
-        catch (ArgumentException)
-        {
-            return new ResultReason(ProfilePropertyValidationFailedCode, FormattableString.Invariant(
-                $"The validation rule declared for profile property \"{definition.PropertyName}\" could not be applied."));
         }
         catch (RegexMatchTimeoutException)
         {
@@ -2973,6 +3475,78 @@ public sealed class UserService : IUserService
         }
 
         return null;
+    }
+
+    /// <summary>Validates a regular expression before it is persisted as tenant configuration.</summary>
+    /// <param name="expression">The submitted expression, or <see langword="null"/> for no rule.</param>
+    /// <returns>The refusal reason, or <see langword="null"/> when the expression is safe to store.</returns>
+    private static ResultReason? ValidateStoredExpression(string? expression)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return null;
+        }
+
+        Result<Regex> validated = GetValidationExpression(expression);
+        return validated.IsFailure ? validated.Error : null;
+    }
+
+    /// <summary>
+    /// Resolves a bounded regular-expression object, preferring the non-backtracking engine and retaining a
+    /// bounded cache of validated tenant expressions.
+    /// </summary>
+    /// <param name="expression">The exact tenant-authored expression.</param>
+    /// <returns>The compiled expression or a caller-safe validation failure.</returns>
+    private static Result<Regex> GetValidationExpression(string expression)
+    {
+        if (expression.Length > ValidationExpressionMaximumLength)
+        {
+            return Result<Regex>.Failure(
+                ProfileDefinitionExpressionInvalidCode,
+                FormattableString.Invariant(
+                    $"A validation expression must be {ValidationExpressionMaximumLength} characters or fewer."));
+        }
+
+        if (ValidationExpressionCache.TryGetValue(expression, out Regex? cached))
+        {
+            return Result<Regex>.Success(cached);
+        }
+
+        Regex created;
+        try
+        {
+            try
+            {
+                created = new Regex(
+                    expression,
+                    RegexOptions.CultureInvariant | RegexOptions.NonBacktracking,
+                    ValidationExpressionTimeout);
+            }
+            catch (NotSupportedException)
+            {
+                // Backreferences and look-around are unsupported by the linear-time engine. They remain
+                // compatible with legacy definitions, but every evaluation is still bounded by the short
+                // timeout and by the request-level property-count limit.
+                created = new Regex(
+                    expression,
+                    RegexOptions.CultureInvariant,
+                    ValidationExpressionTimeout);
+            }
+        }
+        catch (ArgumentException)
+        {
+            return Result<Regex>.Failure(
+                ProfileDefinitionExpressionInvalidCode,
+                "The validation expression is not a valid regular expression.");
+        }
+
+        if (ValidationExpressionCache.Count >= ValidationExpressionCacheMaximum)
+        {
+            ValidationExpressionCache.Clear();
+        }
+
+        ValidationExpressionCache.TryAdd(expression, created);
+        return Result<Regex>.Success(created);
     }
 
     /// <summary>

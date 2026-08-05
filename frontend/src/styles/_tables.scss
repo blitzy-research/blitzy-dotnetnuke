@@ -176,6 +176,19 @@ th[aria-sort='descending'] {
 // reachable by keyboard and announced as operable. This rule makes it inherit the
 // header's appearance so choosing the accessible element costs nothing visually,
 // and the ring is never suppressed — no rule in this file removes an outline.
+//
+// MIGRATION: THE RING ON THIS BUTTON IS THE ONE THAT WAS MEASURED INVISIBLE, and two
+// decisions outside this rule keep it visible. This file paints heading cells with the
+// brand token as TEXT and paints the heading band no surface at all — see the `th`
+// rule above — so the ring here falls on the page surface, the alternating surface or
+// the selected tint rather than on a brand-filled band, at about 12.6:1, 11.6:1 and
+// 8.2:1 against the ring colour. Painting `thead` or `th` with a brand background
+// would reintroduce the collision at 1:1, because the shared ring resolves its colour
+// from that same token; do not add such a rule here. Independently, the shared
+// focus-ring mixin now bands the outline with a contrasting outer shadow, so the ring
+// survives a dark backdrop wherever one is introduced. The `background-color`
+// declaration below is `transparent` for the button so the cell's own surface — not a
+// second one — is what the ring is measured against.
 th[aria-sort] > button {
   font: inherit;
   color: inherit;

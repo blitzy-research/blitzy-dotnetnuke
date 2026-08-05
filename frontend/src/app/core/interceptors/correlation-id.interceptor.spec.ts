@@ -166,10 +166,9 @@ const PORTAL_LIST_URL = '/api/v1/portals';
 /**
  * A second endpoint, used where two distinct requests must be told apart.
  *
- * Portal-nested, because that is the route the API actually exposes: roles are reached at
- * `/api/v1/portals/{portalId}/roles` and there is no flat `/api/v1/roles`.
+ * The canonical role collection is flat; its tenant is resolved from the request host.
  */
-const ROLE_LIST_URL = '/api/v1/portals/0/roles';
+const ROLE_LIST_URL = '/api/v1/roles';
 
 /**
  * The identifier of the portal a delete spec addresses.

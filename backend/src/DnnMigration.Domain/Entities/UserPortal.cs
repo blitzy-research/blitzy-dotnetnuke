@@ -2,61 +2,38 @@ using DnnMigration.Domain.Common;
 
 namespace DnnMigration.Domain.Entities;
 
-// =====================================================================================
 // dbo.UserPortals - the row that makes one account a member of one tenant.
 //
-// MIGRATION: this entity has no legacy counterpart because the legacy model had no join type
-// at all. The per-portal facts were flattened onto the user object: UserInfo.vb declared
-// "Private _PortalID As Integer" (line 52), seeded it to the Null.NullInteger sentinel in the
-// constructor (lines 66-69) and exposed it as a settable property (lines 219-226), which made
-// every hydrated user object silently portal-specific and invited authorisation checks against
-// ambient state. Rule T8 replaces that projection with this typed link entity: an account is
-// one row in dbo.Users, and its membership of each portal is one row here.
+// MIGRATION: this entity has no legacy counterpart because the legacy model had no join type at all.
+// The per-portal facts were flattened onto the user object: UserInfo.vb declared a private portal
+// identifier (line 52), seeded it to the Null.NullInteger sentinel (lines 66-69) and exposed it as a
+// settable property (lines 219-226), which made every hydrated user object silently portal-specific
+// and invited authorisation checks against ambient state. Rule T8 replaces that projection with this
+// typed link entity: an account is one row in dbo.Users, and its membership of each portal is one row
+// here.
 //
-// MIGRATION: the terminal table has EXACTLY FIVE columns, and the path it took to get there is
-// why the shape must never be inferred from any single script. The chain, verified statement by
-// statement in Website/Providers/DataProviders/SqlDataProvider:
+// MIGRATION: the terminal table has EXACTLY FIVE columns - UserId, PortalId, UserPortalId,
+// CreatedDate, Authorised - and the route it took there is why the shape must never be inferred from
+// any single script. The load-bearing events in Website/Providers/DataProviders/SqlDataProvider are:
+// the baseline creates three columns with the CLUSTERED composite key PK_UserPortals over
+// (UserId, PortalId) and both foreign keys (01.00.00:153-157, 405-411, 616-628); 01.00.02:254-256 adds
+// CreatedDate and LastLoginDate; 02.00.00:7209-7210 adds UserPortalId IDENTITY(1,1) ALONGSIDE that key
+// and never promotes it; 02.02.01:54-56 DROPS Authorized, CreatedDate and LastLoginDate together;
+// 03.00.10:11-16 and 03.01.01:1325-1338 bring CreatedDate back and settle it NOT NULL with the named
+// DF_UserPortals_CreatedDate default; 03.00.13:44-53 recreates FK_UserPortals_Users WITH ON DELETE
+// CASCADE, so both foreign keys cascade terminally; and 03.02.03:637-642 - repeated guardedly at
+// 04.00.04:680-684 for lineages that skipped it - re-adds the flag BRITISH-spelled as Authorised
+// NOT NULL DEFAULT 1, back-filled from aspnet_Membership at 04.00.04:2358-2366 and surfaced through
+// vw_Users at 04.00.04:771-787.
 //
-//   01.00.00:153-157   CREATE TABLE [dbo].[UserPortals] ([UserId] int NOT NULL,
-//                      [PortalId] int NOT NULL, [Authorized] bit NULL) - American spelling,
-//                      and nullable.
-//   01.00.00:405-411   CONSTRAINT [PK_UserPortals] PRIMARY KEY CLUSTERED ([UserId],[PortalId]).
-//   01.00.00:616-628   FK_UserPortals_Portals (PortalId -> Portals.PortalID, ON DELETE CASCADE)
-//                      and FK_UserPortals_Users (UserId -> Users.UserID).
-//   01.00.02:254-256   ADD CreatedDate datetime NULL, LastLoginDate datetime NULL.
-//   01.00.10:759-773   IX_UserPortals on (PortalId), IX_UserPortals_1 on (UserID).
-//   02.00.00:7209-7210 ADD UserPortalId int NOT NULL IDENTITY (1, 1) - a surrogate added
-//                      ALONGSIDE the primary key, never promoted to it.
-//   02.02.01:54-56     DROP COLUMN Authorized, CreatedDate, LastLoginDate - all three at once.
-//   03.00.10:11-16     ADD CreatedDate datetime DEFAULT getDate() NOT NULL, behind an
-//                      IF NOT EXISTS column probe.
-//   03.00.13:44-53     FK_UserPortals_Users recreated WITH ON DELETE CASCADE, so both foreign
-//                      keys cascade in the terminal schema.
-//   03.01.01:1325-1338 the auto-named default constraint is dropped through dynamic SQL, the
-//                      column is re-asserted NOT NULL, and DF_UserPortals_CreatedDate
-//                      DEFAULT (getdate()) is added - the terminal, named form.
-//   03.02.03:637-642   ADD Authorised bit NOT NULL CONSTRAINT DF_UserPortals_Authorised
-//                      DEFAULT 1 - the British spelling, which is terminal.
-//   04.00.04:680-684   the identical guarded re-add, for installations whose lineage skipped
-//                      03.02.03. 04.00.04:2358-2366 then back-fills the flag with
-//                      "SET UserPortals.Authorised = AM.IsApproved" read out of
-//                      aspnet_Membership, and 04.00.04:771-787 rebuilds vw_Users so that
-//                      UP.PortalId and UP.Authorised (line 784) reach the user read path
-//                      through a LEFT OUTER JOIN onto this table.
-//   UnInstall:225,227  names the surviving constraints - PK_UserPortals and
-//                      DF_UserPortals_CreatedDate - confirming the terminal set.
-//
-// Terminal ordinal order is therefore UserId, PortalId, UserPortalId, CreatedDate, Authorised.
 // Nothing else survives, and nothing else may be added: Authorized (the American spelling) and
-// LastLoginDate were dropped at 02.02.01:54-56, LastAccessDate never existed on this table, and
-// a per-portal user name, electronic-mail address or display name never existed either - those
-// are columns of dbo.Users, reachable through the User navigation.
+// LastLoginDate were dropped at 02.02.01:54-56, LastAccessDate never existed on this table, and a
+// per-portal user name, electronic-mail address or display name never existed either - those are
+// columns of dbo.Users, reachable through the User navigation.
 //
-// MIGRATION: the storage key is NOT the surrogate. Domain identity and database primary key are
-// two different things on this table, and each is stated separately below so that neither can be
-// mistaken for the other. See the Identity member and the mapping obligations in the class
-// remarks.
-// =====================================================================================
+// MIGRATION: the storage key is NOT the surrogate. Domain identity and database primary key are two
+// different things on this table, and each is stated separately below so neither can be mistaken for
+// the other.
 
 /// <summary>
 /// One account's membership of one portal - the <c>dbo.UserPortals</c> row that makes an
@@ -116,49 +93,11 @@ namespace DnnMigration.Domain.Entities;
 /// only ever states the ordinary-user answer for one portal.
 /// </para>
 /// <para>
-/// <b>Column history that the mapping must honour.</b> Two of the five columns left and returned,
-/// and the terminal form is the only authoritative one.
+/// <b>Column history the mapping must honour</b> is recorded in the file header and on each affected
+/// property: two of the five columns were dropped and returned, and only the terminal form is
+/// authoritative - <c>CreatedDate</c> is required, and the flag's British spelling
+/// <c>Authorised</c> is load-bearing and must not be "corrected".
 /// </para>
-/// <list type="table">
-///   <listheader>
-///     <term>Column</term>
-///     <description>History and terminal form</description>
-///   </listheader>
-///   <item>
-///     <term><c>UserId</c>, <c>PortalId</c></term>
-///     <description>
-///     Present from the baseline (<c>01.00.00</c> lines 153-157), both <c>int NOT NULL</c>, and
-///     together the primary key. Their foreign keys both cascade in the terminal schema: the
-///     portal key from the baseline (lines 616-622) and the user key from its recreation at
-///     <c>03.00.13</c> lines 44-53.
-///     </description>
-///   </item>
-///   <item>
-///     <term><c>UserPortalId</c></term>
-///     <description>
-///     Added at <c>02.00.00</c> lines 7209-7210 as <c>IDENTITY (1, 1)</c>. Store-generated, and
-///     not the primary key.
-///     </description>
-///   </item>
-///   <item>
-///     <term><c>CreatedDate</c></term>
-///     <description>
-///     Added nullable at <c>01.00.02</c> lines 254-256, dropped outright at <c>02.02.01</c> lines
-///     54-56, re-added as <c>datetime DEFAULT getDate() NOT NULL</c> at <c>03.00.10</c> lines
-///     11-16, then normalised at <c>03.01.01</c> lines 1325-1338 into the terminal
-///     required-with-named-default form. Required is authoritative.
-///     </description>
-///   </item>
-///   <item>
-///     <term><c>Authorised</c></term>
-///     <description>
-///     Began as the nullable American-spelled <c>Authorized</c> (<c>01.00.00</c> lines 153-157),
-///     was dropped at <c>02.02.01</c> lines 54-56, and returned British-spelled and required at
-///     <c>03.02.03</c> lines 637-642 with <c>DF_UserPortals_Authorised DEFAULT 1</c>. The
-///     spelling is load-bearing and must not be "corrected" in the mapping.
-///     </description>
-///   </item>
-/// </list>
 /// <para>
 /// Nothing here decides whether the row has been written. That declaration is made through
 /// <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows the answer, and by
@@ -168,19 +107,11 @@ namespace DnnMigration.Domain.Entities;
 /// </remarks>
 public sealed class UserPortal : Entity<int>
 {
-    // =====================================================================================
-    // PERSISTED SCALARS (5)
-    //
-    // One property per terminal column and no property that is not a terminal column. They are
-    // declared surrogate first, so that the Identity projection sits immediately beside the value
-    // it projects and the two key columns follow together; the table's own ordinal order is the
-    // one recorded in the file banner above and is not reproduced here, because column order is a
-    // storage detail that no mapping or query depends on.
-    //
-    // Per Rule T7 every one of these columns is required in the terminal schema, so none is
-    // nullable and none carries a legacy sentinel: absence is not representable on this row, and
-    // a membership that does not exist is simply a row that is not there.
-    // =====================================================================================
+    // PERSISTED SCALARS (5): one property per terminal column and no property that is not a terminal
+    // column, declared surrogate first so the Identity projection sits beside the value it projects.
+    // Per Rule T7 every one of these columns is required in the terminal schema, so none is nullable
+    // and none carries a legacy sentinel: absence is not representable on this row, and a membership
+    // that does not exist is simply a row that is not there.
 
     /// <summary>
     /// Gets or sets the store-generated surrogate key of this membership row
@@ -257,16 +188,13 @@ public sealed class UserPortal : Entity<int>
     /// installation in the field.
     /// </para>
     /// <para>
-    /// MIGRATION: the initialiser is deliberate and is what preserves the default-true semantics
-    /// of the schema in the object model. Three sources agree on it - the store default
-    /// <c>DEFAULT 1</c> above; the legacy field, declared
-    /// <c>Private _Approved As Boolean = True</c> at <c>UserMembership.vb</c> line 45; and the
-    /// 4.0 data migration, which back-filled existing rows from the membership store with
-    /// <c>SET UserPortals.Authorised = AM.IsApproved</c> (<c>04.00.04.SqlDataProvider</c> lines
-    /// 2358-2366). The store default is intentionally not configured in the mapping, because a
-    /// configured default that differs from the CLR default would silently reverse a request to
-    /// create an unauthorised membership; the initialiser here carries it instead, and a caller
-    /// that means <see langword="false"/> still gets <see langword="false"/>.
+    /// MIGRATION: the initialiser is deliberate and preserves the schema's default-true semantics in
+    /// the object model; three sources agree on it - the store default <c>DEFAULT 1</c>, the legacy
+    /// field declared <c>= True</c> (<c>UserMembership.vb</c> line 45), and the 4.0 back-fill from the
+    /// membership store. The store default is intentionally NOT configured in the mapping, because a
+    /// configured default differing from the CLR default would silently reverse a request to create an
+    /// unauthorised membership; the initialiser carries it instead, so a caller that means
+    /// <see langword="false"/> still gets <see langword="false"/>.
     /// </para>
     /// <para>
     /// MIGRATION: this flag speaks for ordinary portal users only. The legacy read is guarded by
@@ -291,15 +219,11 @@ public sealed class UserPortal : Entity<int>
     /// legacy application read and displayed, not an audit stamp the target added.
     /// </para>
     /// <para>
-    /// MIGRATION: the column left and came back, and only its terminal form is authoritative. It
-    /// was added nullable together with <c>LastLoginDate</c> at <c>01.00.02.SqlDataProvider</c>
-    /// lines 254-256, dropped outright by <c>02.02.01.SqlDataProvider</c> lines 54-56, re-added
-    /// as <c>datetime DEFAULT getDate() NOT NULL</c> behind a column probe at
-    /// <c>03.00.10.SqlDataProvider</c> lines 11-16, and finally normalised at
-    /// <c>03.01.01.SqlDataProvider</c> lines 1325-1338, where the auto-named default constraint
-    /// is dropped through dynamic SQL, the column is re-asserted <c>NOT NULL</c> and the named
-    /// <c>DF_UserPortals_CreatedDate</c> default is added. Required, therefore, and never
-    /// nullable - the intermediate nullable form is history, not contract.
+    /// MIGRATION: the column left and came back, and only its terminal form is authoritative - added
+    /// nullable at <c>01.00.02</c>, dropped outright at <c>02.02.01</c>, re-added behind a column probe
+    /// at <c>03.00.10</c> and normalised at <c>03.01.01</c> lines 1325-1338 into
+    /// <c>NOT NULL</c> with the named <c>DF_UserPortals_CreatedDate</c> default. Required, therefore,
+    /// and never nullable: the intermediate nullable form is history, not contract.
     /// </para>
     /// <para>
     /// The value is supplied by the caller from the injected clock. Per Rule T6 this entity reads
@@ -309,23 +233,16 @@ public sealed class UserPortal : Entity<int>
     /// </remarks>
     public DateTime CreatedDate { get; set; }
 
-    // =====================================================================================
-    // NAVIGATIONS (2)
+    // NAVIGATIONS (2): both required, because each relationship's foreign-key column is NOT NULL and
+    // cascades, and both declared non-nullable to say so in the type system. That is a statement about
+    // the relationship, NOT a promise that the graph is loaded - a read path that does not include one
+    // leaves it unset, which is why CS8618 is suppressed solution-wide for materialised types, so code
+    // that needs the principal must include it rather than assume it.
     //
-    // Both are required: the relationship each one represents is required in the schema, because
-    // its foreign-key column is NOT NULL and cascades. They are declared non-nullable to say so
-    // in the type system.
-    //
-    // A navigation being non-nullable is a statement about the relationship, not a promise that
-    // the graph is loaded. A read path that does not include one leaves it unset, which is why
-    // CS8618 is suppressed solution-wide for materialised types - code that needs the principal
-    // must include it rather than assume it.
-    //
-    // MIGRATION: neither replaces a legacy member. UserInfo.vb had no navigation to a portal or
-    // to a membership row at all - it carried a bare portal identifier (lines 219-226) and the
-    // provider set it per read (AspNetMembershipProvider.vb line 330). The inverse ends of both
-    // relationships are the UserPortals collections on the two aggregates.
-    // =====================================================================================
+    // MIGRATION: neither replaces a legacy member. UserInfo.vb had no navigation to a portal or to a
+    // membership row - it carried a bare portal identifier (lines 219-226) that the provider set per
+    // read. The inverse ends of both relationships are the UserPortals collections on the two
+    // aggregates.
 
     /// <summary>
     /// Gets or sets the account this membership belongs to.

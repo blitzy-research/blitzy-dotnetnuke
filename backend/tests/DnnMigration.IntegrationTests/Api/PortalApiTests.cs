@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Reflection;
 using System.Text.Json;
 using DnnMigration.Api.ErrorHandling;
+using DnnMigration.Application.Dtos.Auth;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Portal;
 using FluentAssertions;
@@ -127,7 +128,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_AsHost_ReturnsOkContainingSeededPortal()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=100", UriKind.Relative));
@@ -173,7 +174,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_EmitsTheWireEnvelopeAndNotTheDomainPage()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=25", UriKind.Relative));
@@ -231,7 +232,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_WithNameFilterThatMatchesNothing_ReturnsEmptyPage()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=50&name=zzz-no-portal-bears-this-name", UriKind.Relative));
@@ -264,7 +265,7 @@ public sealed class PortalApiTests
         // A HOST client, because enumerating every portal in the installation is an installation-wide
         // operation and is gated as one. This fact is about the SHAPE of the page envelope; the authority the
         // listing requires is asserted by the facts that cover the policy.
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=25", UriKind.Relative));
@@ -297,7 +298,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_WithPageSizeAboveCeiling_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=100000", UriKind.Relative));
@@ -328,7 +329,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_WithASortFieldBelongingToAnotherCollection_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage refused = await client.GetAsync(
             new Uri("/api/v1/portals?sortBy=LastLoginDate", UriKind.Relative));
@@ -376,12 +377,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_AsPlainMember_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateClientFor(
-            _fixture.Seed.MemberUserId,
-            IntegrationSeed.MemberUserName,
-            _fixture.Seed.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalsRoute);
 
@@ -393,7 +389,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortal_ForSeededPortal_ReturnsOkWithDetail()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
 
@@ -441,10 +437,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortal_ForATenantOtherThanTheResolvedOne_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage existing = await client.GetAsync(PortalRoute(other.PortalId));
         existing.StatusCode.Should().Be(
@@ -483,7 +479,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortal_ForAForeignTenantAsHost_IsPermitted()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
         using HttpResponseMessage response = await host.GetAsync(PortalRoute(other.PortalId));
@@ -510,7 +506,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortal_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(UnknownPortalId));
 
@@ -537,14 +533,14 @@ public sealed class PortalApiTests
     [Fact]
     public async Task AbsentResource_ReturnsAWellFormedProblemDocument()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        // Addressed by ALIAS key rather than by portal identifier, because the tenant binding makes a
-        // foreign portal identifier a 403 rather than a 404 - see the cross-tenant fact above. This route
-        // carries no portal segment, so the binding has nothing to compare and the absent-resource path is
-        // still reachable, which is what this fact needs to exercise.
+        // The canonical alias member route names the seeded portal and an alias identifier that does not
+        // exist, so the request reaches the service's absent-resource branch rather than a withdrawn route.
         using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portal-aliases/{Route(UnknownPortalId)}", UriKind.Relative));
+            new Uri(
+                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/aliases/{Route(UnknownPortalId)}",
+                UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
@@ -581,10 +577,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortal_AsAdministratorOfAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(other.PortalId));
 
@@ -599,10 +595,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortalSettings_AsAdministratorOfAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri($"/api/v1/portals/{Route(other.PortalId)}/settings", UriKind.Relative));
@@ -622,7 +618,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_WithPageSizeAboveCeiling_NamesTheOffendingField()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=100000", UriKind.Relative));
@@ -644,7 +640,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortalSettings_ForSeededPortal_ReturnsOk()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings", UriKind.Relative));
@@ -658,6 +654,97 @@ public sealed class PortalApiTests
         settings!.PortalId.Should().Be(_fixture.Seed.PortalId);
         settings.PortalName.Should().Be(IntegrationSeed.PortalName);
         settings.Guid.Should().NotBe(Guid.Empty);
+    }
+
+    /// <summary>
+    /// The settings resource accepts a complete replacement, returns the updated projection and serves the
+    /// same values from its GET representation afterwards.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_RoundTripsOnTheSettingsResource()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) =
+            await CreatePortalWithRequestAsync(host);
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
+        var route = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/settings",
+            UriKind.Relative);
+
+        using HttpResponseMessage beforeResponse = await client.GetAsync(route);
+        beforeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalSettingsDto before = (await beforeResponse.Content
+            .ReadEnvelopeAsync<PortalSettingsDto>())!;
+
+        UpdatePortalSettingsRequest request = SettingsUpdateFrom(before);
+        request.Description = "Updated through the portal settings resource.";
+
+        using HttpResponseMessage update = await client.PutAsJsonAsync(
+            route,
+            request,
+            ApiTestFixture.Json);
+
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalSettingsDto? returned = await update.Content.ReadEnvelopeAsync<PortalSettingsDto>();
+        returned.Should().NotBeNull();
+        returned!.PortalId.Should().Be(created.PortalId);
+        returned.Description.Should().Be(request.Description);
+        returned.Guid.Should().Be(before.Guid, "the provisioning-owned identifier is not writable");
+
+        using HttpResponseMessage afterResponse = await client.GetAsync(route);
+        afterResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalSettingsDto? after = await afterResponse.Content.ReadEnvelopeAsync<PortalSettingsDto>();
+        after!.Description.Should().Be(request.Description);
+    }
+
+    /// <summary>A malformed settings body answers with a field-keyed validation problem.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_WhenInvalid_NamesTheOffendingField()
+    {
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+        var route = new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings",
+            UriKind.Relative);
+
+        using HttpResponseMessage read = await client.GetAsync(route);
+        PortalSettingsDto settings = (await read.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        UpdatePortalSettingsRequest request = SettingsUpdateFrom(settings);
+        request.PortalName = "   ";
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            route,
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+        errors.Should().ContainKey(nameof(UpdatePortalSettingsRequest.PortalName));
+    }
+
+    /// <summary>The PUT carries the same cross-tenant isolation policy as the GET.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_AsAdministratorOfAnotherTenant_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto other = await CreatePortalAsync(host);
+        var route = new Uri(
+            $"/api/v1/portals/{Route(other.PortalId)}/settings",
+            UriKind.Relative);
+
+        using HttpResponseMessage read = await host.GetAsync(route);
+        PortalSettingsDto settings = (await read.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        UpdatePortalSettingsRequest request = SettingsUpdateFrom(settings);
+
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        using HttpResponseMessage response = await administrator.PutAsJsonAsync(
+            route,
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     /// <summary>
@@ -678,7 +765,7 @@ public sealed class PortalApiTests
             $"/api/v1/portals/{Route(UnknownPortalId)}/settings",
             UriKind.Relative);
 
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage refused = await administrator.GetAsync(settingsRoute);
         refused.StatusCode.Should().Be(
@@ -686,7 +773,7 @@ public sealed class PortalApiTests
             "an administrator of one tenant may not address another tenant's settings, and must not be able "
             + "to tell a foreign identifier from an unknown one");
 
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage absent = await host.GetAsync(settingsRoute);
         absent.StatusCode.Should().Be(
@@ -721,7 +808,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_ReturnsCreatedWithResolvableLocation()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
 
@@ -749,7 +836,7 @@ public sealed class PortalApiTests
         // portal-administrator policy binds a route's tenant to the tenant the request resolved to. Creating
         // a portal is an installation-wide operation and reading one is a tenant-scoped operation, so the two
         // are legitimately reached by two different callers.
-        using HttpClient throughItsOwnAlias = CreatedTenantClient(created, request);
+        using HttpClient throughItsOwnAlias = await CreatedTenantClientAsync(created, request);
 
         using HttpResponseMessage followed = await throughItsOwnAlias.GetAsync(
             new Uri(response.Headers.Location.OriginalString, UriKind.Relative));
@@ -809,7 +896,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_ComposesAChildBeneathTheParentAndItsRoutesResolve()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
 
         // The parent, created by its host name in the ordinary way.
         (PortalDetailDto parent, CreatePortalRequest parentRequest) =
@@ -829,7 +916,7 @@ public sealed class PortalApiTests
         // the STORE, not from the claim, so that a revoked host account loses reach immediately rather than at
         // token expiry. Minting a portal administrator with the super-user claim set would therefore be
         // refused, and would be asserting the claim path this solution deliberately does not take.
-        using HttpClient beneathTheParent = _fixture.CreateHostClient(parentAuthority);
+        using HttpClient beneathTheParent = await _fixture.CreateHostClientAsync(parentAuthority);
 
         using HttpResponseMessage response = await beneathTheParent.PostAsJsonAsync(
             PortalsRoute,
@@ -860,10 +947,9 @@ public sealed class PortalApiTests
 
         // Addressed at the CHILD: the authority is the shared host and the tenant is identified by the path
         // segment, which the path-base stage must strip before routing.
-        using HttpClient beneathTheChild = _fixture.CreateTenantClient(
+        using HttpClient beneathTheChild = await _fixture.CreateTenantClientAsync(
             composed,
             child.PortalId,
-            child.AdministratorId!.Value,
             childRequest.AdministratorUsername!);
 
         using HttpResponseMessage childRead = await beneathTheChild.GetAsync(
@@ -885,7 +971,7 @@ public sealed class PortalApiTests
             HttpStatusCode.Forbidden,
             "a request beneath the child's segment resolves to the child, so the parent is a foreign tenant");
 
-        using HttpClient parentClient = CreatedTenantClient(parent, parentRequest);
+        using HttpClient parentClient = await CreatedTenantClientAsync(parent, parentRequest);
 
         using HttpResponseMessage parentRead = await parentClient.GetAsync(PortalRoute(parent.PortalId));
 
@@ -912,7 +998,7 @@ public sealed class PortalApiTests
         request.IsChildPortal = true;
         request.PortalAlias = "orphan" + Suffix();
 
-        using HttpClient unconfiguredHost = _fixture.CreateHostClient("unconfigured-" + Suffix() + ".local");
+        using HttpClient unconfiguredHost = await _fixture.CreateHostClientAsync("unconfigured-" + Suffix() + ".local");
 
         using HttpResponseMessage response = await unconfiguredHost.PostAsJsonAsync(
             PortalsRoute,
@@ -943,7 +1029,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WhenRefused_LeavesNothingBehind()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         (_, CreatePortalRequest existing) = await CreatePortalWithRequestAsync(client);
 
@@ -978,7 +1064,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithoutTemplateFile_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.TemplateFile = null;
@@ -1001,7 +1087,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithPathQualifiedTemplateFile_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.TemplateFile = "../escaped.template";
@@ -1019,7 +1105,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithSpaceInAlias_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.PortalAlias = "not a valid alias";
@@ -1041,7 +1127,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithAliasAlreadyBound_ReturnsConflict()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.PortalAlias = ApiTestFixture.TestHost;
@@ -1062,7 +1148,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithAdministratorNameAlreadyInUse_ReturnsConflictAndWritesNothing()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.AdministratorUsername = IntegrationSeed.AdminUserName;
@@ -1104,7 +1190,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_ProvisionsProfileDefinitionsAndAHomePage()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
 
@@ -1211,7 +1297,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WhenAStageFails_PublishesNothingAtAll()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.AdministratorUsername = IntegrationSeed.AdminUserName;
@@ -1265,10 +1351,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_AsHost_ReturnsOkAndPersists()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = "Renamed " + Suffix();
@@ -1303,6 +1389,174 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// Portal updates cannot inject an administrator membership or page reference owned by another tenant.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdatePortal_RejectsForeignAdministratorAndPageReferences()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto victim = await CreatePortalAsync(host);
+        PortalDetailDto foreign = await CreatePortalAsync(host);
+        victim.AdministratorId.Should().NotBeNull();
+        foreign.AdministratorId.Should().NotBeNull();
+        foreign.HomeTabId.Should().NotBeNull();
+
+        UpdatePortalRequest administratorInjection = EchoHostOnlyFields(victim);
+        administratorInjection.PortalName = victim.PortalName;
+        administratorInjection.AdministratorId = foreign.AdministratorId;
+
+        using HttpResponseMessage foreignAdministrator = await host.PutAsJsonAsync(
+            PortalRoute(victim.PortalId),
+            administratorInjection,
+            ApiTestFixture.Json);
+
+        foreignAdministrator.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        UpdatePortalRequest pageInjection = EchoHostOnlyFields(victim);
+        pageInjection.PortalName = victim.PortalName;
+        pageInjection.HomeTabId = foreign.HomeTabId;
+
+        using HttpResponseMessage foreignPage = await host.PutAsJsonAsync(
+            PortalRoute(victim.PortalId),
+            pageInjection,
+            ApiTestFixture.Json);
+
+        foreignPage.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        int administratorId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [AdministratorId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = victim.PortalId });
+        administratorId.Should().Be(victim.AdministratorId);
+
+        int homeTabId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [HomeTabId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = victim.PortalId });
+        homeTabId.Should().Be(victim.HomeTabId);
+    }
+
+    /// <summary>
+    /// The legacy processor-password column stores only managed-secret references and exposes explicit
+    /// keep, replace and clear operations without echoing the reference.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdatePortal_ProcessorReferenceSupportsKeepReplaceAndClearWithoutEcho()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto created = await CreatePortalAsync(host);
+        const string legacyPlaintext = "legacy-plaintext-password";
+        const string original = "secret://processor/original";
+        const string replacement = "secret://processor/replacement";
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            UPDATE [dbo].[Portals]
+            SET [ProcessorPassword] = @reference
+            WHERE [PortalID] = @portalId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["reference"] = legacyPlaintext,
+                ["portalId"] = created.PortalId,
+            });
+
+        UpdatePortalRequest refuseLegacyKeep = EchoHostOnlyFields(created);
+        refuseLegacyKeep.PortalName = created.PortalName;
+        refuseLegacyKeep.ProcessorCredentialReference = null;
+
+        using HttpResponseMessage legacyKeep = await host.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            refuseLegacyKeep,
+            ApiTestFixture.Json);
+        legacyKeep.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        UpdatePortalRequest migrate = EchoHostOnlyFields(created);
+        migrate.PortalName = created.PortalName;
+        migrate.ProcessorCredentialReference = original;
+
+        using HttpResponseMessage migrated = await host.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            migrate,
+            ApiTestFixture.Json);
+        migrated.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string afterMigration = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [ProcessorPassword] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        afterMigration.Should().Be(original);
+
+        UpdatePortalRequest keep = EchoHostOnlyFields(created);
+        keep.PortalName = created.PortalName;
+        keep.ProcessorCredentialReference = null;
+
+        using HttpResponseMessage kept = await host.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            keep,
+            ApiTestFixture.Json);
+        kept.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string afterKeep = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [ProcessorPassword] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        afterKeep.Should().Be(original);
+
+        UpdatePortalRequest replace = EchoHostOnlyFields(created);
+        replace.PortalName = created.PortalName;
+        replace.ProcessorCredentialReference = replacement;
+
+        using HttpResponseMessage replaced = await host.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            replace,
+            ApiTestFixture.Json);
+        replaced.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using JsonDocument body = JsonDocument.Parse(await replaced.Content.ReadAsStringAsync());
+        JsonElement data = body.RootElement.GetProperty("data");
+        data.TryGetProperty("processorCredentialReference", out _).Should().BeFalse();
+        data.TryGetProperty("processorPassword", out _).Should().BeFalse();
+
+        string afterReplace = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [ProcessorPassword] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        afterReplace.Should().Be(replacement);
+
+        UpdatePortalRequest rejectPlaintext = EchoHostOnlyFields(created);
+        rejectPlaintext.PortalName = created.PortalName;
+        rejectPlaintext.ProcessorCredentialReference = "plaintext-password";
+
+        using HttpResponseMessage rejected = await host.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            rejectPlaintext,
+            ApiTestFixture.Json);
+        rejected.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string afterRejectedPlaintext = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [ProcessorPassword] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        afterRejectedPlaintext.Should().Be(replacement);
+
+        UpdatePortalRequest clear = EchoHostOnlyFields(created);
+        clear.PortalName = created.PortalName;
+        clear.ProcessorCredentialReference = string.Empty;
+
+        using HttpResponseMessage cleared = await host.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            clear,
+            ApiTestFixture.Json);
+        cleared.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        int nullCount = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[Portals]
+            WHERE [PortalID] = @portalId AND [ProcessorPassword] IS NULL;
+            """,
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        nullCount.Should().Be(1);
+    }
+
+    /// <summary>
     /// A portal administrator that submits a different hosting charge is refused. The charge is a
     /// host-account concern: a tenant administrator that could raise or waive it would be setting the price
     /// of its own hosting.
@@ -1318,10 +1572,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_AsAdministratorAlteringHostingCharge_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = created.PortalName;
@@ -1344,6 +1598,89 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// A current portal administrator does not gain host-only field access from a stale super-user claim.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// SEC-011: route, token and arrival tenant all agree, and the account holds the target portal's stored
+    /// administrator role. The only false statement is the token's super-user claim; the account row remains
+    /// non-host, so the application guard must refuse after authorisation has succeeded.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_WithOnlyAStaleSuperUserClaim_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+        created.AdministratorId.Should().NotBeNull();
+
+        using HttpClient staleClaim = _fixture.CreateTenantClient(
+            createRequest.PortalAlias!,
+            created.PortalId,
+            created.AdministratorId!.Value,
+            createRequest.AdministratorUsername!,
+            isSuperUser: true);
+
+        UpdatePortalRequest request = EchoHostOnlyFields(created);
+        request.PortalName = created.PortalName;
+        request.HostFee = (created.HostFee ?? 0m) + 10m;
+
+        using HttpResponseMessage response = await staleClaim.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        problem.Should().NotBeNull();
+        problem!.Type.Should().NotStartWith(
+            AuthorisationProblemTypePrefix,
+            "the target-portal administrator passed the endpoint policy; the store-backed field guard refused");
+    }
+
+    /// <summary>
+    /// A super-user claim on portal A's token does not admit that non-host account to portal B's route.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// SEC-011 and SEC-006 meet here: the caller is a real administrator of portal A and the token says it is
+    /// a host account, but the store says otherwise. The claim therefore cannot become the host exemption that
+    /// would let an A-token cross onto an existing B-route.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_WithASuperUserClaimFromAnotherTenant_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto victim = await CreatePortalAsync(host);
+
+        using HttpClient staleClaim = _fixture.CreateClientFor(
+            _fixture.Seed.AdminUserId,
+            IntegrationSeed.AdminUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: true,
+            roles: [IntegrationSeed.AdministratorsRoleName]);
+
+        UpdatePortalRequest request = EchoHostOnlyFields(victim);
+        request.PortalName = victim.PortalName;
+        request.HostFee = (victim.HostFee ?? 0m) + 10m;
+
+        using HttpResponseMessage response = await staleClaim.PutAsJsonAsync(
+            PortalRoute(victim.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        problem.Should().NotBeNull();
+        problem!.Type.Should().StartWith(
+            AuthorisationProblemTypePrefix,
+            "the store-backed host check must refuse the stale claim before the request reaches the field guard");
+    }
+
+    /// <summary>
     /// An administrator of one portal is refused on another portal's route. THIS IS THE CROSS-TENANT
     /// REGRESSION TEST: the policy used to be evaluated against the tenant the request's Host header resolved
     /// to and never against the portal named in the route, so any portal administrator could rename, re-key
@@ -1353,12 +1690,12 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_ByAnAdministratorOfADifferentPortal_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto victim = await CreatePortalAsync(host);
 
         // The seeded portal's administrator: a genuine, fully provisioned administrator - of a DIFFERENT
         // portal. Nothing about this caller is malformed, which is what made the defect reachable.
-        using HttpClient attacker = _fixture.CreateAdministratorClient();
+        using HttpClient attacker = await _fixture.CreateAdministratorClientAsync();
 
         UpdatePortalRequest request = EchoHostOnlyFields(victim);
         request.PortalName = "Taken over " + Suffix();
@@ -1395,10 +1732,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortal_ByAnAdministratorOfADifferentPortal_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(other.PortalId));
 
@@ -1419,7 +1756,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_AsPortalAdministrator_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=100", UriKind.Relative));
@@ -1435,7 +1772,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_AsPortalAdministrator_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
 
@@ -1466,10 +1803,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_AsAdministratorOfAnotherTenant_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         UpdatePortalRequest request = EchoHostOnlyFields(other);
         request.PortalName = other.PortalName;
@@ -1487,16 +1824,19 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_AsHostAlteringHostingCharge_ReturnsOk()
     {
-        using HttpClient host = _fixture.CreateHostClient();
-        (PortalDetailDto created, CreatePortalRequest createRequest) =
-            await CreatePortalWithRequestAsync(host);
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto created = await CreatePortalAsync(host);
 
-        // A caller that is BOTH the created tenant's administrator and a host account. The update route is
-        // tenant-scoped, so the tenant half is what gets the request past authorisation; the super-user flag
-        // is what gets the hosting charge past the host-only-field guard. Two independent gates, and this is
-        // the one caller that clears both.
-        using HttpClient client = CreatedTenantClient(created, createRequest, isSuperUser: true);
-
+        // THE SEEDED HOST ACCOUNT performs the update as well as the create, and it is the one caller that
+        // clears both of the two independent gates this route carries: the portal-administrator policy admits
+        // a host account before it looks at any tenant, and the host-only-field guard admits it because the
+        // account genuinely IS an installation superuser.
+        //
+        // An earlier revision asked for the created tenant's administrator carrying a hand-minted super-user
+        // claim, and that arrangement was unreachable in production: the policy reads the flag from the stored
+        // row and would have refused it, while the field guard reads it from the claim and would have allowed
+        // it - so the pass depended on a token the sign-in endpoint could never issue. The persona is now the
+        // account that really holds the authority, which is also what this fact's name says it is.
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = created.PortalName;
         request.HostFee = 42.75m;
@@ -1504,7 +1844,7 @@ public sealed class PortalApiTests
         request.PageQuota = 25;
         request.UserQuota = 50;
 
-        using HttpResponseMessage response = await client.PutAsJsonAsync(
+        using HttpResponseMessage response = await host.PutAsJsonAsync(
             PortalRoute(created.PortalId),
             request,
             ApiTestFixture.Json);
@@ -1534,11 +1874,11 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_ForATenantOtherThanTheResolvedOne_ReturnsForbidden()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto foreign = await CreatePortalAsync(host);
 
         // Addressed at the seeded tenant, as its own administrator, naming another tenant on the route.
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         var request = new UpdatePortalRequest
         {
@@ -1581,7 +1921,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_WithMismatchedBodyIdentifier_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         var request = new UpdatePortalRequest
         {
@@ -1611,7 +1951,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_WithoutAName_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         var request = new UpdatePortalRequest
         {
@@ -1635,7 +1975,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task DeletePortal_ReturnsNoContentAndReleasesAlias()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         PortalDetailDto created = await CreatePortalAsync(client);
 
         string alias = created.Aliases!.Single().HttpAlias!;
@@ -1666,6 +2006,124 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// Removing a tenant deletes a final-membership administrator and every external credential and session
+    /// that would otherwise outlive it, while an account shared with another tenant survives with that other
+    /// membership intact.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task DeletePortal_RemovesFinalMembersButRetainsSharedAccounts()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) =
+            await CreatePortalWithRequestAsync(host);
+
+        created.AdministratorId.Should().NotBeNull();
+        created.RegisteredRoleId.Should().NotBeNull();
+        string alias = created.Aliases!.Single().HttpAlias!;
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[UserPortals] ([UserId], [PortalId], [CreatedDate], [Authorised])
+            VALUES (@userId, @portalId, SYSUTCDATETIME(), 1);
+
+            INSERT INTO [dbo].[UserRoles] ([UserID], [RoleID], [EffectiveDate], [ExpiryDate], [IsTrialUsed])
+            VALUES (@userId, @roleId, NULL, NULL, 0);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = _fixture.Seed.MemberUserId,
+                ["portalId"] = created.PortalId,
+                ["roleId"] = created.RegisteredRoleId!.Value,
+            });
+
+        using HttpClient portalClient = _fixture.CreateAnonymousClient();
+        portalClient.BaseAddress = new Uri($"http://{alias}", UriKind.Absolute);
+
+        using HttpResponseMessage login = await portalClient.PostAsJsonAsync(
+            new Uri("/api/v1/auth/login", UriKind.Relative),
+            new LoginRequest
+            {
+                Username = createRequest.AdministratorUsername!,
+                Password = createRequest.AdministratorPassword!,
+            },
+            ApiTestFixture.Json);
+
+        login.StatusCode.Should().Be(HttpStatusCode.OK);
+        LoginResponse? issued = await login.Content.ReadEnvelopeAsync<LoginResponse>();
+        issued.Should().NotBeNull();
+        issued!.RefreshToken.Should().NotBeNullOrWhiteSpace();
+
+        using HttpResponseMessage removed = await host.DeleteAsync(PortalRoute(created.PortalId));
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage staleSession = await portalClient.PostAsJsonAsync(
+            new Uri("/api/v1/auth/refresh", UriKind.Relative),
+            new RefreshTokenRequest { RefreshToken = issued.RefreshToken },
+            ApiTestFixture.Json);
+        staleSession.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        int removedAdministrator = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Users] WHERE [UserID] = @userId;",
+            new Dictionary<string, object?> { ["userId"] = created.AdministratorId!.Value });
+        removedAdministrator.Should().Be(0);
+
+        int removedCredential = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[aspnet_Users] au
+            INNER JOIN [dbo].[aspnet_Membership] am ON am.[UserId] = au.[UserId]
+            WHERE au.[LoweredUserName] = LOWER(@userName);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userName"] = createRequest.AdministratorUsername,
+            });
+        removedCredential.Should().Be(0);
+
+        int removedMemberships = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[UserPortals] WHERE [PortalId] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        removedMemberships.Should().Be(0);
+
+        int removedRoles = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+        removedRoles.Should().Be(0);
+
+        int retainedSharedAccount = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Users] WHERE [UserID] = @userId;",
+            new Dictionary<string, object?> { ["userId"] = _fixture.Seed.MemberUserId });
+        retainedSharedAccount.Should().Be(1);
+
+        int retainedSharedMembership = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[UserPortals]
+            WHERE [UserId] = @userId AND [PortalId] = @portalId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = _fixture.Seed.MemberUserId,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+        retainedSharedMembership.Should().Be(1);
+
+        int retainedSharedCredential = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[aspnet_Users] au
+            INNER JOIN [dbo].[aspnet_Membership] am ON am.[UserId] = au.[UserId]
+            WHERE au.[LoweredUserName] = LOWER(@userName);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userName"] = IntegrationSeed.MemberUserName,
+            });
+        retainedSharedCredential.Should().Be(1);
+    }
+
+    /// <summary>
     /// A portal administrator may not delete a portal - not even its own - because bringing a tenant into
     /// existence and removing it again are installation-wide acts.
     /// </summary>
@@ -1679,7 +2137,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task DeletePortal_AsPortalAdministrator_ReturnsForbidden()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             PortalRoute(_fixture.Seed.PortalId));
@@ -1737,7 +2195,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task DeletePortal_WhenUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(PortalRoute(UnknownPortalId));
 
@@ -1752,14 +2210,14 @@ public sealed class PortalApiTests
     [Fact]
     public async Task PortalAliases_SupportCreateUpdateAndDelete()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) =
             await CreatePortalWithRequestAsync(host);
 
         // The alias collection is nested beneath a portal, so it is tenant-scoped and has to be addressed
         // through the tenant that owns it. The portal keeps the alias it was created with throughout, so the
         // base address stays resolvable while a SECOND alias is added, renamed and removed beneath it.
-        using HttpClient client = CreatedTenantClient(created, createRequest);
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
 
         var aliasesRoute = new Uri(
             $"/api/v1/portals/{Route(created.PortalId)}/aliases",
@@ -1769,7 +2227,7 @@ public sealed class PortalApiTests
 
         using HttpResponseMessage createdAlias = await client.PostAsJsonAsync(
             aliasesRoute,
-            new PortalAliasDto { PortalId = created.PortalId, HttpAlias = firstAlias },
+            new CreatePortalAliasRequest { HttpAlias = firstAlias },
             ApiTestFixture.Json);
 
         createdAlias.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -1802,12 +2260,7 @@ public sealed class PortalApiTests
 
         using HttpResponseMessage updated = await client.PutAsJsonAsync(
             aliasRoute,
-            new PortalAliasDto
-            {
-                PortalAliasId = alias.PortalAliasId,
-                PortalId = created.PortalId,
-                HttpAlias = secondAlias,
-            },
+            new UpdatePortalAliasRequest { HttpAlias = secondAlias },
             ApiTestFixture.Json);
 
         updated.StatusCode.Should().Be(HttpStatusCode.NoContent);
@@ -1842,14 +2295,14 @@ public sealed class PortalApiTests
     [Fact]
     public async Task PortalAlias_OfAnotherTenant_IsNotReachableByAPortalAdministrator()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
         string foreignAlias = "foreign-" + Suffix() + ".local";
 
         using HttpResponseMessage createdAlias = await host.PostAsJsonAsync(
             new Uri($"/api/v1/portals/{Route(other.PortalId)}/aliases", UriKind.Relative),
-            new PortalAliasDto { PortalId = other.PortalId, HttpAlias = foreignAlias },
+            new CreatePortalAliasRequest { HttpAlias = foreignAlias },
             ApiTestFixture.Json);
 
         createdAlias.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -1862,7 +2315,7 @@ public sealed class PortalApiTests
 
         alias.Should().NotBeNull();
 
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         var foreignRoute = new Uri(
             $"/api/v1/portals/{Route(other.PortalId)}/aliases/{Route(alias!.PortalAliasId)}",
@@ -1873,12 +2326,7 @@ public sealed class PortalApiTests
 
         using HttpResponseMessage renamed = await administrator.PutAsJsonAsync(
             foreignRoute,
-            new PortalAliasDto
-            {
-                PortalAliasId = alias.PortalAliasId,
-                PortalId = other.PortalId,
-                HttpAlias = "hijacked-" + Suffix() + ".local",
-            },
+            new UpdatePortalAliasRequest { HttpAlias = "hijacked-" + Suffix() + ".local" },
             ApiTestFixture.Json);
 
         renamed.StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -1911,10 +2359,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task Portal_OfAnotherTenant_IsNotReachableByAPortalAdministrator()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto other = await CreatePortalAsync(host);
 
-        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage read = await administrator.GetAsync(PortalRoute(other.PortalId));
         read.StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -1941,15 +2389,15 @@ public sealed class PortalApiTests
     [Fact]
     public async Task AddPortalAlias_WhenAlreadyBound_ReturnsConflict()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) =
             await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreatedTenantClient(created, createRequest);
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             new Uri($"/api/v1/portals/{Route(created.PortalId)}/aliases", UriKind.Relative),
-            new PortalAliasDto { PortalId = created.PortalId, HttpAlias = ApiTestFixture.TestHost },
+            new CreatePortalAliasRequest { HttpAlias = ApiTestFixture.TestHost },
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -2019,23 +2467,17 @@ public sealed class PortalApiTests
             + "class attribute carries authentication only");
     }
 
-    /// <summary>The unscoped alias collection includes the seeded host name.</summary>
+    /// <summary>The host-wide alias collection is not part of the frozen public API.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ListAllPortalAliases_ReturnsOkIncludingSeededHost()
+    public async Task HostWidePortalAliasCollection_IsNotPublished()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portal-aliases", UriKind.Relative));
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        IReadOnlyList<PortalAliasDto>? all = await response.Content
-            .ReadEnvelopeAsync<IReadOnlyList<PortalAliasDto>>();
-
-        all.Should().NotBeNull();
-        all!.Select(item => item.HttpAlias).Should().Contain(ApiTestFixture.TestHost);
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
@@ -2070,7 +2512,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task Portal_SentinelValuedIdentifiers_SurviveTheWireAsIdentifiers()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         _fixture.Seed.PortalId.Should().BeLessThan(1,
             "the seeded portal takes the first value of an IDENTITY(-1, 1) column, so this suite is "
@@ -2125,10 +2567,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task Portal_EmptyStringMembers_SurviveAsEmptyStringsAndAreNeverDropped()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = created.PortalName;
@@ -2207,7 +2649,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task Portal_HostingChargeAndAllowances_TravelAsNumbersEvenWhenNought()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         PortalDetailDto created = await CreatePortalAsync(host);
 
         using HttpResponseMessage response = await host.GetAsync(PortalRoute(created.PortalId));
@@ -2264,7 +2706,7 @@ public sealed class PortalApiTests
     [InlineData(0)]
     public async Task GetPortal_WithASentinelValuedIdentifierInTheRoute_IsAnsweredAsALookup(int portalId)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(portalId));
 
@@ -2296,13 +2738,13 @@ public sealed class PortalApiTests
     public async Task UpdatePortal_WithASentinelValuedBodyIdentifier_IsRefusedAgainstAnotherPortalsRoute(
         int bodyPortalId)
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
         created.PortalId.Should().NotBe(bodyPortalId,
             "the created portal must differ from the submitted identifier for this to be a mismatch");
 
-        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = created.PortalName;
@@ -2339,7 +2781,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_WithNoBodyIdentifier_IsRefusedBecauseZeroIsARealIdentifier()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             PortalRoute(_fixture.Seed.PortalId),
@@ -2377,7 +2819,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_ReportsANonNegativeTotalOnAPopulatedAndOnAnEmptyPage()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage populated = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=25", UriKind.Relative));
@@ -2426,7 +2868,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_PublishesExactlyTheColumnsTheLegacyGridRendered()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/portals?pageIndex=0&pageSize=1", UriKind.Relative));
@@ -2477,7 +2919,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task ListPortals_NameFilter_MatchesAFragmentAnywhereAndTreatsWildcardsAsLiterals()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // A fragment taken from the MIDDLE of the seeded portal's name: it is neither a prefix of the name
         // nor a suffix of it, so only a containment match can find it.
@@ -2518,10 +2960,11 @@ public sealed class PortalApiTests
     /// The environment override wrapping the isolated fixture is not decoration. A fixture publishes its
     /// database and signing key by SETTING PROCESS ENVIRONMENT VARIABLES, because the composition root reads
     /// configuration while it is composing services and nothing contributed later would arrive in time. A
-    /// second fixture therefore overwrites the shared fixture's variables for the remainder of the run, and
-    /// any host built afterwards would compose against a database that had already been dropped. Opening a
-    /// scope over the shared configuration first, and letting it restore on the way out, is what confines the
-    /// second fixture's side effect to this method.
+    /// second fixture therefore overwrites the shared fixture's variables, and any host built afterwards would
+    /// compose against a database that had already been dropped. The fixture now captures and restores what it
+    /// overwrote, so the second fixture puts the shared values back itself - but this scope stays, because it
+    /// is what makes the guarantee hold even when the inner fixture cannot complete its own disposal, and
+    /// because being wrong about this costs the remainder of the run rather than one fact.
     /// </para>
     /// <para>
     /// MIGRATION: the legacy removal reported outcomes by returning a MESSAGE STRING, and the only non-empty
@@ -2550,7 +2993,7 @@ public sealed class PortalApiTests
             {
                 await lifetime.InitializeAsync();
 
-                using HttpClient client = isolated.CreateHostClient();
+                using HttpClient client = await isolated.CreateHostClientAsync();
 
                 using HttpResponseMessage listed = await client.GetAsync(
                     new Uri("/api/v1/portals?pageIndex=0&pageSize=25", UriKind.Relative));
@@ -2595,7 +3038,7 @@ public sealed class PortalApiTests
         }
 
         // The shared host is still serving from the shared database, which proves the isolation held.
-        using HttpClient shared = _fixture.CreateHostClient();
+        using HttpClient shared = await _fixture.CreateHostClientAsync();
         using HttpResponseMessage afterwards = await shared.GetAsync(PortalRoute(_fixture.Seed.PortalId));
         afterwards.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -2620,7 +3063,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CorrelationId_IsEchoedWhenSuppliedAndGeneratedWhenNot()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         string supplied = "portal-suite-" + Suffix();
 
@@ -2663,13 +3106,15 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CorrelationId_IsPresentOnAProblemDocument()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         string supplied = "portal-failure-" + Suffix();
 
         using var stamped = new HttpRequestMessage(
             HttpMethod.Get,
-            new Uri($"/api/v1/portal-aliases/{Route(UnknownPortalId)}", UriKind.Relative));
+            new Uri(
+                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/aliases/{Route(UnknownPortalId)}",
+                UriKind.Relative));
         ApiTestFixture.WithCorrelationId(stamped, supplied);
 
         using HttpResponseMessage response = await client.SendAsync(stamped);
@@ -2718,7 +3163,7 @@ public sealed class PortalApiTests
         string hostile,
         string description)
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         using var request = new HttpRequestMessage(HttpMethod.Get, PortalRoute(_fixture.Seed.PortalId));
         request.Headers.TryAddWithoutValidation(ApiTestFixture.CorrelationIdHeader, hostile);
@@ -2748,7 +3193,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CorrelationId_LongerThanTheAcceptedBound_IsReplacedRatherThanTruncated()
     {
-        using HttpClient client = _fixture.CreateAdministratorClient();
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         string oversized = new('x', 512);
 
@@ -2798,10 +3243,7 @@ public sealed class PortalApiTests
         string expectedType)
     {
         using HttpClient client = authenticated
-            ? _fixture.CreateClientFor(
-                _fixture.Seed.MemberUserId,
-                IntegrationSeed.MemberUserName,
-                _fixture.Seed.PortalId)
+            ? await _fixture.CreateUnprivilegedClientAsync()
             : _fixture.CreateAnonymousClient();
 
         using HttpResponseMessage response = await client.GetAsync(
@@ -2852,7 +3294,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithAnEmptyBody_NamesEveryOffendingFieldInTheErrorsDictionary()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             PortalsRoute,
@@ -2908,16 +3350,23 @@ public sealed class PortalApiTests
     /// security fault, not merely an oddity.
     /// </para>
     /// <para>
-    /// PASS-THROUGH IS THE SUBTLE HALF, and it is the assertion most easily got wrong. Failing to resolve a
-    /// tenant is not itself an error: this route names its portal in the ROUTE, so it does not need the host
-    /// name to identify one, and the tenant reconciliation still proves the caller administers the portal
-    /// named there. So the request must not be answered with a bad request, an absent resource, a conflict or
-    /// a server fault, and must not be short-circuited - it must reach the endpoint and be decided on its
-    /// merits.
+    /// THE REFUSAL IS THE SUBTLE HALF, and this assertion was inverted by SEC-006. It used to assert that the
+    /// request was still SERVED, on the reasoning that the route names its portal and so needs no host name to
+    /// identify one. That reasoning was the defect: a route segment is a claim about which tenant to act on,
+    /// chosen by the caller, and accepting it in place of a resolved arrival tenant meant the tenant a request
+    /// belonged to could be chosen by addressing the installation from a name that resolves to nothing. The
+    /// substring host is refused now, and refused for the RIGHT reason - the tenant one - which is asserted
+    /// explicitly, because a refusal arriving from some unrelated cause would prove nothing about aliases.
+    /// </para>
+    /// <para>
+    /// THE PROPERTY THIS FACT EXISTS FOR IS UNCHANGED AND STRONGER. The legacy predicate mis-resolved a
+    /// substring host to the wrong tenant; the target resolves it to no tenant, and now serves it nothing at
+    /// all. The body is inspected as well as the status, because what has to be excluded is not merely a
+    /// non-success code but a SUCCESSFUL answer carrying some other tenant's portal.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task GetPortal_FromAHostThatIsOnlyASubstringOfAConfiguredAlias_IsStillServed()
+    public async Task GetPortal_FromAHostThatIsOnlyASubstringOfAConfiguredAlias_IsRefused()
     {
         // One character shorter than the configured alias, so it is a strict substring of it and nothing
         // else - which is precisely the input the legacy containment predicate mis-resolved.
@@ -2925,18 +3374,28 @@ public sealed class PortalApiTests
         substring.Should().NotBe(ApiTestFixture.TestHost);
         ApiTestFixture.TestHost.Should().Contain(substring);
 
-        using HttpClient client = _fixture.CreateHostClient(substring);
+        using HttpClient client = await _fixture.CreateHostClientAsync(substring);
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
 
         response.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "the route names its own portal, so an unresolved host name is not a reason to refuse it");
+            HttpStatusCode.Forbidden,
+            "a strict substring of an alias resolves to no tenant, and a portal named in the route is not a "
+            + "substitute for having arrived at one");
 
-        PortalDetailDto detail = await ReadDetailAsync(response);
-        detail.PortalId.Should().Be(
-            _fixture.Seed.PortalId,
-            "no tenant was substituted for the one the route named");
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("the refusal carries a problem document rather than an empty body");
+        problem!.Type.Should().Be(
+            TenantUnresolvedProblemType,
+            "the refusal must be the tenant one, so this fact is proving alias handling and not some "
+            + "unrelated authorisation outcome");
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().NotContain(
+            "\"portalId\"",
+            "nothing may be served in place of the tenant that could not be resolved");
     }
 
     /// <summary>
@@ -2963,11 +3422,10 @@ public sealed class PortalApiTests
         string upperCased = ApiTestFixture.TestHost.ToUpperInvariant();
         upperCased.Should().NotBe(ApiTestFixture.TestHost, "the host name must actually differ in case");
 
-        using HttpClient client = _fixture.CreateTenantClient(
-            upperCased,
-            _fixture.Seed.PortalId,
-            _fixture.Seed.AdminUserId,
-            IntegrationSeed.AdminUserName);
+        // The credential is presented at the seeded alias and the REQUEST is addressed at the mixed-case
+        // form, so the only thing this fact varies is the host name a request arrives on - which is what it
+        // claims to measure.
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync(upperCased);
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
 
@@ -2997,7 +3455,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task PathsServedWithoutATenant_AnswerFromAnUnclaimedHostName()
     {
-        using HttpClient client = _fixture.CreateHostClient("no-portal-claims-this-name.invalid");
+        using HttpClient client = await _fixture.CreateHostClientAsync("no-portal-claims-this-name.invalid");
 
         using HttpResponseMessage health = await client.GetAsync(new Uri("/health", UriKind.Relative));
         health.StatusCode.Should().Be(
@@ -3041,10 +3499,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task AddPortalAlias_LocatesTheCreatedAliasBeneathItsPortal()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreatedTenantClient(created, createRequest);
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
 
         string aliasCollection = $"/api/v1/portals/{Route(created.PortalId)}/aliases";
         string httpAlias = "located-" + Suffix() + ".local";
@@ -3121,10 +3579,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_AsAdministratorAlteringAnyHostOnlyValue_IsForbiddenAndNotAServerFault()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
         (string Field, Action<UpdatePortalRequest> Alter)[] hostOnly =
         [
@@ -3200,7 +3658,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task UpdatePortal_WithAllowancesOfNought_IsAcceptedBecauseNoughtMeansUnlimited()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
         PortalDetailDto created = await CreatePortalAsync(client);
 
         UpdatePortalRequest request = EchoHostOnlyFields(created);
@@ -3260,10 +3718,10 @@ public sealed class PortalApiTests
     [Fact]
     public async Task DeletePortalAlias_OfTheOnlyRemainingAlias_IsPermittedAndTheAddressCanBeRebound()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
         (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
 
-        using HttpClient client = CreatedTenantClient(created, createRequest);
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
 
         string aliasCollection = $"/api/v1/portals/{Route(created.PortalId)}/aliases";
 
@@ -3334,7 +3792,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithASchemeQualifiedMixedCaseAlias_StoresItVerbatim()
     {
-        using HttpClient host = _fixture.CreateHostClient();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
 
         string bareAlias = "normalised-" + Suffix() + ".local";
         string submitted = "HTTP://" + bareAlias.ToUpperInvariant();
@@ -3373,10 +3831,9 @@ public sealed class PortalApiTests
 
         rebound.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        using HttpClient tenant = _fixture.CreateTenantClient(
+        using HttpClient tenant = await _fixture.CreateTenantClientAsync(
             usable,
             created.PortalId,
-            created.AdministratorId!.Value,
             request.AdministratorUsername!);
 
         using HttpResponseMessage addressed = await tenant.GetAsync(PortalRoute(created.PortalId));
@@ -3409,7 +3866,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_WithSeveralOffendingCharactersInTheAlias_ReportsOneMessageNotOnePerCharacter()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest request = NewPortalRequest();
         request.PortalAlias = "bad alias!!" + Suffix();
@@ -3441,7 +3898,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task GetPortalSettings_WhenThePortalIsUnknown_ReturnsNotFound()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri($"/api/v1/portals/{Route(UnknownPortalId)}/settings", UriKind.Relative));
@@ -3490,7 +3947,7 @@ public sealed class PortalApiTests
     [InlineData("/api/v1/portals/-1/settings/keys")]
     public async Task ExcludedLegacyPortalScreens_HaveNoEndpoint(string excluded)
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(excluded, UriKind.Relative));
 
@@ -3512,7 +3969,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task DeleteOnThePortalCollection_IsNotAllowed()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(PortalsRoute);
 
@@ -3549,7 +4006,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task CreatePortal_AppliesTheLegacyCredentialPolicyAndNoStricterOne()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreatePortalRequest tooShort = NewPortalRequest();
         tooShort.AdministratorPassword = "abc123";
@@ -3673,29 +4130,42 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
-    /// Mints a client for the administrator account the create provisioned for a given portal.
+    /// Signs in as the administrator account the create provisioned for a given portal, WITHOUT addressing
+    /// that portal's host.
     /// </summary>
-    /// <param name="request">The request that created the portal, which carries the login name.</param>
+    /// <param name="request">The request that created the portal, which carries the alias and login name.</param>
     /// <param name="detail">The created portal, which carries the administrator's identifier.</param>
     /// <returns>A client authenticated as that portal's own administrator.</returns>
     /// <remarks>
-    /// The role claim is carried for completeness, but it is NOT what admits the caller: the portal
-    /// administrator policy reads the target portal's <c>AdministratorRoleId</c> and verifies a time-bounded
-    /// assignment of that role to this account in the database. A token claiming the role name without the
-    /// underlying assignment is refused, which is deliberate - a role NAME is not a tenant-scoped fact.
+    /// <para>
+    /// No role claim is asserted by the test, because none would help: the portal administrator policy reads
+    /// the target portal's <c>AdministratorRoleId</c> and verifies a time-bounded assignment of that role to
+    /// this account in the database. A token naming the role without the underlying assignment is refused,
+    /// which is deliberate - a role NAME is not a tenant-scoped fact. What the token must carry is the TENANT
+    /// it was issued for, and it carries it because the credential is presented at the created portal's own
+    /// alias, which is the only place that account can present it.
+    /// </para>
+    /// <para>
+    /// The returned client then addresses the SEEDED host rather than the created portal's, and the difference
+    /// is the point: every route these callers use names its portal, and a named route is decided against the
+    /// route and the token rather than against the host the request arrived at. Keeping the addressed host
+    /// unchanged is what leaves that binding measured rather than assumed.
+    /// </para>
     /// </remarks>
-    private HttpClient CreateAdministratorClientFor(CreatePortalRequest request, PortalDetailDto detail)
+    private Task<HttpClient> CreateAdministratorClientForAsync(
+        CreatePortalRequest request,
+        PortalDetailDto detail)
     {
         detail.AdministratorId.Should().NotBeNull(
             "the create provisions an administrator and records it against the portal");
         request.AdministratorUsername.Should().NotBeNullOrWhiteSpace();
+        request.PortalAlias.Should().NotBeNullOrWhiteSpace();
 
-        return _fixture.CreateClientFor(
-            detail.AdministratorId!.Value,
-            request.AdministratorUsername!,
+        return _fixture.CreateTenantClientAsync(
+            request.PortalAlias!,
             detail.PortalId,
-            isSuperUser: false,
-            roles: [IntegrationSeed.AdministratorsRoleName]);
+            request.AdministratorUsername!,
+            addressedAt: ApiTestFixture.TestHost);
     }
 
     /// <summary>
@@ -3704,24 +4174,28 @@ public sealed class PortalApiTests
     /// </summary>
     /// <param name="created">The created portal.</param>
     /// <param name="request">The request that created it, which carries the alias and administrator name.</param>
-    /// <param name="isSuperUser">Whether the caller additionally carries installation-wide authority.</param>
     /// <returns>An authenticated client addressed at the created tenant.</returns>
     /// <remarks>
+    /// <para>
     /// The portal-administrator policy binds a route's tenant to the tenant the request resolved to, and
     /// resolution is by host name, so a tenant-scoped action against a created portal has to be addressed
     /// through that portal's own alias. That is not a test workaround: it is how an operator reaches a
     /// tenant, and it is the behaviour the legacy screens enforced by forcing a non-host caller onto the
     /// ambient portal (<c>SiteSettings.ascx.vb:L235</c>).
+    /// </para>
+    /// <para>
+    /// The caller no longer states an account identifier or an installation-wide flag. Both are read from the
+    /// store by the sign-in endpoint while it composes the token, so stating them here could only ever
+    /// contradict what the store holds - and a caller that genuinely holds installation-wide authority is the
+    /// seeded host account, obtained from <c>CreateHostClientAsync</c>.
+    /// </para>
     /// </remarks>
-    private HttpClient CreatedTenantClient(
+    private Task<HttpClient> CreatedTenantClientAsync(
         PortalDetailDto created,
-        CreatePortalRequest request,
-        bool isSuperUser = false) => _fixture.CreateTenantClient(
+        CreatePortalRequest request) => _fixture.CreateTenantClientAsync(
             request.PortalAlias!,
             created.PortalId,
-            created.AdministratorId!.Value,
-            request.AdministratorUsername!,
-            isSuperUser);
+            request.AdministratorUsername!);
 
     /// <summary>
     /// Builds a create request whose every unique value carries a random suffix, so the suite is
@@ -3770,6 +4244,41 @@ public sealed class PortalApiTests
         BannerAdvertising = detail.BannerAdvertising,
         AdministratorId = detail.AdministratorId,
         HomeDirectory = detail.HomeDirectory,
+    };
+
+    /// <summary>
+    /// Builds the complete body accepted by the settings PUT from the representation returned by its GET.
+    /// </summary>
+    /// <param name="settings">The current settings projection.</param>
+    /// <returns>A whole-row replacement that preserves every value the response publishes.</returns>
+    private static UpdatePortalSettingsRequest SettingsUpdateFrom(PortalSettingsDto settings) => new()
+    {
+        PortalName = settings.PortalName,
+        LogoFile = settings.LogoFile,
+        FooterText = settings.FooterText,
+        ExpiryDate = settings.ExpiryDate,
+        UserRegistration = settings.UserRegistration,
+        BannerAdvertising = settings.BannerAdvertising,
+        Currency = settings.Currency,
+        AdministratorId = settings.AdministratorId,
+        HostFee = settings.HostFee,
+        HostSpace = settings.HostSpace,
+        PageQuota = settings.PageQuota,
+        UserQuota = settings.UserQuota,
+        PaymentProcessor = settings.PaymentProcessor,
+        ProcessorUserId = settings.ProcessorUserId,
+        ProcessorCredentialReference = null,
+        Description = settings.Description,
+        KeyWords = settings.KeyWords,
+        BackgroundFile = settings.BackgroundFile,
+        SiteLogHistory = settings.SiteLogHistory,
+        SplashTabId = settings.SplashTabId,
+        HomeTabId = settings.HomeTabId,
+        LoginTabId = settings.LoginTabId,
+        UserTabId = settings.UserTabId,
+        DefaultLanguage = settings.DefaultLanguage,
+        TimeZoneOffset = settings.TimeZoneOffset,
+        HomeDirectory = settings.HomeDirectory,
     };
 
     /// <summary>Reads a portal representation out of a response, failing the test when it is absent.</summary>
@@ -3916,7 +4425,7 @@ public sealed class PortalApiTests
     [Fact]
     public async Task NumericEnumerations_TravelAsTheirStoredIntegers()
     {
-        using HttpClient client = _fixture.CreateHostClient();
+        using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
 

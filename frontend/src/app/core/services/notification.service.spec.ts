@@ -14,27 +14,17 @@ const UNISSUED_ID = 4242;
 
 /**
  * The message-length bound the service documents on its own `MAX_MESSAGE_LENGTH`
- * constant.
- *
- * Mirrored here rather than imported: the service keeps its bounds module-private,
- * exactly as it keeps its frozen empty queue private, and widening its exported
- * surface merely to be observable from a spec would be the wrong trade. Restating
- * the figure means a deliberate change to the bound has to be made in both places,
- * which is the intent - an accidental change fails these specs loudly.
- *
- * The figure itself is measured, not chosen: across the 40 in-scope resource files
- * (1561 plain `<data>` values) legacy admin wording runs to a 99th percentile of
- * 387 characters, so 1024 clears every real message value by a wide margin.
+ * constant. Mirrored rather than imported, because the service keeps its bounds
+ * module-private and widening its exported surface merely to be observable from a
+ * spec would be the wrong trade; restating the figure makes an accidental change to
+ * the bound fail loudly here.
  */
 const MAX_MESSAGE_LENGTH = 1024;
 
 /**
  * The queue-depth bound the service documents on its own
- * `MAX_QUEUED_NOTIFICATIONS` constant. Mirrored here for the same reason as
+ * `MAX_QUEUED_NOTIFICATIONS` constant. Mirrored for the same reason as
  * {@link MAX_MESSAGE_LENGTH}.
- *
- * The legacy `AddModuleMessage` surface rendered one module message per page
- * render, so 25 is an order of magnitude more than any legacy screen ever showed.
  */
 const MAX_QUEUED_NOTIFICATIONS = 25;
 

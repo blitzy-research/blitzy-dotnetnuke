@@ -1203,9 +1203,8 @@ public class RoleServiceTests
         record.Outcome.Should().Be(AuditOutcome.Succeeded);
         record.PortalId.Should().Be(PortalId);
         record.ActorUserId.Should().Be(OperatorUserId, "the acting operator comes from the credential");
-        record.ActorUserName.Should().Be(OperatorUserName);
         record.ResourceType.Should().Be("Role");
-        record.Properties.Should().ContainKey("RoleName");
+        record.Properties.Should().NotContainKey("RoleName", "the resource identifier is the durable attribution");
     }
 
     /// <summary>
@@ -1711,12 +1710,12 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A committed removal is recorded under the legacy event name, and it still carries the role's name
-    /// even though the row it came from no longer exists.
+    /// A committed removal is recorded under the legacy event name and stable role identifier without
+    /// copying the deleted role's caller-authored name into the logging store.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task DeleteRole_RecordsTheLegacyRoleDeletedAuditEventIncludingTheName()
+    public async Task DeleteRole_RecordsTheLegacyRoleDeletedAuditEventByIdentifier()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
@@ -1727,9 +1726,8 @@ public class RoleServiceTests
         record.EventName.Should().Be("ROLE_DELETED");
         record.PortalId.Should().Be(PortalId);
         record.ResourceType.Should().Be("Role");
-        record.Properties["RoleName"].Should().Be(
-            RoleName,
-            "the name is captured before the removal, because afterwards there is no row to read it from");
+        record.ResourceId.Should().Be(RoleId.ToString(CultureInfo.InvariantCulture));
+        record.Properties.Should().NotContainKey("RoleName");
     }
 
     /// <summary>

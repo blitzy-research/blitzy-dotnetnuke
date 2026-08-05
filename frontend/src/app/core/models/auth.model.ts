@@ -354,8 +354,21 @@ export interface LoginRequest {
    * response. Their legacy wording authority is the resource file beside the
    * legacy administrative sign-in control, whose `EnterCode`, `InvalidCode` and
    * `UserNotAuthorized` entries must not be replaced with invented text.
+   *
+   * MIGRATION: THE DECLARATION NOW ADMITS `null`, WHICH IS WHAT THE PARAGRAPH ABOVE
+   * ALREADY CLAIMED. It was typed `verificationCode?: string`, which permits the
+   * member to be omitted or to hold a string and forbids `null` outright — so the
+   * documented three-way equivalence was unachievable from a caller written against
+   * this type, and the server's own contract disagreed with it: `LoginRequest.cs`
+   * declares `string?` and treats a null and an empty string as identical. The
+   * mismatch is a compile error rather than a curiosity under this workspace's
+   * `strict` setting: a reactive control that has not been touched reads as
+   * `string | null`, so assigning one straight into this member was rejected and a
+   * caller was pushed into normalising the value — which is exactly what the
+   * paragraph above forbids. Admitting `null` alongside `undefined` removes the
+   * contradiction without moving the decision boundary.
    */
-  readonly verificationCode?: string;
+  readonly verificationCode?: string | null;
 }
 
 /*
@@ -694,13 +707,15 @@ export interface LoginResponse {
 
   /**
    * Whether the caller must change their credential before continuing.
-   * `false` means no such advisory.
+   * `false` means no such requirement.
    *
    * **BLOCKING** — the legacy interstitial offered no way past it. Absorbs both
    * legacy blocking credential cases (an administrator-forced update and an
    * already-expired credential) and both success-with-caveat sign-in statuses
    * raised when a shipped default credential is still in use. See the migration
-   * note above.
+   * note above. The API enforces the current stored value on every protected
+   * request; this client-side value exists to choose a remediation experience, not
+   * to make an authorization decision.
    */
   readonly mustChangePassword: boolean;
 
@@ -718,7 +733,7 @@ export interface LoginResponse {
 
   /**
    * Whether the caller must complete or correct their profile before continuing.
-   * `false` means no such advisory.
+   * `false` means no such requirement.
    *
    * **BLOCKING**, and the one advisory the legacy flow sent to a different step
    * rather than to the credential interstitial. Because the legacy enumeration was
@@ -732,8 +747,9 @@ export interface LoginResponse {
    * tenant's required profile-property definitions against the caller's stored
    * values. It is carried here because the sign-in contract is the one that owns
    * this signal — the administrative account contract in `user.model.ts` does not
-   * carry it, and says so explicitly. A read that fails server-side is treated as
-   * "no advisory", so an advisory outage can never become a sign-in outage.
+   * carry it, and says so explicitly. The API re-evaluates that state on every
+   * protected request and fails closed when it cannot be read; this value is a
+   * presentation signal for the same server-enforced gate.
    */
   readonly mustUpdateProfile: boolean;
 
@@ -765,20 +781,35 @@ export interface LoginResponse {
  * contract owned by the API, the other is what this application chooses to keep. An
  * alias would make any server-side addition silently become stored state.
  *
- * That distinction is what {@link LoginResponse.mustUpdateProfile} illustrates: the
- * server does send it and {@link LoginResponse} does model it, but it is **not**
- * kept here, because no screen in this application consumes it. The legacy flow
- * sent that one advisory to a different step rather than to the credential
- * interstitial, and no such step exists yet. Holding a signal in stored state that
- * nothing can act on is the mirror image of publishing a flag with no producer
- * behind it, so it is read from the response by whatever needs it and not retained.
- * Adding it here is a one-line change on the day a profile-completion step is
- * built.
+ * ALL THREE ADVISORIES ARE KEPT, and the two blocking ones are kept because the API
+ * enforces them against authoritative storage on every protected request. An earlier
+ * revision retained two and dropped {@link LoginResponse.mustUpdateProfile} on the
+ * grounds that no screen consumed it yet. That reasoning was wrong in a way worth
+ * recording, because the shape of the mistake recurs: the sign-in method returns the
+ * identity rather than the session, so dropping the advisory here did not leave it
+ * "readable from the response by whatever needs it" — it made the advisory
+ * **unreachable by any caller at all**, and the legacy blocking profile-completion
+ * prompt was therefore lost rather than deferred. An advisory the server troubles
+ * itself to compute and send is kept, and it is kept in the one place a caller can
+ * reach it from, whether or not the screen that finally acts on it exists today.
  *
- * The two advisories that ARE kept stay plain booleans rather than optional ones:
- * `false` means "no advisory" and is always present on the wire, so there is no
- * third state to model, and a missing key must never become indistinguishable from
- * an explicit `false`.
+ * The advisories are carried on the RESPONSE and in this session, and nowhere else:
+ * the access token carries no claim describing them, so a client neither can nor need
+ * decode one, and the server recomputes the gate from storage on every request it
+ * guards. Keeping the values here makes the response and the browser session describe
+ * the same gate; they remain advisory to presentation code, because the API is always
+ * the enforcement point.
+ *
+ * MIGRATION: the legacy flow sent the profile advisory to a different step rather than
+ * to the credential interstitial, and no profile-completion step is built yet. What
+ * survives is therefore the SIGNAL, not the interstitial: the advisory is stored,
+ * projected and readable, and the screen that consumes it is outstanding work rather
+ * than a dropped requirement.
+ *
+ * All three advisories are plain booleans rather than optional ones: `false` means
+ * "no advisory" and is always present on the wire, so there is no third state to
+ * model, and a missing key must never become indistinguishable from an explicit
+ * `false`.
  */
 export interface AuthSession {
   /** The bearer token presented on subsequent requests. Never logged. */
@@ -793,6 +824,14 @@ export interface AuthSession {
   /** Blocking advisory: the credential must be changed before continuing. */
   readonly mustChangePassword: boolean;
 
+  /**
+   * Blocking advisory: required profile properties must be completed before continuing.
+   *
+   * Retained so the advisory has somewhere to be read from. See the note on this
+   * interface for why dropping it made it unreachable rather than deferred.
+   */
+  readonly mustUpdateProfile: boolean;
+
   /** Non-blocking advisory: the credential is approaching its expiry. */
   readonly passwordExpiring: boolean;
 
@@ -805,10 +844,9 @@ export interface AuthSession {
  *
  * A pure, total field selection: it reads only the argument, allocates one object,
  * and performs no clock read, no expiry arithmetic, no token parsing and no
- * normalisation of any value. Both retained advisories are carried through
- * unchanged so that a reload does not lose a prompt the caller has not yet acted
- * on, and {@link LoginResponse.mustUpdateProfile} is intentionally not copied for
- * the reason recorded on {@link AuthSession}.
+ * normalisation of any value. All three advisories are carried through unchanged
+ * so that a refresh does not lose a blocking requirement or expiry prompt the
+ * caller has not yet acted on.
  *
  * @param response A successful login or refresh response.
  * @returns The session to store.
@@ -819,6 +857,7 @@ export function sessionFromLoginResponse(response: LoginResponse): AuthSession {
     expiresAtUtc: response.expiresAtUtc,
     refreshToken: response.refreshToken,
     mustChangePassword: response.mustChangePassword,
+    mustUpdateProfile: response.mustUpdateProfile,
     passwordExpiring: response.passwordExpiring,
     user: response.user,
   };

@@ -58,27 +58,24 @@
  * the warning on the value itself, which is the durable guard.
  *
  * MIGRATION: The legacy `SiteSqlServer` connection string
- * (`Website/release.config` L21-26, `Data Source=.\SQLExpress;Integrated
- * Security=True;User Instance=True;AttachDBFilename=|DataDirectory|Database.mdf;`)
- * deliberately has no counterpart in this module. It became the API's own
- * server-side `Default` database configuration entry, supplied to the container as
- * an environment variable, so the database is never addressable from a browser and
- * its location is never disclosed to one.
+ * (`Website/release.config` L21-26) deliberately has no counterpart in this module.
+ * It became the API's own server-side `Default` configuration entry, supplied to the
+ * container as an environment variable, so the database is never addressable from a
+ * browser and its location is never disclosed to one.
  *
  * MIGRATION: The legacy `machineKey` material (`Website/release.config` L89-93,
- * `decryptionKey="F9D1..."` with `decryption="3DES"`) has NO counterpart in this
- * client bundle by design. Note precisely what the legacy twins did: the
- * development twin (`Website/development.config` L88-92) committed the IDENTICAL
- * `decryptionKey` value, so the twin-file convention isolated infrastructure
- * bindings but emphatically did not isolate confidential material. That half of
- * the precedent is deliberately NOT reproduced. Together with the legacy provider
- * settings that stored credentials reversibly and permitted their retrieval
- * (release.config L232-246), it is the exact anti-pattern this migration removes:
- * credential verification is now one-way and server-side, and retrieval is gone.
- * Confidential values live in the API's configuration, never in a browser bundle.
+ * a committed `decryptionKey` [redacted] under `decryption="3DES"`) has NO
+ * counterpart in this client bundle by design. Note precisely what the legacy twins
+ * did: the development twin (`Website/development.config` L88-92) committed the
+ * IDENTICAL key value, so the twin-file convention isolated infrastructure bindings
+ * but emphatically did not isolate confidential material. That half of the precedent
+ * is deliberately NOT reproduced. Together with the legacy provider settings that
+ * stored credentials reversibly and permitted their retrieval (release.config
+ * L232-246), it is the exact anti-pattern this migration removes: credential
+ * verification is now one-way and server-side, and retrieval is gone. Confidential
+ * values live in the API's configuration, never in a browser bundle.
  *
- * MIGRATION: The legacy configuration declared 14 `defaultProvider` attributes
- * (verified: `grep -c 'defaultProvider' Website/release.config` reports 14),
+ * MIGRATION: The legacy configuration declared 14 `defaultProvider` attributes,
  * each selecting a reflection-resolved implementation for data access, caching,
  * logging, membership, roles, profiles and the rest. That indirection is REMOVED
  * rather than reproduced: the API binds strongly-typed options classes through
@@ -136,16 +133,24 @@ export const environment: AppEnvironment = {
 
   // MIGRATION: RELATIVE, and it must stay relative. `docker/nginx.conf` L135-136
   // proxies `/api/` to `http://api:8080/api/` on this very origin, and L191 serves
-  // `index.html` for everything else, so the SPA and the API share one origin and
-  // no request is cross-origin. An absolute value — 'http://api:8080/api/v1',
-  // 'http://localhost:8080/api/v1', an https host — type-checks, lints, bundles
-  // and deploys without a single complaint, leaves both containers reporting
-  // healthy, and still breaks every call the moment a browser makes one: the
-  // compose service name resolves only inside the Docker network, and even a
-  // reachable absolute host would bypass the proxy and turn each call into a
-  // cross-origin request that the API's named policy is not written to admit.
-  // Nothing in the toolchain detects this. Change this value only in lockstep
-  // with the proxy configuration that serves the bundle.
+  // `index.html` for everything else, so the SPA and the API share one origin, no
+  // request is cross-origin, and the bundle is portable to any host name the proxy
+  // is served under. An absolute value type-checks, lints, bundles and deploys
+  // without a single complaint and leaves both containers reporting healthy, so
+  // nothing in the toolchain detects the substitution — but what breaks depends on
+  // which absolute value is written, and the difference is worth knowing:
+  //   * a compose service name such as 'http://api:8080/api/v1' resolves only
+  //     inside the Docker network, so every call fails in the browser;
+  //   * 'http://localhost:8080/api/v1' works from a browser on the machine that
+  //     published the API's port, because `Cors:AllowedOrigins` admits
+  //     'http://localhost:4200' and the published port is reachable — and then
+  //     fails for every other client, because their `localhost` is not this host;
+  //   * any other absolute host bypasses the proxy and becomes a cross-origin
+  //     request, which succeeds only if that exact origin is listed in
+  //     `Cors:AllowedOrigins` on the API.
+  // In none of the three is the value portable, which is the point. Change it only
+  // in lockstep with the proxy configuration that serves the bundle and with the
+  // API's configured origin list.
   apiBaseUrl: '/api/v1',
 
   applicationName: 'DotNetNuke Administration',

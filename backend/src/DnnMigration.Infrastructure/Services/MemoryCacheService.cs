@@ -294,6 +294,17 @@ internal sealed class MemoryCacheService : ICacheService
     private const int KeyFingerprintBytes = 8;
 
     /// <summary>
+    /// The size every entry declares against the store's size limit: one entry.
+    /// </summary>
+    /// <remarks>
+    /// The limit this counts against is configured where the store is registered, and the two belong
+    /// together - a store with a limit rejects an entry that declares no size, so this value is not
+    /// optional. Counting entries rather than estimating bytes is deliberate; the reasoning is recorded at
+    /// the point of use, where the alternative would have to be applied.
+    /// </remarks>
+    private const long SingleEntrySize = 1;
+
+    /// <summary>
     /// The per-process secret that keys every fingerprint.
     /// </summary>
     /// <remarks>
@@ -577,7 +588,23 @@ internal sealed class MemoryCacheService : ICacheService
     /// <param name="expiration">How long the entry stays live.</param>
     private void Publish<T>(string key, T value, TimeSpan expiration)
     {
-        MemoryCacheEntryOptions entryOptions = new() { SlidingExpiration = expiration };
+        // A SIZE IS DECLARED ON EVERY ENTRY, and it must be: the host configures the underlying store with
+        // a size limit, and that store REFUSES an entry carrying no size once a limit is set - so omitting
+        // it here would turn every cache write in the application into an exception rather than into a
+        // silently unbounded store. The two settings are therefore a pair and neither may be changed alone.
+        //
+        // The unit is ONE ENTRY, not an estimate of bytes. The values written here are object graphs -
+        // projected records, string sequences, dictionaries - whose true footprint cannot be measured
+        // without walking them, and a walk on every write would cost more than the cache saves. Counting
+        // entries is honest about what it bounds: it caps how MANY answers are retained, which is exactly
+        // the quantity a caller-influenced key space can inflate, and it leaves the size of one answer to
+        // the projection that produced it. Every entry declaring the same size also makes the store's
+        // eviction order purely least-recently-used, which is the behaviour a read-through cache wants.
+        MemoryCacheEntryOptions entryOptions = new()
+        {
+            SlidingExpiration = expiration,
+            Size = SingleEntrySize,
+        };
 
         // An entry that goes away on its own must take its registration with it. Without this the
         // registry only ever shrank when somebody happened to ask for the very key that had

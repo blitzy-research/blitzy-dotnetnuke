@@ -98,11 +98,11 @@ internal sealed class CurrentUser : ICurrentUser
         return new Snapshot(
             IsAuthenticated: true,
             UserId: ReadInt(principal, DnnClaimTypes.Subject),
-            UserName: ReadString(principal, DnnClaimTypes.UniqueName),
+            UserName: null,
             PortalId: ReadInt(principal, DnnClaimTypes.PortalId),
-            IsSuperUser: ReadBool(principal, DnnClaimTypes.SuperUser),
-            Roles: ReadAll(principal, ClaimTypes.Role),
-            PermissionKeys: ReadAll(principal, DnnClaimTypes.Permission));
+            IsSuperUser: false,
+            Roles: Array.Empty<string>(),
+            PermissionKeys: Array.Empty<string>());
     }
 
     /// <summary>Reads one claim as text.</summary>
@@ -135,52 +135,14 @@ internal sealed class CurrentUser : ICurrentUser
             : null;
     }
 
-    /// <summary>Reads one claim as a boolean.</summary>
-    /// <param name="principal">The principal to read.</param>
-    /// <param name="claimType">The claim name.</param>
-    /// <returns>
-    /// <see langword="true"/> only when the claim is present and reads as true. An absent, blank or
-    /// unparseable value is false, which fails closed.
-    /// </returns>
-    private static bool ReadBool(ClaimsPrincipal principal, string claimType)
-    {
-        string? value = ReadString(principal, claimType);
-
-        return bool.TryParse(value, out bool parsed) && parsed;
-    }
-
-    /// <summary>Reads every claim of one name.</summary>
-    /// <param name="principal">The principal to read.</param>
-    /// <param name="claimType">The claim name.</param>
-    /// <returns>The values in the order the token carried them, blanks discarded.</returns>
-    /// <remarks>
-    /// Order and duplicates are preserved rather than normalised. This type reports what the token says; it
-    /// is not the authority on what the caller holds, and quietly rewriting the set here would make a
-    /// client's view disagree with the token that produced it.
-    /// </remarks>
-    private static IReadOnlyList<string> ReadAll(ClaimsPrincipal principal, string claimType)
-    {
-        List<string> values = new();
-
-        foreach (Claim claim in principal.FindAll(claimType))
-        {
-            if (!string.IsNullOrWhiteSpace(claim.Value))
-            {
-                values.Add(claim.Value);
-            }
-        }
-
-        return values.Count == 0 ? Array.Empty<string>() : values;
-    }
-
     /// <summary>The immutable projection of one request's principal.</summary>
     /// <param name="IsAuthenticated">Whether a principal was authenticated.</param>
     /// <param name="UserId">The account identifier, or null when anonymous.</param>
-    /// <param name="UserName">The sign-in name, or null when anonymous.</param>
+    /// <param name="UserName">The compatibility name projection; always null.</param>
     /// <param name="PortalId">The tenant the token was issued for, or null when anonymous.</param>
-    /// <param name="IsSuperUser">Whether the account is an installation-wide superuser.</param>
-    /// <param name="Roles">The roles the token carries.</param>
-    /// <param name="PermissionKeys">The permission keys the token carries.</param>
+    /// <param name="IsSuperUser">The compatibility host projection; always false.</param>
+    /// <param name="Roles">The compatibility role projection; always empty.</param>
+    /// <param name="PermissionKeys">The compatibility permission projection; always empty.</param>
     private sealed record Snapshot(
         bool IsAuthenticated,
         int? UserId,

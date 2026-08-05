@@ -78,4 +78,17 @@ public enum RefreshTokenOutcome
     /// both untrue and unactionable.
     /// </remarks>
     CapacityExhausted = 6,
+
+    /// <summary>
+    /// The durable store could not complete the operation. The caller's credential was not at fault,
+    /// and a later retry may succeed.
+    /// </summary>
+    StoreUnavailable = 7,
+
+    /// <summary>
+    /// The same server-observed client presented a token again inside the tightly bounded concurrent
+    /// redemption grace window. No replacement is issued, but the family is not treated as stolen and
+    /// is not revoked.
+    /// </summary>
+    ConcurrentUse = 8,
 }

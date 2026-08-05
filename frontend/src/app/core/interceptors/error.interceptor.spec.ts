@@ -118,6 +118,40 @@ describe('errorInterceptor', () => {
       expect(messages()).toEqual(['Already registered.']);
     });
 
+    it('falls back by status when a member of the document carries the wrong type', async () => {
+      // The body a shape test asking whether SOME member matched would have accepted:
+      // `status` is a number, so the document was narrowed to a shape declaring
+      // `detail?: string`, and the message extractor then called `.trim()` on the
+      // number 42 and threw a TypeError INSIDE this interceptor - replacing a server
+      // refusal the caller could have rendered with an unhandled client fault, and
+      // queueing nothing at all for the person who submitted the request.
+      const pending = firstValueFrom(http.get(URL));
+
+      controller
+        .expectOne(URL)
+        .flush({ status: 400, detail: 42 }, { status: 400, statusText: 'Bad Request' });
+
+      await expectAsync(pending)
+        .withContext('the caller still learns its request failed')
+        .toBeRejected();
+
+      expect(messages())
+        .withContext('a malformed document is announced by status, not by faulting')
+        .toEqual(['The request could not be completed.']);
+    });
+
+    it('falls back by status for a per-field dictionary that is null or holds a bare string', async () => {
+      // `typeof null === 'object'`, so neither of these is excluded by a type-of test
+      // alone, and both would have put a non-iterable value in front of the summary.
+      await failWith({ status: 400, errors: null }, 400);
+      await failWith({ status: 400, errors: { PortalName: 'Required.' } }, 400);
+
+      expect(messages()).toEqual([
+        'The request could not be completed.',
+        'The request could not be completed.',
+      ]);
+    });
+
     it('falls back by status when the body is not JSON at all', async () => {
       // A gateway returning an HTML error page lands here; no part of that page would
       // describe the failure better than the status does.
@@ -210,6 +244,28 @@ describe('errorInterceptor', () => {
       );
 
       expect(messages()).toEqual(['A role with that name already exists.']);
+    });
+
+    it('does announce a 400 whose per-field dictionary is present but empty', async () => {
+      // The API writes `errors: {}` whenever model state carries no entries, so the
+      // dictionary is present and the document IS a validation problem - but nothing
+      // renderable was reported against a field, which means no form control is
+      // showing the refusal and the summary is the only place a person can read it.
+      // The shape test admits the empty dictionary for exactly this reason, and the
+      // two halves of the suppression test answer different questions.
+      await failWith(
+        {
+          title: 'Bad Request',
+          status: 400,
+          detail: 'The template could not be applied.',
+          errors: {},
+        },
+        400,
+      );
+
+      expect(messages())
+        .withContext('an empty dictionary suppresses nothing')
+        .toEqual(['The template could not be applied.']);
     });
   });
 

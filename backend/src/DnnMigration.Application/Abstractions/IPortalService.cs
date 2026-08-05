@@ -337,10 +337,9 @@ public interface IPortalService
     /// Modifies an existing portal.
     /// </summary>
     /// <param name="portalId">
-    /// Identifier of the portal to modify, bound from the route. It is the only place a tenant is
-    /// named on this call - <paramref name="request"/> carries no identifier of its own - so a caller
-    /// cannot retarget the write at another tenant, and there is no disagreement for any layer to
-    /// detect.
+    /// Identifier of the portal to modify, bound from the route. The legacy-compatible request also
+    /// carries the identifier, and its validator requires the two values to agree before the service is
+    /// invoked.
     /// </param>
     /// <param name="request">The values to store.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
@@ -352,9 +351,9 @@ public interface IPortalService
     /// <remarks>
     /// Replaces both legacy update overloads: the twenty-seven-argument
     /// <c>UpdatePortalInfo</c> (<c>PortalController.vb:L1568</c>) and the record-taking overload at
-    /// <c>L1524</c> that merely unpacked into it. This is the single write path for every settable
-    /// column on a portal, which is why no separate settings-writing member exists; two write paths
-    /// over the same columns could diverge.
+    /// <c>L1524</c> that merely unpacked into it. The settings-specific member below exposes the same
+    /// business write through a route-owned request and returns the settings projection; both operations
+    /// share the mapper and guards so their behaviour cannot diverge.
     /// </remarks>
     Task<Result<PortalDetailDto?>> UpdatePortalAsync(
         int portalId,
@@ -417,16 +416,43 @@ public interface IPortalService
     /// must therefore not add a setting-by-key reader or writer here.
     /// </para>
     /// <para>
-    /// Reading is separated from writing on purpose. There is no matching configuration-writing
-    /// member: every settable column is written through
-    /// <see cref="UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken)"/>, which is the
-    /// single successor to the one legacy write path for all of them. This member exists because the
-    /// configuration screen needs a projection shaped for it, not because configuration is stored
-    /// separately.
+    /// Reading and writing share one resource URL and one projection, but configuration is still stored
+    /// on the portal row rather than in a separate settings table. The matching writer below applies the
+    /// same business guards and mapping as
+    /// <see cref="UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken)"/> while returning this
+    /// screen-shaped projection.
     /// </para>
     /// </remarks>
     Task<Result<PortalSettingsDto?>> GetPortalSettingsAsync(
         int portalId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces a portal's editable configuration and returns the updated settings projection.
+    /// </summary>
+    /// <param name="portalId">Identifier of the portal whose configuration is being replaced.</param>
+    /// <param name="request">The complete editable state submitted by the settings screen.</param>
+    /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
+    /// <returns>
+    /// A successful outcome carrying the updated configuration, or a successful outcome whose value is
+    /// <see langword="null"/> when no portal carries that identifier.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Serves <c>PUT /api/v1/portals/{portalId}/settings</c>, the write companion to
+    /// <see cref="GetPortalSettingsAsync(int, CancellationToken)"/> required by the frozen API contract.
+    /// The route is the sole portal identity; the body therefore carries no duplicate portal identifier.
+    /// </para>
+    /// <para>
+    /// This is not a key-value settings writer. It replaces the editable columns on the tracked
+    /// <c>Portal</c> aggregate, reproducing the one save operation in
+    /// <c>Website/admin/Portal/SiteSettings.ascx.vb</c>. Host-only fields and the designated
+    /// administrator are guarded exactly as they are on the general portal update path.
+    /// </para>
+    /// </remarks>
+    Task<Result<PortalSettingsDto?>> UpdatePortalSettingsAsync(
+        int portalId,
+        UpdatePortalSettingsRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -945,32 +945,26 @@ export function loginParams(selector?: LoginPortalSelector | null): HttpParams {
  * inferred from the plan. A dedicated function above exists for each entry in the
  * first list; the second list is why several of them do not.
  *
- * Roles, role groups and profile definitions are each reachable at TWO addresses: the
- * flat one the contract froze - /roles, /roles/{roleId}/users, /role-groups,
- * /profile-definitions - and a portal-nested one. Both are served by the same action,
- * so the query contract is identical either way and there is nothing here to choose
- * between them. They differ only in where the tenant comes from: the flat address acts
- * on the tenant the request host resolves to, so a client that administers its own
- * portal should prefer it and send no tenant at all, while the nested address names a
- * tenant explicitly and is what a host account uses to reach another one. The tenant is
- * never a query parameter on either form, which is why no function above emits one.
+ * Roles, role groups, profile definitions, modules and accounts each have one canonical
+ * flat address. Their tenant is the portal the request host resolves to, never a path or
+ * query parameter. Portal aliases and the page collection are the deliberate
+ * portal-nested exceptions.
  *
  *   ACCEPT QUERY PARAMETERS
  *     GET    /portals ................................. paging contract + name
- *     GET    /portals/{portalId}/users ................ paging contract + userName,
+ *     GET    /users .................................... paging contract + userName,
  *                                                       email, profilePropertyName,
  *                                                       profilePropertyValue, isApproved
- *     PUT    /portals/{portalId}/users/{userId}/approval ... isApproved (required)
- *     GET    /roles and /portals/{portalId}/roles ..... paging contract + roleGroupId,
+ *     PUT    /users/{userId}/approval ................. isApproved (required)
+ *     GET    /roles .................................... paging contract + roleGroupId,
  *                                                       scope
- *     GET    /roles/{roleId}/users and
- *            /portals/{portalId}/roles/{roleId}/users .. paging contract only
- *     GET    /portals/{portalId}/modules .............. paging contract + tabId,
+ *     GET    /roles/{roleId}/users .................... paging contract only
+ *     GET    /modules .................................. paging contract + tabId,
  *                                                       includeDeleted
- *     GET    /portals/{portalId}/modules/{moduleId} .... tabModuleId
- *     DELETE /portals/{portalId}/modules/{moduleId} .... tabModuleId
- *     GET    /portals/{portalId}/modules/{moduleId}/settings ... tabModuleId
- *     PUT    /portals/{portalId}/modules/{moduleId}/settings ... tabModuleId
+ *     GET    /modules/{moduleId} ...................... tabModuleId
+ *     DELETE /modules/{moduleId} ...................... tabModuleId
+ *     GET    /modules/{moduleId}/settings ............. tabModuleId
+ *     PUT    /modules/{moduleId}/settings ............. tabModuleId
  *     GET    /permissions ............................. permissionCode,
  *                                                       moduleDefinitionId,
  *                                                       permissionKey
@@ -981,16 +975,11 @@ export function loginParams(selector?: LoginPortalSelector | null): HttpParams {
  *     GET    /module-definitions/{moduleDefinitionId}
  *     GET    /module-definitions/desktop-modules/{desktopModuleId}
  *     GET    /permissions/{permissionId}
- *     GET    /permissions/modules/{moduleId}
- *     GET    /permissions/tabs/{tabId}
- *     GET    /profile-definitions and
- *            /portals/{portalId}/profile-definitions ..... unpaged reference data
- *     GET    /role-groups and
- *            /portals/{portalId}/role-groups ............. unpaged reference data
+ *     GET    /profile-definitions ..................... unpaged reference data
+ *     GET    /role-groups ............................. unpaged reference data
  *     GET    /portals/{portalId}/tabs .................... the page tree, unpaged
  *     GET|PUT /tabs/{tabId}
  *     GET    /portals/{portalId}/aliases
- *     GET    /portal-aliases and GET|PUT|DELETE /portal-aliases/{portalAliasId}
  *     POST   /auth/refresh, POST /auth/logout, GET /auth/me
  *     every single-record read, create, update and delete addressed by its identifier
  *
@@ -1005,13 +994,10 @@ export function loginParams(selector?: LoginPortalSelector | null): HttpParams {
  *     needs a function here. All three reads resolve the tenant from the request host and
  *     accept no query parameter of any kind.
  *   - The permission catalogue binds permissionCode, moduleDefinitionId AND permissionKey.
- *     The module-scoped and page-scoped catalogue reads exist too, but take their subject
- *     as a route segment, so they bind no query parameter either. An earlier revision of
- *     this note recorded that they did not exist at all; they were restored once the
- *     terminal procedure bodies were measured and found to select catalogue definitions
- *     rather than grants.
- *   - The profile-definition and role-group listings take the portal as a ROUTE
- *     SEGMENT, not as a parameter.
+ *     The legacy module- and page-keyed catalogue helpers are not published as HTTP child
+ *     resources.
+ *   - The profile-definition and role-group listings resolve the portal from the request
+ *     host rather than accepting it as a route or query parameter.
  *   - The portal listing has a dedicated name filter over and above the paging
  *     contract's own filter, so a caller states which of the two it means.
  *   - includeDeleted (module listing) and tabModuleId (module read, delete and both

@@ -28,6 +28,7 @@ namespace DnnMigration.IntegrationTests.Persistence;
 [Collection(IntegrationTestCollection.Name)]
 public sealed class UserRepositoryTests
 {
+    private const int HostPortalId = -1;
     private const int UnknownPortalId = 987654;
     private const int UnknownUserId = 987654;
     private const int LockoutThreshold = 5;
@@ -474,33 +475,47 @@ public sealed class UserRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
 
-            (bool exists, string? hash, bool approved, bool locked) = await users.GetCredentialStateAsync(userId);
+            (
+                bool exists,
+                string? hash,
+                PasswordFormat? format,
+                string? salt,
+                bool approved,
+                bool locked) = await users.GetCredentialStateAsync(userId);
             exists.Should().BeFalse("the account has been created but holds no credential yet");
             hash.Should().BeNull();
+            format.Should().BeNull();
+            salt.Should().BeNull();
             approved.Should().BeFalse();
             locked.Should().BeFalse();
 
             bool created = await users.CreateCredentialAsync(userId, StoredHash, isApproved: true, DateTime.UtcNow);
             created.Should().BeTrue();
 
-            (exists, hash, approved, locked) = await users.GetCredentialStateAsync(userId);
+            (exists, hash, format, salt, approved, locked) = await users.GetCredentialStateAsync(userId);
             exists.Should().BeTrue();
             hash.Should().Be(StoredHash);
+            format.Should().Be(PasswordFormat.Hashed);
+            salt.Should().BeEmpty("BCrypt embeds its salt in the stored representation");
             approved.Should().BeTrue();
             locked.Should().BeFalse();
 
             bool replaced = await users.SetPasswordHashAsync(userId, ReplacementHash, DateTime.UtcNow);
             replaced.Should().BeTrue();
 
-            (_, hash, _, _) = await users.GetCredentialStateAsync(userId);
+            (_, hash, format, salt, _, _) = await users.GetCredentialStateAsync(userId);
             hash.Should().Be(ReplacementHash);
+            format.Should().Be(PasswordFormat.Hashed);
+            salt.Should().BeEmpty();
 
             bool deleted = await users.DeleteCredentialAsync(userId);
             deleted.Should().BeTrue();
 
-            (exists, hash, _, _) = await users.GetCredentialStateAsync(userId);
+            (exists, hash, format, salt, _, _) = await users.GetCredentialStateAsync(userId);
             exists.Should().BeFalse();
             hash.Should().BeNull();
+            format.Should().BeNull();
+            salt.Should().BeNull();
         }
         finally
         {
@@ -541,7 +556,8 @@ public sealed class UserRepositoryTests
                 MembershipWriteOutcome.NoRecord,
                 "an account that does not exist has no record to count against, and the store was reachable");
 
-        (bool exists, string? hash, _, _) = await users.GetCredentialStateAsync(UnknownUserId);
+        (bool exists, string? hash, _, _, _, _) =
+            await users.GetCredentialStateAsync(UnknownUserId);
         exists.Should().BeFalse();
         hash.Should().BeNull();
     }
@@ -580,7 +596,7 @@ public sealed class UserRepositoryTests
                     MembershipWriteOutcome.Recorded,
                     FormattableString.Invariant($"attempt {attempt} is below the threshold of {LockoutThreshold}"));
 
-                (_, _, _, bool lockedYet) = await users.GetCredentialStateAsync(userId);
+                (_, _, _, _, _, bool lockedYet) = await users.GetCredentialStateAsync(userId);
                 lockedYet.Should().BeFalse();
                 (await ReadFailedAttemptCountAsync(userName)).Should().Be(attempt);
             }
@@ -589,7 +605,7 @@ public sealed class UserRepositoryTests
                 MembershipWriteOutcome.RecordedAndLocked,
                 "the attempt that reaches the threshold is the attempt that locks");
 
-            (_, _, _, bool locked) = await users.GetCredentialStateAsync(userId);
+            (_, _, _, _, _, bool locked) = await users.GetCredentialStateAsync(userId);
             locked.Should().BeTrue();
 
             int attemptCount = await ReadFailedAttemptCountAsync(userName);
@@ -604,7 +620,7 @@ public sealed class UserRepositoryTests
 
             (await users.UnlockAsync(userId)).Should().BeTrue();
 
-            (_, _, _, bool unlocked) = await users.GetCredentialStateAsync(userId);
+            (_, _, _, _, _, bool unlocked) = await users.GetCredentialStateAsync(userId);
             unlocked.Should().BeFalse();
             (await ReadFailedAttemptCountAsync(userName)).Should().Be(0, "unlocking clears the failure record");
         }
@@ -626,12 +642,12 @@ public sealed class UserRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
 
-            (_, _, bool initiallyApproved, _) = await users.GetCredentialStateAsync(userId);
+            (_, _, _, _, bool initiallyApproved, _) = await users.GetCredentialStateAsync(userId);
             initiallyApproved.Should().BeFalse();
 
             (await users.SetApprovalAsync(userId, isApproved: true)).Should().BeTrue();
 
-            (_, _, bool nowApproved, _) = await users.GetCredentialStateAsync(userId);
+            (_, _, _, _, bool nowApproved, _) = await users.GetCredentialStateAsync(userId);
             nowApproved.Should().BeTrue();
 
             User? projected = await users.GetAsync(null, userId);
@@ -640,7 +656,7 @@ public sealed class UserRepositoryTests
 
             (await users.SetApprovalAsync(userId, isApproved: false)).Should().BeTrue();
 
-            (_, _, bool withdrawn, _) = await users.GetCredentialStateAsync(userId);
+            (_, _, _, _, bool withdrawn, _) = await users.GetCredentialStateAsync(userId);
             withdrawn.Should().BeFalse();
         }
         finally
@@ -1696,6 +1712,91 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
+    /// Collection, name and key reads apply one host-scope predicate: the legacy identifier -1 addresses
+    /// SQL-null declarations and never widens to rows that physically store the colliding portal key.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ProfileDefinitionReads_ApplyOneExactLegacyHostScope()
+    {
+        _fixture.Seed.PortalId.Should().Be(
+            HostPortalId,
+            "the collision is exercised against the real first portal key rather than a synthetic value");
+
+        string hostName = FormattableString.Invariant($"HostDefinition{Suffix()}");
+        string collidingName = FormattableString.Invariant($"TenantDefinition{Suffix()}");
+        int hostDefinitionId = 0;
+        int collidingDefinitionId = 0;
+
+        try
+        {
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                ProfilePropertyDefinition hostLevel = DefinitionForScope(null, hostName, viewOrder: 1);
+                ProfilePropertyDefinition collidingTenant =
+                    DefinitionForScope(HostPortalId, collidingName, viewOrder: 2);
+
+                await profiles.AddDefinitionAsync(hostLevel);
+                await profiles.AddDefinitionAsync(collidingTenant);
+                await unitOfWork.SaveChangesAsync();
+
+                hostDefinitionId = hostLevel.PropertyDefinitionId;
+                collidingDefinitionId = collidingTenant.PropertyDefinitionId;
+            }
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+
+                IReadOnlyList<ProfilePropertyDefinition> catalogue =
+                    await profiles.GetDefinitionsByPortalIdAsync(HostPortalId);
+
+                catalogue.Select(definition => definition.PropertyDefinitionId)
+                    .Should().Contain(hostDefinitionId)
+                    .And.NotContain(
+                        collidingDefinitionId,
+                        "the legacy provider translated -1 to NULL instead of matching both encodings");
+
+                (await profiles.GetDefinitionByNameAsync(HostPortalId, hostName))
+                    .Should().NotBeNull("the name read uses the same host translation as the catalogue");
+                (await profiles.GetDefinitionByNameAsync(HostPortalId, collidingName))
+                    .Should().BeNull("a stored -1 is outside the translated host scope");
+
+                (await profiles.GetDefinitionByIdAsync(HostPortalId, hostDefinitionId))
+                    .Should().NotBeNull("the single read must agree with the catalogue");
+                (await profiles.GetDefinitionByIdAsync(HostPortalId, collidingDefinitionId))
+                    .Should().BeNull("the single read must not reintroduce the old unscoped fallback");
+                (await profiles.GetDefinitionByIdAsync(UnknownPortalId, hostDefinitionId))
+                    .Should().BeNull("an ordinary foreign tenant cannot address a host declaration");
+            }
+        }
+        finally
+        {
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IUserProfileRepository profiles =
+                scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+            IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            if (hostDefinitionId > 0)
+            {
+                await profiles.DeleteDefinitionAsync(hostDefinitionId);
+            }
+
+            if (collidingDefinitionId > 0)
+            {
+                await profiles.DeleteDefinitionAsync(collidingDefinitionId);
+            }
+
+            await unitOfWork.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
     /// Profile declarations and profile values persist through their own repository, and the values they hold
     /// drive the profile-property filter of the account listing.
     /// </summary>
@@ -1771,7 +1872,8 @@ public sealed class UserRepositoryTests
             {
                 IUserProfileRepository profiles = scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
 
-                ProfilePropertyDefinition? byId = await profiles.GetDefinitionByIdAsync(definitionId);
+                ProfilePropertyDefinition? byId =
+                    await profiles.GetDefinitionByIdAsync(portalId, definitionId);
                 byId.Should().NotBeNull();
                 byId!.PropertyName.Should().Be(propertyName);
                 byId.PortalId.Should().Be(
@@ -1788,8 +1890,10 @@ public sealed class UserRepositoryTests
 
                 (await profiles.GetDefinitionByNameAsync(UnknownPortalId, propertyName)).Should().BeNull(
                     "a declaration belonging to another tenant is not visible through this tenant");
-                (await profiles.GetDefinitionByIdAsync(UnknownUserId)).Should().BeNull(
+                (await profiles.GetDefinitionByIdAsync(portalId, UnknownUserId)).Should().BeNull(
                     "an unknown key answers with null rather than with a sentinel-bearing instance");
+                (await profiles.GetDefinitionByIdAsync(UnknownPortalId, definitionId)).Should().BeNull(
+                    "the key read is tenant-scoped just like the name and collection reads");
 
                 IReadOnlyList<ProfilePropertyDefinition> forPortal = await profiles.GetDefinitionsByPortalIdAsync(portalId);
                 forPortal.Select(candidate => candidate.PropertyDefinitionId).Should().Contain(definitionId);
@@ -1805,7 +1909,8 @@ public sealed class UserRepositoryTests
                 IUserProfileRepository profiles = scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
                 IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-                ProfilePropertyDefinition? amending = await profiles.GetDefinitionByIdAsync(definitionId);
+                ProfilePropertyDefinition? amending =
+                    await profiles.GetDefinitionByIdAsync(portalId, definitionId);
                 amending.Should().NotBeNull();
 
                 amending!.PropertyCategory = "Contact";
@@ -1823,7 +1928,8 @@ public sealed class UserRepositoryTests
             {
                 IUserProfileRepository profiles = scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
 
-                ProfilePropertyDefinition? amended = await profiles.GetDefinitionByIdAsync(definitionId);
+                ProfilePropertyDefinition? amended =
+                    await profiles.GetDefinitionByIdAsync(portalId, definitionId);
                 amended.Should().NotBeNull();
                 amended!.PropertyCategory.Should().Be("Contact", "the amendment persisted");
                 amended.IsRequired.Should().BeTrue();
@@ -2048,6 +2154,28 @@ public sealed class UserRepositoryTests
 
         return page.Items.Select(account => account.UserId).ToList();
     }
+
+    /// <summary>Builds one live profile declaration in the requested persisted scope.</summary>
+    /// <param name="portalId">The stored portal key, or <see langword="null"/> for host scope.</param>
+    /// <param name="propertyName">The unique property name.</param>
+    /// <param name="viewOrder">The display order.</param>
+    /// <returns>An unsaved declaration.</returns>
+    private static ProfilePropertyDefinition DefinitionForScope(
+        int? portalId,
+        string propertyName,
+        int viewOrder) =>
+        new()
+        {
+            PortalId = portalId,
+            PropertyName = propertyName,
+            PropertyCategory = "Scope",
+            DataType = 0,
+            Length = 50,
+            IsRequired = false,
+            IsVisible = true,
+            IsDeleted = false,
+            ViewOrder = viewOrder,
+        };
 
     /// <summary>Creates a bare tenant through the repository.</summary>
     /// <returns>The identifier the store assigned.</returns>

@@ -200,6 +200,15 @@ public sealed class LoginRequest
     /// and the sign-in service to agree on.
     /// </para>
     /// <para>
+    /// MIGRATION: the client contract now admits all three forms too. Its
+    /// declaration in <c>frontend/src/app/core/models/auth.model.ts</c> permitted
+    /// only an omitted member or a string, so a caller written against it could not
+    /// express the null this member accepts - the documented equivalence held on this
+    /// side of the boundary and not on the other. The member there is now
+    /// <c>string | null</c> and optional, which matches this declaration exactly. The
+    /// equivalence itself is unchanged and is still decided in one place, here.
+    /// </para>
+    /// <para>
     /// <b>The sign-in service is the only consumer.</b> <c>IAuthService.LoginAsync</c> reads
     /// this member and nothing else does, and it is that contract - not this one - that
     /// declares the two outcomes the code produces: <c>auth.verification_required</c> when the

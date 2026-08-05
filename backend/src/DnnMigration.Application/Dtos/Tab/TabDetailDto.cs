@@ -9,10 +9,10 @@ namespace DnnMigration.Application.Dtos.Tab;
 /// Purpose. This type is the detail representation of one page. It is a read projection
 /// only: it is never accepted as a request body, and it carries no paging metadata of any
 /// kind. Because the endpoint addresses exactly one resource, it is never carried inside a
-/// paged envelope. Today it is returned BARE - <c>TabsController</c> declares
-/// <c>TabDetailDto</c> itself as the 200 response type on both actions - and the shared
-/// single-resource envelope under <c>Dtos/Common/</c> is declared but not yet adopted by any
-/// controller. This type references no envelope type and must not be changed to do so.
+/// paged envelope. On the wire it is the <c>data</c> member of the shared single-resource
+/// success envelope, which <c>TabsController</c> declares as
+/// <c>ApiResponse&lt;TabDetailDto&gt;</c> on both actions. This type itself references no
+/// envelope type and must not be changed to do so - the API edge does the wrapping.
 /// </para>
 /// <para>
 /// Legacy source. The shape is derived from three independent, mutually corroborating
@@ -700,9 +700,11 @@ public sealed class TabDetailDto
     /// The legacy editor presented this as a free-form multi-line field and stored whatever
     /// was typed, so the value is arbitrary author-supplied markup rather than a structured
     /// value. It is carried verbatim: this projection neither parses, validates, sanitises nor
-    /// escapes it, and any consumer that renders it into a document head is responsible for
-    /// its own escaping decisions. The legacy value for "no header tags" was the empty string
-    /// rather than <c>null</c>, since the legacy null-string sentinel was <c>""</c>; the
+    /// escapes it. A consumer must never inject it into a document head merely because it came
+    /// from this DTO; rendering it as markup requires an explicit, narrowly-scoped sanitisation
+    /// and element/attribute allowlist policy at that rendering boundary. Without such a policy
+    /// it must be treated as untrusted text. The legacy value for "no header tags" was the empty
+    /// string rather than <c>null</c>, since the legacy null-string sentinel was <c>""</c>; the
     /// target representation is a nullable string and a mapper must not silently convert
     /// between the two. The maximum length of 500 characters is documentation only.
     /// </remarks>

@@ -25,11 +25,12 @@ FROM nginx:alpine AS runtime
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY --from=build /app/dist/dnn-migration/browser /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 80 443
 
-# Probe 127.0.0.1 explicitly: `localhost` resolves to ::1 first in Alpine, which
-# would fail unless nginx also listens on [::]:80 (it now does - belt and braces).
+# The plain-HTTP listener exposes only this fixed liveness location and redirects
+# every application path to TLS. Certificate and private-key files are mounted as
+# compose secrets at /run/secrets; neither is copied into an image layer.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:80/ || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:80/nginx-health || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

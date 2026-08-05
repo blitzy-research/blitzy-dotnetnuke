@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
-/// Request contract for <c>POST /api/v1/portals/{portalId}/profile-definitions</c>: the ten values that
+/// Request contract for <c>POST /api/v1/profile-definitions</c>: the ten values that
 /// declare a new profile property for a portal to collect.
 /// </summary>
 /// <remarks>
@@ -30,8 +30,8 @@ namespace DnnMigration.Application.Dtos.User;
 /// <b>Three members of the response shape are deliberately absent.</b> The definition's identifier is
 /// assigned by the store, which is precisely why the HTTP method rather than a sentinel distinguishes
 /// this from an update - the legacy screen overloaded the value minus one as that switch
-/// (<c>EditProfileDefinition.ascx.vb</c> L449). The owning portal arrives in the route and is resolved
-/// once per request, so accepting it in the body would give the tenant a second, contradictable source
+/// (<c>EditProfileDefinition.ascx.vb</c> L449). The owning portal arrives through the resolved request
+/// context, so accepting it in the body would give the tenant a second, contradictable source
 /// of truth. And the default visibility is not a column of this table at all: verified across all
 /// eighty-eight scripts, <c>ProfilePropertyDefinition</c> has no <c>Visibility</c> column, and the
 /// stored per-account counterpart lives on <c>UserProfile</c> - so the response projection carries it as

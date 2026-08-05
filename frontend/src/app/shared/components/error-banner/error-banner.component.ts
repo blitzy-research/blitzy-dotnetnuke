@@ -389,19 +389,25 @@ export class ErrorBannerComponent {
   readonly hasFieldErrors: Signal<boolean> = computed(() => this.fieldErrors().length > 0);
 
   /**
-   * The server's trace identifier, or null when the document carried none.
+   * The identifier a person quotes when reporting this failure, or null when the
+   * document carried none.
    *
    * Surfaced rather than discarded because it is the only value that joins something a
    * person saw in the browser to the request as the server recorded it — quotable in a
    * support report, and useless to anyone who does not already have the server's logs.
+   * It is the server's correlation identifier, which is the value that appears on the
+   * response header and in the server's own records; the utility falls back to the W3C
+   * trace identifier only when no correlation identifier was published.
    * Absence is ordinary: the utility reports a missing or blank identifier as null,
    * which is tested for explicitly rather than by truthiness, because a blank string
    * is a legitimate value in this data and not a synonym for absent.
    */
-  readonly traceId: Signal<string | null> = computed(() => this.summary().traceId);
+  readonly supportReference: Signal<string | null> =
+    computed(() => this.summary().supportReference);
 
-  /** Whether there is a trace identifier worth quoting. */
-  readonly hasTraceId: Signal<boolean> = computed(() => this.traceId() !== null);
+  /** Whether there is an identifier worth quoting. */
+  readonly hasSupportReference: Signal<boolean> =
+    computed(() => this.supportReference() !== null);
 
   /**
    * The label shown for a group of messages.

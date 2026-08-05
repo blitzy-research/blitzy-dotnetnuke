@@ -55,8 +55,9 @@ namespace DnnMigration.Application.Validation;
 //   independent findings show a numeric range would have been the wrong reading even had the member
 //   survived: the terminal column TabModules.Border is nvarchar(1) NULL - a single character used as a
 //   renderer flag, not a width - and ModuleSettings.ascx.vb L347 assigns it as a bare string with no
-//   integer parse anywhere on the border path. The update-path contract keeps the member and reproduces
-//   the rule as a single-digit test; this contract has nothing to attach it to.
+//   integer parse anywhere on the border path. The update contract excludes the same appearance surface,
+//   so neither write path has a member to which this legacy renderer rule could be attached; the mapped
+//   stored value is preserved by leaving it out of both projections.
 //
 // MIGRATION: NO RULE COMPARES THE TWO DATES TO EACH OTHER, AND THE MEASURED CONTRAST PROVES THE ABSENCE
 //   IS DELIBERATE. modulesettings.ascx contains zero controltocompare attributes, so both date validators
@@ -156,7 +157,7 @@ namespace DnnMigration.Application.Validation;
 //   API edge. This file is a declarative shape check and nothing else.
 
 /// <summary>
-/// Validates the shape of a module creation submitted to <c>POST /api/v1/portals/{portalId}/modules</c>.
+/// Validates the shape of a module creation submitted to <c>POST /api/v1/modules</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -265,34 +266,15 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
         // annotation on that omission - and the upper bound is stated at the last representable instant of
         // 9999-12-31 rather than at that day's midnight, so a preserved perpetual value is admitted by the
         // rule rather than refused by it.
-        RuleFor(request => request.StartDate)
-            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
-
-        RuleFor(request => request.EndDate)
-            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
-
-        // MIGRATION: the two date members carry a REPRESENTABILITY bound and nothing else. The CLR date
-        // type begins in the year one while the stored column begins in 1753, so a value the type accepts
-        // can still be unstorable; unbounded, such a value passed every rule here and was refused by the
-        // provider instead, which surfaces as a server fault naming no field rather than a field-level
-        // answer. The bound states only what the column can hold. The two are still NOT compared to one
-        // another - see the annotation on that omission - and the upper bound is stated at the last
-        // representable instant of 9999-12-31 rather than at that day's midnight, so a preserved
-        // perpetual value is admitted by the rule rather than refused by it.
-        RuleFor(request => request.StartDate)
-            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
-
-        RuleFor(request => request.EndDate)
-            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
-
-        // MIGRATION: the two date members carry a REPRESENTABILITY bound and nothing else. The CLR date
-        // type begins in the year one while the stored column begins in 1753, so a value the type accepts
-        // can still be unstorable; unbounded, such a value passed every rule here and was refused by the
-        // provider instead, which surfaces as a server fault naming no field rather than a field-level
-        // answer. The bound states only what the column can hold. The two are still NOT compared to one
-        // another - see the annotation on that omission - and the upper bound is stated at the last
-        // representable instant of 9999-12-31 rather than at that day's midnight, so a preserved
-        // perpetual value is admitted by the rule rather than refused by it.
+        // MIGRATION: ONE RULE PER FIELD, AND THE COUNT IS THE POINT. An earlier revision declared this pair
+        // THREE TIMES over, each copy carrying its own restatement of the paragraph above. FluentValidation
+        // does not deduplicate rules that judge the same member with the same predicate, and this project's
+        // validation filter records EVERY failure into the error map keyed by member name - so a single
+        // unstorable date produced the identical sentence three times under one key, and a caller reading the
+        // published validation document saw a triplicated message with no way to tell whether three distinct
+        // rules had been broken. Duplicating a rule cannot make a request more valid or less: it can only
+        // multiply the answer. Exactly one representability rule per date member is declared here for that
+        // reason, and a second copy of either is a defect rather than a redundancy.
         RuleFor(request => request.StartDate)
             .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
 

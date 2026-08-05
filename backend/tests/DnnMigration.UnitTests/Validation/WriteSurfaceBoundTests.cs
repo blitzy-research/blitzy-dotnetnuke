@@ -1,6 +1,7 @@
 using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.Tab;
+using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
@@ -18,8 +19,8 @@ namespace DnnMigration.UnitTests.Validation;
 /// Each of these requests is bound by an endpoint, so before the validators existed every field on them
 /// reached the service and then the provider unbounded: an over-long value was refused by the column
 /// rather than by a field-level answer, and a blank page name was accepted outright. The rules asserted
-/// here are the column widths, the shared icon containment rule, the single-line rule on a link target,
-/// and the settings cardinality bounds.
+/// here are the column widths, the shared icon containment rule, the supported-form and single-line rules
+/// on a link target, and the settings cardinality bounds.
 /// </para>
 /// <para>
 /// The width assertions submit one character PAST each column, not some round larger number, so each test
@@ -64,17 +65,23 @@ public class WriteSurfaceBoundTests
     [InlineData(nameof(UpdateTabRequest.Keywords), 500)]
     [InlineData(nameof(UpdateTabRequest.PageHeadText), 500)]
     [InlineData(nameof(UpdateTabRequest.Url), 255)]
-    [InlineData(nameof(UpdateTabRequest.SkinSrc), 200)]
-    [InlineData(nameof(UpdateTabRequest.ContainerSrc), 200)]
     [InlineData(nameof(UpdateTabRequest.IconFile), 100)]
     public void PageTextFields_AreBoundedByTheirColumnWidth(string member, int width)
     {
+        const string absoluteUrlPrefix = "https://example.test/";
+        string atLimit = member == nameof(UpdateTabRequest.Url)
+            ? absoluteUrlPrefix + new string('a', width - absoluteUrlPrefix.Length)
+            : new string('a', width);
+        string beyond = member == nameof(UpdateTabRequest.Url)
+            ? absoluteUrlPrefix + new string('a', width + 1 - absoluteUrlPrefix.Length)
+            : new string('a', width + 1);
+
         new UpdateTabRequestValidator()
-            .Validate(PageWith(member, new string('a', width)))
+            .Validate(PageWith(member, atLimit))
             .IsValid.Should().BeTrue(member + " must accept a value that exactly fills its column");
 
         ValidationResult overflowing = new UpdateTabRequestValidator()
-            .Validate(PageWith(member, new string('a', width + 1)));
+            .Validate(PageWith(member, beyond));
 
         overflowing.Errors.Should().Contain(
             failure => failure.PropertyName == member,
@@ -134,22 +141,28 @@ public class WriteSurfaceBoundTests
     }
 
     /// <summary>
-    /// A link target carrying a line break is refused, while an ordinary absolute URL is accepted.
+    /// A link target carrying a line break or an unsupported scheme is refused, while each supported
+    /// persisted form is accepted.
     /// </summary>
     /// <remarks>
-    /// No format, scheme or containment rule is applied to a link target, and that restraint is asserted
-    /// here: the legacy form applied no format validation and the value legitimately takes three unrelated
-    /// shapes. What is refused is a control character, which no shape of the value can contain and which is
-    /// the vehicle for splitting a response header should the stored value ever be emitted into one.
+    /// The forms are a numeric page identifier, a file-reference token, or an absolute HTTP, HTTPS or
+    /// mailto URI. A positive allowlist is required because the value is stored and returned to navigation
+    /// consumers; active schemes must never become persistent content.
     /// </remarks>
     [Theory]
     [InlineData("http://example.test/page", true)]
+    [InlineData("https://example.test/page", true)]
+    [InlineData("mailto:owner@example.test", true)]
     [InlineData("fileid=99", true)]
     [InlineData("42", true)]
+    [InlineData("javascript:alert(1)", false)]
+    [InlineData("data:text/html,<script>alert(1)</script>", false)]
+    [InlineData("vbscript:msgbox(1)", false)]
+    [InlineData("ftp://example.test/file", false)]
     [InlineData("http://example.test/\r\nSet-Cookie: x=1", false)]
     [InlineData("http://example.test/\npage", false)]
     [InlineData("http://example.test/\0page", false)]
-    public void PageLinkTarget_RefusesControlCharactersAndNothingElse(string url, bool acceptable)
+    public void PageLinkTarget_AcceptsOnlySupportedSingleLineForms(string url, bool acceptable)
         => new UpdateTabRequestValidator()
             .Validate(new UpdateTabRequest { TabName = "Home", Url = url })
             .IsValid.Should().Be(acceptable);
@@ -352,6 +365,79 @@ public class WriteSurfaceBoundTests
             },
         }).IsValid.Should().BeTrue();
 
+    /// <summary>Membership settings reject null text, invalid discriminators and negative redirect IDs.</summary>
+    [Fact]
+    public void MembershipSettings_RejectMalformedScalarValues()
+    {
+        var settings = new UpdateMembershipSettingsRequest
+        {
+            DisplayMode = 3,
+            RecordsPerPage = 0,
+            ProfileDefaultVisibility = -1,
+            SecurityUsersControl = 2,
+            SecurityEmailValidation = null!,
+            SecurityDisplayNameFormat = null!,
+            RedirectAfterLogin = -1,
+        };
+
+        ValidationResult result = new UpdateMembershipSettingsRequestValidator().Validate(settings);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Select(error => error.PropertyName).Should().Contain(
+        [
+            nameof(UpdateMembershipSettingsRequest.DisplayMode),
+            nameof(UpdateMembershipSettingsRequest.RecordsPerPage),
+            nameof(UpdateMembershipSettingsRequest.ProfileDefaultVisibility),
+            nameof(UpdateMembershipSettingsRequest.SecurityUsersControl),
+            nameof(UpdateMembershipSettingsRequest.SecurityEmailValidation),
+            nameof(UpdateMembershipSettingsRequest.SecurityDisplayNameFormat),
+            nameof(UpdateMembershipSettingsRequest.RedirectAfterLogin),
+        ]);
+    }
+
+    /// <summary>Profile replacements reject duplicates, null values, invalid visibility and excessive work.</summary>
+    [Fact]
+    public void UserProfile_RejectsMalformedAndDuplicateProperties()
+    {
+        var profile = new UserProfileDto
+        {
+            Properties =
+            [
+                new UserProfileValueDto { PropertyDefinitionId = 7, PropertyValue = null!, Visibility = 3 },
+                new UserProfileValueDto { PropertyDefinitionId = 7, PropertyValue = "duplicate", Visibility = 0 },
+            ],
+        };
+
+        ValidationResult result = new UserProfileDtoValidator().Validate(profile);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error =>
+            error.ErrorMessage.Contains("only once", StringComparison.OrdinalIgnoreCase));
+        result.Errors.Should().Contain(error =>
+            error.PropertyName.EndsWith(nameof(UserProfileValueDto.PropertyValue), StringComparison.Ordinal));
+        result.Errors.Should().Contain(error =>
+            error.PropertyName.EndsWith(nameof(UserProfileValueDto.Visibility), StringComparison.Ordinal));
+    }
+
+    /// <summary>Profile replacements are capped at sixty-four entries.</summary>
+    [Fact]
+    public void UserProfile_RejectsMoreThanSixtyFourProperties()
+    {
+        var profile = new UserProfileDto
+        {
+            Properties = Enumerable.Range(1, 65)
+                .Select(identifier => new UserProfileValueDto
+                {
+                    PropertyDefinitionId = identifier,
+                    PropertyValue = "value",
+                    Visibility = 0,
+                })
+                .ToList(),
+        };
+
+        new UserProfileDtoValidator().Validate(profile).IsValid.Should().BeFalse();
+    }
+
     /// <summary>
     /// Builds a settings map of the requested size.
     /// </summary>
@@ -381,16 +467,35 @@ public class WriteSurfaceBoundTests
 
         switch (member)
         {
-            case nameof(UpdateTabRequest.TabName): request.TabName = value; break;
-            case nameof(UpdateTabRequest.Title): request.Title = value; break;
-            case nameof(UpdateTabRequest.Description): request.Description = value; break;
-            case nameof(UpdateTabRequest.Keywords): request.Keywords = value; break;
-            case nameof(UpdateTabRequest.PageHeadText): request.PageHeadText = value; break;
-            case nameof(UpdateTabRequest.Url): request.Url = value; break;
-            case nameof(UpdateTabRequest.SkinSrc): request.SkinSrc = value; break;
-            case nameof(UpdateTabRequest.ContainerSrc): request.ContainerSrc = value; break;
-            case nameof(UpdateTabRequest.IconFile): request.IconFile = value; break;
-            default: throw new ArgumentOutOfRangeException(nameof(member), member, "Unmapped member.");
+            case nameof(UpdateTabRequest.TabName):
+                request.TabName = value;
+                break;
+            case nameof(UpdateTabRequest.Title):
+                request.Title = value;
+                break;
+            case nameof(UpdateTabRequest.Description):
+                request.Description = value;
+                break;
+            case nameof(UpdateTabRequest.Keywords):
+                request.Keywords = value;
+                break;
+            case nameof(UpdateTabRequest.PageHeadText):
+                request.PageHeadText = value;
+                break;
+            case nameof(UpdateTabRequest.Url):
+                request.Url = value;
+                break;
+            // MIGRATION: NO SKIN OR CONTAINER CASE. A revision added one for each, mirroring the legacy
+            // page's two appearance pickers, but the page-update contract carries neither member: DotNetNuke
+            // skinning is out of scope for this migration (AAP 0.2.2.4), so the columns are never written
+            // from this surface and there is nothing here to bound. The cases are withdrawn rather than
+            // satisfied by adding the members, because adding them would advertise a wire contract the
+            // service does not honour.
+            case nameof(UpdateTabRequest.IconFile):
+                request.IconFile = value;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(member), member, "Unmapped member.");
         }
 
         return request;
@@ -410,10 +515,17 @@ public class WriteSurfaceBoundTests
 
         switch (member)
         {
-            case nameof(UpdateRoleRequest.Description): request.Description = value; break;
-            case nameof(UpdateRoleRequest.RsvpCode): request.RsvpCode = value; break;
-            case nameof(UpdateRoleRequest.IconFile): request.IconFile = value; break;
-            default: throw new ArgumentOutOfRangeException(nameof(member), member, "Unmapped member.");
+            case nameof(UpdateRoleRequest.Description):
+                request.Description = value;
+                break;
+            case nameof(UpdateRoleRequest.RsvpCode):
+                request.RsvpCode = value;
+                break;
+            case nameof(UpdateRoleRequest.IconFile):
+                request.IconFile = value;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(member), member, "Unmapped member.");
         }
 
         return request;

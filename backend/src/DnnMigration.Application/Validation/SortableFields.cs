@@ -108,7 +108,7 @@ internal static class SortableFields
 
     /// <summary>
     /// Field names that may order the role listing served by
-    /// <c>GET /api/v1/portals/{portalId}/roles</c>.
+    /// <c>GET /api/v1/roles</c>.
     /// </summary>
     /// <remarks>
     /// Every member of <c>RoleListItemDto</c> is included, because every one is backed by
@@ -140,7 +140,7 @@ internal static class SortableFields
 
     /// <summary>
     /// Field names that may order the account listing served by
-    /// <c>GET /api/v1/portals/{portalId}/users</c>.
+    /// <c>GET /api/v1/users</c>.
     /// </summary>
     /// <remarks>
     /// Every member is a mapped column on <c>Users</c> that the listing query reads directly:
@@ -186,7 +186,7 @@ internal static class SortableFields
 
     /// <summary>
     /// Field names that may order the module listing served by
-    /// <c>GET /api/v1/portals/{portalId}/modules</c>.
+    /// <c>GET /api/v1/modules</c>.
     /// </summary>
     /// <remarks>
     /// This set is NET-NEW, and its absence was itself part of the defect: the module listing
@@ -217,7 +217,7 @@ internal static class SortableFields
 
     /// <summary>
     /// Field names that may order the role-membership listing served by
-    /// <c>GET /api/v1/portals/{portalId}/roles/{roleId}/users</c>.
+    /// <c>GET /api/v1/roles/{roleId}/users</c>.
     /// </summary>
     /// <remarks>
     /// <para>

@@ -4,7 +4,7 @@ namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
 /// The full state of one module instance, returned as the response body of
-/// <c>GET /api/v1/portals/{portalId}/modules/{moduleId}</c>. A boundary contract and nothing more: no navigation property, no
+/// <c>GET /api/v1/modules/{moduleId}</c>. A boundary contract and nothing more: no navigation property, no
 /// tracked state, no behaviour and no domain entity, in either direction. It describes a single item,
 /// so it carries no paging envelope and no paging metadata - that envelope belongs to the listing
 /// endpoint, whose row shape is <see cref="ModuleListItemDto"/>.
@@ -69,7 +69,7 @@ namespace DnnMigration.Application.Dtos.Module;
 /// SETTINGS ARE NOT CARRIED HERE. Neither the module-scoped nor the placement-scoped key-value settings
 /// appear on this contract, and no map-valued member of any kind does. Both are genuine key-value tables
 /// and both are served by <see cref="ModuleSettingsDto"/> through
-/// <c>GET</c> and <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c>. Keeping them in their own contract is how the
+/// <c>GET</c> and <c>PUT /api/v1/modules/{moduleId}/settings</c>. Keeping them in their own contract is how the
 /// target makes the module-versus-placement scope explicit, which is precisely what the legacy
 /// flattening hid.
 /// </para>

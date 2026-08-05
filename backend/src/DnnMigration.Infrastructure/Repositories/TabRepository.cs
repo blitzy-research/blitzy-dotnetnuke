@@ -786,4 +786,3 @@ internal sealed class TabRepository : ITabRepository
         _context.Tabs.Remove(tab);
     }
 }
-

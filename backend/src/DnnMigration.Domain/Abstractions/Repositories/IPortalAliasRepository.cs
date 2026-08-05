@@ -2,14 +2,13 @@ using DnnMigration.Domain.Entities;
 
 namespace DnnMigration.Domain.Abstractions.Repositories;
 
-// MIGRATION: this contract realises the eight-member 'portal alias block of the legacy abstract data
+// MIGRATION: this contract realises the eight-member portal-alias block of the legacy abstract data
 // provider (Library/Components/Providers/Data/DataProvider.vb lines 354-362) as one aggregate-shaped
 // repository. That class was 397 lines carrying 269 MustOverride members reached through a
-// reflection-created static singleton (lines 29-50). None of the provider metadata constants, the
+// reflection-created static singleton (lines 29-50); none of the provider metadata constants, the
 // reflective activation, the singleton accessor, the raw procedure execution or the reader hydration is
-// translated: the surface is decomposed by aggregate and resolved by dependency injection instead. Seven
-// of the eight members appear below; the eighth is deliberately omitted for the reason recorded further
-// down.
+// translated. Seven of the eight members appear below; the eighth is omitted for the reason recorded
+// further down.
 
 // MIGRATION: legacy GetPortalAliasByPortalID (DataProvider.vb:L356) overloaded -1 as an "all portals"
 // wildcard inside the SQL predicate itself ("where (PortalID = @PortalID or @PortalID = -1)",
@@ -34,15 +33,13 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 // reads "where HTTPAlias = @HTTPAlias and PortalID = @PortalID" - so preserving exact matching here
 // preserves measured behaviour rather than altering it.
 
-// MIGRATION: the pre-generics companion PortalAliasCollection.vb produces no target file. It derived from
-// DictionaryBase to key aliases by host name and exposed Contains and HasKeys; the legacy controller also
-// returned the same rows as an untyped ArrayList from a second member. Both untyped shapes collapse into
-// IReadOnlyList<PortalAlias>, and no hand-rolled collection type is reintroduced.
-
-// MIGRATION: caching is absent by design. The legacy controller cleared the host cache on every write
-// (PortalAliasController.vb lines 29, 35 and 95) and the resolution path evicted a named key
-// (PortalSettings.vb:L1131). Cache reads, writes and evictions belong to the caching service in
-// Infrastructure, so no member here takes a cache flag and no member promises a cached read.
+// MIGRATION: the pre-generics companion PortalAliasCollection.vb produces no target file - it derived
+// from DictionaryBase to key aliases by host name, and the legacy controller returned the same rows as an
+// untyped ArrayList from a second member. Both untyped shapes collapse into IReadOnlyList<PortalAlias>.
+// Caching is likewise absent by design: the legacy controller cleared the host cache on every write
+// (PortalAliasController.vb lines 29, 35, 95) and the resolution path evicted a named key, but cache
+// reads, writes and evictions belong to the caching service in Infrastructure, so no member here takes a
+// cache flag or promises a cached read.
 
 /// <summary>
 /// Reads and writes the <c>dbo.PortalAlias</c> rows that bind a host name to a portal.
@@ -95,10 +92,10 @@ public interface IPortalAliasRepository
     /// because a caller acting on a client-supplied identifier cannot know in advance that the row exists.
     /// </remarks>
     /// <param name="portalAliasId">
-    /// The alias key. Every value denotes exactly the row bearing it; this identity seeds at 1, but no
-    /// value is read as a request for "any" or "no" row.
+    /// The alias key. Every value denotes exactly the row bearing it - no value is read as a request for
+    /// "any" or "no" row.
     /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>The matching alias, or <see langword="null"/> when none matches.</returns>
     Task<PortalAlias?> GetByIdAsync(int portalAliasId, CancellationToken cancellationToken = default);
 
@@ -118,13 +115,11 @@ public interface IPortalAliasRepository
     /// Matching is by equality on the whole stored value: never by prefix, suffix, fragment or pattern.
     /// </para>
     /// <para>
-    /// An implementation must compare host names without regard to case. Every legacy write and every
-    /// legacy read of this table lower-cased the value first - see PortalAliasController.vb lines 31, 52,
-    /// 76 and 97, and PortalSettings.vb:L1118 - so a case-sensitive comparison here would fail to find
-    /// rows the legacy code found. Host names are case-insensitive by specification, so this preserves
-    /// measured behaviour rather than relaxing it. Normalising a value before it is stored belongs to the
-    /// Application layer, and this contract neither performs that normalisation nor exposes a normalised
-    /// member.
+    /// An implementation must compare host names WITHOUT regard to case. Every legacy write and read of
+    /// this table lower-cased the value first (PortalAliasController.vb lines 31, 52, 76, 97 and
+    /// PortalSettings.vb:L1118), so a case-sensitive comparison would fail to find rows the legacy code
+    /// found; host names are case-insensitive by specification, so this preserves measured behaviour
+    /// rather than relaxing it. Normalising a value before it is stored belongs to the Application layer.
     /// </para>
     /// </remarks>
     /// <param name="httpAlias">
@@ -135,7 +130,7 @@ public interface IPortalAliasRepository
     /// The portal whose aliases are searched. Both -1 and 0 are genuine portal keys in this schema, so
     /// each denotes that portal and neither widens the query.
     /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>The matching alias, or <see langword="null"/> when that portal has no such host name.</returns>
     Task<PortalAlias?> GetByAliasAsync(string httpAlias, int portalId, CancellationToken cancellationToken = default);
 
@@ -160,16 +155,14 @@ public interface IPortalAliasRepository
     /// responsibility, because it is a policy question rather than a persistence one.
     /// </para>
     /// <para>
-    /// SEVERAL CANDIDATES ARE ACCEPTED IN ONE CALL, and that is what makes a virtual-path alias resolvable
+    /// SEVERAL CANDIDATES ARE ACCEPTED IN ONE CALL, which is what makes a virtual-path alias resolvable
     /// without a round trip per candidate. The legacy product let a child portal be addressed by a path
-    /// segment beneath a shared host, so the stored value can be a host name OR a host name followed by one
-    /// or more path segments - <c>Signup.ascx.vb</c> L232-L236 composes exactly that, and the legacy
-    /// request-side counterpart, <c>Globals.GetDomainName</c> L563 onward, walked the request's path
-    /// segments to build the value it matched against this column. A caller resolving a request therefore
-    /// has a CHAIN of possible addresses, longest first, and asking for them one at a time would mean up to
-    /// one query per path segment on every request. This member answers the whole chain at once and leaves
-    /// the caller to prefer the most specific match, which is the same preference the legacy walk expressed
-    /// by stopping at the first recognised directory.
+    /// segment beneath a shared host, so the stored value can be a host name OR a host name followed by
+    /// path segments - <c>Signup.ascx.vb</c> L232-L236 composes exactly that, and the request-side
+    /// counterpart <c>Globals.GetDomainName</c> walked the request's path segments to build the value it
+    /// matched. A caller resolving a request therefore has a CHAIN of possible addresses, longest first,
+    /// and this member answers the whole chain at once, leaving the caller to prefer the most specific
+    /// match - the same preference the legacy walk expressed by stopping at the first recognised directory.
     /// </para>
     /// <para>
     /// Matching is exact and case-insensitive, on the same evidence as <see cref="GetByAliasAsync"/> - never
@@ -182,7 +175,7 @@ public interface IPortalAliasRepository
     /// The candidate addresses to match, exactly as supplied by the caller. Untrusted data throughout, and
     /// never treated as patterns. An empty collection matches nothing and must not read the store.
     /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>
     /// Every alias whose host name matches ANY candidate, in a stable order; empty when none matches. Two
     /// elements matching the SAME candidate signal an ambiguous address the caller must refuse rather than
@@ -221,7 +214,7 @@ public interface IPortalAliasRepository
     /// An alias to disregard, or <see langword="null"/> to consider every row. A value denotes exactly the
     /// row bearing it.
     /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns><see langword="true"/> when the host name is already claimed.</returns>
     Task<bool> AliasExistsAsync(string httpAlias, int? excludingPortalAliasId, CancellationToken cancellationToken = default);
 
@@ -229,23 +222,18 @@ public interface IPortalAliasRepository
     /// Returns the aliases belonging to exactly the portal bearing the supplied identifier.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// One half of the split described at the top of this file. This member is scoped to a single portal
-    /// and has no wildcard: -1 and 0 are genuine portal keys in this schema, so
-    /// <c>GetByPortalIdAsync</c> applied to -1 returns the aliases of the portal whose identifier is -1
-    /// and nothing else. Asking for every alias in the installation is a different question, and it has its
-    /// own member: <see cref="GetAllAsync"/>.
-    /// </para>
-    /// <para>
-    /// A portal with no aliases yields an empty list. That is an ordinary result and not an error: it is
-    /// simply a tenant no host name currently reaches.
-    /// </para>
+    /// One half of the split described at the top of this file: this member is scoped to a single portal
+    /// and has NO wildcard, so applied to -1 it returns the aliases of the portal whose identifier is -1
+    /// and nothing else, because -1 and 0 are both genuine portal keys in this schema. Asking for every
+    /// alias in the installation is a different question with its own member,
+    /// <see cref="GetAllAsync"/>. A portal with no aliases yields an empty list, which is an ordinary
+    /// result rather than an error - simply a tenant no host name currently reaches.
     /// </remarks>
     /// <param name="portalId">
     /// The portal whose aliases are wanted. Every value denotes exactly the portal bearing it, and none is
     /// interpreted as a request for every portal.
     /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>That portal's aliases in a stable order; empty when it has none.</returns>
     Task<IReadOnlyList<PortalAlias>> GetByPortalIdAsync(int portalId, CancellationToken cancellationToken = default);
 
@@ -254,11 +242,11 @@ public interface IPortalAliasRepository
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The other half of the split, and the member that makes the legacy wildcard explicit. The intention
-    /// "every alias regardless of portal" used to be expressed by passing -1 to the portal-scoped read,
-    /// which is why it takes no parameter here: a distinct question is asked by calling a distinct member,
-    /// not by supplying a magic value to a shared one. A reader of a call site can therefore see which of
-    /// the two operations was intended without knowing that a particular integer is special.
+    /// The other half of the split, and the member that makes the legacy wildcard explicit. "Every alias
+    /// regardless of portal" used to be expressed by passing -1 to the portal-scoped read, which is why
+    /// this member takes no parameter: a distinct question is asked by calling a distinct member, not by
+    /// supplying a magic value to a shared one, so a reader of a call site sees which operation was
+    /// intended without knowing that a particular integer is special.
     /// </para>
     /// <para>
     /// Intended for installation-wide work - presenting the whole alias inventory, or grouping aliases by
@@ -266,7 +254,7 @@ public interface IPortalAliasRepository
     /// through <see cref="GetAllByHttpAliasAsync"/> and must not filter this result in memory.
     /// </para>
     /// </remarks>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>Every alias in a stable order; empty when the installation has none.</returns>
     Task<IReadOnlyList<PortalAlias>> GetAllAsync(CancellationToken cancellationToken = default);
 
@@ -288,7 +276,7 @@ public interface IPortalAliasRepository
     /// </para>
     /// </remarks>
     /// <param name="portalAliasId">The alias whose owning portal is wanted.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>The owning portal, or <see langword="null"/> when no alias bears the identifier.</returns>
     Task<Portal?> GetPortalByAliasIdAsync(int portalAliasId, CancellationToken cancellationToken = default);
 
@@ -300,29 +288,24 @@ public interface IPortalAliasRepository
     /// RETURNS NO IDENTIFIER, DELIBERATELY. Legacy <c>AddPortalAlias</c> (DataProvider.vb:L361) returned
     /// an Integer only because its procedure ended with <c>select SCOPE_IDENTITY()</c>
     /// (02.02.02.SqlDataProvider:L4080) - the insert and the key retrieval were one indivisible statement.
-    /// Returning a key here would require this member to commit in order to have one to return, which
-    /// would take the commit decision away from the unit of work and give every insert its own
-    /// transaction.
+    /// Returning a key here would require this member to commit in order to have one, taking the commit
+    /// decision away from the unit of work and giving every insert its own transaction.
     /// </para>
     /// <para>
-    /// THAT WOULD BREAK A REAL TRANSACTION, not a hypothetical one. Creating a portal writes the portal,
-    /// its aliases, its roles, its tabs and its modules; this table is one of those five. Those writes
-    /// must commit together or not at all, and a per-insert commit would leave a half-built tenant behind
-    /// on failure - which is the defect the legacy sequence had, since it committed each statement
-    /// separately.
+    /// THAT WOULD BREAK A REAL TRANSACTION, not a hypothetical one: creating a portal writes the portal,
+    /// its aliases, its roles, its tabs and its modules, and those writes must commit together or not at
+    /// all. A per-insert commit would leave a half-built tenant behind on failure, which is precisely the
+    /// defect the legacy sequence had.
     /// </para>
     /// <para>
-    /// The generated key is therefore read from the entity after the unit of work has saved: at that point
-    /// <see cref="PortalAlias.PortalAliasId"/> holds it. Before then the alias is staged and has no key,
-    /// and its identifier must not be read or relied upon.
-    /// </para>
-    /// <para>
-    /// Assigning <see cref="PortalAlias.Portal"/> rather than <see cref="PortalAlias.PortalId"/> is how an
-    /// alias is bound to a portal that is itself new and whose key does not exist yet.
+    /// The generated key is therefore read from the entity after the unit of work has saved, at which
+    /// point <see cref="PortalAlias.PortalAliasId"/> holds it; before then the alias is staged, has no key
+    /// and its identifier must not be relied upon. Assigning <see cref="PortalAlias.Portal"/> rather than
+    /// <see cref="PortalAlias.PortalId"/> is how an alias is bound to a portal that is itself new.
     /// </para>
     /// </remarks>
     /// <param name="portalAlias">The alias to insert.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>A task that completes once the insertion is staged.</returns>
     Task AddAsync(PortalAlias portalAlias, CancellationToken cancellationToken = default);
 
@@ -343,7 +326,7 @@ public interface IPortalAliasRepository
     /// </para>
     /// </remarks>
     /// <param name="portalAlias">The alias whose stored state is to be replaced by its current state.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>A task that completes once the update is staged.</returns>
     Task UpdateAsync(PortalAlias portalAlias, CancellationToken cancellationToken = default);
 
@@ -364,7 +347,7 @@ public interface IPortalAliasRepository
     /// </para>
     /// </remarks>
     /// <param name="portalAliasId">The alias to delete.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>A task that completes once the deletion is staged.</returns>
     Task DeleteAsync(int portalAliasId, CancellationToken cancellationToken = default);
 }

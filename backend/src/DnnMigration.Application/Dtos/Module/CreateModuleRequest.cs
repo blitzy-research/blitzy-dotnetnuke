@@ -3,7 +3,7 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// The state submitted to <c>POST /api/v1/portals/{portalId}/modules</c> to place a module on a page. A boundary
+/// The state submitted to <c>POST /api/v1/modules</c> to place a module on a page. A boundary
 /// contract and nothing more: no navigation property, no tracked state, no behaviour and no domain
 /// entity, in either direction.
 /// </summary>

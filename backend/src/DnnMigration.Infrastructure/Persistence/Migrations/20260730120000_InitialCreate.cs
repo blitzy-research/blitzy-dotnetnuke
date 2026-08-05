@@ -5,10 +5,11 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations;
 // MIGRATION: Intentionally empty baseline migration — history only, never schema.
 //
 // This migration deliberately performs NO schema work. Both method bodies below are empty
-// by design so that `dotnet ef database update` inserts only the row
-// '20260730120000_InitialCreate' into __EFMigrationsHistory, establishing a baseline from
-// which future migrations can be diffed against DnnDbContext, while leaving an existing
-// DotNetNuke database byte-identical.
+// by design, so the only change `dotnet ef database update` makes to an existing DotNetNuke
+// database is the row '20260730120000_InitialCreate' it inserts into __EFMigrationsHistory
+// (creating that table first if the database does not already have it). Every application
+// table, every column, every constraint and every row is left exactly as it was; the history
+// row is what establishes the baseline that future migrations are diffed from.
 //
 // Why a generated schema is impossible rather than merely undesirable:
 //   * The 88 *.SqlDataProvider upgrade scripts under

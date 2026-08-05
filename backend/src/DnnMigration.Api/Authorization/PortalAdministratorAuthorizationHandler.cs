@@ -185,10 +185,23 @@ internal sealed class HostAdministratorAuthorizationHandler
 /// on portal administration alone would remove self-service entirely.
 /// </para>
 /// <para>
-/// THE OWNERSHIP TEST IS SUBJECT AGAINST ROUTE, and it is an equality test on integers rather than anything
-/// cleverer. The subject claim is the account key the token was issued for; the route value is the account
-/// the request acts on. Nothing else can stand in for either - not the account name, which is not unique
-/// across portals, and not the token's portal claim, which says only where the caller signed in.
+/// SEC: OWNERSHIP IS FOUR IDENTITIES AGREEING, NOT TWO. The subject claim must name the route's account AND
+/// the token's portal claim must name the route's portal. Testing subject against route alone - which is what
+/// this handler previously did - is not ownership of a resource, it is ownership of an ACCOUNT KEY, and in
+/// this schema one account key can belong to several portals: <c>dbo.Users</c> is installation-wide and
+/// <c>dbo.UserPortals</c> is what associates it with a tenant. A caller who belongs to portals A and B could
+/// therefore sign in to A - obtaining a token whose portal claim is A, with A's roles and A's permissions -
+/// and then read or update its portal-B profile through a route naming B, because its subject matched. The
+/// two tenants' data are not the same data: profile values are keyed by definitions that belong to a portal,
+/// and the response is composed from the portal named in the route.
+/// </para>
+/// <para>
+/// The portal claim is therefore not "only where the caller signed in": it is the tenant in which the
+/// credential was presented and the tenant whose authority the token carries, so it is exactly the right
+/// thing to bind. A token carrying no readable portal claim is refused rather than given the benefit of the
+/// doubt - every token this installation mints carries one, so an absent claim is either foreign or a defect.
+/// A host account is exempt, because a host account belongs to no tenant; that arm is answered from stored
+/// state by the shared evaluator, never from a claim.
 /// </para>
 /// <para>
 /// THE ADMINISTRATOR ARM IS THE SAME QUESTION THE PORTAL POLICY ASKS, delegated to the shared evaluator
@@ -233,12 +246,42 @@ internal sealed class AccountOwnerAuthorizationHandler : AuthorizationHandler<Ac
         int? subject = PortalAdministrationEvaluator.TryGetUserId(context.User);
         int? routeUserId = _evaluator.ReadRouteInt(PortalAdministrationEvaluator.UserRouteKey);
 
-        // Both must be present for ownership to be provable. A route that names no account cannot be
-        // self-service, and a token with no readable subject cannot own anything.
-        if (subject is { } callerId && routeUserId is { } targetId && callerId == targetId)
+        // BOTH VALUES MUST BE PRESENT AND MUST AGREE. A route that names no account cannot be self-service and
+        // a token with no readable subject cannot own anything, so either absent leaves the requirement to the
+        // administrator arm below rather than granting.
+        //
+        // Note that both -1 and 0 are legitimate identifiers in this schema - portals seed at -1, pages and
+        // roles at 0 - so this is a real comparison and not a sentinel test, and absence is the value not being
+        // there at all.
+        //
+        // MIGRATION: THE TENANT COMPARISON IS DELEGATED, AND THAT IS THE FIX RATHER THAN A RELAXATION. This
+        // arm used to additionally demand a portalId ROUTE VALUE and compare it with the token's claim itself.
+        // The account routes are mounted flat - api/v1/users/{userId} - and name no portal segment at all, so
+        // that demand could never be satisfied: every account owner was refused its own self-service routes,
+        // including the credential change and the profile completion that a blocking remediation requirement
+        // exists to send it to, which left an account that MUST change its password unable to. Reconciling the
+        // tenants is exactly what IsTenantBoundAsync does, and it is stricter than the withdrawn check rather
+        // than looser: it resolves the target tenant from the route WHEN THE ROUTE NAMES ONE and from the
+        // tenant the caller arrived through otherwise, then requires the token's claim to equal it AND the
+        // arrival tenant to equal it. An A-issued token therefore still cannot act on the same account's
+        // portal-B record - it would have to arrive at B's host, whereupon its own claim disagrees.
+        if (subject is { } callerId
+            && routeUserId is { } targetId
+            && callerId == targetId)
         {
-            context.Succeed(requirement);
-            return;
+            // SEC: AN ACCOUNT KEY CAN BELONG TO SEVERAL PORTALS, so a subject match alone is not ownership of
+            // the addressed record. A host account is exempt and is answered from the store rather than from
+            // any claim the token carries, so an account demoted since sign-in loses the exemption
+            // immediately.
+            if (await _evaluator.IsTenantBoundAsync(context.User, CancellationToken.None).ConfigureAwait(false))
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
+            // Deliberately NOT returning here. Ownership has been refused for this request, but the
+            // administrator arm below is a different question and may still admit the caller - an
+            // administrator of the route's portal reaching an account that happens to be their own.
         }
 
         if (!requirement.AllowPortalAdministrator)

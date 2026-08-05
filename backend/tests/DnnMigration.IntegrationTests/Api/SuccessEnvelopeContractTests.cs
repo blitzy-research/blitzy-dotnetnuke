@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text.Json;
 using Asp.Versioning.ApiExplorer;
 using DnnMigration.Application.Dtos.Common;
 using FluentAssertions;
@@ -64,9 +66,19 @@ public sealed class SuccessEnvelopeContractTests
     /// documented exception to the uniform success shape - named here so that the exception is a decision a
     /// reader can see and challenge, rather than a gap the assertion happens not to notice.
     /// </remarks>
-    private const string ExportPath = "/api/v1/portals/{portalId}/modules/{moduleId}/export";
+    private const string ExportPath = "/api/v1/modules/{moduleId}/export";
 
     private readonly OpenApiDocument _document;
+
+    /// <summary>
+    /// The composed host, held so that the live-wire fact can issue a real request.
+    /// </summary>
+    /// <remarks>
+    /// Every other fact in this suite reads the generated document, which settles what is DECLARED. Whether
+    /// a declared member is actually written, and in which form, is a serializer question only a response can
+    /// answer, so this suite needs both seams.
+    /// </remarks>
+    private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="SuccessEnvelopeContractTests"/> class.</summary>
     /// <param name="fixture">The shared API host.</param>
@@ -74,6 +86,8 @@ public sealed class SuccessEnvelopeContractTests
     public SuccessEnvelopeContractTests(ApiTestFixture fixture)
     {
         ArgumentNullException.ThrowIfNull(fixture);
+
+        _fixture = fixture;
 
         using IServiceScope scope = fixture.Services.CreateScope();
 
@@ -294,5 +308,74 @@ public sealed class SuccessEnvelopeContractTests
         }
 
         bodied.Should().BeEmpty("HTTP forbids a body on a 204");
+    }
+
+    /// <summary>
+    /// A single-payload success writes its metadata member PRESENT AND NULL, never omitted.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Every other fact in this suite reads the generated document, which can only say that the member is
+    /// DECLARED. Whether it is actually written, and in which of the two possible forms, is a serializer
+    /// question that only a live response can settle - and the two forms imply different client
+    /// declarations, so getting it wrong is a cross-layer contract break that no compiler on either side
+    /// notices.
+    /// </para>
+    /// <para>
+    /// The serializer is configured with <c>JsonIgnoreCondition.Never</c> precisely so that absence travels
+    /// as a null VALUE rather than as a missing key: the legacy null encoding makes <c>-1</c>, <c>0</c>,
+    /// <c>""</c> and <c>false</c> legitimate stored values, so a policy that dropped defaults or nulls would
+    /// erase real data. The consequence for this envelope is that a scalar response - which by definition has
+    /// no page to describe - writes <c>"meta": null</c>. <c>paged-result.model.ts</c> therefore declares
+    /// <c>meta: ApiMeta | null</c>, required and nullable; an earlier revision declared it optional and
+    /// non-null, the one shape this policy cannot produce, and this fact is what stops that recurring.
+    /// </para>
+    /// <para>
+    /// Read as raw JSON rather than deserialised, because deserialising into the envelope would materialise a
+    /// null companion whether or not the member was on the wire, and so could not tell the two forms apart.
+    /// A paged response is asserted alongside it, so the fact covers both arities of the one contract and
+    /// distinguishes "always null" from "null for a scalar and populated for a page".
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ASinglePayloadSuccess_WritesItsMetadataMemberAsNullRatherThanOmittingIt()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage scalar = await client.GetAsync(
+            new Uri(
+                FormattableString.Invariant($"/api/v1/portals/{_fixture.Seed.PortalId}"),
+                UriKind.Relative));
+
+        scalar.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using JsonDocument scalarDocument = JsonDocument.Parse(await scalar.Content.ReadAsStringAsync());
+        JsonElement scalarRoot = scalarDocument.RootElement;
+
+        scalarRoot.EnumerateObject().Select(member => member.Name).Should().BeEquivalentTo(
+            new[] { "data", "meta" },
+            "the single-payload envelope is exactly the payload and its companion");
+        scalarRoot.GetProperty("meta").ValueKind.Should().Be(
+            JsonValueKind.Null,
+            "a scalar payload has no page to describe, and the serializer writes every declared member, so "
+            + "the companion is present and null rather than omitted - which is why the client declares it "
+            + "required and nullable");
+
+        using HttpResponseMessage paged = await client.GetAsync(
+            new Uri("/api/v1/portals?pageIndex=0&pageSize=10", UriKind.Relative));
+
+        paged.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using JsonDocument pagedDocument = JsonDocument.Parse(await paged.Content.ReadAsStringAsync());
+        JsonElement pagedRoot = pagedDocument.RootElement;
+
+        pagedRoot.EnumerateObject().Select(member => member.Name).Should().BeEquivalentTo(
+            new[] { "items", "meta" },
+            "the paging projection is exactly the rows and their companion");
+        pagedRoot.GetProperty("meta").ValueKind.Should().Be(
+            JsonValueKind.Object,
+            "a page HAS coordinates to report, so the same member is populated here - which is what makes "
+            + "the null above meaningful rather than merely constant");
     }
 }

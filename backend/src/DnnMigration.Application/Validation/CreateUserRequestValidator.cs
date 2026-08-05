@@ -9,7 +9,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Validates <see cref="CreateUserRequest"/>, the inbound contract of
-/// <c>POST /api/v1/portals/{portalId}/users</c>, reproducing the legacy DotNetNuke user-creation rules
+/// <c>POST /api/v1/users</c>, reproducing the legacy DotNetNuke user-creation rules
 /// exactly and adding nothing to them.
 /// </summary>
 /// <remarks>

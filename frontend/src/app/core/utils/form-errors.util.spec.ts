@@ -39,10 +39,23 @@
 //     Anything that treats them differently changes a branch outcome.
 //
 //  3. THREE NEIGHBOURING ENUMERATIONS USE THREE DIFFERENT SUCCESS CONVENTIONS.
-//     `UserCreateStatus.Success` is 13, `UserLoginStatus.LOGIN_SUCCESS` is 1, and
-//     the legacy `UserValidStatus.VALID` is 0. A "zero means success" assumption is
-//     wrong two times out of three, and `UserCreateStatus.AddUser` at 0 is the
-//     "no error yet" seed rather than an outcome.
+//     `UserCreateStatus.Success` is 13, the sign-in success outcome is 1 - spelled
+//     `LOGIN_SUCCESS` in the legacy source and `UserLoginStatus.Success` in the target
+//     enumeration, same value either way - and the legacy `UserValidStatus.VALID` is 0.
+//     A "zero means success" assumption is wrong two times out of three, and
+//     `UserCreateStatus.AddUser` at 0 is the "no error yet" seed rather than an outcome.
+//
+//  4. THE DISCRIMINATION GUARD IS ONLY AS SOUND AS THE SHAPE TEST IT DELEGATES TO.
+//     `isValidationProblemDetails` narrows an UNTRUSTED body, and it does so by
+//     calling `isProblemDetails` first so that the two guards cannot disagree about
+//     what a problem document is. That makes the delegated shape test part of this
+//     module's contract rather than someone else's detail: if it admits a document
+//     whose members carry the wrong types, this module hands a caller a narrowed
+//     value that lies, and the caller then reads a number as though it were a
+//     string. The block at (d2) below exercises the delegated test directly, and
+//     covers the two admissions - an empty per-field dictionary, and a DOM
+//     `ProgressEvent` - that `error.interceptor.ts` depends on and that must
+//     therefore survive any future tightening.
 //
 // The legacy tree shipped no automated tests of any kind, so there is no assertion
 // to port; every expectation below is derived from reading the source it cites.
@@ -63,7 +76,6 @@ import {
   TOO_MANY_ATTEMPTS,
   USER_CREATE_MESSAGE,
   USER_CREATE_STATUS_NAMES,
-  USER_LOGIN_STATUS_NAMES,
   VALIDATION_REJECTED,
   advisoryMessage,
   authFailureMessage,
@@ -76,14 +88,21 @@ import {
   passwordUpdateMessage,
   problemMessage,
   problemSeverity,
-  problemTraceId,
+  problemSupportReference,
   resolveVerificationPrompt,
   statusMessage,
   stripLegacyBreakTags,
   summarizeProblem,
   userCreateMessage,
 } from './form-errors.util';
+import {
+  isProblemDetails,
+  problemDetailsFieldErrors,
+  problemDetailsMessage,
+} from '../models/problem-details.model';
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
+import { UserLoginStatus } from '../models/auth.model';
+import { UserCreateStatus } from '../models/user.model';
 
 describe('form-errors.util', () => {
   // -------------------------------------------------------------------------
@@ -255,25 +274,194 @@ describe('form-errors.util', () => {
   });
 
   // -------------------------------------------------------------------------
-  // (e) THE TRACE IDENTIFIER IS SURFACED, AND ABSENCE IS SAFE
+  // (d2) THE DELEGATED SHAPE TEST THE GUARD IS BUILT ON
+  //
+  // `isValidationProblemDetails` calls `isProblemDetails` before it looks at the
+  // per-field dictionary, so every judgement made here propagates into the guard
+  // above. The subject lives in `../models/problem-details.model`, which carries no
+  // spec of its own by design - it is a declarations file - so the module that
+  // DEPENDS on the predicate is where the predicate's behaviour is pinned.
+  //
+  // The question the predicate answers is deliberately asymmetric: absent members
+  // are fine, because RFC 7807 makes every member optional and the API genuinely
+  // emits subsets; a PRESENT member carrying the wrong type is not, because the
+  // narrowing then asserts a declaration the value does not satisfy and the caller
+  // reads it as though it did.
   // -------------------------------------------------------------------------
-  describe('problemTraceId', () => {
-    it('surfaces the identifier when the document carries one', () => {
+  describe('isProblemDetails - the delegated shape test', () => {
+    const FALLBACK = 'The request could not be completed.';
+
+    // The read every consumer performs: gate on the predicate, then extract. Writing
+    // it once keeps the expectations below about the CALLER'S outcome rather than
+    // about the predicate's return value, which is the property that actually
+    // matters and the one that survives any future hardening of the extractors.
+    const readGuarded = (body: unknown): string =>
+      isProblemDetails(body) ? problemDetailsMessage(body, FALLBACK) : FALLBACK;
+
+    const fieldsGuarded = (body: unknown): Readonly<Record<string, readonly string[]>> =>
+      isProblemDetails(body) ? problemDetailsFieldErrors(body) : {};
+
+    it('refuses a well-typed member vouching for a malformed one', () => {
+      // The exact body that motivated the tightening. `status` is a number, so a
+      // test asking whether SOME member matched passed, narrowed to a shape
+      // declaring `detail?: string`, and the message extractor then called `.trim()`
+      // on the number 42.
+      const body: unknown = { status: 400, detail: 42 };
+
+      expect(isProblemDetails(body))
+        .withContext('a numeric detail contradicts the declared string')
+        .toBeFalse();
+      expect(isValidationProblemDetails(body))
+        .withContext('the delegating guard inherits the refusal')
+        .toBeFalse();
+      expect(() => readGuarded(body)).not.toThrow();
+      expect(readGuarded(body)).toBe(FALLBACK);
+    });
+
+    it('accepts the same document once every present member carries its declared type', () => {
+      const body: unknown = { status: 400, detail: 'The portal name is already in use.' };
+
+      expect(isProblemDetails(body)).toBeTrue();
+      expect(readGuarded(body)).toBe('The portal name is already in use.');
+    });
+
+    it('refuses a per-field dictionary that is null or an array', () => {
+      // `typeof null === 'object'` and `typeof [] === 'object'`, so neither is
+      // excluded by a type-of test alone. A document declaring `errors` while
+      // holding nothing iterable is what the interceptor would then walk.
+      expect(isProblemDetails({ title: 'Bad Request', errors: null })).toBeFalse();
+      expect(isProblemDetails({ title: 'Bad Request', errors: [] })).toBeFalse();
+      expect(isProblemDetails({ title: 'Bad Request', errors: ['Required.'] })).toBeFalse();
+      expect(fieldsGuarded({ title: 'Bad Request', errors: null })).toEqual({});
+    });
+
+    it('refuses a dictionary whose values are not arrays of strings', () => {
+      expect(isProblemDetails({ errors: { Email: 'Required.' } })).toBeFalse();
+      expect(isProblemDetails({ errors: { Email: [1, 2] } })).toBeFalse();
+      expect(isProblemDetails({ errors: { Email: ['Required.'], PortalName: null } })).toBeFalse();
+      expect(fieldsGuarded({ errors: { Email: 'Required.' } })).toEqual({});
+    });
+
+    it('ADMITS an empty dictionary and counts it as a recognised member', () => {
+      // Load-bearing, not incidental. The API writes `errors: {}` whenever model
+      // state carries no entries, and `error.interceptor.ts` distinguishes "a
+      // per-field dictionary is present" from "anything renderable was reported" on
+      // exactly that basis. Tightening this away would silently change which branch
+      // a validation response takes.
+      expect(isProblemDetails({ errors: {} })).toBeTrue();
+      expect(isProblemDetails({ title: 'Bad Request', errors: {} })).toBeTrue();
+      expect(isValidationProblemDetails({ status: 400, errors: {} })).toBeTrue();
+      expect(fieldsGuarded({ title: 'Bad Request', errors: {} })).toEqual({});
+    });
+
+    it('ADMITS a value shaped like a DOM ProgressEvent', () => {
+      // Also load-bearing. A transport failure delivers a `ProgressEvent`, which
+      // carries a string `type` and none of the other standard members. That is why
+      // `error.interceptor.ts` resolves a status of zero BEFORE it reads the body;
+      // the ordering there depends on this admission rather than compensating for it.
+      expect(isProblemDetails({ type: 'error' })).toBeTrue();
+      expect(readGuarded({ type: 'error' })).toBe(FALLBACK);
+    });
+
+    it('refuses every standard member that is present with the wrong type', () => {
+      const refused: readonly unknown[] = [
+        { type: 7, title: 'Bad Request' },
+        { title: 12345 },
+        { status: '400' },
+        { detail: { message: 'nested' } },
+        { instance: {}, title: 'Bad Request' },
+        { traceId: 99, title: 'Bad Request' },
+      ];
+
+      for (const body of refused) {
+        expect(isProblemDetails(body))
+          .withContext(`refused: ${JSON.stringify(body)}`)
+          .toBeFalse();
+        expect(readGuarded(body))
+          .withContext(`the caller falls back for: ${JSON.stringify(body)}`)
+          .toBe(FALLBACK);
+      }
+    });
+
+    it('refuses a value carrying no recognised member, and every non-object', () => {
+      const refused: readonly unknown[] = [
+        { items: [], totalCount: 0 },
+        {},
+        [],
+        [{ status: 400 }],
+        'a string',
+        42,
+        true,
+        null,
+        undefined,
+      ];
+
+      for (const body of refused) {
+        expect(isProblemDetails(body))
+          .withContext(`refused: ${JSON.stringify(body) ?? String(body)}`)
+          .toBeFalse();
+        expect(fieldsGuarded(body)).toEqual({});
+      }
+    });
+
+    it('accepts a complete document and reads every member through the narrowing', () => {
+      const body: unknown = {
+        type: 'https://httpstatuses.io/400',
+        title: 'One or more validation errors occurred.',
+        status: 400,
+        detail: 'The portal name is required.',
+        instance: '/api/v1/portals',
+        traceId: '00-abc-def-00',
+        errors: { PortalName: ['The portal name is required.'] },
+      };
+
+      expect(isProblemDetails(body)).toBeTrue();
+      expect(isValidationProblemDetails(body)).toBeTrue();
+      expect(readGuarded(body)).toBe('The portal name is required.');
+      expect(fieldsGuarded(body)).toEqual({ portalName: ['The portal name is required.'] });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // (e) THE TRACE IDENTIFIER IS SURFACED, AND ABSENCE IS SAFE
+  // (e) THE SUPPORT REFERENCE IS SURFACED, THE CORRELATION IDENTIFIER WINS,
+  //     AND ABSENCE IS SAFE
+  // -------------------------------------------------------------------------
+  describe('problemSupportReference', () => {
+    it('prefers the correlation identifier, which is the value the server can find', () => {
+      const problem: ProblemDetails = {
+        status: 500,
+        correlationId: 'c0rrelation-id',
+        traceId: '00-abc-def-00',
+      };
+
+      expect(problemSupportReference(problem)).toBe('c0rrelation-id');
+      expect(summarizeProblem(problem).supportReference).toBe('c0rrelation-id');
+    });
+
+    it('falls back to the trace identifier only when no correlation identifier was published', () => {
       const problem: ProblemDetails = { status: 500, traceId: '00-abc-def-00' };
 
-      expect(problemTraceId(problem)).toBe('00-abc-def-00');
-      expect(summarizeProblem(problem).traceId).toBe('00-abc-def-00');
+      expect(problemSupportReference(problem)).toBe('00-abc-def-00');
+      expect(summarizeProblem(problem).supportReference).toBe('00-abc-def-00');
     });
 
     it('reports null rather than throwing when the document carries none', () => {
-      expect(problemTraceId({ status: 500 })).toBeNull();
-      expect(problemTraceId(null)).toBeNull();
-      expect(problemTraceId(undefined)).toBeNull();
-      expect(summarizeProblem(null).traceId).toBeNull();
+      expect(problemSupportReference({ status: 500 })).toBeNull();
+      expect(problemSupportReference(null)).toBeNull();
+      expect(problemSupportReference(undefined)).toBeNull();
+      expect(summarizeProblem(null).supportReference).toBeNull();
     });
 
     it('treats a blank identifier as absent, because it joins nothing to nothing', () => {
-      expect(problemTraceId({ status: 500, traceId: '   ' })).toBeNull();
+      expect(problemSupportReference({ status: 500, traceId: '   ' })).toBeNull();
+      expect(problemSupportReference({ status: 500, correlationId: '  ' })).toBeNull();
+    });
+
+    it('falls back past a blank correlation identifier to a usable trace identifier', () => {
+      const problem: ProblemDetails = { status: 500, correlationId: ' ', traceId: '00-a-b-00' };
+
+      expect(problemSupportReference(problem)).toBe('00-a-b-00');
     });
   });
 
@@ -528,7 +716,7 @@ describe('form-errors.util', () => {
       expect(summary.message).toBe('See the fields below.');
       expect(summary.fieldMessages).toEqual([{ field: 'email', messages: ['Email Is Required.'] }]);
       expect(summary.formMessages).toEqual([]);
-      expect(summary.traceId).toBe('00-trace-span-00');
+      expect(summary.supportReference).toBe('00-trace-span-00');
       expect(summary.status).toBe(400);
       expect(summary.hasFieldMessages).toBeTrue();
     });
@@ -756,10 +944,14 @@ describe('form-errors.util', () => {
     });
 
     it('proves the three success conventions differ, so zero never means success', () => {
+      // Read from the authoritative enumerations rather than from a restatement of them.
+      // Creation seeds at AddUser 0 and succeeds at 13; sign-in fails at 0 and succeeds at 1.
+      expect(UserCreateStatus.Success).toBe(13);
+      expect(UserCreateStatus.AddUser).toBe(0);
+      expect(UserLoginStatus.Success).toBe(1);
+      expect(UserLoginStatus.Failure).toBe(0);
       expect(USER_CREATE_STATUS_NAMES.indexOf('Success')).toBe(13);
-      expect(USER_LOGIN_STATUS_NAMES.indexOf('LOGIN_SUCCESS')).toBe(1);
       expect(USER_CREATE_STATUS_NAMES[0]).toBe('AddUser');
-      expect(USER_LOGIN_STATUS_NAMES[0]).toBe('LOGIN_FAILURE');
     });
 
     it('keeps the three username outcomes as three distinct members', () => {
@@ -946,7 +1138,6 @@ describe('form-errors.util', () => {
       expect(Object.isFrozen(USER_CREATE_MESSAGE)).toBeTrue();
       expect(Object.isFrozen(USER_CREATE_STATUS_NAMES)).toBeTrue();
       expect(Object.isFrozen(PASSWORD_UPDATE_STATUS_NAMES)).toBeTrue();
-      expect(Object.isFrozen(USER_LOGIN_STATUS_NAMES)).toBeTrue();
       expect(Object.isFrozen(ADVISORY_MESSAGE)).toBeTrue();
     });
 
@@ -974,20 +1165,41 @@ describe('form-errors.util', () => {
       }
     });
 
-    it('keeps the legacy SCREAMING_CASE spelling of the non-wire login statuses', () => {
-      expect([...USER_LOGIN_STATUS_NAMES]).toEqual([
-        'LOGIN_FAILURE',
-        'LOGIN_SUCCESS',
-        'LOGIN_SUPERUSER',
-        'LOGIN_USERLOCKEDOUT',
-        'LOGIN_USERNOTAPPROVED',
-        'LOGIN_INSECUREADMINPASSWORD',
-        'LOGIN_INSECUREHOSTPASSWORD',
-      ]);
-      // The lockout defect at Login.ascx.vb:L187 is only visible once these two
-      // ordinals are known: 3 is not 0, so a lockout passed the legacy test.
-      expect(USER_LOGIN_STATUS_NAMES.indexOf('LOGIN_USERLOCKEDOUT')).toBe(3);
-      expect(USER_LOGIN_STATUS_NAMES.indexOf('LOGIN_FAILURE')).toBe(0);
+    it('preserves every legacy login ordinal under the renamed members', () => {
+      // This module no longer restates the login vocabulary - one definition, in
+      // auth.model.ts. What still has to hold is that the rename changed only the
+      // spellings: UserLoginStatus.vb:L23-L31 declares LOGIN_FAILURE 0, LOGIN_SUCCESS 1,
+      // LOGIN_SUPERUSER 2, LOGIN_USERLOCKEDOUT 3, LOGIN_USERNOTAPPROVED 4,
+      // LOGIN_INSECUREADMINPASSWORD 5 and LOGIN_INSECUREHOSTPASSWORD 6.
+      expect(UserLoginStatus.Failure).toBe(0);
+      expect(UserLoginStatus.Success).toBe(1);
+      expect(UserLoginStatus.SuperUser).toBe(2);
+      expect(UserLoginStatus.UserLockedOut).toBe(3);
+      expect(UserLoginStatus.UserNotApproved).toBe(4);
+      expect(UserLoginStatus.InsecureAdminPassword).toBe(5);
+      expect(UserLoginStatus.InsecureHostPassword).toBe(6);
+
+      // The lockout defect at Login.ascx.vb:L187 is only visible once these two ordinals
+      // are known: 3 is not 0, so a lockout passed the legacy test.
+      expect(UserLoginStatus.UserLockedOut).not.toBe(UserLoginStatus.Failure);
+    });
+
+    it('derives the creation vocabulary from the authoritative enumeration', () => {
+      // The guard against the two definitions drifting apart: the derived array must be
+      // exactly the enumeration's string members, in ordinal order.
+      const fromEnum = Object.values(UserCreateStatus).filter(
+        (member): member is string => typeof member === 'string',
+      );
+
+      expect([...USER_CREATE_STATUS_NAMES]).toEqual(fromEnum);
+      expect(USER_CREATE_STATUS_NAMES.length).toBe(18);
+
+      for (let ordinal = 0; ordinal < USER_CREATE_STATUS_NAMES.length; ordinal += 1) {
+        const name = USER_CREATE_STATUS_NAMES[ordinal] as keyof typeof UserCreateStatus;
+        expect(UserCreateStatus[name])
+          .withContext(`${name} must sit at ordinal ${ordinal}`)
+          .toBe(ordinal);
+      }
     });
   });
 });

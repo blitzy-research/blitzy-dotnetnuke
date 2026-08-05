@@ -5,104 +5,66 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
-// MIGRATION: this type replaces the whole of the legacy module-definition provider block
-//   (Library/Components/Providers/Data/DataProvider.vb:L156-L183) together with the three static
-//   controllers that wrapped it - DesktopModuleController.vb, ModuleDefinitionController.vb and
-//   ModuleControlController.vb - and the concrete stored-procedure layer beneath them
-//   (Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L773-L846). Every one of
-//   those calls reached the source-less binary Microsoft.ApplicationBlocks.Data.dll through
-//   SqlHelper with the procedure name built by string concatenation
-//   ("DatabaseOwner & ObjectQualifier & <name>"); none of that survives here. Table and column
-//   binding belongs to the four configurations under Persistence/Configurations, so this file names
-//   no table, no column and no procedure, and issues no SQL of its own.
+// MIGRATION: this type replaces the legacy module-definition provider block
+//   (Library/Components/Providers/Data/DataProvider.vb:L156-L183), the three static controllers that
+//   wrapped it (DesktopModuleController.vb, ModuleDefinitionController.vb, ModuleControlController.vb)
+//   and the stored-procedure layer beneath them, every call of which reached the source-less binary
+//   Microsoft.ApplicationBlocks.Data.dll through SqlHelper with the procedure name built by string
+//   concatenation. Table and column binding belongs to the four configurations under
+//   Persistence/Configurations, so this file names no table, no column and no procedure, and issues no
+//   SQL of its own.
 //
-// MIGRATION: long positional argument lists and SCOPE_IDENTITY returns collapse to entity staging.
-//   AddDesktopModule took twelve positional arguments and returned the generated key
-//   (DataProvider.vb:L162, wrapped at DesktopModuleController.vb:L33), UpdateDesktopModule took
-//   thirteen (L163, wrapped at L75), AddModuleControl nine (L181, wrapped at
-//   ModuleControlController.vb:L111) and UpdateModuleControl ten (L182, wrapped at L140). Each
-//   procedure ended in SCOPE_IDENTITY() and each wrapper returned the value. Here every write takes
-//   the entity and stages the change against the change tracker; nothing is executed and no key is
-//   returned, because under an object-relational mapper the store assigns the identity during the
-//   commit. A member that returned one would have to commit on the caller's behalf and would split
-//   a package, its definitions, its controls and its per-portal grants into one transaction per row.
-//   Read the entity's own identity property after IUnitOfWork.SaveChangesAsync has completed. The
-//   legacy code had already stopped depending on the value in places - DesktopModuleController.vb:L36
-//   wraps a provider function yielding an identity in a Sub that discards it.
+// MIGRATION: long positional argument lists and SCOPE_IDENTITY returns collapse to entity staging. The
+//   four legacy write procedures took nine to thirteen positional arguments and each returned the
+//   generated key. Here every write takes the entity and stages the change; nothing is executed and no
+//   key is returned, because the store assigns the identity during the flush. A member that returned one
+//   would have to flush on the caller's behalf and would split a package, its definitions, its controls
+//   and its per-portal grants into one transaction per row. Read the entity's own identity property
+//   after IUnitOfWork.SaveChangesAsync has completed.
 //
-// MIGRATION: both legacy row-hydration paths disappear rather than being ported, and neither has a
-//   counterpart in this file. DesktopModuleController.vb and ModuleDefinitionController.vb hydrated
-//   through the reflection-driven CBO helper - FillObject at DesktopModuleController.vb:L51, L55,
-//   L81 and L86 and ModuleDefinitionController.vb:L42 and L46, FillCollection at
-//   DesktopModuleController.vb:L59, L63 and L67 and ModuleDefinitionController.vb:L50 - returning
-//   the untyped ArrayList. ModuleControlController.vb carried a second, hand-written path of its
-//   own: an ArrayList collection filler (L40-L59) and two overloads whose ten sentinel-translating
-//   assignments run from L89 to L98, one of which read IconFile while passing ControlKey as the value
-//   selecting the substituted sentinel (L94) and was correct only because both are strings. The
-//   materialiser performs both jobs, so every multi-row read here returns IReadOnlyList<T> and every
-//   single-row read a nullable entity. No Fill member, no collection wrapper, no data reader and no
-//   sentinel translation appears below.
+// MIGRATION: both legacy row-hydration paths disappear rather than being ported. The controllers
+//   hydrated through the reflection-driven CBO helper into untyped ArrayLists, and
+//   ModuleControlController.vb carried a second hand-written path with ten sentinel-translating
+//   assignments. The materialiser performs both jobs, so every multi-row read here returns
+//   IReadOnlyList<T> and every single-row read a nullable entity. No Fill member, no collection
+//   wrapper, no data reader and no sentinel translation appears below.
 //
 // MIGRATION: the cache invalidation the legacy controllers performed inline, and the clearCache
-//   overloads that guarded it, are deliberately absent. The clears sat at
-//   DesktopModuleController.vb:L42 and L76 (ClearModuleCache) and L47 (ClearPortalCache),
-//   ModuleDefinitionController.vb:L38 and L59, and ModuleControlController.vb:L116 and L141; the
-//   overload pairs at DesktopModuleController.vb:L70/L74, ModuleDefinitionController.vb:L53/L57 and
-//   ModuleControlController.vb:L135/L139 existed only to suppress them. Cache invalidation is a
-//   coordinated concern owned by ICacheService and the Application services that orchestrate a
-//   write; a repository that cleared a cache would invalidate on staging rather than on commit, and
-//   a clearCache argument would make a caller answerable for the correctness of a subsystem it
-//   cannot see. No member below accepts a cache hint or touches a cache.
+//   overloads that guarded it, are deliberately absent. Cache invalidation is a coordinated concern
+//   owned by ICacheService and the Application services that orchestrate a write; a repository that
+//   cleared a cache would invalidate on staging rather than on commit, and a clearCache argument would
+//   make a caller answerable for the correctness of a subsystem it cannot see. No member below accepts a
+//   cache hint or touches a cache.
 //
-// MIGRATION: the obsolete friendly-name package lookup is not implemented, because the contract does
-//   not declare it and the legacy source retired it. DataProvider.vb:L158 declares
-//   GetDesktopModuleByFriendlyName and DesktopModuleController.vb exposes it twice, at L80 and L85,
-//   both carrying <Obsolete("As the FriendlyName is not guaranteed to be the same as when the module
-//   is created, this method has been replaced by GetDesktopModuleByModuleName(moduleName)")> - the
-//   obsolescence message nominates its own replacement. The two wrappers are not even distinct: L81
-//   and L86 call the same provider member, making GetDesktopModuleByName an exact duplicate under a
-//   second name. The schema agrees: 03.01.00.SqlDataProvider:L34 dropped the unique constraint that
-//   once backed DesktopModules.FriendlyName and L38 replaced it with a plain index, so a package
-//   friendly name is not a key, and DesktopModuleConfiguration declares that index non-unique.
-//   GetDesktopModuleByModuleNameAsync is the only name-based package lookup, over the one uniqueness
-//   the terminal schema does impose (IX_DesktopModules_ModuleName, 03.01.00.SqlDataProvider:L30-L31).
+// MIGRATION: the obsolete friendly-name package lookup is not implemented. The legacy source had
+//   already marked it Obsolete and nominated its own replacement, and the schema agrees:
+//   03.01.00.SqlDataProvider:L34 dropped the unique constraint that once backed
+//   DesktopModules.FriendlyName and L38 replaced it with a plain index, so a package friendly name is
+//   not a key. GetDesktopModuleByModuleNameAsync is the only name-based package lookup, over the one
+//   uniqueness the terminal schema does impose (IX_DesktopModules_ModuleName).
 //
-// MIGRATION: DesktopModule.SupportedFeatures and ModuleControl.ControlType travel as the raw
-//   persisted integers they are, and nothing in this file reads, masks, validates or reinterprets
-//   either. The legacy data boundary already treated both as Integer (DataProvider.vb:L162, L163,
-//   L181 and L182); only ModuleControlController.vb:L95 cast the control ordinal, to the
-//   SecurityAccessLevel enumeration in the excluded Library/Components/Security/PortalSecurity.vb,
-//   by round-tripping it through Enum.Parse over a string - which accepts a numeric string and
-//   returns the number whether or not a member carries it, so the ordinal survived unchanged anyway.
-//   Persisted ordinals are not a zero-based range: 04.06.00.SqlDataProvider inserts -1 (L24-L26,
-//   L683-L685, L691-L693) and 3 (L1054), and the terminal query filters on a negative one, which is
-//   the single place below where the ordinal is compared at all - see GetModuleControlsByKeyAsync.
-//   Promoting either column to an enumeration here would re-couple this layer to an excluded tree
-//   and put a named-member contract in front of values the database is free to hold. Likewise
-//   DesktopModule.BusinessControllerClass and ModuleControl.ControlSrc are inert mapped text: this
-//   file resolves, loads, probes for and activates nothing they name. Runtime activation belongs to
-//   the coordinated IModuleBusinessControllerFactory, which draws from a closed, injected set.
+// MIGRATION: DesktopModule.SupportedFeatures and ModuleControl.ControlType travel as the raw persisted
+//   integers they are, and nothing here reads, masks, validates or reinterprets either. Persisted
+//   ordinals are not a zero-based range - 04.06.00.SqlDataProvider inserts -1 and 3 - and the terminal
+//   query filters on a negative one, which is the single place below where the ordinal is compared at
+//   all; see GetModuleControlsByKeyAsync. Promoting either column to an enumeration here would re-couple
+//   this layer to an excluded tree and put a named-member contract in front of values the database is
+//   free to hold. Likewise DesktopModule.BusinessControllerClass and ModuleControl.ControlSrc are inert
+//   mapped text: this file resolves, loads, probes for and activates nothing they name. Runtime
+//   activation belongs to IModuleBusinessControllerFactory, which draws from a closed, injected set.
 //
 // MIGRATION: the legacy sentinel-to-database-null conversion is not reproduced, so no identifier or
-//   lookup key below carries a second meaning. Null.vb:L38-L45 sets the integer sentinel to -1 and
-//   the string sentinel to the empty string, and GetNull (Null.vb:L155) turned a sentinel argument
-//   into SQL NULL on the way to the store. Seven measured sites did so for this block:
-//   SqlDataProvider.vb:L799 and L805 (both arguments of the grant read and the grant delete), L831
-//   (the control read), L834 (both arguments of the control-key read), L837 (all three of the
-//   key-and-source read), and L840 and L843 (the control write pair). The terminal procedures then
-//   gave that NULL two incompatible readings. GetPortalDesktopModules
-//   (02.02.02.SqlDataProvider:L3161-L3162) reads "((PortalId = @PortalId) or @PortalId is null)",
-//   a match-all wildcard, and GetModuleDefinitions (02.02.00.SqlDataProvider:L632) spells the same
-//   idea literally as "or @DesktopModuleId = -1". GetModuleControlsByKey
-//   (04.05.00.SqlDataProvider:L1378-L1379) instead reads "((ControlKey is null and @ControlKey is
-//   null) or (ControlKey = @ControlKey))", which matches the rows whose own column is null - the
-//   mechanism by which 04.05.00.SqlDataProvider:L1491 finds a definition's default control. Neither
-//   reading is reproduced: every identifier here is applied exactly, no value is treated as absent,
-//   and no predicate compares a column with null. That is also why the string parameters are
-//   guarded rather than trusted - a null argument would translate to "column IS NULL" and silently
-//   resurrect the null-row reading the contract excludes. ModuleControl.ModuleDefinitionId stays
-//   nullable in the entity, as the terminal column is, so the host-level controls belonging to no
-//   definition remain representable and remain outside every definition-scoped result below.
+//   lookup key below carries a second meaning. Null.vb:L38-L45 sets the integer sentinel to -1 and the
+//   string sentinel to the empty string, and GetNull turned a sentinel argument into SQL NULL on the way
+//   to the store - which the terminal procedures then read two incompatible ways. GetPortalDesktopModules
+//   and GetModuleDefinitions treated it as a match-all wildcard; GetModuleControlsByKey instead matched
+//   the rows whose own column is null, which is how a definition's default control was found. Neither
+//   reading survives: every identifier here is applied exactly, no value is treated as absent, and no
+//   predicate compares a column with null. That is also why the string parameters are guarded rather
+//   than trusted - a null argument would translate to "column IS NULL" and silently resurrect the
+//   null-row reading the contract excludes. ModuleControl.ModuleDefinitionId stays nullable in the
+//   entity, as the terminal column is, so the host-level controls belonging to no definition remain
+//   representable and remain outside every definition-scoped result below.
 
 /// <summary>
 /// Reads and writes the module registration catalogue - installed packages, the per-portal grants
@@ -126,12 +88,13 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// row rather than by issuing a statement.
 /// </para>
 /// <para>
-/// <b>Writes stage; they do not commit.</b> No member calls <c>SaveChanges</c> in either form, opens
+/// <b>Writes stage; they do not flush.</b> No member calls <c>SaveChanges</c> in either form, opens
 /// a transaction, or executes a statement immediately, so a package, its definitions, its controls
 /// and its grants can be written as one indivisible batch by <see cref="IUnitOfWork"/>. Bulk removal
 /// materialises its rows and stages them rather than issuing a set-based delete, for the same
-/// reason: an immediately executed statement would commit outside the unit of work and could not be
-/// rolled back with the rest of the batch.
+/// reason: a set-based statement executes at once, bypassing the staging the batch depends on, and
+/// leaves the change tracker holding rows the store no longer has. Where no explicit transaction is
+/// open it is also durable the instant it runs, ahead of everything the caller has staged.
 /// </para>
 /// <para>
 /// <b>Every multi-row order is total.</b> Where the terminal procedure declared an order it is
@@ -393,19 +356,13 @@ internal sealed class ModuleDefinitionRepository : IModuleDefinitionRepository
     /// </para>
     /// <para>
     /// The pair is unique in the terminal schema - <c>IX_PortalDesktopModules</c>, declared unique by
-    /// <c>PortalDesktopModuleConfiguration</c> - so at most one grant can match. The list shape is
-    /// the contract's, kept because that is the shape the legacy read produced and because the
-    /// uniqueness is the database's guarantee to make rather than this signature's to assert. The
-    /// result is the grant rows themselves, never the packages or the portals they join.
-    /// </para>
-    /// <para>
-    /// Both references are loaded because the legacy statement carried the same information: it
-    /// projected <c>PortalName</c> and <c>FriendlyName</c> alongside the grant
-    /// (<c>L3156-L3157</c>) through inner joins on <c>Portals</c> and <c>DesktopModules</c>
-    /// (<c>L3159-L3160</c>). Those are join projections rather than columns of the grant, so they are
-    /// absent from <see cref="PortalDesktopModule"/> and are answered here by loading the grant's own
-    /// references, which spares a caller a further read per row without inventing a column. Both
-    /// foreign keys are required, so each join is inner either way.
+    /// <c>PortalDesktopModuleConfiguration</c> - so at most one grant can match. The list shape is the
+    /// contract's, because the uniqueness is the database's guarantee to make rather than this
+    /// signature's to assert. Both references are loaded because the legacy statement projected the
+    /// portal and package names alongside the grant; those are join projections rather than columns of
+    /// the grant, so they are absent from <see cref="PortalDesktopModule"/> and are answered by loading
+    /// the grant's own references, which spares a caller a further read per row without inventing a
+    /// column.
     /// </para>
     /// <para>
     /// MIGRATION: neither identifier is a wildcard. The legacy wrapper passed both through the
@@ -457,11 +414,12 @@ internal sealed class ModuleDefinitionRepository : IModuleDefinitionRepository
     /// </para>
     /// <para>
     /// MIGRATION: the matching rows are materialised and then staged for removal, rather than deleted
-    /// by a set-based statement. A set-based delete would execute immediately and commit outside the
-    /// unit of work, so it could not be rolled back with the rest of a batch - which matters
-    /// precisely here, because withdrawing a grant is normally one step of a larger tenant or package
-    /// change. The member is named for a set because the legacy procedure was, and it returns no
-    /// count: the number of rows a staged change ultimately affects is what
+    /// by a set-based statement. A set-based delete would execute at once, ahead of everything else
+    /// the caller has staged and outside the change tracker that then still holds the removed rows -
+    /// and, absent an explicit transaction, it would be durable immediately. That matters precisely
+    /// here, because withdrawing a grant is normally one step of a larger tenant or package change.
+    /// The member is named for a set because the legacy procedure was, and it returns no count: the
+    /// number of rows a staged change ultimately affects is what
     /// <see cref="IUnitOfWork.SaveChangesAsync"/> reports, and reporting it here would invite a
     /// caller to read it before the change had been made.
     /// </para>
@@ -528,13 +486,12 @@ internal sealed class ModuleDefinitionRepository : IModuleDefinitionRepository
     /// architecture rather than an optimisation of the ported rule - the rule itself is unchanged.
     /// </para>
     /// <para>
-    /// Availability carries the same disjunction as <see cref="GetDesktopModulesByPortalIdAsync"/>: a
-    /// definition is placeable when its owning package is not premium, or when a grant exists for the
-    /// pair (<c>04.05.00.SqlDataProvider:L1063</c>). The premium arm traverses the configured
-    /// association from the owning package, so the store evaluates it. The administrative exclusion
-    /// that the package-level member carries is deliberately not applied here, because the contract
-    /// states the disjunction as this member's whole rule and the legacy pair it replaces applied the
-    /// exclusion once, when selecting packages, not again when listing what they published.
+    /// Availability carries the same rule as <see cref="GetDesktopModulesByPortalIdAsync"/>: an
+    /// administrative package is excluded outright, then a remaining definition is placeable when its
+    /// owning package is not premium or when a grant exists for the pair
+    /// (<c>04.05.00.SqlDataProvider:L1062-L1063</c>). SEC-007 requires the exclusion here because this
+    /// member is the single-query replacement for the legacy two-step package-then-definition read; omitting
+    /// the package predicate from the collapsed query reintroduced rows the first legacy step had removed.
     /// </para>
     /// <para>
     /// A null portal is neither a sentinel nor a wildcard over rows: it states that the question is
@@ -556,8 +513,10 @@ internal sealed class ModuleDefinitionRepository : IModuleDefinitionRepository
             int addressedPortalId = portalId.Value;
 
             definitions = definitions.Where(definition =>
-                !definition.DesktopModule!.IsPremium
-                || definition.DesktopModule!.PortalDesktopModules.Any(grant => grant.PortalId == addressedPortalId));
+                !definition.DesktopModule!.IsAdmin
+                && (!definition.DesktopModule!.IsPremium
+                    || definition.DesktopModule!.PortalDesktopModules.Any(
+                        grant => grant.PortalId == addressedPortalId)));
         }
 
         return await definitions
@@ -565,6 +524,34 @@ internal sealed class ModuleDefinitionRepository : IModuleDefinitionRepository
             .ThenBy(definition => definition.ModuleDefinitionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// SEC-007: administrative definitions are intentionally reachable only through this named lookup. The
+    /// portal predicate is proved by a live module instance rather than by a package grant: administrative
+    /// modules are installed into the portal by the host and are not content packages a portal may elect to
+    /// place. A deleted instance does not make its security settings source available.
+    /// </remarks>
+    public Task<ModuleDefinition?> GetAdministrativeDefinitionByFriendlyNameAsync(
+        int portalId,
+        string friendlyName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(friendlyName);
+
+        return _dbContext.ModuleDefinitions
+            .AsNoTracking()
+            .Include(definition => definition.DesktopModule)
+            .Where(definition =>
+                definition.DesktopModule!.IsAdmin
+                && definition.FriendlyName == friendlyName
+                && _dbContext.Modules.Any(module =>
+                    module.PortalId == portalId
+                    && module.ModuleDefinitionId == definition.ModuleDefinitionId
+                    && !module.IsDeleted))
+            .OrderBy(definition => definition.ModuleDefinitionId)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <inheritdoc />

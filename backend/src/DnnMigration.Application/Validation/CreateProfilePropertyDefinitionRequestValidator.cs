@@ -5,8 +5,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Declares the field rules for <see cref="CreateProfilePropertyDefinitionRequest"/>, the payload submitted
-/// to <c>POST /api/v1/profile-definitions</c> and to its portal-nested equivalent to declare one new profile
-/// property a portal collects.
+/// to <c>POST /api/v1/profile-definitions</c> to declare one new profile property for the resolved portal.
 /// </summary>
 /// <remarks>
 /// <para>

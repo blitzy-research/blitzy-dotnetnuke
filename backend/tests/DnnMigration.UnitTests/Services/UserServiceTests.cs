@@ -4,10 +4,12 @@ using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
+using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -41,6 +43,8 @@ namespace DnnMigration.UnitTests.Services;
 /// </remarks>
 public class UserServiceTests
 {
+    private const int HostPortalId = -1;
+
     private const int PortalId = 0;
 
     private const int OtherPortalId = 3;
@@ -165,6 +169,11 @@ public class UserServiceTests
 
     private const string MembershipSettingsSourceMissingCode = "user.membership-settings.source-missing";
 
+    private const string MembershipSettingsRedirectNotInPortalCode =
+        "user.membership-settings.redirect_not_in_portal";
+
+    private const string DisplayNameTooLongCode = "user.display-name.too-long";
+
     private const string ProfileUnknownPropertyCode = "user.profile.unknown-property";
 
     private const string ProfileRequiredPropertyMissingCode = "user.profile.required-property-missing";
@@ -180,7 +189,7 @@ public class UserServiceTests
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The account contract exposes exactly twenty named asynchronous operations, every one of them scoped
+    /// The account contract exposes exactly twenty-one named asynchronous operations, every one of them scoped
     /// to a tenant.
     /// </summary>
     /// <remarks>
@@ -201,7 +210,7 @@ public class UserServiceTests
     /// </para>
     /// </remarks>
     [Fact]
-    public void UserContract_OffersExactlyTwentyNamedTenantScopedOperations()
+    public void UserContract_OffersExactlyTwentyOneNamedTenantScopedOperations()
     {
         MethodInfo[] members = typeof(IUserService).GetMethods();
 
@@ -219,6 +228,7 @@ public class UserServiceTests
             "RequirePasswordChangeAsync",
             "GetMembershipSettingsAsync",
             "UpdateMembershipSettingsAsync",
+            "IsEmailValidAsync",
             "RequiresProfileCompletionAsync",
             "GetProfileAsync",
             "UpdateProfileAsync",
@@ -251,6 +261,7 @@ public class UserServiceTests
         var portals = new Mock<IPortalRepository>().Object;
         var modules = new Mock<IModuleRepository>().Object;
         var definitions = new Mock<IModuleDefinitionRepository>().Object;
+        var tabs = new Mock<ITabRepository>().Object;
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var hasher = new Mock<IPasswordHasher>().Object;
         var clock = new Mock<IClock>().Object;
@@ -263,67 +274,71 @@ public class UserServiceTests
 
         Assert.Throws<ArgumentNullException>("users", () =>
         {
-            _ = new UserService(null!, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(null!, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("profiles", () =>
         {
-            _ = new UserService(users, null!, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, null!, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
-            _ = new UserService(users, profiles, null!, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, null!, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
-            _ = new UserService(users, profiles, roles, null!, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, null!, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, null!, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, null!, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("modules", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, null!, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, null!, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("definitions", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, null!, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+        });
+        Assert.Throws<ArgumentNullException>("tabs", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, null!, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, null!, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, null!, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, null!, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, null!, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, null!, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("tokens", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, null!, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, null!, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordPolicy", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, null!);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, null!);
         });
     }
 
@@ -838,6 +853,51 @@ public class UserServiceTests
         paged.Value.PageSize.Should().Be(5);
     }
 
+    /// <summary>Hidden tenant columns are minimised before a user-list row crosses the service boundary.</summary>
+    [Fact]
+    public async Task ListUsers_HonoursTheTenantColumnVisibilitySettings()
+    {
+        Harness harness = Harness.Ready();
+        harness.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+        harness.AddMembershipSettingsSource();
+        harness.StoredModuleSettings[ModuleId].AddRange(
+        [
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_FirstName", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_LastName", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_DisplayName", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_Address", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_Telephone", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_Email", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_CreatedDate", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_LastLogin", SettingValue = "False" },
+            new ModuleSetting { ModuleId = ModuleId, SettingName = "Column_Authorized", SettingValue = "False" },
+        ]);
+
+        Result<PagedResult<UserListItemDto>> outcome = await harness.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        UserListItemDto row = outcome.Value.Items.Should().ContainSingle().Subject;
+        row.Username.Should().Be(Username);
+        row.FirstName.Should().BeEmpty();
+        row.LastName.Should().BeEmpty();
+        row.DisplayName.Should().BeEmpty();
+        row.Address.Should().BeNull();
+        row.Telephone.Should().BeNull();
+        row.Email.Should().BeEmpty();
+        row.CreatedDate.Should().BeNull();
+        row.LastLoginDate.Should().BeNull();
+        row.IsApproved.Should().BeFalse();
+
+        harness.Profiles.Verify(
+            profiles => profiles.GetProfileValuesAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
     /// <summary>
     /// Reading one account reports absence rather than a failure, and carries the role names that are in
     /// force at the present moment.
@@ -1238,7 +1298,9 @@ public class UserServiceTests
         record.Outcome.Should().Be(AuditOutcome.Succeeded);
         record.PortalId.Should().Be(PortalId);
         record.ResourceType.Should().Be("User");
-        record.Properties["Username"].Should().Be(Username);
+        record.Properties.Should().NotContainKey(
+            "Username",
+            "the stable subject and resource identifiers replace a retained account name");
         record.Properties.Should().NotContainKey(
             "Password",
             "no credential material of any kind may reach an audit record");
@@ -1263,12 +1325,21 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A credential the store refuses withdraws the account row that had already committed, so no account is
-    /// left that cannot sign in.
+    /// A credential the store refuses rolls the open creation transaction back, so no compensation write is
+    /// required and no account is left that cannot sign in.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, deliberately. The earlier revision committed the
+    /// account, its membership and its automatic enrolments and then deleted them again in a second commit
+    /// when the credential store refused - a routine that could fail for the same reason the credential write
+    /// did, and that could not run at all if the process were terminated between the two commits. Both
+    /// outcomes left an account that could never be signed in to. The account and its credential are now
+    /// written inside ONE transaction, so the reversal is the store's own rollback: the correct assertion is
+    /// therefore that no compensating write was issued at all, and that no commit was taken.
+    /// </remarks>
     [Fact]
-    public async Task CreateUser_WithdrawsTheCommittedRowWhenTheCredentialIsRefused()
+    public async Task CreateUser_RollsBackWhenTheCredentialIsRefused()
     {
         Harness harness = Harness.Ready();
         harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users", AutoAssignment = true });
@@ -1282,20 +1353,24 @@ public class UserServiceTests
         outcome.Reason!.Message.Should().Be(
             $"The credential store already holds a credential for account name \"{Username}\".");
 
-        harness.RemovedAssignments.Should().ContainSingle();
-        harness.RemovedMemberships.Should().ContainSingle();
-        harness.RemovedUsers.Should().ContainSingle().Which.Should().BeSameAs(harness.AddedUsers.Single());
-        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Exactly(2));
+        harness.RemovedAssignments.Should().BeEmpty();
+        harness.RemovedMemberships.Should().BeEmpty();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once());
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
         harness.InvalidatedPortalIds.Should().BeEmpty();
     }
 
     /// <summary>
-    /// A credential store that faults withdraws the row and reports the fault by kind, without letting the
-    /// exception escape as a five-hundred.
+    /// A credential store that faults rolls the transaction back and reports the fault by kind, without
+    /// letting the exception escape as a five-hundred.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreateUser_WithdrawsTheRowAndNamesTheFaultKind()
+    public async Task CreateUser_RollsBackAndNamesTheFaultKind()
     {
         Harness harness = Harness.Ready();
         harness.CredentialFault = new TimeoutException("the store did not answer");
@@ -1307,7 +1382,11 @@ public class UserServiceTests
         outcome.Reason!.Code.Should().Be(CreateProviderErrorCode);
         outcome.Reason!.Message.Should()
             .Be("The credential store could not be written: TimeoutException.");
-        harness.RemovedUsers.Should().ContainSingle();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
     }
 
     /// <summary>
@@ -1324,7 +1403,11 @@ public class UserServiceTests
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => harness.Service.CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None));
 
+        // Nothing is withdrawn and nothing is committed: the scope is disposed as the exception unwinds and
+        // the store reverses the flush.
         harness.RemovedUsers.Should().BeEmpty();
+        harness.Transaction.Verify(t => t.CommitAsync(It.IsAny<CancellationToken>()), Times.Never());
+        harness.Transaction.Verify(t => t.DisposeAsync(), Times.Once());
     }
 
     /// <summary>
@@ -1407,6 +1490,60 @@ public class UserServiceTests
         await harness.Service.UpdateUserAsync(PortalId, UserId, ValidUpdateRequest(), CancellationToken.None);
 
         harness.LookupUser!.DisplayName.Should().Be($"Hopper, Grace ({Username}/{UserId})");
+    }
+
+    /// <summary>
+    /// A short tokenised format can expand beyond the stored display-name width. The service reports that
+    /// as a request failure before mutating the tracked account or reaching the commit point.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateUser_WhenTheConfiguredDisplayNameExpandsPastTheStoredWidth_WritesNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser = StoredUser(username: new string('u', 70));
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_DisplayNameFormat", "[USERNAME][USERNAME]");
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, ValidUpdateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(DisplayNameTooLongCode);
+        outcome.Reason.Message.Should().Be(
+            $"The tenant's display-name format produces 140 characters for account {UserId}; the stored limit is 128.");
+
+        harness.LookupUser.FirstName.Should().Be("Grace");
+        harness.LookupUser.LastName.Should().Be("Hopper");
+        harness.LookupUser.DisplayName.Should().Be("Grace B Hopper");
+        harness.LookupUser.Email.Should().Be(Email);
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.InvalidatedUsers.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The computed-width guard is inclusive: a value that occupies all 128 UTF-16 code units of the
+    /// column is valid and is committed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateUser_WhenTheConfiguredDisplayNameFitsTheStoredWidth_Succeeds()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser = StoredUser(username: new string('u', 64));
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_DisplayNameFormat", "[USERNAME][USERNAME]");
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, ValidUpdateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.LookupUser.DisplayName.Should().HaveLength(128);
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     /// <summary>
@@ -1642,7 +1779,9 @@ public class UserServiceTests
         record.PortalId.Should().Be(PortalId);
         record.SubjectUserId.Should().Be(UserId);
         record.ResourceType.Should().Be("User");
-        record.Properties["Username"].Should().Be(Username);
+        record.Properties.Should().NotContainKey(
+            "Username",
+            "deleting an account must not leave its name in an independently retained store");
         record.Properties["AccountRemoved"].Should().Be(
             "True",
             "the account belonged to no other tenant, so the row itself went with the membership");
@@ -2678,6 +2817,141 @@ public class UserServiceTests
         outcome.Reason!.Code.Should().Be(CredentialRemovalFailedCode);
         harness.RemovedUsers.Should().BeEmpty();
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+
+        // Nothing is committed and the scope is disposed, so the grant cascade the permission service staged
+        // earlier in this same transaction is rolled back with everything else. That is the whole point of
+        // the enclosing transaction: before it existed the cascade committed on its own, so this refusal
+        // reported failure over an account that was intact but had lost every grant it held.
+        harness.Transaction.Verify(t => t.CommitAsync(It.IsAny<CancellationToken>()), Times.Never());
+        harness.Transaction.Verify(t => t.DisposeAsync(), Times.Once());
+    }
+
+    /// <summary>
+    /// The whole deletion cascade is published by ONE commit inside ONE transaction.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Four stores are written - both grant tables through the permission contract, the assignment table, the
+    /// membership table and the account row through the repositories, and the external credential store - and
+    /// the contract promises all or none. The assertion that makes that true is this one: exactly one
+    /// transaction, exactly one flush inside it, and exactly one commit.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_PublishesTheWholeCascadeInOneTransaction()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.CascadedUserPermissions.Should().ContainSingle();
+        harness.DeletedCredentialUserIds.Should().ContainSingle();
+        harness.RemovedUsers.Should().ContainSingle();
+
+        harness.UnitOfWork.Verify(
+            u => u.BeginTransactionAsync(TransactionIsolation.Default, It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once());
+        harness.Transaction.Verify(t => t.CommitAsync(It.IsAny<CancellationToken>()), Times.Once());
+        harness.Transaction.Verify(t => t.DisposeAsync(), Times.Once());
+    }
+
+    /// <summary>
+    /// The whole deletion cascade runs inside exactly one transaction, which is committed exactly once, and
+    /// its permission step is STAGED into that transaction rather than committed on its own.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE DEFECT THIS PINS. Five writes make up a deletion - the account's direct grants, its role
+    /// assignments, its tenant membership, its credential in the external membership store, and the account
+    /// row - and they cannot be one <c>SaveChanges</c>, because the credential is written through its own
+    /// statement outside the mapped model. An earlier revision had no enclosing scope AND delegated the
+    /// permission step to the member that commits on its own, so the grant removal became durable before
+    /// anything after it: a credential removal that then failed left the account intact with its grants
+    /// already destroyed, and this method reported that the account had been left alone.
+    /// </para>
+    /// <para>
+    /// So the oracle is threefold and each part is load-bearing: exactly one scope is opened, it is committed
+    /// exactly once, and the permission contract is asked for STAGING - never for the committing sibling,
+    /// which the unit of work would in any case refuse to nest a scope inside.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_RunsTheWholeCascadeInOneTransactionAndStagesTheGrantRemoval()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.UserAssignments.Add(new UserRole { UserRoleId = 7, UserId = UserId, RoleId = 5 });
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+
+        harness.TransactionsOpened.Should().Be(1, "the five writes are one logical unit of work");
+        harness.TransactionsCommitted.Should().Be(1);
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+
+        // The default isolation is correct here: the sequence is atomic-or-nothing but depends on nothing it
+        // read staying unchanged, so a serialisable scope would serialise deletions for no benefit.
+        harness.UnitOfWork.Verify(
+            u => u.BeginTransactionAsync(TransactionIsolation.Default, It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Staging, never the committing sibling.
+        harness.Permissions.Verify(
+            p => p.StageUserPermissionRemovalAsync(PortalId, UserId, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Permissions.Verify(
+            p => p.DeleteUserPermissionsAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // The grant-cache eviction the permission contract owns is performed by this service, because this
+        // service owned the commit - and only after it.
+        harness.EvictedGrantCaches.Should().Equal(new[] { PortalId });
+    }
+
+    /// <summary>
+    /// A cascade abandoned at its last step opens a transaction and never commits it, so disposal rolls the
+    /// staged removals back and nothing is evicted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The credential is the one write that leaves the mapped model, so its refusal is the sharpest case: the
+    /// grants and assignments have already been staged by the time it answers. Leaving the scope uncommitted
+    /// is what undoes them, which is why the abstraction declares no rollback member - the safe outcome is
+    /// what disposal does by default, including on a path whose author did not think about failure.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenTheCredentialCannotBeRemoved_RollsTheTransactionBackAndEvictsNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.UserAssignments.Add(new UserRole { UserRoleId = 7, UserId = UserId, RoleId = 5 });
+        harness.CredentialRemoved = false;
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(CredentialRemovalFailedCode);
+
+        // The grant removal WAS staged - the cascade got that far - and is undone by the rollback rather than
+        // by a compensation routine.
+        harness.CascadedUserPermissions.Should().Equal(new[] { (PortalId, UserId) });
+        harness.TransactionsOpened.Should().Be(1);
+        harness.TransactionsCommitted.Should().Be(0, "an abandoned cascade must not commit any part of itself");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.Transaction.Verify(t => t.DisposeAsync(), Times.Once);
+
+        // Nothing describes a deletion that did not happen.
+        harness.EvictedGrantCaches.Should().BeEmpty();
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+        harness.InvalidatedUsers.Should().BeEmpty();
+        harness.AuditRecords.Should().BeEmpty();
     }
 
     /// <summary>
@@ -3104,7 +3378,7 @@ public class UserServiceTests
 
         Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
             PortalId,
-            new MembershipSettingsDto(),
+            new UpdateMembershipSettingsRequest(),
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3125,8 +3399,18 @@ public class UserServiceTests
         Harness harness = Harness.Ready();
         harness.AddMembershipSettingsSource();
         harness.StoreSetting("records_perpage", "10");
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(12, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = 12, PortalId = PortalId });
 
-        var settings = new MembershipSettingsDto
+        // The redirect target has to be a page of THIS tenant, so the page lookup is stubbed for it. That
+        // requirement is the point of the check: an identifier arriving over the wire cannot otherwise be
+        // distinguished from one belonging to another portal.
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(12, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = 12, PortalId = PortalId, TabName = "Landing" });
+
+        var settings = new UpdateMembershipSettingsRequest
         {
             ColumnFirstName = true,
             RecordsPerPage = 40,
@@ -3163,6 +3447,88 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// A redirect page is tenant data, not merely a syntactically valid integer. A page belonging to
+    /// another portal receives the same non-enumerating answer as an unknown page, and no setting is staged.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateMembershipSettings_RefusesARedirectOutsideTheTenantBeforeWriting()
+    {
+        const int otherPortalId = 91;
+        const int pageId = 12;
+
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(pageId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = pageId, PortalId = otherPortalId });
+
+        // MIGRATION: RE-POINTED FROM THE READ PROJECTION ONTO THE WRITE SHAPE. This fact was written against
+        // an overload taking MembershipSettingsDto - the shape this surface RETURNS - while the write had
+        // already been split onto UpdateMembershipSettingsRequest, which is the only shape an endpoint binds.
+        // The rule, the refusal and the "nothing staged" assertions are unchanged; only the request type and
+        // the reason code follow the surviving surface.
+        Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest { RedirectAfterLogin = pageId },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(MembershipSettingsRedirectNotInPortalCode);
+        outcome.Reason.Message.Should().Be(
+            $"{nameof(UpdateMembershipSettingsRequest.RedirectAfterLogin)} names page {pageId}, "
+            + $"which does not belong to portal {PortalId}.");
+
+        harness.AddedSettings.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+        harness.InvalidatedProfileDefinitionsPortalIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Zero and minus one are looked up as page keys rather than reinterpreted as absence. Null alone means
+    /// "no redirect" at the API boundary.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateMembershipSettings_ResolvesZeroAndMinusOneAsRealRedirectKeys()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(0, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = 0, PortalId = PortalId });
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(-1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = -1, PortalId = PortalId });
+
+        Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest
+            {
+                RedirectAfterLogin = 0,
+                RedirectAfterRegistration = -1,
+                RedirectAfterLogout = 0,
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        SettingValue(harness, "Redirect_AfterLogin").Should().Be("0");
+        SettingValue(harness, "Redirect_AfterRegistration").Should().Be("-1");
+        SettingValue(harness, "Redirect_AfterLogout").Should().Be("0");
+
+        harness.Tabs.Verify(
+            tabs => tabs.GetByIdAsync(0, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the duplicate login/logout target adds no information");
+        harness.Tabs.Verify(
+            tabs => tabs.GetByIdAsync(-1, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
     /// A settings write ignores a module instance of another definition, so it cannot store the tenant's
     /// membership settings against an unrelated module.
     /// </summary>
@@ -3176,12 +3542,161 @@ public class UserServiceTests
 
         Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
             PortalId,
-            new MembershipSettingsDto(),
+            new UpdateMembershipSettingsRequest(),
             CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(MembershipSettingsSourceMissingCode);
     }
+
+    /// <summary>
+    /// Every bounded membership setting is refused outside its range, and the refusal happens before the
+    /// settings source is even located.
+    /// </summary>
+    /// <param name="mutate">Applies one out-of-range value to an otherwise valid request.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy screen constrained these values through its CHOICE OF CONTROL - a drop-down
+    /// bound to an enumeration cannot submit a member the enumeration does not have, and a page picker bound
+    /// to the portal's pages cannot offer another tenant's page (UserSettings.ascx.vb:L58-L104). None of that
+    /// constraint survives a JSON body, so what the control expressed implicitly is stated explicitly here.
+    /// Before these rules existed every one of the twenty-three values reached the store unchecked.
+    /// </remarks>
+    [Theory]
+    [MemberData(nameof(OutOfRangeMembershipSettings))]
+    public async Task UpdateMembershipSettings_RefusesAValueOutsideItsRange(
+        Action<UpdateMembershipSettingsRequest> mutate)
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+
+        var request = new UpdateMembershipSettingsRequest();
+        mutate(request);
+
+        Result outcome = await harness.Service
+            .UpdateMembershipSettingsAsync(PortalId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("user.membership-settings.invalid");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.AddedSettings.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A redirect member naming a page the tenant does not own is refused, and so is one naming no page at
+    /// all.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateMembershipSettings_RefusesARedirectPageTheTenantDoesNotOwn()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+
+        // A real page, owned by a DIFFERENT tenant. This is the case a range rule cannot catch and the one
+        // the legacy page picker made unreachable by construction.
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(500, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = 500, PortalId = PortalId + 1, TabName = "Another tenant's page" });
+
+        Result foreignPage = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest { RedirectAfterLogin = 500 },
+            CancellationToken.None);
+
+        foreignPage.IsFailure.Should().BeTrue();
+        foreignPage.Reason!.Code.Should().Be("user.membership-settings.redirect_not_in_portal");
+        foreignPage.Reason!.Message.Should().Contain(nameof(UpdateMembershipSettingsRequest.RedirectAfterLogin));
+
+        // A page that does not exist at all is refused identically, so absence and foreign ownership cannot
+        // be distinguished by a caller probing for identifiers.
+        Result unknownPage = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest { RedirectAfterLogout = 999 },
+            CancellationToken.None);
+
+        unknownPage.IsFailure.Should().BeTrue();
+        unknownPage.Reason!.Code.Should().Be("user.membership-settings.redirect_not_in_portal");
+
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A null redirect member is the legitimate "no redirect" answer and is not looked up at all.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Absence is null and only null. The page identity seeds at ZERO, so zero is a legitimate page: a
+    /// non-positive test would reject the first page of every portal, and the legacy minus-one marker is
+    /// translated by the projection rather than accepted on the wire.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_TreatsAnAbsentRedirectAsNoRedirect()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+
+        Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest
+            {
+                RedirectAfterLogin = null,
+                RedirectAfterRegistration = null,
+                RedirectAfterLogout = null,
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.Tabs.Verify(
+            tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never());
+        SettingValue(harness, "Redirect_AfterLogin").Should().Be("-1");
+    }
+
+    /// <summary>
+    /// An electronic-mail validation expression that cannot be compiled is refused rather than stored.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the one setting whose stored value is later EXECUTED, by the registration and profile
+    /// validators. Storing an uncompilable expression would therefore leave every subsequent submission
+    /// failing inside a validator with no field to name, so the failure belongs to the request that stored it.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_RefusesAnUnusableEmailExpression()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+
+        Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest { SecurityEmailValidation = "([a-z" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("user.membership-settings.invalid");
+        harness.AddedSettings.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The out-of-range cases exercised by <see cref="UpdateMembershipSettings_RefusesAValueOutsideItsRange"/>.
+    /// </summary>
+    /// <returns>One mutation per bounded member, above and below where both bounds exist.</returns>
+    public static TheoryData<Action<UpdateMembershipSettingsRequest>> OutOfRangeMembershipSettings()
+        => new()
+        {
+            request => request.DisplayMode = -1,
+            request => request.DisplayMode = 3,
+            request => request.ProfileDefaultVisibility = -1,
+            request => request.ProfileDefaultVisibility = 3,
+            request => request.SecurityUsersControl = -1,
+            request => request.SecurityUsersControl = 2,
+            request => request.RecordsPerPage = 0,
+            request => request.RecordsPerPage = UpdateMembershipSettingsRequestValidator.MaximumRecordsPerPage + 1,
+            request => request.SecurityDisplayNameFormat = new string('x', 2001),
+            request => request.SecurityEmailValidation = new string('x', 2001),
+            request => request.SecurityEmailValidation = string.Empty,
+        };
 
     /// <summary>
     /// Reading a profile reports absence for an unknown account, and otherwise reports one entry per declared
@@ -3532,6 +4047,205 @@ public class UserServiceTests
         harness.InvalidatedUsers.Should().Equal(new[] { (PortalId, Username) });
     }
 
+    /// <summary>Portal-scoped profile operations never call the installation-wide value reader.</summary>
+    [Fact]
+    public async Task ProfileOperations_ReadOnlyValuesOwnedByTheAddressedPortal()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.GetProfileAsync(PortalId, UserId, CancellationToken.None);
+        await harness.Service.UpdateProfileAsync(
+            PortalId,
+            UserId,
+            Profile((StreetPropertyId, "Fleet Street")),
+            CancellationToken.None);
+
+        harness.Profiles.Verify(
+            profiles => profiles.GetProfileValuesAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
+        harness.Profiles.Verify(
+            profiles => profiles.GetProfileValuesAsync(
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>Duplicate definitions and invalid visibility are refused before any value is staged.</summary>
+    [Fact]
+    public async Task UpdateProfile_RejectsDuplicateDefinitionsAndInvalidVisibility()
+    {
+        Harness duplicate = Harness.Ready();
+        UserProfileDto repeated = Profile(
+            (StreetPropertyId, "one"),
+            (StreetPropertyId, "two"));
+
+        Result duplicateOutcome = await duplicate.Service.UpdateProfileAsync(
+            PortalId,
+            UserId,
+            repeated,
+            CancellationToken.None);
+
+        duplicateOutcome.IsFailure.Should().BeTrue();
+        duplicateOutcome.Error!.Code.Should().Be("user.profile.duplicate-property");
+        duplicate.AddedValues.Should().BeEmpty();
+        duplicate.UpdatedValues.Should().BeEmpty();
+
+        Harness invalidVisibility = Harness.Ready();
+        UserProfileDto invalid = Profile((StreetPropertyId, "one"));
+        invalid.Properties[0].Visibility = 3;
+
+        Result visibilityOutcome = await invalidVisibility.Service.UpdateProfileAsync(
+            PortalId,
+            UserId,
+            invalid,
+            CancellationToken.None);
+
+        visibilityOutcome.IsFailure.Should().BeTrue();
+        visibilityOutcome.Error!.Code.Should().Be("user.profile.visibility-invalid");
+    }
+
+    /// <summary>Membership redirects must name pages owned by the addressed portal.</summary>
+    [Fact]
+    public async Task UpdateMembershipSettings_RefusesAForeignRedirectPage()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+
+        // The page exists but belongs to another tenant, which is the case a field rule cannot decide and
+        // the one the legacy picker made unreachable by only ever offering the portal's own pages.
+        harness.Tabs
+            .Setup(tabs => tabs.GetByIdAsync(OtherPortalId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tab { TabId = OtherPortalId, PortalId = OtherPortalId });
+
+        Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest { RedirectAfterLogin = OtherPortalId },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("user.membership-settings.redirect_not_in_portal");
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>The configured email expression is enforced through the typed membership settings.</summary>
+    [Fact]
+    public async Task IsEmailValid_UsesThePortalExpressionAndFailsClosed()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoredModuleSettings[ModuleId].Add(new ModuleSetting
+        {
+            ModuleId = ModuleId,
+            SettingName = "Security_EmailValidation",
+            SettingValue = @"^[^@]+@example\.com$",
+        });
+
+        Result<bool> accepted = await harness.Service.IsEmailValidAsync(
+            PortalId,
+            "ada@example.com",
+            CancellationToken.None);
+        Result<bool> refused = await harness.Service.IsEmailValidAsync(
+            PortalId,
+            "ada@elsewhere.test",
+            CancellationToken.None);
+
+        accepted.Value.Should().BeTrue();
+        refused.Value.Should().BeFalse();
+    }
+
+    /// <summary>The general valid-profile requirement is enforced even when the login-specific flag is off.</summary>
+    [Fact]
+    public async Task RequiresProfileCompletion_HonoursTheGeneralRequirement()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoredModuleSettings[ModuleId].AddRange(
+        [
+            new ModuleSetting
+            {
+                ModuleId = ModuleId,
+                SettingName = "Security_RequireValidProfile",
+                SettingValue = bool.TrueString,
+            },
+            new ModuleSetting
+            {
+                ModuleId = ModuleId,
+                SettingName = "Security_RequireValidProfileAtLogin",
+                SettingValue = bool.FalseString,
+            },
+        ]);
+        harness.DefinitionFor(StreetPropertyId).IsRequired = true;
+
+        Result<bool> outcome = await harness.Service.RequiresProfileCompletionAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        outcome.Value.Should().BeTrue();
+    }
+
+    /// <summary>Account creation and deletion each own exactly one outer transaction.</summary>
+    /// <remarks>
+    /// The two paths open that scope through DIFFERENT members, and the difference is the point. Creation
+    /// may be composed inside a wider operation - installing a tenant creates its administrator - so it
+    /// JOINS an ambient scope when one exists. Deletion is a top-level operation whose whole cascade must be
+    /// atomic, and every write inside it stages rather than commits, so it BEGINS its own scope: the unit of
+    /// work refuses to nest, which is what proves no suboperation is committing underneath it.
+    /// </remarks>
+    [Fact]
+    public async Task AccountCreationAndDeletion_UseOneOuterTransactionBoundaryEach()
+    {
+        Harness creation = Harness.Ready();
+
+        Result<UserDetailDto> created = await creation.Service.CreateUserAsync(
+            PortalId,
+            ValidCreateRequest(),
+            CancellationToken.None);
+
+        created.IsSuccess.Should().BeTrue();
+        creation.UnitOfWork.Verify(
+            unit => unit.JoinOrBeginTransactionAsync(
+                TransactionIsolation.Default,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        creation.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+
+        Harness deletion = Harness.Ready();
+
+        Result removed = await deletion.Service.DeleteUserAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        removed.IsSuccess.Should().BeTrue();
+        deletion.Profiles.Verify(
+            profiles => profiles.DeleteProfileValuesAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        deletion.UnitOfWork.Verify(
+            unit => unit.BeginTransactionAsync(
+                TransactionIsolation.Default,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        deletion.UnitOfWork.Verify(
+            unit => unit.JoinOrBeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        deletion.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
     /// <summary>
     /// The declaration catalogue is read through the cache under a tenant-keyed name, with a lifetime scaled
     /// by the configured multiplier, and is read straight through when caching is disabled.
@@ -3628,6 +4342,43 @@ public class UserServiceTests
         outcome.Value!.PropertyDefinitionId.Should().Be(StreetPropertyId);
         outcome.Value.PropertyName.Should().Be("Street");
         outcome.Value.PortalId.Should().Be(PortalId);
+    }
+
+    /// <summary>
+    /// The legacy host identifier reaches a SQL-null definition through the same repository scope used by
+    /// the collection read, while a row physically storing the colliding portal key remains outside it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetProfilePropertyDefinition_UsesTheLegacyHostScopeForTheSingleRead()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.LookupDefinition.PortalId = null;
+
+        Result<ProfilePropertyDefinitionDto?> hostLevel = await harness.Service
+            .GetProfilePropertyDefinitionAsync(HostPortalId, StreetPropertyId, CancellationToken.None);
+
+        hostLevel.Value.Should().NotBeNull();
+        hostLevel.Value!.PortalId.Should().Be(
+            HostPortalId,
+            "the response boundary restores the legacy identifier for a SQL-null host declaration");
+
+        harness.Profiles.Verify(
+            profiles => profiles.GetDefinitionByIdAsync(
+                HostPortalId,
+                StreetPropertyId,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.LookupDefinition.PortalId = HostPortalId;
+
+        Result<ProfilePropertyDefinitionDto?> collidingTenantRow = await harness.Service
+            .GetProfilePropertyDefinitionAsync(HostPortalId, StreetPropertyId, CancellationToken.None);
+
+        collidingTenantRow.Value.Should().BeNull(
+            "the legacy provider translated -1 to SQL NULL rather than matching a stored -1");
     }
 
     /// <summary>
@@ -4291,6 +5042,7 @@ public class UserServiceTests
             SetPasswordHashes = [];
             ApprovalWrites = [];
             CascadedUserPermissions = [];
+            EvictedGrantCaches = [];
             InvalidatedPortalIds = [];
             InvalidatedUsers = [];
             InvalidatedProfileDefinitionsPortalIds = [];
@@ -4302,7 +5054,9 @@ public class UserServiceTests
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
             ModuleDefinitions = new Mock<IModuleDefinitionRepository>(MockBehavior.Loose);
+            Tabs = new Mock<ITabRepository>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
+            Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
@@ -4315,6 +5069,18 @@ public class UserServiceTests
                 .Callback<AuditEvent>(AuditRecords.Add);
 
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
+            Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
+
+            // Both account-lifecycle workflows open ONE explicit transaction - creation so that the account
+            // row and its external credential are published together, deletion so that the grant cascade,
+            // the assignments, the membership, the account row and the credential removal are all-or-nothing.
+            // Loose behaviour would hand back a null scope and the await-using would dereference it, so this
+            // stub is required rather than decorative.
+            UnitOfWork
+                .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => Transaction.Object);
 
             Service = new UserService(
                 Users.Object,
@@ -4324,6 +5090,7 @@ public class UserServiceTests
                 Portals.Object,
                 Modules.Object,
                 ModuleDefinitions.Object,
+                Tabs.Object,
                 UnitOfWork.Object,
                 PasswordHasher.Object,
                 Clock.Object,
@@ -4351,7 +5118,19 @@ public class UserServiceTests
 
         public Mock<IModuleDefinitionRepository> ModuleDefinitions { get; }
 
+        /// <summary>
+        /// The page repository, read only to prove that a membership-settings redirect target belongs to the
+        /// tenant being written.
+        /// </summary>
+        public Mock<ITabRepository> Tabs { get; }
+
         public Mock<IUnitOfWork> UnitOfWork { get; }
+
+        /// <summary>
+        /// The transaction scope the unit of work hands back. The deletion cascade opens exactly one around
+        /// all five of its writes, so a scope must exist for the await-using to dispose.
+        /// </summary>
+        public Mock<ITransactionScope> Transaction { get; }
 
         public Mock<IPasswordHasher> PasswordHasher { get; }
 
@@ -4366,6 +5145,7 @@ public class UserServiceTests
         /// <summary>Every audit record the service emitted, in the order it emitted them.</summary>
         public List<AuditEvent> AuditRecords { get; }
         public Mock<ITokenService> Tokens { get; }
+
 
         /// <summary>
         /// Accounts whose sessions the service asked to have ended, in the order it asked.
@@ -4504,6 +5284,18 @@ public class UserServiceTests
         /// assert that the deletion is abandoned with the account intact.
         /// </summary>
         public Result CascadeResult { get; set; } = Result.Success();
+
+        /// <summary>
+        /// Every portal whose grant-cache entries the service asked the permission contract to evict, in
+        /// order. Eviction must happen only after the cascade's single commit has succeeded.
+        /// </summary>
+        public List<int> EvictedGrantCaches { get; }
+
+        /// <summary>Gets the number of transaction scopes the service opened.</summary>
+        public int TransactionsOpened { get; set; }
+
+        /// <summary>Gets the number of transaction scopes the service committed.</summary>
+        public int TransactionsCommitted { get; set; }
 
         public List<int> InvalidatedPortalIds { get; }
 
@@ -4725,6 +5517,8 @@ public class UserServiceTests
                 .ReturnsAsync(() => (
                     harness.CredentialExists,
                     harness.CredentialExists ? StoredHashFor(CurrentPassword) : null,
+                    harness.CredentialExists ? PasswordFormat.Hashed : null,
+                    harness.CredentialExists ? string.Empty : null,
                     harness.CredentialApproved,
                     harness.CredentialLockedOut));
             harness.Users
@@ -4799,8 +5593,24 @@ public class UserServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Definitions.ToList());
             harness.Profiles
-                .Setup(p => p.GetDefinitionByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.LookupDefinition);
+                .Setup(p => p.GetDefinitionByIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, int propertyDefinitionId, CancellationToken _) =>
+                {
+                    ProfilePropertyDefinition? definition = harness.LookupDefinition;
+                    if (definition is null || definition.PropertyDefinitionId != propertyDefinitionId)
+                    {
+                        return null;
+                    }
+
+                    bool inScope = portalId == HostPortalId
+                        ? definition.PortalId is null
+                        : definition.PortalId == portalId;
+
+                    return inScope ? definition : null;
+                });
 
             // The name lookup answers with the DECLARATION, as the legacy provider member did, so a
             // caller editing a declaration can tell a real clash from the row it is already editing.
@@ -4820,6 +5630,21 @@ public class UserServiceTests
                     harness.ValuesByUserId.TryGetValue(userId, out List<UserProfileValue>? values)
                         ? values.ToList()
                         : []);
+            harness.Profiles
+                .Setup(p => p.GetProfileValuesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, int userId, CancellationToken _) =>
+                    harness.ValuesByUserId.TryGetValue(userId, out List<UserProfileValue>? values)
+                        ? values.ToList()
+                        : []);
+            harness.Profiles
+                .Setup(p => p.DeleteProfileValuesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
             harness.Profiles
                 .Setup(p => p.AddProfileValueAsync(
                     It.IsAny<UserProfileValue>(),
@@ -4856,6 +5681,22 @@ public class UserServiceTests
                     It.IsAny<ProfilePropertyDefinition>(),
                     It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
+
+            harness.UnitOfWork
+                .Setup(unit => unit.JoinOrBeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(harness.Transaction.Object);
+            harness.Transaction
+                .Setup(transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            harness.Portals
+                .Setup(portal => portal.TabBelongsToPortalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
 
             // Removal is addressed by identifier, matching the legacy procedure, and the answers
             // recorded against the declaration cascade inside the repository rather than being
@@ -4908,8 +5749,15 @@ public class UserServiceTests
             //            up. What these tests own is that the account service asks exactly once, for
             //            exactly the tenant and account being deleted, and abandons the deletion when the
             //            answer is a refusal.
+            //
+            //            THE MEMBER ASKED FOR IS THE STAGE-ONLY ONE, and that is a correctness property
+            //            rather than a naming detail. The whole cascade runs inside one transaction, so a
+            //            permission step that committed on its own would make the grant removal durable
+            //            ahead of everything after it - and a credential removal failing afterwards would
+            //            then leave an account intact but stripped of its grants, while this method reported
+            //            that the account had been left alone.
             harness.Permissions
-                .Setup(p => p.DeleteUserPermissionsAsync(
+                .Setup(p => p.StageUserPermissionRemovalAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
@@ -4918,10 +5766,39 @@ public class UserServiceTests
                     harness.CascadedUserPermissions.Add((portalId, userId));
                     return harness.CascadeResult;
                 });
+            harness.Permissions
+                .Setup(p => p.InvalidateUserPermissionCachesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((portalId, _) => harness.EvictedGrantCaches.Add(portalId))
+                .Returns(Task.CompletedTask);
+
+            // The cascade opens one scope around all five writes, so the scope has to exist: loose behaviour
+            // returns null and the await-using would dereference it.
+            harness.UnitOfWork
+                .Setup(u => u.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.Transaction.Object)
+                .Callback(() => harness.TransactionsOpened++);
+            harness.Transaction
+                .Setup(t => t.CommitAsync(It.IsAny<CancellationToken>()))
+                .Callback(() => harness.TransactionsCommitted++)
+                .Returns(Task.CompletedTask);
 
             harness.ModuleDefinitions
                 .Setup(d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ModuleDefinitionCatalogue.ToList());
+            harness.ModuleDefinitions
+                .Setup(d => d.GetAdministrativeDefinitionByFriendlyNameAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, string friendlyName, CancellationToken _) =>
+                    harness.ModuleDefinitionCatalogue.FirstOrDefault(definition => string.Equals(
+                        definition.FriendlyName,
+                        friendlyName,
+                        StringComparison.OrdinalIgnoreCase)));
 
             // The module repository contract carries no paging member, so the tenant's modules arrive whole
             // and the service narrows them itself.

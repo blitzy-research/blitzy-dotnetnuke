@@ -53,7 +53,7 @@ namespace DnnMigration.UnitTests.Application;
 /// controller, and that each place where it deliberately departs from that behaviour departs in the
 /// documented direction.
 /// </summary>
-public class ModuleServiceTests
+public class ModuleServiceApplicationTests
 {
     /// <summary>
     /// The tenant under test. <c>Portals.PortalID</c> is declared <c>IDENTITY(-1,1)</c>, so -1 is a real
@@ -102,8 +102,21 @@ public class ModuleServiceTests
     /// </summary>
     private const string BusinessController = "Dnn.Modules.Html.HtmlController";
 
-    /// <summary>The package name, which the export document carries as its <c>type</c> attribute.</summary>
+    /// <summary>The package name, from which the export document's <c>type</c> attribute is derived.</summary>
     private const string PackageName = "DNN_HTML";
+
+    /// <summary>
+    /// The package name after the legacy sanitiser, which is what the export document's <c>type</c>
+    /// attribute actually carries.
+    /// </summary>
+    /// <remarks>
+    /// <c>Website/admin/Modules/Export.ascx.vb</c> L159 writes <c>CleanName(objModule.ModuleName)</c>, and
+    /// its helper at L209-L221 removes the underscore among a fixed punctuation set - so the seeded
+    /// <c>DNN_HTML</c> is written as <c>DNNHTML</c>. Spelled out as its own constant rather than computed
+    /// from <see cref="PackageName"/>, because a computed expectation would agree with whatever the
+    /// sanitiser happened to do; the difference between the two constants is the whole point.
+    /// </remarks>
+    private const string SanitisedPackageName = "DNNHTML";
 
     /// <summary>The package version, which the export document carries as its <c>version</c> attribute.</summary>
     private const string PackageVersion = "04.09.00";
@@ -141,8 +154,17 @@ public class ModuleServiceTests
     /// </summary>
     private const string ControllerFailureCode = "module.controller_exploded";
 
-    /// <summary>The audit event name every module write is recorded under.</summary>
+    /// <summary>The audit event name a module change is recorded under.</summary>
     private const string ModuleUpdatedEventName = "MODULE_UPDATED";
+
+    /// <summary>
+    /// The audit event name a module EXPORT is recorded under.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from the update name on purpose. An export changes nothing, so recording it as an update
+    /// asserted something untrue in a trail whose value is that it is believed.
+    /// </remarks>
+    private const string ModuleExportedEventName = "MODULE_EXPORTED";
 
     /// <summary>
     /// The cache key the definition catalogue is stored under. The legacy name is preserved verbatim so
@@ -457,27 +479,34 @@ public class ModuleServiceTests
 
     /// <summary>
     /// Proves the exported document carries the module's payload under the legacy element and attribute
-    /// names, and that the payload survives the escaping intact.
+    /// names, and that the payload is spliced in without any escaping layer over it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <c>ModuleController.vb</c> L236-L242 built a <c>content</c> element carrying a <c>type</c>
-    /// attribute and a <c>version</c> attribute, and L244 escaped the payload before writing it. The
-    /// element and attribute names are part of the file format, so a legacy export file stays readable and
-    /// a file written here stays readable by the legacy importer.
+    /// The authority for this endpoint is the STANDALONE admin exporter,
+    /// <c>Website/admin/Modules/Export.ascx.vb</c> lines 157-164, which built a <c>content</c> element
+    /// carrying a <c>type</c> attribute holding <c>CleanName(objModule.ModuleName)</c> and a
+    /// <c>version</c> attribute, and concatenated what the module returned DIRECTLY between the tags. The
+    /// element and attribute names are part of the file format, so a legacy export file stays readable here
+    /// and a file written here stays readable by the legacy importer.
     /// <para>
-    /// MIGRATION: the legacy coercion at L233 was
-    /// <c>CType(CType(objObject, IPortable).ExportModule(objModule.ModuleID), String)</c> - a cast to
-    /// String applied to a member already declared <c>As String</c>, which is the kind of redundant
-    /// conversion Option Strict OFF made invisible. It is made explicit here as a typed
-    /// <c>Result&lt;string&gt;</c>: the outer cast disappears because the contract cannot return anything
-    /// else, and the nullability of what the module hands back is expressed by the factory returning
-    /// <c>Result&lt;string?&gt;</c> rather than by a runtime cast that would have thrown.
+    /// MIGRATION: the legacy coercion in that method was
+    /// <c>CType(CType(objObject, IPortable).ExportModule(ModuleID), String)</c> - a cast to String applied
+    /// to a member already declared <c>As String</c>, which is the kind of redundant conversion Option
+    /// Strict OFF made invisible. It is made explicit here as a typed <c>Result&lt;string&gt;</c>: the
+    /// outer cast disappears because the contract cannot return anything else, and the nullability of what
+    /// the module hands back is expressed by the factory returning <c>Result&lt;string?&gt;</c> rather than
+    /// by a runtime cast that would have thrown.
     /// </para>
     /// <para>
-    /// The doubled escaping in the expected text is not a defect. The payload is HTML-escaped, turning
-    /// <c>&lt;</c> into <c>&amp;lt;</c>, and the XML writer then escapes the ampersand that produced,
-    /// giving <c>&amp;amp;lt;</c>. Reading it back reverses both layers.
+    /// MIGRATION: THE EXPECTED DOCUMENT USED TO CARRY A DOUBLY-ESCAPED PAYLOAD AND THE RAW PACKAGE NAME, and
+    /// this paragraph replaces the one that defended both. The service HTML-escaped the payload, turning
+    /// <c>&lt;</c> into <c>&amp;lt;</c>, and the XML writer then escaped the ampersand that produced, giving
+    /// <c>&amp;amp;lt;</c> - so only a reader that knew to undo a layer the format does not declare could
+    /// recover the payload. That encode belongs to the PORTAL TEMPLATE writer at
+    /// <c>ModuleController.vb</c> L244; the module admin exporter this endpoint migrates escapes nothing.
+    /// The type attribute is now the SANITISED name, which is what the legacy wrote and what its importer
+    /// compares against, and the document opens with the declaration the legacy emitted as a literal.
     /// </para>
     /// </remarks>
     [Fact]
@@ -494,8 +523,9 @@ public class ModuleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(
-            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
-            + "&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</content>");
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?>"
+            + $"<content type=\"{SanitisedPackageName}\" version=\"{PackageVersion}\">"
+            + "<item>one</item></content>");
     }
 
     /// <summary>
@@ -538,7 +568,8 @@ public class ModuleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(
-            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">{payload}</content>");
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?>"
+            + $"<content type=\"{SanitisedPackageName}\" version=\"{PackageVersion}\">{payload}</content>");
     }
 
     /// <summary>
@@ -657,6 +688,65 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// Proves the export refuses content beyond its stated ceiling instead of assembling a document of
+    /// whatever size a module chose to hand over.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The payload of an export arrives from MODULE code rather than from the caller's request, so the
+    /// API's request-body limit does not bound it and nothing else did: every step after it - HTML escaping,
+    /// XML escaping and document assembly - is proportional to its length, and an unbounded payload
+    /// therefore bought unbounded processor and memory work from a single request.
+    /// <para>
+    /// The ceiling is restated here as the suite's own expectation rather than read from the
+    /// implementation, so that moving the implementation's constant without considering the consequence
+    /// fails this fact instead of silently redefining what it proves. It is refused with the export
+    /// failure code, not a request-invalid one, because the caller supplied nothing that could be
+    /// corrected - which is the same distinction that code already draws for content XML cannot represent.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy export had no ceiling; it encoded whatever the module returned and wrote it to
+    /// disk, bounded only by a disk-space check that the excluded file subsystem performed. The divergence
+    /// is recorded in MIGRATION_NOTES.md.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ExportModule_BeyondTheContentCeiling_IsRefusedRatherThanAssembled()
+    {
+        // One character past the documented ceiling of one mebibyte of characters.
+        const int exportPayloadCeiling = 1024 * 1024;
+
+        Harness harness = Harness.Ready();
+        harness.ExportOutcome = Result<string?>.Success(new string('x', exportPayloadCeiling + 1));
+
+        Result<string> outcome = await harness.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(ExportFailedCode);
+        outcome.Error.Message.Should().Contain(
+            (exportPayloadCeiling + 1).ToString(CultureInfo.InvariantCulture),
+            "the refusal states what arrived so an operator can size the module's content against the bound");
+
+        // The bound is a ceiling and not a lower limit: a payload exactly at it is carried, which is what
+        // stops the guard from being a silent narrowing of one character.
+        Harness atTheBound = Harness.Ready();
+        atTheBound.ExportOutcome = Result<string?>.Success(new string('x', exportPayloadCeiling));
+
+        Result<string> permitted = await atTheBound.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        permitted.IsSuccess.Should().BeTrue(permitted.Reason?.ToString());
+        permitted.Value.Should().Contain(new string('x', 32), "the payload is carried, not summarised");
+    }
+
+    /// <summary>
     /// Proves the export path writes nothing, so no commit is attempted on any of its outcomes.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -685,40 +775,51 @@ public class ModuleServiceTests
             Times.Never);
 
         AuditEvent recorded = Assert.Single(harness.AuditTrail);
-        recorded.EventName.Should().Be(ModuleUpdatedEventName);
+        recorded.EventName.Should().Be(ModuleExportedEventName);
         recorded.Properties["Operation"].Should().Be("Export");
         recorded.Properties["PayloadLength"].Should().Be("16");
         recorded.Properties.Values.Should().NotContain("<item>one</item>");
     }
 
     /// <summary>
-    /// Proves the submitted document is unescaped before the module receives it, and that the unescaping
-    /// happens without any dependency on an ambient request context.
+    /// Proves the submitted document's payload reaches the module as the document's INNER XML, unaltered,
+    /// and that no escaping decision is taken in either direction.
     /// </summary>
-    /// <param name="documentPayload">The escaped text as it appears inside the document.</param>
+    /// <param name="documentPayload">The payload as it appears inside the document.</param>
     /// <param name="expected">What the module must receive.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: <c>ModuleController.vb</c> L428 read
-    /// <c>strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)</c>, and
-    /// <c>EventMessageProcessor.vb</c> L35 did the same on the deferred path. Both reached through the
-    /// ambient static request context, which an Application-layer class cannot and must not touch - only 8
-    /// of the 84 in-scope legacy files referenced <c>System.Web</c> at all, and the one place the target
-    /// injects an HTTP accessor is a single piece of API middleware. The unescaping itself is preserved,
-    /// performed by a framework-agnostic helper, so a document produced by the legacy exporter imports
-    /// here unchanged.
+    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L200 passes
+    /// <c>xmlDoc.DocumentElement.InnerXml</c>, so an entity reference the document carries reaches the module
+    /// still escaped - <c>InnerXml</c> returns markup, not text. The rows below are the markup as written and
+    /// the markup as received, and every pair is identity: the format declares no escaping layer, so there is
+    /// none to undo.
     /// <para>
-    /// The legacy line preceding it, <c>strcontent.Substring(9, strcontent.Length - 12)</c> at L413, was
-    /// fixed-offset arithmetic that stripped a CDATA wrapper by counting characters. It is not ported: an
-    /// XML reader already resolves a CDATA section to its text, so the offsets have nothing left to strip.
+    /// MIGRATION: THIS FACT USED TO ASSERT THE OPPOSITE, and it is retargeted rather than deleted because the
+    /// property it guards - what the module receives - is still the right one to pin. It asserted that a
+    /// payload was HTML-DECODED once, taking <c>ModuleController.vb</c> L428's
+    /// <c>Server.HtmlDecode</c> as its authority. That line belongs to the PORTAL TEMPLATE reader, whose
+    /// writer at L244 had encoded the payload first; applied to a module admin document it corrupted every
+    /// entity reference the content legitimately carried, and the corruption was invisible only because the
+    /// matching encode on the export side undid it again. The rows that used to read
+    /// <c>"a &amp;amp; b" -&gt; "a &amp; b"</c> now read <c>"a &amp;amp; b" -&gt; "a &amp;amp; b"</c>, which
+    /// is what <c>InnerXml</c> yields and what the module's own reader will resolve for itself.
+    /// </para>
+    /// <para>
+    /// The concern the old title raised is still honoured and is worth restating: nothing here touches an
+    /// ambient request context. Only 8 of the 84 in-scope legacy files referenced <c>System.Web</c> at all,
+    /// and the one place the target injects an HTTP accessor is a single piece of API middleware. The
+    /// dependency disappears with the transformation rather than being replaced.
     /// </para>
     /// </remarks>
     [Theory]
-    [InlineData("&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;", "<item>one</item>")]
-    [InlineData("a &amp;amp; b", "a & b")]
+    [InlineData("&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;", "&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;")]
+    [InlineData("a &amp;amp; b", "a &amp;amp; b")]
     [InlineData("plain text", "plain text")]
-    [InlineData("&amp;quot;quoted&amp;quot;", "\"quoted\"")]
-    public async Task ImportModule_UnescapesThePayloadWithoutAnAmbientRequestContext(
+    [InlineData("&amp;quot;quoted&amp;quot;", "&amp;quot;quoted&amp;quot;")]
+    [InlineData("&quot;quoted&quot;", "\"quoted\"")]
+    [InlineData("&#60;item&#62;", "&lt;item&gt;")]
+    public async Task ImportModule_HandsThePayloadToTheModuleAsTheDocumentsInnerXml(
         string documentPayload,
         string expected)
     {
@@ -729,7 +830,7 @@ public class ModuleServiceTests
             new ModuleImportRequest
             {
                 ModuleId = ModuleId,
-                Content = $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">{documentPayload}</content>",
+                Content = $"<content type=\"{SanitisedPackageName}\" version=\"{PackageVersion}\">{documentPayload}</content>",
             },
             CancellationToken.None);
 
@@ -738,15 +839,16 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Proves a payload that is itself markup is handed on as markup, because it was never escaped and
-    /// unescaping it would corrupt any entity reference it legitimately contains.
+    /// Proves a payload that is itself markup is handed on as markup, with the entity reference it carries
+    /// left exactly as written.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The legacy path applied its unescape unconditionally, which was safe only because the legacy
-    /// exporter always wrote the escaped text form. A document whose <c>content</c> element holds child
-    /// elements is a different shape and is carried through structurally. This is the counterpart to the
-    /// theory above and exists so that the unescape cannot be made unconditional again without a failure.
+    /// This is the counterpart to the theory above: the rule is uniform, so an element child serialises as
+    /// markup for the same reason a text child serialises as escaped text - both are the root's inner XML.
+    /// The fixture's <c>&amp;amp;</c> is the load-bearing part. Under the decode an earlier revision applied
+    /// it would have arrived as a bare ampersand, leaving the module with markup that is no longer
+    /// well-formed, so this assertion is what prevents the decode being reintroduced.
     /// </remarks>
     [Fact]
     public async Task ImportModule_WithAMarkupPayload_HandsItOnWithoutUnescapingIt()
@@ -758,7 +860,7 @@ public class ModuleServiceTests
             new ModuleImportRequest
             {
                 ModuleId = ModuleId,
-                Content = $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
+                Content = $"<content type=\"{SanitisedPackageName}\" version=\"{PackageVersion}\">"
                     + "<item>a &amp; b</item></content>",
             },
             CancellationToken.None);
@@ -768,32 +870,43 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Proves a document written by the legacy exporter, CDATA wrapper and all, imports unchanged.
+    /// Proves a CDATA section survives as a CDATA section, delimiters included, because that is what
+    /// <c>InnerXml</c> returns.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This is the compatibility fact that the two preceding ones exist to serve. The legacy exporter
-    /// wrapped its escaped payload in a CDATA section, and an XML reader resolves that to text, so the
-    /// document takes the unescaping branch and arrives at the module exactly as it left the old one.
-    /// Without this, every portal template written by a DotNetNuke 4.x installation would be unreadable.
+    /// The third member of the payload group, covering the one node kind whose markup form differs most from
+    /// its text form. There is no branch on document shape: an element, a text node and a CDATA section are
+    /// all written back as the markup they are, which is exactly the semantics of the
+    /// <c>DocumentElement.InnerXml</c> the legacy importer passed on.
+    /// <para>
+    /// MIGRATION: THIS FACT USED TO CLAIM THE SECTION WAS UNWRAPPED AND DECODED, and was named for accepting a
+    /// document written by "the legacy exporter". It was wrong about which one. The CDATA-and-encode shape is
+    /// written by <c>ModuleController.vb</c> L244-L246, the PORTAL TEMPLATE writer, and read by the portal
+    /// template parser - never by the module import screen, whose own exporter wraps nothing. Unwrapping it
+    /// here required a branch on whether the content element had child elements, and that branch silently
+    /// mangled module content that legitimately contained a CDATA section of its own. Recorded in
+    /// MIGRATION_NOTES.md.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task ImportModule_AcceptsALegacyDocumentWrittenWithACdataSection()
+    public async Task ImportModule_HandsOnACdataSectionAsMarkupRatherThanText()
     {
         Harness harness = Harness.Ready();
+        const string cdataSection = "<![CDATA[&lt;item&gt;one&lt;/item&gt;]]>";
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
             new ModuleImportRequest
             {
                 ModuleId = ModuleId,
-                Content = $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
-                    + "<![CDATA[&lt;item&gt;one&lt;/item&gt;]]></content>",
+                Content = $"<content type=\"{SanitisedPackageName}\" version=\"{PackageVersion}\">"
+                    + cdataSection + "</content>",
             },
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        harness.ImportedContent.Should().Be("<item>one</item>");
+        harness.ImportedContent.Should().Be("<![CDATA[&lt;item&gt;one&lt;/item&gt;]]>");
     }
 
     /// <summary>
@@ -1039,7 +1152,7 @@ public class ModuleServiceTests
                 break;
 
             case "malformed-document":
-                request.Content = "<content><unclosed>";
+                request.Content = $"<content type=\"{SanitisedPackageName}\"><unclosed>";
                 break;
 
             case "wrong-root":
@@ -1514,33 +1627,42 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Guards the reconciliation between the module window and the placement rows expanded out of it, on
-    /// the request shape where the two disagree.
+    /// A module placed on more pages than the window is wide is cut BY THE WINDOW, and the metadata stays
+    /// exact.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This fact exists because the code it covers was wrong, and it is written to fail again if the fault
-    /// returns. The page window is taken over MODULES while the response carries PLACEMENT rows. The
-    /// service's own remarks reconciled the two by observing that a module has at most one placement on any
-    /// one page - which is true, but only while a page is NAMED. With <c>tabId</c> null, the default listing
-    /// of a portal's modules, no page filter is applied and a module contributes every placement it has, so
-    /// the rows outnumber the modules behind them.
+    /// This fact exists because the code it covers was wrong, and it is written to fail again if either
+    /// generation of the fault returns.
     /// <para>
-    /// The envelope enforces that a grand total cannot be smaller than the page it describes and that a page
-    /// cannot carry more records than the size it declares. Handing it a module total alongside placement
-    /// rows broke both guards and raised
-    /// <see cref="ArgumentOutOfRangeException"/> - surfacing as a server error on a listing whose only
-    /// unusual feature was a module placed on two pages, which is ordinary, and universal for a module
-    /// marked to appear on all pages. Two placements and a window of one module reproduce it exactly.
+    /// The FIRST fault was a raise. The window was taken over MODULES while the response carried PLACEMENT
+    /// rows, and the service's remarks reconciled the two by observing that a module has at most one
+    /// placement on any one page - true, but only while a page is NAMED. With <c>tabId</c> null, the default
+    /// listing of a portal's modules, a module contributes every placement it has, so the rows outnumbered
+    /// the modules behind them. The envelope forbids a total smaller than the page it describes and a page
+    /// carrying more records than its declared size, so both guards refused and
+    /// <see cref="ArgumentOutOfRangeException"/> surfaced as a server error on a listing whose only unusual
+    /// feature was a module placed on two pages - ordinary, and universal for a module marked to appear on
+    /// every page.
     /// </para>
     /// <para>
-    /// This is a fault in code written for this migration, not a legacy behaviour to preserve: the legacy
-    /// listing had no paging envelope at all and so had nothing to reconcile. It is therefore fixed rather
-    /// than annotated, which is why no <c>// MIGRATION:</c> marker accompanies it.
+    /// The SECOND fault was the fix for the first: both figures were raised with <c>Math.Max</c> to whatever
+    /// the row count happened to be. That silenced the guards and left the contract broken in a quieter way.
+    /// A caller asking for one row received two; the declared width was a number it never sent; the total was
+    /// a lower bound rather than a count; and <c>totalPages</c>, computed from both, changed according to
+    /// which page was asked for, so a pager could not enumerate the collection. An earlier revision of THIS
+    /// FACT asserted that behaviour with <c>BeGreaterThanOrEqualTo</c> - a shape loose enough to pass against
+    /// the fabricated figures - which is why it is now asserted by equality.
+    /// </para>
+    /// <para>
+    /// The window is cut over the rows, so one row is what a width of one returns and the module's second
+    /// placement is simply the first row of the next window. Neither fault is a legacy behaviour to preserve:
+    /// the legacy listing had no paging envelope at all and so had nothing to reconcile. Both are therefore
+    /// fixed rather than annotated, which is why no <c>// MIGRATION:</c> marker accompanies this.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListModules_WhenAModuleOutnumbersItsWindow_ReconcilesTheEnvelopeInsteadOfThrowing()
+    public async Task ListModules_WhenAModuleOutnumbersItsWindow_CutsTheRowsRatherThanWideningTheWindow()
     {
         Harness harness = Harness.Ready();
 
@@ -1557,21 +1679,32 @@ public class ModuleServiceTests
         outcome.IsSuccess.Should().BeTrue();
 
         PagedResult<ModuleListItemDto> page = outcome.Value;
-        page.Items.Should().HaveCount(2, "one module in the window, placed on two pages");
-        page.TotalCount.Should().BeGreaterThanOrEqualTo(page.Items.Count);
-        page.PageSize.Should().BeGreaterThanOrEqualTo(page.Items.Count);
+            page.Items.Should().HaveCount(1, "the window is one row wide and the rows are placements");
+            page.PageSize.Should().Be(1, "the declared width is the width the caller asked for");
+            page.PageIndex.Should().Be(0, "the coordinates address rows, so the first window is index zero");
+            page.TotalCount.Should().Be(2, "the module sits on two pages, so the collection holds two rows");
+            page.TotalPages.Should().Be(2, "two rows in windows of one is two windows");
+
+            Result<PagedResult<ModuleListItemDto>> next = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { PageIndex = 1, PageSize = 1 },
+            tabId: null,
+            includeDeleted: false,
+            CancellationToken.None);
+
+        next.Value.Items.Should().ContainSingle().Which.TabId.Should().Be(
+            SecondTabId,
+            "the placement the first window could not carry is the first row of the second");
     }
 
     /// <summary>
-    /// Proves the declared window is left exactly as the caller asked for it whenever the expanded rows fit
-    /// inside it.
+    /// Proves the declared window is left exactly as the caller asked for it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The reconciliation above widens the declared window only when the placement expansion overflowed it.
-    /// This is the other half of that statement, and it is what stops the fix from becoming a licence to
-    /// return whatever geometry is convenient: with the module restricted to a single page, the rows and the
-    /// modules are in step, and the envelope reports the requested size untouched.
+    /// The companion of the fact above, on the shape where the rows fit. It is what stops a fix from becoming
+    /// a licence to return whatever geometry is convenient: with the module restricted to a single page there
+    /// is one row, and the envelope reports the requested size untouched.
     /// </remarks>
     [Fact]
     public async Task ListModules_WhenTheRowsFitTheWindow_ReportsTheRequestedGeometryUnchanged()
@@ -1846,6 +1979,19 @@ public class ModuleServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Placements);
 
+            // The set-based placement read the listing uses, served from the same placement world as the
+            // single-module read above so the harness cannot describe two different realities. The listing
+            // asks for many modules at once precisely so that its cost does not grow with the number of
+            // modules, and a stub that answered from a separate seam would let that property go untested.
+            harness.Modules
+                .Setup(repository => repository.GetTabModulesByModuleIdsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<int> moduleIds, CancellationToken _) =>
+                    harness.Placements
+                        .Where(placement => moduleIds.Contains(placement.ModuleId))
+                        .ToList());
+
             harness.Modules
                 .Setup(repository => repository.GetTabModuleByIdAsync(
                     It.IsAny<int>(),
@@ -1876,6 +2022,18 @@ public class ModuleServiceTests
                     It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => new List<ModuleDefinition> { harness.Definition });
+            harness.Definitions
+                .Setup(repository => repository.GetAdministrativeDefinitionByFriendlyNameAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, string friendlyName, CancellationToken _) =>
+                    string.Equals(
+                        harness.Definition.FriendlyName,
+                        friendlyName,
+                        StringComparison.OrdinalIgnoreCase)
+                        ? harness.Definition
+                        : null);
 
             harness.Definitions
                 .Setup(repository => repository.GetDesktopModuleByIdAsync(
@@ -1992,7 +2150,7 @@ public class ModuleServiceTests
         /// here is the same shape as one a DotNetNuke 4.x installation produced.
         /// </remarks>
         public static string Document(string payload) =>
-            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">{payload}</content>";
+            $"<content type=\"{SanitisedPackageName}\" version=\"{PackageVersion}\">{payload}</content>";
 
         private static TabModule NewPlacement(int tabModuleId, int tabId, int order) => new()
         {

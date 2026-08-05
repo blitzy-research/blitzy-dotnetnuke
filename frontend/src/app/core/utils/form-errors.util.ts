@@ -76,6 +76,7 @@ import type {
   ProblemDetailsErrors,
   ValidationProblemDetails,
 } from '../models/problem-details.model';
+import { UserCreateStatus } from '../models/user.model';
 
 // ---------------------------------------------------------------------------
 // SEVERITY
@@ -160,15 +161,19 @@ export interface ProblemSummary {
   readonly formMessages: readonly string[];
 
   /**
-   * The server's trace identifier, or null when the document carried none.
+   * The identifier a person quotes when reporting this failure, or null when the
+   * document carried none.
    *
    * Surfaced because it is the only join key between something a person saw in
-   * the browser and the request as the server recorded it. The successful
-   * response envelope deliberately carries no such member, so a problem document
-   * is the only place it appears. It is diagnostic: quote it in a report, do not
-   * present it as an explanation.
+   * the browser and the request as the server recorded it. It is the correlation
+   * identifier the server validated for the request, which is the value that
+   * appears on the response header, on the request envelope in the server's log
+   * and on every audit event the request produced; the W3C trace identifier is
+   * used only when no correlation identifier is present, because it appears in
+   * none of those records. It is diagnostic: quote it in a report, do not present
+   * it as an explanation.
    */
-  readonly traceId: string | null;
+  readonly supportReference: string | null;
 
   /** The status code the document reported, or null when it carried none. */
   readonly status: number | null;
@@ -438,16 +443,35 @@ export function problemMessage(
 }
 
 /**
- * Reads the server's trace identifier from a problem document.
+ * Reads the identifier a person should quote when reporting a failure.
  *
- * Present only when a trace identifier was available server-side, so absence is
- * ordinary and not a fault. A blank value is reported as absent, because a blank
+ * The correlation identifier is preferred, and the preference is the whole point of
+ * this function rather than a detail of it: that value is the one the server
+ * validated for the request, and it is what appears on the response header, on the
+ * request envelope in the server's log and on every audit event the request
+ * produced. The W3C trace identifier is a fallback only. It is taken from whatever
+ * diagnostic activity happened to be current, so it appears in none of those
+ * records, and quoting it produced a reference an operator could not find - which
+ * is what this function did before the server published the correlation identifier
+ * in the body.
+ *
+ * Absence of both is ordinary and not a fault: RFC 7807 makes every member
+ * optional, and a proxy between the browser and the API can return a document this
+ * application never produced. A blank value is reported as absent, because a blank
  * identifier joins nothing to nothing.
  *
  * @param problem The problem document, or null.
  * @returns The identifier, or null when there is none to quote.
  */
-export function problemTraceId(problem: ProblemDetails | null | undefined): string | null {
+export function problemSupportReference(
+  problem: ProblemDetails | null | undefined,
+): string | null {
+  const correlationId = problem?.correlationId?.trim();
+
+  if (correlationId !== undefined && correlationId.length > 0) {
+    return correlationId;
+  }
+
   const traceId = problem?.traceId?.trim();
 
   return traceId !== undefined && traceId.length > 0 ? traceId : null;
@@ -801,7 +825,7 @@ export function summarizeProblem(
     message: problemMessage(problem, resolvedFallback),
     fieldMessages: perField,
     formMessages,
-    traceId: problemTraceId(problem),
+    supportReference: problemSupportReference(problem),
     status,
     hasFieldMessages: perField.length > 0 || formMessages.length > 0,
   };
@@ -1130,12 +1154,19 @@ export function passwordUpdateMessage(code: string | null | undefined): string |
 // ---------------------------------------------------------------------------
 
 /**
- * The user-creation outcomes, in declaration order, which here equals their
- * explicit numeric order.
+ * The user-creation outcomes, in ordinal order.
  *
- * Library/Components/Users/Membership/UserCreateStatus.vb:L23-L42 declares all
- * eighteen members with EXPLICIT values 0 to 17, and declaration order matches, so
- * the index of a member in this array is again its ordinal.
+ * DERIVED FROM {@link UserCreateStatus}, which is the authoritative declaration in
+ * `core/models/user.model.ts`, rather than restated as a literal list. Restating it
+ * gave the same vocabulary two definitions and no mechanism to keep them agreeing: a
+ * member added, removed or renumbered on the model would leave this array quietly
+ * describing the previous contract, and the wording table below is keyed on it.
+ *
+ * The enumeration declares its eighteen members with EXPLICIT values 0 to 17 in
+ * declaration order, so the index of a member here is its ordinal, exactly as before.
+ * The reverse-mapping walk is the standard one for a numeric TypeScript enumeration:
+ * the object holds both directions, and reading it by ascending ordinal yields the
+ * member names in declaration order.
  *
  * TWO ORDINALS ARE COUNTER-INTUITIVE AND BOTH MATTER:
  *
@@ -1143,36 +1174,28 @@ export function passwordUpdateMessage(code: string | null | undefined): string |
  *   legacy code tests against it exactly that way: Website/admin/Users/User.ascx.vb
  *   L175 and L185 both read `If createStatus <> UserCreateStatus.AddUser`, treating
  *   any other value as a failure.
- * - `Success` is 13, NOT 0 (L37).
+ * - `Success` is 13, NOT 0.
  *
  * A "zero means success" assumption is therefore wrong here, and wrong differently
- * in each neighbouring enumeration: `UserLoginStatus.LOGIN_SUCCESS` is 1 (see
- * {@link USER_LOGIN_STATUS_NAMES}) while the legacy `UserValidStatus.VALID` is 0.
- * Three enumerations, three conventions.
+ * in each neighbouring enumeration: `UserLoginStatus.Success` is 1 (see
+ * `core/models/auth.model.ts`) while the legacy `UserValidStatus.VALID` is 0. Three
+ * enumerations, three conventions.
  */
-export const USER_CREATE_STATUS_NAMES = Object.freeze([
-  'AddUser',
-  'UsernameAlreadyExists',
-  'UserAlreadyRegistered',
-  'DuplicateEmail',
-  'DuplicateProviderUserKey',
-  'DuplicateUserName',
-  'InvalidAnswer',
-  'InvalidEmail',
-  'InvalidPassword',
-  'InvalidProviderUserKey',
-  'InvalidQuestion',
-  'InvalidUserName',
-  'ProviderError',
-  'Success',
-  'UnexpectedError',
-  'UserRejected',
-  'PasswordMismatch',
-  'AddUserToPortal',
-] as const);
+export const USER_CREATE_STATUS_NAMES: readonly string[] = Object.freeze(
+  Object.values(UserCreateStatus).filter(
+    (member): member is string => typeof member === 'string',
+  ),
+);
 
-/** One user-creation outcome. */
-export type UserCreateStatusName = (typeof USER_CREATE_STATUS_NAMES)[number];
+/**
+ * One user-creation outcome, spelled as the authoritative enumeration spells it.
+ *
+ * Taken from the enumeration's own key set rather than from the derived array,
+ * because a value derived at run time cannot produce a literal union at compile time.
+ * The two are the same vocabulary by construction: the array is the enumeration's
+ * string members and this union is its keys.
+ */
+export type UserCreateStatusName = keyof typeof UserCreateStatus;
 
 /**
  * Wording for each user-creation outcome.
@@ -1416,38 +1439,34 @@ export function advisoryMessage(code: AdvisoryCode, formattedDate?: string | nul
 const DATE_PLACEHOLDER = '{0}';
 
 // ---------------------------------------------------------------------------
-// LEGACY LOGIN STATUS - REFERENCE ONLY
+// LEGACY LOGIN STATUS - WHERE IT LIVES, AND WHY IT IS NOT DECLARED HERE
 // ---------------------------------------------------------------------------
-
-/**
- * The legacy login outcomes, in declaration order, which equals their explicit
- * values 0 to 6.
- *
- * MIGRATION: the legacy member names are SCREAMING_CASE with a `LOGIN_` prefix,
- * exactly as reproduced here, at
- * Library/Components/Users/Membership/UserLoginStatus.vb:L23-L31. The PascalCase
- * spellings that appear in migration prose - `Failure`, `Success`, `SuperUser` and
- * so on - are target renames, not source spellings, so a citation of the legacy
- * enumeration must quote the `LOGIN_` form.
- *
- * MIGRATION: this enumeration is NON-WIRE. The sign-in response carries no status
- * member, and a refusal arrives as a problem document instead, so nothing here
- * decodes it. It is recorded because the legacy control flow is unreadable without
- * it - the value seeded at Login.ascx.vb:L163 is `LOGIN_FAILURE`, a fail-closed
- * default, and the lockout defect annotated on
- * {@link resolveVerificationPrompt} is only visible once one knows that
- * `LOGIN_USERLOCKEDOUT` is 3 while `LOGIN_FAILURE` is 0.
- */
-export const USER_LOGIN_STATUS_NAMES = Object.freeze([
-  'LOGIN_FAILURE',
-  'LOGIN_SUCCESS',
-  'LOGIN_SUPERUSER',
-  'LOGIN_USERLOCKEDOUT',
-  'LOGIN_USERNOTAPPROVED',
-  'LOGIN_INSECUREADMINPASSWORD',
-  'LOGIN_INSECUREHOSTPASSWORD',
-] as const);
-
-/** One legacy login outcome. Reference only; never read from a response. */
-export type UserLoginStatusName = (typeof USER_LOGIN_STATUS_NAMES)[number];
-
+//
+// The login outcomes are declared once, as `UserLoginStatus` in
+// `core/models/auth.model.ts`. This module previously restated them as a frozen
+// array of the legacy SCREAMING_CASE spellings, exported, and then never read them:
+// nothing in this file or anywhere in the application decoded a login status, because
+// the sign-in response carries no status member and a refusal arrives as a problem
+// document instead. An exported vocabulary with no reader is a second definition of
+// something that already had one, and the two spellings could drift apart with
+// nothing to detect it. The array and its member union are therefore removed, and the
+// authoritative enumeration is cited instead.
+//
+// MIGRATION: THE TWO SPELLINGS ARE NOT INTERCHANGEABLE, which is the one fact worth
+//   carrying here rather than leaving to a reader to rediscover. The legacy member
+//   names are SCREAMING_CASE with a `LOGIN_` prefix -
+//   Library/Components/Users/Membership/UserLoginStatus.vb:L23-L31 declares
+//   LOGIN_FAILURE 0, LOGIN_SUCCESS 1, LOGIN_SUPERUSER 2, LOGIN_USERLOCKEDOUT 3,
+//   LOGIN_USERNOTAPPROVED 4, LOGIN_INSECUREADMINPASSWORD 5 and
+//   LOGIN_INSECUREHOSTPASSWORD 6. The target enumeration keeps every numeric value
+//   and renames every member to PascalCase: Failure, Success, SuperUser,
+//   UserLockedOut, UserNotApproved, InsecureAdminPassword, InsecureHostPassword. A
+//   citation of the LEGACY enumeration must quote the `LOGIN_` form; a reference to
+//   the TARGET enumeration must not.
+//
+// MIGRATION: the ordinals are why the legacy control flow reads the way it does, and
+//   the reason is preserved because the defect annotated on
+//   `resolveVerificationPrompt` depends on it: the value seeded at
+//   Login.ascx.vb:L163 is LOGIN_FAILURE, a fail-closed default, and the lockout
+//   defect is only visible once one knows that the locked-out outcome is 3 while the
+//   failure outcome is 0. Both values are unchanged by the rename.

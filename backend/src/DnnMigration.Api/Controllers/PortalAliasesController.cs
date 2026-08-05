@@ -39,11 +39,9 @@ namespace DnnMigration.Api.Controllers;
 /// of the service rather than for every screen that remembers to apply them.
 /// </para>
 /// <para>
-/// <b>Two addressing families, and both are deliberate.</b> Five actions address one tenant's aliases
-/// beneath the portal that owns them, at <c>portals/{portalId}/aliases</c>. Four address an alias - or the
-/// whole alias table - without naming a tenant, at <c>portal-aliases</c>. The second family cannot be
-/// nested: an installation-wide listing exists precisely to show every alias across every portal, and the
-/// repair path for a wrong or missing alias must not require an alias to resolve before it can be reached.
+/// <b>One canonical addressing family.</b> All five actions address one tenant's aliases beneath the
+/// portal that owns them, at <c>portals/{portalId}/aliases</c>. No host-wide alias route is published:
+/// installation-wide seam-repair addresses are outside the frozen API surface.
 /// </para>
 /// <para>
 /// <b>The individual alias is reachable beneath its owning portal, and that nesting is a security
@@ -60,21 +58,14 @@ namespace DnnMigration.Api.Controllers;
 /// and the service cannot see which credential asked.
 /// </para>
 /// <para>
-/// <b>Authority is declared per action, not on the class.</b> The class attribute carries authentication
-/// only. Five actions name <see cref="PolicyNames.PortalAdministrator"/>, whose handler binds the
-/// tenant named in the route to the tenant the caller administers; four name
-/// <see cref="PolicyNames.HostAdministrator"/>, because they span every tenant by definition and so carry
-/// no tenant to bind. The split is unavoidable rather than stylistic: authorisation attributes COMBINE
-/// rather than override, so a class-level tenant policy would be ANDed onto the installation-wide actions
-/// and would make them unreachable by the only credential entitled to them, since a host account holds no
-/// administrator role assignment in any tenant. The cost of the split is that an action added later would
-/// inherit mere authentication if its author forgot the attribute, and an attribute cannot express "every
-/// action must name a policy, but not the same one" - so that guard is a test over this type's metadata
-/// rather than a declaration here.
+/// <b>Authority is declared per action.</b> The class attribute carries authentication only, and each of
+/// the five actions names <see cref="PolicyNames.PortalAdministrator"/>, whose handler binds the tenant in
+/// the route to the tenant the caller administers. A metadata test guards against a future action
+/// inheriting authentication without naming its policy.
 /// </para>
 /// <para>
-/// MIGRATION: authority is therefore WIDER than the legacy screens in one direction and NARROWER in
-/// another, and both halves are stated so neither is absorbed. The legacy delete and edit affordances were
+/// MIGRATION: authority is wider than the legacy screens and the difference is stated rather than absorbed.
+/// The legacy delete and edit affordances were
 /// super-user gated (<c>EditPortalAlias.ascx.vb:L181-L186</c> refused with the <c>AccessDenied</c>
 /// message, <c>:L65-L70</c> with "You do not have access to view this Portal Alias", and
 /// <c>PortalAlias.ascx.vb:L84</c> honoured a caller-supplied portal only under the host navigation tree
@@ -82,9 +73,7 @@ namespace DnnMigration.Api.Controllers;
 /// because the policy catalogue is closed and holds no per-screen super-user gate. The legacy non-host arm
 /// nevertheless enforced ownership against the LOADED RECORD, comparing
 /// <c>objPortalAliasInfo.PortalID</c> against the ambient portal, and that check survives intact inside
-/// the service. The installation-wide routes are narrower than the widening implies: they are refused to a
-/// portal administrator outright and require host authority, which is the legacy super-user arm preserved
-/// exactly. Refusal is <c>403</c> rather than the legacy redirect to an access-denied page.
+/// the service. Refusal is <c>403</c> rather than the legacy redirect to an access-denied page.
 /// </para>
 /// <para>
 /// MIGRATION: alias lookup and duplicate detection are EXACT-MATCH throughout. The legacy tenant-resolution
@@ -93,7 +82,8 @@ namespace DnnMigration.Api.Controllers;
 /// (<c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L4569-L4600</c>) and then
 /// took <c>min(PortalID)</c> of whatever matched, so an alias that was a substring of another portal's
 /// alias resolved to the wrong tenant - a latent multi-tenant mis-resolution. The exact-match replacement
-/// lives in <see cref="PortalAliasResolutionMiddleware"/> and in the service; the consequence for this
+/// lives in <see cref="DnnMigration.Api.Middleware.PortalAliasResolutionMiddleware"/> and in the service;
+/// the consequence for this
 /// file is a prohibition rather than a behaviour, namely that nothing here reintroduces a substring or
 /// wildcard notion of matching an alias. No action normalises, folds case or compares host names at all.
 /// </para>
@@ -105,10 +95,8 @@ namespace DnnMigration.Api.Controllers;
 /// (<c>Library/Components/Shared/Null.vb:L41-L45</c>) and the <c>glbRoleAllUsers</c> role token
 /// (<c>Globals.vb:L95</c>). No route here imposes a lower bound, tests an identifier against <c>0</c> or
 /// <c>-1</c>, or substitutes a default for a value it failed to bind: the segment is constrained to
-/// <c>:int</c> and forwarded exactly as bound. An installation-wide read is expressed by NOT naming a
-/// portal - the service's parameter is nullable for that purpose - rather than by the legacy wildcard,
-/// which passed <c>-1</c> as "match every row" and so could not be told apart from a genuine request for
-/// the first portal.
+/// <c>:int</c> and forwarded exactly as bound. The legacy installation-wide wildcard read is not exposed
+/// on this controller.
 /// </para>
 /// <para>
 /// MIGRATION: the string sentinel is honoured the same way. <c>Null.NullString</c> is the EMPTY STRING and
@@ -155,20 +143,30 @@ namespace DnnMigration.Api.Controllers;
 [Authorize]
 public sealed class PortalAliasesController : ControllerBase
 {
-    /// <summary>
-    /// Why the identifier-only alias actions may be served without a resolved tenant.
-    /// </summary>
+    /// <summary>Reason the alias reads and writes are exempt from tenant resolution.</summary>
     /// <remarks>
-    /// THE REPAIR PATH MUST NOT DEPEND ON WHAT IT REPAIRS. These four actions are how an operator inspects and
+    /// <para>
+    /// THE REPAIR PATH MUST NOT DEPEND ON WHAT IT REPAIRS. These actions are how an operator inspects and
     /// corrects the alias table, so requiring the host name to resolve against that table before they could be
     /// reached would make a mistyped alias unrecoverable: every route capable of fixing it would be refused for
-    /// precisely the reason it needed fixing. Each is restricted to a host account, and each resolves the portal
-    /// it concerns from the stored alias row rather than from the host name.
+    /// precisely the reason it needed fixing. Each names the portal it concerns in its own route rather than
+    /// inferring it from the host name.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the mark is NOT a weakening, because the authorisation policy is the control that matters
+    /// here and it is untouched. A portal administrator still has to satisfy the tenant reconciliation the
+    /// policy performs - route tenant, token tenant and arrival tenant must agree - so an unresolved arrival
+    /// tenant still refuses one. What the exemption admits is the documented escape hatch: a HOST account,
+    /// which the policy exempts from tenant binding by design, so that an operator whose alias table is
+    /// misconfigured can sign in and repair it. The exemption was lost when these operations moved from four
+    /// flat host-only routes onto the portal-scoped shape, which left the installation with no route capable of
+    /// correcting a broken alias table from a host that the broken table could not resolve.
+    /// </para>
     /// </remarks>
     private const string AliasRepairJustification =
-        "Host-only alias administration: the path by which a wrong or missing alias is repaired, so it must "
-        + "not itself require an alias to resolve. The portal is read from the stored alias row.";
-
+        "Alias administration: the path by which a wrong or missing alias is repaired, so it must not itself "
+        + "require an alias to resolve. The portal is named by the route, and the authorisation policy still "
+        + "binds a portal administrator to the tenant it arrived through.";
     /// <summary>The application-layer contract this controller delegates every decision to.</summary>
     private readonly IPortalService _portals;
 
@@ -219,6 +217,7 @@ public sealed class PortalAliasesController : ControllerBase
     /// </remarks>
     [HttpGet("portals/{portalId:int}/aliases")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [TenantOptional(AliasRepairJustification)]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<PortalAliasDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
@@ -229,108 +228,6 @@ public sealed class PortalAliasesController : ControllerBase
     {
         Result<IReadOnlyList<PortalAliasDto>> outcome = await _portals
             .ListPortalAliasesAsync(portalId, cancellationToken)
-            .ConfigureAwait(false);
-
-        return this.Complete(outcome);
-    }
-
-    /// <summary>Lists every alias in the installation, across all portals.</summary>
-    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>Every alias, in the shared success envelope.</returns>
-    /// <response code="200">Every alias bound anywhere in the installation.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but does not hold installation-wide authority. A portal administrator is
-    /// refused here and reads its own portal's aliases through the nested collection instead.
-    /// </response>
-    /// <remarks>
-    /// <para>
-    /// The host-wide view exists because alias collisions are a host-level problem: an operator diagnosing
-    /// why one portal is answering for another needs to see every alias at once, which no per-portal view
-    /// can show.
-    /// </para>
-    /// <para>
-    /// <b>And that is exactly why it requires HOST authority rather than tenant authority.</b> The
-    /// projection spans every tenant by definition, so there is no tenant it could be scoped to and no
-    /// route value the tenant-binding handler could check; served under the tenant policy it would hand an
-    /// administrator of any one portal the complete address book of every other. The legacy screens drew
-    /// the same line: <c>PortalAlias.ascx.vb:L84</c> honoured a caller-supplied portal only under the host
-    /// navigation tree or for a super-user, and <c>EditPortalAlias.ascx.vb:L65-L70</c> refused outright
-    /// when the addressed record belonged to another tenant and the caller was not a host account.
-    /// </para>
-    /// <para>
-    /// MIGRATION: replaces <c>GetPortalAliases</c> (<c>PortalAliasController.vb:L86</c>), which asked for
-    /// every alias by calling the by-portal reader with <c>-1</c> - a value the underlying procedure
-    /// treated as "match every row", and which is also the identifier of the first portal an installation
-    /// creates. The unfiltered case is expressed here by naming no portal at all, so it cannot be confused
-    /// with a genuine request for that portal.
-    /// </para>
-    /// </remarks>
-    [HttpGet("portal-aliases")]
-    [Authorize(Policy = PolicyNames.HostAdministrator)]
-    [TenantOptional(AliasRepairJustification)]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<PortalAliasDto>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<PortalAliasDto>>>> ListAllAsync(
-        CancellationToken cancellationToken)
-    {
-        // The unfiltered case is a null portal rather than a sentinel. See the class remarks: -1 is a real
-        // portal identifier here, so the legacy wildcard value cannot serve as "every portal".
-        Result<IReadOnlyList<PortalAliasDto>> outcome = await _portals
-            .ListPortalAliasesAsync(null, cancellationToken)
-            .ConfigureAwait(false);
-
-        return this.Complete(outcome);
-    }
-
-    /// <summary>Reads one alias by its own identifier, without naming a portal.</summary>
-    /// <param name="portalAliasId">
-    /// Identifier of the alias to read. Constrained to an integer and nothing further: no bound is imposed
-    /// and no default is substituted, for the reason given in the class remarks.
-    /// </param>
-    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>The alias, in the shared success envelope.</returns>
-    /// <response code="200">The alias, together with the portal it is bound to.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but does not hold installation-wide authority. A portal administrator
-    /// reads its own portal's aliases through the nested route instead.
-    /// </response>
-    /// <response code="404">No alias bears that identifier.</response>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: replaces <c>GetPortalAliasByPortalAliasID</c> (<c>PortalAliasController.vb:L63</c>), read by
-    /// the legacy edit screen at <c>EditPortalAlias.ascx.vb:L60</c> from the <c>paid</c> query-string value.
-    /// Absence was expressed there by returning nothing, which the screen then dereferenced at <c>:L63</c>
-    /// before testing it; here absence is a successful outcome carrying no value, which the shared
-    /// translator renders as a well-formed <c>404</c> problem document.
-    /// </para>
-    /// <para>
-    /// This is the installation-wide arm of the alias-repair surface, so it names no portal - see
-    /// <see cref="AliasRepairJustification"/> for why it must not require one - and it is reached only by a
-    /// host account. The nested twin, <see cref="GetForPortalAsync"/>, is the route a portal administrator
-    /// uses, and it names the owning portal so the tenant-binding policy has something to compare.
-    /// </para>
-    /// </remarks>
-    [HttpGet("portal-aliases/{portalAliasId:int}")]
-    [Authorize(Policy = PolicyNames.HostAdministrator)]
-    [TenantOptional(AliasRepairJustification)]
-    [ProducesResponseType(typeof(ApiResponse<PortalAliasDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ApiResponse<PortalAliasDto?>>> GetAsync(
-        int portalAliasId,
-        CancellationToken cancellationToken)
-    {
-        // No tenant is named, and none may be inferred. This route is reached only by a host administrator,
-        // whose authority is installation-wide, and binding it to a portal it did not name would have meant
-        // binding it to the model binder's default of zero - which is a REAL portal in this schema, because
-        // Portals.PortalID is IDENTITY(-1, 1). Every alias outside that one portal would then have read as
-        // absent on the one surface that exists to repair a broken binding.
-        Result<PortalAliasDto?> outcome = await _portals
-            .GetPortalAliasAsync(portalId: null, portalAliasId, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
@@ -420,116 +317,11 @@ public sealed class PortalAliasesController : ControllerBase
         return this.Created(outcome, created => created.PortalAliasId);
     }
 
-    /// <summary>Changes the host name of one alias, addressed by its own identifier.</summary>
-    /// <param name="portalAliasId">
-    /// Identifier of the alias to change. It is the only place an alias is named on this call, so a caller
-    /// cannot redirect the write onto a different alias by editing the body.
-    /// </param>
-    /// <param name="request">The host name to store in place of the current one.</param>
-    /// <param name="cancellationToken">Abandons the work when the caller disconnects.</param>
-    /// <returns><c>204 No Content</c> when the alias has been changed.</returns>
-    /// <response code="204">
-    /// The alias was changed. There is no body: the request carried the only value this resource holds
-    /// besides its identifiers, so a caller already knows what it now says.
-    /// </response>
-    /// <response code="400">
-    /// The body was absent or malformed, or a declared rule refused the host name, in which case the body is
-    /// an RFC 7807 validation document naming the offending field.
-    /// </response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but does not hold installation-wide authority.
-    /// </response>
-    /// <response code="404">No alias bears that identifier.</response>
-    /// <response code="409">
-    /// The new host name is already bound to another alias. The body carries
-    /// <c>portal.alias_duplicate</c> as its problem type.
-    /// </response>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: replaces <c>UpdatePortalAliasInfo</c> (<c>PortalAliasController.vb:L94</c>) as driven by
-    /// the update arm at <c>EditPortalAlias.ascx.vb:L218-L228</c>. The alias cannot be moved between
-    /// portals through this route, matching the legacy screen, which re-supplied the owning portal from page
-    /// state at <c>:L221</c> rather than from the operator and offered only the host name for editing.
-    /// </para>
-    /// <para>
-    /// MIGRATION: LEGACY DEFECT, annotated rather than inherited. The legacy update wrapped the write in a
-    /// BARE <c>Catch</c> and reported the <c>DuplicateAlias</c> message for EVERY exception it caught
-    /// (<c>:L223-L228</c>) - a lost connection, a timeout and a genuine unique-constraint violation were
-    /// indistinguishable to the operator, and the screen then returned as though the request had merely
-    /// been refused. Here the two are separated by construction: a duplicate is a reported outcome that
-    /// becomes <c>409</c>, and anything unexpected is an exception that reaches
-    /// <see cref="GlobalExceptionHandler"/> and becomes a <c>500</c> RFC 7807 document carrying a trace
-    /// identifier. No action in this file contains a <c>try</c> or a <c>catch</c>, which is what makes that
-    /// separation total rather than conventional.
-    /// </para>
-    /// </remarks>
-    [HttpPut("portal-aliases/{portalAliasId:int}")]
-    [Authorize(Policy = PolicyNames.HostAdministrator)]
-    [TenantOptional(AliasRepairJustification)]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
-    public async Task<ActionResult> UpdateAsync(
-        int portalAliasId,
-        [FromBody] UpdatePortalAliasRequest request,
-        CancellationToken cancellationToken)
-    {
-        // VALIDATED BY THE GLOBALLY REGISTERED FILTER, NOT HERE, for the reason recorded on the create above.
-        Result outcome = await _portals
-            .UpdatePortalAliasAsync(portalId: null, portalAliasId, request, cancellationToken)
-            .ConfigureAwait(false);
-
-        return this.Complete(outcome);
-    }
-
-    /// <summary>Unbinds one alias, addressed by its own identifier.</summary>
-    /// <param name="portalAliasId">Identifier of the alias to unbind.</param>
-    /// <param name="cancellationToken">Abandons the work when the caller disconnects.</param>
-    /// <returns><c>204 No Content</c> when the alias has been unbound.</returns>
-    /// <response code="204">The alias was unbound.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but does not hold installation-wide authority.
-    /// </response>
-    /// <response code="404">No alias bears that identifier.</response>
-    /// <remarks>
-    /// MIGRATION: replaces <c>DeletePortalAlias</c> (<c>PortalAliasController.vb:L34</c>) as driven by
-    /// <c>EditPortalAlias.ascx.vb:L173-L193</c>, which removed the row whether or not it existed and
-    /// reported nothing either way. Reporting <c>portal.alias_not_found</c> lets a caller distinguish a
-    /// removal it caused from one that had already happened. The legacy screen's own super-user check at
-    /// <c>:L181-L186</c> is preserved here as the host-authority policy rather than widened.
-    /// </remarks>
-    [HttpDelete("portal-aliases/{portalAliasId:int}")]
-    [Authorize(Policy = PolicyNames.HostAdministrator)]
-    [TenantOptional(AliasRepairJustification)]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult> DeleteAsync(
-        int portalAliasId,
-        CancellationToken cancellationToken)
-    {
-        Result outcome = await _portals
-            .DeletePortalAliasAsync(portalId: null, portalAliasId, cancellationToken)
-            .ConfigureAwait(false);
-
-        return this.Complete(outcome);
-    }
-
     // -------------------------------------------------------------------------------------------------
-    // THE PORTAL-NESTED SIBLINGS. Each names the owning tenant in its route, so the portal-administrator
-    // policy has a portal to bind to instead of falling back to whichever tenant the caller arrived
-    // through - and the service compares the named tenant against the alias's stored owner before it
-    // reports or writes anything. Both addressing families exist deliberately and neither is redundant:
-    // an administrator of one tenant reaches its own aliases here and nowhere else, while the host-scoped
-    // routes above answer the installation-wide case, whose caller names no tenant because its authority
-    // is not scoped to one. A tenant mismatch below reads as NOT FOUND rather than as a refusal, so the
-    // route cannot become an oracle for which alias identifiers exist in other tenants.
+    // THE CANONICAL PORTAL-NESTED RESOURCE. Each route names the owning tenant, so the
+    // portal-administrator policy can bind the request to it and the service can compare the same tenant
+    // against the alias's stored owner before reporting or writing anything. A mismatch reads as NOT FOUND
+    // rather than as a refusal, so the route cannot become an oracle for identifiers in other tenants.
     // -------------------------------------------------------------------------------------------------
 
     /// <summary>Reads one alias of one portal.</summary>
@@ -562,6 +354,7 @@ public sealed class PortalAliasesController : ControllerBase
     /// </remarks>
     [HttpGet("portals/{portalId:int}/aliases/{portalAliasId:int}")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [TenantOptional(AliasRepairJustification)]
     [ProducesResponseType(typeof(ApiResponse<PortalAliasDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
@@ -603,13 +396,13 @@ public sealed class PortalAliasesController : ControllerBase
     /// <c>portal.alias_duplicate</c> as its problem type.
     /// </response>
     /// <remarks>
-    /// MIGRATION: the tenant-scoped twin of <see cref="UpdateAsync"/>, and the same legacy defect is
-    /// recorded there rather than repeated here: the legacy update reported every caught exception as a
-    /// duplicate alias. The owning portal is not re-bound by this action - the request contract carries the
-    /// host name alone, so there is no portal key on the wire for it to be re-bound to.
+    /// MIGRATION: the legacy update reported every caught exception as a duplicate alias. Here a duplicate
+    /// is a reported conflict and an unexpected failure reaches the global exception handler. The owning
+    /// portal is not re-bound by this action - the request contract carries the host name alone.
     /// </remarks>
     [HttpPut("portals/{portalId:int}/aliases/{portalAliasId:int}")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [TenantOptional(AliasRepairJustification)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -649,13 +442,14 @@ public sealed class PortalAliasesController : ControllerBase
     /// </response>
     /// <response code="404">No alias bears that identifier within that portal.</response>
     /// <remarks>
-    /// MIGRATION: the tenant-scoped twin of <see cref="DeleteAsync"/>. The legacy delete affordance was
-    /// super-user gated (<c>EditPortalAlias.ascx.vb:L181-L186</c>); a portal administrator reaches it here
-    /// for its own portal only, which is the widening recorded in the class remarks, and the ownership check
-    /// the legacy screen performed against the loaded record survives inside the service.
+    /// MIGRATION: the legacy delete affordance was super-user gated
+    /// (<c>EditPortalAlias.ascx.vb:L181-L186</c>); a portal administrator reaches it here for its own portal
+    /// only, which is the widening recorded in the class remarks, and the ownership check the legacy screen
+    /// performed against the loaded record survives inside the service.
     /// </remarks>
     [HttpDelete("portals/{portalId:int}/aliases/{portalAliasId:int}")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [TenantOptional(AliasRepairJustification)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]

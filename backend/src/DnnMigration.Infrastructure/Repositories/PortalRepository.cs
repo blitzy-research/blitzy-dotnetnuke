@@ -67,6 +67,20 @@ internal sealed class PortalRepository : IPortalRepository
     /// </remarks>
     private const string DefaultSortProperty = "PortalName";
 
+    /// <summary>
+    /// The page tally reported for a portal that does not exist or records no administration page.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: minus one is what the terminal <c>GetTabCount</c> returned in both of those cases and
+    /// is therefore preserved rather than smoothed to zero. The procedure read <c>@AdminTabId</c> into a
+    /// variable and then compared every row against it; a null made each row's predicate UNKNOWN, so
+    /// <c>COUNT(*)</c> was nought and <c>COUNT(*) - 1</c> was minus one. It is NOT the legacy
+    /// <c>Null.NullInteger</c> sentinel and must not be read as one - it is an arithmetic consequence,
+    /// and a caller that wanted "unknown" would have had no way to tell the two apart, which is exactly
+    /// why the value is carried through unchanged rather than reinterpreted here.
+    /// </remarks>
+    private const int NoAdministrationPageTally = -1;
+
     private readonly DnnDbContext _dbContext;
 
     /// <summary>Initialises a new instance of the <see cref="PortalRepository"/> class.</summary>
@@ -322,13 +336,19 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: this reproduces the terminal <c>GetTabCount</c>
+    /// (<c>04.04.00.SqlDataProvider</c> lines 511-527) exactly, which is the procedure the legacy portal
+    /// grid actually displayed: <c>PortalInfo.Pages</c> (<c>PortalInfo.vb</c> lines 320-325) resolved its
+    /// value through <c>TabController.GetTabCount(PortalID)</c>. Three parts of that predicate are
+    /// counter-intuitive and every one of them is deliberate - see
+    /// <see cref="IPortalRepository.CountPagesAsync"/>, where the reasoning is recorded once. An earlier
+    /// revision counted every non-deleted page instead, which agreed with the legacy figure on no portal
+    /// at all.
+    /// </remarks>
     public Task<int> CountPagesAsync(int portalId, CancellationToken cancellationToken = default)
     {
-        // Deletion of a page is the soft delete that backs the legacy recycle bin, so a page in the
-        // bin is excluded from the tenant's page count exactly as the legacy grid excluded it. The
-        // predicate is stated here rather than as a model-wide filter because the model declares no
-        // global query filter, which keeps a soft delete visible at the call sites that care.
-        return _dbContext.Tabs.CountAsync(t => t.PortalId == portalId && !t.IsDeleted, cancellationToken);
+        return CountPagesLikeGetTabCountAsync(portalId, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -361,6 +381,22 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// The batched counterpart of <see cref="CountPagesAsync"/>, and it answers the identical question:
+    /// the terminal <c>GetTabCount</c>. Two reads serve the whole set - one projection of each requested
+    /// portal's administration page, one grouped page tally - and the per-portal arithmetic is then done
+    /// in memory, so a listing costs a fixed number of round trips rather than two per row.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the two members are made to agree by CONSTRUCTION rather than by intent. The predicate
+    /// that excludes the administration page and its direct children is stated once, in
+    /// <see cref="ExcludesAdministrationPage"/>, and both this member and the single-portal one apply it,
+    /// so neither can drift into answering a different question. An earlier revision had them agreeing
+    /// with each other and with neither <c>GetTabCount</c>, which is the failure mode a
+    /// batched-versus-single comparison alone cannot detect.
+    /// </para>
+    /// </remarks>
     public async Task<IReadOnlyDictionary<int, int>> CountPagesForPortalsAsync(
         IReadOnlyCollection<int> portalIds,
         CancellationToken cancellationToken = default)
@@ -373,20 +409,123 @@ internal sealed class PortalRepository : IPortalRepository
             return new Dictionary<int, int>();
         }
 
-        // Tab.PortalId is nullable because a host page belongs to no tenant, so the identifier is
-        // tested for a value before it is matched; a null can never equal a supplied identifier and a
-        // host page is therefore excluded, exactly as the single-portal member excludes it. The
-        // soft-delete predicate is likewise carried over unchanged.
-        List<PortalTally> tallies = await _dbContext.Tabs
+        // The administration page of each requested portal, in one read. A portal that is absent from
+        // this map either does not exist or records no administration page; the legacy statement could
+        // not distinguish those two either, and both answer minus one below.
+        Dictionary<int, int> administrationPages = await _dbContext.Portals
             .AsNoTracking()
-            .Where(t => t.PortalId.HasValue && wanted.Contains(t.PortalId.Value) && !t.IsDeleted)
-            .GroupBy(t => t.PortalId!.Value)
-            .Select(group => new PortalTally { PortalId = group.Key, Count = group.Count() })
+            .Where(portal => wanted.Contains(portal.PortalId) && portal.AdminTabId != null)
+            .Select(portal => new PortalTally { PortalId = portal.PortalId, Count = portal.AdminTabId!.Value })
+            .ToDictionaryAsync(row => row.PortalId, row => row.Count, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Every page of every requested portal, WITH its parent, because the exclusion is expressed over
+        // both the page's own key and its parent's. Tab.PortalId is nullable because a host page belongs
+        // to no tenant, so the identifier is tested for a value before it is matched; a null can never
+        // equal a supplied identifier and a host page is therefore excluded, exactly as the
+        // single-portal member excludes it.
+        //
+        // MIGRATION: the soft-delete predicate is deliberately ABSENT, on both members. GetTabCount
+        // states no IsDeleted condition, so a page awaiting emptying of the recycle bin was counted by
+        // the legacy grid, and Rule T5 preserves that rather than improving on it.
+        List<PageParentage> pages = await _dbContext.Tabs
+            .AsNoTracking()
+            .Where(tab => tab.PortalId.HasValue && wanted.Contains(tab.PortalId.Value))
+            .Select(tab => new PageParentage
+            {
+                PortalId = tab.PortalId!.Value,
+                TabId = tab.TabId,
+                ParentId = tab.ParentId,
+            })
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        var tallies = new List<PortalTally>(wanted.Length);
+
+        foreach (int portalId in wanted)
+        {
+            if (!administrationPages.TryGetValue(portalId, out int administrationTabId))
+            {
+                tallies.Add(new PortalTally { PortalId = portalId, Count = NoAdministrationPageTally });
+                continue;
+            }
+
+            int counted = pages.Count(page => page.PortalId == portalId
+                && ExcludesAdministrationPage(page.TabId, page.ParentId, administrationTabId));
+
+            tallies.Add(new PortalTally { PortalId = portalId, Count = counted - 1 });
+        }
+
+        // Densify is still applied, so the contract's totality holds even though every identifier has
+        // already been given a row above: it is the one place that promise is expressed.
         return Densify(wanted, tallies);
     }
+
+    /// <summary>
+    /// Counts one portal's pages the way the terminal <c>GetTabCount</c> counted them.
+    /// </summary>
+    /// <param name="portalId">The portal to tally.</param>
+    /// <param name="cancellationToken">Abandons the reads when the caller disconnects.</param>
+    /// <returns>
+    /// The legacy page tally, which is minus one for a portal that does not exist or records no
+    /// administration page.
+    /// </returns>
+    /// <remarks>
+    /// A faithful translation of <c>04.04.00.SqlDataProvider</c> lines 511-527, in its own order: read
+    /// <c>AdminTabId</c> from the portal, then <c>SELECT COUNT(*) - 1</c> over the portal's pages
+    /// excluding the administration page and its direct children. It is the same implementation
+    /// <c>TabRepository.CountByPortalIdAsync</c> carries, because the two answer the same legacy
+    /// question and the schema offers no shared place for it below the repository layer.
+    /// </remarks>
+    private async Task<int> CountPagesLikeGetTabCountAsync(int portalId, CancellationToken cancellationToken)
+    {
+        int? adminTabId = await _dbContext.Portals
+            .AsNoTracking()
+            .Where(portal => portal.PortalId == portalId)
+            .Select(portal => portal.AdminTabId)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (adminTabId is not int administrationTabId)
+        {
+            // Reached both when the portal does not exist and when it records no administration page.
+            // The legacy statement could not distinguish them either: comparing against a null
+            // @AdminTabId made every row's predicate UNKNOWN, so COUNT(*) was 0 and the expression
+            // returned 0 - 1.
+            return NoAdministrationPageTally;
+        }
+
+        int counted = await _dbContext.Tabs
+            .AsNoTracking()
+            .CountAsync(
+                tab => tab.PortalId == portalId
+                    && tab.TabId != administrationTabId
+                    // The null disjunct is spelled out rather than left to the provider's null
+                    // semantics, because it is the legacy predicate's own "OR ParentId IS NULL" branch
+                    // and it is what keeps every root page inside the count.
+                    && (tab.ParentId == null || tab.ParentId != administrationTabId),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return counted - 1;
+    }
+
+    /// <summary>
+    /// Applies the legacy exclusion of the administration page and its direct children to one page.
+    /// </summary>
+    /// <param name="tabId">The page's own key.</param>
+    /// <param name="parentId">The page's parent, or <see langword="null"/> for a root page.</param>
+    /// <param name="administrationTabId">The portal's administration page.</param>
+    /// <returns><see langword="true"/> when the page counts towards the tally.</returns>
+    /// <remarks>
+    /// The in-memory counterpart of the predicate <see cref="CountPagesLikeGetTabCountAsync"/> issues to
+    /// the store, stated once so the batched tally cannot drift from the single one. Only DIRECT children
+    /// of the administration page are excluded: the legacy predicate tested <c>ParentId</c> and nothing
+    /// deeper, so a grandchild of the administration page was counted, and that is preserved rather than
+    /// corrected.
+    /// </remarks>
+    private static bool ExcludesAdministrationPage(int tabId, int? parentId, int administrationTabId) =>
+        tabId != administrationTabId && (parentId is null || parentId.Value != administrationTabId);
 
     /// <summary>
     /// Expands a grouped tally into a total map over the identifiers that were asked for.
@@ -431,6 +570,27 @@ internal sealed class PortalRepository : IPortalRepository
 
         /// <summary>Gets or sets the number of rows counted for that portal.</summary>
         public int Count { get; set; }
+    }
+
+    /// <summary>
+    /// Carries one page's own key and its parent out of a batched page read.
+    /// </summary>
+    /// <remarks>
+    /// The batched page tally needs both keys, because the legacy exclusion is expressed over the page's
+    /// own identifier AND its parent's. A named type rather than an anonymous one for the same reason
+    /// <see cref="PortalTally"/> is named: the projection is consumed by a shared predicate whose
+    /// signature has to name it.
+    /// </remarks>
+    private sealed class PageParentage
+    {
+        /// <summary>Gets or sets the portal the page belongs to.</summary>
+        public int PortalId { get; set; }
+
+        /// <summary>Gets or sets the page's own key. <c>Tabs.TabID</c> is <c>IDENTITY (0, 1)</c>, so zero is genuine.</summary>
+        public int TabId { get; set; }
+
+        /// <summary>Gets or sets the page's parent, or <see langword="null"/> for a root page.</summary>
+        public int? ParentId { get; set; }
     }
 
     /// <inheritdoc />

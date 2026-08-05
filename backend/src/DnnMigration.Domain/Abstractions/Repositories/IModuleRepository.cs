@@ -363,6 +363,40 @@ public interface IModuleRepository
     Task<IReadOnlyList<TabModule>> GetTabModulesByModuleIdAsync(int moduleId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns every placement of each of many modules in one read.
+    /// </summary>
+    /// <param name="moduleIds">
+    /// The modules whose placements are wanted. Every value is a real identity - <c>ModuleID</c> is
+    /// <c>IDENTITY(0, 1)</c>, so 0 addresses a row and no value is treated as "unspecified" - and an
+    /// empty request asks for nothing rather than for everything.
+    /// </param>
+    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <returns>
+    /// The placements of every named module in a stable order, flat rather than grouped, so a caller
+    /// groups by <see cref="TabModule.ModuleId"/> itself. A module that is placed nowhere, and one that
+    /// does not exist, both contribute no row; an empty request yields an empty list without a round
+    /// trip.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The set-based form of <see cref="GetTabModulesByModuleIdAsync"/>, and it exists for one reason:
+    /// a listing that projects one row per placement needs the placements of every module it is about
+    /// to consider, and asking for them one module at a time makes the read cost proportional to the
+    /// number of modules. This member answers the same question for many modules in a single statement.
+    /// It does not replace the single-module read, which remains the right shape for the decision paths
+    /// that hold exactly one module.
+    /// </para>
+    /// <para>
+    /// No paging member is implied or invented by this: the legacy module block of the data provider
+    /// carries none, and the page window over a projected collection belongs to the layer that owns the
+    /// paging request. This is a set-shaped READ, nothing more.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<TabModule>> GetTabModulesByModuleIdsAsync(
+        IReadOnlyCollection<int> moduleIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Stages a new placement of a module on a page.
     /// </summary>
     /// <param name="tabModule">

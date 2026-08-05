@@ -40,11 +40,12 @@ import { environment } from '../../../environments/environment';
  * that reading are worth stating up front, because both contradict what a reader
  * might reasonably expect:
  *
- * - Most collections are addressed UNDER a portal. Modules and accounts have no
- *   unscoped form at all; roles, role groups and profile definitions have both an
- *   explicitly scoped form and a form whose tenant the API resolves from the request
- *   host. Both forms are declared here, in separate groups, so a caller picks one on
- *   purpose instead of guessing.
+ * - Modules, accounts, roles, role groups and profile definitions use one canonical
+ *   flat resource family. Their tenant is resolved from the request host and the
+ *   authenticated context; adding a portal segment would create a second public
+ *   identity for the same operation and drift from the frozen API surface. Portal
+ *   aliases and page listings are the deliberate exceptions because the AAP defines
+ *   those operations as children of an explicitly named portal.
  * - The versioned prefix is mandatory. The API does not assume a default version
  *   when none is supplied, so a request that omits the prefix does not fall back —
  *   it fails to route. `environment.apiBaseUrl` carries the prefix, which is the
@@ -92,9 +93,6 @@ const SEGMENT = {
   /** The signed-in identity. */
   me: 'me',
 
-  /** Portal-wide account policy. */
-  membershipSettings: 'membership-settings',
-
   /** Module definition catalogue. */
   moduleDefinitions: 'module-definitions',
 
@@ -109,9 +107,6 @@ const SEGMENT = {
 
   /** Permission catalogue. */
   permissions: 'permissions',
-
-  /** Host-level alias collection, spanning every portal. */
-  portalAliases: 'portal-aliases',
 
   /** Portal collection. */
   portals: 'portals',
@@ -219,24 +214,6 @@ export interface PortalAliasScope extends PortalScope {
   readonly portalAliasId: number;
 }
 
-/** One module placement within one portal. */
-export interface ModuleScope extends PortalScope {
-  /** The module placement within the portal. */
-  readonly moduleId: number;
-}
-
-/** One account within one portal. */
-export interface UserScope extends PortalScope {
-  /** The account within the portal. */
-  readonly userId: number;
-}
-
-/** One role within one explicitly named portal. */
-export interface PortalRoleScope extends PortalScope {
-  /** The role within the portal. */
-  readonly roleId: number;
-}
-
 /** One account's membership of one role, within the tenant the API resolves. */
 export interface RoleMemberScope {
   /** The role the membership belongs to. */
@@ -244,24 +221,6 @@ export interface RoleMemberScope {
 
   /** The account holding the membership. */
   readonly userId: number;
-}
-
-/** One account's membership of one role, within one explicitly named portal. */
-export interface PortalRoleMemberScope extends PortalRoleScope {
-  /** The account holding the membership. */
-  readonly userId: number;
-}
-
-/** One role group within one explicitly named portal. */
-export interface PortalRoleGroupScope extends PortalScope {
-  /** The role group within the portal. */
-  readonly roleGroupId: number;
-}
-
-/** One profile property definition within one explicitly named portal. */
-export interface ProfileDefinitionScope extends PortalScope {
-  /** The property definition within the portal. */
-  readonly propertyDefinitionId: number;
 }
 
 /**
@@ -335,21 +294,97 @@ export const ANONYMOUS_AUTH_ENDPOINTS: readonly string[] = Object.freeze([
   AUTH_ENDPOINTS.logout,
 ]);
 
-/**
- * Whether a request URL addresses one of the anonymous authentication endpoints.
- *
- * Compares against the path portion only, so a URL that carries a query string or
- * arrives fully qualified still matches. The comparison is an exact path match
- * rather than a prefix test, because a prefix test on `auth/login` would also match
- * a hypothetical `auth/login-history` and silently stop sending its token.
- *
- * @param url The outbound request URL.
- * @returns True when the request must be sent without a bearer token.
- */
-export function isAnonymousAuthEndpoint(url: string): boolean {
-  const path = url.split('?')[0] ?? url;
+// ---------------------------------------------------------------------------
+// URL RESOLUTION — the shared basis for both credential tests below
+//
+// MIGRATION: BOTH TESTS BELOW RESOLVE URLS RATHER THAN COMPARING STRINGS, AND
+//   THAT IS A SECURITY PROPERTY RATHER THAN A TIDINESS ONE. A textual prefix or
+//   substring comparison against the configured base cannot tell WHERE a URL
+//   points, only what it happens to spell. With the production base `/api/v1`,
+//   `https://evil.example/api/v1/exfiltrate` starts with nothing relevant but
+//   contains the base; `//evil.example/api/v1/exfiltrate` is protocol-relative and
+//   resolves to a foreign host while reading as a path; and
+//   `https://evil.example/x?next=/api/v1/users` carries the base inside a query
+//   parameter. All three are foreign origins, and the only consumer of these tests
+//   attaches `Authorization: Bearer <token>` to whatever they admit — so a string
+//   test hands the session token to whoever serves that host. Resolving each URL
+//   against the document base and comparing the resulting ORIGIN is the only test
+//   that answers the question actually being asked.
+//
+// MIGRATION: THE PATH COMPARISON IS SEGMENT-BOUNDED, not a prefix test. `/api/v10`
+//   shares a textual prefix with `/api/v1` and is a different API version; a prefix
+//   test admits it. Only an exact path match, or a match followed by a `/`
+//   separator, identifies a URL as being inside the configured base.
+//
+// Both helpers FAIL CLOSED: anything that cannot be resolved, or that resolves to
+// an opaque origin, is reported as not-an-API-request. The consequence of a false
+// negative is a request sent without a token, which the server refuses visibly. The
+// consequence of a false positive is a leaked credential, which nothing refuses.
+// ---------------------------------------------------------------------------
 
-  return ANONYMOUS_AUTH_ENDPOINTS.some((endpoint) => path === endpoint || path.endsWith(endpoint));
+/**
+ * Resolves a URL against the document's base, or null when it cannot be resolved.
+ *
+ * `document.baseURI` rather than the current location, because the application
+ * declares `<base href="/">` and the framework composes relative request URLs
+ * against that same base. Using the location instead would resolve a root-relative
+ * request differently once the router had navigated into a nested path.
+ *
+ * @param url An absolute, protocol-relative or relative URL.
+ * @returns The resolved URL, or null when the value is not a URL at all.
+ */
+function resolveAgainstDocument(url: string): URL | null {
+  try {
+    return new URL(url, document.baseURI);
+  } catch {
+    // Not a URL in any form the platform recognises. Deliberately swallowed: the
+    // caller's contract is a boolean, and an unresolvable value is simply not an
+    // API request.
+    return null;
+  }
+}
+
+/**
+ * The configured API base as an absolute URL, or null when it cannot discriminate.
+ *
+ * Three configurations yield null, and all three for the same reason the original
+ * empty-base guard gave: a base that matches everything cannot distinguish an API
+ * call from a static asset, and reporting a match would attach the session token to
+ * every request the application makes.
+ *
+ * - an empty base, or one made entirely of slashes;
+ * - a base whose resolved path is the site root, which is the absolute spelling of
+ *   the same degenerate case — `https://host` and `/` both claim every path;
+ * - a base that resolves to an opaque origin, for which origin equality is not a
+ *   meaningful test because every opaque origin compares equal to every other.
+ *
+ * @returns The resolved base, or null when no safe comparison is possible.
+ */
+function resolveApiBase(): URL | null {
+  const configured = environment.apiBaseUrl.replace(/\/+$/, '');
+
+  if (configured.length === 0) {
+    return null;
+  }
+
+  const base = resolveAgainstDocument(configured);
+
+  if (base === null || base.origin === 'null' || base.pathname === '/') {
+    return null;
+  }
+
+  return base;
+}
+
+/**
+ * Whether a resolved path lies at or beneath a base path.
+ *
+ * @param path The resolved path of the candidate URL.
+ * @param basePath The resolved path of the configured API base.
+ * @returns True when the path is the base itself or a descendant of it.
+ */
+function isWithinBasePath(path: string, basePath: string): boolean {
+  return path === basePath || path.startsWith(`${basePath}/`);
 }
 
 /**
@@ -359,25 +394,70 @@ export function isAnonymousAuthEndpoint(url: string): boolean {
  * asset, a template, or a third-party URL. Attaching a bearer token to those would
  * disclose it to whoever serves them.
  *
- * A relative base makes the test a prefix comparison on the path. An absolute base
- * is also handled, because the configured value is compared as a substring of the
- * request URL rather than being assumed to be root-relative.
+ * The URL and the configured base are both resolved to absolute form and then
+ * compared on origin and on path, so the answer describes where the request goes
+ * rather than how it is spelled. See the note above the helpers for the specific
+ * inputs a textual comparison admitted.
+ *
+ * Note the consequence of the two configured bases. The production base is
+ * relative, so it resolves to the document's own origin and every same-origin API
+ * path matches — which is exactly the same-origin arrangement the reverse proxy
+ * serves. The development base is absolute, so a root-relative request URL resolves
+ * to the document origin, does NOT match the configured API origin, and is refused;
+ * that is correct, because in development every request URL is composed from the
+ * absolute base by this very module, so a root-relative one did not come from here.
  *
  * @param url The outbound request URL.
  * @returns True when the request is addressed to the API.
  */
 export function isApiRequest(url: string): boolean {
-  const base = environment.apiBaseUrl.replace(/\/+$/, '');
+  const base = resolveApiBase();
 
-  if (base.length === 0) {
-    // A base that is empty or entirely slashes cannot distinguish an API call
-    // from anything else, so nothing is treated as one. Reporting true here would
-    // attach the token to every request the application makes, including requests
-    // for static assets.
+  if (base === null) {
     return false;
   }
 
-  return url.startsWith(base) || url.includes(`${base}/`);
+  const candidate = resolveAgainstDocument(url);
+
+  if (candidate === null || candidate.origin !== base.origin) {
+    return false;
+  }
+
+  return isWithinBasePath(candidate.pathname, base.pathname);
+}
+
+/**
+ * Whether a request URL addresses one of the anonymous authentication endpoints.
+ *
+ * Compares resolved paths, so a URL that carries a query string or arrives fully
+ * qualified still matches. The comparison is an exact path match rather than a
+ * prefix or suffix test, because a prefix test on `auth/login` would also match a
+ * hypothetical `auth/login-history` and silently stop sending its token, and a
+ * suffix test would be satisfied by any host willing to serve a path ending in
+ * `/auth/login`.
+ *
+ * Gated on {@link isApiRequest} first, so a foreign origin can never be classified
+ * as one of this application's anonymous endpoints however its path is spelled.
+ *
+ * @param url The outbound request URL.
+ * @returns True when the request must be sent without a bearer token.
+ */
+export function isAnonymousAuthEndpoint(url: string): boolean {
+  if (!isApiRequest(url)) {
+    return false;
+  }
+
+  const candidate = resolveAgainstDocument(url);
+
+  if (candidate === null) {
+    return false;
+  }
+
+  return ANONYMOUS_AUTH_ENDPOINTS.some((endpoint) => {
+    const declared = resolveAgainstDocument(endpoint);
+
+    return declared !== null && declared.pathname === candidate.pathname;
+  });
 }
 
 /**
@@ -420,14 +500,13 @@ export const API_ENDPOINTS = {
     byId: (portalId: number): string => apiUrl(`${SEGMENT.portals}/${portalId}`),
 
     /**
-     * `GET` the configuration projection of one portal.
+     * `GET` the configuration projection of one portal; `PUT` its complete editable settings state.
      *
-     * MIGRATION: READ-ONLY, and the absence of a writer is deliberate rather than an
-     * omission. There is no portal-settings table in the legacy schema at all — the
-     * projection is assembled from columns on the portal row itself — so there is no
-     * key/value settings resource to expose, and the legacy site-setting keys that
-     * had no column behind them are not carried forward. Portal fields are edited
-     * through `PUT` on {@link API_ENDPOINTS.portals.byId}. Do not add a `PUT` here.
+     * MIGRATION: this is a column projection and replacement, not a key/value settings
+     * table. The legacy schema defines no portal-settings table, and the site-setting
+     * keys with no portal-column counterpart remain excluded. GET and PUT intentionally
+     * share this URL because they are the read and write representations of the same
+     * settings screen required by the frozen API contract.
      */
     settings: (portalId: number): string =>
       apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.settings}`),
@@ -436,10 +515,9 @@ export const API_ENDPOINTS = {
   /**
    * Portal aliases — the host names that resolve to a portal.
    *
-   * Two shapes exist and both are declared, because they are protected differently:
-   * the portal-scoped shape is available to an administrator of that portal, while
-   * the host-level collection spans every tenant and is reserved to a host
-   * administrator. Choosing the wrong one is a `403`, not a `404`.
+   * The portal-owned family is the only public shape. The legacy host-wide repair
+   * seam is intentionally not published: it would create a second identity for the
+   * same alias rows outside the AAP-authorized portal resource.
    */
   portalAliases: {
     /** Aliases addressed beneath their owning portal. */
@@ -452,26 +530,15 @@ export const API_ENDPOINTS = {
       byId: ({ portalId, portalAliasId }: PortalAliasScope): string =>
         apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.aliases}/${portalAliasId}`),
     },
-
-    /** Aliases addressed across every portal. Host administrators only. */
-    host: {
-      /** `GET` every alias in the installation. */
-      collection: (): string => apiUrl(SEGMENT.portalAliases),
-
-      /** `GET`, `PUT` or `DELETE` one alias without naming its portal. */
-      byId: (portalAliasId: number): string =>
-        apiUrl(`${SEGMENT.portalAliases}/${portalAliasId}`),
-    },
   },
 
   /**
-   * Module placements. Always addressed beneath their portal — there is no unscoped
-   * module collection, because a placement has no meaning outside a tenant.
+   * Module placements. The route family is flat; the API resolves the tenant from
+   * the request host and authenticated context before any service call.
    */
   modules: {
-    /** `GET` the placements of one portal; `POST` to add one. */
-    collection: (portalId: number): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.modules}`),
+    /** `GET` the resolved tenant's placements; `POST` to add one. */
+    collection: (): string => apiUrl(SEGMENT.modules),
 
     /**
      * `GET`, `PUT` or `DELETE` one placement.
@@ -481,12 +548,11 @@ export const API_ENDPOINTS = {
      * rows. Restoring one, and emptying the bin, are not exposed — see the recycle
      * bin note on {@link API_ENDPOINTS.tabs}.
      */
-    byId: ({ portalId, moduleId }: ModuleScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.modules}/${moduleId}`),
+    byId: (moduleId: number): string => apiUrl(`${SEGMENT.modules}/${moduleId}`),
 
     /** `GET` or `PUT` the per-placement settings. */
-    settings: ({ portalId, moduleId }: ModuleScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.modules}/${moduleId}/${SEGMENT.settings}`),
+    settings: (moduleId: number): string =>
+      apiUrl(`${SEGMENT.modules}/${moduleId}/${SEGMENT.settings}`),
 
     /**
      * `POST` to export one placement's content.
@@ -500,14 +566,14 @@ export const API_ENDPOINTS = {
      * design, so the string the contract already produced is simply returned to the
      * caller, which hands it to the browser. Nothing is written on the server.
      */
-    export: ({ portalId, moduleId }: ModuleScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.modules}/${moduleId}/${SEGMENT.export}`),
+    export: (moduleId: number): string =>
+      apiUrl(`${SEGMENT.modules}/${moduleId}/${SEGMENT.export}`),
 
     /**
-     * `POST` to import content into one portal.
+     * `POST` to import content into the resolved tenant.
      *
      * MIGRATION: the target module travels IN THE BODY, not in the path, so this
-     * template takes only the portal. That mirrors the legacy screen, which received
+     * template takes no identifier. That mirrors the legacy screen, which received
      * its target as a request value rather than as part of its address —
      * `Website/admin/Modules/Import.ascx.vb` L67-L68 parses
      * `Request.QueryString("moduleid")` into the field declared at L51 — and it also
@@ -515,8 +581,7 @@ export const API_ENDPOINTS = {
      * declared type and the target are refused together, so splitting the target out
      * into the path would let a caller address a module the payload contradicts.
      */
-    import: (portalId: number): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.modules}/${SEGMENT.import}`),
+    import: (): string => apiUrl(`${SEGMENT.modules}/${SEGMENT.import}`),
   },
 
   /**
@@ -547,9 +612,9 @@ export const API_ENDPOINTS = {
   },
 
   /**
-   * Accounts. Always addressed beneath their portal: an account's membership,
-   * approval state and profile are all portal-scoped facts, so there is no unscoped
-   * account collection.
+   * Accounts. The canonical family is flat; membership, approval and profile remain
+   * tenant-scoped facts because the API resolves one tenant before dispatching the
+   * request rather than accepting a second portal identity in the path.
    *
    * MIGRATION: no bulk operation is exposed, on this resource or any other. The
    * legacy administration offered several — `Website/admin/Users/Users.ascx.vb` L326
@@ -563,24 +628,22 @@ export const API_ENDPOINTS = {
    * tracking and a scheduled purge job that this migration does not reproduce.
    */
   users: {
-    /** `GET` the paged accounts of one portal; `POST` to create one. */
-    collection: (portalId: number): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}`),
+    /** `GET` the resolved tenant's paged accounts; `POST` to create one. */
+    collection: (): string => apiUrl(SEGMENT.users),
 
     /** `GET`, `PUT` or `DELETE` one account. */
-    byId: ({ portalId, userId }: UserScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}`),
+    byId: (userId: number): string => apiUrl(`${SEGMENT.users}/${userId}`),
 
     /** `GET` or `PUT` the profile values of one account. */
-    profile: ({ portalId, userId }: UserScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.profile}`),
+    profile: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.profile}`),
 
     /**
      * `POST` a credential change made by the account holder, who supplies the
      * current credential alongside the new one.
      */
-    password: ({ portalId, userId }: UserScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.password}`),
+    password: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.password}`),
 
     /**
      * `POST` a credential reset performed by an administrator.
@@ -591,12 +654,11 @@ export const API_ENDPOINTS = {
      * endpoint discloses a credential — see the retrieval note on
      * {@link AUTH_ENDPOINTS}.
      */
-    passwordReset: ({ portalId, userId }: UserScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.passwordReset}`),
+    passwordReset: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.passwordReset}`),
 
     /** `POST` to release an account locked out by failed sign-in attempts. */
-    unlock: ({ portalId, userId }: UserScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.unlock}`),
+    unlock: (userId: number): string => apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.unlock}`),
 
     /**
      * `PUT` the approval state of one account.
@@ -605,25 +667,20 @@ export const API_ENDPOINTS = {
      * granting and withdrawing it. The state being set is a query parameter that
      * `core/utils/http-params.util.ts` builds, so it does not appear here.
      */
-    approval: ({ portalId, userId }: UserScope): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.approval}`),
+    approval: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.approval}`),
 
     /** `POST` to oblige an account to change its credential at next sign-in. */
-    requirePasswordChange: ({ portalId, userId }: UserScope): string =>
-      apiUrl(
-        `${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.requirePasswordChange}`,
-      ),
+    requirePasswordChange: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.requirePasswordChange}`),
 
     /**
      * `GET` or `PUT` the portal-wide account policy.
      *
-     * Note the shape: this is a resource OF THE PORTAL, not of the account
-     * collection, because the policy governs every account in the tenant and
-     * belongs to none of them. It is addressed as a sibling of the account
-     * collection rather than beneath it.
+     * The policy governs every account in the resolved tenant and belongs to no
+     * individual account, so it is the `settings` child of the account collection.
      */
-    membershipSettings: (portalId: number): string =>
-      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.membershipSettings}`),
+    membershipSettings: (): string => apiUrl(`${SEGMENT.users}/${SEGMENT.settings}`),
   },
 
   /**
@@ -638,7 +695,7 @@ export const API_ENDPOINTS = {
    * discover the neighbour. The caller sets the order it wants.
    */
   profileDefinitions: {
-    /** Definitions of the tenant the API resolves from the request. */
+    /** Definitions of the tenant the API resolves from the request. The only public family. */
     forCurrentPortal: {
       /** `GET` the definitions; `POST` to create one. Unpaged. */
       collection: (): string => apiUrl(SEGMENT.profileDefinitions),
@@ -646,19 +703,6 @@ export const API_ENDPOINTS = {
       /** `GET`, `PUT` or `DELETE` one definition. */
       byId: (propertyDefinitionId: number): string =>
         apiUrl(`${SEGMENT.profileDefinitions}/${propertyDefinitionId}`),
-    },
-
-    /** Definitions of an explicitly named portal. */
-    forPortal: {
-      /** `GET` the definitions of one portal; `POST` to create one. */
-      collection: (portalId: number): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.profileDefinitions}`),
-
-      /** `GET`, `PUT` or `DELETE` one definition of one portal. */
-      byId: ({ portalId, propertyDefinitionId }: ProfileDefinitionScope): string =>
-        apiUrl(
-          `${SEGMENT.portals}/${portalId}/${SEGMENT.profileDefinitions}/${propertyDefinitionId}`,
-        ),
     },
   },
 
@@ -674,7 +718,7 @@ export const API_ENDPOINTS = {
    * second name for one table.
    */
   roles: {
-    /** Roles of the tenant the API resolves from the request. */
+    /** Roles of the tenant the API resolves from the request. The only public family. */
     forCurrentPortal: {
       /** `GET` the paged roles; `POST` to create one. */
       collection: (): string => apiUrl(SEGMENT.roles),
@@ -692,36 +736,11 @@ export const API_ENDPOINTS = {
       /** `GET` the roles held by one account. */
       forUser: (userId: number): string => apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.roles}`),
     },
-
-    /** Roles of an explicitly named portal. */
-    forPortal: {
-      /** `GET` the paged roles of one portal; `POST` to create one. */
-      collection: (portalId: number): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.roles}`),
-
-      /** `GET`, `PUT` or `DELETE` one role of one portal. */
-      byId: ({ portalId, roleId }: PortalRoleScope): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.roles}/${roleId}`),
-
-      /** `GET` the accounts holding one role; `POST` to add a membership. */
-      members: ({ portalId, roleId }: PortalRoleScope): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.roles}/${roleId}/${SEGMENT.users}`),
-
-      /** `DELETE` one account's membership of one role. */
-      member: ({ portalId, roleId, userId }: PortalRoleMemberScope): string =>
-        apiUrl(
-          `${SEGMENT.portals}/${portalId}/${SEGMENT.roles}/${roleId}/${SEGMENT.users}/${userId}`,
-        ),
-
-      /** `GET` the roles held by one account of one portal. */
-      forUser: ({ portalId, userId }: UserScope): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.users}/${userId}/${SEGMENT.roles}`),
-    },
   },
 
   /** Role groups — the optional grouping above a role. */
   roleGroups: {
-    /** Groups of the tenant the API resolves from the request. */
+    /** Groups of the tenant the API resolves from the request. The only public family. */
     forCurrentPortal: {
       /** `GET` the groups; `POST` to create one. Unpaged. */
       collection: (): string => apiUrl(SEGMENT.roleGroups),
@@ -733,17 +752,6 @@ export const API_ENDPOINTS = {
        * removing a grouping must not silently remove the permissions grouped by it.
        */
       byId: (roleGroupId: number): string => apiUrl(`${SEGMENT.roleGroups}/${roleGroupId}`),
-    },
-
-    /** Groups of an explicitly named portal. */
-    forPortal: {
-      /** `GET` the groups of one portal; `POST` to create one. */
-      collection: (portalId: number): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.roleGroups}`),
-
-      /** `GET`, `PUT` or `DELETE` one group of one portal. */
-      byId: ({ portalId, roleGroupId }: PortalRoleGroupScope): string =>
-        apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.roleGroups}/${roleGroupId}`),
     },
   },
 
@@ -805,12 +813,5 @@ export const API_ENDPOINTS = {
 
     /** `GET` one permission definition. */
     byId: (permissionId: number): string => apiUrl(`${SEGMENT.permissions}/${permissionId}`),
-
-    /** `GET` the permission definitions that apply to one module placement. */
-    forModule: (moduleId: number): string =>
-      apiUrl(`${SEGMENT.permissions}/${SEGMENT.modules}/${moduleId}`),
-
-    /** `GET` the permission definitions that apply to one page. */
-    forTab: (tabId: number): string => apiUrl(`${SEGMENT.permissions}/${SEGMENT.tabs}/${tabId}`),
   },
 } as const;

@@ -68,6 +68,13 @@ public class PortalServiceTests
 
     private const int AdministratorId = 7;
 
+    /// <summary>
+    /// The account key of the caller making the request, deliberately distinct from
+    /// <see cref="AdministratorId"/> so that a fact about the CALLER's stored authority cannot be satisfied by
+    /// a lookup of the portal's designated administrator.
+    /// </summary>
+    private const int CallerId = 990;
+
     private const int AdministratorRoleId = 0;
 
     private const int RegisteredRoleId = 1;
@@ -106,17 +113,23 @@ public class PortalServiceTests
 
     private const string LastRemainingCode = "portal.last_remaining";
 
+    private const string MemberSessionRevocationFailedCode =
+        "portal.member.session.revocation_store_unavailable";
+
+    private const string MemberCredentialRemovalFailedCode =
+        "portal.member.credential.removal_store_unavailable";
+
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The tenant contract exposes eleven asynchronous operations and nothing else.
+    /// The tenant contract exposes twelve asynchronous operations and nothing else.
     /// </summary>
     [Fact]
-    public void PortalContract_OffersExactlyElevenOperations()
+    public void PortalContract_OffersExactlyTwelveOperations()
     {
         MethodInfo[] members = typeof(IPortalService).GetMethods();
 
-        members.Should().HaveCount(11);
+        members.Should().HaveCount(12);
         foreach (MethodInfo member in members)
         {
             member.Name.Should().EndWith("Async");
@@ -141,6 +154,7 @@ public class PortalServiceTests
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var hostSettings = new Mock<IHostSettingsService>().Object;
         var hasher = new Mock<IPasswordHasher>().Object;
+        var tokens = new Mock<ITokenService>().Object;
         var clock = new Mock<IClock>().Object;
         var cache = new Mock<ICacheService>().Object;
         var currentUser = new Mock<ICurrentUser>().Object;
@@ -151,98 +165,104 @@ public class PortalServiceTests
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
             _ = new PortalService(
-                null!, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, clock,
-                cache, currentUser, audit, portalContext, caching);
+                null!, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("aliases", () =>
         {
             _ = new PortalService(
-                portals, null!, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, clock,
-                cache, currentUser, audit, portalContext, caching);
+                portals, null!, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
             _ = new PortalService(
                 portals, aliases, null!, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                clock, cache, currentUser, audit, portalContext, caching);
+                tokens, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("profiles", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, null!, permissions, users, roles, unitOfWork, hostSettings, hasher, clock,
-                cache, currentUser, audit, portalContext, caching);
+                portals, aliases, tabs, null!, permissions, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, null!, users, roles, unitOfWork, hostSettings, hasher, clock,
-                cache, currentUser, audit, portalContext, caching);
+                portals, aliases, tabs, profiles, null!, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("users", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, null!, roles, unitOfWork, hostSettings, hasher,
-                clock, cache, currentUser, audit, portalContext, caching);
+                tokens, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, null!, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, null!, unitOfWork, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, null!, hostSettings, hasher, clock,
-                cache, currentUser, audit, portalContext, caching);
+                portals, aliases, tabs, profiles, permissions, users, roles, null!, hostSettings, hasher, tokens,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("hostSettings", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, null!, hasher, clock,
-                cache, currentUser, audit, portalContext, caching);
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, null!, hasher, tokens,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, null!,
-                clock, cache, currentUser, audit, portalContext, caching);
+                tokens, clock, cache, currentUser, audit, portalContext, caching);
+        });
+        Assert.Throws<ArgumentNullException>("tokens", () =>
+        {
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                null!, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                null!, cache, currentUser, audit, portalContext, caching);
+                tokens, null!, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                clock, null!, currentUser, audit, portalContext, caching);
+                tokens, clock, null!, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                clock, cache, null!, audit, portalContext, caching);
+                tokens, clock, cache, null!, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                clock, cache, currentUser, null!, portalContext, caching);
+                tokens, clock, cache, currentUser, null!, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("portalContext", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                clock, cache, currentUser, audit, null!, caching);
+                tokens, clock, cache, currentUser, audit, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
             _ = new PortalService(
                 portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
-                clock, cache, currentUser, audit, portalContext, null!);
+                tokens, clock, cache, currentUser, audit, portalContext, null!);
         });
     }
 
@@ -1660,17 +1680,35 @@ public class PortalServiceTests
 
         await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
-        (string EventName, IReadOnlyDictionary<string, string?> Properties) recorded =
-            harness.AuditEvents.Should().ContainSingle().Subject;
+        // Both legacy intents of an installation are recorded: PORTAL_CREATED, the enumeration's accurate
+        // member, and HOST_ALERT, the type PortalController.vb:L1140-L1141 actually raised.
+        harness.AuditEvents.Select(candidate => candidate.EventName)
+            .Should()
+            .BeEquivalentTo(["PORTAL_CREATED", "HOST_ALERT"]);
 
-        recorded.EventName.Should().Be("PORTAL_CREATED");
-        recorded.Properties.Should().ContainKey("PortalId");
-        recorded.Properties["PortalName"].Should().Be(PortalName);
-        recorded.Properties["PortalAlias"].Should().Be(HostAlias);
-        recorded.Properties["AdministratorUsername"].Should().Be(AdministratorUsername);
+        (string EventName, IReadOnlyDictionary<string, string?> Properties) recorded =
+            harness.AuditEvents.Should().ContainSingle(candidate => candidate.EventName == "PORTAL_CREATED").Subject;
+
+        recorded.Properties["IsChildPortal"].Should().Be("False");
+        recorded.Properties.Should().ContainKey("AdministratorId");
+        recorded.Properties.Should().ContainKey("DescriptionSupplied");
+        recorded.Properties.Should().ContainKey("KeywordsSupplied");
+
+        // MIGRATION: the tenant NAME and ALIAS were recorded by one revision and are deliberately absent.
+        // Both are caller-supplied text bounded in length and not in content, and the record's envelope
+        // already carries the tenant key - so they add no identifying power to a log whose sink admits only
+        // identifiers, closed vocabularies and booleans.
+        recorded.Properties.Should().NotContainKeys("PortalName", "PortalAlias");
+        recorded.Properties.Values.Should().NotContain(PortalName);
+        recorded.Properties.Values.Should().NotContain(HostAlias);
         recorded.Properties.Values.Should().NotContain(
             AdministratorPassword,
             "the legacy entry did not record the credential and neither does this one");
+        recorded.Properties.Should().NotContainKey(
+            "AdministratorUsername",
+            "the administrator is identified by a stable identifier rather than by personal data, "
+            + "because the general application log is not a records-management store");
+        recorded.Properties.Values.Should().NotContain(AdministratorUsername);
     }
 
     /// <summary>
@@ -1691,7 +1729,7 @@ public class PortalServiceTests
             harness.AuditEvents.Should().ContainSingle().Subject;
 
         recorded.EventName.Should().Be("PORTAL_DELETED");
-        recorded.Properties["PortalName"].Should().Be(PortalName);
+        recorded.Properties.Should().NotContainKey("PortalName");
         recorded.Properties.Should().ContainKey("PortalId");
     }
 
@@ -1936,6 +1974,97 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// SEC-011 REGRESSION. A caller whose TOKEN still claims host status but whose STORED account no longer has
+    /// it is refused the host-only exemption.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the shape the finding described. Access tokens are bearer credentials with a lifetime of their
+    /// own, so every claim inside one is a statement about the past: an account removed from the host role
+    /// keeps a syntactically valid token asserting the old status until it expires. Reading the exemption from
+    /// that claim meant a demoted account could still waive a portal's hosting charge and lift all three
+    /// quotas, on any portal it could otherwise administer, for the remainder of the token's life - and the
+    /// only way to stop it would have been to shorten every token's lifetime, which is a different trade.
+    /// </para>
+    /// <para>
+    /// The claim is deliberately left ASSERTING host status here rather than being cleared. A fact that cleared
+    /// it would pass whether or not the implementation consults the store, because both sources would then
+    /// agree; making them disagree is what pins which one is read.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_RefusesAHostOnlyChangeWhenOnlyTheTokenStillClaimsHostStatus()
+    {
+        Harness harness = Harness.Ready();
+        harness.SuperUser = false;
+        harness.SuperUserClaim = true;
+        UpdatePortalRequest request = ValidUpdateRequest();
+        request.HostFee = 99m;
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => harness.Service.UpdatePortalAsync(PortalId, request, CancellationToken.None));
+
+        harness.PortalRow!.HostFee.Should().Be(
+            0m,
+            "a demoted account must not be able to waive the hosting charge with a token minted before the "
+            + "demotion");
+    }
+
+    /// <summary>
+    /// THE CONVERSE, WHICH IS WHAT PROVES THE CLAIM IS NOT CONSULTED AT ALL. A caller whose stored account IS a
+    /// host account is granted the exemption even though its token claims otherwise.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Asserted in both directions on purpose. The refusal above is satisfied by an implementation that
+    /// requires the claim AND the store to agree, which would still be reading the claim; only a fact in which
+    /// the store alone admits the change can distinguish that from reading the store alone. It also states the
+    /// operational half: a promotion takes effect on the next request rather than on the next sign-in.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_PermitsAHostOnlyChangeWhenOnlyTheStoreSaysHostAccount()
+    {
+        Harness harness = Harness.Ready();
+        harness.SuperUser = true;
+        harness.SuperUserClaim = false;
+        UpdatePortalRequest request = ValidUpdateRequest();
+        request.HostFee = 42.75m;
+
+        Result<PortalDetailDto?> outcome = await harness.Service
+            .UpdatePortalAsync(PortalId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.PortalRow!.HostFee.Should().Be(
+            decimal.Parse("42.75", CultureInfo.InvariantCulture),
+            "the stored account is the authority, so a stale claim neither grants nor withholds the exemption");
+    }
+
+    /// <summary>
+    /// An UNAUTHENTICATED caller never receives the exemption, and no store read can give it one.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The fail-closed arm. With no account key there is nothing to look up, so the guard must refuse rather
+    /// than fall through - a lookup of "no user" must not be mistaken for a lookup that found a host account,
+    /// and an absent account must not be mistaken for an unrestricted one.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_RefusesAHostOnlyChangeFromAnUnauthenticatedCaller()
+    {
+        Harness harness = Harness.Ready();
+        harness.SuperUser = true;
+        harness.CallerUserId = null;
+        UpdatePortalRequest request = ValidUpdateRequest();
+        request.HostFee = 99m;
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => harness.Service.UpdatePortalAsync(PortalId, request, CancellationToken.None));
+
+        harness.PortalRow!.HostFee.Should().Be(0m);
+    }
+
+    /// <summary>
     /// The guard is applied before anything is written, so a refused update leaves the stored row untouched.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -1984,6 +2113,55 @@ public class PortalServiceTests
         await harness.Service.UpdatePortalAsync(PortalId, ValidUpdateRequest(), CancellationToken.None);
 
         harness.CacheKey.Should().BeNull();
+    }
+
+    /// <summary>A foreign portal membership cannot be injected as the designated administrator.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortal_RefusesAnAdministratorWithoutPortalMembership()
+    {
+        Harness harness = Harness.Ready();
+        harness.ExistingMembership = null;
+        UpdatePortalRequest request = ValidUpdateRequest();
+        request.AdministratorId = 9_999;
+
+        Result<PortalDetailDto?> outcome = await harness.Service.UpdatePortalAsync(
+            PortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.administrator_invalid");
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>A page from another portal cannot be injected into any portal navigation reference.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortal_RefusesAReferencedPageOwnedByAnotherPortal()
+    {
+        Harness harness = Harness.Ready();
+        UpdatePortalRequest request = ValidUpdateRequest();
+        request.HomeTabId = 9_999;
+        harness.Portals
+            .Setup(portals => portals.TabBelongsToPortalAsync(
+                PortalId,
+                9_999,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        Result<PortalDetailDto?> outcome = await harness.Service.UpdatePortalAsync(
+            PortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.tab_reference_invalid");
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -2071,6 +2249,146 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// A member that belongs to another tenant loses only the expiring membership; its installation-wide
+    /// account, credential and sessions remain usable by the tenant it still belongs to.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_RetainsAMemberThatBelongsToAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        User account = PortalMember(41, isSuperUser: false, PortalId, SecondPortalId);
+        harness.PortalMembers.Add(account);
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.RemovedMemberships.Should().ContainSingle()
+            .Which.Should().BeSameAs(account.UserPortals.Single(row => row.PortalId == PortalId));
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.RevokedSessionUserIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A non-host member whose expiring membership is its last tenancy is removed globally together with
+    /// its direct grants, external credential and live sessions.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_RemovesAFinalMembershipAccountAndItsExternalState()
+    {
+        Harness harness = Harness.Ready();
+        User account = PortalMember(42, isSuperUser: false, PortalId);
+        harness.PortalMembers.Add(account);
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.RevokedSessionUserIds.Should().Equal(account.UserId);
+        harness.DeletedCredentialUserIds.Should().Equal(account.UserId);
+        harness.RemovedUsers.Should().ContainSingle().Which.Should().BeSameAs(account);
+        harness.RemovedMemberships.Should().BeEmpty(
+            "the account delete owns its final membership through the database cascade");
+        harness.Permissions.Verify(
+            repository => repository.DeleteModulePermissionsByUserIdAsync(
+                PortalId,
+                account.UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Permissions.Verify(
+            repository => repository.DeleteTabPermissionsByUserIdAsync(
+                PortalId,
+                account.UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A host account is installation-wide even when this is its only membership row, so deleting one
+    /// tenant may remove that row but must not delete the operator, credential or sessions.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_ProtectsASuperUserFromGlobalRemoval()
+    {
+        Harness harness = Harness.Ready();
+        User account = PortalMember(43, isSuperUser: true, PortalId);
+        harness.PortalMembers.Add(account);
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.RemovedMemberships.Should().ContainSingle()
+            .Which.Should().BeSameAs(account.UserPortals.Single());
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.RevokedSessionUserIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Refusing to remove a final member's external credential abandons the whole tenant transaction rather
+    /// than committing a portal whose user has become an unreachable orphan.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_RollsBackWhenAFinalMembersCredentialCannotBeRemoved()
+    {
+        Harness harness = Harness.Ready();
+        User account = PortalMember(44, isSuperUser: false, PortalId);
+        harness.PortalMembers.Add(account);
+        harness.CredentialDeleted = false;
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(MemberCredentialRemovalFailedCode);
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.RemovedPortals.Should().BeEmpty();
+        harness.RemovedAliases.Should().BeEmpty();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A session-store refusal is detected before any relational removal is staged, so the tenant and its
+    /// final member remain intact.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_AbandonsBeforeDatabaseRemovalWhenSessionsCannotBeEnded()
+    {
+        Harness harness = Harness.Ready();
+        User account = PortalMember(45, isSuperUser: false, PortalId);
+        harness.PortalMembers.Add(account);
+        harness.SessionRevocationResult = Result.Failure(
+            "TOKEN_STORE_UNAVAILABLE",
+            "The token store is unavailable.");
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(MemberSessionRevocationFailedCode);
+        harness.RevokedSessionUserIds.Should().Equal(account.UserId);
+        harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.RemovedMemberships.Should().BeEmpty();
+        harness.RemovedPortals.Should().BeEmpty();
+        harness.Permissions.Verify(
+            repository => repository.DeleteModulePermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
     /// Removing a tenant discards its pages, its own cache and the installation-wide cache, because a
     /// released host name must stop resolving.
     /// </summary>
@@ -2150,9 +2468,9 @@ public class PortalServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The NAME is the load-bearing property. The row is gone by the time anyone reads the trail, so an
-    /// identifier alone would no longer resolve to anything and the record would not answer "which tenant was
-    /// removed". The count of released host names is carried for the same reason.
+    /// The stable tenant identifier is the load-bearing property. The independently retained trail does not
+    /// copy the deleted tenant's name; the released-alias count records the removal's blast radius without
+    /// retaining any host name.
     /// </remarks>
     [Fact]
     public async Task DeletePortal_RecordsTheLegacyPortalDeletedEvent()
@@ -2174,8 +2492,7 @@ public class PortalServiceTests
         record.ResourceType.Should().Be("Portal");
         record.ResourceId.Should().Be(PortalId.ToString(CultureInfo.InvariantCulture));
         record.ActorUserId.Should().Be(11);
-        record.ActorUserName.Should().Be("host");
-        record.Properties["PortalName"].Should().Be(PortalName);
+        record.Properties.Should().NotContainKey("PortalName");
         record.Properties["AliasesReleased"].Should().Be("2");
     }
 
@@ -2208,26 +2525,61 @@ public class PortalServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
 
-        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
-        record.EventName.Should().Be(AuditEventNames.PortalCreated);
+        harness.AuditRecords.Select(candidate => candidate.EventName)
+            .Should()
+            .BeEquivalentTo(
+                [AuditEventNames.PortalCreated, AuditEventNames.HostAlert],
+                "an installation records the enumeration's accurate member and the coarser legacy type");
+
+        AuditEvent record = harness.AuditRecords
+            .Should()
+            .ContainSingle(candidate => candidate.EventName == AuditEventNames.PortalCreated)
+            .Subject;
         record.Outcome.Should().Be(AuditOutcome.Succeeded);
         record.ResourceType.Should().Be("Portal");
         record.ActorUserId.Should().Be(11);
-        record.ActorUserName.Should().Be("host");
         record.SubjectUserId.Should().Be(harness.AddedUsers.Single().UserId);
-        record.Properties["PortalName"].Should().Be(PortalName);
-        record.Properties["PortalAlias"].Should().Be(HostAlias);
         record.Properties["IsChildPortal"].Should().Be("False");
-        record.Properties["AdministratorUsername"].Should().Be(AdministratorUsername);
-        record.Properties["AdministratorEmail"].Should().Be(AdministratorEmail);
-        record.Properties["Description"].Should().Be("A measured tenant");
-        record.Properties["Keywords"].Should().Be("measured, tenant");
+        record.Properties["AdministratorId"].Should().Be(
+            harness.AddedUsers.Single().UserId.ToString(CultureInfo.InvariantCulture));
+
+        // The two free-text members are recorded as PRESENT rather than quoted, which is the whole of the
+        // narrowing: an auditor can still tell that an installation was asked for a description, and the
+        // caller-shaped text itself never reaches the general log.
+        record.Properties["DescriptionSupplied"].Should().Be("True");
+        record.Properties["KeywordsSupplied"].Should().Be("True");
+
+        // MIGRATION: THE TENANT NAME AND ALIAS ARE ABSENT TOO, WHICH IS WHERE TWO REVISIONS DISAGREED. One
+        // recorded both for readability; the record's envelope already carries the tenant key, so neither
+        // adds identifying power, and both are caller-supplied text that the sink's allowlist would withhold
+        // anyway. Asserting their absence here is what keeps this layer and the sink from disagreeing.
+        record.Properties.Should().NotContainKeys("PortalName", "PortalAlias");
+        record.Properties.Values.Should().NotContain(PortalName);
+        record.Properties.Values.Should().NotContain(HostAlias);
 
         record.Properties.Should().NotContainKey("TemplateFile");
         record.Properties.Should().NotContainKey("TemplatePath");
         record.Properties.Should().NotContainKey("ServerPath");
         record.Properties.Should().NotContainKey("ChildPath");
         record.Properties.Values.Should().NotContain(AdministratorPassword);
+
+        // SEC: THE PERSONAL DATA AND THE CALLER'S FREE TEXT MUST NOT BE HERE, AND THIS IS THE ASSERTION
+        // THAT KEEPS THEM OUT. The general application log is not a records-management store: it is the
+        // highest-volume and longest-retained log the application writes, its retention is not controlled
+        // from this codebase, and a subject-access or erasure request cannot reach it. The administrator's
+        // identifier is carried instead, and it resolves to the name and address in the store whenever an
+        // operator legitimately needs them. The two free-text members were additionally attacker-shaped:
+        // bounded in length by the validators but not in content.
+        record.Properties.Should().NotContainKey("AdministratorUsername");
+        record.Properties.Should().NotContainKey("AdministratorFirstName");
+        record.Properties.Should().NotContainKey("AdministratorLastName");
+        record.Properties.Should().NotContainKey("AdministratorEmail");
+        record.Properties.Should().NotContainKey("Description");
+        record.Properties.Should().NotContainKey("Keywords");
+        record.Properties.Values.Should().NotContain(AdministratorUsername);
+        record.Properties.Values.Should().NotContain(AdministratorEmail);
+        record.Properties.Values.Should().NotContain("A measured tenant");
+        record.Properties.Values.Should().NotContain("measured, tenant");
     }
 
     /// <summary>
@@ -2294,8 +2646,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The composed child address, not the submitted segment, is what the uniqueness check probes and what
-    /// the audit record names.
+    /// The composed child address, not the submitted segment, is what the uniqueness check probes; the
+    /// audit record retains only that the result is a child portal.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
@@ -2322,8 +2674,15 @@ public class PortalServiceTests
             aliases => aliases.AliasExistsAsync("sales", null, It.IsAny<CancellationToken>()),
             Times.Never);
 
-        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
-        record.Properties["PortalAlias"].Should().Be("parent.example/sales");
+        // Read from the accurate member of the pair an installation records; its HOST_ALERT twin carries the
+        // identical facts, so asserting on one is asserting on both.
+        AuditEvent record = harness.AuditRecords
+            .Should()
+            .ContainSingle(candidate => candidate.EventName == AuditEventNames.PortalCreated)
+            .Subject;
+        record.Properties.Should().NotContainKey(
+            "PortalAlias",
+            "host names are caller-authored identifiers with a separate retention lifecycle");
         record.Properties["IsChildPortal"].Should().Be("True");
     }
 
@@ -2446,6 +2805,86 @@ public class PortalServiceTests
         harness.Portals.Verify(
             p => p.GetByIdAsync(PortalId, true, It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    /// <summary>The settings write requires a body before it attempts any persistence work.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_RequiresARequest()
+    {
+        Harness harness = Harness.Ready();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => harness.Service.UpdatePortalSettingsAsync(PortalId, null!, CancellationToken.None));
+    }
+
+    /// <summary>An unknown tenant is reported as absent and no write is staged.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_ReportsAbsenceWithoutWriting()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalRow = null;
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            ValidSettingsUpdateRequest(),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeNull();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A successful settings write commits once, invalidates the portal cache and returns the values that
+    /// were stored without issuing a second read.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_CommitsInvalidatesAndReturnsTheProjection()
+    {
+        Harness harness = Harness.Ready();
+        UpdatePortalSettingsRequest request = ValidSettingsUpdateRequest();
+        request.Description = "Changed through the settings resource.";
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.PortalId.Should().Be(PortalId);
+        outcome.Value.PortalName.Should().Be("Settings Renamed");
+        outcome.Value.Description.Should().Be("Changed through the settings resource.");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        harness.InvalidatedPortalIds.Should().Equal(new[] { PortalId });
+        harness.Portals.Verify(
+            p => p.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Portals.Verify(
+            p => p.GetByIdAsync(PortalId, true, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// The settings route cannot bypass the host-only comparison shared by the general update path.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalSettings_RefusesATenantAdministratorChangingAHostOnlyTerm()
+    {
+        Harness harness = Harness.Ready();
+        harness.SuperUser = false;
+        UpdatePortalSettingsRequest request = ValidSettingsUpdateRequest();
+        request.HostFee = 1m;
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => harness.Service.UpdatePortalSettingsAsync(PortalId, request, CancellationToken.None));
+
+        harness.PortalRow!.PortalName.Should().Be(PortalName);
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     /// <summary>
@@ -2880,6 +3319,37 @@ public class PortalServiceTests
     };
 
     /// <summary>
+    /// Builds an account with exactly the supplied portal memberships.
+    /// </summary>
+    /// <param name="userId">Installation-wide account identifier.</param>
+    /// <param name="isSuperUser">Whether the account is a host operator.</param>
+    /// <param name="portalIds">Portal identifiers whose membership rows the account holds.</param>
+    /// <returns>The account and its complete membership collection.</returns>
+    private static User PortalMember(int userId, bool isSuperUser, params int[] portalIds)
+    {
+        var account = new User
+        {
+            UserId = userId,
+            Username = FormattableString.Invariant($"member-{userId}"),
+            DisplayName = FormattableString.Invariant($"Member {userId}"),
+            IsSuperUser = isSuperUser,
+        };
+
+        foreach (int portalId in portalIds)
+        {
+            account.UserPortals.Add(new UserPortal
+            {
+                UserId = userId,
+                PortalId = portalId,
+                CreatedDate = Now,
+                IsAuthorised = true,
+            });
+        }
+
+        return account;
+    }
+
+    /// <summary>
     /// Builds a host-name row.
     /// </summary>
     /// <param name="portalAliasId">The row identifier.</param>
@@ -3002,6 +3472,20 @@ public class PortalServiceTests
     };
 
     /// <summary>
+    /// Builds the route-owned settings request with the same ordinary values as
+    /// <see cref="ValidUpdateRequest"/>.
+    /// </summary>
+    /// <returns>A well-formed settings update request.</returns>
+    private static UpdatePortalSettingsRequest ValidSettingsUpdateRequest() => new()
+    {
+        PortalName = "Settings Renamed",
+        DefaultLanguage = DefaultLanguageCode,
+        TimeZoneOffset = DefaultTimeZoneOffsetMinutes,
+        HomeDirectory = "Portals/0",
+        AdministratorId = AdministratorId,
+    };
+
+    /// <summary>
     /// Assembles the service over twelve recording doubles, exposing every answer as mutable state so a test
     /// can change the world after the doubles have been wired.
     /// </summary>
@@ -3032,11 +3516,19 @@ public class PortalServiceTests
                 DisplayName = "Ada Lovelace",
                 Email = AdministratorEmail,
             };
+            ExistingMembership = new UserPortal
+            {
+                PortalId = PortalId,
+                UserId = AdministratorId,
+            };
             HostRootTab = HostRootTabId;
             HostSettingValues = [];
             CredentialCreated = true;
+            CredentialDeleted = true;
+            SessionRevocationResult = Result.Success();
             EchoCreatedPortal = true;
             SuperUser = true;
+            CallerUserId = CallerId;
 
             AddedPortals = [];
             RemovedPortals = [];
@@ -3054,6 +3546,7 @@ public class PortalServiceTests
             HashedSecrets = [];
             CreatedCredentials = [];
             DeletedCredentialUserIds = [];
+            RevokedSessionUserIds = [];
             InvalidatedPortalIds = [];
             InvalidatedTabsPortalIds = [];
             AuditRecords = [];
@@ -3083,6 +3576,7 @@ public class PortalServiceTests
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
+            Tokens = new Mock<ITokenService>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
@@ -3126,6 +3620,7 @@ public class PortalServiceTests
                 UnitOfWork.Object,
                 HostSettings.Object,
                 PasswordHasher.Object,
+                Tokens.Object,
                 Clock.Object,
                 Cache.Object,
                 CurrentUser.Object,
@@ -3155,6 +3650,8 @@ public class PortalServiceTests
         public Mock<IHostSettingsService> HostSettings { get; }
 
         public Mock<IPasswordHasher> PasswordHasher { get; }
+
+        public Mock<ITokenService> Tokens { get; }
 
         public Mock<IClock> Clock { get; }
 
@@ -3210,11 +3707,29 @@ public class PortalServiceTests
 
         public bool CredentialCreated { get; set; }
 
+        public bool CredentialDeleted { get; set; }
+
+        public Result SessionRevocationResult { get; set; }
+
         public Exception? CredentialFault { get; set; }
 
         public bool EchoCreatedPortal { get; set; }
 
+        /// <summary>
+        /// Whether the caller's STORED account is a host account. SEC-011: this is the authoritative knob,
+        /// because the guard it drives re-reads the status from the store rather than trusting the token.
+        /// </summary>
         public bool SuperUser { get; set; }
+
+        /// <summary>
+        /// What the caller's TOKEN claims about host status, when that must differ from the store. Left unset
+        /// the claim mirrors the store, which is the ordinary case; setting it is how a test states the case
+        /// the finding was about - a token minted before a demotion, or before a promotion.
+        /// </summary>
+        public bool? SuperUserClaim { get; set; }
+
+        /// <summary>The caller's account key, or <see langword="null"/> for an unauthenticated caller.</summary>
+        public int? CallerUserId { get; set; }
 
         public UserRole? ExistingAssignment { get; set; }
 
@@ -3252,6 +3767,8 @@ public class PortalServiceTests
 
         public List<User> RemovedUsers { get; }
 
+        public List<User> PortalMembers { get; } = [];
+
         public List<UserPortal> AddedMemberships { get; }
 
         public List<UserPortal> RemovedMemberships { get; }
@@ -3261,6 +3778,8 @@ public class PortalServiceTests
         public List<(int UserId, string PasswordHash, bool IsApproved, DateTime UtcNow)> CreatedCredentials { get; }
 
         public List<int> DeletedCredentialUserIds { get; }
+
+        public List<int> RevokedSessionUserIds { get; }
 
         public List<int> InvalidatedPortalIds { get; }
 
@@ -3337,6 +3856,12 @@ public class PortalServiceTests
             harness.Portals
                 .Setup(p => p.GetRoleNamesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RoleNames);
+            harness.Portals
+                .Setup(p => p.TabBelongsToPortalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
 
             // The default profile property definitions the new tenant receives are captured so a test can
             // assert their number, their categories and their view ordering.
@@ -3500,6 +4025,11 @@ public class PortalServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ExistingMembership);
             harness.Users
+                .Setup(u => u.ListPortalMembersForRemovalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.PortalMembers);
+            harness.Users
                 .Setup(u => u.Add(It.IsAny<User>()))
                 .Callback<User>(harness.AddedUsers.Add);
             harness.Users
@@ -3534,7 +4064,17 @@ public class PortalServiceTests
                 .Returns((int userId, CancellationToken _) =>
                 {
                     harness.DeletedCredentialUserIds.Add(userId);
-                    return Task.FromResult(true);
+                    return Task.FromResult(harness.CredentialDeleted);
+                });
+
+            harness.Tokens
+                .Setup(tokens => tokens.RevokeAllRefreshTokensAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((int userId, CancellationToken _) =>
+                {
+                    harness.RevokedSessionUserIds.Add(userId);
+                    return Task.FromResult(harness.SessionRevocationResult);
                 });
 
             harness.Roles
@@ -3593,7 +4133,34 @@ public class PortalServiceTests
 
             harness.Clock.SetupGet(c => c.UtcNow).Returns(Now);
 
-            harness.CurrentUser.SetupGet(c => c.IsSuperUser).Returns(() => harness.SuperUser);
+            // SEC-011: THE CLAIM AND THE STORE ARE WIRED SEPARATELY, SO A TEST CAN MAKE THEM DISAGREE. The
+            // claim follows the store unless a test overrides it, which keeps every existing fact meaning what
+            // it says while giving the demotion facts a way to state their case.
+            harness.CurrentUser
+                .SetupGet(c => c.IsSuperUser)
+                .Returns(() => harness.SuperUserClaim ?? harness.SuperUser);
+            harness.CurrentUser
+                .SetupGet(c => c.IsAuthenticated)
+                .Returns(() => harness.CallerUserId is not null);
+            harness.CurrentUser
+                .SetupGet(c => c.UserId)
+                .Returns(() => harness.CallerUserId);
+
+            // Declared AFTER the catch-all account read above, so it wins for the caller's own installation-wide
+            // lookup while every other lookup still resolves to the administrator account.
+            harness.Users
+                .Setup(u => u.GetAsync(
+                    It.Is<int?>(portalId => portalId == null),
+                    It.Is<int>(userId => userId == harness.CallerUserId),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.CallerUserId is null
+                    ? null
+                    : new User
+                    {
+                        UserId = harness.CallerUserId.Value,
+                        Username = "caller",
+                        IsSuperUser = harness.SuperUser,
+                    });
 
             harness.Cache
                 .Setup(c => c.InvalidateHost())

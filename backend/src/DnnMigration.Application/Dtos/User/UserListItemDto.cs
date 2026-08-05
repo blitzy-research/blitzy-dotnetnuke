@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
-/// One row of the user administration grid, returned by <c>GET /api/v1/portals/{portalId}/users</c> as the element
+/// One row of the user administration grid, returned by <c>GET /api/v1/users</c> as the element
 /// type of the paged response envelope.
 /// </summary>
 /// <remarks>
@@ -14,13 +14,15 @@ namespace DnnMigration.Application.Dtos.User;
 /// spelling forms a settings key.
 /// </para>
 /// <para>
-/// EVERY FIELD IS RETURNED UNCONDITIONALLY. The legacy screen resolved per-column visibility by
+/// PER-COLUMN VISIBILITY IS APPLIED BEFORE THIS CONTRACT IS RETURNED. The legacy screen resolved it by
 /// concatenating a literal prefix with the grid header - <c>Users.ascx.vb:L514</c> reads
 /// <c>Dim settingKey As String = "Column_" + header</c> - against nine module settings seeded in
 /// <c>UserModuleBase.vb:L98-L123</c>, with <c>Username</c> short-circuited to always-visible at
-/// L512. Visibility is therefore a presentation decision, carried by
-/// <see cref="MembershipSettingsDto"/>. There is deliberately no visibility flag on this type and
-/// no field is ever omitted on the strength of a setting.
+/// L512. The target enforces those settings in the service rather than trusting every client to hide
+/// sensitive values correctly: a hidden text field is replaced by the empty-string sentinel, a hidden
+/// nullable field by <see langword="null"/>, and the username remains present. There is deliberately no
+/// visibility flag on this type, because the sensitive value itself must not cross the boundary merely
+/// because a cooperative client could choose not to render it.
 /// </para>
 /// <para>
 /// SEVERAL MEMBERS ARE NOT USER-ROW DATA. <see cref="PortalId"/> comes from the request route or

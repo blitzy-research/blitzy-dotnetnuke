@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DnnMigration.Application.Dtos.Auth;
 
 /// <summary>
@@ -90,4 +92,14 @@ public sealed class RefreshTokenRequest
     /// </para>
     /// </remarks>
     public string RefreshToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the bounded server-observed client binding used for concurrent redemption grace.
+    /// </summary>
+    /// <remarks>
+    /// Excluded from JSON: the API computes it from trusted connection metadata after forwarded headers
+    /// have been processed. A caller cannot choose the value carried into the store.
+    /// </remarks>
+    [JsonIgnore]
+    public string ClientBinding { get; set; } = string.Empty;
 }

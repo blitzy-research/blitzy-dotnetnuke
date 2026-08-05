@@ -5,7 +5,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
-// =====================================================================================================
 // MIGRATION: this repository spans the TWO legacy provider stacks its contract was assembled from, and
 // nothing else. The per-user answers come from the membership provider's "Profile" block -
 // Library/Providers/MembershipProviders/DataProvider/DataProvider.vb:L117-L119, implemented at
@@ -60,7 +59,8 @@ namespace DnnMigration.Infrastructure.Repositories;
 // value insert ends in SELECT SCOPE_IDENTITY() (04.00.04:L1653). Under an object-relational mapper the
 // key is assigned when the unit of work is saved, so returning it would force a flush here and split
 // batches that must be atomic: provisioning a tenant's default declarations writes a whole set, and
-// portal creation writes across five tables. IUnitOfWork.SaveChangesAsync remains the only commit point.
+// portal creation spans seven tables across several flushes inside one explicit transaction.
+// IUnitOfWork.SaveChangesAsync is the flush; the transaction scope's commit is what makes it durable.
 //
 // MIGRATION: rules that shape a declaration stay OUT of this layer, deliberately. ProfileController.vb
 // forced Visible true whenever Required was set, in the add path (L373-L375) and again in the update path
@@ -76,7 +76,6 @@ namespace DnnMigration.Infrastructure.Repositories;
 // cache on a profile write (L250). The target coordinates that above this layer through ICacheService,
 // which is why no member below takes a bypass, refresh or clear flag and no cache is touched: a
 // repository that cached its own reads would answer from a cache the committing caller cannot evict.
-// =====================================================================================================
 
 /// <summary>
 /// Reads and writes the user-profile slice of the User aggregate over the legacy
@@ -159,9 +158,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
     }
 
-    // =================================================================================================
-    // SECTION A - PROFILE VALUES  (membership DataProvider.vb:L117-L119)
-    // =================================================================================================
+    // Profile values (membership DataProvider.vb:L117-L119).
 
     /// <inheritdoc />
     /// <remarks>
@@ -200,6 +197,53 @@ internal sealed class UserProfileRepository : IUserProfileRepository
             .AsNoTracking()
             .Include(value => value.PropertyDefinition)
             .Where(value => value.UserId == userId)
+            .OrderBy(value => value.PropertyDefinitionId)
+            .ThenBy(value => value.ProfileId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THE PORTAL SCOPE IS THE ONE <see cref="DefinitionsInPortalScope(int)"/> DEFINES, and
+    /// delegating to it rather than restating it is the point. This read compared
+    /// <see cref="ProfilePropertyDefinition.PortalId"/> with the requested tenant directly for a while, which
+    /// looked equivalent and was not: <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so -1 is both the
+    /// first tenant an installation has and the value the legacy contract used to mean "the host-level
+    /// declarations, stored with a SQL NULL portal". The declaration read maps it to those NULL rows; a direct
+    /// comparison here excluded them. Every ANSWER to a host-level property therefore became invisible to the
+    /// tenant that could see the property, and the consequence was not cosmetic - the sign-in gate that
+    /// requires a complete profile read the declarations through one rule and the answers through the other,
+    /// so an account that had just answered every required property was told it still had to answer them and
+    /// could not leave the remediation gate at all.
+    /// </para>
+    /// <para>
+    /// Expressed as a subquery over the scoped declaration keys, so the two reads cannot drift apart again:
+    /// there is one definition of what a tenant's declarations are, and this read asks it rather than
+    /// re-deriving it. Deleted declarations are deliberately not filtered out here - an answer to a
+    /// withdrawn property is still an answer, and every caller that cares about required properties consults
+    /// the declaration list, which does filter them.
+    /// </para>
+    /// <para>
+    /// The ordering and the loaded declaration are exactly as in the account-wide overload above, for the
+    /// reasons recorded there.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<UserProfileValue>> GetProfileValuesAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<int> scopedDefinitions = DefinitionsInPortalScope(portalId)
+            .Select(definition => definition.PropertyDefinitionId);
+
+        return await _dbContext.UserProfileValues
+            .AsNoTracking()
+            .Include(value => value.PropertyDefinition)
+            .Where(value =>
+                value.UserId == userId
+                && scopedDefinitions.Contains(value.PropertyDefinitionId))
             .OrderBy(value => value.PropertyDefinitionId)
             .ThenBy(value => value.ProfileId)
             .ToListAsync(cancellationToken)
@@ -267,6 +311,31 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         StageModified(profileValue);
 
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteProfileValuesAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        // MIGRATION: scoped through DefinitionsInPortalScope for the same reason the portal-scoped read is -
+        // -1 is both an installation's first tenant and the legacy sentinel for the host-level declarations
+        // stored with a SQL NULL portal, so a direct comparison here left the addressed tenant's OWN answers
+        // behind when it removed an account's membership of it. Asking the one definition of a tenant's
+        // declarations keeps this write and the reads beside it describing the same set.
+        IQueryable<int> scopedDefinitions = DefinitionsInPortalScope(portalId)
+            .Select(definition => definition.PropertyDefinitionId);
+
+        List<UserProfileValue> values = await _dbContext.UserProfileValues
+            .Include(value => value.PropertyDefinition)
+            .Where(value =>
+                value.UserId == userId
+                && scopedDefinitions.Contains(value.PropertyDefinitionId))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        _dbContext.UserProfileValues.RemoveRange(values);
     }
 
     // =================================================================================================
@@ -406,19 +475,18 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// MIGRATION: replaces <c>GetPropertyDefinition(ByVal definitionId As Integer) As IDataReader</c>
-    /// (core <c>DataProvider.vb:L253</c>, executed at <c>SqlDataProvider.vb:L1035-L1037</c>). A reader a
-    /// caller had to drain to discover emptiness becomes a nullable return, so absence lives in the type
-    /// system. Note that the legacy identifier reached the procedure unwrapped - there is no
-    /// <c>GetNull</c> around it, unlike the two portal-scoped readers - so this lookup is an exact key
-    /// match with no sentinel handling of any kind.
+    /// MIGRATION: the raw provider member accepted only the definition identifier, but its only controller
+    /// wrapper accepted the portal too and first searched the portal-scoped catalogue
+    /// (<c>ProfileController.vb:L425-L439</c>). Falling through to the raw key lookup on a catalogue miss
+    /// discarded that scope and could answer another tenant's declaration. This member retains the
+    /// tenant-bearing controller contract and routes the key through
+    /// <see cref="DefinitionsInPortalScope(int)"/>, the same predicate used by the name and collection
+    /// reads. The unsafe fallback is not reproduced.
     /// </para>
     /// <para>
-    /// MIGRATION: the legacy controller answered this question from a cache first and fell through to the
-    /// database only on a miss, and its cache was keyed by PORTAL rather than by definition
-    /// (<c>ProfileController.vb:L425-L442</c>), so a declaration belonging to another tenant was answered
-    /// from whichever portal's list happened to be warm. This member reads the store by key, once, and
-    /// caching is coordinated above it.
+    /// MIGRATION: host scope is translated before the identifier predicate is applied. A caller naming -1
+    /// therefore reaches rows whose <c>PortalID</c> is SQL <c>NULL</c>, exactly as the legacy list and name
+    /// procedures did after <c>GetNull</c>; it does not also reach a row physically storing -1.
     /// </para>
     /// <para>
     /// MIGRATION: absence is <see langword="null"/> and never a sentinel identifier. Both values the
@@ -428,11 +496,11 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// </para>
     /// </remarks>
     public async Task<ProfilePropertyDefinition?> GetDefinitionByIdAsync(
+        int portalId,
         int propertyDefinitionId,
         CancellationToken cancellationToken = default)
     {
-        return await _dbContext.ProfilePropertyDefinitions
-            .AsNoTracking()
+        return await DefinitionsInPortalScope(portalId)
             .FirstOrDefaultAsync(
                 definition => definition.PropertyDefinitionId == propertyDefinitionId,
                 cancellationToken)
@@ -552,22 +620,18 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// did reach them.
     /// </para>
     /// <para>
-    /// MIGRATION: the second disjunct is ADDITIVE, and that is the one place this file knowingly differs
-    /// from a literal reading of the legacy translation, for a measured reason. Dropping the exact match
-    /// for -1 - translating the sentinel and nothing else - would be faithful to a schema in which -1
-    /// cannot be a tenant, and this schema is not that: <c>Portals.PortalID</c> is
-    /// <c>IDENTITY(-1, 1)</c>, so -1 is the FIRST tenant a fresh installation creates, and the
-    /// Application mapper deliberately stores a declaration created for it with <c>PortalID</c> -1
-    /// rather than folding it into <see langword="null"/>, precisely so the declaration is not silently
-    /// reassigned away from the tenant the caller named. Matching only <see langword="null"/> for -1
-    /// would therefore make the target unable to read back what the target had just written. The union
-    /// is the only reading under which the sentinel keeps reaching the host-level declarations AND the
-    /// round trip holds.
+    /// MIGRATION: the translation is exact rather than additive. The core provider wrapped -1 with
+    /// <c>GetNull</c> on the add, name and collection paths
+    /// (<c>SqlDataProvider.vb:L1021,L1039,L1042</c>), so SQL received <c>NULL</c> and the terminal
+    /// predicates matched only host-level rows. A row physically storing -1 is therefore not in host
+    /// scope for this subsystem, even though -1 is also a genuine key in <c>dbo.Portals</c>. The
+    /// Application mapper applies the same translation on creation, so the read-after-write round trip
+    /// needs no widened union.
     /// </para>
     /// <para>
-    /// MIGRATION: it is NOT an all-portals wildcard and must never be widened into one. At most two
-    /// scopes are ever in play - the named tenant, plus the host-level declarations for the one
-    /// identifier that historically addressed them - and every other identifier reaches exactly one.
+    /// MIGRATION: it is NOT an all-portals wildcard and must never be widened into one. Exactly one
+    /// scope is ever in play: -1 means the SQL-null host scope for this legacy subsystem, and every
+    /// other identifier matches exactly one tenant value.
     /// </para>
     /// </remarks>
     private IQueryable<ProfilePropertyDefinition> DefinitionsInPortalScope(int portalId)
@@ -576,8 +640,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
             _dbContext.ProfilePropertyDefinitions.AsNoTracking();
 
         return portalId == HostPortalId
-            ? definitions.Where(
-                definition => definition.PortalId == portalId || definition.PortalId == null)
+            ? definitions.Where(definition => definition.PortalId == null)
             : definitions.Where(definition => definition.PortalId == portalId);
     }
 

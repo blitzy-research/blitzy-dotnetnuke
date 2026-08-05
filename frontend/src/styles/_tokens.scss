@@ -18,7 +18,11 @@
   --color-primary: #003366;
 
   // The darker brand tint, for hover and active companions to --color-primary.
-  // Despite the name it is not the link-hover colour; that role is --color-danger.
+  // It IS the link-hover colour: _reset.scss section 8 resolves `a:hover` to this
+  // token, and its own annotation there records why — the measured legacy hover red
+  // reads 3.998:1 on the page background, so reproducing it would have made every
+  // hovered link unreadable. Measures 7.30:1 on --color-background and 6.29:1 on
+  // --color-surface.
   --color-primary-hover: #25569A;
 
   --color-background: #FFFFFF;
@@ -86,12 +90,50 @@
   // without the attribute is an accessibility defect in the consumer, not here.
   --color-selected: #C1D2EE;
 
-  // Carries two roles: danger text and the link-hover colour.
-  // Contrast on --color-background is 4.0:1, below the 4.5:1 AA minimum for
-  // normal text, and bold weight is not a mitigation below 18.66px. It clears the
-  // 3:1 threshold for non-text UI. Error states must therefore carry a non-colour
-  // cue as well — an icon or the word itself — never colour alone.
+  // NON-TEXT ONLY: borders, rules and indicators. Contrast on --color-background is
+  // 4.0:1, which clears the 3:1 threshold for a non-text UI component and misses the
+  // 4.5:1 minimum for normal text, and bold weight is not a mitigation below
+  // 18.66px. The measured legacy value is kept exactly as the plan's colour table
+  // specifies, because design-system compliance outranks the generic accessibility
+  // minimum and darkening it in place would put a second, undocumented red into the
+  // system for every consumer at once — including the borders and rules for which the
+  // value is already correct.
+  //
+  // DANGER TEXT RESOLVES TO --color-danger-text INSTEAD. That token is declared
+  // immediately below and this one must never be used for a text colour again. Error
+  // states still carry a non-colour cue as well — the severity word, or the marker
+  // glyph and its visually-hidden text — because colour is never the sole indicator.
   --color-danger: #FF0000;
+
+  // MIGRATION: the ELEVENTH colour, and a corrected accessibility defect rather than
+  // a preference — the same standing this file's own anchor-hover substitution has,
+  // and admitted on the same terms. --color-danger renders at 4.0:1 on the page
+  // background, so every place the system rendered danger TEXT in it — the danger
+  // banner, the required marker and the validation message — sat below the 4.5:1 AA
+  // minimum for normal text. Those three sites carried standing accessibility flags
+  // saying, verbatim, that the remedy belonged in the token rather than at the point
+  // of use. This is that remedy.
+  //
+  // #B30000 is the same hue at a lower lightness, so a reader sees the same red
+  // family and nothing about the visual language changes; what changes is that the
+  // text is legible. Measured against every surface the vocabulary can put behind
+  // danger text:
+  //   --color-background #FFFFFF     7.20:1
+  //   --color-surface #EEEEEE        6.21:1
+  //   --color-selected #C1D2EE       4.70:1
+  //   --color-surface-hint #FFFF99   6.86:1
+  // All four clear 4.5:1, so the token is safe on any painted surface in the system
+  // rather than only on the page background. #C00000 was measured first and REJECTED:
+  // it reads 4.23:1 on the selected tint, which would have moved the defect onto
+  // selected rows instead of removing it.
+  //
+  // Admitting an eleventh member is a deliberate widening of a vocabulary this file
+  // declares closed, and the closed-count annotation below is updated to match. It is
+  // admitted because no existing member can carry the role: --color-danger is the
+  // measured legacy red and must not move, and no other member is a red at all. The
+  // alternative — a darkened red written as a literal at three points of use — is
+  // what the zero-hardcoded-values rule forbids outright.
+  --color-danger-text: #B30000;
 
   // Contrast on --color-background is 1.37:1, below the 3:1 AA threshold for
   // non-text UI, so this is a decorative hairline. Use --color-border-strong or
@@ -105,8 +147,9 @@
   //  COLOUR — text
   //  ONE token, and the reasoning for the three that are deliberately absent.
   //
-  //  The colour vocabulary is CLOSED at the ten members declared above: the
-  //  plan's nine, plus the informational hint surface --color-surface-hint. Four
+  //  The colour vocabulary is CLOSED at the eleven members declared above: the
+  //  plan's nine, plus the informational hint surface --color-surface-hint, plus the
+  //  accessible danger-text colour --color-danger-text. Four
   //  candidates beyond the nine each have a legacy-fidelity argument — a base text
   //  black, a heading grey, a disabled silver and the pale-yellow hint surface —
   //  and admitting all four would defeat a closed vocabulary as completely as forty
@@ -115,8 +158,16 @@
   //  question. The fourth is
   //  reinstated: the hint surface is a measured, in-scope value with no vocabulary
   //  member that can carry its meaning, and the annotation on the token itself
-  //  records why. Ten is therefore the closed count — a downstream author still
-  //  cannot reach for an eleventh, and every value in every stylesheet still
+  //  records why.
+  //
+  //  The eleventh member is admitted on a different and narrower ground: it is not a
+  //  legacy-fidelity argument at all but a CORRECTED ACCESSIBILITY DEFECT, and the
+  //  annotation on --color-danger-text records the measurement on all four surfaces
+  //  it can appear against. That ground is deliberately not extensible — a downstream
+  //  author cannot reach for a twelfth by preference, and a twelfth admitted on
+  //  accessibility grounds would have to carry the same four-surface measurement and
+  //  the same demonstration that no existing member can carry the role. Eleven is
+  //  therefore the closed count, and every value in every stylesheet still
   //  resolves to a member of this list.
   //
   //  The base text black and the heading grey were both answered by the platform
@@ -491,4 +542,29 @@
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
   --focus-ring-color: var(--color-primary);
+
+  // MIGRATION: the SECOND TONE of a two-tone focus indicator, and the token that
+  // makes the ring independent of what is painted behind it. --focus-ring-color
+  // resolves to the brand colour, and the brand colour is also a painted surface in
+  // this system — _layout.scss fills the skip link with it — so a single-toned ring
+  // is one stylesheet away from painting brand-on-brand at 1:1 wherever a focusable
+  // element sits on a brand-coloured surface. That is not a hypothetical: the record
+  // grid carried a standing accessibility flag for exactly this collision, and it
+  // established two things by measurement that this token answers. First, NO SINGLE
+  // FLAT RING COLOUR CAN WORK: clearing the 3:1 non-text floor on a brand-filled band
+  // needs a luminance at or above roughly 0.20 while clearing it on the selected tint
+  // needs one at or below roughly 0.18, an empty window whose best achievable
+  // worst-case is about 2.87:1. Second, setting the ring to the page background MOVES
+  // the failure rather than removing it, because it then reads 1:1 against every
+  // unselected row. A second tone is the remedy that survives both measurements: the
+  // ring is banded by this colour on each side, so wherever one tone vanishes into
+  // the backdrop the other is at maximum contrast against it.
+  //
+  // It resolves to the page background rather than to a new literal, which is what
+  // makes the pairing self-balancing: against the brand hue the two tones measure
+  // 12.61:1, so a ring on a brand surface is delimited by its bands, and a ring on a
+  // light surface is delimited by the ring itself while the bands disappear into the
+  // page — no visible change at all on the light surfaces that make up almost the
+  // whole application. The mixin composes the geometry; see _mixins.scss.
+  --focus-ring-contrast-color: var(--color-background);
 }

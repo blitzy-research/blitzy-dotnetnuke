@@ -167,81 +167,6 @@ using DnnMigration.Domain.Common;
 namespace DnnMigration.Application.Abstractions;
 
 /// <summary>
-/// Application-layer contract for the role aggregate - DotNetNuke's permission
-/// grouping - together with role groups and user-to-role assignment.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Scope. Three closely bound concerns share this one contract: the role itself,
-/// including its paid-membership terms; the role group that classifies roles for
-/// presentation; and the assignment that joins a user to a role for a period. They
-/// are not separable, because the legacy screens treat them as one workflow and
-/// because a role group cannot be deleted while it still classifies roles. There is
-/// deliberately no separate role-group contract; the role-group endpoints are served
-/// from here.
-/// </para>
-/// <para>
-/// Not in this contract. Role <em>permissions</em> belong to the permission contract:
-/// a role is the <em>subject</em> of a permission grant, never its store, so no
-/// member here reads or writes a module or page permission. Caching is an
-/// implementation concern behind the cache abstraction the domain layer owns, so no
-/// member exposes a cache, a clear or a synchronise switch. Data access is reached
-/// only through the repository abstractions the domain layer declares (AAP Rule T3),
-/// which is why nothing on this surface names a persistence type.
-/// </para>
-/// <para>
-/// Every member is asynchronous, carries the <c>Async</c> suffix and accepts a
-/// trailing cancellation token, because every one of them performs input or output
-/// (AAP Rule T6). No member declares an out-parameter or a by-reference parameter:
-/// the thirty measured legacy signatures that mutated an argument while returning a
-/// status are replaced by <see cref="Result"/> and <see cref="Result{T}"/>, which
-/// carry the value and the reason together (AAP 0.7.4).
-/// </para>
-/// <para>
-/// Reading an outcome. An <em>expected</em> failure - a missing role, a duplicate
-/// name, a protected assignment - is returned as a failed result carrying a stable
-/// reason code. Request-SHAPE failures travel the other channel: the implementation
-/// throws <see cref="DomainException"/> for a blank or over-long name, a negative fee
-/// or period, and an unrecognised frequency code, on the reasoning that a request which
-/// cannot be formed is a caller defect rather than a business outcome. On the HTTP path
-/// those are normally caught first by the boundary validator and surface as a validation
-/// problem response; a caller invoking this contract directly must be prepared for both
-/// channels and must not read "returns a Result" as "does not throw". Either way the
-/// answer is a 400. Any other exception is left to surface and is translated once at the
-/// outermost boundary. On a single-item lookup a
-/// <em>successful</em> result whose value is <see langword="null"/> means the item is
-/// <em>absent</em>, which is a different answer from a failed lookup and must not be
-/// collapsed into one (AAP Rule T7). A successful result may additionally carry an
-/// informational reason, which is how the cancel-a-paid-assignment path reports that
-/// it expired the assignment rather than deleting it.
-/// </para>
-/// <para>
-/// Reason codes used by this contract, all stable and all lower-case:
-/// <c>portal.not_found</c>, <c>role.not_found</c>, <c>role.name_duplicate</c>,
-/// <c>role.create_failed</c>, <c>role_group.not_found</c>,
-/// <c>role_group.name_duplicate</c>, <c>role_group.in_use</c>,
-/// <c>role_group.scope_invalid</c>, <c>user.not_found</c>,
-/// <c>role_assignment.not_found</c>, <c>role_assignment.protected</c> and the
-/// informational <c>role_assignment.expired_not_removed</c>.
-/// </para>
-/// <para>
-/// Tenancy. Every member takes an explicit portal identifier and scopes every read
-/// and write to it. A role, a role group or an assignment that exists in a different
-/// portal is reported as not found rather than returned, which reproduces the legacy
-/// screens' treatment of a cross-tenant identifier as a security violation. Where a
-/// request object also carries a portal identifier, the parameter is authoritative
-/// and a disagreement is a request-shape validation failure at the boundary, not a
-/// reason code here.
-/// </para>
-/// <para>
-/// Registration. Implemented by <c>Services/RoleService.cs</c> and registered by
-/// <c>AddApplication()</c> as one of its seven scoped services. A scoped lifetime is
-/// required: the implementation composes with the scoped repositories, the scoped
-/// unit of work and the scoped tenant context, so a singleton registration would
-/// capture one request's state and serve it to every later request.
-/// </para>
-/// </remarks>
-/// <summary>
 /// Selects which roles of a portal a listing considers, where the choice cannot be expressed by a group
 /// identifier alone.
 /// </summary>
@@ -343,6 +268,81 @@ public enum RoleGroupScope
     Ungrouped = 1,
 }
 
+/// <summary>
+/// Application-layer contract for the role aggregate - DotNetNuke's permission
+/// grouping - together with role groups and user-to-role assignment.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Scope. Three closely bound concerns share this one contract: the role itself,
+/// including its paid-membership terms; the role group that classifies roles for
+/// presentation; and the assignment that joins a user to a role for a period. They
+/// are not separable, because the legacy screens treat them as one workflow and
+/// because a role group cannot be deleted while it still classifies roles. There is
+/// deliberately no separate role-group contract; the role-group endpoints are served
+/// from here.
+/// </para>
+/// <para>
+/// Not in this contract. Role <em>permissions</em> belong to the permission contract:
+/// a role is the <em>subject</em> of a permission grant, never its store, so no
+/// member here reads or writes a module or page permission. Caching is an
+/// implementation concern behind the cache abstraction the domain layer owns, so no
+/// member exposes a cache, a clear or a synchronise switch. Data access is reached
+/// only through the repository abstractions the domain layer declares (AAP Rule T3),
+/// which is why nothing on this surface names a persistence type.
+/// </para>
+/// <para>
+/// Every member is asynchronous, carries the <c>Async</c> suffix and accepts a
+/// trailing cancellation token, because every one of them performs input or output
+/// (AAP Rule T6). No member declares an out-parameter or a by-reference parameter:
+/// the thirty measured legacy signatures that mutated an argument while returning a
+/// status are replaced by <see cref="Result"/> and <see cref="Result{T}"/>, which
+/// carry the value and the reason together (AAP 0.7.4).
+/// </para>
+/// <para>
+/// Reading an outcome. An <em>expected</em> failure - a missing role, a duplicate
+/// name, a protected assignment - is returned as a failed result carrying a stable
+/// reason code. Request-SHAPE failures travel the other channel: the implementation
+/// throws <see cref="DomainException"/> for a blank or over-long name, a negative fee
+/// or period, and an unrecognised frequency code, on the reasoning that a request which
+/// cannot be formed is a caller defect rather than a business outcome. On the HTTP path
+/// those are normally caught first by the boundary validator and surface as a validation
+/// problem response; a caller invoking this contract directly must be prepared for both
+/// channels and must not read "returns a Result" as "does not throw". Either way the
+/// answer is a 400. Any other exception is left to surface and is translated once at the
+/// outermost boundary. On a single-item lookup a
+/// <em>successful</em> result whose value is <see langword="null"/> means the item is
+/// <em>absent</em>, which is a different answer from a failed lookup and must not be
+/// collapsed into one (AAP Rule T7). A successful result may additionally carry an
+/// informational reason, which is how the cancel-a-paid-assignment path reports that
+/// it expired the assignment rather than deleting it.
+/// </para>
+/// <para>
+/// Reason codes used by this contract, all stable and all lower-case:
+/// <c>portal.not_found</c>, <c>role.not_found</c>, <c>role.name_duplicate</c>,
+/// <c>role.create_failed</c>, <c>role_group.not_found</c>,
+/// <c>role_group.name_duplicate</c>, <c>role_group.in_use</c>,
+/// <c>role_group.scope_invalid</c>, <c>user.not_found</c>,
+/// <c>role_assignment.not_found</c>, <c>role_assignment.protected</c> and the
+/// informational <c>role_assignment.expired_not_removed</c>.
+/// </para>
+/// <para>
+/// Tenancy. Every member takes an explicit portal identifier and scopes every read
+/// and write to it. A role, a role group or an assignment that exists in a different
+/// portal is reported as not found rather than returned, which reproduces the legacy
+/// screens' treatment of a cross-tenant identifier as a security violation. Where a
+/// request object also carries a portal identifier, the parameter is authoritative
+/// and a disagreement is a request-shape validation failure at the boundary, not a
+/// reason code here.
+/// </para>
+/// <para>
+/// Registration. Implemented by <c>Services/RoleService.cs</c> and registered by
+/// <c>AddApplication()</c> as one of its seven scoped services. A scoped lifetime is
+/// required: the implementation composes with the scoped repositories, the scoped
+/// unit of work and the scoped tenant context, so a singleton registration would
+/// capture one request's state and serve it to every later request.
+/// </para>
+/// </remarks>
 public interface IRoleService
 {
     /// <summary>
@@ -724,7 +724,7 @@ public interface IRoleService
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
     /// A successful outcome, which <c>RolesController.AssignUserAsync</c> answers with
-    /// <c>204 No Content</c> at <c>POST /api/v1/portals/{portalId}/roles/{roleId}/users</c>;
+    /// <c>204 No Content</c> at <c>POST /api/v1/roles/{roleId}/users</c>;
     /// or a failed outcome carrying <c>portal.not_found</c>, <c>role.not_found</c> or
     /// <c>user.not_found</c>. No payload is returned, and no read projection on this
     /// contract exposes the stored effective or expiry date either - returning one would

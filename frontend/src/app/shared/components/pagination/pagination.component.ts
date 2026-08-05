@@ -7,6 +7,51 @@ import {
 } from '@angular/core';
 
 /**
+ * Rejects a page size the API could not have produced and this component cannot render.
+ *
+ * A page size is a whole number of at least 1. The paging request contract says so
+ * outright — a size of zero or below is rejected by the API's own validator rather than
+ * reinterpreted — so a value outside that range never arrived in a response envelope and
+ * can only be a consumer defect: a size that was never resolved, a subtraction that went
+ * negative, or a member read from the wrong object.
+ *
+ * REFUSING IS THE POINT. Treating 0 as "every match on one page" is what this replaces,
+ * and it was wrong twice over. It invented a mode the API does not have, and it did so
+ * silently, so a screen whose page size failed to resolve rendered a plausible-looking
+ * single page of results instead of reporting the fault — the reader had no way to tell
+ * that page from a real one. Failing at binding time surfaces it on the first render.
+ *
+ * Rejecting non-integers is what keeps `NaN` and `Infinity` out of the arithmetic below,
+ * since neither is an integer. The page count is therefore always a finite positive whole
+ * number, and no guard against a division by zero is needed anywhere: the invariant is
+ * established once, here, at the boundary.
+ *
+ * The API's page-size MAXIMUM is deliberately not enforced here. That bound constrains
+ * what a client may ASK FOR, whereas this component only renders the size a response came
+ * back with; refusing a large page would break a screen that had legitimately been served
+ * one, and the request side already validates it.
+ *
+ * @param value The bound page size.
+ * @returns The same value, once proven usable.
+ * @throws Error if the value is not a whole number of at least 1.
+ */
+function requirePositivePageSize(value: number): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(
+      'PaginationComponent: `pageSize` must be a whole number of at least 1, but was ' +
+        `${value}. A page size of zero or below is rejected by the API's own paging ` +
+        'validator, so no response envelope carries one, and it cannot be rendered: the ' +
+        'page count is this size divided into the total. Zero is NOT a request for every ' +
+        'match on one page — that mode does not exist. Resolve the page size in the ' +
+        'feature before binding it, and if the resource is genuinely unpaged do not ' +
+        'render this component at all rather than binding a size of zero to suppress it.',
+    );
+  }
+
+  return value;
+}
+
+/**
  * Page navigation for a list screen, driven by the API's paging envelope.
  *
  * Reports the page a person asked for and renders nothing else — it holds no data, it
@@ -45,13 +90,25 @@ export class PaginationComponent {
   @Input({ required: true }) page!: number;
 
   /**
-   * The number of items requested per page.
+   * The number of items on a full page, as a whole number of at least 1.
    *
-   * The value 0 is a legitimate request for every match in one page, not an empty
-   * page. It is handled explicitly throughout rather than guarded at each use, because
-   * the naive page-count division by it produces `Infinity`.
+   * REFUSED IF IT IS NOT. Zero is not a request for every match on one page; the paging
+   * request contract rejects both zero and a negative size, so neither can reach a
+   * response envelope, and a value outside the range is a consumer defect that
+   * {@link requirePositivePageSize} reports rather than absorbs.
+   *
+   * A GENUINELY UNPAGED RESOURCE DOES NOT RENDER THIS COMPONENT. Several administration
+   * resources return every match in one response by design — role groups, portal aliases,
+   * profile property definitions, module definitions and the page tree among them — and
+   * the way to express that is for the feature to omit the pager, not to bind a page size
+   * of zero and rely on it suppressing itself. There is deliberately no input for
+   * suppression, because "there is nothing to page through" is the feature's fact, not
+   * this component's.
+   *
+   * Because the value is validated on assignment, every derivation below may divide by it
+   * freely: the page count cannot be `NaN`, `Infinity` or negative.
    */
-  @Input({ required: true }) pageSize!: number;
+  @Input({ required: true, transform: requirePositivePageSize }) pageSize!: number;
 
   /**
    * The total number of matches across every page.
@@ -87,9 +144,15 @@ export class PaginationComponent {
    * Returns 1 for an empty result set, because a list screen still shows one page —
    * the page that says there is nothing on it. Returning 0 would render "page 1 of 0"
    * and would make the "next page" test false for the only page that exists.
+   *
+   * The division needs no guard: {@link pageSize} is validated to be at least 1 when it is
+   * bound, so it is never zero here. The page count is derived rather than taken from the
+   * response envelope only because the input surface is closed at three members and cannot
+   * receive the server's own count; where a consumer has that count, it is the better
+   * value.
    */
   get totalPages(): number {
-    if (this.pageSize <= 0 || this.totalCount <= 0) {
+    if (this.totalCount <= 0) {
       return 1;
     }
 
@@ -117,10 +180,6 @@ export class PaginationComponent {
       return 0;
     }
 
-    if (this.pageSize <= 0) {
-      return 1;
-    }
-
     return this.page * this.pageSize + 1;
   }
 
@@ -133,10 +192,6 @@ export class PaginationComponent {
   get lastItemNumber(): number {
     if (this.totalCount <= 0) {
       return 0;
-    }
-
-    if (this.pageSize <= 0) {
-      return this.totalCount;
     }
 
     return Math.min((this.page + 1) * this.pageSize, this.totalCount);

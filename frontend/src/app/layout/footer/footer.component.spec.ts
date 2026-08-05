@@ -11,17 +11,12 @@ const FOUR_DIGIT_YEAR_ANYWHERE = /\b\d{4}\b/;
 /**
  * The WHOLE rendered sentence, anchored at both ends, with the year captured.
  *
- * Anchoring is what makes this oracle mutation-sensitive. A substring check on the
- * opening words and the product name passes against any amount of extra text, any
- * reordering and any substituted year, so it cannot distinguish the correct band
- * from one whose year was hard-coded to a past value or whose wording gained a
- * stray word; the anchored form fails on all three. The single capture group is
- * what lets the rendered year be compared against the component's own year
- * without this specification reading a clock of its own.
- *
+ * Anchoring is what makes this oracle mutation-sensitive: a substring check passes
+ * against extra text, reordering and a substituted year alike, whereas the anchored
+ * form fails on all three. The capture group lets the rendered year be compared
+ * against the component's own year without this spec reading a clock of its own.
  * The shape reproduces the legacy copyright resource wording with its second
- * placeholder resolved to the product designation. The parenthesised letter is
- * escaped because it is a literal in that wording, not a group.
+ * placeholder resolved to the product designation.
  */
 const COPYRIGHT_SENTENCE = /^Copyright \(c\) (\d{4}) DotNetNuke$/;
 
@@ -57,15 +52,11 @@ describe('FooterComponent', () => {
   const footerText = (): string => footerElement()?.textContent ?? '';
 
   /**
-   * The band's text with every run of whitespace collapsed to one space and the
-   * ends trimmed.
-   *
-   * Normalisation is what makes an anchored, whole-sentence assertion possible:
-   * the template is authored across several lines for readability, so the raw text
-   * node carries the indentation around the interpolation. Collapsing it compares
-   * the words the reader actually sees, and it deliberately does NOT discard
-   * whitespace entirely - a missing space between the year and the product name
-   * would still fail.
+   * The band's text with every run of whitespace collapsed to one space and the ends
+   * trimmed, which is what makes an anchored whole-sentence assertion possible
+   * against a template authored across several lines. It deliberately does NOT
+   * discard whitespace entirely: a missing space between the year and the product
+   * name still fails.
    */
   const normalisedFooterText = (): string => footerText().replace(/\s+/g, ' ').trim();
 
@@ -77,13 +68,11 @@ describe('FooterComponent', () => {
       return;
     }
 
-    // The band's whole structure, asserted as a structure rather than as a
-    // truthiness check on the fixture. A wrapper `<div>`, a second paragraph, a
-    // `<span>` around the year or a nested element inside the paragraph would each
-    // fail here, and each would be a real change: the paired stylesheet addresses
-    // both elements BY TYPE rather than by class, so it silently stops matching the
-    // moment an intervening element appears, and the sibling `<p>` rule that zeroes
-    // the user-agent margin would leave the band's intrinsic height wrong.
+    // Asserted as a structure because the paired stylesheet addresses both elements
+    // BY TYPE rather than by class: a wrapper `<div>`, a second paragraph or a
+    // `<span>` around the year silently stops the rules matching, and the sibling
+    // `<p>` rule that zeroes the user-agent margin would leave the band's intrinsic
+    // height wrong.
     const descendants = Array.from(footer.querySelectorAll('*'));
 
     expect(descendants.map((element: Element): string => element.tagName)).toEqual(['P']);
@@ -105,9 +94,8 @@ describe('FooterComponent', () => {
   it('renders the exact copyright sentence and nothing besides', () => {
     expect(footerElement()).not.toBeNull();
 
-    // ANCHORED, WHOLE-SENTENCE assertion: the wording, the word order, the spacing
-    // and the absence of any extra text are all proven in one expectation, so a
-    // reworded, reordered or padded band fails rather than passing on a substring.
+    // Anchored, so a reworded, reordered or padded band fails rather than passing on
+    // a substring.
     expect(normalisedFooterText()).toMatch(COPYRIGHT_SENTENCE);
 
     expect(normalisedFooterText()).toContain(COPYRIGHT_PREFIX);
@@ -124,12 +112,11 @@ describe('FooterComponent', () => {
       return;
     }
 
-    // THE POINT OF THIS TEST. A four-digit pattern alone is satisfied by a template
-    // that hard-codes an old year, which is exactly the regression this band is
-    // exposed to - the year is resolved once in TypeScript and interpolated in
-    // markup, so the two could drift apart silently. Comparing the captured run
-    // against the component's own member closes that gap without reading a clock:
-    // whatever year the platform supplied, the rendered band has to agree with it.
+    // A four-digit pattern alone is satisfied by a template that hard-codes an old
+    // year, which is the regression this band is exposed to: the year is resolved
+    // once in TypeScript and interpolated in markup, so the two could drift apart
+    // silently. Comparing the captured run against the component's own member closes
+    // that gap without reading a clock.
     expect(match[1]).toBe(String(component.currentYear));
   });
 
@@ -138,22 +125,18 @@ describe('FooterComponent', () => {
   });
 
   it('renders exactly the year it resolved once at construction', () => {
-    // The determinism guard. The component reads the platform clock through one
-    // named seam, exactly once per instance, and every other member derives from
-    // that value - so the rendered year is compared against the component's own
-    // member rather than against a freshly computed year. A second, independent
-    // clock read introduced anywhere in the band could disagree with the first
-    // across a New Year boundary; this expectation is what would catch it, and it
-    // cannot itself become flaky because both sides come from the same single read.
+    // The determinism guard. The component reads the platform clock through one named
+    // seam, exactly once per instance, so a second independent clock read introduced
+    // anywhere in the band could disagree with the first across a New Year boundary.
+    // Comparing against the component's own member catches that and cannot itself
+    // become flaky, because both sides come from the same single read.
     expect(footerText()).toContain(String(component.currentYear));
   });
 
   it('exposes a precomposed copyright line matching the rendered sentence exactly', () => {
-    // The precomposed member is held to the SAME anchored sentence as the rendered
-    // band, so the two published granularities - the whole line, and the year on
-    // its own - cannot drift apart. The band interpolates the year and re-states
-    // the wording in markup, so without this the member could keep the correct
-    // wording while the template lost it, or vice versa.
+    // Held to the SAME anchored sentence as the rendered band, so the whole line and
+    // the year on its own cannot drift apart: the band re-states the wording in
+    // markup, so the member could otherwise keep it while the template lost it.
     expect(component.copyrightText).toMatch(COPYRIGHT_SENTENCE);
     expect(component.copyrightText).toContain(COPYRIGHT_PREFIX);
     expect(component.copyrightText).toContain(PRODUCT_DESIGNATION);

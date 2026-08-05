@@ -68,25 +68,20 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 // MIGRATION: membership DataProvider.vb:L69 UserLogin(Username, Password) is omitted - it verified
 //            credentials inside SQL against a reversibly-encrypted store, registered with
 //            passwordFormat="Encrypted" and a 3DES decryption key committed to source control at
-//            Website/release.config:L89-L93 and L236-L246. Verification moves to IPasswordHasher
-//            and the Application AuthService, which loads the account through the by-name read
-//            below. AN ADMINISTRATIVE RESET IS THE ONLY WAY A LEGACY CREDENTIAL BECOMES USABLE.
-//            An earlier revision of this note claimed legacy credentials are re-hashed on first
-//            successful login with reset as a mere fallback; THAT CLAIM WAS FALSE and is removed
-//            rather than softened. Re-hashing on sign-in requires first verifying the submitted
-//            password against the legacy stored value, and nothing in this solution can: the
-//            hashing abstraction recognises BCrypt digests only, holds no legacy verifier, and no
-//            entity maps a legacy credential column. The path the claim described could therefore
-//            never run, so every pre-existing account requires a reset before its owner can sign
-//            in. That is a deliberate functional reduction recorded in MIGRATION_NOTES.md, and it
-//            must not be read as a fallback for a lazy upgrade that does not exist.
+//            Website/release.config:L89-L93 and L236-L246. Verification moves to the isolated
+//            ILegacyCredentialVerifier and the Application AuthService. This repository exposes the
+//            membership row's value, format discriminator and salt without interpreting any of them;
+//            after a successful bounded legacy comparison, AuthService writes a BCrypt replacement
+//            through SetPasswordHashAsync before issuing tokens. Administrative reset remains the
+//            fallback when legacy verification is disabled, malformed or unsuccessful.
 //
 // MIGRATION: UserController.GetPassword(ByRef user, passwordAnswer) at L433 yields no member -
 //            password retrieval is deliberately not carried forward to any repository, service,
 //            endpoint or screen, because a one-way store cannot support it and reproducing
 //            reversible storage is forbidden. For the same reason no member on this contract
-//            performs hashing, verification, encryption or decryption: a stored hash is a value
-//            this contract reads and writes, never one it compares.
+//            performs hashing, verification, encryption or decryption: a stored representation,
+//            format and salt are values this contract reads, and a current hash is a value it writes;
+//            it never compares either.
 //
 // MIGRATION: membership DataProvider.vb:L80 GetUserByAuthToken(PortalID, UserToken, AuthType) is
 //            omitted - the target domain declares no user-authentication entity, and the legacy
@@ -362,6 +357,41 @@ public interface IUserRepository
     /// </remarks>
     Task<IReadOnlyList<User>> ListSuperUsersAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns the tracked accounts that currently hold a membership in one portal, including every
+    /// membership each account holds.
+    /// </summary>
+    /// <param name="portalId">Portal whose members are being removed.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// The portal's member accounts in deterministic identifier order, with
+    /// <see cref="User.UserPortals"/> populated.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// This is a removal-specific read rather than another listing overload. A portal deletion has to
+    /// decide separately for every member whether to remove only the membership row or, when this is the
+    /// final membership, the installation-wide account together with its credential and active sessions.
+    /// That decision cannot be made from the ordinary paged listing because it does not load the complete
+    /// membership collection.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy bulk deletion made the same decision by reading one row per membership from
+    /// <c>vw_Users</c>, then deleting the global account only when no second row existed. The entities
+    /// returned here preserve that meaning without reproducing the reader-position test.
+    /// </para>
+    /// <para>
+    /// The implementation deliberately does not populate approval, lockout or credential timestamps from
+    /// the external membership store. None is needed to remove a tenant membership, and making this
+    /// enumeration depend on that separate store would prevent the relational cleanup from even being
+    /// planned when the store is unavailable. Credential deletion remains an explicit operation and may
+    /// still refuse the overall deletion atomically.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<User>> ListPortalMembersForRemovalAsync(
+        int portalId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Determines whether a username is already taken.</summary>
     /// <param name="username">The username to test.</param>
     /// <param name="excludingUserId">A user to ignore, so that an edit does not collide with itself.</param>
@@ -475,6 +505,14 @@ public interface IUserRepository
     // they carry, and comparison belongs to IPasswordHasher. They exchange primitives rather than
     // entities precisely because the store is not modelled as a mapped entity - the DDL chain only
     // ever ALTERs it.
+    //
+    // THEIR WRITES ARE IMMEDIATE, AND THEY ENLIST IN AN AMBIENT TRANSACTION. Because the store is not a
+    // mapped entity, nothing here is staged for a later flush: each member issues its statement when it is
+    // called. An implementer MUST issue that statement on the unit of work's own connection and attach the
+    // transaction opened through IUnitOfWork.BeginTransactionAsync when one is open, so that a caller which
+    // needs an account row and its credential to appear together - or not at all - can obtain that by
+    // wrapping both in one transaction. Account creation and account deletion both depend on this property;
+    // an implementation that opened its own connection would silently break their atomicity.
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>Reads the credential state of a user from the external membership store.</summary>
@@ -482,16 +520,23 @@ public interface IUserRepository
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// <c>Exists</c> is <see langword="false"/> when the user has no credential record at all;
-    /// <c>PasswordHash</c> carries the stored hash; <c>IsApproved</c> and <c>IsLockedOut</c> carry the
-    /// account gates that authentication must honour before comparing a password.
+    /// <c>PasswordValue</c>, <c>Format</c> and <c>PasswordSalt</c> carry the bounded stored
+    /// representation needed to distinguish current BCrypt data from a legacy migration value;
+    /// <c>IsApproved</c> and <c>IsLockedOut</c> carry the account gates authentication must honour.
     /// </returns>
     /// <remarks>
-    /// MIGRATION: the stored hash is served here and deliberately not broadcast by the read members,
-    /// so a listing or a projection cannot carry credential material. This member replaces the
-    /// credential half of the omitted SQL-side login check; the comparison itself happens outside the
-    /// database.
+    /// MIGRATION: the stored representation, format and salt are served only through this narrow member
+    /// and are deliberately not broadcast by listing or projection reads. Format and salt are required
+    /// during the bounded cut-over window so a successful legacy verification can immediately replace
+    /// the row with a BCrypt value; no retrieval path is introduced.
     /// </remarks>
-    Task<(bool Exists, string? PasswordHash, bool IsApproved, bool IsLockedOut)> GetCredentialStateAsync(
+    Task<(
+        bool Exists,
+        string? PasswordValue,
+        PasswordFormat? Format,
+        string? PasswordSalt,
+        bool IsApproved,
+        bool IsLockedOut)> GetCredentialStateAsync(
         int userId,
         CancellationToken cancellationToken = default);
 
@@ -518,7 +563,8 @@ public interface IUserRepository
     /// <remarks>
     /// MIGRATION: the legacy store used reversible encryption, so retrieval was possible and is
     /// deliberately not carried forward. This member only ever writes a hash it is given; a legacy
-    /// credential is replaced on the owner's first successful login or by administrative reset.
+    /// credential is replaced on the owner's first successful login within the bounded compatibility
+    /// window, with administrative reset retained as the fallback.
     /// </remarks>
     Task<bool> SetPasswordHashAsync(
         int userId,

@@ -13,17 +13,18 @@ namespace DnnMigration.Api.Controllers;
 
 /// <summary>
 /// The role group resource - the tenant-owned classification a role may be filed under - exposed at
-/// <c>/api/v1/role-groups</c>, and additionally at <c>/api/v1/portals/{portalId}/role-groups</c>.
+/// <c>/api/v1/role-groups</c>.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <strong>What this type does, and the complete list.</strong> It binds a request, delegates to
 /// <see cref="IRoleService"/>, and translates the returned outcome into a status code. Nothing else. No
 /// name is checked for uniqueness here, no tally of the roles a group classifies is taken, no cache is
-/// evicted and no audit record is written. A rule implemented in a controller applies only to callers
-/// arriving over HTTP and silently fails to apply to every other caller - a background job, a console
-/// tool, a unit test - so every rule lives in the service, which is also the thing the unit tests
-/// exercise.
+/// evicted and no role-group audit record is written. The service deliberately preserves that last
+/// absence because the legacy event vocabulary had no role-group event to reproduce. A rule implemented
+/// in a controller applies only to callers arriving over HTTP and silently fails to apply to every other
+/// caller - a background job, a console tool, a unit test - so every rule lives in the service, which is
+/// also the thing the unit tests exercise.
 /// </para>
 /// <para>
 /// <strong>Legacy origin.</strong> One Web Forms editor and one grid collapse into this resource:
@@ -37,16 +38,14 @@ namespace DnnMigration.Api.Controllers;
 /// whether the caller had already loaded the group and both addressed the same row.
 /// </para>
 /// <para>
-/// <strong>Why the route nests under the portal.</strong> A role group is unconditionally tenant-owned:
+/// <strong>Why the flat route remains tenant-bound.</strong> A role group is unconditionally tenant-owned:
 /// <c>RoleGroups.PortalID</c> is declared <c>NOT NULL</c> and the uniqueness constraint on the table is
 /// <c>UNIQUE ([PortalID] ASC, [RoleGroupName] ASC)</c> (measured at
 /// <c>Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider:L49-L62</c>, where the
 /// table reaches its terminal shape; it first appears at <c>03.02.03.SqlDataProvider:L16</c> and not, as
 /// might be assumed, in the baseline script). Every member of the application contract accordingly takes
-/// the portal identifier, so naming the tenant in the path rather than in a query string makes the
-/// scoping structural: there is no reachable address that omits it and therefore no request whose tenant
-/// has to be guessed. This also matches the two sibling resources that are owned the same way, modules
-/// and profile definitions.
+/// the portal identifier. The HTTP resource takes that identifier from the portal resolved for the request
+/// host and exposes no route or query parameter through which a caller can substitute another tenant.
 /// </para>
 /// <para>
 /// MIGRATION: the legacy editor decided between inserting and updating by testing a private field
@@ -132,15 +131,10 @@ namespace DnnMigration.Api.Controllers;
 /// literal.
 /// </para>
 /// <para>
-/// A distinction worth stating plainly, because it is easy to misread: the tenant the policy evaluates is
-/// the one the REQUEST resolves to, from the host header via the portal alias table, and it is not the
-/// <c>portalId</c> in the path. The routed identifier is the subject the application contract scopes its
-/// work to; the resolved tenant is who the caller is administering. This file neither performs nor
-/// duplicates either resolution - the alias lookup belongs to the resolution middleware, which is the one
-/// place in the project permitted to reach for the ambient HTTP context, and the scoping belongs to the
-/// service. The practical consequence for a caller is that a request must arrive on a host that has an
-/// alias row, or the tenant cannot be resolved and the policy denies for want of a portal rather than for
-/// want of a role.
+/// The tenant the policy evaluates and the tenant passed to the service are the same portal the request
+/// resolves from its host alias. This file neither performs nor duplicates that lookup; it reads the scoped
+/// holder populated by the resolution pipeline. A request arriving on a host with no alias row therefore
+/// names no tenant and is refused.
 /// </para>
 /// <para>
 /// MIGRATION: cache invalidation has moved out of the presentation layer. Both legacy call sites
@@ -151,15 +145,13 @@ namespace DnnMigration.Api.Controllers;
 /// controller injects no cache and evicts nothing.
 /// </para>
 /// <para>
-/// MIGRATION - business audit parity is NOT yet achieved, and that is recorded rather than implied away.
-/// The legacy grid wrote event-log entries keyed <c>ROLE_CREATED</c>, <c>ROLE_UPDATED</c> and
-/// <c>ROLE_DELETED</c> from inside its button handlers. No equivalent business-event record is written
-/// anywhere in the target today: <c>RoleService</c> emits no audit log, and the request-logging middleware
-/// says explicitly that it is not a substitute - it records that a request happened, with its correlation
-/// identifier, not that a role group was created and by whom. The correct home for the equivalent record
-/// is the application service that performs the write, so that every caller produces it and not only an
-/// HTTP one; no logger is injected here for that purpose, and adding one would reintroduce the transport
-/// coupling the legacy screens had.
+/// MIGRATION: role-group writes deliberately produce no business-audit event because there is no legacy
+/// event to preserve. The forty-three-member legacy event vocabulary names role creation, update and
+/// deletion, but no role-group operation, and <c>Website/admin/Security/EditGroups.ascx.vb</c> wrote no
+/// event-log record when it changed a group. Those <c>ROLE_CREATED</c>, <c>ROLE_UPDATED</c> and
+/// <c>ROLE_DELETED</c> events belong to role writes and are emitted by <c>RoleService</c> on those paths.
+/// Minting a new group event here would be a behavioural addition and would also couple audit to the HTTP
+/// transport, so this controller injects no audit dependency.
 /// </para>
 /// <para>
 /// <strong>What this resource deliberately does not expose.</strong> There is no action that lists or
@@ -170,52 +162,18 @@ namespace DnnMigration.Api.Controllers;
 /// no cache-invalidation or bulk action of any kind.
 /// </para>
 /// <para>
-/// <strong>Two addresses, one implementation.</strong> The specified address for this resource is the flat
-/// <c>/api/v1/role-groups</c>, and it is declared first below because it is the canonical one. The nested
-/// <c>/api/v1/portals/{portalId}/role-groups</c> is retained alongside it, and both are served by the same
-/// five actions - there is no second controller, no duplicated body and no forwarding action. The two forms
-/// differ in exactly one respect, which is where the tenant comes from.
-/// </para>
-/// <para>
-/// On the FLAT form the tenant is the one the request resolved to, read from
-/// <see cref="IPortalContextHolder"/>. A caller cannot name another tenant on that form because there is no
-/// parameter through which to name one, so the isolation is structural rather than checked. On the NESTED
-/// form the routed identifier is reconciled against the resolved tenant by the portal-administrator policy
-/// before this file is entered, so a caller that is not a host account cannot address another tenant there
-/// either. The identifier is bound <c>[FromRoute]</c> and never from the query string, and that is what
-/// keeps the reconciliation unavoidable: a query-bound tenant would travel on the flat form too, where the
-/// policy has no route value to reconcile it against, and would reopen the very hole the nested form's
-/// reconciliation closes.
-/// </para>
-/// <para>
-/// The nested form is also what makes a host account able to administer a NAMED tenant at all. A request
-/// resolves to whichever portal's alias it arrived on and an HTTP client cannot forge another tenant's host
-/// name, so removing the routed form would leave cross-tenant administration with no address. It is
-/// therefore retained rather than replaced.
+/// <strong>One canonical address.</strong> The five actions below are exposed only at
+/// <c>/api/v1/role-groups</c>. A host account administers another tenant by addressing that tenant's alias,
+/// not by giving the same resource a second portal-nested identity.
 /// </para>
 /// </remarks>
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/role-groups")]
-[Route("api/v{version:apiVersion}/portals/{portalId:int}/role-groups")]
 [Authorize(Policy = PolicyNames.PortalAdministrator)]
 [Produces("application/json")]
 public sealed class RoleGroupsController : ControllerBase
 {
-    /// <summary>The application contract that owns role groups.</summary>
-    /// <remarks>
-    /// Role groups live on the role contract rather than on one of their own, and deliberately so: every
-    /// rule about a group is a rule about the roles it classifies - the per-portal name uniqueness the
-    /// table enforces, and the refusal to remove a group while it still classifies a role. There is no
-    /// <c>IRoleGroupService</c> to inject. One dependency, and it is an application-layer interface:
-    /// there is no repository, no persistence context, no cache and no clock here. What keeps them out is
-    /// not the project reference graph - this project references the Infrastructure assembly, because it
-    /// has to compose the container at start-up - but two other things: the persistence context and the
-    /// repositories are declared internal to that assembly and so are not nameable here at all, and this
-    /// controller depends only on the application abstraction. A type that IS visible and reachable, such
-    /// as a cache or a clock, is kept out by that discipline rather than by the compiler, so injecting one
-    /// would be a review finding rather than a build failure.
-    /// </remarks>
     /// <summary>
     /// Failure code carried as the problem type when the request reached this action without a tenant.
     /// </summary>
@@ -237,6 +195,20 @@ public sealed class RoleGroupsController : ControllerBase
     /// </remarks>
     private const string TenantUnresolvedCode = "portal.tenant_unresolved";
 
+    /// <summary>The application contract that owns role groups.</summary>
+    /// <remarks>
+    /// Role groups live on the role contract rather than on one of their own, and deliberately so: every
+    /// rule about a group is a rule about the roles it classifies - the per-portal name uniqueness the
+    /// table enforces, and the refusal to remove a group while it still classifies a role. There is no
+    /// <c>IRoleGroupService</c> to inject. One dependency, and it is an application-layer interface:
+    /// there is no repository, no persistence context, no cache and no clock here. What keeps them out is
+    /// not the project reference graph - this project references the Infrastructure assembly, because it
+    /// has to compose the container at start-up - but two other things: the persistence context and the
+    /// repositories are declared internal to that assembly and so are not nameable here at all, and this
+    /// controller depends only on the application abstraction. A type that IS visible and reachable, such
+    /// as a cache or a clock, is kept out by that discipline rather than by the compiler, so injecting one
+    /// would be a review finding rather than a build failure.
+    /// </remarks>
     private readonly IRoleService _roles;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -278,36 +250,22 @@ public sealed class RoleGroupsController : ControllerBase
     }
 
     /// <summary>
-    /// Chooses the tenant an action acts on: the routed identifier when the nested address was used, and
-    /// otherwise the tenant the request resolved to.
+    /// Returns the tenant the request resolved to.
     /// </summary>
-    /// <param name="routedPortalId">
-    /// The identifier bound from the route, or <see langword="null"/> when the flat address was used.
-    /// </param>
     /// <returns>
-    /// The tenant identifier, or <see langword="null"/> when the flat address was used and the request
-    /// resolved to no tenant at all.
+    /// The tenant identifier, or <see langword="null"/> when the request resolved to no tenant.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// The routed value wins when it is present, because on that address it IS the subject of the request
-    /// and the policy has already reconciled it against the resolved tenant. It is forwarded exactly as
-    /// bound: no lower bound is imposed and no value is treated as "absent", because the portal table is
-    /// <c>IDENTITY (-1, 1)</c> and -1 is therefore a real portal rather than the legacy missing-integer
-    /// sentinel.
-    /// </para>
     /// <para>
     /// The holder is read rather than a placeholder returned, and it throws instead of yielding one, so
     /// resolution is tested first, and the null answer here is a precondition rather than a state a caller
     /// can steer into.
     /// </para>
     /// <para>
-    /// MIGRATION: WHAT REFUSES FIRST IS THE TENANT-RESOLUTION MIDDLEWARE, NOT THE CLASS-LEVEL POLICY, and an
-    /// earlier revision of this block credited the policy. Measured both ways against a running instance: a
-    /// portal administrator addressing a host name with no alias row is refused by the policy with
-    /// <c>auth.not_permitted</c>, but a superuser passes that policy from any host name whatsoever, because
-    /// the policy is anchored to the portal named in the route and the unscoped route names none. That
-    /// request is refused by the middleware instead, with <c>portal.tenant_unresolved</c>. Either way the
+    /// MIGRATION: WHAT REFUSES FIRST DEPENDS ON THE CALLER. The tenant-resolution middleware records an
+    /// unresolved host and continues. A portal administrator is then refused by the policy with
+    /// <c>auth.not_permitted</c>; a superuser passes that policy because host authority is installation-wide
+    /// and is refused by this guard with <c>portal.tenant_unresolved</c>. Either way the
     /// action never runs, so this guard is defence in depth and is expected to be unreachable; it stays
     /// because the alternative to an unreachable refusal is the holder throwing, and a <c>500</c> is a worse
     /// answer than a <c>403</c> for a condition that is not the caller's fault.
@@ -322,24 +280,10 @@ public sealed class RoleGroupsController : ControllerBase
     /// indistinguishable to a client keying on that code.
     /// </para>
     /// </remarks>
-    private int? ResolvePortalId(int? routedPortalId)
-    {
-        if (routedPortalId is { } portalId)
-        {
-            return portalId;
-        }
-
-        return _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
-    }
+    private int? ResolvePortalId() =>
+        _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
 
     /// <summary>Lists every role group a portal defines.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal whose role groups are listed, bound from the route on the nested address
-    /// and absent on the flat one, where the tenant the request resolved to is used instead. Forwarded
-    /// exactly as bound: no lower bound is imposed, because <c>Portals.PortalID</c> is
-    /// <c>IDENTITY (-1, 1)</c>, so -1 is the seed and first generated value while the shipped default
-    /// portal row carries an explicit 0. Both are real portal keys, and neither means "absent".
-    /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The portal's role groups.</returns>
     /// <response code="200">
@@ -376,10 +320,9 @@ public sealed class RoleGroupsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<RoleGroupDto>>>> ListAsync(
-        [FromRoute] int? portalId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -395,10 +338,6 @@ public sealed class RoleGroupsController : ControllerBase
     }
 
     /// <summary>Reads one role group.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role group, bound from the route on the nested address and
-    /// absent on the flat one, where the tenant the request resolved to is used instead.
-    /// </param>
     /// <param name="roleGroupId">
     /// Identifier of the role group to read. Forwarded exactly as bound and never compared against a
     /// sentinel; see the note at the head of this file on why no range constraint appears here. The
@@ -436,11 +375,10 @@ public sealed class RoleGroupsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<RoleGroupDto?>>> GetAsync(
-        [FromRoute] int? portalId,
         int roleGroupId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -453,16 +391,13 @@ public sealed class RoleGroupsController : ControllerBase
     }
 
     /// <summary>Creates a role group in a portal.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that will own the role group, bound from the route on the nested address
-    /// and absent on the flat one, where the tenant the request resolved to is used instead.
-    /// </param>
     /// <param name="request">
     /// The role group to create: its name and an optional description. Those are the only two values the
     /// legacy editor's inputs supplied (<c>EditGroups.ascx:L11</c> and <c>:L17</c>) and the only two this
     /// path honours, so they are the only two the contract declares. The group's identifier is assigned by
     /// the store - which is precisely why the method rather than a sentinel distinguishes this from an
-    /// update - and the owning portal arrives in the route, so neither is expressible in the body.
+    /// update - and the owning portal arrives through the resolved request context, so neither is
+    /// expressible in the body.
     /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The created role group, addressed by the location header.</returns>
@@ -511,8 +446,8 @@ public sealed class RoleGroupsController : ControllerBase
     /// MIGRATION: the location header is derived from this request's own path plus the assigned
     /// identifier rather than from a named-route lookup, so the address is spelled in exactly one place.
     /// That is the shared creation translator's documented behaviour and it yields
-    /// <c>/api/v1/portals/{portalId}/role-groups/{roleGroupId}</c> for this endpoint - the address of the
-    /// by-identifier read above. The legacy screen had no equivalent: it answered a successful add with a
+    /// <c>/api/v1/role-groups/{roleGroupId}</c> for this endpoint - the address of the by-identifier read
+    /// above. The legacy screen had no equivalent: it answered a successful add with a
     /// redirect back to the grid (<c>EditGroups.ascx.vb:L120</c>), discarding the new identifier.
     /// </para>
     /// </remarks>
@@ -524,11 +459,10 @@ public sealed class RoleGroupsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<RoleGroupDto>>> CreateAsync(
-        [FromRoute] int? portalId,
         [FromBody] CreateRoleGroupRequest request,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -544,10 +478,6 @@ public sealed class RoleGroupsController : ControllerBase
     }
 
     /// <summary>Updates an existing role group.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role group, bound from the route on the nested address and
-    /// absent on the flat one, where the tenant the request resolved to is used instead.
-    /// </param>
     /// <param name="roleGroupId">
     /// Identifier of the role group to update. This is the authoritative subject of the request.
     /// </param>
@@ -598,12 +528,11 @@ public sealed class RoleGroupsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<RoleGroupDto>>> UpdateAsync(
-        [FromRoute] int? portalId,
         int roleGroupId,
         [FromBody] UpdateRoleGroupRequest request,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
@@ -619,10 +548,6 @@ public sealed class RoleGroupsController : ControllerBase
     }
 
     /// <summary>Removes a role group from a portal.</summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role group, bound from the route on the nested address and
-    /// absent on the flat one, where the tenant the request resolved to is used instead.
-    /// </param>
     /// <param name="roleGroupId">Identifier of the role group to remove.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> once the role group has been removed.</returns>
@@ -678,11 +603,10 @@ public sealed class RoleGroupsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult> DeleteAsync(
-        [FromRoute] int? portalId,
         int roleGroupId,
         CancellationToken cancellationToken)
     {
-        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        if (ResolvePortalId() is not { } scopedPortalId)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }

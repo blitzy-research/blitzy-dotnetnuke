@@ -273,14 +273,19 @@ public static class AuthenticationExtensions
         // also splits the replacement in two; it is not a rename.
         services.AddScoped<IAuthorizationHandler, AccountOwnerAuthorizationHandler>();
 
-        // The fourth handler, and it is required alongside the three above rather than an alternative to
+        // The fourth requirement handler, and it is required alongside the three above rather than an alternative to
         // them. Every requirement a policy declares must have a handler registered for it, and a
         // requirement with no handler never succeeds - the framework reports the policy as failed rather
         // than as misconfigured, so the symptom is a 403 from an endpoint whose caller genuinely holds the
         // permission. The four permission policies below declare PermissionRequirement, which is a fourth
         // requirement type none of the membership handlers answers, so it gets its own handler here. Four
-        // requirement types declared, four handlers registered: that count is the invariant to preserve.
+        // requirement types declared, four requirement handlers registered: that count is the invariant.
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
+
+        // A fifth handler that is deliberately not tied to one requirement. It can fail any named policy or
+        // the fallback policy while current account state requires credential or profile remediation; a
+        // fallback policy alone would not run on endpoints that declare a named policy.
+        services.AddScoped<IAuthorizationHandler, RemediationAuthorizationHandler>();
 
         // Gives the middleware's own refusals the RFC 7807 body they otherwise omit. Registered here
         // rather than beside the controller services because it is a property of the authorisation stage
@@ -529,7 +534,7 @@ public static class AuthenticationExtensions
             // Neither value may be changed without changing the issuer to match. A disagreement here is not
             // a compile error and not an exception; it silently turns every role test negative, which
             // presents as a caller who plainly holds a role being refused.
-            NameClaimType = DnnClaimTypes.UniqueName,
+            NameClaimType = DnnClaimTypes.Subject,
             RoleClaimType = ClaimTypes.Role,
         };
     }

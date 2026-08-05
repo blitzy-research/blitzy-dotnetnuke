@@ -58,7 +58,7 @@ namespace DnnMigration.UnitTests.Application;
 /// placeholders.
 /// </para>
 /// </remarks>
-public class AuthServiceTests
+public class AuthServiceApplicationTests
 {
     /// <summary>
     /// The tenant every test signs in against. Minus one is deliberate rather than arbitrary: the tenant
@@ -85,7 +85,7 @@ public class AuthServiceTests
     /// The stored representation the account is found holding. An obvious placeholder rather than a real
     /// digest, so that nothing resembling a credential is committed to this repository.
     /// </summary>
-    private const string StoredRepresentation = "stored-representation-placeholder";
+    private const string StoredRepresentation = "$2a$12$stored-representation-placeholder";
 
     /// <summary>
     /// The stand-in the hashing abstraction publishes for an account that holds no stored representation,
@@ -240,10 +240,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
 
@@ -424,10 +420,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Once,
             "the caller is signed in, so exactly one pair is minted");
@@ -703,7 +695,7 @@ public class AuthServiceTests
         IEnumerable<string?> everyRecordedValue = accepted.AuditRecords
             .Concat(refused.AuditRecords)
             .SelectMany(record => record.Properties.Values
-                .Concat([record.EventName, record.FailureCode, record.ActorUserName, record.ResourceId]));
+                .Concat([record.EventName, record.FailureCode, record.ResourceId]));
 
         foreach (string? value in everyRecordedValue)
         {
@@ -987,15 +979,14 @@ public class AuthServiceTests
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// An accepted credential mints exactly one pair, and the pair is minted with the facts the caller
-    /// actually holds.
+    /// An accepted credential mints exactly one pair using only the stable identity required by the
+    /// authority-minimised token contract.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// Every fact the token asserts is passed to the token contract rather than fetched by it, so this is
-    /// where the correctness of those arguments is established. The roles and permission keys are read
-    /// through their own abstractions and handed on unaltered - neither invented, filtered nor reordered
-    /// here.
+    /// Mutable authority is deliberately absent from the token contract. The response carries an empty
+    /// authority projection and clients load current roles and permissions through the explicit
+    /// current-user endpoint.
     /// </remarks>
     [Fact]
     public async Task LoginAsync_AnAcceptedCredential_MintsExactlyOnePairFromTheCallersOwnFacts()
@@ -1012,15 +1003,11 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 UserId,
                 PortalId,
-                AccountName,
-                false,
-                It.Is<IReadOnlyList<string>>(roles => roles.SequenceEqual(harness.RoleNames)),
-                It.Is<IReadOnlyList<string>>(keys => keys.SequenceEqual(harness.PermissionKeys)),
                 It.IsAny<CancellationToken>()),
             Times.Once);
 
-        outcome.Value.User.Roles.Should().Equal(harness.RoleNames);
-        outcome.Value.User.Permissions.Should().Equal(harness.PermissionKeys);
+        outcome.Value.User.Roles.Should().BeEmpty();
+        outcome.Value.User.Permissions.Should().BeEmpty();
         outcome.Value.User.PortalId.Should().Be(PortalId, "and minus one survives as a real tenant identifier");
     }
 
@@ -1052,10 +1039,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -1151,21 +1134,19 @@ public class AuthServiceTests
         outcome.Value.RefreshToken.Should().Be(
             SignInHarness.RotatedRefreshToken,
             "a successor value is issued, which is what retires the one presented");
-        outcome.Value.User.Roles.Should().Equal(
-            harness.RoleNames,
-            "the caller's authority is re-read rather than copied from the retired token");
+        outcome.Value.User.Roles.Should().BeEmpty(
+            "token responses expose identity only; mutable authority is loaded through /auth/me");
 
         harness.Tokens.Verify(
-            tokens => tokens.RefreshAsync(SignInHarness.PresentedRefreshToken, It.IsAny<CancellationToken>()),
+            tokens => tokens.RefreshAsync(
+                SignInHarness.PresentedRefreshToken,
+                SignInHarness.ClientBinding,
+                It.IsAny<CancellationToken>()),
             Times.Once);
         harness.Tokens.Verify(
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never,
             "rotation is not a second sign-in, so the issuing member is not called again");
@@ -1202,10 +1183,6 @@ public class AuthServiceTests
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<bool>(),
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -1228,7 +1205,10 @@ public class AuthServiceTests
         outcome.Reason!.Code.Should().Be(InvalidRefreshTokenCode);
 
         harness.Tokens.Verify(
-            tokens => tokens.RefreshAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            tokens => tokens.RefreshAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -1397,6 +1377,53 @@ public class AuthServiceTests
                 It.IsAny<CancellationToken>()),
             Times.Once,
             "and written exactly once, stamped with the instant the injected clock reported");
+    }
+
+    /// <summary>
+    /// A successfully verified legacy representation is replaced with BCrypt during that same accepted
+    /// sign-in.
+    /// </summary>
+    /// <returns>A task representing the assertions.</returns>
+    [Fact]
+    public async Task LoginAsync_AcceptedLegacyCredential_IsImmediatelyReplacedWithBcrypt()
+    {
+        const string SyntheticSalt = "synthetic-salt-placeholder";
+
+        SignInHarness harness = SignInHarness.Ready();
+        harness.StoredFormat = PasswordFormat.Encrypted;
+        harness.StoredSalt = SyntheticSalt;
+        harness.CredentialMatches = false;
+        harness.LegacyCredentials
+            .Setup(verifier => verifier.Verify(
+                SubmittedCredential,
+                StoredRepresentation,
+                PasswordFormat.Encrypted,
+                SyntheticSalt))
+            .Returns(LegacyCredentialVerification.Legacy(isMatch: true));
+
+        Result<LoginResponse> outcome = await harness.LoginAsync();
+
+        outcome.IsSuccess.Should().BeTrue(
+            "the bounded legacy verifier accepted the credential and the replacement is not a second gate");
+        harness.PasswordHasher.Verify(
+            hasher => hasher.Verify(SubmittedCredential, DecoyRepresentation),
+            Times.Once,
+            "a current-cost comparison still runs so a legacy row does not create a timing shortcut");
+        harness.PasswordHasher.Verify(
+            hasher => hasher.Hash(SubmittedCredential),
+            Times.Once);
+        harness.Users.Verify(
+            users => users.SetPasswordHashAsync(
+                UserId,
+                SignInHarness.ReplacementRepresentation,
+                Now,
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the accepted legacy representation is replaced before the token pair is issued");
+        harness.PasswordHasher.Verify(
+            hasher => hasher.NeedsRehash(It.IsAny<string>()),
+            Times.Never,
+            "legacy acceptance itself requires the replacement; the BCrypt cost predicate is irrelevant");
     }
 
     /// <summary>
@@ -1816,11 +1843,14 @@ public class AuthServiceTests
         /// <summary>The refresh token a caller presents for exchange.</summary>
         public const string PresentedRefreshToken = "presented-refresh-token";
 
+        /// <summary>The server-observed client binding carried through refresh orchestration.</summary>
+        public const string ClientBinding = "client-binding-placeholder";
+
         /// <summary>The account identifier the tenant records as its administrator.</summary>
         public const int AdministratorId = 2;
 
         /// <summary>The replacement a superseded stored representation is upgraded to.</summary>
-        private const string ReplacementRepresentation = "replacement-representation-placeholder";
+        public const string ReplacementRepresentation = "replacement-representation-placeholder";
 
         private SignInHarness()
         {
@@ -1854,7 +1884,9 @@ public class AuthServiceTests
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Accounts = new Mock<IUserService>(MockBehavior.Loose);
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
+            RefreshTokens = new Mock<IRefreshTokenStore>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
+            LegacyCredentials = new Mock<ILegacyCredentialVerifier>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
@@ -1862,13 +1894,22 @@ public class AuthServiceTests
             Audit = new Mock<IAuditSink>(MockBehavior.Loose);
             Diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Loose);
 
+            Accounts
+                .Setup(accounts => accounts.IsEmailValidAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(true));
+
             Service = new AuthService(
                 Users.Object,
                 Portals.Object,
                 Permissions.Object,
                 Accounts.Object,
                 Tokens.Object,
+                RefreshTokens.Object,
                 PasswordHasher.Object,
+                LegacyCredentials.Object,
                 Clock.Object,
                 HostSettings.Object,
                 UnitOfWork.Object,
@@ -1936,6 +1977,12 @@ public class AuthServiceTests
         /// <summary>Whether a stored representation exists to compare against.</summary>
         public bool StoredRepresentationOnFile { get; set; } = true;
 
+        /// <summary>The persisted membership format discriminator for the stored representation.</summary>
+        public PasswordFormat StoredFormat { get; set; } = PasswordFormat.Hashed;
+
+        /// <summary>The optional legacy membership salt stored beside the representation.</summary>
+        public string? StoredSalt { get; set; }
+
         /// <summary>Whether the hashing abstraction considers the stored representation superseded.</summary>
         public bool StoredRepresentationIsSuperseded { get; set; }
 
@@ -1981,8 +2028,14 @@ public class AuthServiceTests
         /// <summary>Token minting, rotation and revocation.</summary>
         public Mock<ITokenService> Tokens { get; }
 
+        /// <summary>Non-consuming refresh-token inspection.</summary>
+        public Mock<IRefreshTokenStore> RefreshTokens { get; }
+
         /// <summary>One-way credential comparison and replacement detection.</summary>
         public Mock<IPasswordHasher> PasswordHasher { get; }
+
+        /// <summary>Bounded verification of representations still held in a legacy format.</summary>
+        public Mock<ILegacyCredentialVerifier> LegacyCredentials { get; }
 
         /// <summary>The only source of the current instant.</summary>
         public Mock<IClock> Clock { get; }
@@ -2039,12 +2092,28 @@ public class AuthServiceTests
                 .ReturnsAsync(() => harness.ScopedAccountExists ? harness.Account : null);
 
             harness.Users
+                .Setup(users => users.GetAsync(
+                    It.Is<int?>(portalId => portalId == null),
+                    It.Is<int>(userId => userId == harness.SignedInCallerUserId),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.CallerIsSignedIn && harness.SignedInCallerIsSuperUser
+                    ? new User
+                    {
+                        UserId = harness.SignedInCallerUserId,
+                        Username = "authoritative_host",
+                        IsSuperUser = true,
+                    }
+                    : null);
+
+            harness.Users
                 .Setup(users => users.GetCredentialStateAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => (
                     harness.StoredRepresentationOnFile,
                     harness.StoredRepresentationOnFile ? StoredRepresentation : null,
+                    harness.StoredFormat,
+                    harness.StoredSalt,
                     harness.IsApproved,
                     harness.IsLockedOut));
 
@@ -2132,6 +2201,14 @@ public class AuthServiceTests
                 .Setup(hasher => hasher.Hash(It.IsAny<string>()))
                 .Returns(ReplacementRepresentation);
 
+            harness.LegacyCredentials
+                .Setup(verifier => verifier.Verify(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<PasswordFormat>(),
+                    It.IsAny<string?>()))
+                .Returns(LegacyCredentialVerification.Current);
+
             harness.UnitOfWork
                 .Setup(work => work.SaveChangesAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(1);
@@ -2154,10 +2231,6 @@ public class AuthServiceTests
                 .Setup(tokens => tokens.IssueTokensAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
-                    It.IsAny<string>(),
-                    It.IsAny<bool>(),
-                    It.IsAny<IReadOnlyList<string>>(),
-                    It.IsAny<IReadOnlyList<string>>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.TokenStoreAvailable
                     ? Result<LoginResponse>.Success(new LoginResponse
@@ -2170,8 +2243,20 @@ public class AuthServiceTests
                         TokenStoreUnavailableCode,
                         "The session could not be recorded."));
 
+            harness.RefreshTokens
+                .Setup(store => store.InspectAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => RefreshTokenInspection.Succeeded(
+                    new RefreshTokenSubject(UserId, PortalId),
+                    Now.AddDays(1)));
+
             harness.Tokens
-                .Setup(tokens => tokens.RefreshAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Setup(tokens => tokens.RefreshAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RotationOutcome ?? Result<LoginResponse>.Success(new LoginResponse
                 {
                     AccessToken = RotatedAccessToken,
@@ -2274,7 +2359,11 @@ public class AuthServiceTests
         /// <returns>The service's outcome.</returns>
         public Task<Result<LoginResponse>> RefreshAsync(string refreshToken = PresentedRefreshToken)
             => Service.RefreshAsync(
-                new RefreshTokenRequest { RefreshToken = refreshToken },
+                new RefreshTokenRequest
+                {
+                    RefreshToken = refreshToken,
+                    ClientBinding = ClientBinding,
+                },
                 CancellationToken.None);
     }
 }

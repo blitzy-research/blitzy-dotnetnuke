@@ -5,7 +5,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Field rules for <see cref="UpdateRoleGroupRequest"/>, the body of
-/// <c>PUT /api/v1/portals/{portalId}/role-groups/{roleGroupId}</c>.
+/// <c>PUT /api/v1/role-groups/{roleGroupId}</c>.
 /// </summary>
 /// <remarks>
 /// <para>

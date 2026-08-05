@@ -1,17 +1,15 @@
 namespace DnnMigration.Application.Dtos.Common;
 
 /// <summary>
-/// Envelope metadata companion to <c>ApiResponse</c>, describing a successful API response rather
-/// than the payload it carries. Declared but NOT YET ADOPTED, along with the envelopes that compose
-/// it.
+/// Envelope metadata companion to <c>ApiResponse</c> and <c>PagedResponse</c>, describing a successful
+/// API response rather than the payload it carries.
 /// </summary>
 /// <remarks>
 /// <para>
-/// STATUS: no endpoint emits this type today. It is reached only through <c>ApiResponse</c> and
-/// <c>PagedResponse</c>, neither of which any controller returns; the paged endpoints return the flat
-/// <c>PagedResult&lt;T&gt;</c> instead. The intended contract, once those envelopes are adopted, is
-/// that a collection endpoint populates every member while a single-item endpoint omits the metadata
-/// altogether, because a scalar payload has no page to describe.
+/// This type is reached only through those two envelopes, and it appears on the wire as their
+/// <c>meta</c> member. A paged endpoint returns <c>{ "items": [...], "meta": {...} }</c> and populates
+/// every member here; a single-resource endpoint returns <c>{ "data": {...} }</c> and omits
+/// <c>meta</c> altogether, because a scalar payload has no page to describe.
 /// </para>
 /// <para>
 /// The member set is confined to the three facts the legacy pager consumed plus the one value

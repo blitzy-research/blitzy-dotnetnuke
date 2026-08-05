@@ -97,6 +97,15 @@ public sealed class PortalService : IPortalService
     /// </remarks>
     private const string AdministratorDuplicateCode = "portal.administrator_duplicate";
 
+    /// <summary>Reason code reported when the designated administrator is not a member of the portal.</summary>
+    private const string AdministratorReferenceInvalidCode = "portal.administrator_invalid";
+
+    /// <summary>Reason code reported when a submitted page reference belongs to another portal.</summary>
+    private const string TabReferenceInvalidCode = "portal.tab_reference_invalid";
+
+    /// <summary>Reason code reported when a processor credential is not represented by a managed reference.</summary>
+    private const string ProcessorReferenceInvalidCode = "portal.processor_reference_invalid";
+
     /// <summary>Reason code reported when a host name is already bound to a portal.</summary>
     private const string AliasDuplicateCode = "portal.alias_duplicate";
 
@@ -105,6 +114,14 @@ public sealed class PortalService : IPortalService
 
     /// <summary>Reason code reported when removal is refused to keep one portal in the installation.</summary>
     private const string LastRemainingCode = "portal.last_remaining";
+
+    /// <summary>Reason code reported when a member's live sessions could not be ended before removal.</summary>
+    private const string MemberSessionRevocationFailedCode =
+        "portal.member.session.revocation_store_unavailable";
+
+    /// <summary>Reason code reported when a final member's external credential could not be removed.</summary>
+    private const string MemberCredentialRemovalFailedCode =
+        "portal.member.credential.removal_store_unavailable";
 
     /// <summary>
     /// Reason code reported when a child portal was requested but the parent authority its address
@@ -184,7 +201,6 @@ public sealed class PortalService : IPortalService
     /// <summary>Description of the stock subscribers role, preserved verbatim (L1396).</summary>
     private const string SubscribersRoleDescription = "A public role for portal subscriptions";
 
-    /// <summary>Reason code reported when the requested page coordinates are unusable.</summary>
     /// <summary>
     /// The editor type recorded on a default profile property definition, meaning "not resolved".
     /// </summary>
@@ -234,6 +250,7 @@ public sealed class PortalService : IPortalService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IHostSettingsService _hostSettings;
     private readonly IPasswordHasher _passwordHasher;
+    private readonly ITokenService _tokens;
     private readonly IClock _clock;
     private readonly ICacheService _cache;
     private readonly ICurrentUser _currentUser;
@@ -259,6 +276,9 @@ public sealed class PortalService : IPortalService
     /// <param name="unitOfWork">Commits each write exactly once.</param>
     /// <param name="hostSettings">Supplies the installation defaults a new portal inherits.</param>
     /// <param name="passwordHasher">Hashes the administrator's password before it is stored.</param>
+    /// <param name="tokens">
+    /// Ends every refresh-token family belonging to an account that portal removal deletes globally.
+    /// </param>
     /// <param name="clock">Supplies the current instant, so time-dependent behaviour is testable.</param>
     /// <param name="cache">Absorbs the legacy portal cache.</param>
     /// <param name="currentUser">
@@ -291,6 +311,7 @@ public sealed class PortalService : IPortalService
         IUnitOfWork unitOfWork,
         IHostSettingsService hostSettings,
         IPasswordHasher passwordHasher,
+        ITokenService tokens,
         IClock clock,
         ICacheService cache,
         ICurrentUser currentUser,
@@ -308,6 +329,7 @@ public sealed class PortalService : IPortalService
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _hostSettings = hostSettings ?? throw new ArgumentNullException(nameof(hostSettings));
         _passwordHasher = passwordHasher ?? throw new ArgumentNullException(nameof(passwordHasher));
+        _tokens = tokens ?? throw new ArgumentNullException(nameof(tokens));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
@@ -325,13 +347,13 @@ public sealed class PortalService : IPortalService
     /// </param>
     /// <remarks>
     /// Called only AFTER the change has been committed, so no record can describe a write that was later
-    /// rolled back. The actor is read from the credential through <see cref="ICurrentUser"/> and only when
-    /// the caller is authenticated: an unauthenticated path leaves the actor absent rather than fabricating
-    /// one, which is honest about a signup that carries no credential.
+    /// rolled back. The actor identifier is read from the credential through <see cref="ICurrentUser"/> and
+    /// only when the caller is authenticated: an unauthenticated path leaves the actor absent rather than
+    /// fabricating one, which is honest about a signup that carries no credential.
     /// <para>
-    /// MIGRATION: the legacy entries named the acting account explicitly - <c>PortalController.vb:L1146</c>
-    /// attached the administrator's own name among the fourteen properties - so keeping the actor is
-    /// faithful rather than an addition.
+    /// MIGRATION: the legacy entry copied the acting account's name into the logging store. The target keeps
+    /// the stable account identifier instead: it remains joinable to the authoritative account while the
+    /// account exists, and deletion does not leave a second copy of the person's identifier behind.
     /// </para>
     /// </remarks>
     private void RecordAudit(AuditEvent record)
@@ -341,7 +363,6 @@ public sealed class PortalService : IPortalService
             record = record with
             {
                 ActorUserId = _currentUser.UserId,
-                ActorUserName = _currentUser.UserName,
             };
         }
 
@@ -717,9 +738,9 @@ public sealed class PortalService : IPortalService
             isPublic: true,
             autoAssignment: true);
 
-        // Staged, not committed: IRoleRepository.AddAsync records the insertion and the single
-        // SaveChanges below closes the transaction over all five tables at once, which is what keeps
-        // the legacy multi-table creation sequence atomic.
+        // Staged, not flushed: IRoleRepository.AddAsync records the insertion and the SaveChanges below
+        // flushes it. What keeps the whole multi-table creation sequence atomic is the explicit
+        // transaction this method opened - its commit, not any single flush, is the durability boundary.
         await _roles.AddAsync(administratorsRole, cancellationToken).ConfigureAwait(false);
         await _roles.AddAsync(registeredUsersRole, cancellationToken).ConfigureAwait(false);
         await _roles.AddAsync(subscribersRole, cancellationToken).ConfigureAwait(false);
@@ -877,8 +898,9 @@ public sealed class PortalService : IPortalService
                 "The portal was created but could not be read back.");
         }
 
-        // MIGRATION: the legacy path closed with an AUDIT ENTRY that this service does not emit, and the
-        // reason is a layering constraint rather than an oversight, so it is recorded in full here.
+        // MIGRATION: the legacy path closed with an AUDIT ENTRY that this service now emits through the
+        // package-neutral sink; the original shape and the layering reason for the indirection are recorded
+        // in full here.
         // PortalController.vb:L1137-L1160 built a Services.Log.EventLog.LogInfo with BypassBuffering set
         // to True - the entry was written through immediately rather than batched, because a failed
         // installation had to leave a trace - typed it as EventLogType.HOST_ALERT, attached FOURTEEN
@@ -900,15 +922,47 @@ public sealed class PortalService : IPortalService
         // declared HERE, in terms this project can express, and Infrastructure implements it over ILogger -
         // which is where AAP 0.6.1 already assigns Serilog. The trail is kept, the package inventory is
         // untouched, and the layering rule is satisfied rather than worked around.
-        // MIGRATION: of the fourteen legacy properties, the ones that survive are recorded below. Six are
-        // carried verbatim - the portal name, the administrator's first name, last name, user name and email,
-        // and the alias - and IsChildPortal is carried too, because it is now the flag that DETERMINES the
-        // alias rather than a passive note about it. Description and Keywords are carried when present. Four
-        // are NOT carried, and each is absent for the same reason: TemplatePath, TemplateFile, ServerPath and
-        // ChildPath all describe file-system work this migration does not perform, so recording them would
-        // assert something untrue about what happened. The password remains absent, exactly as it was in the
-        // legacy entry - the legacy code already declined to record the credential and that restraint is
-        // preserved rather than newly imposed.
+        // MIGRATION: TWO REVISIONS NARROWED THIS SET INDEPENDENTLY AND THE NARROWER ONE SURVIVES, WIDENED BY
+        // THE THREE PROPERTIES THE OTHER ADDED THAT CARRY NO CALLER-SHAPED TEXT. What has to go either way is
+        // the administrator's name, user name and email, which are personal, and the CONTENT of the two
+        // free-text members. What the two revisions disagreed about was the tenant name and alias; the
+        // reasoning is set out at the dictionary below. An earlier rationale here asserted that six
+        // properties were "carried verbatim" while one was recorded, and this paragraph replaces that drift.
+        //
+        // MIGRATION: of the fourteen legacy properties, the ones that survive are recorded below, and the
+        // set is NARROWER than the original's. Four are NOT carried because they describe
+        // file-system work this migration does not perform - TemplatePath, TemplateFile, ServerPath and
+        // ChildPath - so recording them would assert something untrue about what happened. The password
+        // remains absent, exactly as it was in the legacy entry: the legacy code already declined to
+        // record the credential and that restraint is preserved rather than newly imposed.
+        //
+        // SEC: FIVE FURTHER PROPERTIES ARE NOW WITHHELD, AND THIS IS A DELIBERATE NARROWING OF THE
+        // LEGACY RECORD. An earlier revision carried the administrator's FIRST NAME, LAST NAME, USER NAME
+        // and EMAIL ADDRESS, plus the caller's free-text DESCRIPTION and KEYWORDS. Every one of those is
+        // personal data or unvalidated caller text, and this sink writes to the GENERAL application log -
+        // the highest-volume, longest-retained and most widely-readable store the application produces,
+        // and one this codebase does not control the retention of. Two distinct problems followed:
+        //
+        //   - Personal data was copied into a store chosen for diagnostics rather than for records
+        //     management, where it cannot be located for a subject-access or erasure request and is
+        //     retained for as long as the log is. An audit trail that legally requires personal data
+        //     belongs in a dedicated, access-controlled store with its own retention policy; it does not
+        //     belong here by default, and adding one is a deployment decision rather than a side effect
+        //     of porting a legacy entry.
+        //   - The two free-text members were caller-supplied and therefore attacker-shaped. They are
+        //     bounded in length by the request validators but not in CONTENT, so a description containing
+        //     a carriage return and a line feed could forge additional log lines - a log-injection defect
+        //     whose root cause is now also closed at the rendering layer, in
+        //     Infrastructure/Services/LoggingAuditSink.cs, so no property from any event can break out
+        //     of its own line.
+        //
+        // WHAT SURVIVES IS EVERY FACT AN AUDITOR ACTUALLY NEEDS, and it is deliberately all
+        // non-personal: the portal identifier and name, the alias the tenant answers on, whether it is a
+        // child portal, and the administrator's USER IDENTIFIER. The identifier is the stable key that
+        // resolves to the account's name and address in the store whenever an operator legitimately needs
+        // them, which is the difference between a record that points at a person and a record that copies
+        // them. The event's own SubjectUserId already carries that identifier, so "who can now sign in to
+        // this tenant" remains answerable.
         // MIGRATION: the legacy entry was typed HOST_ALERT and this one is named PORTAL_CREATED, from the
         // same EventLogType enum (EventLogController.vb:L38-L77). The legacy typing was the coarser of the
         // two available choices; the enum's own PORTAL_CREATED member is the accurate one, so it is used.
@@ -929,37 +983,45 @@ public sealed class PortalService : IPortalService
         // legacy outcome is preserved without the legacy mechanism.
         Dictionary<string, string?> installation = new(StringComparer.Ordinal)
         {
-            ["PortalName"] = created.PortalName,
-            ["PortalAlias"] = alias,
+            // MIGRATION: THE TENANT NAME AND ALIAS ARE DELIBERATELY ABSENT, AND ONE REVISION RECORDED BOTH.
+            // The argument for recording them is readability: a record naming "Contoso Intranet" is easier
+            // to reconstruct an incident from than one naming tenant 42. The argument against is decisive
+            // for a general log: both are CALLER-SUPPLIED text bounded in length and not in content, and the
+            // envelope of this very record already carries the tenant key, so the name adds no identifying
+            // power the record did not already have - it only adds an unbounded-shape string to a line-
+            // oriented sink. The sink's allowlist enforces the same rule from the other side, admitting only
+            // identifiers, closed vocabularies and booleans, so recording them here would have had them
+            // withheld there and the two layers would have disagreed in silence.
+            //
+            // What that revision contributed and is KEPT: the administrator's numeric key, which answers
+            // "who can now sign in to this tenant" without naming anybody, and presence-only flags for the
+            // two free-text members - so an auditor can still tell that an installation was asked for a
+            // description without the description itself reaching the log.
             ["IsChildPortal"] = request.IsChildPortal.ToString(),
-            ["AdministratorUsername"] = administratorUsername,
-            ["AdministratorFirstName"] = request.AdministratorFirstName,
-            ["AdministratorLastName"] = request.AdministratorLastName,
-            ["AdministratorEmail"] = request.AdministratorEmail,
             ["AdministratorId"] = administrator.UserId.ToString(CultureInfo.InvariantCulture),
+            ["DescriptionSupplied"] = (!string.IsNullOrWhiteSpace(request.Description))
+                .ToString(CultureInfo.InvariantCulture),
+            ["KeywordsSupplied"] = (!string.IsNullOrWhiteSpace(request.KeyWords))
+                .ToString(CultureInfo.InvariantCulture),
         };
-
-        if (!string.IsNullOrWhiteSpace(request.Description))
-        {
-            installation["Description"] = request.Description;
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.KeyWords))
-        {
-            installation["Keywords"] = request.KeyWords;
-        }
 
         // Recorded after the commit, so no record can describe an installation that was rolled back. The
         // SUBJECT is the administrator the installation created, which is what makes the record answer
         // "who can now sign in to this tenant" and not merely "a tenant appeared".
-        RecordAudit(new AuditEvent(AuditEventNames.PortalCreated)
+        AuditEvent installed = new(AuditEventNames.PortalCreated)
         {
             PortalId = portal.PortalId,
             SubjectUserId = administrator.UserId,
             ResourceType = PortalResourceType,
             ResourceId = portal.PortalId.ToString(CultureInfo.InvariantCulture),
             Properties = installation,
-        });
+        };
+
+        RecordAudit(installed);
+
+        // The legacy type for the same operation, emitted from the same facts by changing only the name, so
+        // the two records cannot drift apart or describe different installations.
+        RecordAudit(installed with { EventName = AuditEventNames.HostAlert });
 
         return Result<PortalDetailDto>.Success(created);
     }
@@ -972,21 +1034,35 @@ public sealed class PortalService : IPortalService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        Portal? portal = await _portals
-            .GetByIdAsync(portalId, includeAliases: true, cancellationToken)
-            .ConfigureAwait(false);
-        if (portal is null)
+        // SEC-010: the ownership checks and the write are one serialisable operation. Without the
+        // transaction, a membership or page could move after it was validated and before the portal row
+        // was saved, recreating the foreign reference through a time-of-check/time-of-use race.
+        await using (ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Serializable, cancellationToken)
+            .ConfigureAwait(false))
         {
-            return Result<PortalDetailDto?>.Success(null);
+            Portal? portal = await _portals
+                .GetByIdAsync(portalId, includeAliases: true, cancellationToken)
+                .ConfigureAwait(false);
+            if (portal is null)
+            {
+                return Result<PortalDetailDto?>.Success(null);
+            }
+
+            await EnsureHostOnlyFieldsUnchangedAsync(portal, request, cancellationToken).ConfigureAwait(false);
+
+            Result references = await ValidateUpdateReferencesAsync(portal, request, cancellationToken)
+                .ConfigureAwait(false);
+            if (references.IsFailure)
+            {
+                return Result<PortalDetailDto?>.Failure(references.Error!);
+            }
+
+            PortalMappings.ApplyUpdate(portal, request);
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-
-        EnsureHostOnlyFieldsUnchanged(portal, request);
-
-        EnsureAdministratorRetained(portal, request);
-
-        PortalMappings.ApplyUpdate(portal, request);
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         _cache.InvalidatePortal(portalId);
 
@@ -1074,9 +1150,91 @@ public sealed class PortalService : IPortalService
         // removed by the cascade configured on the portal's relationships: the repository contracts
         // expose no removal member for a page or a module, and expressing the sweep here would require
         // widening abstractions that are deliberately narrow.
-        // Captured BEFORE the removal, because the trail needs them and neither survives it.
-        string removedPortalName = portal.PortalName;
+        // Captured BEFORE the removal because the alias rows do not survive it.
         int releasedAliasCount = portal.PortalAliases.Count;
+
+        IReadOnlyList<User> portalMembers = await _users
+            .ListPortalMembersForRemovalAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        HashSet<int> accountIdsToRemove = portalMembers
+            .Where(member =>
+                !member.IsSuperUser
+                && !member.UserPortals.Any(membership => membership.PortalId != portalId))
+            .Select(member => member.UserId)
+            .ToHashSet();
+
+        // The token store is in process and cannot enlist in the database transaction. The serialisable
+        // transaction is already open because the final-membership decision above has to be protected from
+        // concurrent membership changes, but no relational removal has been staged yet. Ending sessions
+        // first therefore has the same safety property as UserService.DeleteUserAsync: a refusal leaves all
+        // database rows intact, while a later database refusal can cost an account a re-authentication and
+        // nothing more.
+        foreach (User account in portalMembers.Where(account => accountIdsToRemove.Contains(account.UserId)))
+        {
+            Result revoked = await _tokens
+                .RevokeAllRefreshTokensAsync(account.UserId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (revoked.IsFailure)
+            {
+                return Result.Failure(
+                    MemberSessionRevocationFailedCode,
+                    FormattableString.Invariant(
+                        $"The sessions held by account {account.UserId} could not be ended.")
+                    + " The portal removal was abandoned before any database row was removed. Try again.");
+            }
+        }
+
+        foreach (User account in portalMembers)
+        {
+            UserPortal? membership = account.UserPortals
+                .SingleOrDefault(candidate => candidate.PortalId == portalId);
+
+            bool removeAccount = accountIdsToRemove.Contains(account.UserId);
+
+            if (removeAccount)
+            {
+                // Both direct-grant foreign keys to dbo.Users are deliberately restrictive in the legacy
+                // schema. Staging these rows first gives EF an explicit dependency graph and prevents an
+                // account delete from being issued while either table still points at it.
+                await _permissions
+                    .DeleteModulePermissionsByUserIdAsync(portalId, account.UserId, cancellationToken)
+                    .ConfigureAwait(false);
+                await _permissions
+                    .DeleteTabPermissionsByUserIdAsync(portalId, account.UserId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // This write reaches the external aspnet membership store immediately but uses the unit of
+                // work's connection and ambient transaction. A refusal consequently rolls back every
+                // relational removal staged above and leaves the account reachable rather than orphaning
+                // its credential.
+                if (!await _users
+                    .DeleteCredentialAsync(account.UserId, cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    return Result.Failure(
+                        MemberCredentialRemovalFailedCode,
+                        FormattableString.Invariant(
+                            $"The credential held by account {account.UserId} could not be removed.")
+                        + " The portal and account were left intact rather than separated. Try again.");
+                }
+
+                _users.Remove(account);
+                continue;
+            }
+
+            if (membership is not null)
+            {
+                // MIGRATION: a host account is installation-wide and must never be globally removed by
+                // deleting one tenant, even when this is its only UserPortals row. The legacy bulk path
+                // admitted super users and could therefore delete the installation's final operator. The
+                // divergence is intentional: only the expiring tenant membership is removed. The same arm
+                // retains ordinary accounts that still belong to another portal, and their sessions remain
+                // active because the account itself survives.
+                _users.RemoveMembership(membership);
+            }
+        }
 
         foreach (PortalAlias alias in portal.PortalAliases.ToList())
         {
@@ -1095,9 +1253,16 @@ public sealed class PortalService : IPortalService
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateHost();
 
-        // Recorded after the commit, so no event can describe a removal that was rolled back. The tenant
-        // NAME is carried because the row is gone by the time anyone reads the trail and an identifier
-        // alone would no longer resolve to anything.
+        // Per-account entries are evicted too. They are keyed by tenant and login name, so an entry left
+        // warm would keep answering for a tenant that no longer exists - and would still answer for an
+        // account whose membership of it has just been removed.
+        foreach (User account in portalMembers)
+        {
+            _cache.InvalidateUser(portalId, account.Username);
+        }
+        // Recorded after the commit, so no event can describe a removal that was rolled back. The stable
+        // identifier remains in the envelope; the deleted tenant's name is deliberately not copied into
+        // the independently retained logging store.
         RecordAudit(new AuditEvent(AuditEventNames.PortalDeleted)
         {
             PortalId = portalId,
@@ -1105,7 +1270,6 @@ public sealed class PortalService : IPortalService
             ResourceId = portalId.ToString(CultureInfo.InvariantCulture),
             Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["PortalName"] = removedPortalName,
                 ["AliasesReleased"] = releasedAliasCount.ToString(CultureInfo.InvariantCulture),
             },
         });
@@ -1144,6 +1308,42 @@ public sealed class PortalService : IPortalService
         return portal is null
             ? Result<PortalSettingsDto?>.Success(null)
             : Result<PortalSettingsDto?>.Success(PortalMappings.ToSettings(portal));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<PortalSettingsDto?>> UpdatePortalSettingsAsync(
+        int portalId,
+        UpdatePortalSettingsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // The settings projection carries no aliases, so this path deliberately avoids loading them.
+        // The general portal update still requests them because its response is the full detail contract.
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+        if (portal is null)
+        {
+            return Result<PortalSettingsDto?>.Success(null);
+        }
+
+        // Both public update resources replace the same stored row and therefore share the same
+        // content-sensitive authorisation and aggregate invariant. Keeping the guards on the shared
+        // request interface prevents the settings route from becoming a less protected way to write the
+        // fields already defended by UpdatePortalAsync.
+        await EnsureHostOnlyFieldsUnchangedAsync(portal, request, cancellationToken).ConfigureAwait(false);
+        EnsureAdministratorRetained(portal, request);
+
+        PortalMappings.ApplyUpdate(portal, request);
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // The settings read bypasses the cache, but other readers do not. Invalidating after the commit
+        // prevents the list/detail surfaces from continuing to publish the values this operation replaced.
+        _cache.InvalidatePortal(portalId);
+
+        return Result<PortalSettingsDto?>.Success(PortalMappings.ToSettings(portal));
     }
 
     /// <inheritdoc />
@@ -1672,6 +1872,8 @@ public sealed class PortalService : IPortalService
     /// </summary>
     /// <param name="portal">The stored portal.</param>
     /// <param name="request">The submitted values.</param>
+    /// <param name="cancellationToken">Abandons the authority read when the caller disconnects.</param>
+    /// <returns>A task that completes when the request has been admitted.</returns>
     /// <exception cref="UnauthorizedAccessException">
     /// Thrown when a non-host caller has altered the hosting charge, the disc-space quota, the page
     /// quota, the member quota, the site-log retention period or the expiry date.
@@ -1704,10 +1906,23 @@ public sealed class PortalService : IPortalService
     /// effective value closes that, and costs a caller who is genuinely not changing them nothing,
     /// because echoing a value back compares equal.
     /// </para>
+    /// <para>
+    /// SEC-011: THE EXEMPTION IS READ FROM THE STORE, NOT FROM THE TOKEN. It used to test the super-user claim
+    /// carried on the caller's bearer token, which is a snapshot of what was true when the token was minted.
+    /// Access tokens outlive the facts they assert: an account demoted out of the host role keeps a valid token
+    /// until it expires, and would have kept the exemption with it - able to waive the hosting charge and lift
+    /// every quota on any portal it could otherwise administer, for the remainder of that token's life. The
+    /// status is therefore re-read from <c>dbo.Users</c> per request, which is the same rule the
+    /// portal-administration authorisation handler already applies to the same claim, so the two cannot
+    /// disagree about who is a host account.
+    /// </para>
     /// </remarks>
-    private void EnsureHostOnlyFieldsUnchanged(Portal portal, UpdatePortalRequest request)
+    private async Task EnsureHostOnlyFieldsUnchangedAsync(
+        Portal portal,
+        IPortalSettingsUpdateRequest request,
+        CancellationToken cancellationToken)
     {
-        if (_currentUser.IsSuperUser)
+        if (await CallerIsHostAccountAsync(cancellationToken).ConfigureAwait(false))
         {
             return;
         }
@@ -1727,45 +1942,20 @@ public sealed class PortalService : IPortalService
     }
 
     /// <summary>
-    /// Refuses an update that would leave a portal designating no administrator account.
+    /// Refuses an update that would leave a portal with no designated administrator account.
     /// </summary>
-    /// <param name="portal">The stored portal, read before anything is applied.</param>
-    /// <param name="request">The submitted update.</param>
+    /// <param name="portal">The stored tenant being updated.</param>
+    /// <param name="request">The submitted settings.</param>
     /// <exception cref="DomainException">
-    /// Thrown when the portal currently designates an administrator and the update would clear it.
+    /// The stored portal designates an administrator and the request would clear it.
     /// </exception>
     /// <remarks>
-    /// <para>
-    /// This guard exists because of what the surrounding contract makes possible rather than because the
-    /// legacy application needed it. The request is a whole-row replacement - the sibling guard above
-    /// explains that at length - so a caller that simply leaves <c>AdministratorId</c> out of the body is
-    /// not saying "leave it alone", it is saying "set it to nothing", and
-    /// <c>Portals.AdministratorId</c> is <c>int NULL</c>, so the database accepts that write without
-    /// complaint.
-    /// </para>
-    /// <para>
-    /// The consequence is out of all proportion to the omission. A portal that designates no
-    /// administrator cannot be used: request-time tenant resolution reports the portal as incomplete and
-    /// the portal-administrator authorisation policy then denies every request addressed to that tenant,
-    /// including the requests that would put the value back. One well-formed update would therefore take
-    /// a live tenant permanently out of service, and nothing in the write path would report a problem.
-    /// </para>
-    /// <para>
-    /// Refusing the clear costs no legacy behaviour, which is why it is safe to add.
-    /// <c>Website/admin/Portal/sitesettings.ascx</c> renders the administrator as a drop-down list of the
-    /// portal's administrator accounts, so every save the legacy screen could produce carried a value and
-    /// no legacy input reaches this refusal. It is recorded as an intentional strengthening.
-    /// </para>
-    /// <para>
-    /// The test is deliberately the narrow one - a designated administrator being cleared - rather than
-    /// "the effective value is null". A portal whose stored value is already absent stays editable, so an
-    /// operator can repair such a row instead of finding it frozen, and an update that designates an
-    /// administrator for the first time is exactly the repair. Existence and tenant ownership of the
-    /// referenced account are not checked here: that is a repository question, and the column's foreign
-    /// key settles existence authoritatively.
-    /// </para>
+    /// An omitted administrator means "leave it as it is", which is why the guard tests the STORED value as
+    /// well as the submitted one: a portal that already has none is not made worse by an update that supplies
+    /// none, whereas clearing a designated administrator would leave the tenant with no account able to
+    /// administer it and no route back other than a host-level repair.
     /// </remarks>
-    private static void EnsureAdministratorRetained(Portal portal, UpdatePortalRequest request)
+    private static void EnsureAdministratorRetained(Portal portal, IPortalSettingsUpdateRequest request)
     {
         if (portal.AdministratorId is null || request.AdministratorId is not null)
         {
@@ -1774,6 +1964,165 @@ public sealed class PortalService : IPortalService
 
         throw new DomainException(
             "A portal must designate an administrator account, so an update may not clear it.");
+    }
+
+    /// <summary>
+    /// Reports whether the caller is a host account according to the store, rather than according to the
+    /// claim its token carries.
+    /// </summary>
+    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
+    /// <returns><see langword="true"/> when the caller's stored account is a host account.</returns>
+    /// <remarks>
+    /// <para>
+    /// SEC-011: EVERY ARM OF THIS FAILS CLOSED. An unauthenticated caller is not a host account. A caller
+    /// whose account is absent from the store - deleted since sign-in, or a token minted for an identifier
+    /// that never existed - is not a host account either, because a missing record cannot evidence authority.
+    /// Only a stored row saying so grants the exemption.
+    /// </para>
+    /// <para>
+    /// The account is read installation-wide, with no portal anchor. A host account belongs to no tenant, so
+    /// anchoring the read to a portal would fail to find precisely the account being asked about.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> CallerIsHostAccountAsync(CancellationToken cancellationToken)
+    {
+        if (!_currentUser.IsAuthenticated || _currentUser.UserId is not { } userId)
+        {
+            return false;
+        }
+
+        User? account = await _users
+            .GetAsync(portalId: null, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return account?.IsSuperUser == true;
+    }
+
+    /// <summary>
+    /// Validates every account and page reference before an update can be mapped onto the tracked portal.
+    /// </summary>
+    /// <param name="portal">The stored portal, read before anything is applied.</param>
+    /// <param name="request">The submitted update.</param>
+    /// <param name="cancellationToken">Abandons the ownership reads when the caller disconnects.</param>
+    /// <returns>A successful result when every reference belongs to the addressed portal.</returns>
+    /// <remarks>
+    /// <para>
+    /// SEC-010: the legacy screen populated the administrator and four page selectors from this portal's
+    /// own records, but the API accepts identifiers directly. A foreign identifier is therefore rejected
+    /// here rather than trusted until a database constraint fails; the page columns do not even carry
+    /// foreign keys in every supported schema.
+    /// </para>
+    /// <para>
+    /// The request is a whole-row replacement, so a null administrator clears the column. A portal that
+    /// already designates an administrator may not be cleared accidentally; a pre-existing broken row with
+    /// no administrator remains repairable by assigning a valid member.
+    /// </para>
+    /// <para>
+    /// Each page is tested through <see cref="IPortalRepository.TabBelongsToPortalAsync"/>, whose false
+    /// result deliberately covers both absence and another tenant's row. No numeric range check is used:
+    /// zero is a legitimate page identifier.
+    /// </para>
+    /// <para>
+    /// Expected failures carry bounded messages and stable reason codes, so the API returns a correctable
+    /// 400 response without disclosing another tenant's account or page metadata.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> ValidateUpdateReferencesAsync(
+        Portal portal,
+        UpdatePortalRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.ProcessorCredentialReference is null)
+        {
+            if (!string.IsNullOrEmpty(portal.ProcessorCredentialReference)
+                && !IsManagedSecretReference(portal.ProcessorCredentialReference))
+            {
+                return Result.Failure(
+                    ProcessorReferenceInvalidCode,
+                    "The legacy processor credential must be cleared or replaced with a managed-secret reference before the portal can be updated.");
+            }
+        }
+        else if (request.ProcessorCredentialReference.Length > 0
+            && !IsManagedSecretReference(request.ProcessorCredentialReference))
+        {
+            return Result.Failure(
+                ProcessorReferenceInvalidCode,
+                "The processor credential reference must use secret:// followed by a managed-secret identifier.");
+        }
+
+        if (request.AdministratorId is int administratorId)
+        {
+            UserPortal? membership = await _users
+                .GetMembershipAsync(portal.PortalId, administratorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (membership is null)
+            {
+                return Result.Failure(
+                    AdministratorReferenceInvalidCode,
+                    "The designated administrator must be an account that belongs to the addressed portal.");
+            }
+        }
+        else if (portal.AdministratorId is not null)
+        {
+            return Result.Failure(
+                AdministratorReferenceInvalidCode,
+                "A portal must designate an administrator account that belongs to the addressed portal.");
+        }
+
+        (string Field, int? TabId)[] pageReferences =
+        [
+            (nameof(UpdatePortalRequest.SplashTabId), request.SplashTabId),
+            (nameof(UpdatePortalRequest.HomeTabId), request.HomeTabId),
+            (nameof(UpdatePortalRequest.LoginTabId), request.LoginTabId),
+            (nameof(UpdatePortalRequest.UserTabId), request.UserTabId),
+        ];
+
+        foreach ((string field, int? tabId) in pageReferences)
+        {
+            if (tabId is int referencedTabId
+                && !await _portals
+                    .TabBelongsToPortalAsync(portal.PortalId, referencedTabId, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                return Result.Failure(
+                    TabReferenceInvalidCode,
+                    FormattableString.Invariant(
+                        $"{field} must identify a page that belongs to the addressed portal."));
+            }
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>Reports whether a value satisfies the bounded managed-secret reference contract.</summary>
+    /// <param name="reference">The non-empty reference to inspect.</param>
+    /// <returns><see langword="true"/> only for a 50-character-or-shorter <c>secret://</c> reference.</returns>
+    private static bool IsManagedSecretReference(string reference)
+    {
+        const string prefix = "secret://";
+        if (reference.Length is < 10 or > 50
+            || !reference.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> identifier = reference.AsSpan(prefix.Length);
+        if (!char.IsAsciiLetterOrDigit(identifier[0]))
+        {
+            return false;
+        }
+
+        foreach (char character in identifier[1..])
+        {
+            if (!char.IsAsciiLetterOrDigit(character)
+                && character is not ('.' or '_' or '/' or '-'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

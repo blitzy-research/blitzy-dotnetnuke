@@ -148,6 +148,32 @@ public static class RateLimitingExtensions
     public const string AuthenticationPolicyName = "authentication";
 
     /// <summary>
+    /// The policy name the caller-description read declares: <c>session-read</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// SEC: A SEPARATE BUDGET, AND THAT SEPARATION IS THE WHOLE POINT. The caller-description read
+    /// (<c>GET /auth/me</c>) carries no credential, so it must stay bounded - an unbounded read is something
+    /// a stolen token can be probed against indefinitely - but it must NOT share the budget that sign-in
+    /// draws on. Sharing them is a denial of service in both directions: a client that polls its own
+    /// description exhausts the window every other caller needs in order to SIGN IN, and a burst of
+    /// credential guessing locks legitimate clients out of describing themselves. One controller-wide
+    /// declaration produced exactly that coupling.
+    /// </para>
+    /// <para>
+    /// The window size is the same, taken from the same configuration section, because the traffic it bounds
+    /// is of the same order. What differs is the partition key prefix, which is what gives it a budget of its
+    /// own; see <see cref="SessionReadPartitionKeyPrefix"/>.
+    /// </para>
+    /// </remarks>
+    public const string SessionReadPolicyName = "session-read";
+
+    /// <summary>
+    /// Policy name for profile replacements that evaluate tenant-authored regular expressions.
+    /// </summary>
+    public const string ProfileWritePolicyName = "profile-write";
+
+    /// <summary>
     /// The configuration section that sizes the credential window: <c>RateLimiting:Authentication</c>.
     /// </summary>
     /// <remarks>
@@ -175,6 +201,9 @@ public static class RateLimitingExtensions
     /// becomes a per-client budget, which is stricter again.
     /// </remarks>
     private const int DefaultCredentialPermitsPerWindow = 30;
+
+    /// <summary>Profile replacements permitted per client per minute.</summary>
+    private const int ProfileWritePermitsPerWindow = 20;
 
     /// <summary>
     /// Credential requests processed at once, across the whole process: 4.
@@ -220,19 +249,35 @@ public static class RateLimitingExtensions
     private const string ConcurrencyPartitionKey = "credential-concurrency";
 
     /// <summary>
-    /// Partition key used when the remote address cannot be determined.
+    /// Partition key suffix used when the remote address cannot be determined.
     /// </summary>
     /// <remarks>
     /// Requests with no observable address share one partition rather than being
     /// exempted. An unattributable request is the one most in need of a bound, and
-    /// exempting it would turn a missing address into a way around the window.
+    /// exempting it would turn a missing address into a way around the window. The
+    /// suffix is combined with the caller's own prefix, so an unattributed credential
+    /// request and an unattributed caller-description read remain separate budgets for
+    /// the same reason attributed ones do.
     /// </remarks>
-    private const string UnattributedClientPartitionKey = "credential-window:unattributed";
+    private const string UnattributedClientSuffix = "unattributed";
 
     /// <summary>
     /// Prefix distinguishing window partitions from the other keys in play.
     /// </summary>
     private const string ClientPartitionKeyPrefix = "credential-window:";
+
+    /// <summary>
+    /// Prefix distinguishing the caller-description window's partitions from the credential window's.
+    /// </summary>
+    /// <remarks>
+    /// Two partitions keyed by the same address but under different prefixes are two independent budgets,
+    /// which is precisely what separates the caller-description read from sign-in. Changing this to match
+    /// <see cref="ClientPartitionKeyPrefix"/> would silently re-merge them.
+    /// </remarks>
+    private const string SessionReadPartitionKeyPrefix = "session-read-window:";
+
+    /// <summary>Prefix separating profile-validation work from every credential/session budget.</summary>
+    private const string ProfileWritePartitionKeyPrefix = "profile-write-window:";
 
     /// <summary>
     /// Path segments that mark a request as credential-bearing.
@@ -329,6 +374,21 @@ public static class RateLimitingExtensions
                 AuthenticationPolicyName,
                 context => BuildWindowPartition(context, permitLimit, window));
 
+            // Same window, separate partition prefix, therefore a separate budget. See
+            // SessionReadPolicyName for why the caller-description read must be bounded without drawing on
+            // the budget sign-in needs.
+            options.AddPolicy(
+                SessionReadPolicyName,
+                context => BuildWindowPartition(context, permitLimit, window, SessionReadPartitionKeyPrefix));
+
+            options.AddPolicy(
+                ProfileWritePolicyName,
+                context => BuildWindowPartition(
+                    context,
+                    ProfileWritePermitsPerWindow,
+                    DefaultCredentialWindow,
+                    ProfileWritePartitionKeyPrefix));
+
             options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
                 PartitionedRateLimiter.Create<HttpContext, string>(
                     context => ResolveWindowPartition(context, permitLimit, window)),
@@ -414,6 +474,10 @@ public static class RateLimitingExtensions
     /// <param name="context">The request being partitioned.</param>
     /// <param name="permitLimit">Permits per window.</param>
     /// <param name="window">Length of the window.</param>
+    /// <param name="partitionKeyPrefix">
+    /// The prefix that names which budget the partition belongs to. Defaults to the credential window's
+    /// prefix; the caller-description policy passes its own so that the two do not share a budget.
+    /// </param>
     /// <returns>A window partition keyed by the caller's observable address.</returns>
     /// <remarks>
     /// <para>
@@ -431,12 +495,13 @@ public static class RateLimitingExtensions
     private static RateLimitPartition<string> BuildWindowPartition(
         HttpContext context,
         int permitLimit,
-        TimeSpan window)
+        TimeSpan window,
+        string partitionKeyPrefix = ClientPartitionKeyPrefix)
     {
         ArgumentNullException.ThrowIfNull(context);
 
         return RateLimitPartition.GetFixedWindowLimiter(
-            ResolveClientPartitionKey(context),
+            ResolveClientPartitionKey(context, partitionKeyPrefix),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = permitLimit,
@@ -625,6 +690,10 @@ public static class RateLimitingExtensions
     /// Builds the window partition key from the caller's observable address.
     /// </summary>
     /// <param name="context">The request being partitioned.</param>
+    /// <param name="partitionKeyPrefix">
+    /// The prefix naming the budget the key belongs to, so that one address occupies one partition per
+    /// budget rather than one partition shared across budgets.
+    /// </param>
     /// <returns>A bounded, non-null partition key.</returns>
     /// <remarks>
     /// <para>
@@ -640,13 +709,15 @@ public static class RateLimitingExtensions
     /// wearing the costume of a security control.
     /// </para>
     /// </remarks>
-    private static string ResolveClientPartitionKey(HttpContext context)
+    private static string ResolveClientPartitionKey(
+        HttpContext context,
+        string partitionKeyPrefix = ClientPartitionKeyPrefix)
     {
         IPAddress? address = context.Connection.RemoteIpAddress;
 
         if (address is null)
         {
-            return UnattributedClientPartitionKey;
+            return string.Concat(partitionKeyPrefix, UnattributedClientSuffix);
         }
 
         if (address.IsIPv4MappedToIPv6)
@@ -654,7 +725,7 @@ public static class RateLimitingExtensions
             address = address.MapToIPv4();
         }
 
-        return string.Concat(ClientPartitionKeyPrefix, address.ToString());
+        return string.Concat(partitionKeyPrefix, address.ToString());
     }
 
     /// <summary>

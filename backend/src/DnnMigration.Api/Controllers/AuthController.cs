@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using Asp.Versioning;
+using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Extensions;
 using DnnMigration.Api.Middleware;
@@ -96,6 +99,7 @@ namespace DnnMigration.Api.Controllers;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/auth")]
+[AllowDuringRemediation(RemediationEndpointKind.Authentication)]
 // Every operation here names its tenant by a means other than the host name, and sign-in MUST stay reachable
 // from a host that resolves to no portal - it is how an operator obtains the session that repairs the alias
 // configuration. Sign-in takes an explicit portal identifier when no alias matches; refresh, revocation and
@@ -103,32 +107,38 @@ namespace DnnMigration.Api.Controllers;
 [TenantOptional(
     "Sign-in accepts an explicit portal identifier and must remain reachable from an unconfigured host so an "
     + "operator can obtain a session; the other three operations take their portal from the bearer token.")]
-// THE COMPENSATING CONTROL FOR THE DELETED CAPTCHA, DECLARED ONCE FOR THE WHOLE CONTROLLER. Declared here
-// rather than operation by operation so that an operation added to this controller cannot be reachable
-// without it: the omission that a per-operation declaration invites is exactly the omission this control
-// exists to prevent. The policy is named through its constant, never through its spelling, so renaming the
-// policy is a compile error rather than a silently inert attribute.
+// THE COMPENSATING CONTROL FOR THE DELETED CAPTCHA IS DECLARED PER OPERATION, AND THE SPLIT IS A SECURITY
+// FIX RATHER THAN A TIDY-UP. One controller-wide declaration put all four operations into ONE budget, and
+// three of them handle a credential while the fourth - the caller-description read - does not. Sharing one
+// budget between them is a denial of service in both directions: a client polling its own description spends
+// the window every other caller needs in order to SIGN IN, and a burst of credential guessing locks
+// legitimate clients out of describing themselves. Each operation therefore names its own policy:
 //
-// The window is sized from configuration under RateLimiting:Authentication, partitioned by the caller's
-// normalised remote address and never by anything the caller submits, and refuses with 429 plus a wait hint.
-// Note what this deliberately is NOT: it is not a global limiter and not a default policy. The health probe
-// must never be throttled - the container's readiness check and the end-to-end gate both depend on it
-// answering - so the policy is opt-in and is applied here and nowhere else.
+//   * sign-in, refresh and sign-out declare RateLimitingExtensions.AuthenticationPolicyName, the credential
+//     window. They also carry [CredentialEndpoint], which is what brings them under the global chained
+//     limiter's process-wide concurrency bound - the bound that protects the cost of verifying a password
+//     hash - and what makes their responses non-cacheable.
+//   * the caller-description read declares RateLimitingExtensions.SessionReadPolicyName, an identically
+//     sized window on a SEPARATE partition prefix. It carries no credential, so it is exempt from the global
+//     classifier by design and this declaration is the WHOLE of its bound; removing it would leave the one
+//     operation on this controller that a stolen token can be probed against with no limit at all.
 //
-// WHAT THIS DECLARATION ADDS, MEASURED RATHER THAN ASSUMED, because it is not the same on every operation
-// here and a reader who assumes it is will delete it. For the three operations marked as credential
-// endpoints the global classifier already applies this window, so the named policy contributes a second,
-// identically keyed budget consumed in lockstep with the first: one extra permit acquisition per request
-// that enforces nothing further, kept because the declaration is what makes the control visible at the top
-// of the file. For the caller-description read the picture is the opposite. That operation carries no
-// credential and is therefore exempt from the global classifier by design, so this declaration is the WHOLE
-// of its bound. Removing it would silently leave the one operation on this controller that a stolen token
-// can be probed against with no limit at all - confirmed by observation: forty consecutive reads answer
-// until the window is spent and then answer 429 with a wait hint, which is why that status is declared on it.
-[EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
+// Both policies are sized from configuration under RateLimiting:Authentication, partitioned by the caller's
+// normalised remote address - which is the ORIGINAL client address wherever the deployment has named its
+// proxies, see ApplicationBuilderExtensions - and never by anything the caller submits. Per-ACCOUNT
+// brute-force protection is a separate control and is not attempted here: the account name arrives in the
+// request body, which a limiter placed before model binding cannot read without buffering it (a denial of
+// service of its own). That dimension is covered where it belongs, by the failed-attempt count and lockout
+// the credential store maintains per account.
+//
+// Neither policy is global and neither is a default policy. The health probe must never be throttled - the
+// container's readiness check and the end-to-end gate both depend on it answering - so both are opt-in and
+// are applied on these actions and nowhere else. Each is named through its constant, never its spelling, so
+// renaming one is a compile error rather than a silently inert attribute.
 [Produces("application/json")]
 public sealed class AuthController : ControllerBase
 {
+    private const int MaximumUserAgentCharacters = 512;
     /// <summary>The query-string name that names the portal being signed in to.</summary>
     /// <remarks>
     /// A fallback, not the primary source. The request host normally identifies the portal, exactly as it did
@@ -206,6 +216,7 @@ public sealed class AuthController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("login")]
+    [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
     // Verifies a credential and, on a successful verification against a value stored at a superseded cost,
     // replaces it. The path matcher already classifies this address; the mark states the fact rather than
     // inferring it, and is what guarantees the process-wide concurrency bound applies even if the path list
@@ -309,6 +320,7 @@ public sealed class AuthController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("refresh")]
+    [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
     // Exchanges a token derived from a credential, which is a credential-equivalent secret.
     [CredentialEndpoint]
     [AllowAnonymous]
@@ -321,11 +333,36 @@ public sealed class AuthController : ControllerBase
         [FromBody] RefreshTokenRequest request,
         CancellationToken cancellationToken)
     {
+        request.ClientBinding = BuildClientBinding(HttpContext);
+
         Result<LoginResponse> outcome = await _auth
             .RefreshAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
+    }
+
+    /// <summary>Builds the server-observed client fingerprint used only for refresh concurrency grace.</summary>
+    /// <param name="context">The current HTTP context.</param>
+    /// <returns>A fixed-width hexadecimal SHA-256 fingerprint.</returns>
+    private static string BuildClientBinding(HttpContext context)
+    {
+        string address = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        string userAgent = context.Request.Headers.UserAgent.ToString();
+        if (userAgent.Length > MaximumUserAgentCharacters)
+        {
+            userAgent = userAgent[..MaximumUserAgentCharacters];
+        }
+
+        byte[] source = Encoding.UTF8.GetBytes(string.Concat(address, "\n", userAgent));
+        try
+        {
+            return Convert.ToHexString(SHA256.HashData(source));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(source);
+        }
     }
 
     /// <summary>Withdraws a refresh token.</summary>
@@ -358,8 +395,10 @@ public sealed class AuthController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("logout")]
+    [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
     // Withdraws a token derived from a credential.
     [CredentialEndpoint]
+    [RemediationAllowed]
     [AllowAnonymous]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -397,13 +436,18 @@ public sealed class AuthController : ControllerBase
     /// policy would refuse every ordinary account the operation exists to serve.
     /// </para>
     /// <para>
-    /// Bounded by the same window as the rest of this controller. The operation carries no credential, so it
-    /// is not marked as a credential endpoint and takes no part in the process-wide concurrency bound that
-    /// protects the hashing work; the window still applies, because it is declared for the controller.
+    /// Bounded by a window of its own, sized identically to the credential window but drawn from a separate
+    /// partition so that polling this operation cannot spend the budget sign-in needs, and a burst of
+    /// credential guessing cannot lock a client out of describing itself. The operation carries no
+    /// credential, so it is deliberately not marked as a credential endpoint and takes no part in the
+    /// process-wide concurrency bound that protects the hashing work.
     /// </para>
     /// </remarks>
     [HttpGet("me")]
+    // Bounded on its OWN budget rather than on the credential window. See the note above the controller.
+    [EnableRateLimiting(RateLimitingExtensions.SessionReadPolicyName)]
     [Authorize]
+    [RemediationAllowed]
     [ProducesResponseType(typeof(ApiResponse<CurrentUserDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]

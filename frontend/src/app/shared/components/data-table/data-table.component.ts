@@ -1,13 +1,11 @@
 /**
  * The shared, presentational record grid.
  *
- * This is the single replacement for the eight `asp:DataGrid` instances in the five
- * in-scope administration trees: the portal list, the portal-alias list, the account
- * list, the profile-property list, the role list, the role-membership list, the
- * member-services list and the page-module list. It renders a real `table` so the
- * row-and-column relationships assistive technology reads a cell by survive; a grid
- * assembled from `div` elements discards them and no amount of ARIA restores them as
- * faithfully as the native element supplies them.
+ * This is the single replacement for the eight `asp:DataGrid` instances across the five
+ * in-scope administration trees. It renders a real `table` so the row-and-column
+ * relationships assistive technology reads a cell by survive; a grid assembled from `div`
+ * elements discards them, and no amount of ARIA restores them as faithfully as the native
+ * element supplies them.
  *
  * It is presentational and nothing else. It performs no sorting, no paging and no
  * filtering, and it reaches no data source of any kind: no service, no HTTP client and no
@@ -64,24 +62,21 @@
  *
  * ## The exported surface is three types, and the rest are module-private
  *
- * L-04: a consumer of this component needs exactly three names - {@link DataTableColumn}
- * to declare its columns, {@link DataTableCellContext} to type a cell template's
- * implicit context, and {@link DataTableSortChange} to receive the sort event. Those
- * three are exported. The seven remaining declarations are the projected view models
- * and the small unions they are built from, and they exist only so the template can
- * read pre-projected data rather than call functions during change detection: no
- * consumer constructs one, receives one or names one. They are therefore declared
- * without `export`, which states that fact in the code instead of leaving a reader to
- * infer it from the absence of imports elsewhere. Narrowing them restricts nothing a
- * consumer could do - content projection and {@link DataTableColumn.cellTemplate}
- * deliver every further affordance, as set out above - it states which names are
- * contract and which are mechanism.
+ * A consumer needs exactly three names - {@link DataTableColumn} to declare its columns,
+ * {@link DataTableCellContext} to type a cell template's implicit context, and
+ * {@link DataTableSortChange} to receive the sort event - and those three are exported.
+ * The remaining declarations are the projected view models and the small unions they are
+ * built from, which exist only so the template can read pre-projected data rather than
+ * call functions during change detection: no consumer constructs, receives or names one.
+ * They are declared without `export` to state that in the code rather than leave a reader
+ * to infer it from the absence of imports elsewhere, and narrowing them restricts nothing
+ * a consumer could do, because content projection and
+ * {@link DataTableColumn.cellTemplate} deliver every further affordance.
  *
- * L-04 also reports the third standalone import, `NgTemplateOutlet`. It is retained and
- * explicitly authorised; the reasoning, with the legacy template columns it carries, is
- * recorded once in the migration note at the foot of this file rather than restated here.
- * In short: it is what renders {@link DataTableColumn.cellTemplate}, so removing it would
- * force the input surface to WIDEN rather than narrow.
+ * `NgTemplateOutlet` is the third standalone import and is retained deliberately: it is
+ * what renders {@link DataTableColumn.cellTemplate}, so removing it would force the input
+ * surface to WIDEN rather than narrow. The reasoning, with the legacy template columns it
+ * carries, is recorded once in the migration note at the foot of this file.
  *
  * @typeParam TRow The row contract carried on the current page - always a transfer
  *   contract off the wire, never a persisted entity. Deliberately unconstrained so a
@@ -163,9 +158,8 @@ type DataTableAriaSort = 'ascending' | 'descending' | 'none';
  * - A GRID TRACK KEYWORD is silently DISCARDED. `fr` and `minmax()` are grid track
  *   sizing syntax and are not valid values for `inline-size`, so the browser drops
  *   the declaration and the column takes its share as though nothing had been
- *   declared. An earlier revision of this member documented both as permitted, which
- *   is worse than not documenting them at all: a caller follows the guidance, sees no
- *   error, and gets no width.
+ *   declared. Documenting either as permitted would be worse than saying nothing: a
+ *   caller would follow the guidance, see no error, and get no width.
  *
  * The four admitted forms:
  *
@@ -224,33 +218,21 @@ export interface DataTableCellContext<TRow> {
  *
  * ## Why {@link DataTableColumnCommon.key} is separate from {@link DataTableColumnCommon.label}
  *
- * Because a label-keyed column model is provably impossible against this codebase.
- * The role list declares twelve columns in one grid, and among them `HeaderText`
- * `"Every"` appears TWICE - once over the billing period and once over the trial
- * period - and `HeaderText` `"Period"` appears TWICE as well, over the billing
- * frequency and the trial frequency. Keying on the label would collapse each pair
- * into one column and silently drop the other, with no error anywhere.
+ * Because a label-keyed column model is provably impossible against this codebase. The
+ * role list declares twelve columns in one grid in which the heading text `"Every"`
+ * appears TWICE - over the billing period and the trial period - and `"Period"` appears
+ * twice as well, over the two frequencies; keying on the label would collapse each pair
+ * into one column and silently drop the other, with no error anywhere. Three further
+ * bindings show the two are different things - `UserName` under `Username`, `RoleName`
+ * under `SecurityRole`, `HTTPAlias` under `HTTP Alias` - and the legacy application
+ * already drew the distinction itself, looking header text up as a LOCALISED RESOURCE
+ * keyed by the column's own stable identity (`PortalId.Header`, `Title.Header` and so on):
+ * identity was structure and the label was data.
  *
- * Three further independent proofs that the two are different things: the account
- * list binds `UserName` under the heading `Username`, a casing mismatch; the
- * role-membership list binds `RoleName` under the heading `SecurityRole`, wholly
- * different words; and the portal-alias list binds `HTTPAlias` under `HTTP Alias`,
- * differing by a space.
- *
- * The legacy application already drew this distinction, which is the strongest
- * argument of all: header text was a LOCALISED RESOURCE looked up BY the column's own
- * stable identity, keyed `PortalId.Header`, `Title.Header`, `HostingFee.Header` and so
- * on. Identity was structure and the label was data. This descriptor keeps it that
- * way.
- *
- * Note the refinement that makes the model workable: even where two labels collide,
- * the underlying field differs - billing period against trial period, billing
- * frequency against trial frequency - so a field name remains a serviceable unique
- * key. The descriptor must not therefore INSIST on a field, because derived columns
- * have none at all: one composes a portal's alias list from its identifier, another
- * formats an expiry date, and one composes a postal address from SIX separate profile
- * members. That is why {@link DataTableColumnCommon.key} is a plain `string` and not
- * `keyof TRow`.
+ * The descriptor must not, however, INSIST on a field, because derived columns have none
+ * at all - one composes a portal's alias list from its identifier, another formats an
+ * expiry date, one composes a postal address from six separate profile members. That is
+ * why {@link DataTableColumnCommon.key} is a plain `string` and not `keyof TRow`.
  *
  * ## Why this is a UNION and not one interface with optional members
  *
@@ -496,12 +478,11 @@ export interface DataTableFormattedColumn<TRow> {
    * Must be pure and must not throw. It runs during a `computed()` evaluation, so a
    * side effect here would fire at an unpredictable point in change detection.
    *
-   * DECLARING BOTH THIS AND A BOUND MEMBER IS A COMPILE ERROR, deliberately. An
-   * earlier revision accepted both and resolved the ambiguity with a precedence rule,
-   * which meant a column that named the wrong member alongside a formatter looked
-   * correct and rendered correctly - until the formatter was removed and the wrong
-   * member surfaced. One text source per column removes the ambiguity instead of
-   * documenting a way through it.
+   * DECLARING BOTH THIS AND A BOUND MEMBER IS A COMPILE ERROR, deliberately. Accepting
+   * both and resolving the ambiguity with a precedence rule would mean a column that
+   * named the wrong member alongside a formatter looked correct and rendered correctly -
+   * until the formatter was removed and the wrong member surfaced. One text source per
+   * column removes the ambiguity instead of documenting a way through it.
    *
    * @param row The row being rendered.
    * @returns The text to display. Return the empty string for an absent value; never
@@ -777,11 +758,11 @@ const SPACE_KEY = ' ';
  * through `rowSelect`. That one attribute is the whole announcement: the current-item
  * state is deliberately NOT published alongside it, because it denotes a reader's
  * position within a set of related items - a concept this component does not model
- * separately from selection - so emitting both stated one state twice, once in a
- * vocabulary the component could not substantiate. It is deliberately kept OUT of the row projection: were it a
- * member of {@link DataTableBodyRow}, selecting a row would re-run every
- * {@link DataTableFormattedColumn.value} formatter on the page to recompute text that had not
- * changed. The template compares the reference instead, which is a pointer test.
+ * separately from selection - so emitting both would state one state twice, in a
+ * vocabulary the component could not substantiate. Selection is also kept OUT of the row
+ * projection: were it a member of {@link DataTableBodyRow}, selecting a row would re-run
+ * every {@link DataTableFormattedColumn.value} formatter on the page to recompute text
+ * that had not changed. The template compares the reference instead, a pointer test.
  *
  * ## Render virtualisation, without a scrolling package
  *
@@ -804,9 +785,8 @@ const SPACE_KEY = ' ';
  *   fixed table layout, supplies exactly that guarantee. The width member and the
  *   virtualisation strategy are two halves of one design.
  * - The placeholder size is composed ENTIRELY from existing design tokens - the base
- *   line height, the base type size and a spacing step - because the token set
- *   declares no row-height or intrinsic-size token. That gap is reported rather than
- *   papered over with a pixel literal.
+ *   line height, the base type size and a spacing step - because the token set declares
+ *   no row-height or intrinsic-size token, and a pixel literal is forbidden.
  *
  * Because every row remains rendered, this strategy is not windowing, and the
  * `aria-rowcount` and `aria-rowindex` values below are not strictly needed to keep a
@@ -849,13 +829,10 @@ export class DataTableComponent<TRow extends object> {
    *
    * ## The invariants checked HERE, and why they are not checked by a type
    *
-   * {@link DataTableColumn} closes every per-column combination at compile time - a
-   * kind without its payload, a payload under the wrong kind, two text sources at
-   * once, and a sortable heading whose label is hidden are all unrepresentable. Four
-   * invariants remain that a type cannot carry ALONE, and all four are checked the
-   * moment a set is bound rather than later inside a projection, so the defect is
-   * reported at the call site that caused it, once per binding, before a single cell is
-   * rendered:
+   * {@link DataTableColumn} closes every per-column combination at compile time. Four
+   * invariants remain that a type cannot carry ALONE, and all four are checked the moment
+   * a set is bound rather than later inside a projection, so a defect is reported at the
+   * call site that caused it, once per binding, before a single cell is rendered:
    *
    * - A DUPLICATE KEY. Comparing two members of an array is beyond a type. A duplicate
    *   makes two headings and two cells share one `track` value and the framework
@@ -872,12 +849,11 @@ export class DataTableComponent<TRow extends object> {
    *   VISIBLE IN IT. A caller reaching this component from JavaScript, or through a
    *   cast, would otherwise plant an unlabelled tab stop in the heading row.
    *
-   * Each throws rather than being absorbed, and that choice is deliberate. A column set
-   * is a STRUCTURE the feature authors, not data a user supplies, so every one of these
-   * is a programming defect; dropping a malformed width silently is exactly the
-   * behaviour this validation exists to end, and there is no logging channel in this
-   * component to report it through. Throwing is also the only form that a test can
-   * assert on.
+   * Each THROWS rather than being absorbed: a column set is a structure the feature
+   * authors rather than data a user supplies, so every one of these is a programming
+   * defect, dropping a malformed width silently is exactly what this validation exists to
+   * end, and there is no logging channel here to report it through. Throwing is also the
+   * only form a test can assert on.
    *
    * @param value The column descriptors, or an absent value for none.
    * @throws Error when two columns share a key, when a key is blank, when a width is
@@ -1386,10 +1362,10 @@ function assertColumnsAreValid<TRow extends object>(
  * Resolves a column's declared track width into the value bound to its `col` element.
  *
  * No normalisation happens here and none is wanted: the width has already been proved to
- * be one of the four admitted forms when the set was bound, so trimming or repairing it
- * at this point would be repairing something that cannot be broken. An earlier revision
- * trimmed the text and accepted whatever remained, which is what let an invalid value
- * reach the DOM and be discarded there in silence.
+ * be one of the four admitted forms when the set was bound, so trimming or repairing it at
+ * this point would be repairing something that cannot be broken - and trimming the text
+ * then accepting whatever remained is precisely what would let an invalid value reach the
+ * DOM and be discarded there in silence.
  *
  * Declared as a function rather than assigned to a constant so it is hoisted, and can
  * therefore be read by the field initialisers above without depending on the order of
@@ -1445,9 +1421,9 @@ function flipDirection(direction: SortDirection): SortDirection {
  *
  * A one-line resolution, and it is one line BECAUSE the descriptor is a discriminated
  * union: `text` is the only kind that may be omitted, and both other kinds must declare
- * themselves and must carry a template. An earlier revision inferred `template` from the
- * presence of a cell template, which was the mechanism by which a mis-declared column
- * became a rendering decision instead of a compile error. Nothing is inferred now.
+ * themselves and must carry a template. Inferring `template` from the presence of a cell
+ * template is the mechanism by which a mis-declared column would become a rendering
+ * decision instead of a compile error, so nothing is inferred.
  *
  * @param column The column being projected.
  * @returns The resolved kind.
@@ -1712,19 +1688,16 @@ function projectCell<TRow extends object>(
 // the defect rather than merely reporting it, so the machinery would buy nothing.
 
 // MIGRATION: NgTemplateOutlet is imported as a THIRD entry alongside the two composed
-// siblings, and that is a deliberate, reported deviation from a strictly two-entry import
-// list. It is NOT the umbrella common-directives module - which appears nowhere in this
-// workspace - but the single
-// tree-shakeable standalone directive that renders a caller's TemplateRef, and Angular
+// siblings, which is a deliberate deviation from a strictly two-entry import list. It is NOT
+// the umbrella common-directives module - which appears nowhere in this workspace - but the
+// single tree-shakeable standalone directive that renders a caller's TemplateRef, and Angular
 // offers no other mechanism for rendering one from a template. Omitting it would leave
 // cellTemplate and the entire actions column kind as members that can never render, which
-// the zero-placeholder standard forbids outright, and would strand the legacy columns they
-// exist to carry: the template columns of roles.ascx L40-L77, portals.ascx L23-L54,
-// users.ascx L44-L79 and managetabs.ascx L144-L170, the two inline-editable
-// dnn:checkboxcolumn cells of ProfileDefinitions.ascx L32-L33, and every
-// dnn:imagecommandcolumn command in all eight grids. Functional parity carries rule-force
-// under the Minimal Change Clause; an import count whose stated purpose is avoiding dead
-// weight does not, and this import is not dead weight.
+// the zero-placeholder standard forbids outright, and would strand the legacy template,
+// inline-editable and image-command columns they exist to carry - for example roles.ascx
+// L40-L77. Functional parity carries rule-force under the Minimal Change Clause; an import
+// count whose stated purpose is avoiding dead weight does not, and this import is not dead
+// weight.
 
 // MIGRATION: the grid degrades by SCROLLING, and its headings degrade by WRAPPING, neither
 // of which the legacy grids did - they simply crushed. Two measured trade-offs are recorded
@@ -1732,20 +1705,19 @@ function projectCell<TRow extends object>(
 // from the spacing scale so the scroll container has something to scroll; the intrinsic
 // `min-content` keyword was tried first and is INERT under a fixed table layout with
 // percentage tracks, where it resolves to approximately zero. Second, headings wrap instead
-// of being held to one line: held to one line they do not fit, they SPILL, and four pairs of
-// headings were measured physically overlapping at a 480px viewport, the worst by 34.89px.
-// The cost of wrapping is that a single-word heading in a marginally narrow track breaks
-// mid-word - measured as an orphaned final letter on a 1.30px shortfall - which is cosmetic,
+// of being held to one line: held to one line they do not fit, they SPILL, and pairs of
+// headings physically overlap at a narrow viewport. The cost of wrapping is that a
+// single-word heading in a marginally narrow track can break mid-word, which is cosmetic,
 // leaves the accessible name intact, and is strictly preferable to two illegible headings.
 
-// MIGRATION: virtualisation is delivered by CSS render-virtualisation - graded option
-// ONE - with zero JavaScript, zero new dependency and no change to the public surface.
-// No scrolling package exists in the pinned twenty-one and none was added, so no
-// viewport component was available. Every row remains in the DOM, hence in the
-// accessibility tree, find-in-page and the tab order. REPORTED GAP: the design-token
-// set declares no row-height or intrinsic-size token, so the placeholder size is
-// composed from the existing base line-height, base type size and spacing tokens rather
-// than being hardcoded to a pixel literal. Because no rows are removed this is not
+// MIGRATION: virtualisation is delivered by CSS render-virtualisation, with zero
+// JavaScript, zero new dependency and no change to the public surface. No scrolling
+// package exists in the pinned dependency set and none was added, so no viewport
+// component was available. Every row remains in the DOM, hence in the accessibility
+// tree, find-in-page and the tab order. The design-token set declares no row-height or
+// intrinsic-size token, so the placeholder size is composed from the existing base
+// line-height, base type size and spacing tokens rather than being hardcoded to a pixel
+// literal. Because no rows are removed this is not
 // windowing, so aria-rowcount and aria-rowindex are not strictly needed; they are
 // published anyway because they are accurate, valid on a native table without an
 // explicit role, visually free, and they stop a future switch to real windowing from

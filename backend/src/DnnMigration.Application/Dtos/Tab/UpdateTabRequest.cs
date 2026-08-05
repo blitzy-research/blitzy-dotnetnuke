@@ -438,45 +438,23 @@ public sealed class UpdateTabRequest
     /// </remarks>
     public string? IconFile { get; set; }
 
-    // MIGRATION: a real column on the write surface, but the subsystem behind it is out of scope. The
-    // terminal update procedure accepts and persists this column - nvarchar(200) NULL - so omitting it
-    // from the only mutation endpoint would silently strand any stored value and lose write parity
-    // with the legacy screen, which did post it. It is therefore included. What is NOT included is any
-    // behaviour attached to it: skinning and containers are excluded from this migration wholesale, so
-    // the value is treated as an opaque token stored verbatim, with no skin resolution, no file
-    // lookup, no existence check and no rendering anywhere in the target. The two derived
-    // presentation-path members the legacy entity computed alongside it are excluded for the same
-    // reason.
-    /// <summary>
-    /// Gets or sets the opaque skin source token applied to this page. Captioned "Page Skin" in the
-    /// legacy administration screens. Maps the legacy <c>Tabs.SkinSrc</c> column,
-    /// <c>nvarchar(200) NULL</c>.
-    /// </summary>
-    /// <remarks>
-    /// Legacy help text: "The selected skin will be applied to this page." Maximum length 200. The
-    /// value is stored and returned verbatim and is never interpreted: nothing in the target resolves
-    /// a skin, checks that one exists, or renders with it. It is carried so that a stored value
-    /// survives a write rather than being blanked, and so that an administrator's existing choice is
-    /// not destroyed by an unrelated edit.
-    /// </remarks>
-    public string? SkinSrc { get; set; }
-
-    // MIGRATION: included on exactly the same footing as the skin source above - a genuine
-    // nvarchar(200) NULL column that the terminal update procedure writes, carried so that a stored
-    // value is not silently lost, but semantically inert because the container subsystem is out of
-    // scope. No container is resolved, located or rendered anywhere in the target.
-    /// <summary>
-    /// Gets or sets the opaque container source token applied to every module on this page. Captioned
-    /// "Page Container" in the legacy administration screens. Maps the legacy
-    /// <c>Tabs.ContainerSrc</c> column, <c>nvarchar(200) NULL</c>.
-    /// </summary>
-    /// <remarks>
-    /// Legacy help text: "The selected container will be applied to all modules on this page."
-    /// Maximum length 200. As with the skin source, the value is an opaque token stored verbatim and
-    /// interpreted by nothing in the target.
-    /// </remarks>
-    public string? ContainerSrc { get; set; }
-
+    // MIGRATION: NO SKIN SOURCE AND NO CONTAINER SOURCE ON THIS CONTRACT, AND THAT IS THE SCOPE
+    // DECISION RATHER THAN AN OVERSIGHT. Both were previously declared here - Tabs.SkinSrc and
+    // Tabs.ContainerSrc, each nvarchar(200) NULL and each accepted by the terminal update procedure -
+    // on the argument that omitting a column the legacy screen posted would lose write parity. That
+    // argument is subordinate to an explicit exclusion: skinning and containers are excluded from this
+    // migration wholesale, and a WRITABLE member is not an inert one. Declaring them made this endpoint
+    // the supported way to change a page's skin and container, published them in the OpenAPI document
+    // as part of the page-edit contract, and gave them validation rules - which is precisely the
+    // subsystem the exclusion removes, re-entered through the write surface.
+    //
+    // NOTHING STORED IS LOST BY THE REMOVAL, and that is what makes it safe. The projection in
+    // Mapping/TabMappings.cs no longer assigns either column, so an update leaves both exactly as they
+    // were rather than writing an absent value over an administrator's stored choice - which is the
+    // stronger guarantee of the two, because a caller that simply omitted the member from its JSON
+    // previously BLANKED the column. The values remain readable on TabDetailDto, so a stored choice is
+    // still observable; it is only no longer settable through this API. Changing a skin or a container
+    // is a skinning operation, and skinning has no endpoint in this migration.
     /// <summary>
     /// Gets or sets the target that turns this page into a navigation link to another resource, or
     /// <see langword="null"/> for an ordinary page. Captioned "Link Url" in the legacy administration
@@ -485,9 +463,12 @@ public sealed class UpdateTabRequest
     /// <remarks>
     /// Legacy help text: "If you would like this page to behave as a navigation link to another
     /// resource, you can specify the Link URL value here. Please note that this field is optional."
-    /// Maximum length 255. The legacy form applied no format validation to this field - it accepted
-    /// whatever its URL control produced - and none is introduced here. As with the icon reference,
-    /// the value is stored verbatim and is not resolved, fetched or verified.
+    /// Maximum length 255. The URL control produced one of three persisted forms: a numeric page
+    /// identifier, a <c>fileid=NNN</c> token, or an absolute external URI. The request validator
+    /// allowlists those forms and restricts absolute URIs to HTTP, HTTPS and mailto, because the value is
+    /// stored and later returned to navigation consumers; active schemes such as <c>javascript:</c> and
+    /// <c>data:</c> are never accepted. The admitted value is stored verbatim and is not fetched or
+    /// dereferenced during validation.
     /// </remarks>
     public string? Url { get; set; }
 
@@ -600,10 +581,13 @@ public sealed class UpdateTabRequest
     /// </para>
     /// <para>
     /// The value is raw markup, stored verbatim and never parsed, sanitised or escaped by this
-    /// contract. Because it is markup authored by an administrator and emitted into a document head,
+    /// contract. Because it is markup authored by an administrator and intended for a document head,
     /// it is inherently a privileged field: the endpoint is guarded by the page-edit authorisation
-    /// policy, and that policy - not this DTO - is what limits who may set it. No sanitisation is
-    /// performed here, and none was performed by the legacy screen either.
+    /// policy, and that policy - not this DTO - is what limits who may set it. Authorisation does not
+    /// make the markup intrinsically safe, however. A renderer must not inject it without an explicit,
+    /// narrowly-scoped sanitisation and element/attribute allowlist policy; without one it must be
+    /// treated as untrusted text. No sanitisation is performed here, and none was performed by the
+    /// legacy screen either.
     /// </para>
     /// </remarks>
     public string? PageHeadText { get; set; }

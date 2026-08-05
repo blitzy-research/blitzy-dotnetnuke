@@ -79,12 +79,22 @@ internal sealed class SecurityDiagnostics : ISecurityDiagnostics
         // The member NAME is written rather than its ordinal, so a log remains readable after a member is
         // added and so a reader never has to hold the enumeration's numbering in their head. Ordinals are
         // also the one thing about an enumeration that can change without a compiler complaining.
-        _logger.LogWarning(
-            "Security diagnostic {Occurrence} recorded for portal {PortalId} and account {UserId} with reason {ReasonCode}.",
-            occurrence.ToString(),
-            portalId,
-            userId,
-            Sanitise(reasonCode));
+        try
+        {
+            _logger.LogWarning(
+                "Security diagnostic {Occurrence} recorded for portal {PortalId} and account {UserId} with reason {ReasonCode}.",
+                occurrence.ToString(),
+                portalId,
+                userId,
+                Sanitise(reasonCode));
+        }
+        catch (Exception)
+        {
+            // The contract is a last-resort signal for conditions that deliberately do not fail a request.
+            // A logging provider that throws must not reverse that decision. Audit-delivery failures have
+            // an independent in-memory health counter; other diagnostics have no safe third logging channel,
+            // so containment is the only truthful fallback here.
+        }
     }
 
     /// <summary>
