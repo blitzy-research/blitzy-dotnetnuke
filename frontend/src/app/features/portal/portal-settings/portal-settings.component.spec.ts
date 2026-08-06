@@ -1,1298 +1,1071 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+//
+// Specification for the portal settings screen.
+//
+// The screen is exercised through its real collaborators' CONTRACTS, replaced by doubles:
+// the portal signal store, the identity store, the page transport and the notification
+// queue. No HTTP is configured and none can occur — the component reaches no transport type
+// — so every assertion below is about this screen's own behaviour and never about a
+// framework's.
+//
+// The cases are grouped by the measurement each defends, and the awkward ones are the point:
+// a portal identified as `0`, a portal identified as `-1`, a stored quota of `0`, an absent
+// expiry date, and the page selector's selectable absent option. Those are exactly the values
+// a truthiness test would get wrong.
+//
 
-import {
-  BannerAdvertisingMode,
-  UserRegistrationMode,
-} from '../../../core/models/portal.model';
-import type {
-  PortalSettings,
-  PortalSettingsLookups,
-  UpdatePortalSettingsRequest,
-} from '../../../core/models/portal.model';
+import { signal } from '@angular/core';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
+import { Router } from '@angular/router';
+import { of, throwError } from 'rxjs';
+
+import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
+import { NotificationService } from '../../../core/services/notification.service';
+import { TabService } from '../../../core/services/tab.service';
+import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { PortalSettingsComponent } from './portal-settings.component';
 
+import type { WritableSignal } from '@angular/core';
+import type {
+  PortalDetail,
+  PortalSettings,
+  UpdatePortalSettingsRequest,
+} from '../../../core/models/portal.model';
+import type { TabListItem } from '../../../core/models/tab.model';
+import type { PortalFailure } from '../../../core/state/portal.store';
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
 /**
- * Builds a fully-populated settings snapshot.
+ * A settings resource whose awkward values are the interesting ones.
  *
- * Every field carries a distinct, recognisable value so a submission assertion
- * proves the right value reached the right property rather than merely proving
- * that something reached it. Two values are deliberately awkward: the description
- * is surrounded by whitespace, to prove trimming, and the page quota is zero, to
- * prove a genuine zero survives instead of being read as "absent".
+ * The quotas are `0`, which is a real stored value and must render as `0`. The expiry date
+ * is absent, which must render as an empty box. The splash page is absent and the home page
+ * is `0`, which is a real page identifier because page identifiers start at zero.
  */
-function settingsOf(overrides: Partial<PortalSettings> = {}): PortalSettings {
+function settingsFixture(overrides: Partial<PortalSettings> = {}): PortalSettings {
   return {
-    portalId: 7,
-    portalName: 'Contoso',
-    description: '  A site about widgets  ',
-    keyWords: 'widgets,gadgets',
-    footerText: 'Copyright Contoso',
+    portalId: 0,
+    portalName: 'Baseline Portal',
+    description: 'A description.',
+    keyWords: 'one,two',
+    footerText: 'Copyright notice',
     logoFile: 'logo.gif',
-    backgroundFile: 'bg.gif',
-    expiryDate: '2027-03-01T00:00:00',
+    backgroundFile: 'back.gif',
+    expiryDate: null,
     userRegistration: UserRegistrationMode.PublicRegistration,
     bannerAdvertising: BannerAdvertisingMode.Site,
-    currency: 'GBP',
-    administratorId: 42,
-    hostFee: 19.5,
-    hostSpace: 512,
+    currency: 'USD',
+    administratorId: 2,
+    hostFee: 0,
+    hostSpace: 0,
     pageQuota: 0,
-    userQuota: 250,
+    userQuota: 0,
     paymentProcessor: 'PayPal',
-    processorUserId: 'merchant-1',
-    siteLogHistory: 30,
-    splashTabId: 11,
-    homeTabId: 12,
-    loginTabId: 13,
-    userTabId: 14,
-    defaultLanguage: 'en-GB',
-    timeZoneOffset: -300,
-    homeDirectory: 'Portals/7',
-    guid: '5f1b7c9e-0000-4000-8000-000000000001',
+    processorUserId: 'merchant',
+    siteLogHistory: -1,
+    splashTabId: null,
+    homeTabId: 0,
+    loginTabId: null,
+    userTabId: null,
+    defaultLanguage: 'en-US',
+    timeZoneOffset: -480,
+    homeDirectory: 'Portals/0',
+    guid: 'a2f9c1d4-5b6e-4a70-8c91-0d3e2f4b6a80',
     ...overrides,
   };
 }
 
-/** Lookup lists that cover every held value in {@link settingsOf}. */
-function lookupsOf(overrides: Partial<PortalSettingsLookups> = {}): PortalSettingsLookups {
+/** A page row, defaulting to an ordinary visible root page. */
+function pageFixture(overrides: Partial<TabListItem> = {}): TabListItem {
   return {
-    pages: [
-      { value: 11, label: 'Splash' },
-      { value: 12, label: 'Home' },
-      { value: 13, label: 'Login' },
-      { value: 14, label: 'Account' },
-    ],
-    administrators: [
-      { value: 42, label: 'Grace Hopper' },
-      { value: 43, label: 'Ada Lovelace' },
-    ],
-    currencies: [
-      { value: 'GBP', label: 'Pound Sterling' },
-      { value: 'USD', label: 'US Dollar' },
-    ],
-    paymentProcessors: [
-      { value: 'PayPal', label: 'PayPal' },
-      { value: 'WorldPay', label: 'WorldPay' },
-    ],
-    languages: [
-      { value: 'en-GB', label: 'English (United Kingdom)' },
-      { value: 'fr-FR', label: 'French (France)' },
-    ],
-    timeZones: [
-      { value: -300, label: 'Eastern Time' },
-      { value: 0, label: 'UTC' },
-    ],
+    tabId: 0,
+    tabName: 'Home',
+    title: null,
+    tabOrder: 1,
+    parentId: null,
+    level: 0,
+    tabPath: '//Home',
+    isVisible: true,
+    disableLink: false,
+    isDeleted: false,
+    hasChildren: false,
+    isSecure: false,
+    url: null,
+    iconFile: null,
     ...overrides,
   };
+}
+
+/** A portal detail carrying the administration page identifier the filter needs. */
+function detailFixture(overrides: Partial<PortalDetail> = {}): PortalDetail {
+  return {
+    portalId: 0,
+    portalName: 'Baseline Portal',
+    description: null,
+    keyWords: null,
+    footerText: null,
+    logoFile: null,
+    backgroundFile: null,
+    expiryDate: null,
+    userRegistration: UserRegistrationMode.PublicRegistration,
+    bannerAdvertising: BannerAdvertisingMode.Site,
+    currency: null,
+    administratorId: 2,
+    email: null,
+    hostFee: 0,
+    hostSpace: 0,
+    pageQuota: 0,
+    userQuota: 0,
+    users: 3,
+    pages: 4,
+    administratorRoleId: 0,
+    administratorRoleName: 'Administrators',
+    registeredRoleId: 1,
+    registeredRoleName: 'Registered Users',
+    guid: 'a2f9c1d4-5b6e-4a70-8c91-0d3e2f4b6a80',
+    paymentProcessor: null,
+    processorUserId: null,
+    siteLogHistory: -1,
+    adminTabId: 90,
+    superTabId: null,
+    splashTabId: null,
+    homeTabId: 0,
+    loginTabId: null,
+    userTabId: null,
+    defaultLanguage: 'en-US',
+    timeZoneOffset: -480,
+    homeDirectory: 'Portals/0',
+    aliases: null,
+    ...overrides,
+  };
+}
+
+/** A classified failure, as the store publishes one. */
+function failureFixture(overrides: Partial<PortalFailure> = {}): PortalFailure {
+  return {
+    problem: { status: 400, title: 'Bad Request' },
+    status: 400,
+    severity: 'error',
+    conflictCode: null,
+    validation: null,
+    supportReference: null,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Doubles
+// ---------------------------------------------------------------------------
+
+/** The slice of the portal store this screen reads and commands. */
+interface PortalStoreDouble {
+  settings: WritableSignal<PortalSettings | null>;
+  settingsLoading: WritableSignal<boolean>;
+  settingsFailure: WritableSignal<PortalFailure | null>;
+  selectedPortal: WritableSignal<PortalDetail | null>;
+  detailLoading: WritableSignal<boolean>;
+  detailFailure: WritableSignal<PortalFailure | null>;
+  loadSettings: jasmine.Spy;
+  loadPortal: jasmine.Spy;
+  saveSettings: jasmine.Spy;
+  deletePortal: jasmine.Spy;
+  clearFailures: jasmine.Spy;
+}
+
+function portalStoreDouble(): PortalStoreDouble {
+  return {
+    settings: signal<PortalSettings | null>(null),
+    settingsLoading: signal(false),
+    settingsFailure: signal<PortalFailure | null>(null),
+    selectedPortal: signal<PortalDetail | null>(null),
+    detailLoading: signal(false),
+    detailFailure: signal<PortalFailure | null>(null),
+    loadSettings: jasmine.createSpy('loadSettings'),
+    loadPortal: jasmine.createSpy('loadPortal'),
+    saveSettings: jasmine.createSpy('saveSettings'),
+    deletePortal: jasmine.createSpy('deletePortal'),
+    clearFailures: jasmine.createSpy('clearFailures'),
+  };
+}
+
+interface AuthStoreDouble {
+  isSuperUser: WritableSignal<boolean>;
+  portalId: WritableSignal<number | null>;
+}
+
+function authStoreDouble(): AuthStoreDouble {
+  return { isSuperUser: signal(false), portalId: signal<number | null>(0) };
 }
 
 describe('PortalSettingsComponent', () => {
   let fixture: ComponentFixture<PortalSettingsComponent>;
-  let component: PortalSettingsComponent;
-
-  /**
-   * Assigns an input the way a template binding would.
-   *
-   * `componentRef.setInput` marks the component dirty and runs the declared input
-   * transform. Assigning the field directly does neither, so an `OnPush`
-   * component would not re-render and a `booleanAttribute` transform would never
-   * run — which is the difference between testing the component and testing a
-   * field.
-   */
-  function setInput(
-    name:
-      | 'settings'
-      | 'lookups'
-      | 'heading'
-      | 'loading'
-      | 'saving'
-      | 'canEditHostFields'
-      | 'canDelete',
-    value: unknown,
-  ): void {
-    fixture.componentRef.setInput(name, value);
-    fixture.detectChanges();
-  }
-
-  function host(): HTMLElement {
-    return fixture.nativeElement as HTMLElement;
-  }
-
-  function q<T extends HTMLElement>(selector: string): T | null {
-    return host().querySelector<T>(selector);
-  }
-
-  function qa<T extends HTMLElement>(selector: string): T[] {
-    return Array.from(host().querySelectorAll<T>(selector));
-  }
-
-  function tabs(): HTMLButtonElement[] {
-    return qa<HTMLButtonElement>('.portal-settings__tab');
-  }
-
-  function panel(): HTMLElement | null {
-    return q<HTMLElement>('.portal-settings__panel');
-  }
-
-  function toggles(): HTMLButtonElement[] {
-    return qa<HTMLButtonElement>('.portal-settings__toggle');
-  }
-
-  function toggleFor(label: string): HTMLButtonElement | undefined {
-    return toggles().find((button) => (button.textContent ?? '').trim() === label);
-  }
-
-  function field<T extends HTMLElement>(name: string): T | null {
-    return q<T>(`#portal-settings-${name}`);
-  }
-
-  function messageFor(name: string): HTMLElement | null {
-    return q<HTMLElement>(`#portal-settings-${name}-message`);
-  }
-
-  function hintFor(name: string): HTMLElement | null {
-    return q<HTMLElement>(`#portal-settings-${name}-hint`);
-  }
-
-  /** Types into a text or number control and notifies the form. */
-  function type(name: string, value: string): void {
-    const input = field<HTMLInputElement | HTMLTextAreaElement>(name);
-    expect(input).withContext(`control ${name} should be rendered`).not.toBeNull();
-    input!.value = value;
-    input!.dispatchEvent(new Event('input'));
-    fixture.detectChanges();
-  }
-
-  /**
-   * Chooses an option by index and notifies the form.
-   *
-   * Index rather than value, because `[ngValue]` writes opaque `"0: 11"` style
-   * option values — the whole point of it being that the real value never becomes
-   * a string.
-   */
-  function choose(name: string, index: number): void {
-    const select = field<HTMLSelectElement>(name);
-    expect(select).withContext(`select ${name} should be rendered`).not.toBeNull();
-    select!.selectedIndex = index;
-    select!.dispatchEvent(new Event('change'));
-    fixture.detectChanges();
-  }
-
-  function radios(name: string): HTMLInputElement[] {
-    return qa<HTMLInputElement>(`input[type="radio"][name="${name}"]`);
-  }
-
-  function actionButton(label: string): HTMLButtonElement | undefined {
-    return qa<HTMLButtonElement>('.portal-settings__actions button').find(
-      (button) => (button.textContent ?? '').trim() === label,
-    );
-  }
-
-  function submit(): void {
-    const button = actionButton('Update');
-    expect(button).withContext('an Update button should be rendered').not.toBeUndefined();
-    button!.click();
-    fixture.detectChanges();
-  }
+  let portals: PortalStoreDouble;
+  let identity: AuthStoreDouble;
+  let pages: jasmine.SpyObj<Pick<TabService, 'getByPortal'>>;
+  let notifications: jasmine.SpyObj<
+    Pick<NotificationService, 'success' | 'warning' | 'error' | 'notify'>
+  >;
+  let router: jasmine.SpyObj<Pick<Router, 'navigateByUrl'>>;
 
   beforeEach(async () => {
+    portals = portalStoreDouble();
+    identity = authStoreDouble();
+    pages = jasmine.createSpyObj<Pick<TabService, 'getByPortal'>>('TabService', ['getByPortal']);
+    notifications = jasmine.createSpyObj<
+      Pick<NotificationService, 'success' | 'warning' | 'error' | 'notify'>
+    >('NotificationService', ['success', 'warning', 'error', 'notify']);
+    router = jasmine.createSpyObj<Pick<Router, 'navigateByUrl'>>('Router', ['navigateByUrl']);
+
+    pages.getByPortal.and.returnValue(of([pageFixture()]));
+    router.navigateByUrl.and.returnValue(Promise.resolve(true));
+
     await TestBed.configureTestingModule({
       imports: [PortalSettingsComponent],
+      providers: [
+        { provide: PortalStore, useValue: portals },
+        { provide: AuthStore, useValue: identity },
+        { provide: TabService, useValue: pages },
+        { provide: NotificationService, useValue: notifications },
+        { provide: Router, useValue: router },
+      ],
     }).compileComponents();
 
     fixture = TestBed.createComponent(PortalSettingsComponent);
-    component = fixture.componentInstance;
+  });
+
+  /** Binds the route input the way the router would, and settles the view. */
+  function route(portalId: string | number | null | undefined): void {
+    fixture.componentRef.setInput('portalId', portalId);
     fixture.detectChanges();
+  }
+
+  /** The reactive form, reached through the component instance. */
+  function form(): PortalSettingsComponent['form'] {
+    return (fixture.componentInstance as unknown as { form: PortalSettingsComponent['form'] }).form;
+  }
+
+  function text(): string {
+    return (fixture.nativeElement as HTMLElement).textContent ?? '';
+  }
+
+  // -------------------------------------------------------------------------
+  describe('identity and route binding', () => {
+    it('exposes the class name the route contract loads', () => {
+      expect(PortalSettingsComponent.name).toBe('PortalSettingsComponent');
+    });
+
+    it('accepts a portal identified as 0, which is a real portal', () => {
+      route('0');
+
+      expect(fixture.componentInstance.portalId).toBe(0);
+      expect(portals.loadSettings).toHaveBeenCalledWith(0);
+      expect(pages.getByPortal).toHaveBeenCalledWith(0);
+    });
+
+    it('accepts a portal identified as -1, the first identity value the schema issues', () => {
+      route('-1');
+
+      expect(fixture.componentInstance.portalId).toBe(-1);
+      expect(portals.loadSettings).toHaveBeenCalledWith(-1);
+    });
+
+    it('reads the portal detail as well, because the page filter needs its admin page', () => {
+      route('0');
+
+      expect(portals.loadPortal).toHaveBeenCalledWith(0);
+    });
+
+    it('reports absence rather than guessing when the segment is not a number', () => {
+      route('not-a-portal');
+
+      expect(fixture.componentInstance.portalId).toBeUndefined();
+      expect(portals.loadSettings).not.toHaveBeenCalled();
+      expect(text()).toContain('does not identify a portal');
+    });
+
+    it('reports absence when no segment was bound at all', () => {
+      route(undefined);
+
+      expect(fixture.componentInstance.portalId).toBeUndefined();
+      expect(portals.loadSettings).not.toHaveBeenCalled();
+    });
+
+    it('reads once per identifier and not again for the same one', () => {
+      route('0');
+      route('0');
+
+      expect(portals.loadSettings).toHaveBeenCalledTimes(1);
+      expect(pages.getByPortal).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it('creates', () => {
-    expect(component).toBeTruthy();
-  });
-
-  describe('screen title', () => {
-    it('renders the legacy module title by default', () => {
-      const title = q<HTMLElement>('.page-header__title');
-      expect(title).not.toBeNull();
-      expect((title!.textContent ?? '').trim()).toBe('Site Settings');
-    });
-
-    it('renders a supplied heading instead', () => {
-      setInput('heading', 'Contoso Settings');
-
-      const title = q<HTMLElement>('.page-header__title');
-      expect((title!.textContent ?? '').trim()).toBe('Contoso Settings');
-    });
-
-    it('restores the default when route input binding supplies no heading', () => {
-      setInput('heading', undefined);
-
-      const title = q<HTMLElement>('.page-header__title');
-      expect((title!.textContent ?? '').trim()).toBe('Site Settings');
-    });
-
-    it('keeps the title on screen while the settings are being fetched', () => {
-      setInput('loading', true);
-
-      expect(q('.page-header__title')).not.toBeNull();
-      expect(q('app-loading-spinner')).not.toBeNull();
-    });
-  });
-
-  describe('before any settings arrive', () => {
-    it('treats an absent route-bound lookup collection as empty', () => {
-      expect(() => setInput('lookups', undefined)).not.toThrow();
-      expect(component.lookups.pages).toEqual([]);
-      expect(q('app-empty-state')).not.toBeNull();
-    });
-
-    it('shows the empty state and no form', () => {
-      expect(q('app-empty-state')).not.toBeNull();
-      expect(q('form')).toBeNull();
-    });
-
-    it('shows the fetching affordance in preference to the empty state', () => {
-      setInput('loading', true);
-
-      expect(q('app-loading-spinner')).not.toBeNull();
-      expect(q('app-empty-state')).toBeNull();
-    });
-  });
-
-  describe('tab strip', () => {
+  // -------------------------------------------------------------------------
+  describe('hydration', () => {
     beforeEach(() => {
-      setInput('settings', settingsOf());
+      route('0');
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
     });
 
-    it('offers exactly the two surviving groups, in legacy order', () => {
-      const labels = tabs().map((button) => (button.textContent ?? '').trim());
-      expect(labels).toEqual(['Basic Settings', 'Advanced Settings']);
+    it('fills the four site-detail boxes from the resource', () => {
+      expect(form().controls.portalName.value).toBe('Baseline Portal');
+      expect(form().controls.description.value).toBe('A description.');
+      expect(form().controls.keyWords.value).toBe('one,two');
+      expect(form().controls.footerText.value).toBe('Copyright notice');
     });
 
-    it('marks each tab with the tab role inside a tablist', () => {
-      expect(q('.portal-settings__tablist')!.getAttribute('role')).toBe('tablist');
-      for (const button of tabs()) {
-        expect(button.getAttribute('role')).toBe('tab');
-      }
+    it('renders a stored quota of 0 as the literal 0, never as blank and never as a word', () => {
+      expect(form().controls.hostSpace.value).toBe('0');
+      expect(form().controls.pageQuota.value).toBe('0');
+      expect(form().controls.userQuota.value).toBe('0');
+      expect(form().controls.hostFee.value).toBe('0');
     });
 
-    it('selects the basic group first', () => {
-      const [basic, advanced] = tabs();
-      expect(basic.getAttribute('aria-selected')).toBe('true');
-      expect(advanced.getAttribute('aria-selected')).toBe('false');
+    it('leaves the expiry box EMPTY when the portal has no expiry', () => {
+      expect(form().controls.expiryDate.value).toBe('');
     });
 
-    it('keeps only the selected tab in the tab order', () => {
-      const [basic, advanced] = tabs();
-      expect(basic.getAttribute('tabindex')).toBe('0');
-      expect(advanced.getAttribute('tabindex')).toBe('-1');
-    });
-
-    it('points every tab at the single panel, so no reference can dangle', () => {
-      const panelId = panel()!.id;
-      expect(panelId.length).toBeGreaterThan(0);
-      for (const button of tabs()) {
-        expect(button.getAttribute('aria-controls')).toBe(panelId);
-        expect(host().querySelector(`#${button.getAttribute('aria-controls')}`)).not.toBeNull();
-      }
-    });
-
-    it('labels the panel by whichever tab is selected', () => {
-      const [basic, advanced] = tabs();
-      expect(panel()!.getAttribute('aria-labelledby')).toBe(basic.id);
-
-      advanced.click();
+    it('shows the date alone when the portal does have an expiry', () => {
+      portals.settings.set(settingsFixture({ expiryDate: '2031-07-04T00:00:00' }));
       fixture.detectChanges();
 
-      expect(panel()!.getAttribute('aria-labelledby')).toBe(advanced.id);
+      expect(form().controls.expiryDate.value).toBe('2031-07-04');
     });
 
-    it('switches the panel contents when a tab is clicked', () => {
-      expect(toggleFor('Site Details')).not.toBeUndefined();
-      expect(toggleFor('Security Settings')).toBeUndefined();
-
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      expect(toggleFor('Site Details')).toBeUndefined();
-      expect(toggleFor('Security Settings')).not.toBeUndefined();
+    it('selects the absent-page option for an absent page reference', () => {
+      expect(form().controls.splashTabId.value).toBe(-1);
+      expect(form().controls.loginTabId.value).toBe(-1);
     });
 
-    it('renders exactly one panel region at a time', () => {
-      expect(qa('.portal-settings__panel').length).toBe(1);
-
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      expect(qa('.portal-settings__panel').length).toBe(1);
+    it('keeps page 0 as page 0, because page identifiers start at zero', () => {
+      expect(form().controls.homeTabId.value).toBe(0);
     });
 
-    it('shows each group its own introduction', () => {
-      expect((q('.portal-settings__intro')!.textContent ?? '').trim()).toBe(
-        'In this section, you can set up the basic settings for your site.',
-      );
-
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      expect((q('.portal-settings__intro')!.textContent ?? '').trim()).toBe(
-        'In this section, you can set up more advanced settings for your site.',
-      );
+    it('upper-cases the identifier and never puts it in an input', () => {
+      expect(text()).toContain('A2F9C1D4-5B6E-4A70-8C91-0D3E2F4B6A80');
+      expect(fixture.debugElement.query(By.css('#portal-settings-guid'))?.nativeElement.tagName)
+        .toBe('OUTPUT');
     });
 
-    it('steps forward with the right arrow and wraps', () => {
-      const strip = tabs();
-      strip[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
-      fixture.detectChanges();
-      expect(tabs()[1].getAttribute('aria-selected')).toBe('true');
-
-      tabs()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
-      fixture.detectChanges();
-      expect(tabs()[0].getAttribute('aria-selected')).toBe('true');
+    it('leaves the form pristine so no message shows before the operator acts', () => {
+      expect(form().pristine).toBeTrue();
+      expect(form().untouched).toBeTrue();
     });
 
-    it('steps back with the left arrow and wraps', () => {
-      tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
-      fixture.detectChanges();
-      expect(tabs()[1].getAttribute('aria-selected')).toBe('true');
-    });
-
-    it('jumps to the ends with Home and End', () => {
-      tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'End' }));
-      fixture.detectChanges();
-      expect(tabs()[1].getAttribute('aria-selected')).toBe('true');
-
-      tabs()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Home' }));
-      fixture.detectChanges();
-      expect(tabs()[0].getAttribute('aria-selected')).toBe('true');
-    });
-
-    it('moves focus with selection, so the arrow keys leave the caller on the new tab', () => {
-      tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+    it('re-hydrates when the store publishes a newer resource', () => {
+      portals.settings.set(settingsFixture({ portalName: 'Renamed' }));
       fixture.detectChanges();
 
-      expect(document.activeElement).toBe(tabs()[1]);
-    });
-
-    it('ignores a key it does not handle', () => {
-      tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
-      fixture.detectChanges();
-
-      expect(tabs()[0].getAttribute('aria-selected')).toBe('true');
+      expect(form().controls.portalName.value).toBe('Renamed');
     });
   });
 
-  describe('section collapse', () => {
+  // -------------------------------------------------------------------------
+  describe('the two tabs and their disclosures', () => {
     beforeEach(() => {
-      setInput('settings', settingsOf());
+      route('0');
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
     });
 
-    it('opens the two basic sections the legacy screen opened and closes the third', () => {
-      expect(toggleFor('Site Details')!.getAttribute('aria-expanded')).toBe('true');
-      expect(toggleFor('Site Marketing')!.getAttribute('aria-expanded')).toBe('true');
-      expect(toggleFor('Appearance')!.getAttribute('aria-expanded')).toBe('false');
+    it('offers exactly two tabs', () => {
+      const tabs = fixture.debugElement.queryAll(By.css('[role="tab"]'));
+
+      expect(tabs.length).toBe(2);
+      expect(tabs.map((tab) => (tab.nativeElement as HTMLElement).textContent?.trim())).toEqual([
+        'Basic Settings',
+        'Advanced Settings',
+      ]);
     });
 
-    it('opens the two advanced sections the legacy screen opened and closes the rest', () => {
-      tabs()[1].click();
+    it('starts on the basic tab', () => {
+      expect(fixture.debugElement.query(By.css('#portal-settings-panel-basic'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('#portal-settings-panel-advanced'))).toBeNull();
+    });
+
+    it('moves to the advanced tab when it is chosen', () => {
+      const tabs = fixture.debugElement.queryAll(By.css('[role="tab"]'));
+
+      tabs[1]?.triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(toggleFor('Security Settings')!.getAttribute('aria-expanded')).toBe('true');
-      expect(toggleFor('Page Management')!.getAttribute('aria-expanded')).toBe('true');
-      expect(toggleFor('Payment Settings')!.getAttribute('aria-expanded')).toBe('false');
-      expect(toggleFor('Other Settings')!.getAttribute('aria-expanded')).toBe('false');
+      expect(fixture.debugElement.query(By.css('#portal-settings-panel-advanced'))).not.toBeNull();
     });
 
-    it('removes a collapsed section body rather than hiding it', () => {
-      expect(field('logoFile')).toBeNull();
+    it('moves between tabs with the arrow keys and wraps', () => {
+      const strip = fixture.debugElement.query(By.css('[role="tablist"]'));
 
-      toggleFor('Appearance')!.click();
+      strip.triggerEventHandler('keydown', new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+      fixture.detectChanges();
+      expect(fixture.debugElement.query(By.css('#portal-settings-panel-advanced'))).not.toBeNull();
+
+      strip.triggerEventHandler('keydown', new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+      fixture.detectChanges();
+      expect(fixture.debugElement.query(By.css('#portal-settings-panel-basic'))).not.toBeNull();
+    });
+
+    it('leaves keys it does not handle to the browser', () => {
+      const strip = fixture.debugElement.query(By.css('[role="tablist"]'));
+      const event = new KeyboardEvent('keydown', { key: 'a', cancelable: true });
+
+      strip.triggerEventHandler('keydown', event);
+
+      expect(event.defaultPrevented).toBeFalse();
+    });
+
+    it('keeps the values of the tab that is not showing', () => {
+      form().controls.userQuota.setValue('42');
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(field('logoFile')).not.toBeNull();
+      expect(form().controls.userQuota.value).toBe('42');
     });
 
-    it('collapses an open section again', () => {
-      expect(field('portalName')).not.toBeNull();
+    it('opens the sections the markup declared open and closes the ones it declared closed', () => {
+      expect(fixture.debugElement.query(By.css('#portal-settings-section-siteDetails'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('#portal-settings-section-marketing'))).not.toBeNull();
 
-      toggleFor('Site Details')!.click();
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(field('portalName')).toBeNull();
-      expect(toggleFor('Site Details')!.getAttribute('aria-expanded')).toBe('false');
+      expect(fixture.debugElement.query(By.css('#portal-settings-section-security'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('#portal-settings-section-pages'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('#portal-settings-section-other'))).toBeNull();
     });
 
-    it('never points a section head at a body that may be absent', () => {
-      for (const button of toggles()) {
-        expect(button.hasAttribute('aria-controls')).toBeFalse();
-      }
+    it('toggles a disclosure and reports it through aria-expanded', () => {
+      const toggle = fixture.debugElement.query(By.css('.portal-settings__toggle'));
+
+      expect(toggle.attributes['aria-expanded']).toBe('true');
+
+      toggle.triggerEventHandler('click');
+      fixture.detectChanges();
+
+      expect(
+        fixture.debugElement.query(By.css('.portal-settings__toggle')).attributes['aria-expanded'],
+      ).toBe('false');
+      expect(fixture.debugElement.query(By.css('#portal-settings-section-siteDetails'))).toBeNull();
+    });
+
+    it('uses the measured section captions, resource wording winning over markup', () => {
+      expect(text()).toContain('Site Marketing');
+      expect(text()).toContain('Site Details');
     });
   });
 
-  describe('populating the form', () => {
+  // -------------------------------------------------------------------------
+  describe('the four page selectors', () => {
     beforeEach(() => {
-      setInput('lookups', lookupsOf());
-      setInput('settings', settingsOf());
-      setInput('canEditHostFields', true);
+      pages.getByPortal.and.returnValue(
+        of([
+          pageFixture({ tabId: 0, tabName: 'Home', level: 0 }),
+          pageFixture({ tabId: 1, tabName: 'About', level: 1, parentId: 0 }),
+          pageFixture({ tabId: 2, tabName: 'Deep', level: 2, parentId: 1 }),
+          pageFixture({ tabId: 3, tabName: 'Hidden', isVisible: false }),
+          pageFixture({ tabId: 4, tabName: 'Recycled', isDeleted: true }),
+          pageFixture({ tabId: 5, tabName: 'Link', url: 'https://example.test' }),
+          pageFixture({ tabId: 90, tabName: 'Admin' }),
+          pageFixture({ tabId: 91, tabName: 'Under Admin', parentId: 90 }),
+        ]),
+      );
+      route('0');
+      portals.selectedPortal.set(detailFixture());
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
+      fixture.detectChanges();
     });
 
-    it('writes the site details', () => {
-      expect(field<HTMLInputElement>('portalName')!.value).toBe('Contoso');
-      expect(field<HTMLTextAreaElement>('description')!.value).toBe('  A site about widgets  ');
-      expect(field<HTMLTextAreaElement>('keyWords')!.value).toBe('widgets,gadgets');
-      expect(field<HTMLInputElement>('footerText')!.value).toBe('Copyright Contoso');
+    function optionLabels(controlId: string): string[] {
+      return fixture.debugElement
+        .queryAll(By.css(`#${controlId} option`))
+        .map((option) => (option.nativeElement as HTMLElement).textContent ?? '');
+    }
+
+    it('reads the page listing ONCE for all four selectors', () => {
+      expect(pages.getByPortal).toHaveBeenCalledTimes(1);
     });
 
-    it('shows the identifier as a read-only field that is never submitted', () => {
-      const guid = field<HTMLInputElement>('guid');
-      expect(guid).not.toBeNull();
-      expect(guid!.value).toBe('5f1b7c9e-0000-4000-8000-000000000001');
-      expect(guid!.readOnly).toBeTrue();
-      expect(guid!.getAttribute('formcontrolname')).toBeNull();
+    it('offers the absent-page option first, and it is selectable', () => {
+      const options = fixture.debugElement.queryAll(By.css('#portal-settings-homeTabId option'));
+
+      expect((options[0]?.nativeElement as HTMLElement).textContent).toBe('<None Specified>');
+      expect((options[0]?.nativeElement as HTMLOptionElement).disabled).toBeFalse();
     });
 
-    it('associates every visible label with its control', () => {
-      for (const label of qa<HTMLLabelElement>('.portal-settings__label label[for]')) {
-        expect(host().querySelector(`#${label.getAttribute('for')}`))
-          .withContext(`label "${(label.textContent ?? '').trim()}" should reach its control`)
-          .not.toBeNull();
-      }
+    it('indents by three dots per level, and not at all at the root', () => {
+      const labels = optionLabels('portal-settings-homeTabId');
+
+      expect(labels).toContain('Home');
+      expect(labels).toContain('...About');
+      expect(labels).toContain('......Deep');
     });
 
-    it('selects the held banner mode', () => {
-      const chosen = radios('bannerAdvertising').filter((radio) => radio.checked);
-      expect(chosen.length).toBe(1);
-      expect(radios('bannerAdvertising').indexOf(chosen[0])).toBe(BannerAdvertisingMode.Site);
+    it('includes invisible pages, because the legacy call asked for them', () => {
+      expect(optionLabels('portal-settings-homeTabId')).toContain('Hidden');
     });
 
-    it('writes the appearance fields once the section is opened', () => {
-      toggleFor('Appearance')!.click();
+    it('excludes recycled pages, link pages and the administration band', () => {
+      const labels = optionLabels('portal-settings-homeTabId');
+
+      expect(labels).not.toContain('Recycled');
+      expect(labels).not.toContain('Link');
+      expect(labels).not.toContain('Admin');
+      expect(labels).not.toContain('Under Admin');
+    });
+
+    it('gives all four selectors the same options', () => {
+      const home = optionLabels('portal-settings-homeTabId');
+
+      expect(optionLabels('portal-settings-splashTabId')).toEqual(home);
+      expect(optionLabels('portal-settings-loginTabId')).toEqual(home);
+      expect(optionLabels('portal-settings-userTabId')).toEqual(home);
+    });
+
+    it('keeps a chosen page visible even once it is recycled', () => {
+      pages.getByPortal.and.returnValue(
+        of([pageFixture({ tabId: 7, tabName: 'Gone', isDeleted: true })]),
+      );
+      portals.settings.set(settingsFixture({ homeTabId: 7 }));
+      route('1');
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(field<HTMLInputElement>('logoFile')!.value).toBe('logo.gif');
-      expect(field<HTMLInputElement>('backgroundFile')!.value).toBe('bg.gif');
+      expect(optionLabels('portal-settings-homeTabId')).toContain('Gone');
     });
 
-    it('selects the held registration mode', () => {
-      tabs()[1].click();
+    it('says so, and still works, when the listing cannot be read', () => {
+      pages.getByPortal.and.returnValue(throwError(() => new Error('unreachable')));
+      route('2');
       fixture.detectChanges();
 
-      const chosen = radios('userRegistration').filter((radio) => radio.checked);
-      expect(chosen.length).toBe(1);
-      expect(radios('userRegistration').indexOf(chosen[0])).toBe(UserRegistrationMode.PublicRegistration);
-    });
-
-    it('offers the empty choice first on every select', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      for (const name of ['splashTabId', 'homeTabId', 'loginTabId', 'userTabId']) {
-        const select = field<HTMLSelectElement>(name);
-        expect((select!.options[0].textContent ?? '').trim()).toBe('<None Specified>');
-      }
-    });
-
-    it('selects the held pages and home directory', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      expect(field<HTMLSelectElement>('splashTabId')!.selectedIndex).toBe(1);
-      expect(field<HTMLSelectElement>('homeTabId')!.selectedIndex).toBe(2);
-      expect(field<HTMLSelectElement>('loginTabId')!.selectedIndex).toBe(3);
-      expect(field<HTMLSelectElement>('userTabId')!.selectedIndex).toBe(4);
-      expect(field<HTMLInputElement>('homeDirectory')!.value).toBe('Portals/7');
-    });
-
-    it('leaves the managed-secret reference blank and defaults the explicit clear operation off', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
-      fixture.detectChanges();
-
-      expect(field<HTMLSelectElement>('currency')!.selectedIndex).toBe(1);
-      expect(field<HTMLInputElement>('processorUserId')!.value).toBe('merchant-1');
-      expect(field<HTMLInputElement>('processorCredentialReference')!.value).toBe('');
-      expect(field<HTMLInputElement>('processorCredentialReference')!.type).toBe('text');
-      expect(field<HTMLInputElement>('clearProcessorCredentialReference')!.checked).toBeFalse();
-    });
-
-    it('narrows the stored instant to a date without shifting it into the local zone', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Host Settings')!.click();
-      fixture.detectChanges();
-
-      expect(field<HTMLInputElement>('expiryDate')!.value).toBe('2027-03-01');
-    });
-
-    it('writes the host-administered numbers, including a genuine zero', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Host Settings')!.click();
-      fixture.detectChanges();
-
-      expect(field<HTMLInputElement>('hostFee')!.value).toBe('19.5');
-      expect(field<HTMLInputElement>('hostSpace')!.value).toBe('512');
-      expect(field<HTMLInputElement>('pageQuota')!.value).toBe('0');
-      expect(field<HTMLInputElement>('userQuota')!.value).toBe('250');
-      expect(field<HTMLInputElement>('siteLogHistory')!.value).toBe('30');
-    });
-
-    it('leaves the expiry date blank when the contract does not expire', () => {
-      setInput('settings', settingsOf({ expiryDate: null }));
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Host Settings')!.click();
-      fixture.detectChanges();
-
-      expect(field<HTMLInputElement>('expiryDate')!.value).toBe('');
-    });
-
-    it('discards an unsaved edit when fresh settings arrive', () => {
-      type('portalName', 'Half typed');
-      expect(field<HTMLInputElement>('portalName')!.value).toBe('Half typed');
-
-      setInput('settings', settingsOf({ portalName: 'Fabrikam' }));
-
-      expect(field<HTMLInputElement>('portalName')!.value).toBe('Fabrikam');
-    });
-
-    it('clears the form when the settings are withdrawn', () => {
-      setInput('settings', undefined);
-
-      expect(q('form')).toBeNull();
-      expect(q('app-empty-state')).not.toBeNull();
+      expect(notifications.warning).toHaveBeenCalled();
+      expect(text()).toContain('list of pages could not be loaded');
     });
   });
 
-  describe('help text', () => {
+  // -------------------------------------------------------------------------
+  describe('validation', () => {
     beforeEach(() => {
-      setInput('settings', settingsOf());
+      route('0');
+      identity.isSuperUser.set(true);
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
     });
 
-    it('preserves the legacy double space after a sentence, character for character', () => {
-      expect(hintFor('portalName')!.textContent).toBe(
-        'This is the Title for your portal.  The text you enter will show up in the Title Bar.',
+    it('accepts a BLANK expiry date, because the legacy type check passed on empty input', () => {
+      form().controls.expiryDate.setValue('');
+
+      expect(form().controls.expiryDate.valid).toBeTrue();
+    });
+
+    it('refuses a malformed expiry date with the measured wording, break markup removed', () => {
+      form().controls.expiryDate.setValue('not-a-date');
+
+      expect(form().controls.expiryDate.valid).toBeFalse();
+      expect(form().controls.expiryDate.errors?.['expiryDateType']).toBe('Invalid expiry date!');
+    });
+
+    it('accepts a BLANK hosting fee', () => {
+      form().controls.hostFee.setValue('');
+
+      expect(form().controls.hostFee.valid).toBeTrue();
+    });
+
+    it('refuses a non-currency fee with the measured wording', () => {
+      form().controls.hostFee.setValue('free');
+
+      expect(form().controls.hostFee.errors?.['hostFeeType']).toBe(
+        'Invalid fee, needs to be a currency value!',
       );
     });
 
-    it('preserves the legacy missing trailing period too', () => {
-      tabs()[1].click();
+    it('accepts a decimal fee and a negative one, because the legacy declared no floor', () => {
+      form().controls.hostFee.setValue('12.50');
+      expect(form().controls.hostFee.valid).toBeTrue();
+
+      form().controls.hostFee.setValue('-5');
+      expect(form().controls.hostFee.valid).toBeTrue();
+    });
+
+    it('refuses a fractional quota', () => {
+      form().controls.userQuota.setValue('1.5');
+
+      expect(form().controls.userQuota.valid).toBeFalse();
+    });
+
+    it('declares NO presence rule anywhere, matching a screen with no required validators', () => {
+      form().setValue({
+        portalName: '',
+        description: '',
+        keyWords: '',
+        footerText: '',
+        bannerAdvertising: BannerAdvertisingMode.None,
+        userRegistration: UserRegistrationMode.NoRegistration,
+        splashTabId: -1,
+        homeTabId: -1,
+        loginTabId: -1,
+        userTabId: -1,
+        timeZoneOffset: '',
+        expiryDate: '',
+        hostFee: '',
+        hostSpace: '',
+        pageQuota: '',
+        userQuota: '',
+      });
+
+      expect(form().valid).toBeTrue();
+    });
+
+    it('enforces every measured character limit', () => {
+      form().controls.portalName.setValue('x'.repeat(129));
+      expect(form().controls.portalName.valid).toBeFalse();
+
+      form().controls.description.setValue('x'.repeat(476));
+      expect(form().controls.description.valid).toBeFalse();
+
+      form().controls.footerText.setValue('x'.repeat(101));
+      expect(form().controls.footerText.valid).toBeFalse();
+
+      form().controls.userQuota.setValue('1234567');
+      expect(form().controls.userQuota.valid).toBeFalse();
+    });
+
+    it('shows no message until the control is touched or changed', () => {
+      form().controls.hostFee.setValue('free');
+      form().controls.hostFee.markAsUntouched();
+      form().controls.hostFee.markAsPristine();
+
+      expect(fixture.componentInstance).toBeTruthy();
+      expect(text()).not.toContain('Invalid fee');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('the banner lock', () => {
+    it('disables the choice and shows the notice when the stored value is Host', () => {
+      route('0');
+      identity.isSuperUser.set(false);
+      portals.settings.set(settingsFixture({ bannerAdvertising: BannerAdvertisingMode.Host }));
       fixture.detectChanges();
 
-      expect(hintFor('userRegistration')!.textContent).toBe(
-        'The type of user registration allowed for this site',
-      );
-      expect(hintFor('homeDirectory')!.textContent).toBe(
-        'Enter the Home Directory for this site',
-      );
+      expect(form().controls.bannerAdvertising.disabled).toBeTrue();
+      expect(text()).toContain('Banner option was set by the hostingprovider');
     });
 
-    it('renders every hint exactly as the component declares it, on every section', () => {
-      const declared = component['hints'] as Readonly<Record<string, string>>;
-      let checked = 0;
+    it('strips the leading break markup from that notice', () => {
+      route('0');
+      identity.isSuperUser.set(false);
+      portals.settings.set(settingsFixture({ bannerAdvertising: BannerAdvertisingMode.Host }));
+      fixture.detectChanges();
 
-      // The host-administered group holds six of the twenty-seven hints and is
-      // withheld from an unprivileged operator, so the privilege is granted here
-      // in order for the comparison to reach every one of them.
-      setInput('canEditHostFields', true);
-
-      for (const tabIndex of [0, 1]) {
-        tabs()[tabIndex].click();
-        fixture.detectChanges();
-        // Open every section on this tab so no hint escapes the comparison.
-        for (const toggle of toggles()) {
-          if (toggle.getAttribute('aria-expanded') === 'false') {
-            toggle.click();
-            fixture.detectChanges();
-          }
-        }
-
-        for (const element of qa<HTMLElement>('.form-help')) {
-          const key = element.id
-            .replace(/^portal-settings-/, '')
-            .replace(/-hint$/, '');
-          expect(declared[key])
-            .withContext(`hint ${key} should be declared on the component`)
-            .toBeDefined();
-          expect(element.textContent)
-            .withContext(`hint ${key} should render uncollapsed`)
-            .toBe(declared[key]);
-          checked += 1;
-        }
-      }
-
-      // Every declared hint is reachable: 27 in total, and none is orphaned.
-      expect(checked).toBe(Object.keys(declared).length);
+      expect(text()).not.toContain('<br>');
     });
 
-    it('points every control at its own help text', () => {
-      const described = field<HTMLInputElement>('portalName')!.getAttribute('aria-describedby');
-      expect(described).toBe('portal-settings-portalName-hint');
-      expect(host().querySelector(`#${described}`)).not.toBeNull();
+    it('leaves the choice open for a host account, and hides the notice', () => {
+      identity.isSuperUser.set(true);
+      route('0');
+      portals.settings.set(settingsFixture({ bannerAdvertising: BannerAdvertisingMode.Host }));
+      fixture.detectChanges();
+
+      expect(form().controls.bannerAdvertising.enabled).toBeTrue();
+      expect(text()).not.toContain('Banner option was set by');
+    });
+
+    it('reacts when the identity resolves AFTER the resource has landed', () => {
+      route('0');
+      identity.isSuperUser.set(false);
+      portals.settings.set(settingsFixture({ bannerAdvertising: BannerAdvertisingMode.Host }));
+      fixture.detectChanges();
+      expect(form().controls.bannerAdvertising.disabled).toBeTrue();
+
+      identity.isSuperUser.set(true);
+      fixture.detectChanges();
+
+      expect(form().controls.bannerAdvertising.enabled).toBeTrue();
+    });
+
+    it('does not lock mid-edit when Host is merely chosen', () => {
+      route('0');
+      identity.isSuperUser.set(false);
+      portals.settings.set(settingsFixture({ bannerAdvertising: BannerAdvertisingMode.None }));
+      fixture.detectChanges();
+
+      form().controls.bannerAdvertising.setValue(BannerAdvertisingMode.Host);
+      fixture.detectChanges();
+
+      expect(form().controls.bannerAdvertising.enabled).toBeTrue();
     });
   });
 
-  describe('banner lock', () => {
-    it('locks the control and shows the advisory for a site operator when host-managed', () => {
-      setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
-
-      expect(q('.portal-settings__notice')).not.toBeNull();
-      expect((q('.portal-settings__notice')!.textContent ?? '').trim()).toBe(
-        'Banner option was set by the hostingprovider, and cannot be changed',
-      );
-      for (const radio of radios('bannerAdvertising')) {
-        expect(radio.disabled).toBeTrue();
-      }
-    });
-
-    it('leaves the control open for a site operator when it is site-managed', () => {
-      setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Site }));
-
-      expect(q('.portal-settings__notice')).toBeNull();
-      for (const radio of radios('bannerAdvertising')) {
-        expect(radio.disabled).toBeFalse();
-      }
-    });
-
-    it('never locks the control for a host operator, even when host-managed', () => {
-      setInput('canEditHostFields', true);
-      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
-
-      expect(q('.portal-settings__notice')).toBeNull();
-      for (const radio of radios('bannerAdvertising')) {
-        expect(radio.disabled).toBeFalse();
-      }
-    });
-
-    it('re-evaluates the lock when the privilege changes', () => {
-      setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
-      expect(radios('bannerAdvertising')[0].disabled).toBeTrue();
-
-      setInput('canEditHostFields', true);
-
-      expect(radios('bannerAdvertising')[0].disabled).toBeFalse();
-    });
-
-    it('still submits a locked banner setting unchanged', () => {
-      const emitted: UpdatePortalSettingsRequest[] = [];
-      component.save.subscribe((request) => emitted.push(request));
-
-      setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
-      submit();
-
-      expect(emitted.length).toBe(1);
-      expect(emitted[0].bannerAdvertising).toBe(BannerAdvertisingMode.Host);
-    });
-  });
-
-  describe('host-administered group', () => {
+  // -------------------------------------------------------------------------
+  describe('the host-settings gate', () => {
     beforeEach(() => {
-      setInput('settings', settingsOf());
+      route('0');
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
+      fixture.detectChanges();
     });
 
-    it('is withheld from an operator who may not administer it', () => {
-      tabs()[1].click();
+    it('hides the section from an account without the host role', () => {
+      expect(text()).not.toContain('Host Settings');
+      expect(fixture.debugElement.query(By.css('#portal-settings-hostFee'))).toBeNull();
+    });
+
+    it('shows it to a host account', () => {
+      identity.isSuperUser.set(true);
       fixture.detectChanges();
 
-      expect(toggleFor('Host Settings')).toBeUndefined();
-      expect(field('hostFee')).toBeNull();
+      expect(text()).toContain('Host Settings');
     });
 
-    it('is offered to an operator who may', () => {
-      setInput('canEditHostFields', true);
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      expect(toggleFor('Host Settings')).not.toBeUndefined();
-    });
-
-    it('is still submitted in full when it is not offered', () => {
-      const emitted: UpdatePortalSettingsRequest[] = [];
-      component.save.subscribe((request) => emitted.push(request));
-
-      setInput('canEditHostFields', false);
-      submit();
-
-      expect(emitted.length).toBe(1);
-      expect(emitted[0].hostFee).toBe(19.5);
-      expect(emitted[0].hostSpace).toBe(512);
-      expect(emitted[0].pageQuota).toBe(0);
-      expect(emitted[0].userQuota).toBe(250);
-      expect(emitted[0].siteLogHistory).toBe(30);
-      expect(emitted[0].expiryDate).toBe('2027-03-01');
+    it('still HYDRATES the hidden host controls, so they are returned unchanged', () => {
+      expect(form().controls.hostFee.value).toBe('0');
+      expect(form().controls.userQuota.value).toBe('0');
     });
   });
 
-  describe('submitting', () => {
-    let emitted: UpdatePortalSettingsRequest[];
-
+  // -------------------------------------------------------------------------
+  describe('saving', () => {
     beforeEach(() => {
-      emitted = [];
-      setInput('lookups', lookupsOf());
-      setInput('settings', settingsOf());
-      component.save.subscribe((request) => emitted.push(request));
-    });
-
-    it('does not duplicate the route-owned portal identifier in the settings body', () => {
-      submit();
-
-      expect(emitted.length).toBe(1);
-      expect('portalId' in emitted[0]).toBeFalse();
-    });
-
-    it('sends all twenty-six editable properties, so a whole-row replacement is complete', () => {
-      submit();
-
-      const expected: readonly (keyof UpdatePortalSettingsRequest)[] = [
-        'portalName',
-        'logoFile',
-        'footerText',
-        'expiryDate',
-        'userRegistration',
-        'bannerAdvertising',
-        'currency',
-        'administratorId',
-        'hostFee',
-        'hostSpace',
-        'pageQuota',
-        'userQuota',
-        'paymentProcessor',
-        'processorUserId',
-        'processorCredentialReference',
-        'description',
-        'keyWords',
-        'backgroundFile',
-        'siteLogHistory',
-        'splashTabId',
-        'homeTabId',
-        'loginTabId',
-        'userTabId',
-        'defaultLanguage',
-        'timeZoneOffset',
-        'homeDirectory',
-      ];
-
-      expect(Object.keys(emitted[0]).sort()).toEqual([...expected].sort());
-      expect(expected.length).toBe(26);
-    });
-
-    it('trims text and reports a blank field as absent', () => {
-      submit();
-      expect(emitted[0].description).toBe('A site about widgets');
-
-      type('footerText', '   ');
-      submit();
-      expect(emitted[1].footerText).toBeNull();
-    });
-
-    it('preserves a numeric zero rather than reading it as absent', () => {
-      submit();
-
-      expect(emitted[0].pageQuota).toBe(0);
-    });
-
-    it('sends a blank processor reference as absent, leaving the stored reference alone', () => {
-      submit();
-
-      expect(emitted[0].processorCredentialReference).toBeNull();
-    });
-
-    it('sends a managed-secret reference as the replace operation', () => {
-      tabs()[1].click();
+      route('0');
+      identity.isSuperUser.set(true);
+      portals.settings.set(settingsFixture());
       fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
-      fixture.detectChanges();
-      type('processorCredentialReference', 'secret://processor/test');
-      submit();
-
-      expect(emitted[0].processorCredentialReference).toBe('secret://processor/test');
     });
 
-    it('sends an empty string only when the operator explicitly clears the processor reference', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
-      fixture.detectChanges();
-      type('processorCredentialReference', 'plaintext-password');
-      field<HTMLInputElement>('clearProcessorCredentialReference')!.click();
-      fixture.detectChanges();
-      submit();
+    function submitted(): UpdatePortalSettingsRequest {
+      fixture.debugElement.query(By.css('form')).triggerEventHandler('submit', new Event('submit'));
 
-      expect(field<HTMLInputElement>('processorCredentialReference')!.value).toBe('');
-      expect(field<HTMLInputElement>('processorCredentialReference')!.readOnly).toBeTrue();
-      expect(emitted[0].processorCredentialReference).toBe('');
+      return portals.saveSettings.calls.mostRecent().args[1] as UpdatePortalSettingsRequest;
+    }
+
+    it('sends the edited site-detail values', () => {
+      form().controls.portalName.setValue('New Name');
+
+      expect(submitted().portalName).toBe('New Name');
     });
 
-    it('keeps a chosen page identifier a number, not a string', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      choose('homeTabId', 3);
-      submit();
+    it('reports a blank box as absence, matching the legacy empty-string null', () => {
+      form().controls.footerText.setValue('   ');
 
-      expect(emitted[0].homeTabId).toBe(13);
-      expect(typeof emitted[0].homeTabId).toBe('number');
+      expect(submitted().footerText).toBeNull();
     });
 
-    it('sends the empty page choice as absent', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      choose('splashTabId', 0);
-      submit();
+    it('saves ZERO for a blank fee and blank quotas, the measured legacy default', () => {
+      form().controls.hostFee.setValue('');
+      form().controls.hostSpace.setValue('');
+      form().controls.pageQuota.setValue('');
+      form().controls.userQuota.setValue('');
 
-      expect(emitted[0].splashTabId).toBeNull();
+      const request = submitted();
+
+      expect(request.hostFee).toBe(0);
+      expect(request.hostSpace).toBe(0);
+      expect(request.pageQuota).toBe(0);
+      expect(request.userQuota).toBe(0);
     });
 
-    it('keeps a chosen time-zone offset a number', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Other Settings')!.click();
-      fixture.detectChanges();
-      choose('timeZoneOffset', 2);
-      submit();
+    it('sends ABSENCE for a blank expiry, never the unstorable legacy date sentinel', () => {
+      form().controls.expiryDate.setValue('');
 
-      expect(emitted[0].timeZoneOffset).toBe(0);
-      expect(typeof emitted[0].timeZoneOffset).toBe('number');
+      const request = submitted();
+
+      expect(request.expiryDate).toBeNull();
+      expect(request.expiryDate).not.toBe('0001-01-01T00:00:00');
     });
 
-    it('keeps a chosen registration mode a number', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      radios('userRegistration')[UserRegistrationMode.VerifiedRegistration].click();
-      fixture.detectChanges();
-      submit();
+    it('sends absence for the absent-page option, and never the option value itself', () => {
+      form().controls.splashTabId.setValue(-1);
 
-      expect(emitted[0].userRegistration).toBe(UserRegistrationMode.VerifiedRegistration);
-      expect(typeof emitted[0].userRegistration).toBe('number');
+      expect(submitted().splashTabId).toBeNull();
     });
 
-    it('emits nothing while a submission is already in flight', () => {
-      setInput('saving', true);
-      const button = actionButton('Update');
-      expect(button!.disabled).toBeTrue();
+    it('sends page 0 as page 0', () => {
+      form().controls.homeTabId.setValue(0);
 
-      component['onSubmit']();
-
-      expect(emitted.length).toBe(0);
+      expect(submitted().homeTabId).toBe(0);
     });
 
-    it('emits nothing when the form is invalid, and marks it so messages appear', () => {
-      type('portalName', 'x'.repeat(129));
-      submit();
+    it('returns every member it does not show, unchanged', () => {
+      const request = submitted();
 
-      expect(emitted.length).toBe(0);
-      expect(messageFor('portalName')).not.toBeNull();
+      expect(request.logoFile).toBe('logo.gif');
+      expect(request.backgroundFile).toBe('back.gif');
+      expect(request.currency).toBe('USD');
+      expect(request.paymentProcessor).toBe('PayPal');
+      expect(request.processorUserId).toBe('merchant');
+      expect(request.siteLogHistory).toBe(-1);
+      expect(request.defaultLanguage).toBe('en-US');
+      expect(request.homeDirectory).toBe('Portals/0');
+      expect(request.administratorId).toBe(2);
+    });
+
+    it('never returns the processor credential', () => {
+      expect(submitted().processorCredentialReference).toBeNull();
+    });
+
+    it('addresses the portal from the route', () => {
+      submitted();
+
+      expect(portals.saveSettings.calls.mostRecent().args[0]).toBe(0);
+    });
+
+    it('refuses to send a rejected form, and says why once', () => {
+      form().controls.hostFee.setValue('free');
+      fixture.debugElement.query(By.css('form')).triggerEventHandler('submit', new Event('submit'));
+      fixture.detectChanges();
+
+      expect(portals.saveSettings).not.toHaveBeenCalled();
+      expect(notifications.warning).toHaveBeenCalled();
+      expect(form().touched).toBeTrue();
+      expect(text()).toContain('Correct the highlighted fields');
+    });
+
+    it('announces success once the store confirms', () => {
+      const stored = settingsFixture({ portalName: 'Saved' });
+
+      submitted();
+      const confirm = portals.saveSettings.calls.mostRecent().args[2] as (
+        value: PortalSettings,
+      ) => void;
+      confirm(stored);
+
+      expect(notifications.success).toHaveBeenCalledWith('The site settings were saved.');
     });
   });
 
-  describe('validation, mirrored from the server rules', () => {
+  // -------------------------------------------------------------------------
+  describe('failures', () => {
     beforeEach(() => {
-      setInput('lookups', lookupsOf());
-      setInput('settings', settingsOf());
-      setInput('canEditHostFields', true);
-    });
-
-    it('says nothing about a field the operator has not touched', () => {
-      expect(messageFor('portalName')).toBeNull();
-    });
-
-    it('bounds the title at 128 characters', () => {
-      type('portalName', 'x'.repeat(129));
-
-      expect((messageFor('portalName')!.textContent ?? '').trim()).toBe(
-        'Enter at most 128 characters.',
-      );
-    });
-
-    it('accepts a title of exactly 128 characters', () => {
-      type('portalName', 'x'.repeat(128));
-
-      expect(messageFor('portalName')).toBeNull();
-    });
-
-    it('bounds the description and keywords at 500 characters', () => {
-      type('description', 'x'.repeat(501));
-      type('keyWords', 'x'.repeat(501));
-
-      expect((messageFor('description')!.textContent ?? '').trim()).toBe(
-        'Enter at most 500 characters.',
-      );
-      expect((messageFor('keyWords')!.textContent ?? '').trim()).toBe(
-        'Enter at most 500 characters.',
-      );
-    });
-
-    it('bounds the copyright line at 100 characters', () => {
-      type('footerText', 'x'.repeat(101));
-
-      expect((messageFor('footerText')!.textContent ?? '').trim()).toBe(
-        'Enter at most 100 characters.',
-      );
-    });
-
-    it('bounds the two image paths at 50 characters', () => {
-      toggleFor('Appearance')!.click();
+      route('0');
+      portals.settings.set(settingsFixture());
       fixture.detectChanges();
-      type('logoFile', 'x'.repeat(51));
-      type('backgroundFile', 'x'.repeat(51));
+    });
 
-      expect((messageFor('logoFile')!.textContent ?? '').trim()).toBe(
-        'Enter at most 50 characters.',
+    it('names the host-only-field rule for a refusal, and never a session problem', () => {
+      portals.settingsFailure.set(failureFixture({ status: 403, severity: 'warning' }));
+      fixture.detectChanges();
+
+      const [severity, message] = notifications.notify.calls.mostRecent().args as [string, string];
+
+      expect(severity).toBe('warning');
+      expect(message).toContain('Only a host account may change');
+      expect(message).not.toContain('session');
+      expect(router.navigateByUrl).not.toHaveBeenCalled();
+    });
+
+    it('uses the shared wording for the last-remaining-portal refusal', () => {
+      portals.detailFailure.set(
+        failureFixture({ status: 409, conflictCode: 'portal.last_remaining', severity: 'warning' }),
       );
-      expect((messageFor('backgroundFile')!.textContent ?? '').trim()).toBe(
-        'Enter at most 50 characters.',
+      fixture.detectChanges();
+
+      expect(notifications.notify.calls.mostRecent().args[1]).toBe(
+        'You Can Not Delete The Last Portal In Your Database',
       );
     });
 
-    it('bounds the home directory at 100 characters', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      type('homeDirectory', 'x'.repeat(101));
+    it('hands the problem document to the shared failure surface untouched', () => {
+      const failure = failureFixture();
 
-      expect((messageFor('homeDirectory')!.textContent ?? '').trim()).toBe(
-        'Enter at most 100 characters.',
-      );
+      portals.settingsFailure.set(failure);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('app-error-banner'))).not.toBeNull();
     });
 
-    it('bounds the two processor text fields at 50 characters', () => {
-      tabs()[1].click();
+    it('announces one failure once, not on every pass', () => {
+      portals.settingsFailure.set(failureFixture());
       fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
       fixture.detectChanges();
-      type('processorUserId', 'x'.repeat(51));
-      type('processorCredentialReference', 'x'.repeat(51));
 
-      expect((messageFor('processorUserId')!.textContent ?? '').trim()).toBe(
-        'Enter at most 50 characters.',
-      );
-      expect((messageFor('processorCredentialReference')!.textContent ?? '').trim()).toBe(
-        'Enter at most 50 characters.',
-      );
-    });
-
-    it('requires a managed-secret scheme for a replacement processor reference', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
-      fixture.detectChanges();
-      type('processorCredentialReference', 'plaintext-password');
-
-      expect((messageFor('processorCredentialReference')!.textContent ?? '').trim()).toBe(
-        'The processor credential reference must use secret:// followed by a managed-secret identifier.',
-      );
-    });
-
-    it('reports the server sentence when the hosting fee is negative', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Host Settings')!.click();
-      fixture.detectChanges();
-      type('hostFee', '-1');
-
-      expect((messageFor('hostFee')!.textContent ?? '').trim()).toBe(
-        'Hosting Fee must be zero or greater.',
-      );
-    });
-
-    it('reports the server sentence for each negative quota', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Host Settings')!.click();
-      fixture.detectChanges();
-      type('hostSpace', '-1');
-      type('pageQuota', '-1');
-      type('userQuota', '-1');
-      type('siteLogHistory', '-1');
-
-      expect((messageFor('hostSpace')!.textContent ?? '').trim()).toBe(
-        'Disk Space must be zero or greater.',
-      );
-      expect((messageFor('pageQuota')!.textContent ?? '').trim()).toBe(
-        'Page Quota must be zero or greater.',
-      );
-      expect((messageFor('userQuota')!.textContent ?? '').trim()).toBe(
-        'User Quota must be zero or greater.',
-      );
-      expect((messageFor('siteLogHistory')!.textContent ?? '').trim()).toBe(
-        'Site Log History must be zero or greater.',
-      );
-    });
-
-    it('accepts zero for every host-administered number', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Host Settings')!.click();
-      fixture.detectChanges();
-      type('hostFee', '0');
-      type('hostSpace', '0');
-
-      expect(messageFor('hostFee')).toBeNull();
-      expect(messageFor('hostSpace')).toBeNull();
-    });
-
-    it('requires a currency of exactly three letters when one is given', () => {
-      setInput('lookups', lookupsOf({ currencies: [{ value: 'GB', label: 'Two letters' }] }));
-      setInput('settings', settingsOf({ currency: 'GB' }));
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
-      fixture.detectChanges();
-      choose('currency', 1);
-
-      expect((messageFor('currency')!.textContent ?? '').trim()).toBe(
-        'Currency must be a three letter code.',
-      );
-    });
-
-    it('accepts a blank currency, as the server rule does', () => {
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Payment Settings')!.click();
-      fixture.detectChanges();
-      choose('currency', 0);
-
-      expect(messageFor('currency')).toBeNull();
-    });
-
-    it('bounds the default language at six characters', () => {
-      setInput('lookups', lookupsOf({ languages: [{ value: 'en-GB-x', label: 'Too long' }] }));
-      setInput('settings', settingsOf({ defaultLanguage: 'en-GB-x' }));
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Other Settings')!.click();
-      fixture.detectChanges();
-      choose('defaultLanguage', 1);
-
-      expect((messageFor('defaultLanguage')!.textContent ?? '').trim()).toBe(
-        'Enter at most 6 characters.',
-      );
-    });
-
-    it('requires nothing, because the legacy screen required nothing', () => {
-      type('portalName', '');
-      type('description', '');
-      type('keyWords', '');
-      type('footerText', '');
-
-      expect(messageFor('portalName')).toBeNull();
-      expect(messageFor('description')).toBeNull();
-      expect(messageFor('keyWords')).toBeNull();
-      expect(messageFor('footerText')).toBeNull();
-    });
-
-    it('marks an offending control invalid for assistive technology', () => {
-      type('portalName', 'x'.repeat(129));
-
-      expect(field<HTMLInputElement>('portalName')!.getAttribute('aria-invalid')).toBe('true');
-    });
-
-    it('does not mark a valid control invalid', () => {
-      type('portalName', 'Fine');
-
-      expect(field<HTMLInputElement>('portalName')!.hasAttribute('aria-invalid')).toBeFalse();
-    });
-
-    it('adds the message to the control description only while it is showing', () => {
-      expect(field<HTMLInputElement>('portalName')!.getAttribute('aria-describedby')).toBe(
-        'portal-settings-portalName-hint',
-      );
-
-      type('portalName', 'x'.repeat(129));
-
-      expect(field<HTMLInputElement>('portalName')!.getAttribute('aria-describedby')).toBe(
-        'portal-settings-portalName-hint portal-settings-portalName-message',
-      );
+      expect(notifications.notify).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe('option lists', () => {
-    it('offers a held value the supplied list has forgotten', () => {
-      // The other three page settings are cleared so the assertion isolates the
-      // one fold under test; all four share a single list, and each held page is
-      // folded in, which the next test but one covers explicitly.
-      setInput('lookups', lookupsOf({ pages: [{ value: 12, label: 'Home' }] }));
-      setInput(
-        'settings',
-        settingsOf({ splashTabId: 99, homeTabId: null, loginTabId: null, userTabId: null }),
-      );
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      const labels = Array.from(field<HTMLSelectElement>('splashTabId')!.options).map((option) =>
-        (option.textContent ?? '').trim(),
-      );
-      expect(labels).toEqual(['<None Specified>', 'Home', '99']);
-    });
-
-    it('keeps that held value selected, so opening and saving cannot change it', () => {
-      const emitted: UpdatePortalSettingsRequest[] = [];
-      setInput('lookups', lookupsOf({ pages: [{ value: 12, label: 'Home' }] }));
-      setInput('settings', settingsOf({ splashTabId: 99 }));
-      component.save.subscribe((request) => emitted.push(request));
-
-      submit();
-
-      expect(emitted[0].splashTabId).toBe(99);
-    });
-
-    it('does not duplicate a held value the list already offers', () => {
-      setInput('lookups', lookupsOf());
-      setInput('settings', settingsOf());
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      expect(field<HTMLSelectElement>('splashTabId')!.options.length).toBe(5);
-    });
-
-    it('folds all four held pages into the shared page list', () => {
-      setInput('lookups', lookupsOf({ pages: [] }));
-      setInput(
-        'settings',
-        settingsOf({ splashTabId: 1, homeTabId: 2, loginTabId: 3, userTabId: 4 }),
-      );
-      tabs()[1].click();
-      fixture.detectChanges();
-
-      const labels = Array.from(field<HTMLSelectElement>('homeTabId')!.options).map((option) =>
-        (option.textContent ?? '').trim(),
-      );
-      expect(labels).toEqual(['<None Specified>', '1', '2', '3', '4']);
-    });
-
-    it('recomputes when a fresh list arrives', () => {
-      setInput('lookups', lookupsOf({ administrators: [] }));
-      setInput('settings', settingsOf({ administratorId: null }));
-      tabs()[1].click();
-      fixture.detectChanges();
-      toggleFor('Other Settings')!.click();
-      fixture.detectChanges();
-      expect(field<HTMLSelectElement>('administratorId')!.options.length).toBe(1);
-
-      setInput('lookups', lookupsOf());
-
-      expect(field<HTMLSelectElement>('administratorId')!.options.length).toBe(3);
-    });
-  });
-
-  describe('action bar', () => {
+  // -------------------------------------------------------------------------
+  describe('cancel and delete', () => {
     beforeEach(() => {
-      setInput('settings', settingsOf());
+      route('5');
+      portals.settings.set(settingsFixture({ portalId: 5 }));
+      fixture.detectChanges();
     });
 
-    it('offers Update and Cancel in the legacy order', () => {
-      const labels = qa<HTMLButtonElement>('.portal-settings__actions button').map((button) =>
-        (button.textContent ?? '').trim(),
-      );
-      expect(labels).toEqual(['Update', 'Cancel']);
+    it('returns to the listing on cancel, holding no referrer of its own', () => {
+      fixture.debugElement
+        .queryAll(By.css('.portal-settings__actions button'))[1]
+        ?.triggerEventHandler('click');
+
+      expect(router.navigateByUrl).toHaveBeenCalledWith('/portals');
     });
 
-    it('withholds Delete unless the caller permits it', () => {
-      expect(actionButton('Delete')).toBeUndefined();
-
-      setInput('canDelete', true);
-
-      expect(actionButton('Delete')).not.toBeUndefined();
+    it('withholds delete from an account without the host role', () => {
+      expect(fixture.debugElement.query(By.css('app-page-header button'))).toBeNull();
     });
 
-    it('emits cancellation without validating, as the legacy button did', () => {
-      let cancelled = 0;
-      component.cancel.subscribe(() => (cancelled += 1));
-
-      type('portalName', 'x'.repeat(129));
-      actionButton('Cancel')!.click();
-
-      expect(cancelled).toBe(1);
-    });
-
-    it('disables both actions while a submission is in flight', () => {
-      setInput('saving', true);
-
-      expect(actionButton('Update')!.disabled).toBeTrue();
-      expect(actionButton('Cancel')!.disabled).toBeTrue();
-    });
-
-    it('does not submit the form from Cancel or Delete', () => {
-      setInput('canDelete', true);
-
-      expect(actionButton('Cancel')!.type).toBe('button');
-      expect(actionButton('Delete')!.type).toBe('button');
-      expect(actionButton('Update')!.type).toBe('submit');
-    });
-  });
-
-  describe('deletion', () => {
-    beforeEach(() => {
-      setInput('settings', settingsOf());
-      setInput('canDelete', true);
-    });
-
-    it('shows no dialog until Delete is pressed', () => {
-      expect(q('app-confirm-dialog')).toBeNull();
-    });
-
-    it('opens the confirmation carrying the legacy wording, character for character', () => {
-      actionButton('Delete')!.click();
+    it('offers delete to a host account when the target is another portal', () => {
+      identity.isSuperUser.set(true);
+      identity.portalId.set(0);
       fixture.detectChanges();
 
-      expect(q('app-confirm-dialog')).not.toBeNull();
-      expect((q('.confirm-dialog__message')!.textContent ?? '').trim()).toBe(
+      expect(fixture.debugElement.query(By.css('app-page-header button'))).not.toBeNull();
+    });
+
+    it('withholds delete when the target IS the portal being browsed', () => {
+      identity.isSuperUser.set(true);
+      identity.portalId.set(5);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('app-page-header button'))).toBeNull();
+    });
+
+    it('withholds delete when the browsing portal is unknown', () => {
+      identity.isSuperUser.set(true);
+      identity.portalId.set(null);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('app-page-header button'))).toBeNull();
+    });
+
+    it('asks this screen’s own question, with the space before its question mark', () => {
+      identity.isSuperUser.set(true);
+      identity.portalId.set(0);
+      fixture.detectChanges();
+
+      fixture.debugElement.query(By.css('app-page-header button')).triggerEventHandler('click');
+      fixture.detectChanges();
+
+      const dialog = fixture.debugElement.query(By.css('app-confirm-dialog'));
+
+      expect(dialog).not.toBeNull();
+      expect((dialog.nativeElement as HTMLElement).textContent).toContain(
         'Are You Sure You Wish To Delete This Portal ?',
       );
     });
 
-    it('emits nothing until the confirmation is accepted', () => {
-      let removals = 0;
-      component.remove.subscribe(() => (removals += 1));
-
-      actionButton('Delete')!.click();
+    it('deletes and leaves once confirmed', () => {
+      identity.isSuperUser.set(true);
+      identity.portalId.set(0);
+      fixture.detectChanges();
+      fixture.debugElement.query(By.css('app-page-header button')).triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(removals).toBe(0);
+      fixture.debugElement.query(By.css('app-confirm-dialog')).triggerEventHandler('confirm');
+
+      expect(portals.deletePortal.calls.mostRecent().args[0]).toBe(5);
+
+      const done = portals.deletePortal.calls.mostRecent().args[1] as () => void;
+      done();
+
+      expect(notifications.success).toHaveBeenCalledWith('The portal was deleted.');
+      expect(router.navigateByUrl).toHaveBeenCalledWith('/portals');
     });
 
-    it('emits the removal once confirmed and closes the dialog', () => {
-      let removals = 0;
-      component.remove.subscribe(() => (removals += 1));
-
-      actionButton('Delete')!.click();
+    it('deletes nothing when the confirmation is dismissed', () => {
+      identity.isSuperUser.set(true);
+      identity.portalId.set(0);
       fixture.detectChanges();
-      // Located by the destructive modifier rather than by label: the shared
-      // dialog prefixes a warning glyph to a dangerous confirm label, so its text
-      // is not the bare `confirmLabel`.
-      const confirmButton = q<HTMLButtonElement>('.confirm-dialog__button--danger');
-      expect(confirmButton).not.toBeNull();
-      expect((confirmButton!.textContent ?? '').trim().endsWith('Delete')).toBeTrue();
-      confirmButton!.click();
+      fixture.debugElement.query(By.css('app-page-header button')).triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(removals).toBe(1);
-      expect(q('app-confirm-dialog')).toBeNull();
+      fixture.debugElement.query(By.css('app-confirm-dialog')).triggerEventHandler('cancel');
+      fixture.detectChanges();
+
+      expect(portals.deletePortal).not.toHaveBeenCalled();
+      expect(fixture.debugElement.query(By.css('app-confirm-dialog'))).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('the fields that are gone', () => {
+    beforeEach(() => {
+      route('0');
+      identity.isSuperUser.set(true);
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
     });
 
-    it('emits nothing when the confirmation is dismissed', () => {
-      let removals = 0;
-      component.remove.subscribe(() => (removals += 1));
+    it('declares no control for any dropped field', () => {
+      const declared = Object.keys(form().controls);
 
-      actionButton('Delete')!.click();
-      fixture.detectChanges();
-      const cancelButton = qa<HTMLButtonElement>('.confirm-dialog__button').find(
-        (button) => (button.textContent ?? '').trim() === 'Cancel',
-      );
-      cancelButton!.click();
-      fixture.detectChanges();
-
-      expect(removals).toBe(0);
-      expect(q('app-confirm-dialog')).toBeNull();
+      for (const absent of [
+        'logoFile',
+        'backgroundFile',
+        'currency',
+        'paymentProcessor',
+        'processorUserId',
+        'processorCredentialReference',
+        'defaultLanguage',
+        'siteLogHistory',
+        'homeDirectory',
+        'styleSheet',
+        'sslEnabled',
+        'sslEnforced',
+        'sslUrl',
+        'inlineEditor',
+        'controlPanelMode',
+      ]) {
+        expect(declared).not.toContain(absent);
+      }
     });
 
-    it('marks the confirmation as destructive', () => {
-      actionButton('Delete')!.click();
+    it('renders no appearance, payment, usability or SSL section', () => {
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
       fixture.detectChanges();
 
-      expect(q('.confirm-dialog__button--danger')).not.toBeNull();
+      const rendered = text();
+
+      expect(rendered).not.toContain('Appearance');
+      expect(rendered).not.toContain('Payment Settings');
+      expect(rendered).not.toContain('Usability Settings');
+      expect(rendered).not.toContain('SSL Settings');
+      expect(rendered).not.toContain('Stylesheet Editor');
+    });
+
+    it('offers no wizard, template, export or import affordance', () => {
+      const rendered = text().toLowerCase();
+
+      expect(rendered).not.toContain('wizard');
+      expect(rendered).not.toContain('template');
+      expect(rendered).not.toContain('export');
+      expect(rendered).not.toContain('import');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('loading and empty states', () => {
+    it('shows a spinner while the first read is outstanding', () => {
+      portals.settingsLoading.set(true);
+      route('0');
+
+      expect(fixture.debugElement.query(By.css('app-loading-spinner'))).not.toBeNull();
+    });
+
+    it('does not show the first-read spinner once a resource is on screen', () => {
+      route('0');
+      portals.settings.set(settingsFixture());
+      portals.settingsLoading.set(true);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('form'))).not.toBeNull();
+    });
+
+    it('disables both actions while a write is in flight', () => {
+      route('0');
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
+      portals.settingsLoading.set(true);
+      fixture.detectChanges();
+
+      const actions = fixture.debugElement.queryAll(By.css('.portal-settings__actions button'));
+
+      expect(actions.every((action) => (action.nativeElement as HTMLButtonElement).disabled)).toBeTrue();
     });
   });
 });

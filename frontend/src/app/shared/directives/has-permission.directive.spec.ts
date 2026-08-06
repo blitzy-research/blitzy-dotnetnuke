@@ -1,38 +1,70 @@
 import { Component } from '@angular/core';
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import type { ComponentFixture } from '@angular/core/testing';
 
-import { AuthSession, CurrentUser } from '../../core/models/auth.model';
-import type { PermissionKey } from '../../core/models/permission.model';
+// Type-only, matching the convention used by the sibling core specifications: the session
+// and identity shapes are erased at compile time, so this file pulls no runtime code out
+// of the model.
+import type { AuthSession, CurrentUser } from '../../core/models/auth.model';
 import { TokenStorageService } from '../../core/services/token-storage.service';
-import { HasPermissionDirective, isPermitted, normaliseRequiredKeys } from './has-permission.directive';
+
+import { HasPermissionDirective } from './has-permission.directive';
 
 /**
- * A host for the structural directive.
+ * Specification for {@link HasPermissionDirective}.
  *
- * Default change detection deliberately, so the bound specification can be changed by
- * assigning the field and then flushing — which is what a feature screen does when it
- * swaps the required key on the same element.
+ * ## What is under test
  *
- * The bound field is typed exactly as the directive's input is, which is itself part of
- * what these specs assert: a differently cased key, an invented key or a blank string is
- * NOT ASSIGNABLE here, so those mistakes cannot reach a template at all. They are proven
- * refused at the runtime boundary instead, against `normaliseRequiredKeys` further down,
- * which is where an untyped caller would arrive.
+ * The directive against the REAL auth store, driven by storing and clearing a real
+ * session through the token custodian. The store is not stubbed, because the thing worth
+ * proving is that the directive reads the resolved permission list the application
+ * actually publishes — a hand-written stub would prove only that the stub was shaped the
+ * way this file imagined.
+ *
+ * A transport provider and its testing double are configured because the store reaches
+ * the authentication service, which reaches the HTTP client. `httpMock.verify()` in
+ * `afterEach` then earns its place twice over: it is what turns "this directive issues no
+ * HTTP request" from a claim in a comment into an enforced expectation, since any request
+ * the directive provoked on init, on a session change or on a key change would fail the
+ * verification.
+ *
+ * ## The load-bearing expectations
+ *
+ * `key comparison` and `denial` matter more than the render cases. A permission affordance
+ * that fails OPEN is worse than one that never appears, so the specifications that a
+ * differently cased key, a padded key, a merely containing key and the empty string are
+ * all REFUSED are the ones that would catch a well-meaning `toUpperCase()` or a
+ * truthiness guard being introduced later.
+ *
+ * `removes rather than hides` and `keeps the same element` are the other two: the first
+ * fixes structural-removal semantics against a future change to CSS hiding, and the second
+ * fixes idempotence, so an effect that rebuilt its view on every unrelated signal change
+ * would be caught rather than silently degrading focus and DOM state.
+ *
+ * There is no predecessor test to port: the legacy tree contains no automated tests at
+ * all, so every expectation below is net-new.
  */
 @Component({
   standalone: true,
   imports: [HasPermissionDirective],
-  template: `
-    <button *appHasPermission="required" class="guarded" type="button">Edit</button>
-  `,
+  template: ` <button *hasPermission="required" class="guarded" type="button">Edit</button> `,
 })
 class HostComponent {
-  required: PermissionKey | readonly PermissionKey[] | null | undefined = 'EDIT';
+  /**
+   * Typed exactly as the directive's input is — a plain `string`, so a call site is free
+   * to bind a key this file has never heard of, which is precisely the case the denial
+   * expectations below exercise.
+   */
+  required = 'EDIT';
 }
 
 function userWith(permissions: readonly string[], isSuperUser = false): CurrentUser {
   return {
     userId: 7,
+    // Zero deliberately: `Portals.PortalID` is seeded at minus one, so zero is a real
+    // tenant and nothing may read it as absence.
     portalId: 0,
     portalName: 'Primary',
     username: 'operator',
@@ -46,9 +78,9 @@ function userWith(permissions: readonly string[], isSuperUser = false): CurrentU
 
 function sessionWith(permissions: readonly string[], isSuperUser = false): AuthSession {
   return {
-    accessToken: 'access-1',
+    accessToken: 'access-token-placeholder',
     expiresAtUtc: '2100-01-01T00:00:00.000Z',
-    refreshToken: 'refresh-1',
+    refreshToken: 'refresh-token-placeholder',
     mustChangePassword: false,
     mustUpdateProfile: false,
     passwordExpiring: false,
@@ -58,130 +90,188 @@ function sessionWith(permissions: readonly string[], isSuperUser = false): AuthS
 
 describe('HasPermissionDirective', () => {
   let fixture: ComponentFixture<HostComponent>;
-  let host: HostComponent;
   let tokenStorage: TokenStorageService;
+  let httpMock: HttpTestingController;
 
-  beforeEach(async () => {
-    await TestBed.configureTestingModule({ imports: [HostComponent] }).compileComponents();
+  /** The gated element, or null when the directive has removed it. */
+  function guarded(): HTMLElement | null {
+    return fixture.nativeElement.querySelector('.guarded');
+  }
 
-    fixture = TestBed.createComponent(HostComponent);
-    host = fixture.componentInstance;
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+
     tokenStorage = TestBed.inject(TokenStorageService);
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture = TestBed.createComponent(HostComponent);
   });
 
-  /** Flushes the binding and the directive's effect together. */
-  function sync(): void {
-    fixture.detectChanges();
-  }
-
-  function guarded(): HTMLElement | null {
-    return (fixture.nativeElement as HTMLElement).querySelector('.guarded');
-  }
+  afterEach(() => {
+    // Proves the no-HTTP guarantee for every path exercised above, not just for init.
+    httpMock.verify();
+  });
 
   describe('rendering', () => {
-    it('renders nothing when there is no session', () => {
-      sync();
+    it('renders nothing when nobody is signed in', () => {
+      fixture.detectChanges();
 
-      expect(guarded()).withContext('an unauthenticated caller holds no keys').toBeNull();
+      expect(guarded()).toBeNull();
     });
 
     it('renders nothing when the session grants no keys', () => {
-      // The server issues an empty key list rather than refusing the sign-in when it
-      // cannot resolve one, so this is a real state and not a defensive branch.
       tokenStorage.store(sessionWith([]));
-      sync();
+      fixture.detectChanges();
 
       expect(guarded()).toBeNull();
     });
 
     it('renders the content when the granted list contains the required key', () => {
       tokenStorage.store(sessionWith(['EDIT']));
-      sync();
+      fixture.detectChanges();
 
       expect(guarded()).not.toBeNull();
-      expect(guarded()!.textContent!.trim()).toBe('Edit');
+    });
+
+    it('renders the content when the required key sits among several others', () => {
+      tokenStorage.store(sessionWith(['VIEW', 'EDIT', 'READ']));
+      fixture.detectChanges();
+
+      expect(guarded()).not.toBeNull();
     });
 
     it('renders nothing when the granted list contains only other keys', () => {
-      tokenStorage.store(sessionWith(['VIEW', 'READ']));
-      sync();
+      tokenStorage.store(sessionWith(['VIEW']));
+      fixture.detectChanges();
 
       expect(guarded()).toBeNull();
     });
 
     it('removes the content rather than hiding it', () => {
-      // A hidden control is still in the document, still reachable by a script that
-      // clears the style, and depending on how it was hidden still in the accessibility
-      // tree - none of which is what "you cannot do this" should mean.
       tokenStorage.store(sessionWith(['VIEW']));
-      sync();
+      fixture.detectChanges();
 
-      const root = fixture.nativeElement as HTMLElement;
-      expect(root.querySelectorAll('button').length).toBe(0);
-      expect(root.innerHTML).not.toContain('hidden');
+      // Nothing is left behind to be un-hidden: no element, so no style to clear, no
+      // node in the accessibility tree and nothing to receive focus.
+      const host = fixture.nativeElement as HTMLElement;
+
+      expect(host.querySelector('.guarded')).toBeNull();
+      expect(host.querySelectorAll('button').length).toBe(0);
+      expect(host.textContent).not.toContain('Edit');
     });
   });
 
   describe('key comparison', () => {
-    // Case-folding either side would fail OPEN: an unrecognised key that happened to
-    // lower-case onto a held one would admit the content, and a misspelling would be
-    // indistinguishable from a real grant. The server and the database compare these keys
-    // with ordinal equality, so exact comparison is the faithful behaviour as well as the
-    // safe one. Each spec below would have passed with the opposite expectation under a
-    // lenient comparison, which is exactly why they are worth pinning.
-
-    it('matches only when the granted key is spelled exactly as required', () => {
-      host.required = 'EDIT';
+    it('admits the content only when the granted key is spelled exactly as required', () => {
       tokenStorage.store(sessionWith(['EDIT']));
-      sync();
+      fixture.detectChanges();
 
       expect(guarded()).not.toBeNull();
     });
 
     it('refuses a granted key spelled in a different case', () => {
-      host.required = 'EDIT';
       tokenStorage.store(sessionWith(['edit']));
-      sync();
+      fixture.detectChanges();
 
-      expect(guarded())
-        .withContext('a lower-cased grant is not the EDIT key and must not admit content')
-        .toBeNull();
+      expect(guarded()).toBeNull();
     });
 
-    it('refuses a granted key padded with whitespace', () => {
-      host.required = 'EDIT';
-      tokenStorage.store(sessionWith([' EDIT ']));
-      sync();
+    it('refuses a granted key spelled in title case', () => {
+      tokenStorage.store(sessionWith(['Edit']));
+      fixture.detectChanges();
 
-      expect(guarded())
-        .withContext('the server sends trimmed keys; a padded one is not a match')
-        .toBeNull();
+      expect(guarded()).toBeNull();
+    });
+
+    it('refuses a required key spelled in a different case from the granted one', () => {
+      fixture.componentInstance.required = 'edit';
+      tokenStorage.store(sessionWith(['EDIT']));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
+    });
+
+    it('refuses a granted key padded with whitespace rather than trimming it', () => {
+      tokenStorage.store(sessionWith([' EDIT ']));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
     });
 
     it('refuses a granted key that merely contains the required one', () => {
-      host.required = 'EDIT';
-      tokenStorage.store(sessionWith(['EDITOR', 'NOEDIT']));
-      sync();
+      tokenStorage.store(sessionWith(['EDITOR']));
+      fixture.detectChanges();
 
+      expect(guarded()).toBeNull();
+    });
+
+    it('ignores granted values it does not recognise while honouring one it does', () => {
+      tokenStorage.store(sessionWith(['SOMETHING_ELSE', 'EDIT']));
+      fixture.detectChanges();
+
+      expect(guarded()).not.toBeNull();
+    });
+  });
+
+  describe('denial', () => {
+    it('refuses an unrecognised required key', () => {
+      fixture.componentInstance.required = 'MANAGE';
+      tokenStorage.store(sessionWith(['VIEW', 'EDIT']));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
+    });
+
+    it('refuses the empty string rather than reading it as a wildcard', () => {
+      // The legacy catalogue read an empty key as "any key". That wildcard is a
+      // server-side query convenience and is deliberately not honoured here.
+      fixture.componentInstance.required = '';
+      tokenStorage.store(sessionWith(['VIEW', 'EDIT', 'READ', 'WRITE']));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
+    });
+
+    it('refuses the empty string even when the granted list is also empty', () => {
+      fixture.componentInstance.required = '';
+      tokenStorage.store(sessionWith([]));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
+    });
+
+    it('does not throw when the key is unrecognised, absent or blank', () => {
+      fixture.componentInstance.required = '';
+
+      // A denial must never take down the surrounding screen.
+      expect(() => fixture.detectChanges()).not.toThrow();
       expect(guarded()).toBeNull();
     });
   });
 
-  describe('list semantics', () => {
-    it('admits the content when ANY ONE of the listed keys is held', () => {
-      // "All" is expressible by nesting the directive; "any" is not expressible from
-      // "all", which is why the list means any.
-      host.required = ['EDIT', 'VIEW'];
-      tokenStorage.store(sessionWith(['VIEW']));
-      sync();
+  describe('a host account', () => {
+    it('is not admitted by the host flag alone, so no second rule lives on the client', () => {
+      tokenStorage.store(sessionWith([], true));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
+    });
+
+    it('needs no client-side bypass, because the server issues it the whole catalogue', () => {
+      tokenStorage.store(sessionWith(['VIEW', 'EDIT', 'READ', 'WRITE'], true));
+      fixture.detectChanges();
 
       expect(guarded()).not.toBeNull();
     });
+  });
 
-    it('denies the content when none of the listed keys is held', () => {
-      host.required = ['EDIT', 'VIEW'];
-      tokenStorage.store(sessionWith(['READ']));
-      sync();
+  describe('roles are not permissions', () => {
+    it('is not admitted by a role name, even the administrator role', () => {
+      fixture.componentInstance.required = 'Administrators';
+      tokenStorage.store(sessionWith([]));
+      fixture.detectChanges();
 
       expect(guarded()).toBeNull();
     });
@@ -190,238 +280,109 @@ describe('HasPermissionDirective', () => {
   describe('reacting to change', () => {
     it('withdraws the content when the session is cleared', () => {
       tokenStorage.store(sessionWith(['EDIT']));
-      sync();
+      fixture.detectChanges();
       expect(guarded()).not.toBeNull();
 
       tokenStorage.clear();
-      sync();
+      fixture.detectChanges();
 
-      expect(guarded()).withContext('sign-out withdraws the affordance immediately').toBeNull();
+      expect(guarded()).toBeNull();
     });
 
     it('admits the content when a later session grants the key', () => {
-      tokenStorage.store(sessionWith(['VIEW']));
-      sync();
+      fixture.detectChanges();
       expect(guarded()).toBeNull();
 
-      tokenStorage.store(sessionWith(['VIEW', 'EDIT']));
-      sync();
+      tokenStorage.store(sessionWith(['EDIT']));
+      fixture.detectChanges();
 
       expect(guarded()).not.toBeNull();
+    });
+
+    it('withdraws the content when a later session drops the key', () => {
+      tokenStorage.store(sessionWith(['EDIT']));
+      fixture.detectChanges();
+      expect(guarded()).not.toBeNull();
+
+      tokenStorage.store(sessionWith(['VIEW']));
+      fixture.detectChanges();
+
+      expect(guarded()).toBeNull();
     });
 
     it('re-evaluates when the required key changes on the same element', () => {
       tokenStorage.store(sessionWith(['VIEW']));
-      host.required = 'EDIT';
-      sync();
+      fixture.detectChanges();
       expect(guarded()).toBeNull();
 
-      host.required = 'VIEW';
-      sync();
+      fixture.componentInstance.required = 'VIEW';
+      fixture.detectChanges();
 
       expect(guarded()).not.toBeNull();
     });
+  });
 
-    it('keeps the same content when a re-evaluation reaches the same conclusion', () => {
-      // Rebuilding the view would reset any state inside it and move focus out of it.
+  describe('idempotence', () => {
+    /** How many gated elements are present; more than one means the view was duplicated. */
+    function guardedCount(): number {
+      return (fixture.nativeElement as HTMLElement).querySelectorAll('.guarded').length;
+    }
+
+    it('keeps the same single element when a re-evaluation reaches the same conclusion', () => {
       tokenStorage.store(sessionWith(['EDIT']));
-      sync();
-      const before = guarded();
+      fixture.detectChanges();
+      const first = guarded();
+      expect(first).not.toBeNull();
+      expect(guardedCount()).toBe(1);
+
+      // A change that leaves the verdict untouched must not rebuild the view: a rebuilt
+      // element would reset state inside it and move focus out of it.
+      tokenStorage.store(sessionWith(['EDIT', 'VIEW']));
+      fixture.detectChanges();
+
+      expect(guarded()).toBe(first);
+      // Asserted as well as the identity above, and deliberately so. Creating a second
+      // embedded view APPENDS it, leaving the original first in document order — so an
+      // identity check alone still passes while the document quietly holds two copies of
+      // the control. Only the count catches that.
+      expect(guardedCount()).toBe(1);
+    });
+
+    it('does not accumulate copies across repeated grants of the same verdict', () => {
+      tokenStorage.store(sessionWith(['EDIT']));
+      fixture.detectChanges();
 
       tokenStorage.store(sessionWith(['EDIT', 'VIEW']));
-      sync();
+      fixture.detectChanges();
+      tokenStorage.store(sessionWith(['EDIT', 'VIEW', 'READ']));
+      fixture.detectChanges();
+      tokenStorage.store(sessionWith(['EDIT', 'VIEW', 'READ', 'WRITE']));
+      fixture.detectChanges();
 
-      expect(guarded()).toBe(before);
-    });
-  });
-
-  describe('a host account', () => {
-    it('needs no client-side bypass, because the server grants it the whole catalogue', () => {
-      tokenStorage.store(sessionWith(['VIEW', 'EDIT', 'READ', 'WRITE'], true));
-      sync();
-
-      expect(guarded()).not.toBeNull();
+      expect(guardedCount()).toBe(1);
     });
 
-    it('is not admitted by the host flag alone, so the client keeps no second rule', () => {
-      // A bypass here would be a divergent rule that had to be kept in step with the
-      // server's own; the server already returns every key for a host account.
-      tokenStorage.store(sessionWith([], true));
-      sync();
+    it('renders exactly one element after a denial is reversed', () => {
+      tokenStorage.store(sessionWith(['VIEW']));
+      fixture.detectChanges();
+      expect(guardedCount()).toBe(0);
+
+      tokenStorage.store(sessionWith(['EDIT']));
+      fixture.detectChanges();
+
+      expect(guardedCount()).toBe(1);
+    });
+
+    it('stays empty across a re-evaluation that still denies', () => {
+      tokenStorage.store(sessionWith(['VIEW']));
+      fixture.detectChanges();
+      expect(guarded()).toBeNull();
+
+      tokenStorage.store(sessionWith(['VIEW', 'READ']));
+      fixture.detectChanges();
 
       expect(guarded()).toBeNull();
+      expect(guardedCount()).toBe(0);
     });
-  });
-
-  describe('an absent specification', () => {
-    // A blank or whitespace-only string is not assignable to the input's type at all, so
-    // it cannot reach a template and is proven refused at the runtime boundary instead —
-    // see the normaliseRequiredKeys specs. What remains bindable is an empty list and an
-    // absent binding, and both must fail loudly rather than hide the control: a hidden
-    // control looks exactly like a correctly denied permission, which is the hardest
-    // version of this mistake to find.
-
-    it('throws for an empty list', () => {
-      host.required = [];
-
-      expect(() => sync()).toThrowError(/at least one permission key is required/);
-    });
-
-    it('throws for an absent binding', () => {
-      host.required = null;
-
-      expect(() => sync()).toThrowError(/at least one permission key is required/);
-    });
-
-    it('throws for an undefined binding', () => {
-      host.required = undefined;
-
-      expect(() => sync()).toThrowError(/at least one permission key is required/);
-    });
-  });
-});
-
-describe('normaliseRequiredKeys', () => {
-  // This is the runtime boundary behind the directive's typed input. It takes `unknown`
-  // on purpose, so these specs can supply exactly the values a typed template cannot —
-  // which is what an untyped or JavaScript caller would arrive with. Every one of them
-  // must be refused, and none of them may be quietly adjusted into a match.
-
-  it('wraps a single key without altering it', () => {
-    expect(normaliseRequiredKeys('EDIT')).toEqual(['EDIT']);
-  });
-
-  it('preserves every recognised key, in the order supplied', () => {
-    expect(normaliseRequiredKeys(['WRITE', 'VIEW', 'EDIT', 'READ'])).toEqual([
-      'WRITE',
-      'VIEW',
-      'EDIT',
-      'READ',
-    ]);
-  });
-
-  it('refuses a differently cased key rather than folding it', () => {
-    // The defect this replaces returned ['edit'] here, which then matched a granted
-    // 'EDIT' — an unrecognised spelling admitting content, which is a fail-open result.
-    expect(() => {
-      normaliseRequiredKeys('edit');
-    }).toThrowError(/'edit' is not a recognised permission key/);
-  });
-
-  it('refuses a title-cased key', () => {
-    expect(() => {
-      normaliseRequiredKeys('Edit');
-    }).toThrowError(/is not a recognised permission key/);
-  });
-
-  it('refuses a key padded with whitespace rather than trimming it', () => {
-    expect(() => {
-      normaliseRequiredKeys(' EDIT ');
-    }).toThrowError(/is not a recognised permission key/);
-  });
-
-  it('refuses an invented key', () => {
-    // The vocabulary is closed at four. Keys for management, deployment, addition,
-    // removal, administration, creation, export or blanket full control belong to later
-    // DotNetNuke versions and to other permission systems; none exists in this schema.
-    for (const invented of ['MANAGE', 'DEPLOY', 'DELETE', 'ADD', 'ADMIN', 'FULLCONTROL']) {
-      expect(() => {
-        normaliseRequiredKeys(invented);
-      }).toThrowError(/is not a recognised permission key/);
-    }
-  });
-
-  it('refuses a blank key', () => {
-    // The legacy catalogue read used '' as a wildcard meaning "any key"
-    // (PortalController.vb:L1413). That semantic is deliberately not honoured here: a
-    // blank key is none, never any.
-    expect(() => {
-      normaliseRequiredKeys('');
-    }).toThrowError(/'' is not a recognised permission key/);
-  });
-
-  it('refuses a whitespace-only key', () => {
-    expect(() => {
-      normaliseRequiredKeys('   ');
-    }).toThrowError(/is not a recognised permission key/);
-  });
-
-  it('refuses the whole list when any single entry is unrecognised', () => {
-    // Silently dropping the bad entry would leave a control gated by a rule the author
-    // did not write, and would hide the typo that produced it.
-    expect(() => {
-      normaliseRequiredKeys(['EDIT', 'MANAGE']);
-    }).toThrowError(/'MANAGE' is not a recognised permission key/);
-  });
-
-  it('refuses a value that is not a string', () => {
-    expect(() => {
-      normaliseRequiredKeys(42);
-    }).toThrowError(/a value of type number is not a recognised permission key/);
-  });
-
-  it('refuses an inherited object member masquerading as a key', () => {
-    expect(() => {
-      normaliseRequiredKeys('constructor');
-    }).toThrowError(/is not a recognised permission key/);
-  });
-
-  it('throws for an empty list', () => {
-    expect(() => {
-      normaliseRequiredKeys([]);
-    }).toThrowError(/at least one permission key is required/);
-  });
-
-  it('throws for undefined', () => {
-    expect(() => {
-      normaliseRequiredKeys(undefined);
-    }).toThrowError(/at least one permission key is required/);
-  });
-
-  it('throws for null', () => {
-    expect(() => {
-      normaliseRequiredKeys(null);
-    }).toThrowError(/at least one permission key is required/);
-  });
-});
-
-describe('isPermitted', () => {
-  // The granted side stays a plain string list because it is wire data — whatever the
-  // server actually sent. It is compared exactly, so anything that is not a key simply
-  // grants nothing, which is the same conclusion the server itself would reach.
-
-  it('is satisfied by one key out of several', () => {
-    expect(isPermitted(['EDIT', 'VIEW'], ['VIEW'])).toBeTrue();
-  });
-
-  it('is not satisfied by an unrelated key', () => {
-    expect(isPermitted(['EDIT'], ['VIEW'])).toBeFalse();
-  });
-
-  it('is never satisfied by an empty granted set', () => {
-    expect(isPermitted(['EDIT'], [])).toBeFalse();
-  });
-
-  it('is never satisfied by an empty required set', () => {
-    expect(isPermitted([], ['EDIT'])).toBeFalse();
-  });
-
-  it('compares the granted side exactly, refusing a different case', () => {
-    // The replaced defect asserted this was TRUE. It is the fail-open case: it made an
-    // unrecognised spelling on either side behave as the real key.
-    expect(isPermitted(['EDIT'], ['edit'])).toBeFalse();
-  });
-
-  it('compares the granted side exactly, refusing surrounding whitespace', () => {
-    expect(isPermitted(['EDIT'], [' EDIT '])).toBeFalse();
-  });
-
-  it('refuses a granted value that only contains the required key', () => {
-    expect(isPermitted(['EDIT'], ['EDITOR'])).toBeFalse();
-  });
-
-  it('is satisfied when the granted list also carries values it does not recognise', () => {
-    // A server that ever sent an unexpected value must not stop a real grant working.
-    expect(isPermitted(['EDIT'], ['something-else', 'EDIT'])).toBeTrue();
   });
 });

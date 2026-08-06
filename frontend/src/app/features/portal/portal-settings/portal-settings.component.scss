@@ -29,8 +29,7 @@
 //      .portal-settings__intro
 //      .portal-settings__section
 //      .portal-settings__grid
-//      .portal-settings__field
-//      .portal-settings__label
+//      .portal-settings__grid > app-form-field
 //      .portal-settings__control
 //      .portal-settings__control--medium
 //      .portal-settings__control--narrow
@@ -41,10 +40,12 @@
 //  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
 //  carries nine shared components — page header, data table, pagination, form
 //  field, search input, confirm dialog, error banner, loading spinner and empty
-//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
-//  and the wire models under `core/models/`. It carries no portal.service.ts and
-//  no signal store, so this component performs no HTTP: its data arrives through
-//  inputs and its intent leaves through outputs. That seam is what makes every
+//  state — plus the `hasPermission` directive. This screen consumes five of them
+//  and adds no tenth: the tab strip and the disclosures are authored in the paired
+//  template and styled here, because this is the only screen that needs either.
+//  Its data arrives from the portal signal store and its writes go back through
+//  the same store, so no transport type is reachable from the component and no
+//  styling below depends on where a value came from. That seam is what makes every
 //  branch below directly testable from the paired specification, with no HTTP
 //  testing controller involved.
 // =============================================================================
@@ -151,9 +152,25 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // the bottom edge now belongs exclusively to selection semantics, which is what
 // the resting state already reserves it for, so a hovered tab tints three edges
 // and a selected tab owns the fourth. The two states compose instead of competing.
-.portal-settings__tab:enabled:hover {
-  border-inline-color: var(--color-primary-hover);
-  border-block-start-color: var(--color-primary-hover);
+// HOVER IS PRESENT AND GUARDED. A bare hover rule is applied on tap on a touch
+// device and then left applied until something else is tapped, so a tab a reader
+// merely touched would keep reading as hovered — and on a strip whose selected tab
+// is also distinguished by colour, a stuck hover is indistinguishable from a state
+// the reader did not choose. The guard comes from the shared mixin, which is the
+// only file in this workspace permitted a media feature query; writing the query
+// here, or leaving the rule unguarded, are both forbidden. The mixin attaches
+// `:hover` to the parent, so the emitted selector, its specificity and its source
+// position are all exactly what they were before the guard — the per-edge
+// invariant recorded above is therefore untouched.
+//
+// The tint is additive decoration only. Nothing an interaction depends on lives
+// inside the guard: the focus ring and the ARIA selected state carry the affordance
+// for a reader whose device cannot hover.
+.portal-settings__tab:enabled {
+  @include mx.hover {
+    border-inline-color: var(--color-primary-hover);
+    border-block-start-color: var(--color-primary-hover);
+  }
 }
 
 // Selected state, keyed on the ARIA attribute rather than on a presentational
@@ -165,10 +182,15 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // carries the state on its own for a reader with a colour-vision deficiency. Tab
 // ink stays --color-primary, which measures 8.24:1 on this tint.
 //
-// Ordered AFTER the hover rule deliberately. The two have equal specificity, so
-// source order decides: this way hovering the selected tab tints its remaining
-// edges without overwriting the bottom edge that marks the selection, and the
-// state survives the pointer being over it.
+// Ordered AFTER the hover rule, though it no longer depends on that ordering, and
+// the distinction is worth stating because it used to. The two rules were once of
+// equal weight and source order alone kept the selection marker alive; adding
+// `:enabled` to the hover rule made it the heavier of the two, so ordering could no
+// longer be the guarantee. The hover rule was narrowed to name only the inline and
+// block-start edges for exactly that reason, which leaves the bottom edge — the
+// selection marker — untouched by construction whatever the weights or the order.
+// Hovering the selected tab therefore tints its remaining edges and the selection
+// survives the pointer, and it would still do so if either rule moved.
 .portal-settings__tab[aria-selected='true'] {
   font-weight: var(--font-weight-bold);
   background-color: var(--color-selected);
@@ -303,9 +325,17 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // these states, and an affordance that responds to nothing is a worse outcome than
 // the static text it replaced. Net-new by necessity, drawn wholly from the shared
 // vocabulary rather than invented, and recorded here as a deliberate divergence.
-.portal-settings__toggle:not([disabled]):not([aria-disabled='true']):hover {
-  color: var(--color-primary-hover);
-  border-block-end-color: var(--color-primary-hover);
+//
+// GUARDED for the reason the tab rule records: an unguarded hover sticks to the
+// last-tapped element on a touch device, and the guard lives in the shared mixin
+// because that partial is the only file permitted a media feature query. The
+// emitted selector and its specificity are unchanged by the wrapping, so the press
+// rule below still composes with this one exactly as it did.
+.portal-settings__toggle:not([disabled]):not([aria-disabled='true']) {
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    border-block-end-color: var(--color-primary-hover);
+  }
 }
 
 // Press. Distinct from hover by channel: hover moves the ink and the rule beneath
@@ -358,28 +388,22 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   box-sizing: border-box;
 }
 
-// One column by default and two from the medium step up, which is the mobile-first
-// direction the shared breakpoint mixins declare. The label track stands in for the
-// measured width="150" label cells; the control track absorbs the remainder, so the
-// 325 and 300 pixel control groups both simply fill it.
-.portal-settings__field {
-  display: grid;
-  gap: var(--space-1);
-  align-items: start;
-
-  @include mx.respond-above('md') {
-    grid-template-columns: var(--grid-track-label) var(--grid-track-fluid);
-    column-gap: var(--space-4);
-  }
-}
-
-// The label cell also carries the field's help block, which is where the legacy
-// `pl*.Help` strings hung. Long labels wrap inside the fixed track exactly as they
-// did inside the fixed cell rather than widening it.
-.portal-settings__label {
-  display: grid;
-  gap: var(--space-1);
-  overflow-wrap: break-word;
+// The labelled field itself is the shared field wrapper, which owns its own label row,
+// help disclosure and message region — the whole of `Website/controls/labelcontrol.ascx`
+// in one place. Nothing here reaches inside it: the only declaration is on its own host
+// box, positioning it as a row of this grid, which is a parent's business. Its interior
+// keeps the style scoping of the component that declares it, and neither descendant
+// piercing nor disabling that scoping is acceptable.
+//
+// MIGRATION: the legacy fields sat in a two-column table, a width="150" label cell beside
+//   a 325 or 300 pixel control cell. The shared wrapper stacks its label above its control
+//   instead, and that difference is deliberate: design-system compliance ranks above visual
+//   continuity, so the shared member's own layout decision stands rather than being
+//   overridden here. The measured control widths survive as the caps below, so the controls
+//   themselves are the sizes they were.
+.portal-settings__grid > app-form-field {
+  display: block;
+  min-inline-size: 0;
 }
 
 // A grid rather than a plain block so the control it holds stretches to the track

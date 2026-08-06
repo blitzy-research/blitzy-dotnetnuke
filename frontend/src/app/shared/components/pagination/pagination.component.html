@@ -1,11 +1,17 @@
 @if (isNavigable) {
   <!--
-    A `nav` landmark with an accessible name, so a person using assistive technology
-    can jump to the pager and knows what it is. The name comes from an aria-label
-    rather than a visible heading, because a visible "Pagination" heading is not part
-    of the migrated design.
+    A NAMED GROUP rather than a `nav` landmark. The controls still carry an accessible
+    name, so a person using assistive technology knows what they are, but the element
+    is deliberately NOT a landmark: semantic landmarks belong to the application shell
+    in `layout/**`, which already renders the single `nav` for the site's navigation.
+    A second `nav` here would announce a duplicate landmark and add a spurious entry to
+    the landmark list on every list screen. `role="group"` with an accessible name is
+    the correct pattern for a labelled cluster of related controls.
+
+    The name comes from an aria-label rather than a visible heading, because a visible
+    "Pagination" heading is not part of the migrated design.
   -->
-  <nav class="pagination" [attr.aria-label]="labels.region">
+  <div class="pagination" role="group" [attr.aria-label]="labels.region">
     <!--
       The range summary is a live region. Page changes replace the list contents without
       moving focus, so without an announcement a screen-reader user has no signal that
@@ -73,5 +79,5 @@
         <span aria-hidden="true">{{ labels.lastSymbol }}</span>
       </button>
     </div>
-  </nav>
+  </div>
 }

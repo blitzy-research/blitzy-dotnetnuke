@@ -1,0 +1,166 @@
+<!--
+  THE SCREEN THAT EXPORTS A MODULE'S CONTENT. Replaces `Website/admin/Modules/export.ascx`, whose seventeen
+  lines held a layout table with two rows - a folder picker and a filename box - above a paragraph with two
+  link buttons in it.
+
+  MARKUP CONTRACT. The paired stylesheet states the class vocabulary this template may emit, and states why
+  it is binding: emulated view encapsulation rewrites every selector with this component's content
+  attribute, so a class name that drifts does not error - it silently matches nothing and the screen renders
+  unstyled. The vocabulary is exactly `.module-export`, `.module-export__form` and `.module-export__actions`,
+  and nothing below invents a fourth name. The two live regions therefore carry NO class and take their
+  appearance from the global stylesheet, which is the correct outcome rather than a compromise: a class the
+  stylesheet does not know would look styled in the source and be unstyled on the screen.
+
+  MIGRATION: THE LAYOUT TABLE IS GONE. `export.ascx:L4` opened a fixed-width `table` used purely for
+  positioning, carrying a summary attribute that described a completely different screen - "Edit Links Design
+  Table" - because the markup was copied from one. A table used for layout announces rows and cells that do
+  not exist as data, and a summary that describes another screen is worse than none. Positioning is the
+  stylesheet's flow layout here, and the fields are a real form.
+
+  MIGRATION: THERE IS A FORM ELEMENT NOW, WHERE THERE WAS NONE. The legacy markup contained no form of its
+  own - the enclosing page supplied one for the whole screen and every control posted the entire page back.
+  A real form makes the confirming action the field's default action, so the Enter key submits from within
+  the field, which the legacy postback model gave for free and a collection of buttons would not.
+
+  MIGRATION: EVERY STRING BELOW IS INTERPOLATED AS PLAIN TEXT. The wording originates in legacy resource
+  files, of which 76 entries across the in-scope set carry an HTML tag and four carry a live script element -
+  and this screen's own help entry carries a heading and a paragraph. Nothing here is bound as markup: there
+  is no trusted-markup binding, no sanitiser and no pre-escaped member anywhere in this component. Where the
+  legacy help wording genuinely needed a heading and a paragraph, the heading is the page header's own
+  element and the paragraph is its subtitle - real markup rather than resurrected resource markup.
+-->
+<section class="module-export">
+  <!--
+    The page's single `h1` and its supporting sentence, both already resolved. Bound as properties rather
+    than written as static attributes, which matters for the title: a static attribute would also land on
+    the rendered host as a global `title`, producing a native tooltip and a competing accessible name. The
+    shared component defends against that itself, and a property binding does not create the situation in
+    the first place.
+
+    No content is projected into its action slot. The two actions belong with the field they act on, in the
+    actions block at the foot of the form, which is where the legacy screen put them too.
+  -->
+  <app-page-header [title]="title" [subtitle]="subtitle" />
+
+  <!--
+    Progress. Two distinct waits, announced distinctly, because they mean different things to an operator:
+    the module is being read, or its content is being exported. Only one can be in flight at a time.
+  -->
+  @if (moduleLoading()) {
+    <app-loading-spinner size="small" [label]="loadingModuleLabel" />
+  } @else if (exporting()) {
+    <app-loading-spinner size="small" [label]="exportingLabel" />
+  }
+
+  <!--
+    Structured refusals from the API, including the one whose sentence this screen supplies - the component
+    substitutes that sentence into the document rather than rendering it separately, so the severity
+    treatment, the problem title and the support reference all survive. The banner resolves severity, the
+    sentence, the per-field messages and the support reference itself, and renders nothing at all when there
+    is no document, so it needs no guard here. It classifies a refusal as a warning rather than a fault,
+    which is why a denied request does not arrive painted as an error.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  <!--
+    The two outcomes for which no problem document exists at all: a document that came back empty on an
+    otherwise successful response, and an address that resolved to no module.
+
+    `role="status"` makes this a polite live region, so the sentence is announced without interrupting and
+    without moving focus. The region is rendered only when it has something to say rather than kept present
+    and emptied, which is the convention the shared form field already establishes and documents for its own
+    message region: removed rather than emptied, so it neither occupies space nor lingers in the
+    accessibility tree.
+  -->
+  @if (notice(); as message) {
+    <p role="status">{{ message }}</p>
+  }
+
+  <!--
+    `novalidate` suppresses the browser's own validation bubbles so that the shared form field is the single
+    place a message about this field appears. The rules themselves stay on the control, where they are
+    declared once.
+  -->
+  <form class="module-export__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+    <!--
+      The filename field. The shared component owns the label, the label association, the help disclosure and
+      the message region entirely - including the help affordance, which it makes keyboard-reachable and
+      properly named, reversing three defects in the legacy label control. None of that is re-implemented
+      here, and the help wording is the legacy entry's own.
+
+      MIGRATION: THE FOLDER PICKER THAT SAT ABOVE THIS FIELD IS GONE. `export.ascx:L6-L7` declared a labelled
+      drop-down list of server folders, filled from the folders the operator could read and write and opened
+      on a placeholder. No folder-listing, file-listing, upload or disk-space endpoint exists in this API, so
+      there is nothing to fill such a list from and nowhere for a chosen folder to write to. The document is
+      downloaded instead. The filename field survives because it is filesystem-independent and the legacy
+      screen prepopulated it.
+    -->
+    <app-form-field
+      [label]="fileLabel"
+      [for]="fileControlId"
+      [required]="true"
+      [help]="fileHelp"
+      [error]="fileNameError"
+    >
+      <!--
+        A bare input is correct here rather than a shortfall: the shared field renders no control of its own
+        and exposes an unnamed slot precisely so the caller projects the control it needs. Its `id` matches
+        the `for` above, which is what associates the label with it.
+
+        `maxlength` reproduces the attribute the legacy input carried, so the browser refuses the
+        two-hundred-and-first character exactly as it did before. The validator behind it is the second line
+        of defence for a value that arrives by some other route.
+
+        `autocomplete="off"` because a document name is not a personal detail a browser should be offering
+        from another form, and `spellcheck="false"` because a filename is not prose.
+
+        `aria-invalid` carries the failure on the CONTROL, which the message region alone cannot. The shared
+        field announces the message once, assertively, at the moment it appears - but a reader who arrives at
+        this input later, or returns to it after the announcement has passed, would otherwise find a field
+        that gives no indication of being in error. Bound through `attr.` and only while the operator has
+        engaged with the field, so an untouched empty field is not pre-emptively marked wrong. It is
+        invisible, changing no rendered pixel, and it matches the binding the sibling settings screen already
+        uses on its own fields.
+      -->
+      <input
+        [id]="fileControlId"
+        type="text"
+        formControlName="fileName"
+        [maxlength]="fileNameMaxLength"
+        autocomplete="off"
+        spellcheck="false"
+        [attr.aria-invalid]="
+          (form.controls.fileName.touched || form.controls.fileName.dirty) &&
+          form.controls.fileName.invalid
+        "
+      />
+    </app-form-field>
+
+    <div class="module-export__actions">
+      <!--
+        MIGRATION: BOTH ACTIONS ARE REAL BUTTONS. `export.ascx:L15-L16` declared them as link buttons, which
+        render as anchors - elements that navigate rather than act, are announced as links, and are not
+        activated by the space key. As buttons they are properly operable from the keyboard, and the change
+        costs nothing visually.
+
+        MIGRATION: D10 - the confirming action's label is `Export`, taken from the resource entry
+        `cmdExport.Text`, and NOT the `text="Import"` written on the element at `export.ascx:L15`. That
+        attribute is a copy-paste defect from the near-identical import screen, and the legacy framework
+        overwrote it with the resource value at run time, so an operator never saw it. The corrected label is
+        the behaviour that always applied.
+
+        Disabled only while a request is in flight, and while this address names no module. Neither is a
+        portability judgement: the attempt is deliberately always allowed for a module that may not support
+        exporting, because the server owns that answer and says so in words.
+      -->
+      <button type="submit" [disabled]="exporting() || !addressesModule">{{ exportLabel }}</button>
+
+      <!--
+        MIGRATION: `type="button"` is the faithful translation of `causesvalidation="False"` on
+        `export.ascx:L16`. Stated explicitly so this action can never submit the form it sits in: it neither
+        validates nor saves, and abandons a half-typed filename silently, exactly as the legacy action did.
+      -->
+      <button type="button" (click)="cancel()">{{ cancelLabel }}</button>
+    </div>
+  </form>
+</section>

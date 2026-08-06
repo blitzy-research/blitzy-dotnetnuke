@@ -1,8 +1,12 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
+import { provideRouter, Router } from '@angular/router';
 
 import { ModuleSettingsComponent } from './module-settings.component';
 import { MODULE_VISIBILITY, type UpdateModuleRequest } from '../../../core/models/module.model';
+import { NotificationService } from '../../../core/services/notification.service';
 import type { ModuleSettingsViewModel } from './module-settings.view-model';
 
 /**
@@ -243,7 +247,16 @@ describe('ModuleSettingsComponent', () => {
   }
 
   beforeEach(async () => {
-    await TestBed.configureTestingModule({ imports: [ModuleSettingsComponent] }).compileComponents();
+    // The screen orchestrates its own reads and writes through `core/state/module.store.ts`, which reaches
+    // `ModuleService` and `TabService` and therefore `HttpClient`. The testing backend is supplied so the
+    // graph resolves and NO REQUEST REACHES A NETWORK: every call the component issues is parked on the
+    // controller and simply never answered, which leaves the store's own signals at their initial values and
+    // lets these specs drive the screen through its inputs exactly as before. `provideRouter([])` satisfies
+    // the return-to-listing navigation the cancel and delete paths perform.
+    await TestBed.configureTestingModule({
+      imports: [ModuleSettingsComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+    }).compileComponents();
 
     fixture = TestBed.createComponent(ModuleSettingsComponent);
     component = fixture.componentInstance;
@@ -256,6 +269,68 @@ describe('ModuleSettingsComponent', () => {
 
   it('creates', () => {
     expect(component).toBeTruthy();
+  });
+
+  describe('router input binding', () => {
+    /**
+     * REGRESSION GUARD FOR A REAL, MEASURED PRODUCTION FAILURE. Do not weaken or delete this.
+     *
+     * `withComponentInputBinding()` does not bind only the inputs a route names. On every activation it
+     * reflects the component's inputs and calls `setInput(templateName, data[templateName])` for EVERY one,
+     * where `data` is the merged query parameters, path parameters and route data. An input whose name is not
+     * a key of that object receives `undefined` - it is not skipped and it does not keep its initialiser.
+     *
+     * This screen's route is `modules/:moduleId/settings`, so `moduleId` is the only name the router can
+     * supply and all seven presentation inputs arrive as `undefined`. When the setters did not accept it the
+     * screen threw out of `activateRoutes`, then threw again on every change-detection pass, and rendered an
+     * empty form skeleton with no visible error at all. `TestBed` never runs the router's input binder, so
+     * nothing else in this file can catch it - this test reproduces the binder's behaviour directly.
+     */
+    it('survives the router assigning undefined to every input it cannot supply', () => {
+      const routerAssigned: readonly string[] = [
+        'heading',
+        'settings',
+        'loading',
+        'saving',
+        'canDelete',
+        'pages',
+        'canManageAllPages',
+        'tabModuleId',
+      ];
+
+      expect(() => {
+        for (const name of routerAssigned) {
+          fixture.componentRef.setInput(name, undefined);
+        }
+        fixture.componentRef.setInput('moduleId', '0');
+        fixture.detectChanges();
+      }).not.toThrow();
+
+      // The heading must stay non-blank: the shared page header refuses a blank title outright.
+      expect(component.heading).toBe('Module Settings');
+
+      // The absent case must be exactly one value, because the template dereferences it.
+      expect(component.settings).toBeNull();
+
+      // `undefined` must not be mistaken for a caller pinning these flags: each must fall through to the
+      // store. `loading` is therefore TRUE here - the reads the route just triggered are still in flight,
+      // which is exactly the value the store reports and the value the screen should show.
+      expect(component.loading)
+        .withContext('an unpinned loading flag must follow the store, which is fetching')
+        .toBeTrue();
+      expect(component.saving).toBeFalse();
+      expect(component.canDelete).toBeFalse();
+      expect(component.pages).toEqual([]);
+
+      // `'0'` is a REAL module identifier, and the string form the router supplies must coerce to it.
+      expect(component.moduleId).toBe(0);
+      expect(component.tabModuleId).toBeUndefined();
+
+      // And the page picker must NOT be locked shut, which is what treating `undefined` as an assignment did.
+      expect(component['form'].controls.tabId.disabled)
+        .withContext('an undefined privilege input must not lock the page picker on every routed visit')
+        .toBeFalse();
+    });
   });
 
   describe('shell states', () => {
@@ -588,13 +663,53 @@ describe('ModuleSettingsComponent', () => {
       open('pageSettings');
     });
 
-    it('refuses a negative cache period with the legacy message', () => {
-      type('cacheTime', '-1');
+    it('refuses a non-integer cache period with the legacy message', () => {
+      // The legacy rule is `Operator="DataTypeCheck" Type="Integer"` (modulesettings.ascx L172), which checks
+      // the TYPE and nothing else, so the value tested here is one that is not an integer at all.
+      type('cacheTime', 'soon');
       component['form'].controls.cacheTime.markAsTouched();
       fixture.detectChanges();
 
       expect(component['form'].controls.cacheTime.valid).toBeFalse();
       expect(messageFor('cacheTime')).toBe('Invalid Cache Time');
+    });
+
+    it('accepts a negative cache period, because the legacy data-type check accepted one', () => {
+      // A deliberate parity assertion rather than an oversight. `Type="Integer"` imposed no lower bound, so
+      // the legacy screen accepted -1 and stored it. That is a latent legacy defect, and adding a bound here
+      // would be exactly the opportunistic optimisation the migration discipline forbids - it would reject
+      // input the legacy screen accepted. The defect is annotated on `integerDataTypeCheck` instead.
+      type('cacheTime', '-1');
+      component['form'].controls.cacheTime.markAsTouched();
+      fixture.detectChanges();
+
+      expect(component['form'].controls.cacheTime.valid).toBeTrue();
+      expect(messageFor('cacheTime')).toBeNull();
+    });
+
+    it('refuses a start date that is not a date, with the legacy message', () => {
+      // valtxtStartDate (modulesettings.ascx L78), Operator="DataTypeCheck" Type="Date". The id/resource-key
+      // mismatch in the source - id `valtxtStartDate`, key `valStartDate.` - is reproduced as wording only.
+      // The two date fields sit in the region that starts CLOSED (isexpanded="False"), so it is opened first;
+      // the surrounding block opens only pageSettings.
+      openEverything();
+      component['form'].controls.startDate.setValue('2024-02-31');
+      component['form'].controls.startDate.markAsTouched();
+      fixture.detectChanges();
+
+      expect(component['form'].controls.startDate.valid).toBeFalse();
+      expect(messageFor('startDate')).toBe('Invalid Start Date');
+    });
+
+    it('refuses an end date that is not a date, with the legacy message', () => {
+      // valtxtEndDate (modulesettings.ascx L88), Operator="DataTypeCheck" Type="Date".
+      openEverything();
+      component['form'].controls.endDate.setValue('not-a-date');
+      component['form'].controls.endDate.markAsTouched();
+      fixture.detectChanges();
+
+      expect(component['form'].controls.endDate.valid).toBeFalse();
+      expect(messageFor('endDate')).toBe('Invalid End Date');
     });
 
     it('advertises each column bound through maxlength', () => {
@@ -606,7 +721,8 @@ describe('ModuleSettingsComponent', () => {
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      type('cacheTime', '-1');
+      // A value that fails the integer data-type check. `-1` would NOT: see the parity assertion above.
+      type('cacheTime', 'soon');
       submit();
 
       expect(emitted.length).toBe(0);
@@ -820,6 +936,151 @@ describe('ModuleSettingsComponent', () => {
       setInput('saving', true);
 
       expect(actionButton('Update')!.disabled).toBeTrue();
+    });
+  });
+
+  describe('submission conclusion', () => {
+    /**
+     * MIGRATION: the legacy redirect at `ModuleSettings.ascx.vb:L421` -
+     * `Response.Redirect(NavigateURL(), True)`, commented "Navigate back to admin page" - sat INSIDE the
+     * `If Page.IsValid Then` / `Try` block AFTER `UpdateModule` had returned, so a postback that threw fell
+     * through to `Catch` and never redirected. These two specs pin both halves of that: a settled write leaves
+     * for the listing and announces, a rejected one stays put so the per-field messages remain reachable.
+     *
+     * Driven through the ROUTE path rather than through the seed input, because that is the path the
+     * conclusion observer serves: a host that pins `settings` owns its own navigation and is handed the `save`
+     * output instead.
+     */
+    const ECHO = {
+      moduleId: 0,
+      tabModuleId: 31,
+      tabId: 0,
+      portalId: 0,
+      moduleDefId: 14,
+      moduleTitle: 'Latest News',
+      allTabs: true,
+      header: 'Header markup',
+      footer: 'Footer markup',
+      startDate: null,
+      endDate: null,
+      inheritViewPermissions: false,
+      isDeleted: false,
+      moduleOrder: 6,
+      cacheTime: 0,
+      iconFile: 'module.gif',
+      visibility: MODULE_VISIBILITY.none,
+      displayTitle: false,
+      friendlyName: 'Announcements',
+      moduleName: 'DNN_Announcements',
+      description: null,
+      version: '01.00.00',
+      desktopModuleId: 3,
+    };
+
+    let http: HttpTestingController;
+    let navigate: jasmine.Spy;
+    let notify: jasmine.Spy;
+
+    /**
+     * Answers every outstanding request for one method and url.
+     *
+     * @param method The HTTP method to match.
+     * @param url The exact url to match.
+     * @param data The payload to place in the response envelope.
+     * @returns How many requests were answered.
+     */
+    function answer(method: string, url: string, data: unknown): number {
+      const matched = http.match((candidate) => candidate.method === method && candidate.url === url);
+
+      for (const request of matched) {
+        request.flush({ data });
+      }
+
+      fixture.detectChanges();
+
+      return matched.length;
+    }
+
+    /** Answers whatever is still outstanding, which is the store's own follow-up reads and not this screen's. */
+    function drain(): void {
+      for (const request of http.match(() => true)) {
+        const url = request.request.url;
+        const body = url.includes('/tabs') || url.includes('module-definitions') ? [] : null;
+        request.flush({ data: body });
+      }
+
+      fixture.detectChanges();
+    }
+
+    beforeEach(() => {
+      http = TestBed.inject(HttpTestingController);
+      navigate = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
+      notify = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
+
+      // Unpinned, so the picker follows the tenant's pages exactly as the route path leaves it.
+      setInput('pages', null);
+      fixture.componentRef.setInput('moduleId', '0');
+      fixture.detectChanges();
+
+      answer('GET', '/api/v1/modules/0', ECHO);
+      answer('GET', '/api/v1/modules/0/settings', {
+        moduleId: 0,
+        tabModuleId: 31,
+        moduleSettings: {},
+        tabModuleSettings: {},
+      });
+      answer('GET', '/api/v1/module-definitions/14', {
+        moduleDefId: 14,
+        friendlyName: 'Announcements',
+        desktopModuleId: 3,
+        defaultCacheTime: 0,
+        moduleName: 'DNN_Announcements',
+        description: null,
+        version: '01.00.00',
+        isPremium: false,
+        isAdmin: false,
+        isPortable: true,
+      });
+      answer('GET', '/api/v1/portals/0/tabs', []);
+    });
+
+    it('announces and returns to the listing once both writes have settled', () => {
+      submit();
+
+      // Nothing is claimed while either write is still outstanding. The legacy redirect ran after the update
+      // had returned, never before it, so an optimistic announcement would not be the same behaviour.
+      expect(notify).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+
+      expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
+
+      // Still outstanding: the settings bag. One settled write is not a settled submission.
+      expect(navigate).not.toHaveBeenCalled();
+
+      expect(answer('PUT', '/api/v1/modules/0/settings', null)).toBe(1);
+
+      expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+      expect(navigate).toHaveBeenCalledWith(['/modules']);
+
+      drain();
+    });
+
+    it('stays on the screen when a write is rejected, so the messages remain reachable', () => {
+      submit();
+
+      for (const request of http.match((candidate) => candidate.method === 'PUT')) {
+        request.flush(
+          { type: 'about:blank', title: 'Bad Request', status: 400, detail: null, errors: {} },
+          { status: 400, statusText: 'Bad Request' },
+        );
+      }
+
+      fixture.detectChanges();
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalledWith('success', jasmine.any(String));
+
+      drain();
     });
   });
 

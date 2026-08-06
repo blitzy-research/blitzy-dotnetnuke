@@ -1,0 +1,1035 @@
+/**
+ * The module content import screen, mounted at `/modules/import`.
+ *
+ * Replaces `Website/admin/Modules/Import.ascx` and its 245-line code-behind
+ * `Website/admin/Modules/Import.ascx.vb`. The legacy screen offered two cascading server-side
+ * dropdowns — a folder picker and a file picker — over documents that already had to be sitting on the
+ * web server's disk, and posted back to read one of them with `File.OpenText`. Neither picker survives,
+ * because the migrated API exposes no folder listing, no file listing, no upload browse and no
+ * disk-space resource; the operator now chooses a document from their OWN machine and its text travels
+ * inside the request body. The full reasoning is in the annotations below.
+ *
+ * WHAT THIS CLASS OWNS
+ * -------------------
+ * The form, the file-to-text read, and the routing of the server's refusals onto the field they belong
+ * beside. It owns no transport and no state slice: the request is issued by `ModuleStore`, whose
+ * `importing`, `importCompleted` and `failure` signals this screen renders rather than duplicating.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO
+ * -------------------------------
+ * It does not parse the document, does not read its declared type, does not unwrap its root element and
+ * does not decide whether the chosen module can accept it. Every one of those was legacy client-side
+ * work (`Import.ascx.vb` L188-L200) and every one of them is now the server's, so reproducing any of it
+ * here would put one decision in two places and let the two disagree.
+ *
+ * @see ../../../core/state/module.store.ts for the command and the state slice
+ * @see ../../../core/models/module.model.ts for the request contract
+ */
+
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  computed,
+  effect,
+  inject,
+  signal,
+} from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Router } from '@angular/router';
+
+import { ModuleStore } from '../../../core/state/module.store';
+import { NotificationService } from '../../../core/services/notification.service';
+import { conflictMessage, fieldErrorMessage } from '../../../core/utils/form-errors.util';
+import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
+import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
+import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
+import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
+import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+
+import type { ModuleImportRequest, ModuleListItem } from '../../../core/models/module.model';
+import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type { ModuleStoreOperation } from '../../../core/state/module.store';
+
+// =======================================================================================
+// SCREEN-LOCAL SHAPES
+// =======================================================================================
+
+/**
+ * The typed shape of this screen's form.
+ *
+ * Declared here rather than in a shared location on purpose. A form's shape is a property of ONE
+ * screen — the sibling settings, export and list screens each carry their own — so a shared
+ * declaration would couple four screens that have no reason to move together. There is no barrel
+ * inside this feature folder and no sibling's interface is imported.
+ *
+ * Both controls are constructed non-nullable, so `form.value` is fully typed rather than a
+ * `Partial<…>` and `reset()` returns each control to its declared initial value instead of to `null`.
+ * The declared TYPE still admits `null`, because `null` is what "nothing chosen yet" honestly is on
+ * both fields — see the note on {@link ModuleImportComponent.form}.
+ */
+interface ModuleImportFormModel {
+  /**
+   * The module the document will be loaded into.
+   *
+   * `number | null` rather than `number`, and the distinction is load-bearing:
+   * `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so ZERO names a real module and cannot double as
+   * "nothing selected". `null` is the only value free to mean that.
+   */
+  moduleId: FormControl<number | null>;
+
+  /**
+   * The document the operator chose from their own machine.
+   *
+   * Holds the browser's file handle rather than its text: the text is read once, at submit, so that
+   * choosing a document costs nothing and re-choosing does not read the previous one for nothing.
+   */
+  file: FormControl<File | null>;
+}
+
+/**
+ * One selectable module, reduced to what a picker needs.
+ *
+ * A screen-local view shape rather than a transported one. It is deliberately not the listing
+ * contract: a picker needs one identifier and one readable label, and passing the whole 17-member
+ * listing row into a template would invite it to render facts this screen has no business showing.
+ */
+interface ModuleImportChoice {
+  /** The module identifier, carried through verbatim. Zero and minus one are both real values here. */
+  readonly value: number;
+
+  /** Text guaranteed to be visible, so the option is always selectable. Never blank. */
+  readonly label: string;
+}
+
+// =======================================================================================
+// WORDING
+// =======================================================================================
+//
+// Every string a person reads on this screen is authored here as a named constant, so that a
+// specification can assert the rendered text against the same value the screen supplies instead of
+// restating it and letting the two drift.
+//
+// MIGRATION: LOCALISATION IS NOT PORTED, SO THE RESOURCE FILE IS A SOURCE OF WORDING RATHER THAN A
+//   RUNTIME. `Website/admin/Modules/App_LocalResources/Import.ascx.resx` holds exactly twelve
+//   entries and the legacy screen resolved each through the framework's localisation API at render
+//   time. The translation runtime is outside the pinned dependency set, so the wording below is taken
+//   from the resource VALUES and authored directly. No localisation call is reproduced.
+//
+// MIGRATION: RESOURCE TEXT IS UNTRUSTED MARKUP AND IS RE-AUTHORED AS TEXT. Across the in-scope
+//   resource files 76 values carry an HTML tag and four carry a script element - one of them a live
+//   remote-sourced advertising block in the portal settings resources - so binding any resource value
+//   as markup would be an injection vector rather than a formatting convenience. This screen's own
+//   `ModuleHelp.Text` is `'<h1>Import Module</h1><p>Administrators can import content for the
+//   specified module.</p>'`; its heading is already the page title, so only its sentence is carried
+//   over, as plain text. The same rule governs the chosen document's own name and anything the server
+//   echoes back: both are untrusted input, both are bound as text, and neither is ever markup.
+
+/** The screen title. Taken from `ControlTitle_importmodule.Text`. */
+const IMPORT_TITLE = 'Import Module';
+
+/** The lead sentence, re-authored from the paragraph inside `ModuleHelp.Text`. */
+const IMPORT_SUBTITLE = 'Administrators can import content for the specified module.';
+
+/**
+ * The module field's label.
+ *
+ * MIGRATION: NET-NEW, BECAUSE THE FIELD IS NET-NEW. The legacy screen had no module field at all: it
+ *   read its target out of band, from a request value, at `Import.ascx.vb` L67-L68. The migrated
+ *   route carries no parameter, so the target is chosen here instead — see the note on
+ *   {@link ModuleImportComponent.moduleChoices}.
+ */
+const MODULE_FIELD_LABEL = 'Module';
+
+/** Guidance for the module field. Net-new alongside the field itself. */
+const MODULE_FIELD_HELP = 'Select the module to import content into';
+
+/** The document field's label. Taken from `plFile.Text`. */
+const FILE_FIELD_LABEL = 'File';
+
+/** Guidance for the document field. Taken from `plFile.Help`. */
+const FILE_FIELD_HELP = 'Select the import file';
+
+/** The submit action's label. Taken from `cmdImport.Text`. */
+const IMPORT_ACTION_LABEL = 'Import';
+
+/**
+ * The abandon action's label.
+ *
+ * `import.ascx` L16 carries `resourcekey="cmdCancel"`, but `cmdCancel.Text` is NOT among the twelve
+ * entries of this screen's own resource file: it resolves against the shared global resources, where
+ * `cmdCancel.Text` is `'Cancel'`. That is a fifth resource-key convention beyond the four previously
+ * catalogued — a local key that falls through to the global table — and it is reported rather than
+ * assumed.
+ */
+const CANCEL_ACTION_LABEL = 'Cancel';
+
+/**
+ * The message shown when no document has been chosen.
+ *
+ * MIGRATION: A HARD-CODED, UNLOCALISED ENGLISH LITERAL IS REPRODUCED VERBATIM, AND IT IS NOT THE ONE
+ *   THE SIBLING SCREEN USES. `Import.ascx.vb` L157 passes the bare string
+ *   `"Please specify the file to import"` straight to the message renderer — not a resource lookup,
+ *   which is a defect in the legacy screen and is annotated as one. It is emphatically NOT the export
+ *   screen's `Validation.Text`: that key lives in `Export.ascx.resx` alone, and there is no
+ *   `Validation` key anywhere among this screen's twelve entries. The literal below is the measured
+ *   value for THIS screen.
+ *
+ * MIGRATION: THE REQUIREMENT IS NARROWED TO THE DOCUMENT ALONE. L145's guard tested the file
+ *   dropdown, and L149 then read the folder dropdown's value as well, so the legacy message stood in
+ *   for both pickers. The folder picker is gone entirely, so the surviving requirement is the
+ *   document — and the wording, which never named a folder, needs no adjustment to say so.
+ */
+const FILE_REQUIRED_MESSAGE = 'Please specify the file to import';
+
+/**
+ * The message shown when no module has been chosen.
+ *
+ * MIGRATION: NET-NEW. The legacy screen could not produce this message because it never asked for a
+ *   module. The construction follows L157's, so the two read as one voice.
+ */
+const MODULE_REQUIRED_MESSAGE = 'Please specify the module to import into';
+
+/**
+ * The message shown when the chosen document cannot be read from the operator's machine.
+ *
+ * MIGRATION: NET-NEW, BECAUSE THE READ MOVED SIDES. `Import.ascx.vb` L184 read the document on the
+ *   SERVER, from the portal's home directory, so a read failure there surfaced through the screen's
+ *   catch-all `Error` message. Reading now happens in the browser and can fail on its own terms — the
+ *   document was moved, renamed or made unreadable between being chosen and being submitted — which
+ *   is a distinct situation and says so rather than borrowing the server's wording.
+ */
+const FILE_UNREADABLE_MESSAGE = 'The selected file could not be read. Choose the file again.';
+
+/**
+ * Confirmation of a completed import.
+ *
+ * MIGRATION: SUCCESS FEEDBACK IS ADDED. `Import.ascx.vb` L151, and L202 inside the helper, both
+ *   redirected on success and said nothing at all, so an operator could not tell a completed import
+ *   from a navigation that had simply lost their input. The measured legacy message vocabulary is
+ *   three-valued — 27 error, 21 warning and 12 success sites across the in-scope screens — so a
+ *   completed import belongs at success severity rather than being announced as information.
+ */
+const IMPORT_SUCCEEDED_MESSAGE = 'Content was imported into the module.';
+
+/** Shown in place of the picker when the tenant has no modules to offer. */
+const NO_MODULES_MESSAGE = 'There are no modules available to import content into.';
+
+/** Announced while the module list is being read. */
+const LOADING_MODULES_LABEL = 'Loading modules…';
+
+/** Announced while the import is in flight. */
+const IMPORTING_LABEL = 'Importing…';
+
+// =======================================================================================
+// FIXED VALUES
+// =======================================================================================
+
+/**
+ * Where the abandon action goes.
+ *
+ * MIGRATION: `import.ascx` L16 marks the abandon action `causesvalidation="False"` and L127-L129
+ *   handles it with nothing but `Response.Redirect(NavigateURL(), True)` — no read, no write and no
+ *   validation. {@link ModuleImportComponent.cancel} preserves exactly that: it navigates and touches
+ *   neither the form's validity nor its touched state.
+ */
+const MODULE_LIST_ROUTE = '/modules';
+
+/**
+ * The largest page the listing endpoint accepts, requested so the picker reaches as far as one call
+ * can.
+ *
+ * The listing defaults to ten rows, which would hide most of a tenant's modules behind paging that a
+ * picker has no way to expose. One hundred is the server's own ceiling — it answers a larger value
+ * with a field-level refusal — so this is the widest single read available. A tenant with more than a
+ * hundred module placements is therefore a documented limit of this screen rather than a silent one.
+ */
+const MODULE_CHOICE_PAGE_SIZE = 100;
+
+/**
+ * The document types the picker suggests.
+ *
+ * An affordance only. `Import.ascx.vb` L104 listed candidates with the framework's file helper
+ * restricted to the `xml` extension, and this carries that intent into the browser's own picker. It is
+ * NOT validation: the attribute is a hint a user can defeat, and the server adjudicates the document
+ * regardless — which is exactly why no client-side check duplicates it.
+ */
+const IMPORT_FILE_ACCEPT = '.xml,text/xml,application/xml';
+
+/** The element identifier tying the module field's label to its control. */
+const MODULE_FIELD_ID = 'module-import-module';
+
+/** The element identifier tying the document field's label to its control. */
+const FILE_FIELD_ID = 'module-import-file';
+
+/** The status a refused request carries when the caller lacks authority for it. */
+const FORBIDDEN_STATUS = 403;
+
+/**
+ * The store operations whose refusals this screen is answerable for.
+ *
+ * The store is application-scoped, so its failure slice can hold a refusal raised by a different
+ * screen. Filtering on the operation is what stops this screen presenting one, and it is a closed
+ * list of exactly the two commands this screen issues: it reads the module list, and it imports.
+ */
+const OWN_OPERATIONS: readonly ModuleStoreOperation[] = ['importModule', 'listModules'];
+
+/**
+ * The refusal codes that describe the DOCUMENT, and so belong beside the document field.
+ *
+ * MIGRATION: THESE ARE THE SERVER'S SPELLINGS, NOT THE LEGACY ENUMERATION MEMBER NAMES, AND THE
+ *   DISTINCTION IS THE WHOLE POINT. The legacy screen selected its wording with the resource keys
+ *   `NotValidXml` (assigned at `Import.ascx.vb` L192) and `NotCorrectType` (L204 and L217). Those
+ *   names never travel: the API publishes its own vocabulary inside the problem document's `type`
+ *   member, and a table keyed on the legacy names could match nothing taken off the wire. The WORDING
+ *   is what has to survive, and it does — `conflictMessage` in `core/utils/form-errors.util.ts` holds
+ *   it verbatim from the resource files, including the "selected" and "specified" asymmetry between
+ *   the two sentences, which is measured rather than tidied.
+ */
+const DOCUMENT_REFUSAL_CODES: readonly string[] = [
+  /** Legacy `NotValidXml`, raised where L190-L193 failed to load the document. */
+  'module.content_invalid',
+  /** Legacy `NotCorrectType`, raised where L176 or L196-L197 rejected the declared type. */
+  'module.content_type_mismatch',
+];
+
+/**
+ * The refusal codes that describe the MODULE, and so belong beside the module field.
+ *
+ * MIGRATION: legacy `ImportNotSupported`, which L208 and L214 both produced — L214 when the module
+ *   carried no business controller or was not portable, L208 when the resolved controller turned out
+ *   not to implement the portability contract. Both arrive here as one code, which is correct: the
+ *   distinction was about how the server discovered the module could not accept content, not about
+ *   anything the operator can act on.
+ */
+const MODULE_REFUSAL_CODES: readonly string[] = ['module.not_portable'];
+
+/**
+ * The request members the server names when it refuses one of them.
+ *
+ * .NET model-state keys, which are NOT camel-cased — hence the leading capital. They are matched
+ * case-insensitively by `fieldErrorMessage`, so these are the spellings the server actually sends
+ * rather than a guess at what a client would prefer.
+ */
+const CONTENT_FIELD_KEYS: readonly string[] = ['Content', 'FileName'];
+
+/** The request member naming the target module. */
+const MODULE_FIELD_KEY = 'ModuleId';
+
+// =======================================================================================
+// PURE HELPERS
+// =======================================================================================
+
+/**
+ * The first of several candidates that carries visible text.
+ *
+ * MIGRATION: THE EMPTY STRING IS DATA HERE, NOT ABSENCE — WHICH IS PRECISELY WHY THIS FUNCTION EXISTS
+ *   RATHER THAN A COALESCING CHAIN. `Library/Components/Shared/Null.vb` L71-L75 returns the empty
+ *   string as its string absence marker, so the legacy schema stores `''` and `null` interchangeably
+ *   in name columns and neither the domain model nor the wire is free to fold one into the other. A
+ *   `??` chain would consequently stop at a stored `''` and produce a picker option with no visible
+ *   text, which is unselectable. Choosing on VISIBILITY rather than on nullity keeps the option
+ *   usable without asserting anywhere that `''` means "missing".
+ *
+ * @param candidates Values in order of preference; `null` and blank values are passed over.
+ * @returns The first candidate with a non-blank trimmed value, or `null` when none has one.
+ */
+function firstVisible(candidates: readonly (string | null)[]): string | null {
+  for (const candidate of candidates) {
+    if (candidate !== null && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * A readable, never-blank label for one module.
+ *
+ * The operator-facing title is preferred, then the definition's friendly name, then its programmatic
+ * name — the same order of familiarity the legacy screens presented them in. When a module carries no
+ * visible name at all, it is named by its identifier rather than rendered as an empty option: an
+ * unnamed module is still a real module and must stay selectable.
+ *
+ * @param module One row of the module listing.
+ * @returns Text guaranteed to be visible.
+ */
+function moduleChoiceLabel(module: ModuleListItem): string {
+  const named = firstVisible([module.moduleTitle, module.friendlyName, module.moduleName]);
+
+  return named ?? `${MODULE_FIELD_LABEL} ${module.moduleId}`;
+}
+
+/**
+ * Reduces the listing to one option per module, in the order the server returned them.
+ *
+ * MIGRATION: THE LEGACY DUPLICATE-ENTRY DEFECT IS ANNOTATED, NOT REPRODUCED. `Import.ascx.vb`
+ *   L98-L117 built its file picker from two independent `If` blocks — L107-L109 matching the module's
+ *   programmatic name and L111-L113 matching its friendly name — each of which added unconditionally.
+ *   A document whose name satisfied both tests was therefore listed TWICE, with two identical labels
+ *   and no way to tell them apart. This picker has the same exposure for a different reason: a listing
+ *   row is a PLACEMENT, and a module flagged for every page has one row per page, so the same
+ *   identifier recurs. Collapsing on the identifier is what stops a new form growing the old defect.
+ *
+ * @param modules The listing rows, in server order.
+ * @returns One option per distinct module, first occurrence winning.
+ */
+function toModuleChoices(modules: readonly ModuleListItem[]): readonly ModuleImportChoice[] {
+  const seen = new Set<number>();
+  const choices: ModuleImportChoice[] = [];
+
+  for (const module of modules) {
+    if (seen.has(module.moduleId)) {
+      continue;
+    }
+
+    seen.add(module.moduleId);
+    choices.push({ value: module.moduleId, label: moduleChoiceLabel(module) });
+  }
+
+  return choices;
+}
+
+// =======================================================================================
+// THE SCREEN
+// =======================================================================================
+
+@Component({
+  selector: 'app-module-import',
+  standalone: true,
+  // Exactly what the template binds to, and nothing else. `ReactiveFormsModule` supplies the typed
+  // form directives; the five shared components are the design system's members for a page heading, a
+  // labelled control, a busy indicator, a refusal surface and a zero-result state. The framework's
+  // common-directive bundle is deliberately absent: the built-in control-flow blocks need no import at
+  // all, and pulling that bundle in would re-admit the superseded structural directives beside them.
+  imports: [
+    ReactiveFormsModule,
+    PageHeaderComponent,
+    FormFieldComponent,
+    LoadingSpinnerComponent,
+    ErrorBannerComponent,
+    EmptyStateComponent,
+  ],
+  templateUrl: './module-import.component.html',
+  styleUrl: './module-import.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class ModuleImportComponent {
+  // -------------------------------------------------------------------------------------
+  // COLLABORATORS
+  // -------------------------------------------------------------------------------------
+  //
+  // Obtained by injection, never constructed, and never registered on this component: there is no
+  // `providers` array here, so each of these resolves to the one application-scoped instance the
+  // application root already configured. That is what lets a specification substitute any of them.
+
+  /**
+   * The command surface and the state slice for everything module-shaped.
+   *
+   * MIGRATION: THE REFLECTION-RESOLVED SINGLETON IS GONE. The legacy screen reached its data by
+   *   constructing a controller inline — `Dim objModules As New ModuleController` at
+   *   `Import.ascx.vb` L146, L173 and again at L101 — which in turn resolved its provider through a
+   *   static reflection factory. Nothing on this screen can be substituted while that is true. Here
+   *   the collaborator arrives by injection, so the screen is testable without a database, a portal or
+   *   a request.
+   */
+  private readonly store = inject(ModuleStore);
+
+  /** Where confirmations and authority refusals are announced. */
+  private readonly notifications = inject(NotificationService);
+
+  /** Used for both the abandon action and the post-import return. */
+  private readonly router = inject(Router);
+
+  /**
+   * Used to notice that the operator left while a document was being read.
+   *
+   * Reading a document is the one genuinely awaited step on this screen, so it is the one place where
+   * work can complete after the screen has gone. Without this latch an operator who abandoned the
+   * screen mid-read would still have their import submitted.
+   */
+  private readonly destroyRef = inject(DestroyRef);
+
+  // -------------------------------------------------------------------------------------
+  // WORDING, EXPOSED TO THE TEMPLATE
+  // -------------------------------------------------------------------------------------
+
+  /** @see IMPORT_TITLE */
+  protected readonly title = IMPORT_TITLE;
+
+  /** @see IMPORT_SUBTITLE */
+  protected readonly subtitle = IMPORT_SUBTITLE;
+
+  /** @see MODULE_FIELD_LABEL */
+  protected readonly moduleFieldLabel = MODULE_FIELD_LABEL;
+
+  /** @see MODULE_FIELD_HELP */
+  protected readonly moduleFieldHelp = MODULE_FIELD_HELP;
+
+  /** @see FILE_FIELD_LABEL */
+  protected readonly fileFieldLabel = FILE_FIELD_LABEL;
+
+  /** @see FILE_FIELD_HELP */
+  protected readonly fileFieldHelp = FILE_FIELD_HELP;
+
+  /** @see IMPORT_ACTION_LABEL */
+  protected readonly importActionLabel = IMPORT_ACTION_LABEL;
+
+  /** @see CANCEL_ACTION_LABEL */
+  protected readonly cancelActionLabel = CANCEL_ACTION_LABEL;
+
+  /** @see NO_MODULES_MESSAGE */
+  protected readonly noModulesMessage = NO_MODULES_MESSAGE;
+
+  /** @see LOADING_MODULES_LABEL */
+  protected readonly loadingModulesLabel = LOADING_MODULES_LABEL;
+
+  /** @see IMPORTING_LABEL */
+  protected readonly importingLabel = IMPORTING_LABEL;
+
+  /** @see MODULE_FIELD_ID */
+  protected readonly moduleFieldId = MODULE_FIELD_ID;
+
+  /** @see FILE_FIELD_ID */
+  protected readonly fileFieldId = FILE_FIELD_ID;
+
+  /** @see IMPORT_FILE_ACCEPT */
+  protected readonly fileAccept = IMPORT_FILE_ACCEPT;
+
+  // -------------------------------------------------------------------------------------
+  // THE FORM
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * The typed form backing both fields.
+   *
+   * Each control is `nonNullable`, which is what makes `form.value` fully typed and makes `reset()`
+   * return to the declared initial value rather than to `null`. Both initial values ARE `null`, and
+   * that is the point: on this screen `null` is the honest representation of "nothing chosen yet", and
+   * it is the only value free to mean it.
+   *
+   * MIGRATION: IMPERATIVE VALIDATION BECOMES DECLARATIVE, AND THERE WAS NOTHING TO TRANSLATE. Measured
+   *   across `Website/admin/Modules/`, the declarative validator census is: zero required-field
+   *   validators, zero regular-expression validators, zero custom validators, zero range validators,
+   *   zero validation summaries, and four comparison validators — all four in the settings screen.
+   *   `import.ascx` has none whatsoever, and its 17 content lines contain no validator markup of any
+   *   kind. The single check the legacy screen performed was the imperative test at
+   *   `Import.ascx.vb` L145, whose failure branch at L157 rendered a hard-coded literal. Both controls
+   *   below therefore carry a real validator where the legacy carried an `If`.
+   *
+   * MIGRATION: THE MINUS-ONE ABSENCE MARKER IS NOT REINTRODUCED. `Import.ascx.vb` L51 declared its
+   *   target field as `Private Shadows ModuleId As Integer = -1` — an identifier seeded with the
+   *   integer absence marker from `Null.vb` L41-L45. Nothing here initialises an identifier to minus
+   *   one, tests one against minus one, or coalesces one to it. Minus one nevertheless remains a
+   *   LEGITIMATE value to hold and to transmit, and if the form holds it, it is sent unaltered.
+   */
+  protected readonly form = new FormGroup<ModuleImportFormModel>({
+    moduleId: new FormControl<number | null>(null, {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+    file: new FormControl<File | null>(null, {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+  });
+
+  // -------------------------------------------------------------------------------------
+  // SCREEN-LOCAL STATE
+  // -------------------------------------------------------------------------------------
+  //
+  // MIGRATION: THE POSTBACK STATE MACHINE IS DELETED RATHER THAN TRANSLATED. The legacy screen's
+  //   picker cascade existed only because the folder dropdown carried `AutoPostBack="true"`
+  //   (`import.ascx` L7): choosing a folder round-tripped to the server so that
+  //   `cboFolders_SelectedIndexChanged` (L98-L117) could rebuild the file list. The whole mechanism —
+  //   the round trip, the control-state envelope that made it survivable, and the session state beside
+  //   it — has a first-class replacement, so none of it is ported. For the record, the measured legacy
+  //   count under `Website/admin/Modules/` is zero control-state sites and zero session sites, so
+  //   nothing was lost in the deletion. State below is held in signals and updated by replacement.
+
+  /** The document the operator chose, or `null` before they have chosen one. */
+  private readonly _selectedFile = signal<File | null>(null);
+
+  /** Whether the chosen document's text is being read right now. */
+  private readonly _readingFile = signal(false);
+
+  /** Whether the most recent read attempt failed. Cleared by choosing again. */
+  private readonly _fileReadFailed = signal(false);
+
+  /**
+   * Whether submit has been attempted.
+   *
+   * Field-level messages stay hidden until either the field has been touched or submit has been
+   * attempted, so a form that has only just opened is not already covered in complaints about fields
+   * nobody has reached yet.
+   */
+  private readonly _submitAttempted = signal(false);
+
+  /**
+   * Whether the refusal currently held by the store has been superseded by a fresh edit.
+   *
+   * A refusal describes ONE attempt. Once the operator changes either field, the sentence beside that
+   * field is about a document or a module they have already moved on from, and continuing to show it
+   * is worse than showing nothing. The store's failure slice is application-scoped and offers only an
+   * all-or-nothing reset, so suppressing here is preferable to clearing a slice another screen may be
+   * relying on.
+   */
+  private readonly _failureSuperseded = signal(false);
+
+  /**
+   * Latched when the screen is torn down, so an awaited read cannot outlive it.
+   *
+   * A plain field rather than a signal: nothing renders it, and a signal that no template reads would
+   * claim a reactive relationship that does not exist.
+   */
+  private isDestroyed = false;
+
+  // -------------------------------------------------------------------------------------
+  // DERIVED VIEWS
+  // -------------------------------------------------------------------------------------
+  //
+  // Every member below is read-only. No writable signal is exposed, so the template and a
+  // specification can observe this screen's state but cannot reach in and change it.
+
+  /** Whether the module listing is in flight. */
+  protected readonly loadingModules = this.store.listLoading;
+
+  /**
+   * The selectable modules, one option per distinct module.
+   *
+   * MIGRATION: THIS IS HOW THE TARGET MODULE IS IDENTIFIED, AND IT IS A DELIBERATE CHANGE OF
+   *   MECHANISM. The legacy screen took its target from a request value — `Import.ascx.vb` L67-L68
+   *   read `Request.QueryString("moduleid")` — and the migrated endpoint is `POST /modules/import`,
+   *   whose route carries NO identifier at all: the target is a member of the request body, which is
+   *   why the sibling export path is `POST /modules/{moduleId}/export` and this one is not. The Angular
+   *   route is likewise the bare `/modules/import` with no parameter, so nothing is bound into this
+   *   screen from the address and no parameter is invented to fake one. The target is instead CHOSEN
+   *   here, from the module listing, which is the only mechanism available that does not oblige the
+   *   operator to hand-edit a URL.
+   *
+   * MIGRATION: THE QUERY-STRING CASING SPLIT IS RESOLVED BY REMOVING THE QUERY STRING. L67-L68 read
+   *   the key in lower case as `"moduleid"` while the sibling settings screen reads it in Pascal case
+   *   as `"ModuleId"` at `ModuleSettings.ascx.vb` L448-L449 — two spellings of one concept, tolerated
+   *   only because the request-value lookup was case-insensitive. Neither spelling survives.
+   *
+   * MIGRATION: AN UNGUARDED IMPLICIT CONVERSION IS REPLACED BY A TYPED VALUE. The admin screens
+   *   compiled with strict typing DISABLED, so L68's `Int32.Parse` of a caller-supplied string was
+   *   written with no guard at all and threw on any non-numeric input, landing in the screen's
+   *   catch-all. Here the identifier is never parsed from text: it is a `number` taken from the listing
+   *   contract and carried through without conversion.
+   */
+  protected readonly moduleChoices = computed<readonly ModuleImportChoice[]>(() =>
+    toModuleChoices(this.store.modules()),
+  );
+
+  /** Whether there is at least one module to choose from. */
+  protected readonly hasModuleChoices = computed<boolean>(() => this.moduleChoices().length > 0);
+
+  /** The chosen document's own name, or `null` before one is chosen. Bound as TEXT, never as markup. */
+  protected readonly selectedFileName = computed<string | null>(() => {
+    const file = this._selectedFile();
+
+    return file === null ? null : file.name;
+  });
+
+  /**
+   * Whether anything this screen is waiting on is outstanding.
+   *
+   * Covers the awaited read as well as the request, because the read happens before the request is
+   * issued and the store cannot know about it. Without the read, the interface would appear idle for
+   * the duration of a large document.
+   */
+  protected readonly busy = computed<boolean>(() => this._readingFile() || this.store.importing());
+
+  /** Whether the submit action should be offered. */
+  protected readonly canSubmit = computed<boolean>(
+    () => !this.busy() && this.hasModuleChoices() && !this.loadingModules(),
+  );
+
+  /**
+   * The refusal this screen is answerable for, or `null`.
+   *
+   * Filtered on the operation because the store is application-scoped: a refusal raised by another
+   * screen's command must not appear here. Suppressed once superseded by a fresh edit.
+   */
+  private readonly ownFailure = computed(() => {
+    const failure = this.store.failure();
+
+    if (failure === null || !OWN_OPERATIONS.includes(failure.operation)) {
+      return null;
+    }
+
+    // Only an IMPORT refusal is superseded by a fresh edit, and the asymmetry is deliberate. A refusal
+    // of the import describes one attempt, so once the operator changes a field it is about a document
+    // or a module they have moved on from. A LISTING failure describes whether this screen can function
+    // at all, and editing a field neither addresses it nor makes it less true, so it stays until the
+    // listing is read again.
+    if (failure.operation === 'importModule' && this._failureSuperseded()) {
+      return null;
+    }
+
+    return failure;
+  });
+
+  /**
+   * The problem document to surface, or `null`.
+   *
+   * MIGRATION: THE CATCH-ALL MESSAGE IS SUBSUMED BY THE PROBLEM-DOCUMENT CONTRACT. `Import.ascx.vb`
+   *   wrapped every handler in `Try … Catch exc As Exception` and funnelled anything unexpected through
+   *   `ProcessModuleLoadException` (L86, L131, L161), while the helper's own bare `Catch` at L210-L211
+   *   flattened every remaining fault to the single sentence `'An error occurred during the import'`.
+   *   Neither is reproduced. Faults now arrive as RFC 7807 documents from one server-side handler, and
+   *   the shared refusal surface renders their title, their sentence, their per-field messages and the
+   *   support reference an operator can quote — none of which the flattened sentence could carry.
+   *
+   * MIGRATION: THE SILENT NO-OP IS CORRECTED. L148 tested `If Not objModule Is Nothing` with NO `Else`
+   *   branch, so an import aimed at a module that no longer existed did nothing at all and reported
+   *   nothing at all. A module the server cannot find is now a not-found response, and it surfaces
+   *   here as a refusal like any other.
+   *
+   * MIGRATION: THE EMPTY-STRING-MEANS-SUCCESS TEST IS CORRECTED. L150 read `If strMessage = ""` as
+   *   proof of success, which is the string absence marker of `Null.vb` L71-L75 pressed into service as
+   *   a status flag — so any path that failed to set a message was indistinguishable from one that
+   *   succeeded. Success is now the transport's own completion signal and nothing else; no string is
+   *   compared against the empty string to determine an outcome anywhere on this screen.
+   */
+  protected readonly problem = computed<ProblemDetails | null>(
+    () => this.ownFailure()?.problem ?? null,
+  );
+
+  /** The failure code the server published for this screen's refusal, or `null`. */
+  private readonly refusalCode = computed<string | null>(() => this.ownFailure()?.code ?? null);
+
+  // -------------------------------------------------------------------------------------
+  // WIRING
+  // -------------------------------------------------------------------------------------
+
+  constructor() {
+    this.destroyRef.onDestroy(() => {
+      this.isDestroyed = true;
+    });
+
+    // The store outlives this screen, so a previous visit's outcome and refusal are discarded before
+    // anything is rendered. Without this, re-entering the screen would open onto a confirmation that
+    // has already been acknowledged, or a refusal about a document that is no longer chosen. The store
+    // publishes a reset for exactly this situation.
+    this.store.clearTransferOutcome();
+    this.store.clearFailure();
+
+    // A picker is only as useful as its reach, so the widest page the endpoint allows is requested
+    // before the listing is read. The size is part of the store's own query state, so setting it here
+    // is how this screen states its need rather than a mutation smuggled past the store.
+    this.store.setPageSize(MODULE_CHOICE_PAGE_SIZE);
+    this.store.loadModules();
+
+    // A genuine side effect: confirm, then leave. Reading `importCompleted` is the only way a screen
+    // learns the outcome, because the store's command reports through its state slice rather than
+    // returning anything.
+    effect(() => {
+      if (!this.store.importCompleted()) {
+        return;
+      }
+
+      this.notifications.success(IMPORT_SUCCEEDED_MESSAGE);
+
+      // MIGRATION: the legacy screen redirected on success at L151, and again at L202 from inside its
+      //   helper — a redirect issued mid-computation, which is why the helper's remaining branches
+      //   could never be reached once it fired. The return below is the same intent expressed once, at
+      //   the one place that knows the import finished.
+      void this.router.navigate([MODULE_LIST_ROUTE]);
+    });
+
+    // A refusal on grounds of authority is a different kind of event from a fault: the system is
+    // working exactly as configured and the operator simply may not do this. It is announced at warning
+    // severity rather than error, and the shared refusal surface independently reaches the same
+    // classification for this status, so the two never disagree.
+    //
+    // MIGRATION: the legacy access-denied screen rendered BOTH of its branches at warning severity
+    //   (`Website/admin/Security/AccessDenied.ascx.vb` L41-L47) and performed no check of its own, and
+    //   the legacy message renderer gave warning the ordinary heading style while reserving the red one
+    //   for errors (`Library/Components/Skins/ModuleMessage.vb` L115-L158). The legacy application
+    //   itself therefore treated a refusal as distinct from a fault, and that distinction is preserved.
+    effect(() => {
+      const failure = this.ownFailure();
+
+      if (failure === null || failure.summary.status !== FORBIDDEN_STATUS) {
+        return;
+      }
+
+      this.notifications.warning(failure.summary.message);
+    });
+  }
+
+  // -------------------------------------------------------------------------------------
+  // FIELD MESSAGES
+  // -------------------------------------------------------------------------------------
+  //
+  // Plain methods rather than computed signals, because a reactive form control's validity and touched
+  // state are not signals: a computed over either would be evaluated once and never recomputed. Read
+  // from the template they are re-evaluated whenever this view is checked, which covers the form state,
+  // and the signals they also read register normally, which covers everything else.
+
+  /**
+   * The sentence to show beside the module field, or `null` when it has nothing to say.
+   *
+   * Precedence is deliberate and runs from most specific to least: the server's own per-field message
+   * first, because it describes the request that was actually rejected; then the refusal that names the
+   * module as the reason; then this screen's own requirement.
+   */
+  protected moduleError(): string | null {
+    const problem = this.problem();
+    const reported = fieldErrorMessage(problem, MODULE_FIELD_KEY);
+
+    if (reported !== null) {
+      return reported;
+    }
+
+    const refusal = this.refusalFor(MODULE_REFUSAL_CODES);
+
+    if (refusal !== null) {
+      return refusal;
+    }
+
+    return this.shouldShowRequired(this.form.controls.moduleId) ? MODULE_REQUIRED_MESSAGE : null;
+  }
+
+  /**
+   * The sentence to show beside the document field, or `null` when it has nothing to say.
+   *
+   * The unreadable-document case is ranked above the server's messages because it is the more recent
+   * event: a read that failed means nothing was sent, so any message still held from an earlier attempt
+   * describes a request that has since been superseded.
+   */
+  protected fileError(): string | null {
+    if (this._fileReadFailed()) {
+      return FILE_UNREADABLE_MESSAGE;
+    }
+
+    const problem = this.problem();
+
+    for (const key of CONTENT_FIELD_KEYS) {
+      const reported = fieldErrorMessage(problem, key);
+
+      if (reported !== null) {
+        return reported;
+      }
+    }
+
+    const refusal = this.refusalFor(DOCUMENT_REFUSAL_CODES);
+
+    if (refusal !== null) {
+      return refusal;
+    }
+
+    return this.shouldShowRequired(this.form.controls.file) ? FILE_REQUIRED_MESSAGE : null;
+  }
+
+  // -------------------------------------------------------------------------------------
+  // INTERACTION
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * Records the document the operator chose.
+   *
+   * MIGRATION: THE TWO FILESYSTEM PICKERS ARE DROPPED AND REPLACED BY A REAL UPLOAD. This is the single
+   *   largest functional change on the screen, and it is forced rather than chosen. The legacy screen
+   *   listed SERVER-SIDE folders and files: `Import.ascx.vb` L72 seeded the folder dropdown with a
+   *   placeholder whose stored value was the bare hyphen `"-"`, L73 filled it from the framework's
+   *   folder helper restricted to the read and write permission keys, and L76-L77 displayed the root
+   *   folder — whose stored path is the empty string, the string absence marker of `Null.vb` L71-L75 —
+   *   under the localised label `Root`. L184 then opened the chosen document from the portal's home
+   *   directory. The migrated API exposes NO folder listing, NO file listing, NO upload browse and NO
+   *   disk-space resource, so there is nothing for either dropdown to read. The folder dropdown
+   *   therefore disappears outright — no folder field is modelled and no folder value is composed — and
+   *   the file dropdown becomes a document chosen from the operator's own machine.
+   *
+   * MIGRATION: THE DOCUMENT'S OWN NAME IS UNTRUSTED INPUT. It comes from the operator's filesystem, it
+   *   is carried on the request as descriptive metadata that no decision depends on, and it is never
+   *   resolved as a path and never rendered as markup.
+   *
+   * @param event The change event raised by the document input.
+   */
+  protected onFileSelected(event: Event): void {
+    // Narrowed rather than asserted. The event's target is typed as the general event target, and a
+    // non-null assertion or a cast here would be a claim the compiler cannot check; `instanceof` is a
+    // claim it can. `item(0)` yields the file or null, and the optional chain covers an input that
+    // carries no selection collection at all.
+    const target = event.target;
+    const chosen = target instanceof HTMLInputElement ? (target.files?.item(0) ?? null) : null;
+
+    this._selectedFile.set(chosen);
+    this._fileReadFailed.set(false);
+    this.supersedeFailure();
+
+    const control = this.form.controls.file;
+
+    control.setValue(chosen);
+    control.markAsDirty();
+    control.markAsTouched();
+  }
+
+  /**
+   * Notes that the operator changed their choice of module.
+   *
+   * The control's own value is written by the form directive; this exists only so that a refusal held
+   * against the previous choice stops being shown beside the new one.
+   */
+  protected onModuleSelected(): void {
+    this.supersedeFailure();
+  }
+
+  /**
+   * Reads the chosen document and submits it.
+   *
+   * MIGRATION: THE PAYLOAD IS JSON AND THE TARGET TRAVELS IN THE BODY. The endpoint is
+   *   `POST /api/v1/modules/import`, whose route carries no identifier; the request contract declares
+   *   exactly four members — the target module, the document as text, and a descriptive folder and name
+   *   — and declares no upload primitive, no stream and no multipart form. This screen accordingly
+   *   composes a plain object: it reads the document as TEXT and sends that string. No multipart body is
+   *   built anywhere on this screen.
+   *
+   * MIGRATION: NEITHER THE DOCUMENT NOR ITS WRAPPER IS INSPECTED HERE. `Import.ascx.vb` L188-L193 built
+   *   a document object and treated a load failure as the invalid-structure refusal, L196-L197 compared
+   *   the declared type attribute against the module's own names, and L200 handed the ROOT ELEMENT'S
+   *   INNER MARKUP — the wrapper stripped — to the module's portability contract along with the declared
+   *   version and the acting account. Every one of those steps is now server-side, so this screen reads
+   *   text and nothing more: it does not construct a document, does not read an attribute, does not
+   *   unwrap a root element and does not pre-judge the structure. Duplicating any of it would put one
+   *   decision in two places, and the acting account in particular is taken from the authenticated
+   *   caller rather than from the request, so that no caller can attribute an import to somebody else.
+   *
+   * MIGRATION: THE PORTABILITY FLAG IS NEVER COMPUTED HERE. The legacy gate at L177 read
+   *   `objModule.IsPortable`, which `Library/Components/Modules/ModuleInfo.vb` L608 derives by masking
+   *   a bit out of a feature word (L641-L647). The listing contract this picker reads exposes no
+   *   resolved portability flag — only the definition contract does, and that is a different resource —
+   *   so the attempt is always allowed and the server's own refusal is what an operator sees. Masking
+   *   the feature word in the browser would be re-deriving a server-side decision from data this screen
+   *   does not hold.
+   */
+  protected async submit(): Promise<void> {
+    this._submitAttempted.set(true);
+    this._fileReadFailed.set(false);
+
+    // The supersede latch is deliberately NOT cleared here. Clearing it up front would re-expose the
+    // previous attempt's refusal on every submit that never reaches the transport - an invalid form, or
+    // a document that could not be read - and would announce an authority refusal a second time for a
+    // request that was never re-sent. It is cleared at the one point a new attempt genuinely begins,
+    // immediately before the command is issued.
+
+    // Declarative validation replaces the imperative guard at L145. Marking first is what makes the
+    // messages visible for fields the operator never reached.
+    this.form.markAllAsTouched();
+
+    if (this.form.invalid) {
+      return;
+    }
+
+    const file = this._selectedFile();
+    const moduleId = this.form.controls.moduleId.value;
+
+    // Presence is tested EXPLICITLY against null and never by truthiness, and this is the sentinel rule
+    // at its sharpest: `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so a module identifier of ZERO is an
+    // ordinary module. `if (moduleId)` would silently refuse it, and so would a comparison against
+    // zero, a positivity test, or a coalesce to zero or to minus one. None of those appears here. The
+    // validators above have already made this branch unreachable; it stands because the compiler cannot
+    // know that, and narrowing it here is what keeps the request members honestly typed.
+    if (file === null || moduleId === null) {
+      return;
+    }
+
+    this._readingFile.set(true);
+
+    let content: string;
+
+    try {
+      content = await file.text();
+    } catch {
+      // A read can genuinely fail: the document may have been moved, renamed or made unreadable between
+      // being chosen and being submitted. The operator is told, the choice is left in place so they can
+      // re-pick, and nothing is sent.
+      this._readingFile.set(false);
+      this._fileReadFailed.set(true);
+      this.notifications.error(FILE_UNREADABLE_MESSAGE);
+
+      return;
+    }
+
+    this._readingFile.set(false);
+
+    // The read is the one awaited step, so it is the one place the screen can have gone in the meantime.
+    if (this.isDestroyed) {
+      return;
+    }
+
+    // MIGRATION: EVERY MEMBER IS TRANSMITTED VERBATIM. The contract declares all four members, so all
+    //   four are supplied. `folder` is sent as null because the target has no server-side folder concept
+    //   left to name — the contract accepts it for parity and resolves nothing from it — and `fileName`
+    //   carries the chosen document's own name as the descriptive metadata the contract documents it to
+    //   be. The identifier is passed through untouched: minus one, if the form somehow holds it, is a
+    //   legitimate transmitted value and is NOT rewritten to null, and the text is sent exactly as read,
+    //   including when it is empty, because the empty string is data and the server is what refuses it.
+    const request: ModuleImportRequest = {
+      moduleId,
+      content,
+      folder: null,
+      fileName: file.name,
+    };
+
+    // A new attempt begins here and nowhere earlier, so this is where the previous one stops being
+    // suppressed. The command clears the store's failure slice synchronously as its first act, so the
+    // superseded refusal cannot reappear in between.
+    this._failureSuperseded.set(false);
+    this.store.importModule(request);
+  }
+
+  /**
+   * Abandons the screen without validating anything.
+   *
+   * MIGRATION: `import.ascx` L16 marks the abandon action `causesvalidation="False"`, and its handler at
+   *   L127-L129 does nothing but redirect. That is reproduced exactly: nothing below marks a control
+   *   touched, re-evaluates a validator, submits, or reads the form at all.
+   */
+  protected cancel(): void {
+    void this.router.navigate([MODULE_LIST_ROUTE]);
+  }
+
+  // -------------------------------------------------------------------------------------
+  // PRIVATE HELPERS
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * The legacy wording for the current refusal, when it is one of the supplied codes.
+   *
+   * The WORDING is never declared on this screen. It is held, verbatim from the legacy resource files,
+   * by the shared problem-document utility, which also normalises the code before matching it. Keeping
+   * the sentences in one place is what makes the parity claim checkable in one place.
+   *
+   * @param codes The refusal codes this field answers for.
+   * @returns The sentence, or `null` when the current refusal is not one of them.
+   */
+  private refusalFor(codes: readonly string[]): string | null {
+    const code = this.refusalCode();
+
+    if (code === null || !codes.includes(code)) {
+      return null;
+    }
+
+    return conflictMessage(code);
+  }
+
+  /**
+   * Whether a control's unmet requirement should be shown yet.
+   *
+   * @param control The control to test.
+   * @returns True once the operator has reached the field or attempted to submit.
+   */
+  private shouldShowRequired(control: FormControl<number | null> | FormControl<File | null>): boolean {
+    return control.hasError('required') && (control.touched || this._submitAttempted());
+  }
+
+  /** Marks the refusal currently held by the store as describing a superseded attempt. */
+  private supersedeFailure(): void {
+    this._failureSuperseded.set(true);
+  }
+}

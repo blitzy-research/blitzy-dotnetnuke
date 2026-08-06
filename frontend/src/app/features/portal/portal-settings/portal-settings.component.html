@@ -1,838 +1,673 @@
 <!--
-  Site settings — replaces Website/admin/Portal/sitesettings.ascx.
+  THE PORTAL SETTINGS SCREEN.
 
-  Three structural notes, because each looks like a choice and is in fact forced:
+  Structure, measured from `Website/admin/Portal/sitesettings.ascx`: of its thirteen
+  section heads exactly three carry `IncludeRule="True"` and are therefore top level, and
+  the third of those is the stylesheet editor, which goes with the excluded skinning
+  subsystem. Two remain, so this screen is a two-tab strip whose panels hold the surviving
+  nested sections as disclosures.
 
-  1. There is ONE panel element and the tabs change its contents. Every tab points
-     `aria-controls` at it, so no reference can dangle. Rendering a second, removed
-     panel per tab was the alternative and its reference would point outside the
-     document — and the panel cannot merely be hidden, because the paired
-     stylesheet declares `display: grid` on it and the user agent's `[hidden]`
-     rule loses to any author rule.
+  MIGRATION: THE TAB STRIP AND THE DISCLOSURES ARE AUTHORED HERE RATHER THAN AS SHARED
+    COMPONENTS. The shared inventory is closed at ten members and this is the only screen
+    that needs either affordance, so an eleventh member would widen a settled contract for
+    a single caller. The strip declares the roles a tab strip promises AND implements the
+    keyboard movement they oblige, because declaring them without it would be worse than
+    declaring neither.
 
-  2. Each collapsed section is REMOVED, for the same reason: `__grid` declares
-     `display: grid`. `aria-controls` is therefore omitted from the section heads
-     as well; `aria-expanded` alone is a complete disclosure pattern.
+  MIGRATION: EVERY STRING HERE IS INTERPOLATED PLAIN TEXT. Legacy resource values are
+    untrusted markup — this screen's own resource file holds a live third-party advertising
+    script, stored XML-escaped so a naive search clears it wrongly — so no raw-markup
+    binding, no sanitiser bypass and no trusted-markup wrapper appears anywhere below. The
+    help sentences that need structure are authored as real elements instead.
 
-  3. A radio group's visible name is a `<label>` carrying no `for`. The `for`
-     attribute is optional in HTML, and the group's accessible name comes from
-     `role="radiogroup"` with `aria-labelledby`, which is both valid and stronger
-     than the legacy screen managed — its `dnn:Label` pointed `for` at the
-     `<table>` that ASP.NET rendered a RadioButtonList as, which named nothing.
-     Pointing `for` at the first radio would have named the group by side effect
-     and made clicking its title select an option.
+  MIGRATION: THE LEGACY LAYOUT TABLES ARE GONE. `sitesettings.ascx` nested its fields in
+    tables with `cellspacing`, `cellpadding` and pixel widths. Tabular markup is for
+    tabular data; the layout here is grid and flex declared in the paired stylesheet, and
+    every value it uses is a design token.
 -->
-<app-page-header [title]="heading" />
+<section class="portal-settings">
+  <!--
+    The page-level action projects into the header slot. The form's own action bar does NOT
+    — the header component's contract is explicit that an in-page form action bar belongs to
+    the consuming feature's footer, and it is authored there.
+  -->
+  <app-page-header [title]="pageTitle" [subtitle]="portalName()">
+    @if (canDelete()) {
+      <!--
+        Bare, and deliberately so: the shared inventory declares no button member, and the
+        global form stylesheet already gives every button its appearance and its focus ring.
 
-@if (loading) {
-  <app-loading-spinner label="Loading site settings…" />
-} @else if (!hasSettings) {
-  <app-empty-state message="No site settings are available." />
-} @else {
-  <form class="portal-settings" [formGroup]="form" (ngSubmit)="onSubmit()">
-    <div class="portal-settings__tablist" role="tablist" aria-label="Settings groups">
-      @for (tab of tabs; track tab.key) {
+        MIGRATION: withheld when the target IS the portal currently being browsed, which the
+        legacy screen expressed as `cmdDelete.Visible = (intPortalId <> PortalId)`. A portal
+        may not be deleted out from under the session viewing it.
+      -->
+      <button type="button" [disabled]="busy()" (click)="onDeleteRequested()">Delete</button>
+    }
+  </app-page-header>
+
+  <!--
+    The failure surface. It renders nothing when there is no problem document, derives its
+    own severity, field list and support reference, and carries the live region, so this
+    screen neither composes an error sentence nor decides how forcefully to show one.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  @if (!hasPortalId()) {
+    <!-- The address named no usable portal. Said plainly rather than left blank. -->
+    <p class="portal-settings__intro">{{ portalIdMissingMessage }}</p>
+  } @else if (loading()) {
+    <app-loading-spinner size="large" label="Loading site settings…" />
+  } @else if (settings() !== null) {
+    <div
+      class="portal-settings__tablist"
+      role="tablist"
+      aria-label="Site settings sections"
+      (keydown)="onTabKeydown($event)"
+    >
+      @for (tab of tabOrder; track tab) {
+        <!--
+          Only the selected tab is in the sequential tab order; the arrow keys move between
+          them, which is the strip's own contract rather than the document's.
+        -->
         <button
-          class="portal-settings__tab"
+          #tabControl
           type="button"
+          class="portal-settings__tab"
           role="tab"
-          [id]="tabId(tab.key)"
-          [attr.aria-selected]="isSelected(tab.key)"
-          [attr.aria-controls]="panelId"
-          [attr.tabindex]="isSelected(tab.key) ? 0 : -1"
-          (click)="selectTab(tab.key)"
-          (keydown)="onTabKeydown($event)"
+          [id]="tabControlId(tab)"
+          [attr.aria-selected]="isTabActive(tab)"
+          [attr.aria-controls]="tabPanelId(tab)"
+          [attr.tabindex]="isTabActive(tab) ? 0 : -1"
+          (click)="selectTab(tab)"
         >
-          {{ tab.label }}
+          {{ tabLabel[tab] }}
         </button>
       }
     </div>
 
-    <div
-      class="portal-settings__panel"
-      role="tabpanel"
-      tabindex="0"
-      [id]="panelId"
-      [attr.aria-labelledby]="tabId(selectedTab)"
-    >
-      @if (isSelected('basic')) {
-        <p class="portal-settings__intro">
-          In this section, you can set up the basic settings for your site.
-        </p>
+    <form class="portal-settings__panel" [formGroup]="form" (ngSubmit)="onSubmit()">
+      @if (isTabActive('basic')) {
+        <div
+          role="tabpanel"
+          class="portal-settings__panel"
+          [id]="tabPanelId('basic')"
+          [attr.aria-labelledby]="tabControlId('basic')"
+          tabindex="0"
+        >
+          <p class="portal-settings__intro">{{ tabHelp['basic'] }}</p>
 
-        <!-- ============================ SITE DETAILS ======================= -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('siteDetails')"
-              (click)="toggleSection('siteDetails')"
-            >
-              Site Details
-            </button>
-          </legend>
-
-          @if (!isCollapsed('siteDetails')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('portalName')">Title:</label>
-                  <small class="form-help" [id]="hintId('portalName')">{{ hints.portalName }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    formControlName="portalName"
-                    [id]="controlId('portalName')"
-                    [maxlength]="limits.portalName"
-                    [attr.aria-describedby]="describedBy('portalName')"
-                    [attr.aria-invalid]="messageFor('portalName') !== null ? 'true' : null"
-                  />
-                  @if (messageFor('portalName'); as message) {
-                    <p class="form-error" [id]="messageId('portalName')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('description')">Description:</label>
-                  <small class="form-help" [id]="hintId('description')">{{ hints.description }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <textarea
-                    rows="3"
-                    formControlName="description"
-                    [id]="controlId('description')"
-                    [maxlength]="limits.metadata"
-                    [attr.aria-describedby]="describedBy('description')"
-                    [attr.aria-invalid]="messageFor('description') !== null ? 'true' : null"
-                  ></textarea>
-                  @if (messageFor('description'); as message) {
-                    <p class="form-error" [id]="messageId('description')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('keyWords')">Key Words:</label>
-                  <small class="form-help" [id]="hintId('keyWords')">{{ hints.keyWords }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <textarea
-                    rows="3"
-                    formControlName="keyWords"
-                    [id]="controlId('keyWords')"
-                    [maxlength]="limits.metadata"
-                    [attr.aria-describedby]="describedBy('keyWords')"
-                    [attr.aria-invalid]="messageFor('keyWords') !== null ? 'true' : null"
-                  ></textarea>
-                  @if (messageFor('keyWords'); as message) {
-                    <p class="form-error" [id]="messageId('keyWords')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('footerText')">Copyright:</label>
-                  <small class="form-help" [id]="hintId('footerText')">{{ hints.footerText }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    formControlName="footerText"
-                    [id]="controlId('footerText')"
-                    [maxlength]="limits.footerText"
-                    [attr.aria-describedby]="describedBy('footerText')"
-                    [attr.aria-invalid]="messageFor('footerText') !== null ? 'true' : null"
-                  />
-                  @if (messageFor('footerText'); as message) {
-                    <p class="form-error" [id]="messageId('footerText')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <!--
-                MIGRATION: the legacy screen rendered the identifier as an
-                `asp:Label` (sitesettings.ascx:L68-L69), which cannot be
-                associated with a `<label>` and cannot be selected as a unit. A
-                read-only text input keeps the label association, keeps the field
-                rhythm and lets the operator copy the value — which is the only
-                reason to display an identifier at all. It carries no
-                `formControlName`, so it is displayed and never submitted.
-              -->
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="guidControlId">GUID:</label>
-                  <small class="form-help" [id]="guidHintId">{{ hints.guid }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    readonly
-                    [id]="guidControlId"
-                    [value]="portalGuid"
-                    [attr.aria-describedby]="guidHintId"
-                  />
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-
-        <!-- ============================ SITE MARKETING ===================== -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('marketing')"
-              (click)="toggleSection('marketing')"
-            >
-              Site Marketing
-            </button>
-          </legend>
-
-          @if (!isCollapsed('marketing')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [id]="labelId('bannerAdvertising')">Banners:</label>
-                  <small class="form-help" [id]="hintId('bannerAdvertising')">{{ hints.bannerAdvertising }}</small>
-                </div>
-                <div
-                  class="portal-settings__control"
-                  role="radiogroup"
-                  [attr.aria-labelledby]="labelId('bannerAdvertising')"
-                  [attr.aria-describedby]="hintId('bannerAdvertising')"
-                >
-                  @for (choice of bannerChoices; track choice.value) {
-                    <label>
-                      <!--
-                        No `disabled` binding: the control's own enabled state
-                        carries the lock, and the value accessor propagates it
-                        onto every radio. Binding the attribute as well would
-                        contest the directive for the property.
-                      -->
-                      <input
-                        type="radio"
-                        name="bannerAdvertising"
-                        formControlName="bannerAdvertising"
-                        [value]="choice.value"
-                      />
-                      {{ choice.label }}
-                    </label>
-                  }
-                  @if (bannerLockedByHost) {
-                    <p class="portal-settings__notice">{{ bannerLockNotice }}</p>
-                  }
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-
-        <!-- ============================== APPEARANCE ======================= -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('appearance')"
-              (click)="toggleSection('appearance')"
-            >
-              Appearance
-            </button>
-          </legend>
-
-          @if (!isCollapsed('appearance')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('logoFile')">Logo:</label>
-                  <small class="form-help" [id]="hintId('logoFile')">{{ hints.logoFile }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    formControlName="logoFile"
-                    [id]="controlId('logoFile')"
-                    [maxlength]="limits.fileName"
-                    [attr.aria-describedby]="describedBy('logoFile')"
-                    [attr.aria-invalid]="messageFor('logoFile') !== null ? 'true' : null"
-                  />
-                  @if (messageFor('logoFile'); as message) {
-                    <p class="form-error" [id]="messageId('logoFile')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('backgroundFile')">Body Background:</label>
-                  <small class="form-help" [id]="hintId('backgroundFile')">{{ hints.backgroundFile }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    formControlName="backgroundFile"
-                    [id]="controlId('backgroundFile')"
-                    [maxlength]="limits.fileName"
-                    [attr.aria-describedby]="describedBy('backgroundFile')"
-                    [attr.aria-invalid]="messageFor('backgroundFile') !== null ? 'true' : null"
-                  />
-                  @if (messageFor('backgroundFile'); as message) {
-                    <p class="form-error" [id]="messageId('backgroundFile')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-      } @else {
-        <p class="portal-settings__intro">
-          In this section, you can set up more advanced settings for your site.
-        </p>
-
-        <!-- =========================== SECURITY SETTINGS =================== -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('security')"
-              (click)="toggleSection('security')"
-            >
-              Security Settings
-            </button>
-          </legend>
-
-          @if (!isCollapsed('security')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [id]="labelId('userRegistration')">User Registration:</label>
-                  <small class="form-help" [id]="hintId('userRegistration')">{{ hints.userRegistration }}</small>
-                </div>
-                <div
-                  class="portal-settings__control"
-                  role="radiogroup"
-                  [attr.aria-labelledby]="labelId('userRegistration')"
-                  [attr.aria-describedby]="hintId('userRegistration')"
-                >
-                  @for (choice of registrationChoices; track choice.value) {
-                    <label>
-                      <input
-                        type="radio"
-                        name="userRegistration"
-                        formControlName="userRegistration"
-                        [value]="choice.value"
-                      />
-                      {{ choice.label }}
-                    </label>
-                  }
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-
-        <!-- ============================ PAGE MANAGEMENT ==================== -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('pages')"
-              (click)="toggleSection('pages')"
-            >
-              Page Management
-            </button>
-          </legend>
-
-          @if (!isCollapsed('pages')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('splashTabId')">Splash Page:</label>
-                  <small class="form-help" [id]="hintId('splashTabId')">{{ hints.splashTabId }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="splashTabId"
-                    [id]="controlId('splashTabId')"
-                    [attr.aria-describedby]="describedBy('splashTabId')"
-                  >
-                    <option [ngValue]="null">{{ noneSpecified }}</option>
-                    @for (option of pageOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('homeTabId')">Home Page:</label>
-                  <small class="form-help" [id]="hintId('homeTabId')">{{ hints.homeTabId }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="homeTabId"
-                    [id]="controlId('homeTabId')"
-                    [attr.aria-describedby]="describedBy('homeTabId')"
-                  >
-                    <option [ngValue]="null">{{ noneSpecified }}</option>
-                    @for (option of pageOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('loginTabId')">Login Page:</label>
-                  <small class="form-help" [id]="hintId('loginTabId')">{{ hints.loginTabId }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="loginTabId"
-                    [id]="controlId('loginTabId')"
-                    [attr.aria-describedby]="describedBy('loginTabId')"
-                  >
-                    <option [ngValue]="null">{{ noneSpecified }}</option>
-                    @for (option of pageOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('userTabId')">User Page:</label>
-                  <small class="form-help" [id]="hintId('userTabId')">{{ hints.userTabId }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="userTabId"
-                    [id]="controlId('userTabId')"
-                    [attr.aria-describedby]="describedBy('userTabId')"
-                  >
-                    <option [ngValue]="null">{{ noneSpecified }}</option>
-                    @for (option of pageOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('homeDirectory')">Home Directory:</label>
-                  <small class="form-help" [id]="hintId('homeDirectory')">{{ hints.homeDirectory }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    formControlName="homeDirectory"
-                    [id]="controlId('homeDirectory')"
-                    [maxlength]="limits.homeDirectory"
-                    [attr.aria-describedby]="describedBy('homeDirectory')"
-                    [attr.aria-invalid]="messageFor('homeDirectory') !== null ? 'true' : null"
-                  />
-                  @if (messageFor('homeDirectory'); as message) {
-                    <p class="form-error" [id]="messageId('homeDirectory')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-
-        <!-- =========================== PAYMENT SETTINGS ==================== -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('payment')"
-              (click)="toggleSection('payment')"
-            >
-              Payment Settings
-            </button>
-          </legend>
-
-          @if (!isCollapsed('payment')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('currency')">Currency:</label>
-                  <small class="form-help" [id]="hintId('currency')">{{ hints.currency }}</small>
-                </div>
-                <div class="portal-settings__control portal-settings__control--narrow">
-                  <select
-                    formControlName="currency"
-                    [id]="controlId('currency')"
-                    [attr.aria-describedby]="describedBy('currency')"
-                    [attr.aria-invalid]="messageFor('currency') !== null ? 'true' : null"
-                  >
-                    <option [ngValue]="''">{{ noneSpecified }}</option>
-                    @for (option of currencyOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                  @if (messageFor('currency'); as message) {
-                    <p class="form-error" [id]="messageId('currency')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('paymentProcessor')">Payment Processor:</label>
-                  <small class="form-help" [id]="hintId('paymentProcessor')">{{ hints.paymentProcessor }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="paymentProcessor"
-                    [id]="controlId('paymentProcessor')"
-                    [attr.aria-describedby]="describedBy('paymentProcessor')"
-                  >
-                    <option [ngValue]="''">{{ noneSpecified }}</option>
-                    @for (option of processorOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('processorUserId')">Processor UserId:</label>
-                  <small class="form-help" [id]="hintId('processorUserId')">{{ hints.processorUserId }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    autocomplete="off"
-                    formControlName="processorUserId"
-                    [id]="controlId('processorUserId')"
-                    [maxlength]="limits.processorField"
-                    [attr.aria-describedby]="describedBy('processorUserId')"
-                    [attr.aria-invalid]="messageFor('processorUserId') !== null ? 'true' : null"
-                  />
-                  @if (messageFor('processorUserId'); as message) {
-                    <p class="form-error" [id]="messageId('processorUserId')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <!--
-                MIGRATION: the legacy password box is replaced by a managed-secret
-                reference. The response echoes neither the credential nor its
-                reference. Blank means keep, while the checkbox below is the
-                explicit clear operation.
-              -->
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('processorCredentialReference')">Processor Credential Reference:</label>
-                  <small class="form-help" [id]="hintId('processorCredentialReference')">{{
-                    hints.processorCredentialReference
-                  }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <input
-                    type="text"
-                    autocomplete="off"
-                    formControlName="processorCredentialReference"
-                    [id]="controlId('processorCredentialReference')"
-                    [maxlength]="limits.processorField"
-                    [readOnly]="form.controls.clearProcessorCredentialReference.value"
-                    [attr.aria-describedby]="describedBy('processorCredentialReference')"
-                    [attr.aria-invalid]="
-                      messageFor('processorCredentialReference') !== null ? 'true' : null
-                    "
-                  />
-                  @if (messageFor('processorCredentialReference'); as message) {
-                    <p class="form-error" [id]="messageId('processorCredentialReference')">
-                      {{ message }}
-                    </p>
-                  }
-                  <label>
-                    <input
-                      type="checkbox"
-                      formControlName="clearProcessorCredentialReference"
-                      [id]="controlId('clearProcessorCredentialReference')"
-                      (change)="onProcessorReferenceClearChanged()"
-                    />
-                    Clear the stored processor credential reference
-                  </label>
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-
-        <!-- ============================ OTHER SETTINGS ===================== -->
-        <fieldset class="portal-settings__section">
-          <legend>
-            <button
-              class="portal-settings__toggle"
-              type="button"
-              [attr.aria-expanded]="!isCollapsed('other')"
-              (click)="toggleSection('other')"
-            >
-              Other Settings
-            </button>
-          </legend>
-
-          @if (!isCollapsed('other')) {
-            <div class="portal-settings__grid">
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('administratorId')">Administrator:</label>
-                  <small class="form-help" [id]="hintId('administratorId')">{{ hints.administratorId }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="administratorId"
-                    [id]="controlId('administratorId')"
-                    [attr.aria-describedby]="describedBy('administratorId')"
-                  >
-                    <option [ngValue]="null">{{ noneSpecified }}</option>
-                    @for (option of administratorOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('defaultLanguage')">Default Language:</label>
-                  <small class="form-help" [id]="hintId('defaultLanguage')">{{ hints.defaultLanguage }}</small>
-                </div>
-                <div class="portal-settings__control portal-settings__control--narrow">
-                  <select
-                    formControlName="defaultLanguage"
-                    [id]="controlId('defaultLanguage')"
-                    [attr.aria-describedby]="describedBy('defaultLanguage')"
-                    [attr.aria-invalid]="messageFor('defaultLanguage') !== null ? 'true' : null"
-                  >
-                    <option [ngValue]="''">{{ noneSpecified }}</option>
-                    @for (option of languageOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                  @if (messageFor('defaultLanguage'); as message) {
-                    <p class="form-error" [id]="messageId('defaultLanguage')">{{ message }}</p>
-                  }
-                </div>
-              </div>
-
-              <div class="portal-settings__field">
-                <div class="portal-settings__label">
-                  <label [for]="controlId('timeZoneOffset')">Portal TimeZone:</label>
-                  <small class="form-help" [id]="hintId('timeZoneOffset')">{{ hints.timeZoneOffset }}</small>
-                </div>
-                <div class="portal-settings__control">
-                  <select
-                    formControlName="timeZoneOffset"
-                    [id]="controlId('timeZoneOffset')"
-                    [attr.aria-describedby]="describedBy('timeZoneOffset')"
-                  >
-                    <option [ngValue]="null">{{ noneSpecified }}</option>
-                    @for (option of timeZoneOptions; track option.value) {
-                      <option [ngValue]="option.value">{{ option.label }}</option>
-                    }
-                  </select>
-                </div>
-              </div>
-            </div>
-          }
-        </fieldset>
-
-        <!-- ============================= HOST SETTINGS =====================
-          Rendered only for an operator permitted to administer it, reproducing
-          SiteSettings.ascx.vb:L498-L514, where the section head and its body are
-          made visible inside the super-user branch and hidden otherwise. The
-          values are still submitted whatever this decides — the endpoint replaces
-          the row, so omitting them would waive the hosting charge and lift every
-          quota.
-        -->
-        @if (canEditHostFields) {
-          <fieldset class="portal-settings__section">
-            <legend>
+          <!-- Site Details. Open by default: its section head declared no collapsed state. -->
+          <section class="portal-settings__section">
+            <h2>
               <button
-                class="portal-settings__toggle"
                 type="button"
-                [attr.aria-expanded]="!isCollapsed('host')"
-                (click)="toggleSection('host')"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('siteDetails')"
+                [attr.aria-controls]="sectionBodyId('siteDetails')"
+                (click)="toggleSection('siteDetails')"
               >
-                Host Settings
+                {{ sectionLabel['siteDetails'] }}
               </button>
-            </legend>
+            </h2>
 
-            @if (!isCollapsed('host')) {
-              <div class="portal-settings__grid">
-                <div class="portal-settings__field">
-                  <div class="portal-settings__label">
-                    <label [for]="controlId('expiryDate')">Expiry Date:</label>
-                    <small class="form-help" [id]="hintId('expiryDate')">{{ hints.expiryDate }}</small>
-                  </div>
-                  <div class="portal-settings__control portal-settings__control--medium">
+            @if (isSectionOpen('siteDetails')) {
+              <div class="portal-settings__grid" [id]="sectionBodyId('siteDetails')">
+                <app-form-field
+                  [label]="fieldLabel['portalName']"
+                  [for]="controlId('portalName')"
+                  [help]="fieldHelp['portalName']"
+                  [error]="messagesFor('portalName')"
+                >
+                  <div class="portal-settings__control">
                     <input
-                      type="date"
-                      formControlName="expiryDate"
-                      [id]="controlId('expiryDate')"
-                      [attr.aria-describedby]="describedBy('expiryDate')"
+                      type="text"
+                      formControlName="portalName"
+                      [id]="controlId('portalName')"
+                      [maxlength]="maxLength.portalName"
+                      autocomplete="off"
                     />
                   </div>
-                </div>
+                </app-form-field>
 
-                <div class="portal-settings__field">
-                  <div class="portal-settings__label">
-                    <label [for]="controlId('hostFee')">Hosting Fee:</label>
-                    <small class="form-help" [id]="hintId('hostFee')">{{ hints.hostFee }}</small>
+                <!--
+                  MIGRATION: a plain multi-line box. The legacy rich-text provider is
+                  excluded, and the measured row count and character limit are preserved.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['description']"
+                  [for]="controlId('description')"
+                  [help]="fieldHelp['description']"
+                  [error]="messagesFor('description')"
+                >
+                  <div class="portal-settings__control">
+                    <textarea
+                      formControlName="description"
+                      rows="3"
+                      [id]="controlId('description')"
+                      [maxlength]="maxLength.description"
+                    ></textarea>
                   </div>
-                  <div class="portal-settings__control portal-settings__control--medium">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      inputmode="decimal"
-                      formControlName="hostFee"
-                      [id]="controlId('hostFee')"
-                      [attr.aria-describedby]="describedBy('hostFee')"
-                      [attr.aria-invalid]="messageFor('hostFee') !== null ? 'true' : null"
-                    />
-                    @if (messageFor('hostFee'); as message) {
-                      <p class="form-error" [id]="messageId('hostFee')">{{ message }}</p>
-                    }
-                  </div>
-                </div>
+                </app-form-field>
 
-                <div class="portal-settings__field">
-                  <div class="portal-settings__label">
-                    <label [for]="controlId('hostSpace')">Disk Space:</label>
-                    <small class="form-help" [id]="hintId('hostSpace')">{{ hints.hostSpace }}</small>
+                <app-form-field
+                  [label]="fieldLabel['keyWords']"
+                  [for]="controlId('keyWords')"
+                  [help]="fieldHelp['keyWords']"
+                  [error]="messagesFor('keyWords')"
+                >
+                  <div class="portal-settings__control">
+                    <textarea
+                      formControlName="keyWords"
+                      rows="3"
+                      [id]="controlId('keyWords')"
+                      [maxlength]="maxLength.keyWords"
+                    ></textarea>
                   </div>
-                  <div class="portal-settings__control portal-settings__control--narrow">
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputmode="numeric"
-                      formControlName="hostSpace"
-                      [id]="controlId('hostSpace')"
-                      [attr.aria-describedby]="describedBy('hostSpace')"
-                      [attr.aria-invalid]="messageFor('hostSpace') !== null ? 'true' : null"
-                    />
-                    @if (messageFor('hostSpace'); as message) {
-                      <p class="form-error" [id]="messageId('hostSpace')">{{ message }}</p>
-                    }
-                  </div>
-                </div>
+                </app-form-field>
 
-                <div class="portal-settings__field">
-                  <div class="portal-settings__label">
-                    <label [for]="controlId('pageQuota')">Page Quota:</label>
-                    <small class="form-help" [id]="hintId('pageQuota')">{{ hints.pageQuota }}</small>
-                  </div>
-                  <div class="portal-settings__control portal-settings__control--narrow">
+                <app-form-field
+                  [label]="fieldLabel['footerText']"
+                  [for]="controlId('footerText')"
+                  [help]="fieldHelp['footerText']"
+                  [error]="messagesFor('footerText')"
+                >
+                  <div class="portal-settings__control">
                     <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputmode="numeric"
-                      formControlName="pageQuota"
-                      [id]="controlId('pageQuota')"
-                      [attr.aria-describedby]="describedBy('pageQuota')"
-                      [attr.aria-invalid]="messageFor('pageQuota') !== null ? 'true' : null"
+                      type="text"
+                      formControlName="footerText"
+                      [id]="controlId('footerText')"
+                      [maxlength]="maxLength.footerText"
+                      autocomplete="off"
                     />
-                    @if (messageFor('pageQuota'); as message) {
-                      <p class="form-error" [id]="messageId('pageQuota')">{{ message }}</p>
-                    }
                   </div>
-                </div>
+                </app-form-field>
 
-                <div class="portal-settings__field">
-                  <div class="portal-settings__label">
-                    <label [for]="controlId('userQuota')">User Quota:</label>
-                    <small class="form-help" [id]="hintId('userQuota')">{{ hints.userQuota }}</small>
-                  </div>
-                  <div class="portal-settings__control portal-settings__control--narrow">
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputmode="numeric"
-                      formControlName="userQuota"
-                      [id]="controlId('userQuota')"
-                      [attr.aria-describedby]="describedBy('userQuota')"
-                      [attr.aria-invalid]="messageFor('userQuota') !== null ? 'true' : null"
-                    />
-                    @if (messageFor('userQuota'); as message) {
-                      <p class="form-error" [id]="messageId('userQuota')">{{ message }}</p>
-                    }
-                  </div>
-                </div>
+                <!--
+                  The identifier is read-only and upper-cased, exactly as the legacy screen
+                  rendered it: into a label through `.ToString.ToUpper`, never into an input.
+                  An output element is the semantic match for a value the page produces
+                  rather than one the operator types.
 
-                <div class="portal-settings__field">
-                  <div class="portal-settings__label">
-                    <label [for]="controlId('siteLogHistory')">Site Log History:</label>
-                    <small class="form-help" [id]="hintId('siteLogHistory')">{{ hints.siteLogHistory }}</small>
+                  `for` is supplied even though nothing here is typed into. The legacy label
+                  declared `controlname="lblGUID"` at `sitesettings.ascx:L68`, so it DID name
+                  its control, and the wrapper maps that attribute onto `for`. An output
+                  element is one of the labelable elements, so the association is valid and
+                  the read-only value is named by its caption rather than left anonymous.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['guid']"
+                  [for]="controlId('guid')"
+                  [help]="fieldHelp['guid']"
+                >
+                  <div class="portal-settings__control">
+                    <output class="portal-settings__notice" [id]="controlId('guid')">{{
+                      portalGuid()
+                    }}</output>
                   </div>
-                  <div class="portal-settings__control portal-settings__control--narrow">
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputmode="numeric"
-                      formControlName="siteLogHistory"
-                      [id]="controlId('siteLogHistory')"
-                      [attr.aria-describedby]="describedBy('siteLogHistory')"
-                      [attr.aria-invalid]="messageFor('siteLogHistory') !== null ? 'true' : null"
-                    />
-                    @if (messageFor('siteLogHistory'); as message) {
-                      <p class="form-error" [id]="messageId('siteLogHistory')">{{ message }}</p>
-                    }
-                  </div>
-                </div>
+                </app-form-field>
               </div>
             }
-          </fieldset>
+          </section>
+
+          <!--
+            MIGRATION: Site Marketing survives with EXACTLY ONE field. The search-engine,
+            site-map and verification boxes go with the excluded search provider, and the
+            advertising block is never rendered at all. Banner advertising is a portal column
+            and remains. Its section head declared itself expanded, and it is.
+          -->
+          <section class="portal-settings__section">
+            <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('marketing')"
+                [attr.aria-controls]="sectionBodyId('marketing')"
+                (click)="toggleSection('marketing')"
+              >
+                {{ sectionLabel['marketing'] }}
+              </button>
+            </h2>
+
+            @if (isSectionOpen('marketing')) {
+              <div class="portal-settings__grid" [id]="sectionBodyId('marketing')">
+                <!--
+                  NO `for` HERE, DELIBERATELY, and the same reasoning governs the user
+                  registration group on the other tab. The legacy label named a control -
+                  `ControlName="optBanners"` at `sitesettings.ascx:L118` - but the control it
+                  named was ONE radio list server control standing for the whole group, and a
+                  group of radios has no single element in its place here. `for` may only name
+                  a labelable element, which the group's own wrapper is not, and pointing it at
+                  one arbitrary radio would name that radio rather than the group and leave the
+                  other two anonymous. The wrapper already names the group correctly through a
+                  group role carrying a reference to this caption, which is the equivalent the
+                  legacy single-control association translates to.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['bannerAdvertising']"
+                  [help]="fieldHelp['bannerAdvertising']"
+                >
+                  <div class="portal-settings__control">
+                    <!--
+                      Horizontal, three choices, matching the legacy list item for item. The
+                      wrapper the field component places around projected content is a group
+                      named by the label, which is what a set of radio choices needs.
+                    -->
+                    @for (choice of bannerChoices; track choice.value) {
+                      <label>
+                        <input
+                          type="radio"
+                          formControlName="bannerAdvertising"
+                          [value]="choice.value"
+                        />
+                        {{ choice.label }}
+                      </label>
+                    }
+
+                    <!--
+                      The hosting provider's lock. Measured: for a caller without the host
+                      account the list is disabled and this notice appears exactly when the
+                      STORED choice is Host; for a host account the notice is hidden outright.
+                      The stored value decides, not the value currently in the form, so
+                      choosing Host does not lock the control mid-edit.
+                    -->
+                    @if (bannerLockedByHost()) {
+                      <p class="portal-settings__notice">{{ bannerHostLockNotice }}</p>
+                    }
+                  </div>
+                </app-form-field>
+              </div>
+            }
+          </section>
+        </div>
+      }
+
+      @if (isTabActive('advanced')) {
+        <div
+          role="tabpanel"
+          class="portal-settings__panel"
+          [id]="tabPanelId('advanced')"
+          [attr.aria-labelledby]="tabControlId('advanced')"
+          tabindex="0"
+        >
+          <p class="portal-settings__intro">{{ tabHelp['advanced'] }}</p>
+
+          <!-- Security Settings. Open by default. -->
+          <section class="portal-settings__section">
+            <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('security')"
+                [attr.aria-controls]="sectionBodyId('security')"
+                (click)="toggleSection('security')"
+              >
+                {{ sectionLabel['security'] }}
+              </button>
+            </h2>
+
+            @if (isSectionOpen('security')) {
+              <div class="portal-settings__grid" [id]="sectionBodyId('security')">
+                <app-form-field
+                  [label]="fieldLabel['userRegistration']"
+                  [help]="fieldHelp['userRegistration']"
+                >
+                  <div class="portal-settings__control">
+                    @for (choice of registrationChoices; track choice.value) {
+                      <label>
+                        <input
+                          type="radio"
+                          formControlName="userRegistration"
+                          [value]="choice.value"
+                        />
+                        {{ choice.label }}
+                      </label>
+                    }
+                  </div>
+                </app-form-field>
+              </div>
+            }
+          </section>
+
+          <!--
+            Page Management. Open by default. All four selectors share ONE option list: the
+            legacy screen issued the identical query four times, and doing that here would be
+            four requests for one answer.
+          -->
+          <section class="portal-settings__section">
+            <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('pages')"
+                [attr.aria-controls]="sectionBodyId('pages')"
+                (click)="toggleSection('pages')"
+              >
+                {{ sectionLabel['pages'] }}
+              </button>
+            </h2>
+
+            @if (isSectionOpen('pages')) {
+              <div class="portal-settings__grid" [id]="sectionBodyId('pages')">
+                @if (pagesUnavailable()) {
+                  <p class="portal-settings__notice">{{ pagesUnavailableMessage }}</p>
+                }
+
+                <app-form-field
+                  [label]="fieldLabel['splashTabId']"
+                  [for]="controlId('splashTabId')"
+                  [help]="fieldHelp['splashTabId']"
+                  [error]="messagesFor('splashTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <!--
+                      The option value is bound by VALUE rather than as an attribute, so the
+                      control holds a number. An attribute binding would make every stored
+                      page identifier a string and break the comparison that selects one.
+                    -->
+                    <select formControlName="splashTabId" [id]="controlId('splashTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['homeTabId']"
+                  [for]="controlId('homeTabId')"
+                  [help]="fieldHelp['homeTabId']"
+                  [error]="messagesFor('homeTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="homeTabId" [id]="controlId('homeTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['loginTabId']"
+                  [for]="controlId('loginTabId')"
+                  [help]="fieldHelp['loginTabId']"
+                  [error]="messagesFor('loginTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="loginTabId" [id]="controlId('loginTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['userTabId']"
+                  [for]="controlId('userTabId')"
+                  [help]="fieldHelp['userTabId']"
+                  [error]="messagesFor('userTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="userTabId" [id]="controlId('userTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+              </div>
+            }
+          </section>
+
+          <!--
+            MIGRATION: Other Settings survives with EXACTLY TWO fields. The default-language
+            selector goes with the unported localisation subsystem, the site-log retention box
+            with the excluded logging provider, and the premium-module list with the excluded
+            provider families. The administrator and the portal time zone are portal columns
+            and remain. Its section head declared itself collapsed, and it is.
+          -->
+          <section class="portal-settings__section">
+            <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('other')"
+                [attr.aria-controls]="sectionBodyId('other')"
+                (click)="toggleSection('other')"
+              >
+                {{ sectionLabel['other'] }}
+              </button>
+            </h2>
+
+            @if (isSectionOpen('other')) {
+              <div class="portal-settings__grid" [id]="sectionBodyId('other')">
+                <!--
+                  MIGRATION: the administrator is shown but not reassignable here, and no
+                  endpoint is invented to make it so. The legacy selector listed the members of
+                  the portal's Administrators role; the role reads available to this
+                  application resolve their tenant from the caller's own context rather than
+                  from a path segment, so they cannot enumerate another portal's
+                  administrators. The stored account is displayed and returned unchanged, which
+                  keeps it visible and keeps the portal's administrator intact.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['administratorId']"
+                  [for]="controlId('administratorId')"
+                  [help]="fieldHelp['administratorId']"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <output class="portal-settings__notice" [id]="controlId('administratorId')">{{
+                      administratorId()
+                    }}</output>
+                  </div>
+                </app-form-field>
+
+                <!--
+                  MIGRATION: the time zone is an explicit offset in whole minutes rather than a
+                  named-zone list. The legacy list was built from a global resource catalogue in
+                  an excluded tree, and no date library is in the pinned dependency surface, so
+                  the named zones have no source here. The offset is the value the column
+                  actually stores, so the setting stays fully editable and nothing is invented.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['timeZoneOffset']"
+                  [for]="controlId('timeZoneOffset')"
+                  [help]="fieldHelp['timeZoneOffset']"
+                  [error]="messagesFor('timeZoneOffset')"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      formControlName="timeZoneOffset"
+                      [id]="controlId('timeZoneOffset')"
+                      autocomplete="off"
+                    />
+                    <p class="portal-settings__notice">
+                      The offset from Coordinated Universal Time, in minutes. Behind UTC is
+                      negative — for example −480 for Pacific Time.
+                    </p>
+                  </div>
+                </app-form-field>
+              </div>
+            }
+          </section>
+
+          <!--
+            Host Settings.
+
+            MIGRATION: gated on the HOST ACCOUNT, not on a permission. The legacy gate was a
+            super-user test, and the permission vocabulary this application resolves has no
+            member for it — a permission-based gate would match nothing and hide the section
+            from everybody, including the accounts it is for. The gate is advisory in any case:
+            the server applies the same rule and answers a refusal, which this screen presents
+            rather than pre-empts.
+
+            The controls behind the gate are still hydrated and still returned, because the
+            update resource replaces every column it names. That is also what the legacy
+            postback did — a hidden control kept its value in the serialised control tree.
+          -->
+          @if (isSuperUser()) {
+            <section class="portal-settings__section">
+              <h2>
+                <button
+                  type="button"
+                  class="portal-settings__toggle"
+                  [attr.aria-expanded]="isSectionOpen('host')"
+                  [attr.aria-controls]="sectionBodyId('host')"
+                  (click)="toggleSection('host')"
+                >
+                  {{ sectionLabel['host'] }}
+                </button>
+              </h2>
+
+              @if (isSectionOpen('host')) {
+                <div class="portal-settings__grid" [id]="sectionBodyId('host')">
+                  <!--
+                    A native date control. The legacy screen paired a free-text box with a
+                    separate calendar link; the control now provides the picker itself, so the
+                    link has nothing to open. An absent expiry shows an EMPTY box — never a
+                    placeholder date.
+                  -->
+                  <app-form-field
+                    [label]="fieldLabel['expiryDate']"
+                    [for]="controlId('expiryDate')"
+                    [help]="fieldHelp['expiryDate']"
+                    [error]="messagesFor('expiryDate')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--medium">
+                      <input
+                        type="date"
+                        formControlName="expiryDate"
+                        [id]="controlId('expiryDate')"
+                        [maxlength]="maxLength.expiryDate"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="fieldLabel['hostFee']"
+                    [for]="controlId('hostFee')"
+                    [help]="fieldHelp['hostFee']"
+                    [error]="messagesFor('hostFee')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        formControlName="hostFee"
+                        [id]="controlId('hostFee')"
+                        [maxlength]="maxLength.hostFee"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <!--
+                    The three quota boxes show the stored number, INCLUDING zero. The legacy
+                    hydration used a plain string conversion with no special case, so a stored
+                    zero appeared as `0`; the "zero means unlimited" rule is stated in the disk
+                    space help text and nowhere else, because that is where the legacy stated it.
+                  -->
+                  <app-form-field
+                    [label]="fieldLabel['hostSpace']"
+                    [for]="controlId('hostSpace')"
+                    [help]="fieldHelp['hostSpace']"
+                    [error]="messagesFor('hostSpace')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="hostSpace"
+                        [id]="controlId('hostSpace')"
+                        [maxlength]="maxLength.hostSpace"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="fieldLabel['pageQuota']"
+                    [for]="controlId('pageQuota')"
+                    [help]="fieldHelp['pageQuota']"
+                    [error]="messagesFor('pageQuota')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="pageQuota"
+                        [id]="controlId('pageQuota')"
+                        [maxlength]="maxLength.pageQuota"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="fieldLabel['userQuota']"
+                    [for]="controlId('userQuota')"
+                    [help]="fieldHelp['userQuota']"
+                    [error]="messagesFor('userQuota')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="userQuota"
+                        [id]="controlId('userQuota')"
+                        [maxlength]="maxLength.userQuota"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+                </div>
+              }
+            </section>
+          }
+        </div>
+      }
+
+      <!--
+        The form's own action bar. It is outside both panels because it commits the whole
+        form, not the tab that happens to be showing: the controls on the other tab are part
+        of the same write.
+      -->
+      <div class="portal-settings__actions">
+        <button type="submit" [disabled]="busy()">Update</button>
+        <button type="button" [disabled]="busy()" (click)="onCancel()">Cancel</button>
+
+        @if (busy()) {
+          <app-loading-spinner size="small" label="Saving…" />
         }
-      }
-    </div>
+      </div>
 
-    <!--
-      Update / Cancel / Delete, in the legacy order (sitesettings.ascx:L562-L567).
-      Cancel and Delete carried `CausesValidation="False"` there, which is why
-      neither submits the form here.
-    -->
-    <div class="portal-settings__actions">
-      <button type="submit" [disabled]="saving">Update</button>
-      <button type="button" [disabled]="saving" (click)="onCancel()">Cancel</button>
-      @if (canDelete) {
-        <button type="button" [disabled]="saving" (click)="requestRemoval()">Delete</button>
+      @if (submitRejected()) {
+        <!--
+          Named once at form level for a reader who never saw the individual fields. The
+          per-field messages are rendered by the field wrapper, each in its own live region.
+        -->
+        <p class="portal-settings__notice" role="alert">{{ formInvalidMessage }}</p>
       }
-    </div>
-  </form>
+    </form>
+  }
 
-  @if (removalPending) {
+  <!--
+    The confirmation is CREATED when it is needed, because it opens itself as a modal on
+    first view. Its wording is this screen's own measured message — including the space
+    before its question mark — and not the shared "delete this item" question the portal
+    listing asks.
+  -->
+  @if (confirmingDelete()) {
     <app-confirm-dialog
-      title="Delete Portal"
-      confirmLabel="Delete"
-      danger
+      [title]="deleteConfirmTitle"
       [message]="deleteConfirmMessage"
-      (confirm)="onRemovalConfirmed()"
-      (cancel)="onRemovalCancelled()"
+      [confirmLabel]="deleteConfirmLabel"
+      danger
+      (confirm)="onDeleteConfirmed()"
+      (cancel)="onDeleteCancelled()"
     />
   }
-}
+</section>

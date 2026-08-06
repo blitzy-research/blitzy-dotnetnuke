@@ -34,15 +34,23 @@
 //      .module-settings__slot
 //      .module-settings__actions
 //
-//  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
-//  carries nine shared components — page header, data table, pagination, form
-//  field, search input, confirm dialog, error banner, loading spinner and empty
-//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
-//  and the wire models under `core/models/`. It carries no module.service.ts and
-//  no signal store, so this component performs no HTTP: its data arrives through
-//  inputs and its intent leaves through outputs. That seam is what makes every
-//  branch below directly testable from the paired specification, with no HTTP
-//  testing controller involved.
+//  WHAT THE SCREEN CONSUMES. The workspace carries nine shared components — page
+//  header, data table, pagination, form field, search input, confirm dialog,
+//  error banner, loading spinner and empty state — plus the `hasPermission`
+//  directive, `core/config/api-endpoints.ts` and the wire models under
+//  `core/models/`. It also carries `core/services/module.service.ts`,
+//  `core/services/tab.service.ts`, `core/services/notification.service.ts` and
+//  the signal store at `core/state/module.store.ts`, and the component is a
+//  ROUTED screen: it resolves its own module from the `moduleId` route input
+//  through that store, so its data arrives from the store's signals rather than
+//  from a host. The presentation inputs it still declares are an override seam
+//  for a host that wants to pin a value, and every one of them falls through to
+//  the store when nothing is pinned — which is also what the router assigning
+//  `undefined` to a name the route cannot supply has to mean.
+//
+//  Nothing below depends on which of those two sources a value came from: this
+//  file styles the rendered structure only, and the structure is identical
+//  either way.
 // =============================================================================
 //  module-settings.component.scss
 //  Per-instance module settings screen — the `loadComponent` route
@@ -411,6 +419,33 @@
   align-items: baseline;
   gap: var(--space-2);
   min-inline-size: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  FIELD NAME CARRIED BY A NON-LABEL ELEMENT
+// -----------------------------------------------------------------------------
+//  Three of this screen's field names are NOT <label> elements, because a label
+//  names exactly one control and these three name something else: the read-only
+//  definition name, the permissions region, and the visibility choice group,
+//  which is named through role="radiogroup" + aria-labelledby. A <label> that
+//  names nothing is both wrong semantically and reported by the browser as an
+//  unassociated form label.
+//
+//  MIGRATION: a field name must look identical whichever element carries it. The
+//  legacy screen gave ALL of its label cells one class — the twenty-one cells
+//  recorded at the head of this file all carried class="SubHead" — so a name
+//  rendered in body ink beside thirteen siblings rendered in bold primary ink
+//  would be a divergence this screen never had. The declarations therefore
+//  reproduce the global label presentation from the same tokens it resolves,
+//  omitting only `cursor: pointer`: there is no control for a click to focus, so
+//  advertising one would be a false affordance.
+.module-settings__label {
+  display: block;
+  margin-block-end: var(--space-1);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  color: var(--color-primary);
 }
 
 // MIGRATION: the surviving visibility choice group rendered horizontally in the

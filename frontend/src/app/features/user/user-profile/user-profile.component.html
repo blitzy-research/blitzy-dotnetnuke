@@ -1,40 +1,62 @@
 <!--
-  The dynamic profile editor.
+  THE DYNAMIC PROFILE EDITOR.
+
+  There is no field list in this template and there cannot be one: the property set is
+  declared by the tenant and arrives from the API, so every label, bound, requirement and
+  pattern is bound from data. The legacy markup was the same in this respect —
+  `Website/admin/Users/Profile.ascx` L13-L25 is a single `<dnn:ProfileEditorControl>`
+  whose twelve attributes were the entire specification, and it named no field either.
+
+  MIGRATION: EVERY STRING RENDERED HERE IS INTERPOLATED PLAIN TEXT. Measured across the
+  37 in-scope resource files, 76 values carry a raw HTML tag and four carry a live script
+  element, so legacy wording is untrusted markup by measurement. No trusted-markup
+  binding and no sanitiser bypass appears anywhere in this file, and the legacy code
+  reached the same conclusion by hand at `Website/admin/Security/AccessDenied.ascx.vb`
+  L43, which encoded its message before displaying it.
 
   The loading and empty branches render directly on the host, whose stylesheet declares
-  the same grid flow as `.user-profile`; the two content branches render that class on
-  the element that also carries the form, so the action row and the group stack sit in
-  one rhythm without an extra wrapper. The stylesheet's own commentary anticipates
-  exactly this — it states that both selectors carry the same flow "whether the regions
-  sit directly on the host or inside one wrapper element".
+  the same grid flow as `.user-profile`; the two content branches carry that class on the
+  element that also carries the form, so the group stack and the action row share one
+  rhythm without an extra wrapper.
 -->
-<!-- The screen title comes from the shared page header, which the stylesheet names as
-     its owner and deliberately does not style. It is rendered outside the branch below
-     so the operator keeps their bearings while the profile is still being fetched. -->
-<app-page-header [title]="heading" [subtitle]="subheading" />
+<app-page-header [title]="pageTitle()" [subtitle]="subheading()" />
 
-@if (loading) {
+<!--
+  The failure surface, rendered above the content so it is the first thing after the
+  heading and is never scrolled past. The shared banner owns the live region, the
+  severity and the per-field breakdown; it renders nothing at all when there is no
+  problem, so it needs no guard here. It is scoped to this screen's own commands by
+  `problem()`.
+-->
+<app-error-banner [problem]="problem()" />
+
+@if (loading()) {
   <app-loading-spinner label="Loading profile…" />
-} @else if (!hasProperties) {
-  <app-empty-state
-    message="This site declares no visible profile properties, so there is nothing to edit."
-  />
-} @else if (mode === 'view') {
+} @else if (!hasProperties()) {
+  <!--
+    Reached when the tenant declares no profile property at all, which is a legitimate
+    configuration rather than a failure. The message points at the screen that fixes it
+    by URL rather than by importing from that feature's folder.
+  -->
+  <app-empty-state [message]="noPropertiesMessage" />
+} @else if (mode() === 'view') {
   <div class="user-profile">
     <div class="user-profile__groups">
-      @for (category of categories; track category.key) {
+      @for (section of sections(); track section.key) {
         <fieldset class="user-profile__group">
           <legend>
             <button
               type="button"
               class="user-profile__toggle"
-              [attr.aria-expanded]="!isCollapsed(category.key)"
-              (click)="toggleCategory(category.key)"
+              [attr.aria-expanded]="!isCollapsed(section.key)"
+              (click)="toggleSection(section.key)"
             >
-              <!-- A geometric marker rather than a raster asset: no legacy image is
-                   carried across, and the quarter turn that indicates the expanded
-                   state is applied by the stylesheet through `aria-expanded`, so the
-                   affordance and the announcement can never disagree. -->
+              <!--
+                A geometric marker rather than a raster asset: no legacy image is carried
+                across, and the quarter turn that indicates the expanded state is applied
+                by the stylesheet through `aria-expanded`, so the affordance and the
+                announcement can never disagree.
+              -->
               <svg
                 class="user-profile__toggle-icon"
                 viewBox="0 0 8 8"
@@ -43,16 +65,18 @@
               >
                 <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
               </svg>
-              {{ category.heading }}
+              {{ section.heading }}
             </button>
           </legend>
 
-          @if (!isCollapsed(category.key)) {
-            <!-- A description list, so the association between a property name and its
-                 value is structural and survives with no styling at all. -->
+          @if (!isCollapsed(section.key)) {
+            <!--
+              A description list, so the association between a property name and its value
+              is structural and survives with no styling at all.
+            -->
             <dl class="user-profile__values">
-              @for (value of category.values; track value.definition.propertyDefinitionId) {
-                <dt>{{ value.definition.propertyName }}</dt>
+              @for (value of section.values; track value.definition.propertyDefinitionId) {
+                <dt>{{ labelFor(value) }}</dt>
                 <dd class="user-profile__value">{{ displayValue(value) }}</dd>
               }
             </dl>
@@ -62,16 +86,23 @@
     </div>
   </div>
 } @else {
-  <form class="user-profile" [formGroup]="form" (ngSubmit)="onSubmit()">
+  <form class="user-profile" [formGroup]="form()" (ngSubmit)="onSubmit()">
     <div class="user-profile__groups">
-      @for (category of categories; track category.key) {
+      @for (section of sections(); track section.key) {
+        <!--
+          A grouped field set with a caption, which is the target equivalent of the
+          legacy `groupByMode="Section"` with `groupHeaderIncludeRule="True"`
+          (`Profile.ascx` L18 and L25). The shared component library is closed at ten
+          members and holds no section component, so no eleventh is introduced: the
+          grouping is expressed in native markup that needs none.
+        -->
         <fieldset class="user-profile__group">
           <legend>
             <button
               type="button"
               class="user-profile__toggle"
-              [attr.aria-expanded]="!isCollapsed(category.key)"
-              (click)="toggleCategory(category.key)"
+              [attr.aria-expanded]="!isCollapsed(section.key)"
+              (click)="toggleSection(section.key)"
             >
               <svg
                 class="user-profile__toggle-icon"
@@ -81,73 +112,86 @@
               >
                 <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
               </svg>
-              {{ category.heading }}
+              {{ section.heading }}
             </button>
           </legend>
 
-          <!-- A collapsed stack is REMOVED, not hidden: the user agent's
-               `[hidden] { display: none }` is weaker than any author rule, and
-               `.user-profile__fields` declares `display: grid`, so a hidden stack would
-               stay visible. -->
-          @if (!isCollapsed(category.key)) {
+          <!--
+            A collapsed stack is REMOVED, not hidden: the user agent's
+            `[hidden] { display: none }` rule is weaker than any author rule and
+            `.user-profile__fields` declares `display: grid`, so a hidden stack would
+            remain visible.
+          -->
+          @if (!isCollapsed(section.key)) {
             <div class="user-profile__fields">
-              @for (value of category.values; track value.definition.propertyDefinitionId) {
-                <div>
-                  <label [for]="controlId(value)">
-                    {{ value.definition.propertyName }}
-                    @if (value.definition.required) {
-                      <!-- The glyph is decoration; the requirement itself is announced by
-                           `aria-required` on the control, so the marker is hidden from
-                           assistive technology rather than read out as punctuation. -->
-                      <span class="form-required" aria-hidden="true">*</span>
-                    }
-                  </label>
-
-                  @if (valueControl(value); as control) {
+              @for (value of section.values; track value.definition.propertyDefinitionId) {
+                @if (valueControl(value); as control) {
+                  <!--
+                    The shared form field owns the label, the required marker, the help
+                    disclosure and the error region. None of those is re-implemented
+                    here: the control is projected into it and it does the rest.
+                  -->
+                  <app-form-field
+                    [label]="labelFor(value)"
+                    [for]="controlId(value)"
+                    [required]="value.definition.required"
+                    [help]="helpFor(value)"
+                    [error]="errorsFor(value)"
+                  >
                     @if (isMultiline(value)) {
+                      <!--
+                        MIGRATION: a property the tenant allowed several hundred
+                        characters for is prose. The legacy rich-text control is out of
+                        scope, so prose is a plain multi-line text box.
+                      -->
                       <textarea
                         [id]="controlId(value)"
-                        rows="4"
+                        [rows]="multilineRows"
                         [formControl]="control"
-                        [attr.maxlength]="value.definition.length > 0 ? value.definition.length : null"
+                        [attr.maxlength]="maxLengthFor(value)"
                         [attr.aria-required]="value.definition.required ? 'true' : null"
-                        [attr.aria-invalid]="messageFor(value) ? 'true' : null"
-                        [attr.aria-describedby]="messageFor(value) ? messageId(value) : null"
+                        [attr.aria-invalid]="hasError(value) ? 'true' : null"
                       ></textarea>
                     } @else {
+                      <!--
+                        MIGRATION: a text control for EVERY declared data type. The
+                        declared type is an unresolved integer key into the out-of-scope
+                        `Lists` table, so the thirteen legacy control kinds cannot be
+                        selected without guessing. `maxlength` is emitted only when a
+                        bound was actually declared — zero means no bound, and
+                        `maxlength="0"` would stop the operator typing at all.
+                      -->
                       <input
                         type="text"
                         [id]="controlId(value)"
                         [formControl]="control"
-                        [attr.maxlength]="value.definition.length > 0 ? value.definition.length : null"
+                        [attr.maxlength]="maxLengthFor(value)"
                         [attr.aria-required]="value.definition.required ? 'true' : null"
-                        [attr.aria-invalid]="messageFor(value) ? 'true' : null"
-                        [attr.aria-describedby]="messageFor(value) ? messageId(value) : null"
+                        [attr.aria-invalid]="hasError(value) ? 'true' : null"
                       />
                     }
-                  }
+                  </app-form-field>
 
-                  @if (messageFor(value); as message) {
-                    <p class="form-error" [id]="messageId(value)">{{ message }}</p>
-                  }
-
-                  @if (manageVisibility) {
+                  @if (manageVisibility()) {
                     @if (visibilityControl(value); as visibility) {
                       <div class="user-profile__visibility">
-                        <label [for]="visibilityId(value)">Visible to</label>
-                        <!-- `ngValue` rather than `value`: the control holds a number and
-                             a plain `value` binding would write the option back as a
-                             string, so the submitted visibility would no longer match
-                             the codes the API declares. -->
-                        <select [id]="visibilityId(value)" [formControl]="visibility">
-                          @for (option of visibilityOptions; track option.code) {
-                            <option [ngValue]="option.code">{{ option.label }}</option>
-                          }
-                        </select>
+                        <app-form-field label="Visible to" [for]="visibilityId(value)">
+                          <!--
+                            `ngValue` rather than `value`: the control holds a number, and
+                            a plain `value` binding would write the option back as a
+                            string, so the submitted visibility would stop matching the
+                            codes the API declares.
+                          -->
+                          <select [id]="visibilityId(value)" [formControl]="visibility">
+                            @for (option of visibilityOptions; track option.code) {
+                              <option [ngValue]="option.code">{{ option.label }}</option>
+                            }
+                          </select>
+                        </app-form-field>
                       </div>
                     }
                   }
-                </div>
+                }
               }
             </div>
           }
@@ -155,12 +199,24 @@
       }
     </div>
 
-    @if (showActions) {
+    @if (showActions()) {
       <div class="user-profile__actions">
-        <button type="submit" [disabled]="saving">
-          {{ saving ? 'Saving…' : 'Update' }}
+        <!--
+          MIGRATION: the wording is "Update", which is what the legacy button showed.
+          `cmdUpdate.Text` is absent from this screen's own resource file and resolves
+          from the global fallback `Website/App_GlobalResources/SharedResources.resx`,
+          where `cmdUpdate.Text` is "Update" and `cmdCancel.Text` is "Cancel".
+
+          MIGRATION: the legacy affordance was an image link pointing at
+          `~/images/save.gif`. No legacy raster asset is carried across, so it is text.
+
+          The legacy button declared no `causesvalidation` attribute, which defaults to
+          true — so the update DID validate, and it does here.
+        -->
+        <button type="submit" [disabled]="saving()">
+          {{ saving() ? 'Saving…' : 'Update' }}
         </button>
-        <button type="button" [disabled]="saving" (click)="onReset()">Cancel</button>
+        <button type="button" [disabled]="saving()" (click)="onReset()">Cancel</button>
       </div>
     }
   </form>

@@ -19,8 +19,23 @@
 -->
 <app-page-header [title]="heading"></app-page-header>
 
+<!--
+  The rejected-write surface. It renders the problem document the server sent, resolved to plain text by
+  core/utils/form-errors.util.ts, and nothing else: a refusal is announced as an advisory at warning
+  severity instead, on the legacy access-denied screen's own precedent.
+
+  MIGRATION: this banner is a NET-NEW affordance and not the migration of a legacy rendering path. A
+  case-insensitive census finds asp:ValidationSummary ZERO times in the whole of Website/, so there is no
+  predecessor to port - the legacy screen showed each message beside its own field and summarised nothing.
+-->
+<app-error-banner [problem]="problem()"></app-error-banner>
+
 @if (loading) {
   <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
+} @else if (notFound()) {
+  <!-- Addressed by identifier, so an identifier that resolves to nothing is a legitimate state - a stale
+       bookmark, or a module already removed - and is reported as such rather than as an error. -->
+  <app-empty-state [message]="notFoundMessage"></app-empty-state>
 } @else if (settings === null) {
   <app-empty-state [message]="noModuleMessage"></app-empty-state>
 } @else {
@@ -208,8 +223,17 @@
                         type="date"
                         formControlName="startDate"
                         [id]="controlId('startDate')"
+                        [maxlength]="limits.startDate"
                         [attr.aria-describedby]="hintId('startDate')"
+                        [attr.aria-invalid]="form.controls.startDate.touched && form.controls.startDate.invalid"
                       />
+                      <!-- valtxtStartDate (modulesettings.ascx L78), Operator="DataTypeCheck" Type="Date",
+                           Display="Dynamic" - so the message occupies no space until it is triggered. -->
+                      @if (form.controls.startDate.touched && form.controls.startDate.hasError('dateDataType')) {
+                        <small class="form-error" role="alert" [id]="messageId('startDate')">
+                          {{ startDateInvalidMessage }}
+                        </small>
+                      }
                     </div>
                   </div>
 
@@ -223,8 +247,16 @@
                         type="date"
                         formControlName="endDate"
                         [id]="controlId('endDate')"
+                        [maxlength]="limits.endDate"
                         [attr.aria-describedby]="hintId('endDate')"
+                        [attr.aria-invalid]="form.controls.endDate.touched && form.controls.endDate.invalid"
                       />
+                      <!-- valtxtEndDate (modulesettings.ascx L88), Operator="DataTypeCheck" Type="Date". -->
+                      @if (form.controls.endDate.touched && form.controls.endDate.hasError('dateDataType')) {
+                        <small class="form-error" role="alert" [id]="messageId('endDate')">
+                          {{ endDateInvalidMessage }}
+                        </small>
+                      }
                     </div>
                   </div>
                 </div>
@@ -282,16 +314,20 @@
                     </div>
                   </div>
 
-                  <!-- A choice group's visible name is a <label> with NO for attribute; the group is named
-                       through role="radiogroup" + aria-labelledby. Pointing for at the first radio would
-                       name the group by side effect and make clicking its title select an option.
+                  <!-- A choice group's visible name is NOT a <label>: a label names one control, and
+                       pointing for at the first radio would name the group by side effect and make clicking
+                       its title select an option. The group is named through role="radiogroup" +
+                       aria-labelledby instead, and the name is carried by the same <span> element the two
+                       other non-control names on this screen use. A bare <label> that names nothing is also
+                       what a browser reports as an unassociated form label, so the span removes a false
+                       report as well as the wrong semantics.
                        [value] rather than [ngValue]: RadioControlValueAccessor writes the numeric enum
                        value through unchanged. -->
                   <div class="module-settings__field">
-                    <label [id]="labelId('visibility')">
+                    <span class="module-settings__label" [id]="labelId('visibility')">
                       {{ labels['visibility'] }}
                       <small class="form-help" [id]="hintId('visibility')">{{ hints['visibility'] }}</small>
-                    </label>
+                    </span>
                     <div
                       class="module-settings__choices"
                       role="radiogroup"
@@ -327,28 +363,47 @@
                     </div>
                   </div>
 
-                  <div class="module-settings__field">
-                    <label [for]="controlId('cacheTime')">
-                      {{ labels['cacheTime'] }}
-                      <small class="form-help" [id]="hintId('cacheTime')">{{ hints['cacheTime'] }}</small>
-                    </label>
-                    <div class="module-settings__control">
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        formControlName="cacheTime"
-                        [id]="controlId('cacheTime')"
-                        [attr.aria-describedby]="hintId('cacheTime')"
-                        [attr.aria-invalid]="form.controls.cacheTime.touched && form.controls.cacheTime.invalid"
-                      />
-                      @if (form.controls.cacheTime.touched && form.controls.cacheTime.hasError('min')) {
-                        <small class="form-error" role="alert" [id]="messageId('cacheTime')">
-                          {{ cacheTimeInvalidMessage }}
-                        </small>
-                      }
+                  <!--
+                    THE THREE-STATE CACHE RULE. ModuleSettings.ascx.vb:L136-L142 hid the whole row - the
+                    legacy id was rowCache - when the DEFINITION's DefaultCacheTime was Null.NullInteger,
+                    i.e. -1, meaning the definition records no default at all. A default of 0 is a different
+                    fact: caching IS supported with a zero-second default, so the field shows. And this
+                    PLACEMENT's own cacheTime of 0 is a third, legitimate stored value meaning "not cached".
+                    The three are never coalesced and falsiness never distinguishes them, because 0 is falsy
+                    and is one of the two values that must survive.
+                  -->
+                  @if (showCacheField()) {
+                    <div class="module-settings__field">
+                      <label [for]="controlId('cacheTime')">
+                        {{ labels['cacheTime'] }}
+                        <small class="form-help" [id]="hintId('cacheTime')">{{ hints['cacheTime'] }}</small>
+                      </label>
+                      <div class="module-settings__control">
+                        <!--
+                          A TEXT control, matching the legacy asp:textbox with maxlength="6", and validated by
+                          the integer data-type check rather than by a numeric control's own coercion. Holding
+                          it as text is what keeps the Option Strict coercion visible and explicit: the legacy
+                          save used Int32.Parse and not TryParse (L350), so the parse and its failure are both
+                          handled in the component instead of disappearing into a value accessor.
+                        -->
+                        <input
+                          type="text"
+                          inputmode="numeric"
+                          formControlName="cacheTime"
+                          [id]="controlId('cacheTime')"
+                          [maxlength]="limits.cacheTime"
+                          [attr.aria-describedby]="hintId('cacheTime')"
+                          [attr.aria-invalid]="form.controls.cacheTime.touched && form.controls.cacheTime.invalid"
+                        />
+                        <!-- valCacheTime (modulesettings.ascx L172), Operator="DataTypeCheck" Type="Integer". -->
+                        @if (form.controls.cacheTime.touched && form.controls.cacheTime.hasError('integerDataType')) {
+                          <small class="form-error" role="alert" [id]="messageId('cacheTime')">
+                            {{ cacheTimeInvalidMessage }}
+                          </small>
+                        }
+                      </div>
                     </div>
-                  </div>
+                  }
                 </div>
               </div>
             }

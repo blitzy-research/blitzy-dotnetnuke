@@ -1,21 +1,37 @@
-import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output } from '@angular/core';
-import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  EventEmitter,
+  Input,
+  Output,
+  computed,
+  effect,
+  inject,
+  signal,
+} from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
+import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 
+import { MODULE_VISIBILITY, ModuleVisibility } from '../../../core/models/module.model';
+import type { UpdateModuleRequest } from '../../../core/models/module.model';
+import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type { SelectOption } from '../../../core/models/select-option.model';
+import type { TabListItem } from '../../../core/models/tab.model';
+import { NotificationService } from '../../../core/services/notification.service';
+import { ModuleStore } from '../../../core/state/module.store';
+import {
+  CONFLICT,
+  FORBIDDEN,
+  NOT_FOUND,
+  conflictMessage,
+  fieldErrorMessages,
+} from '../../../core/utils/form-errors.util';
+import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
+import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
-import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
-import {
-  MODULE_VISIBILITY,
-  type ModuleVisibility,
-  type UpdateModuleRequest,
-} from '../../../core/models/module.model';
-import type { SelectOption } from '../../../core/models/select-option.model';
-import {
-  toUpdateModuleRequest,
-  type ModuleSettingsFormState,
-  type ModuleSettingsViewModel,
-} from './module-settings.view-model';
 
 /**
  * The seven disclosure regions this screen presents, named after the legacy section heads they replace.
@@ -23,6 +39,11 @@ import {
  * Three are top level and four are nested one level beneath them, reproducing the two-level hierarchy of
  * `Website/admin/Modules/modulesettings.ascx`: dshModule (L11) holds dshDetails (L22) and dshSecurity (L54);
  * dshPage (L97) holds dshAppearance (L108) and dshOther (L178); dshSpecific (L200) stands alone.
+ *
+ * MIGRATION: `specificSettings` survives as a REGION rather than as a working surface. Its legacy body was
+ * an .ascx loaded at run time by the excluded Web Forms module loader (`PortalModuleBase.vb`, 881 lines,
+ * `PaWriter.vb`, 563, `EventMessageProcessor.vb`, 125), and no endpoint replaces that mechanism. The region
+ * is retained so a definition-contributed surface has a declared home, and it renders no controls.
  */
 export type ModuleSettingsSection =
   | 'moduleSettings'
@@ -34,43 +55,200 @@ export type ModuleSettingsSection =
   | 'specificSettings';
 
 /**
+ * The minimum a caller must supply for this screen to seed itself.
+ *
+ * Declared structurally, and deliberately NARROWER than the module read contract, for two reasons. It names
+ * exactly the facts this screen displays or edits, so a reader can see the screen's real dependency surface
+ * without opening the wire contract; and because it is structural, the loaded `ModuleDetail` satisfies it
+ * without a cast or an adapter.
+ *
+ * MIGRATION: the six placement columns the legacy screen edited - paneName, alignment, color, border,
+ * displayPrint and displaySyndicate - are absent here BECAUSE THEY ARE ABSENT FROM THE WIRE CONTRACT. See
+ * the note on {@link ModuleSettingsComponent} for the measurement and the consequence.
+ */
+export interface ModuleSettingsSeed {
+  /**
+   * The module being edited.
+   *
+   * `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so **0 is a real module** and is never read as absent.
+   */
+  readonly moduleId: number;
+
+  /** The placement being edited. */
+  readonly tabModuleId: number;
+
+  /**
+   * The page this placement sits on.
+   *
+   * `dbo.Tabs.TabID` is `IDENTITY(0, 1)`, so **0 is a real page**.
+   */
+  readonly tabId: number;
+
+  /** The tenant this module belongs to, or `null` for a host-level module. */
+  readonly portalId: number | null;
+
+  /** The definition this module instantiates. Used to resolve the definition's default cache period. */
+  readonly moduleDefId: number;
+
+  /** The definition's own name, shown read-only. */
+  readonly friendlyName: string | null;
+
+  /** The operator-supplied heading, or `null` when none is recorded. */
+  readonly moduleTitle: string | null;
+
+  /** The module's position within its pane. Round-tripped; this screen does not reorder. */
+  readonly moduleOrder: number;
+
+  /** Whether the module appears on every page. Round-tripped; the bulk affordance is not offered. */
+  readonly allTabs: boolean;
+
+  /** The soft-delete marker. Round-tripped deliberately - see {@link ModuleSettingsComponent}. */
+  readonly isDeleted: boolean;
+
+  /** Whether View permission is inherited from the page. Round-tripped; grants are not editable here. */
+  readonly inheritViewPermissions: boolean;
+
+  /** Text rendered above the module's content. */
+  readonly header: string | null;
+
+  /** Text rendered below the module's content. */
+  readonly footer: string | null;
+
+  /** The display start instant, or `null`. May carry the legacy date sentinel. */
+  readonly startDate: string | null;
+
+  /** The display end instant, or `null`. May carry the legacy date sentinel. */
+  readonly endDate: string | null;
+
+  /**
+   * This placement's cache period in seconds. A DIFFERENT FACT from the definition's default.
+   *
+   * Accepts `null` defensively even though the read contract declares the member non-nullable, because a
+   * host may seed this screen from a projection that does not carry it. `null` seeds the control as 0, which
+   * is what the legacy `objModule.CacheTime.ToString` produced for a value hydrated through `Null.SetNull`.
+   * `null` here means "no period was supplied to seed with"; a period OF 0 means "not cached". Neither is
+   * the definition's -1, which means "this definition records no default at all".
+   */
+  readonly cacheTime: number | null;
+
+  /** The icon shown with the title. Round-tripped; no file-selection endpoint exists. */
+  readonly iconFile: string | null;
+
+  /** How the placement is presented. `None` is a chosen value, never an absence. */
+  readonly visibility: ModuleVisibility;
+
+  /** Whether the container chrome is displayed. */
+  readonly displayTitle: boolean;
+}
+
+/**
  * The typed shape of this screen's form.
  *
  * Every control is declared `nonNullable`, so `getRawValue()` is fully typed rather than a `Partial`, and a
  * reset returns each control to its declared initial value instead of to `null`.
+ *
+ * MIGRATION: THE THREE COERCED FIELDS ARE HELD AS TEXT, NOT AS NUMBERS OR DATES, AND THAT IS DELIBERATE.
+ * `Website/release.config:L125` is verbatim `<compilation debug="false" strict="false">`, so the 39 admin
+ * code-behinds compiled with Option Strict OFF while the class library compiled with
+ * `<OptionStrict>On</OptionStrict>` (`Library/DotNetNuke.Library.vbproj:L24`). The legacy screen therefore
+ * held `txtCacheTime`, `txtStartDate` and `txtEndDate` as free text and coerced them implicitly at save
+ * time - `Int32.Parse` at `ModuleSettings.ascx.vb:L350` and `Convert.ToDateTime` at L367-L376, neither of
+ * them a `TryParse`. Holding the same three as text here keeps the coercion visible and lets it be made
+ * explicit with real failure handling, which is exactly what the four data-type validators exist for. A
+ * numeric or date-typed control would hide the coercion inside the value accessor and silence the parse.
  */
 interface ModuleSettingsFormModel {
   /**
-   * The page whose placement is being edited.
+   * The page this placement is addressed on - the legacy "Move To Page:" picker (`cboTab`).
    *
-   * MIGRATION: the legacy control was a MOVE affordance and its wording is preserved, but the value now
-   * SELECTS the placement the update addresses rather than relocating it - the update contract carries one
-   * page identifier and a move would need two. Naming a page the module does not occupy is refused by the
-   * service with `module.placement_not_found`. Recorded in MIGRATION_NOTES.md.
+   * MIGRATION: THE MOVE IS EXPRESSED AS A FIELD ON THE UPDATE, NEVER AS AN INVENTED ENDPOINT. The legacy
+   * relocation was a second call, `MoveModule(ModuleId, TabId, newTabId, "")`
+   * (`ModuleController.vb:L1078`), fired after the update at `ModuleSettings.ascx.vb:L403-L408`. That
+   * operation has no counterpart in the module API, and `POST /modules/{moduleId}/move` is not invented to
+   * supply one. `UpdateModuleRequest.tabId` is a required, non-nullable member that the service uses to
+   * select the exact placement being edited, so the page travels on the update the operator already
+   * submits. Naming a page the module does not occupy is refused with `module.placement_not_found`.
    */
   tabId: FormControl<number>;
 
+  /**
+   * The operator-supplied heading (`txtTitle`).
+   *
+   * MIGRATION: CARRIES NO VALIDATOR, AND THE ABSENCE IS THE REQUIREMENT. A census of
+   * `Website/admin/Modules/` finds 0 `RequiredFieldValidator`, 0 `RegularExpressionValidator` and 0
+   * `RangeValidator`; the only validators in the whole feature are four `CompareValidator`s, and none of
+   * them targets `txtTitle`. Adding a presence or length rule here would reject input the legacy screen
+   * accepted. The column bound is advertised through the native `maxlength` attribute instead, which
+   * truncates rather than invalidating and so adds no rule the legacy screen did not have.
+   */
   moduleTitle: FormControl<string>;
+
+  /** Round-tripped, not rendered: reordering has no endpoint. */
   moduleOrder: FormControl<number>;
+
+  /** Round-tripped: the bulk "all pages" affordance has no endpoint, but the stored value must survive. */
   allTabs: FormControl<boolean>;
+
+  /** Round-tripped: permission grants are a separate read-only resource here. */
   inheritViewPermissions: FormControl<boolean>;
+
+  /** Text above the module's content (`txtHeader`, `TextMode="MultiLine"` rows=6). */
   header: FormControl<string>;
+
+  /** Text below the module's content (`txtFooter`, `TextMode="MultiLine"` rows=6). */
   footer: FormControl<string>;
+
+  /** Free text validated by a date data-type check (`txtStartDate`, `valtxtStartDate`). */
   startDate: FormControl<string>;
+
+  /** Free text validated by a date data-type check (`txtEndDate`, `valtxtEndDate`). */
   endDate: FormControl<string>;
+
+  /** Round-tripped: the legacy file picker and its file-system endpoint are both out of scope. */
   iconFile: FormControl<string>;
+
+  /** One of exactly three codes (`cboVisibility`, values 0, 1 and 2). */
   visibility: FormControl<ModuleVisibility>;
+
+  /** Whether the container chrome renders (`chkDisplayTitle`, labelled "Display Container?"). */
   displayTitle: FormControl<boolean>;
-  cacheTime: FormControl<number>;
+
+  /** Free text validated by an integer data-type check (`txtCacheTime`, `valCacheTime`). */
+  cacheTime: FormControl<string>;
+
+  /** An instruction, never echoed back from the module. Seeded unset on every load. */
   setAsDefaultSettings: FormControl<boolean>;
+
+  /** An instruction, never echoed back from the module. Seeded unset on every load. */
   applyToAllModules: FormControl<boolean>;
 }
 
-/** The bound on `dbo.Modules.ModuleTitle` (`nvarchar(256) NULL`). */
+/** The bound on `dbo.Modules.ModuleTitle` (`nvarchar(256) NULL`), advertised as an attribute only. */
 const MODULE_TITLE_MAX_LENGTH = 256;
 
-/** The bound on `dbo.TabModules.IconFile` (`nvarchar(100) NULL`). */
+/** The bound on `dbo.TabModules.IconFile` (`nvarchar(100) NULL`), advertised as an attribute only. */
 const ICON_FILE_MAX_LENGTH = 100;
+
+/** `txtCacheTime` carries `maxlength="6"`; the bound is reproduced rather than widened. */
+const CACHE_TIME_MAX_LENGTH = 6;
+
+/** `txtStartDate` and `txtEndDate` both carry `maxlength="11"`. */
+const DATE_MAX_LENGTH = 11;
+
+/**
+ * The inclusive bounds of a 32-bit signed integer.
+ *
+ * The legacy integer data-type check delegated to `Int32.Parse`, so a value outside this range failed the
+ * check rather than silently wrapping. Reproducing the range keeps that behaviour.
+ */
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+
+/** The error key the two date data-type checks report. */
+const DATE_TYPE_ERROR = 'dateDataType';
+
+/** The error key the two integer data-type checks report. */
+const INTEGER_TYPE_ERROR = 'integerDataType';
 
 /**
  * The regions that start closed.
@@ -90,10 +268,12 @@ const INITIALLY_COLLAPSED: readonly ModuleSettingsSection[] = [
  * Section headings, taken from `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx`.
  *
  * MIGRATION: the resource file overrides the inline `title=` attribute the markup declares, and the two
- * disagree in one place that matters — the markup calls the second nested region "Security Settings" while
+ * disagree in one place that matters - the markup calls the second nested region "Security Settings" while
  * `Security.Text` is 'Advanced Settings'. The resource wins, because that is what the legacy screen actually
  * rendered. Two regions therefore legitimately share the heading 'Basic Settings' and two share 'Advanced
  * Settings'; each is disambiguated for assistive technology by the region it sits in, not by its wording.
+ * Defect D-M10 and defect D13 - the two duplicate section-label pairs - are reproduced rather than
+ * corrected, because renaming a region an operator recognises is not this migration's business.
  */
 const SECTION_HEADINGS: Readonly<Record<ModuleSettingsSection, string>> = {
   moduleSettings: 'Module Settings',
@@ -109,7 +289,7 @@ const SECTION_HEADINGS: Readonly<Record<ModuleSettingsSection, string>> = {
  * The three explanatory paragraphs, one per top-level region.
  *
  * MIGRATION: reproduced character for character from the resource file. The first preserves the space before
- * its closing parenthesis exactly as `ModuleSettingsHelp.Text` carries it — see the note on FIELD_HINTS for
+ * its closing parenthesis exactly as `ModuleSettingsHelp.Text` carries it - see the note on FIELD_HINTS for
  * why every one of these strings is a bound constant rather than template text.
  */
 const SECTION_INTROS: Readonly<Partial<Record<ModuleSettingsSection, string>>> = {
@@ -155,7 +335,7 @@ export type ModuleSettingsField = keyof typeof FIELD_LABELS;
  * The migrated help text, one entry per field, taken from the `pl*.Help` entries of
  * `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx`.
  *
- * MIGRATION — WHY THESE ARE CONSTANTS AND NOT TEMPLATE TEXT: Angular compiles templates with
+ * MIGRATION - WHY THESE ARE CONSTANTS AND NOT TEMPLATE TEXT: Angular compiles templates with
  * `preserveWhitespaces` disabled, which collapses every run of whitespace inside a text node to a single
  * space. Four of these strings put TWO spaces after a sentence period (`plStartDate.Help`, `plEndDate.Help`,
  * `plTitle.Help`, and `plPermissions.Help` twice), so writing them as template text would silently rewrite
@@ -165,7 +345,9 @@ export type ModuleSettingsField = keyof typeof FIELD_LABELS;
  * A second consequence, deliberate: because these are interpolated rather than parsed, the embedded bold
  * markup the legacy `InheritPermissions.Text` carried ('Inherit &lt;b&gt;View&lt;/b&gt; permissions from
  * &lt;b&gt;Page&lt;/b&gt;') renders as plain text. The emphasis is lost; the string cannot become an
- * injection vector.
+ * injection vector. Localisation itself is NOT ported - the Angular localisation package sits outside the
+ * pinned dependency set, so the 48 in-scope legacy localisation calls have no counterpart and these resource
+ * values are read for their wording alone.
  */
 const FIELD_HINTS: Readonly<Record<ModuleSettingsField, string>> = {
   friendlyName: 'Displays the name of the module.',
@@ -196,33 +378,302 @@ const FIELD_HINTS: Readonly<Record<ModuleSettingsField, string>> = {
     + 'modules in the site.',
 };
 
+// =======================================================================================================
+// THE FOUR DATA-TYPE VALIDATORS
+// =======================================================================================================
+//
+// MIGRATION: THE ONLY VALIDATORS THIS SCREEN EVER HAD WERE FOUR `CompareValidator`s, AND ALL FOUR ARE
+//   REPRODUCED AS REAL ANGULAR VALIDATORS. A case-insensitive census of `Website/admin/Modules/` returns
+//   `asp:RequiredFieldValidator` 0, `asp:RegularExpressionValidator` 0, `asp:CompareValidator` 4,
+//   `asp:CustomValidator` 0, `asp:RangeValidator` 0 and `asp:ValidationSummary` 0. The four are
+//   `valtxtStartDate` (modulesettings.ascx L78, DataTypeCheck/Date), `valtxtEndDate` (L88,
+//   DataTypeCheck/Date), `valBorder` (L138, DataTypeCheck/Integer) and `valCacheTime` (L172,
+//   DataTypeCheck/Integer). A presence rule alone would NOT be parity, so none is used and all four
+//   data-type checks are authored here. Two consequences are recorded rather than absorbed: the first two
+//   carry an id/resource-key MISMATCH in the source - the ids read `valtxtStartDate`/`valtxtEndDate` while
+//   the resource keys read `valStartDate.`/`valEndDate.` - which is reproduced as wording, not as a name;
+//   and `asp:ValidationSummary` appears 0 times in the entire `Website/` tree, so the shared error banner
+//   this screen renders is a NET-NEW affordance and not the migration of a legacy rendering path.
+//
+// MIGRATION: THE MESSAGES ARE AUTHORED WITHOUT THE LEADING BREAK TAG RATHER THAN STRIPPED AFTERWARDS.
+//   Every one of the four resource values begins with a literal `<br>`: `valStartDate.ErrorMessage` is
+//   '<br>Invalid Start Date', `valEndDate.ErrorMessage` is '<br>Invalid End Date',
+//   `valCacheTime.ErrorMessage` is '<br>Invalid Cache Time' and `valBorder.ErrorMessage` is '<br>Invalid
+//   Border (must be a number between 0 and 9)'. The tag was layout, not wording - it pushed the message
+//   onto its own line inside a table cell, which a stylesheet now does. Emitting it and then removing it
+//   would put markup through a text sink for no gain, so the wording is declared clean at source. Stripping
+//   remains the job of `core/utils/form-errors.util.ts` for SERVER-supplied strings, which this file
+//   delegates to rather than re-implementing.
+
+/** `valStartDate.ErrorMessage`, without the layout break tag the resource carries. */
+const START_DATE_INVALID_MESSAGE = 'Invalid Start Date';
+
+/** `valEndDate.ErrorMessage`, without the layout break tag the resource carries. */
+const END_DATE_INVALID_MESSAGE = 'Invalid End Date';
+
+/** `valCacheTime.ErrorMessage`, without the layout break tag the resource carries. */
+const CACHE_TIME_INVALID_MESSAGE = 'Invalid Cache Time';
+
+/**
+ * `valBorder.ErrorMessage`, without the layout break tag the resource carries.
+ *
+ * MIGRATION: THE FOURTH VALIDATOR HAS NO CONTROL TO GUARD, AND THE REASON IS A CONTRACT GAP RATHER THAN AN
+ * OMISSION HERE. `valBorder` guarded `txtBorder`, one of six placement columns - paneName, alignment,
+ * color, border, displayPrint and displaySyndicate - that `Dtos/Module/UpdateModuleRequest.cs` does not
+ * project, as `core/models/module.model.ts` records at its own update contract. The border therefore cannot
+ * be transported, so rendering an input for it could only ever produce an HTTP 400 under the API's
+ * `JsonUnmappedMemberHandling.Disallow` setting. The rule and its exact wording are preserved here, and the
+ * integer check below is the same rule `valBorder` declared, so the moment the server projects the column
+ * the control can be added without re-deriving anything. Note the wording states a 0-9 range while the
+ * declared validator was a plain integer data-type check - a legacy inconsistency, reproduced verbatim.
+ */
+const BORDER_INVALID_MESSAGE = 'Invalid Border (must be a number between 0 and 9)';
+
+/**
+ * Reproduces `asp:CompareValidator Operator="DataTypeCheck" Type="Integer"`.
+ *
+ * Blank passes, exactly as every ASP.NET validator did: an empty control was the `RequiredFieldValidator`'s
+ * business and this screen declares none. A non-blank value must be an integer `Int32.Parse` would have
+ * accepted, which means an optional sign, digits only, and a magnitude inside the 32-bit range.
+ *
+ * MIGRATION: A NEGATIVE VALUE PASSES, BECAUSE IT PASSED. `Type="Integer"` checks the TYPE and nothing else,
+ * so the legacy screen accepted a cache period of -1 and stored it. That is a latent legacy defect and it is
+ * annotated rather than corrected: adding a lower bound here would be exactly the opportunistic optimisation
+ * the migration discipline forbids, and it would reject input the legacy screen accepted.
+ *
+ * @param message The wording to report, taken verbatim from the resource file.
+ * @returns A validator reporting {@link INTEGER_TYPE_ERROR} with that wording.
+ */
+function integerDataTypeCheck(message: string): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const text = typeof control.value === 'string' ? control.value.trim() : '';
+
+    if (text.length === 0) {
+      return null;
+    }
+
+    if (!/^[+-]?\d+$/.test(text)) {
+      return { [INTEGER_TYPE_ERROR]: message };
+    }
+
+    const parsed = Number(text);
+
+    // Number() on a digits-only string is exact up to 2^53, well beyond the 32-bit range being tested, so
+    // the range test below is the whole of what `Int32.Parse` would have rejected.
+    return parsed >= INT32_MIN && parsed <= INT32_MAX ? null : { [INTEGER_TYPE_ERROR]: message };
+  };
+}
+
+/**
+ * Reproduces `asp:CompareValidator Operator="DataTypeCheck" Type="Date"`.
+ *
+ * Blank passes, for the reason given on {@link integerDataTypeCheck}. A non-blank value must be a date the
+ * runtime can resolve. The `yyyy-mm-dd` form a date-capable control produces is checked for CALENDAR
+ * correctness rather than merely for shape, because `Date.parse` accepts '2024-02-31' and silently rolls it
+ * forward to the first of March - which would let an operator save a day that does not exist and see a
+ * different one come back.
+ *
+ * @param message The wording to report, taken verbatim from the resource file.
+ * @returns A validator reporting {@link DATE_TYPE_ERROR} with that wording.
+ */
+function dateDataTypeCheck(message: string): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const text = typeof control.value === 'string' ? control.value.trim() : '';
+
+    if (text.length === 0) {
+      return null;
+    }
+
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+
+    if (parts !== null) {
+      return isCalendarDate(parts[1], parts[2], parts[3]) ? null : { [DATE_TYPE_ERROR]: message };
+    }
+
+    // The legacy control was a free-text box, so a value the operator typed in any form the runtime could
+    // resolve was accepted. `Number.isNaN` on the parsed instant is that same test.
+    return Number.isNaN(Date.parse(text)) ? { [DATE_TYPE_ERROR]: message } : null;
+  };
+}
+
+/**
+ * Whether a `yyyy`, `mm`, `dd` triple names a day that exists.
+ *
+ * Built in UTC and compared component by component, so a rolled-over value such as 31 February fails
+ * instead of being accepted as 2 or 3 March.
+ *
+ * @param year The four-digit year.
+ * @param month The two-digit month, 1-based as written.
+ * @param day The two-digit day.
+ * @returns `true` when the triple round-trips unchanged.
+ */
+function isCalendarDate(year: string, month: string, day: string): boolean {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+
+  if (m < 1 || m > 12 || d < 1 || d > 31) {
+    return false;
+  }
+
+  const probe = new Date(Date.UTC(y, m - 1, d));
+
+  return (
+    probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d
+  );
+}
+
+/**
+ * Whether an instant carries the legacy null-date sentinel.
+ *
+ * MIGRATION: THE COMPARISON IS ON THE UTC DATE PART ALONE, BECAUSE THAT IS WHAT THE LEGACY COMPARISON WAS.
+ * `Library/Components/Shared/Null.vb` sets `NullDate` to `Date.MinValue` (L68) and its `IsNull` overload
+ * for dates (L222-L224) compares `objDate.Date.Equals(NullDate.Date)` under the source's own comment about
+ * avoiding "subtle time differences". Any instant whose calendar date is 0001-01-01 is therefore the
+ * sentinel EVEN WITH A NON-ZERO TIME COMPONENT, which is why this is a three-component test and not a
+ * timestamp equality: `getTime() === -62135596800000` would miss `0001-01-01T09:30:00Z`, and a year
+ * threshold such as `year < 1900` would wrongly blank a genuinely stored early date.
+ *
+ * The upper sentinel has no counterpart. 9999-12-31 is a REAL value in this schema and must render.
+ *
+ * @param instant An ISO 8601 instant, or `null`.
+ * @returns `true` when the value is absent or is the sentinel.
+ */
+function isNullDate(instant: string | null): boolean {
+  if (instant === null || instant.trim().length === 0) {
+    return true;
+  }
+
+  const parsed = new Date(instant);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return true;
+  }
+
+  // MIGRATION: THE UTC DATE PART ALONE, NEVER THE TIMESTAMP. `Null.vb:L222-L224` compares
+  // `objDate.Date.Equals(NullDate.Date)` with the standing comment that this "avoids subtle time
+  // differences", so ANY instant whose calendar day is 0001-01-01 is the sentinel even with a non-zero time
+  // component. A `getTime()` equality against `Date.MinValue` would miss exactly those rows, and a year
+  // threshold would blank real dates. There is no date library in the pinned dependency surface, so the three
+  // UTC accessors are the whole mechanism.
+  return (
+    parsed.getUTCFullYear() === 1 && parsed.getUTCMonth() === 0 && parsed.getUTCDate() === 1
+  );
+}
+
+/**
+ * Narrows an instant to the date a date-capable control expects.
+ *
+ * The value is SLICED, never parsed, once the sentinel test has passed. Constructing a `Date` and then
+ * formatting it locally shifts the value into the browser's zone and moves the date by a day either side of
+ * midnight, so a module scheduled to appear on the first of the month would be shown - and written back - as
+ * the last day of the previous one.
+ *
+ * @param instant An ISO 8601 instant, or `null`.
+ * @returns The leading `yyyy-mm-dd`, or an empty string for an absent or sentinel value.
+ */
+function toDateInputValue(instant: string | null): string {
+  if (isNullDate(instant) || instant === null) {
+    return '';
+  }
+
+  return instant.slice(0, 10);
+}
+
+/**
+ * Collapses emptied text to the wire's `null`.
+ *
+ * MIGRATION: this applies to the NULLABLE TEXT members only - the heading, the header, the footer, the icon
+ * and the two dates. It must never be generalised into "drop falsy values": the update body is a whole-row
+ * replacement in which `false` and `0` are data, and the settings body is a pair of string maps in which the
+ * empty string is a legitimate stored value.
+ *
+ * @param value The control's text.
+ * @returns The trimmed text, or `null` when nothing was entered.
+ */
+function textOrNull(value: string): string | null {
+  const trimmed = value.trim();
+
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Resolves a route-supplied identifier to a number.
+ *
+ * MIGRATION: EVERY GUARD HERE IS `undefined`-BASED, NEVER TRUTH-BASED, AND THAT IS A SCHEMA CONSTRAINT.
+ * `dbo.Modules.ModuleID` and `dbo.Tabs.TabID` are both `IDENTITY(0, 1)`
+ * (01.00.00.SqlDataProvider L221 and L140), so **0 is the first real row of each table**. `if (id)`,
+ * `id > 0`, `id ?? 0` and every relative of theirs would treat module 0 and page 0 as absent. Router inputs
+ * arrive as strings, so the coercion is explicit and its failure is explicit too.
+ *
+ * @param value A route parameter, a query parameter, or a number a caller assigned directly.
+ * @returns The identifier, or `undefined` when none was supplied or the value was not an integer.
+ */
+function parseIdentifier(value: number | string | null | undefined): number | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : undefined;
+  }
+
+  const text = value.trim();
+
+  if (!/^[+-]?\d+$/.test(text)) {
+    return undefined;
+  }
+
+  const parsed = Number(text);
+
+  return parsed >= INT32_MIN && parsed <= INT32_MAX ? parsed : undefined;
+}
+
 /**
  * The confirmation the legacy screen raised before a deletion.
  *
- * MIGRATION: `ModuleSettings.ascx.vb` wired its delete affordance to a client-side confirmation. The legacy
- * resource carries no module-specific wording, so the shared confirmation phrasing is used and the module's
- * own name is interpolated to make the target unambiguous — which the legacy prompt did not do.
+ * MIGRATION: the legacy delete ALREADY prompted - `ModuleSettings.ascx.vb:L205` wires
+ * `ClientAPI.AddButtonConfirm(cmdDelete, Localization.GetString("DeleteItem"))` - so a confirmation dialog
+ * is parity rather than an addition. The shared wording is `DeleteItem.Text`, 'Are You Sure You Wish To
+ * Delete This Item?', from `SharedResources.resx`; the module's own name is interpolated below to make the
+ * target unambiguous, which the legacy prompt did not do.
  */
 const DELETE_CONFIRM_TITLE = 'Delete Module';
 
 /** The label on the destructive confirmation's accept affordance. */
 const DELETE_CONFIRM_LABEL = 'Delete';
 
+/** The shared wording, reproduced verbatim, used when the module carries no name to interpolate. */
+const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
+
 /**
- * The message shown when no module has been supplied.
+ * The message shown when no module has resolved.
  *
  * The screen is addressed by identifier, so an unresolved identifier is a legitimate state rather than an
- * error: it is what a stale bookmark or a deleted module produces.
+ * error: it is what a stale bookmark or an already-removed module produces.
  */
 const NO_MODULE_MESSAGE = 'No module settings are available.';
 
-/** The validation message for a negative cache period, from `ModuleSettings.ascx.resx` valCacheTime. */
-const CACHE_TIME_INVALID_MESSAGE = 'Invalid Cache Time';
+/** Confirmation wording for a completed save, at success severity. */
+const SAVED_MESSAGE = 'The module settings were saved.';
 
-/** The validation message for a title longer than its column. */
-const MODULE_TITLE_TOO_LONG_MESSAGE = 'Title must be 256 characters or fewer.';
+/** Confirmation wording for a completed removal, at success severity. */
+const REMOVED_MESSAGE = 'The module was removed from this page.';
 
-/** The visibility choices, from `modulesettings.ascx:L144-L148`. */
+/**
+ * The visibility choices, from `modulesettings.ascx:L144-L148`.
+ *
+ * MIGRATION: THE THREE ORDINALS ARE LOAD-BEARING AND `0` IS MEANINGFUL. `ModuleInfo.vb:L30-L34` declared a
+ * public visibility enumeration with `Maximized`, `Minimized` and `None` and NO explicit values, so the
+ * implicit 0, 1 and 2 are the stored codes and the markup's `value="0|1|2"` matches them exactly. The
+ * enumeration is renamed to `ModuleVisibility` in the target and the legacy spelling appears nowhere.
+ * `None` means "renders without its container chrome" - a rendering instruction the operator CHOSE - so it
+ * is never treated as an absence and no expression of the form `visibility ?? Maximized` appears here.
+ * Selection is by enumeration member, never by truthiness, which is also what structurally prevents the
+ * legacy defect D-M2: `cboAlign.Items.FindByValue(...).Selected = True` at `ModuleSettings.ascx.vb:L144`
+ * was unguarded and threw a `NullReferenceException` whenever the stored value was not one of the offered
+ * items. A typed control cannot reach that state.
+ */
 const VISIBILITY_CHOICES: readonly SelectOption<ModuleVisibility>[] = [
   { value: MODULE_VISIBILITY.maximized, label: 'Maximized' },
   { value: MODULE_VISIBILITY.minimized, label: 'Minimized' },
@@ -230,61 +681,143 @@ const VISIBILITY_CHOICES: readonly SelectOption<ModuleVisibility>[] = [
 ];
 
 /**
- * Narrows an instant to the date a `<input type="date">` expects.
+ * The definition-level cache default that means "this definition records no default".
  *
- * The value is SLICED, never parsed. Constructing a `Date` from the instant and then formatting it locally
- * shifts the value into the browser's zone and moves the date by a day either side of midnight, so a module
- * scheduled to appear on the first of the month would be shown — and written back — as the last day of the
- * previous one.
- *
- * @param instant An ISO 8601 instant, or `null`.
- * @returns The leading `yyyy-mm-dd`, or an empty string when there is no instant.
+ * `Null.vb:L43` returns -1 for `NullInteger`, and `ModuleSettings.ascx.vb:L138` compares the definition's
+ * `DefaultCacheTime` against exactly that value.
  */
-function toDateInputValue(instant: string | null): string {
-  return instant === null ? '' : instant.slice(0, 10);
-}
+const NO_CACHE_DEFAULT = -1;
+
+/**
+ * The status a refusal arrives with.
+ *
+ * Surfaced at WARNING severity rather than error, on the legacy screen's own precedent: the whole of
+ * `Website/admin/Security/AccessDenied.ascx.vb` is presentation, performs no permission check of its own,
+ * and both branches of its `Page_Load` (L43 and L45) raise `ModuleMessage.ModuleMessageType.YellowWarning`.
+ */
+const FORBIDDEN_STATUS = 403;
+
+/** The status an unresolved identifier arrives with. */
+const NOT_FOUND_STATUS = 404;
+
+/** The status a rejected write arrives with. */
+const CONFLICT_STATUS = 409;
+
+/** The route this screen returns to when the operator finishes or abandons. */
+const MODULE_LIST_ROUTE = '/modules';
+
+/**
+ * The screen's heading when a caller supplies none.
+ *
+ * Taken from `ModuleSettings.ascx.resx`'s own `ModuleSettings.Text`, which is the wording the legacy screen
+ * showed above its first section head.
+ */
+const DEFAULT_HEADING = 'Module Settings';
+
+/**
+ * The label used for the occupied page when the tenant's page list does not contain it.
+ *
+ * Reached when the module sits on a page the list omits - a host-level module, whose `portalId` is `null` and
+ * for which no portal page list is read, or a page in the recycle bin. Naming it neutrally is honest: the
+ * page's own name is genuinely unknown here, and inventing one would be worse than saying so.
+ */
+const CURRENT_PAGE_LABEL = 'This page';
 
 /**
  * The module settings screen, replacing `Website/admin/Modules/modulesettings.ascx` and its code-behind.
  *
- * The screen is purely presentational: it accepts the module's stored state and the lookup lists it needs,
- * and it emits the operator's intent. It performs no data access of its own, which is what keeps the
- * nine-service inventory closed and keeps this component testable without a transport.
+ * Mounted at `modules/:moduleId/settings`. The route parameter arrives on the {@link moduleId} input because
+ * the application enables `withComponentInputBinding()`, which binds a parameter onto an input of the SAME
+ * NAME - so this input's name is a contract with the route table and not a local choice.
+ *
+ * The screen owns its own orchestration. It reads and writes through `core/state/module.store.ts`, which is
+ * the single place `ModuleService` and `TabService` are called from; no business logic lives in either
+ * service, and this component never builds a URL, never sets a header - the correlation identifier is the
+ * interceptor's job - and declares no provider of its own, because every provider is registered in
+ * `app.config.ts`.
  *
  * DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
  *
- *  - The "Move To Page" affordance (cboTab, `plTab.Text` 'Move To Page:') is NOT carried across. The agreed
- *    API inventory in the action plan enumerates this resource's operations explicitly and contains no move
- *    operation; adding one would be a new endpoint, service member and repository member outside that
- *    enumeration. Recorded as an out-of-scope divergence rather than silently dropped.
- *  - The pane, alignment, colour, border, print and syndication controls are NOT carried across. Their
- *    columns remain mapped in the domain, but AAP 0.2.2 excludes the skinning and server-rendering surface
- *    they configure, and neither the module read contract nor `UpdateModuleRequest` transports them. The API
- *    now rejects undeclared JSON members, so rendering controls that can only produce a 400 would be
- *    actively misleading. The stored values are preserved because the update projection never writes them.
- *  - The module container selector (ctlModuleContainer) is NOT carried across, because a container is a skin
- *    object and skinning is excluded. The stored container value is preserved untouched by the server on
- *    every update rather than being cleared, so nothing is lost by not editing it here.
- *  - The two date fields paired a text box with a pop-up calendar link. A native date control provides the
- *    same affordance, so no calendar component is introduced.
- *  - The permission grid is described but not rendered here: permissions are their own resource with their
- *    own screen, and the legacy grid posted back through a control that has no counterpart. The inherit
- *    switch, which IS a column on the module, is kept.
- *  - The legacy inherit label carried embedded bold markup; it renders as plain text for the reason given on
- *    {@link FIELD_HINTS}.
- *  - Rich text editing is not carried forward: the header and footer are plain multi-line controls.
+ *  - MIGRATION: SIX PLACEMENT CONTROLS ARE NOT RENDERED, ON THE CONTRACT'S OWN INSTRUCTION. The legacy
+ *    screen edited `paneName`, `alignment` (cboAlign), `color` (txtColor), `border` (txtBorder),
+ *    `displayPrint` (chkDisplayPrint) and `displaySyndicate` (chkDisplaySyndicate). None is projected onto
+ *    `Dtos/Module/UpdateModuleRequest.cs`, and `core/models/module.model.ts` states the consequence
+ *    directly: the six "are neither rendered nor transported - the module-settings screen omits the controls
+ *    and the stored columns are preserved by not projecting them through the update at all". The API sets
+ *    `JsonUnmappedMemberHandling.Disallow`, so sending one is an HTTP 400 rather than a silent no-op, and
+ *    rendering a control whose value can never persist would tell the operator their edit was saved when it
+ *    was not. The alignment control is the sharpest loss: its fourth item carried `value=""`
+ *    (modulesettings.ascx L126), which is `Null.NullString` and therefore LEGITIMATE TRANSMITTED DATA rather
+ *    than "unset" - so were the column ever projected, the empty string would have to travel un-elided and
+ *    could not be collapsed to `null` or detected by truthiness.
+ *  - MIGRATION: THE PERMISSION GRID AND ITS INHERIT SWITCH ARE NOT EDITABLE HERE. `dgPermissions` (the real
+ *    control id; the sibling label's `controlname="ctlPermissions"` is a legacy mismatch) and
+ *    `chkInheritPermissions` posted grants back through a Web Forms control. Grant mutation has no endpoint
+ *    - the permission resource is read-only - so the grid is not rendered. `inheritViewPermissions` IS a
+ *    column on the update contract, so its stored value is round-tripped and never cleared by omission.
+ *  - MIGRATION: `ctlModuleContainer` IS DROPPED because a container is a skin object and the skinning
+ *    surface is excluded; `ctlIcon` is dropped because the legacy URL control is excluded and no
+ *    file-selection endpoint exists. `iconFile` is a column on the contract, so it too is round-tripped.
+ *  - MIGRATION: `chkAllTabs`, `chkDefault` AND `chkAllModules` ARE NOT OFFERED AS BULK AFFORDANCES.
+ *    `chkAllTabs` lived in tblSecurity rather than tblOther and its `AllTabs` column (`ModuleInfo.vb:L248`)
+ *    IS real persisted data, so the value is round-tripped even though the toggle is gone. `chkDefault` and
+ *    `chkAllModules` were backed by `IsDefaultModule` (L590) and `AllModules` (L599), both carrying
+ *    `<XmlIgnore()>`, which proves they were transient UI intents rather than stored facts; their contract
+ *    counterparts are instructions the server acts on after the update, so both are seeded unset on every
+ *    load and sent explicitly false. Echoing a previous instruction back onto the form would reapply it.
+ *  - MIGRATION: `pnlSpecific` AND ITS HELP AFFORDANCES RENDER NOTHING. The legacy body was loaded at run
+ *    time at L458-L476 by the excluded Web Forms module loader. The region is kept as a declared home; no
+ *    control is loaded into it and no endpoint is invented to supply one.
+ *  - MIGRATION: `cmdStartCalendar` AND `cmdEndCalendar` ARE DROPPED. Both were `asp:hyperlink` launchers
+ *    wired at L196-L197 to `Common.Utilities.Calendar.InvokePopupCal`. The shared component library is
+ *    closed at ten members and contains no date picker, so a date-capable native control carries the
+ *    affordance and no eleventh shared member is introduced.
+ *  - MIGRATION: RICH TEXT IS REDUCED TO PLAIN MULTI-LINE TEXT. The legacy editor provider is out of scope,
+ *    so the header and footer are plain text areas and their values are bound as text, never as markup.
+ *  - MIGRATION: THE REMOVAL IS SOFT AND THERE IS NO WAY BACK. `cmdDelete_Click` (L300-L312) called
+ *    `DeleteTabModule(TabId, ModuleId)` (`ModuleController.vb:L837`) and NOT `DeleteModule` (L819): the
+ *    placement row goes, the remaining placements are reordered, and only when the module is left on no page
+ *    at all is it marked deleted. No recycle-bin restore or purge endpoint exists, so this screen offers no
+ *    undo. Defect D-M4 is annotated here rather than reproduced: the legacy comment at L290-L292 claims the
+ *    handler deletes a PORTAL when the caller is a super user, which is wrong on both counts - L305 calls
+ *    `DeleteTabModule` and performs no super-user test whatsoever.
+ *  - MIGRATION: THE COPY AND DELETE-ALL BRANCH IS DROPPED. L411-L418 called `CopyModule` and
+ *    `DeleteAllModules`; neither has an endpoint, and neither is invented.
+ *  - MIGRATION: `objModule.IsDeleted = False` AT L364 IS NOT REPRODUCED. Every legacy save silently
+ *    UN-DELETED the module it was editing. The stored value is round-tripped instead, which is what the
+ *    update contract asks for in terms - the member stays required "so a caller must preserve the loaded
+ *    state deliberately rather than clearing it by omission". Restoring a module is a recycle-bin operation
+ *    and this screen is not one; the legacy behaviour is recorded here as a defect rather than carried over.
+ *  - MIGRATION: DEFECT D-M3 IS ANNOTATED AND NEITHER HALF IS REPRODUCED. `cboTab` was selected TWICE with
+ *    contradictory values - a guarded set at L129-L131 and then an unguarded
+ *    `cboTab.Items.FindByValue(CType(TabId, String)).Selected = True` at L145. The form is seeded once, from
+ *    the loaded placement, and a page absent from the list cannot throw.
+ *  - MIGRATION: THE TAB-ADMINISTRATOR DISABLING IS RETAINED BUT CANNOT BE DECIDED CLIENT-SIDE. L215-L220
+ *    and L333-L338 disabled `chkAllTabs`, `chkDefault`, `chkAllModules` and `cboTab` for a caller who
+ *    administered the page but not the portal. Three of those four controls are gone; the fourth survives,
+ *    so {@link canManageAllPages} still locks the far-reaching controls when a caller supplies it. No role
+ *    is inferred here - there is no endpoint that would answer the question - and the server remains
+ *    authoritative, answering 403.
+ *  - MIGRATION: TWO LEGACY SETTINGS SCOPES COLLAPSE INTO ONE WHOLE-OBJECT PUT. `GetModuleSettings`
+ *    (`ModuleController.vb:L1237`) and `GetTabModuleSettings` (L1336) were distinct reads, and per-key
+ *    mutation went through six separate members (L1283, L1306, L1318, L1373, L1395 and L1407). The target
+ *    reads and replaces both maps in one document, `ModuleSettingsBag`, whose two members keep the module
+ *    scope and the placement scope apart exactly as `dbo.ModuleSettings` and `dbo.TabModuleSettings` do. No
+ *    per-key mutation is issued and no settings key is invented: this screen reads the bag so an operator's
+ *    stored settings survive a save, and writes back only what it read.
  */
 @Component({
   selector: 'app-module-settings',
   standalone: true,
-  // ReactiveFormsModule for the typed form; the four shared components are the only presentational
-  // primitives this screen needs. There is deliberately no form-field or data-table import, because neither
-  // exists in the shared inventory — the global style layer styles bare form elements directly.
+  // ReactiveFormsModule for the typed form; the five shared components are the only presentational
+  // primitives this screen needs. The shared library is closed at ten members, so the collapsible regions
+  // are built from semantic markup in the template rather than from an eleventh shared component.
   imports: [
     ReactiveFormsModule,
     PageHeaderComponent,
     LoadingSpinnerComponent,
     EmptyStateComponent,
+    ErrorBannerComponent,
     ConfirmDialogComponent,
   ],
   templateUrl: './module-settings.component.html',
@@ -292,36 +825,573 @@ function toDateInputValue(instant: string | null): string {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ModuleSettingsComponent {
-  /** The typed form backing every editable field on the screen. */
+  // -----------------------------------------------------------------------------------------------------
+  // COLLABORATORS
+  // -----------------------------------------------------------------------------------------------------
+  // Resolved with `inject()` into private readonly fields rather than through constructor parameters, and
+  // no `providers` array is declared: every provider this screen relies on is registered once in
+  // `app.config.ts`, and a component-level provider would give this screen a private copy of shared state.
+
+  /** The single place `ModuleService` and `TabService` are reached from. */
+  private readonly store = inject(ModuleStore);
+
+  /** The advisory surface. A refusal is surfaced here at warning severity, not as a danger banner. */
+  private readonly notifications = inject(NotificationService);
+
+  /** Used only to return to the listing, which is what the legacy redirect at L421 did. */
+  private readonly router = inject(Router);
+
+  // -----------------------------------------------------------------------------------------------------
+  // THE FORM
+  // -----------------------------------------------------------------------------------------------------
+
+  /**
+   * The typed form backing every editable field on the screen.
+   *
+   * The three coerced fields are text controls; see {@link ModuleSettingsFormModel} for why. Only the four
+   * measured data-type checks are attached, and nothing else: no presence rule, no length rule and no bound
+   * appears on any control the legacy screen left unvalidated.
+   */
   protected readonly form = new FormGroup<ModuleSettingsFormModel>({
     tabId: new FormControl(0, { nonNullable: true }),
-    moduleTitle: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.maxLength(MODULE_TITLE_MAX_LENGTH)],
-    }),
+    moduleTitle: new FormControl('', { nonNullable: true }),
     moduleOrder: new FormControl(0, { nonNullable: true }),
     allTabs: new FormControl(false, { nonNullable: true }),
-    inheritViewPermissions: new FormControl(true, { nonNullable: true }),
+    inheritViewPermissions: new FormControl(false, { nonNullable: true }),
+    // MIGRATION: RICH TEXT IS REDUCED TO PLAIN TEXT, AND THE WORDING IS AUTHORED RATHER THAN LOCALISED. The
+    // legacy `txtHeader` and `txtFooter` were `TextMode="MultiLine"` rows=6 entries whose content the excluded
+    // FCK editor provider could dress up; the target renders a plain textarea, so markup typed here is stored
+    // and returned as text and is never bound as HTML. Their labels and hints, like every string on this
+    // screen, are taken verbatim from `ModuleSettings.ascx.resx` and written into the source: `@angular/
+    // localize` is outside the pinned dependency surface, so none of the 48 in-scope legacy localisation calls
+    // is reproduced and the resource files are read for WORDING ONLY.
     header: new FormControl('', { nonNullable: true }),
     footer: new FormControl('', { nonNullable: true }),
-    startDate: new FormControl('', { nonNullable: true }),
-    endDate: new FormControl('', { nonNullable: true }),
-    iconFile: new FormControl('', {
+    startDate: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(ICON_FILE_MAX_LENGTH)],
+      validators: [dateDataTypeCheck(START_DATE_INVALID_MESSAGE)],
     }),
-    visibility: new FormControl<ModuleVisibility>(MODULE_VISIBILITY.maximized, { nonNullable: true }),
+    endDate: new FormControl('', {
+      nonNullable: true,
+      validators: [dateDataTypeCheck(END_DATE_INVALID_MESSAGE)],
+    }),
+    iconFile: new FormControl('', { nonNullable: true }),
+    visibility: new FormControl<ModuleVisibility>(MODULE_VISIBILITY.maximized, {
+      nonNullable: true,
+    }),
     displayTitle: new FormControl(true, { nonNullable: true }),
-    cacheTime: new FormControl(0, { nonNullable: true, validators: [Validators.min(0)] }),
+    cacheTime: new FormControl('', {
+      nonNullable: true,
+      validators: [integerDataTypeCheck(CACHE_TIME_INVALID_MESSAGE)],
+    }),
     setAsDefaultSettings: new FormControl(false, { nonNullable: true }),
     applyToAllModules: new FormControl(false, { nonNullable: true }),
   });
 
-  /** The regions currently closed. Seeded from the legacy `isexpanded` attributes. */
-  protected readonly collapsed = new Set<ModuleSettingsSection>(INITIALLY_COLLAPSED);
+  // -----------------------------------------------------------------------------------------------------
+  // LOCAL STATE
+  // -----------------------------------------------------------------------------------------------------
+
+  /** The module addressed by the route, or `undefined` before the parameter resolves. */
+  private readonly addressedModuleId = signal<number | undefined>(undefined);
+
+  /** The placement addressed by a query parameter, or `undefined` to address the module itself. */
+  private readonly addressedTabModuleId = signal<number | undefined>(undefined);
+
+  /** The state a caller seeded the form from, or `null` to follow the loaded module. */
+  private readonly seeded = signal<ModuleSettingsSeed | null>(null);
+
+  /**
+   * The picker's options, derived from the tenant's page list and the occupied page.
+   *
+   * A `computed()` rather than a field an effect recomputes: the options are a pure function of the two
+   * signals they read, so deriving them reactively means they can never fall out of step, and no effect can
+   * overwrite a list a caller supplied.
+   */
+  private readonly derivedPages = computed<readonly SelectOption<number>[]>(() => {
+    const detail = this.store.module();
+
+    // MIGRATION: THE SELECTION IS MADE ONCE, FROM ONE SOURCE. `ModuleSettings.ascx.vb` selected `cboTab`
+    // TWICE with contradictory values - a guarded set at L129-L131 and then an UNGUARDED
+    // `cboTab.Items.FindByValue(CType(TabId, String)).Selected = True` at L145 that threw a null reference
+    // whenever the occupied page was absent from the bound list. Neither the double set nor the unguarded
+    // lookup is reproduced: the option list is derived here and the occupied page is guaranteed to be in it,
+    // and the selection itself is the form control's value. The defect is annotated, not fixed in place.
+    return buildPageOptions(this.store.tabs(), detail === null ? undefined : detail.tabId);
+  });
+
+  /** The resolved heading. Never blank, because the shared page header refuses a blank title. */
+  private headingText: string = DEFAULT_HEADING;
+
+  /** A caller-pinned loading flag, or `null` to follow the store. */
+  private pinnedLoading: boolean | null = null;
+
+  /** A caller-pinned saving flag, or `null` to follow the store. */
+  private pinnedSaving: boolean | null = null;
+
+  /** A caller-pinned removal affordance, or `null` to follow the loaded module. */
+  private pinnedCanDelete: boolean | null = null;
+
+  /** A caller-pinned page list, or `null` to follow the tenant's pages. */
+  private pinnedPages: readonly SelectOption<number>[] | null = null;
+
+  /**
+   * The placement the form was last seeded for, so a store refresh does not discard an edit in progress.
+   *
+   * `undefined` means "nothing seeded yet". It is NEVER compared against 0 or -1, because a placement
+   * identity of 0 would be a legitimate row.
+   */
+  private seededPlacement: number | undefined = undefined;
 
   /** Whether the destructive confirmation is showing. */
-  protected removalPending = false;
+  private readonly removalOpen = signal(false);
+
+  /** The problem document to surface in the banner, or `null`. */
+  private readonly currentProblem = signal<ProblemDetails | null>(null);
+
+  /** Whether a caller has assigned {@link canManageAllPages} explicitly. */
+  private privilegeAssigned = false;
+
+  /** The backing field for {@link canManageAllPages}. */
+  private allPagesManageable = false;
+
+  /** The identity the definition lookup was last issued for, so it is issued once per definition. */
+  private definitionRequested: number | undefined = undefined;
+
+  /** The tenant the page lookup was last issued for, so it is issued once per tenant. */
+  private tabsRequested: number | undefined = undefined;
+
+  /** The failure already surfaced, so one refusal produces one advisory. */
+  private failureSurfaced: ProblemDetails | null = null;
+
+  /**
+   * Whether a submission raised FROM THIS SCREEN is still outstanding.
+   *
+   * The store is provided at the root, so its write flags settle for reasons this screen did not cause. This
+   * latch is what makes {@link concludeSubmission} act on THIS screen's own save and on nothing else. It is a
+   * signal rather than a plain field so that the observer's dependency on it is explicit and tracked.
+   */
+  private readonly submissionPending = signal(false);
+
+  // -----------------------------------------------------------------------------------------------------
+  // ROUTE INPUTS
+  // -----------------------------------------------------------------------------------------------------
+
+  /**
+   * The module to edit, supplied by the `:moduleId` route parameter.
+   *
+   * THE NAME IS A CONTRACT. `app.config.ts` enables `withComponentInputBinding()`, which binds a route
+   * parameter onto an input of the same name; renaming this input would break the binding SILENTLY, with no
+   * compile error and no runtime message - the screen would simply never resolve a module. The server side
+   * agrees on the spelling too: the authorisation handler resolves module scope by looking for `moduleId`
+   * and then `id`.
+   *
+   * Router inputs arrive as STRINGS, so the value is coerced explicitly and a value that is not an integer
+   * resolves to `undefined` rather than to a number that happens to parse.
+   *
+   * @param value The route parameter, or a number a caller assigns directly.
+   */
+  @Input()
+  public set moduleId(value: number | string | null | undefined) {
+    this.addressedModuleId.set(parseIdentifier(value));
+  }
+
+  /** The module being edited, or `undefined` before the route parameter resolves. */
+  public get moduleId(): number | undefined {
+    return this.addressedModuleId();
+  }
+
+  /**
+   * The single placement to address, supplied by an optional `tabModuleId` query parameter.
+   *
+   * Omitting it addresses the module itself, which is a materially different request from naming one of its
+   * placements, so no default is supplied.
+   *
+   * @param value The query parameter, or a number a caller assigns directly.
+   */
+  @Input()
+  public set tabModuleId(value: number | string | null | undefined) {
+    this.addressedTabModuleId.set(parseIdentifier(value));
+  }
+
+  /** The placement being addressed, or `undefined` when the module itself is. */
+  public get tabModuleId(): number | undefined {
+    return this.addressedTabModuleId();
+  }
+
+  // -----------------------------------------------------------------------------------------------------
+  // PRESENTATION INPUTS
+  // -----------------------------------------------------------------------------------------------------
+  //
+  // ⚠ EVERY SETTER BELOW ACCEPTS `undefined`, AND THAT IS NOT DEFENSIVE PADDING - IT IS REQUIRED FOR THE
+  //   SCREEN TO RENDER AT ALL. `withComponentInputBinding()` does not bind only the inputs a route happens
+  //   to name. On every activation it reflects the component's inputs and calls
+  //   `setInput(templateName, data[templateName])` for EVERY ONE of them, where `data` is the merged query
+  //   parameters, path parameters and route data. An input whose name is not a key of that object is
+  //   therefore assigned `undefined` - not left alone, not left at its field initialiser, and not skipped.
+  //
+  //   This route is `modules/:moduleId/settings`, so `moduleId` is the ONLY name the router can supply.
+  //   `heading`, `settings`, `loading`, `saving`, `canDelete`, `pages` and `canManageAllPages` are all
+  //   overwritten with `undefined` the moment the route activates. TypeScript cannot see it: the assignment
+  //   happens through the framework's reflection, so a setter declared to take `ModuleSettingsSeed | null`
+  //   compiles perfectly and still receives `undefined` at run time.
+  //
+  //   Measured consequence when the setters did NOT accept it: `set settings(undefined)` passed its
+  //   `!== null` guard, dereferenced `undefined.tabModuleId` and threw out of `activateRoutes`; the template
+  //   then dereferenced `undefined.friendlyName` and threw on EVERY change-detection pass, which aborts the
+  //   update function part-way and leaves the DOM half-built - no control ids, no labels, no options in the
+  //   page picker, no visibility radios; and the blank `heading` tripped the shared page header's own
+  //   non-blank-title guard. The screen rendered an empty form skeleton with nine uncaught errors and no
+  //   visible failure of any kind. Unit tests cannot catch this, because `TestBed` never runs the router's
+  //   input binder. Hence the explicit `undefined` handling and the regression guard in the spec.
+  //
+  // EACH OF THESE READS THE STORE DIRECTLY UNLESS A CALLER HAS ASSIGNED IT, AND THAT SHAPE IS DELIBERATE.
+  // The obvious alternative - an `effect()` that copies the store's signals onto plain fields - renders a
+  // frame behind: a component effect runs as part of the component's own refresh, so the template can be
+  // evaluated against the PREVIOUS value and needs a second change-detection pass to catch up. In a browser
+  // the extra pass always arrives, which is exactly what makes the fault so unpleasant - it is invisible
+  // until something renders once and never again, and a screen stuck behind its own loading indicator is
+  // indistinguishable from a screen whose data never arrived. Reading the signal inside the getter removes
+  // the ordering question altogether: the template sees the current value in the pass that asked for it.
+  //
+  // Assigning any of them pins it, so a host or a test still drives the screen exactly as before.
+
+  /**
+   * The screen's heading.
+   *
+   * @param value The heading to show, or `null`/`undefined`/blank to take the default.
+   */
+  @Input()
+  public set heading(value: string | null | undefined) {
+    const candidate = typeof value === 'string' ? value.trim() : '';
+
+    // The shared page header REFUSES a blank title - it is rendered as the page's single h1 and an unnamed
+    // heading is an accessibility defect - so a blank must resolve to the default here rather than reach it.
+    this.headingText = candidate.length > 0 ? candidate : DEFAULT_HEADING;
+  }
+
+  /** The screen's heading. Never blank. */
+  public get heading(): string {
+    return this.headingText;
+  }
+
+  /**
+   * The module and placement being edited, or `null` when none has resolved.
+   *
+   * Assigning re-seeds the form, so the screen never shows a value the loaded state does not hold.
+   *
+   * @param value The state to show.
+   */
+  @Input()
+  public set settings(value: ModuleSettingsSeed | null | undefined) {
+    // `undefined` means "the router had nothing of this name", which is NOT the same as a caller clearing
+    // the screen with an explicit `null`. It must leave the screen following the store, so it is normalised
+    // to `null` and no seeding is attempted.
+    const supplied = value ?? null;
+
+    this.seeded.set(supplied);
+
+    if (supplied !== null) {
+      this.seededPlacement = supplied.tabModuleId;
+      this.seed(supplied);
+    }
+  }
+
+  /**
+   * The module and placement being edited, or the loaded module, or `null`.
+   *
+   * NEVER `undefined`: the template dereferences this value, so the absent case must be exactly one thing.
+   */
+  public get settings(): ModuleSettingsSeed | null {
+    const explicit = this.seeded();
+
+    return explicit !== null ? explicit : this.store.module();
+  }
+
+  /**
+   * Whether the module is still being fetched.
+   *
+   * Both reads matter: the settings bag is fetched alongside the module and a save replaces it, so showing
+   * the form before it has arrived would let a save empty settings the screen never displayed.
+   *
+   * @param value Whether to report the screen as loading, pinning the value.
+   */
+  @Input()
+  public set loading(value: boolean | null | undefined) {
+    this.pinnedLoading = typeof value === 'boolean' ? value : null;
+  }
+
+  /** Whether the module is still being fetched. */
+  public get loading(): boolean {
+    return this.pinnedLoading ?? (this.store.moduleLoading() || this.store.settingsLoading());
+  }
+
+  /**
+   * Whether a submission is in flight.
+   *
+   * @param value Whether to report the screen as saving, pinning the value.
+   */
+  @Input()
+  public set saving(value: boolean | null | undefined) {
+    this.pinnedSaving = typeof value === 'boolean' ? value : null;
+  }
+
+  /** Whether a submission is in flight. */
+  public get saving(): boolean {
+    return this.pinnedSaving ?? (this.store.saving() || this.store.settingsSaving());
+  }
+
+  /**
+   * Whether a removal affordance should be offered.
+   *
+   * A module that has resolved can be removed - the removal endpoint exists and the whole route is already
+   * gated on the module-edit policy - so the affordance follows the module rather than being defaulted off.
+   *
+   * @param value Whether to offer removal, pinning the value.
+   */
+  @Input()
+  public set canDelete(value: boolean | null | undefined) {
+    this.pinnedCanDelete = typeof value === 'boolean' ? value : null;
+  }
+
+  /** Whether a removal affordance should be offered. */
+  public get canDelete(): boolean {
+    return this.pinnedCanDelete ?? (this.store.module() !== null);
+  }
+
+  /**
+   * The portal pages offered by the "Move To Page" picker.
+   *
+   * @param value The pages to offer, pinning the list.
+   */
+  @Input()
+  public set pages(value: readonly SelectOption<number>[] | null | undefined) {
+    this.pinnedPages = Array.isArray(value) ? value : null;
+  }
+
+  /** The pages offered by the picker: the caller's list when one was supplied, otherwise the tenant's. */
+  public get pages(): readonly SelectOption<number>[] {
+    return this.pinnedPages ?? this.derivedPages();
+  }
+
+  /**
+   * Whether the caller may change the settings that reach beyond the page being edited.
+   *
+   * Locking is applied through the reactive forms API rather than through a `disabled` attribute binding:
+   * binding the attribute on a control a `formControlName` owns contests the directive for the property and
+   * raises Angular's reactive-forms warning. `getRawValue()` still carries a locked control's value, so a
+   * caller without the privilege submits the stored value unchanged instead of clearing it.
+   *
+   * @param value Whether the far-reaching controls are editable.
+   */
+  @Input()
+  public set canManageAllPages(value: boolean | null | undefined) {
+    // Only a REAL boolean counts as an assignment. Treating the router's `undefined` as one would both pin
+    // the value to a falsy default and suppress the store-driven default, locking the page picker shut on
+    // every routed visit - the exact opposite of the legacy behaviour, which locked it only for a caller who
+    // administered the page but not the portal.
+    if (typeof value !== 'boolean') {
+      return;
+    }
+
+    this.privilegeAssigned = true;
+    this.allPagesManageable = value;
+    this.applyPrivilegeLocks();
+  }
+
+  /** Whether the caller may change the far-reaching controls. */
+  public get canManageAllPages(): boolean {
+    return this.allPagesManageable;
+  }
+
+  // -----------------------------------------------------------------------------------------------------
+  // OUTPUTS
+  // -----------------------------------------------------------------------------------------------------
+  // The screen completes each intent itself. These report what it did, so a host can react without having
+  // to observe the store, and so the submitted document can be asserted directly.
+
+  /** Emits the submitted document when the operator accepts the form. */
+  @Output() public readonly save = new EventEmitter<UpdateModuleRequest>();
+
+  /** Emits when the operator abandons the form. */
+  @Output() public readonly cancel = new EventEmitter<void>();
+
+  /** Emits when the operator confirms a removal. */
+  @Output() public readonly remove = new EventEmitter<void>();
+
+  // -----------------------------------------------------------------------------------------------------
+  // ORCHESTRATION
+  // -----------------------------------------------------------------------------------------------------
+  // `effect()` is used ONLY for genuine side effects - issuing a fetch, seeding a form, raising an advisory
+  // - and never to derive a value that a `computed()` could express.
+
+  /**
+   * Issues the reads for the addressed module.
+   *
+   * Both the module and its settings are fetched: the settings bag is read so that a save replaces the two
+   * property maps with what the module actually holds rather than emptying them, which a whole-object PUT
+   * would otherwise do.
+   */
+  private readonly loadAddressedModule = effect(() => {
+    const id = this.addressedModuleId();
+
+    // `=== undefined` and never a truth test: module 0 is a real module.
+    if (id === undefined) {
+      return;
+    }
+
+    const placement = this.addressedTabModuleId();
+
+    this.store.loadModule(id, placement);
+    this.store.loadSettings(id, placement);
+  });
+
+  /**
+   * Seeds the form from the loaded module.
+   *
+   * This one genuinely IS a side effect - a form group is not reactive state and has to be written to - which
+   * is why it is an effect while the read-only presentation values are getters. The seeding is guarded on the
+   * PLACEMENT IDENTITY rather than on object identity, so a store refresh that returns an equal-but-distinct
+   * object does not discard an edit in progress.
+   */
+  private readonly adoptLoadedModule = effect(() => {
+    const detail = this.store.module();
+
+    if (detail === null) {
+      return;
+    }
+
+    // The legacy screen locked the far-reaching controls for a page-scoped administrator. No endpoint answers
+    // that question, so the controls stay editable unless a caller says otherwise and the server adjudicates.
+    // Assigning the input suppresses this default.
+    if (!this.privilegeAssigned) {
+      this.allPagesManageable = true;
+      this.applyPrivilegeLocks();
+    }
+
+    if (this.seededPlacement !== detail.tabModuleId) {
+      this.seededPlacement = detail.tabModuleId;
+      this.seed(detail);
+    }
+  });
+
+  /**
+   * Fetches the definition that owns the loaded module, which is the only source of the cache default.
+   *
+   * MIGRATION: THE DEFINITION IS FETCHED BECAUSE THE CACHE FIELD'S VISIBILITY DEPENDS ON IT AND ON NOTHING
+   * ELSE. `ModuleSettings.ascx.vb:L136-L142` read the definition and hid `rowCache` outright when
+   * `DefaultCacheTime` equalled `Null.NullInteger`. That fact lives on the definition, not on the module, so
+   * skipping this read would make the three-state rule unimplementable.
+   */
+  private readonly loadOwningDefinition = effect(() => {
+    const detail = this.store.module();
+
+    if (detail === null) {
+      return;
+    }
+
+    if (this.definitionRequested === detail.moduleDefId) {
+      return;
+    }
+
+    this.definitionRequested = detail.moduleDefId;
+    this.store.loadDefinition(detail.moduleDefId);
+  });
+
+  /**
+   * Fetches the tenant's pages for the "Move To Page" picker.
+   *
+   * The tenant is taken from the loaded module rather than from the address, because the route does not carry
+   * it. A host-level module reports `portalId` as `null`, in which case there is no portal page list to read
+   * and the picker offers only the page the module already sits on.
+   *
+   * The portal-scoped page list is UNPAGED, so no page coordinate, ordering or filter is sent.
+   */
+  private readonly loadTenantPages = effect(() => {
+    const detail = this.store.module();
+
+    if (detail === null || detail.portalId === null) {
+      return;
+    }
+
+    if (this.tabsRequested === detail.portalId) {
+      return;
+    }
+
+    this.tabsRequested = detail.portalId;
+    this.store.loadTabs(detail.portalId);
+  });
+
+  /**
+   * Surfaces a store failure once, at the severity the legacy screen used.
+   *
+   * MIGRATION: A REFUSAL IS AN ADVISORY, NOT AN ERROR. The legacy access-denied screen raised
+   * `YellowWarning` on both of its branches, so a 403 is announced through the advisory service at warning
+   * severity and is not dressed as a danger banner. Field-level rejections are handed to the banner, which
+   * renders the problem document the utility already resolved; the utility owns both the break-tag stripping
+   * and the severity mapping, and neither is re-implemented here.
+   */
+  private readonly surfaceFailure = effect(() => {
+    const failure = this.store.failure();
+
+    if (failure === null) {
+      this.failureSurfaced = null;
+      this.currentProblem.set(null);
+      return;
+    }
+
+    const problem = failure.problem;
+
+    if (problem !== null && problem === this.failureSurfaced) {
+      return;
+    }
+
+    this.failureSurfaced = problem;
+    this.announce(failure.operation, problem, failure.code);
+  });
+
+  /**
+   * Concludes a submission once BOTH writes have settled, then reports and leaves.
+   *
+   * MIGRATION: the legacy redirect at `ModuleSettings.ascx.vb:L421` -
+   * `Response.Redirect(NavigateURL(), True)`, commented "Navigate back to admin page" - sat INSIDE the
+   * `If Page.IsValid Then` / `Try` block after `UpdateModule` had returned, so a postback that threw fell
+   * through to `Catch` and never redirected. The faithful port therefore leaves ONLY on success, and the
+   * announcement is raised here rather than at the point of submission for the same reason: the legacy
+   * postback was synchronous, so "saved" was never claimed before the write had actually happened. Two
+   * independent writes are in flight - the module replacement and the settings bag - so both write flags must
+   * be clear before either outcome is known.
+   *
+   * A rejected write keeps the operator on the screen, because {@link surfaceFailure} has put the per-field
+   * messages on the fields and navigating away would discard them.
+   */
+  private readonly concludeSubmission = effect(() => {
+    const pending = this.submissionPending();
+    const writing = this.store.saving() || this.store.settingsSaving();
+
+    if (!pending || writing) {
+      return;
+    }
+
+    // Both commands clear the failure as they begin, so a document present now belongs to this submission.
+    const failed = this.store.failure() !== null;
+
+    this.submissionPending.set(false);
+
+    if (failed) {
+      return;
+    }
+
+    // MIGRATION: the announcement and the departure are raised HERE, not at the point of submission, because
+    // `Response.Redirect(NavigateURL(), True)` at L421 ran after `UpdateModule` had returned and a throwing
+    // postback never reached it. A synchronous postback could not claim "saved" before saving; nor may this.
+    this.notifications.notify('success', SAVED_MESSAGE);
+    this.returnToListing();
+  });
+
+  // -----------------------------------------------------------------------------------------------------
+  // BOUND CONSTANTS
+  // -----------------------------------------------------------------------------------------------------
 
   /** The section headings, exposed for binding. */
   protected readonly headings = SECTION_HEADINGS;
@@ -344,89 +1414,115 @@ export class ModuleSettingsComponent {
   /** The label on the destructive confirmation's accept affordance. */
   protected readonly deleteConfirmLabel = DELETE_CONFIRM_LABEL;
 
-  /** The message shown when no module has been supplied. */
+  /** The message shown when no module has resolved. */
   protected readonly noModuleMessage = NO_MODULE_MESSAGE;
 
-  /** The cache period validation message. */
+  /** `valCacheTime`'s wording, for the template's message slot. */
   protected readonly cacheTimeInvalidMessage = CACHE_TIME_INVALID_MESSAGE;
 
-  /** The title-length validation message. */
-  protected readonly moduleTitleTooLongMessage = MODULE_TITLE_TOO_LONG_MESSAGE;
+  /** `valStartDate`'s wording, for the template's message slot. */
+  protected readonly startDateInvalidMessage = START_DATE_INVALID_MESSAGE;
 
-  /** The column bounds the template advertises through `maxlength`. */
+  /** `valEndDate`'s wording, for the template's message slot. */
+  protected readonly endDateInvalidMessage = END_DATE_INVALID_MESSAGE;
+
+  /**
+   * `valBorder`'s wording.
+   *
+   * Retained with its rule even though the border column is not transported, so the pair survives together;
+   * see {@link BORDER_INVALID_MESSAGE}.
+   */
+  protected readonly borderInvalidMessage = BORDER_INVALID_MESSAGE;
+
+  /**
+   * The wording the previous revision of this screen used for an over-long heading.
+   *
+   * MIGRATION: NO LENGTH RULE IS ENFORCED, because `txtTitle` carried no validator. The column bound is
+   * advertised through {@link limits} as a native `maxlength` attribute, which truncates rather than
+   * invalidating, and the server's own rule adjudicates anything that gets past it. The wording is kept so a
+   * template slot that still references it renders text rather than nothing.
+   */
+  protected readonly moduleTitleTooLongMessage = 'Title must be 256 characters or fewer.';
+
+  /** The column and control bounds the template advertises through `maxlength`. */
   protected readonly limits = {
     moduleTitle: MODULE_TITLE_MAX_LENGTH,
     iconFile: ICON_FILE_MAX_LENGTH,
+    cacheTime: CACHE_TIME_MAX_LENGTH,
+    startDate: DATE_MAX_LENGTH,
+    endDate: DATE_MAX_LENGTH,
   } as const;
 
-  /** The backing field for {@link settings}. */
-  private module: ModuleSettingsViewModel | null = null;
+  // -----------------------------------------------------------------------------------------------------
+  // DERIVED VIEW STATE
+  // -----------------------------------------------------------------------------------------------------
 
-  /** The backing field for {@link canManageAllPages}. */
-  private allPagesManageable = false;
+  /** The regions currently closed. Seeded from the legacy `isexpanded` attributes. */
+  protected readonly collapsed = new Set<ModuleSettingsSection>(INITIALLY_COLLAPSED);
 
-  /** The screen's heading. Defaults to the legacy module definition's own name. */
-  @Input() heading = 'Module Settings';
+  /** Whether the destructive confirmation is showing. */
+  protected get removalPending(): boolean {
+    return this.removalOpen();
+  }
 
-  /** Whether the module is still being fetched. */
-  @Input() loading = false;
-
-  /** Whether a submission is in flight. */
-  @Input() saving = false;
-
-  /** Whether a deletion affordance should be offered. */
-  @Input() canDelete = false;
-
-  /** The portal pages available to the legacy "Move To Page" picker. */
-  @Input() pages: readonly SelectOption<number>[] = [];
+  /** The problem document the banner renders, or `null` when there is nothing to report. */
+  protected readonly problem = computed<ProblemDetails | null>(() => this.currentProblem());
 
   /**
-   * The module and placement being edited, or `null` when none has resolved.
+   * Whether the cache period field renders at all.
    *
-   * Assigning re-seeds the form from the supplied state, so the screen never shows a value the store does
-   * not hold.
+   * MIGRATION: THE THREE-STATE CACHE RULE, PRESERVED WITHOUT COALESCING. `ModuleSettings.ascx.vb:L136-L142`
+   * reads verbatim `If objModuleDef.DefaultCacheTime = Null.NullInteger Then rowCache.Visible = False Else
+   * txtCacheTime.Text = objModule.CacheTime.ToString`, and the three states it distinguishes are all
+   * preserved:
+   *
+   *   1. the definition's `defaultCacheTime` is -1 - the definition records no default, so the field is
+   *      HIDDEN outright and the save writes 0, exactly as L349-L353 did for an empty control;
+   *   2. the definition's `defaultCacheTime` is 0 - caching IS supported with a zero-second default, so the
+   *      field is SHOWN;
+   *   3. this placement's `cacheTime` is 0 - a legitimate stored value meaning "not cached".
+   *
+   * `defaultCacheTime` of -1 and `cacheTime` of 0 are DIFFERENT FACTS on DIFFERENT contracts. They are never
+   * coalesced, no `cacheTime ?? defaultCacheTime` is written, no single "effective" period is derived, and
+   * falsiness is never used to tell them apart - `0` is falsy and is one of the two values that must survive.
+   *
+   * While the definition has not arrived the field is shown, because hiding a field that is about to be
+   * needed loses an edit, whereas showing one that turns out to be unsupported costs nothing: the save
+   * writes 0 for a hidden field either way.
    */
-  @Input()
-  set settings(value: ModuleSettingsViewModel | null) {
-    this.module = value;
-    if (value !== null) {
-      this.seed(value);
+  protected readonly showCacheField = computed<boolean>(() => {
+    const definition = this.store.definition();
+
+    if (definition === null) {
+      return true;
     }
-  }
 
-  /** The module and placement being edited, or `null`. */
-  get settings(): ModuleSettingsViewModel | null {
-    return this.module;
-  }
+    // MIGRATION: `!== NO_CACHE_DEFAULT` and NEVER a truth test. `ModuleSettings.ascx.vb:L136-L142` hid
+    // `rowCache` when and only when `objModuleDef.DefaultCacheTime = Null.NullInteger`, that is -1. A default
+    // of 0 means caching IS supported with a zero-second default and the field must SHOW, so `!definition
+    // .defaultCacheTime` would collapse the two distinct states the legacy screen kept apart.
+    return definition.defaultCacheTime !== NO_CACHE_DEFAULT;
+  });
 
   /**
-   * Whether the caller may change the four settings that reach beyond this page.
+   * Whether the addressed module resolved to nothing.
    *
-   * MIGRATION: `ModuleSettings.ascx.vb:L333-L338` disabled chkAllTabs, chkDefault, chkAllModules and cboTab
-   * for a caller who was not a portal administrator, because each of those settings alters pages the caller
-   * does not administer. All four are locked the same way — through the reactive forms API, so
-   * that `getRawValue()` still carries the stored value unchanged and a locked field cannot be zeroed by
-   * being absent from the submission.
+   * Distinguished from "still loading" so the template can offer a not-found affordance rather than an
+   * indefinite spinner. An unresolved identifier is a legitimate state: it is what a stale bookmark produces.
    */
-  @Input()
-  set canManageAllPages(value: boolean) {
-    this.allPagesManageable = value;
-    this.applyPrivilegeLocks();
-  }
+  protected readonly notFound = computed<boolean>(
+    () =>
+      this.addressedModuleId() !== undefined
+      && this.store.module() === null
+      && !this.store.moduleLoading(),
+  );
 
-  /** Whether the caller may change the four far-reaching settings. */
-  get canManageAllPages(): boolean {
-    return this.allPagesManageable;
-  }
+  /** The wording for a not-found module, from the shared vocabulary. */
+  protected readonly notFoundMessage = NOT_FOUND;
 
-  /** Emits the submitted state when the operator accepts the form. */
-  @Output() readonly save = new EventEmitter<UpdateModuleRequest>();
-
-  /** Emits when the operator abandons the form. */
-  @Output() readonly cancel = new EventEmitter<void>();
-
-  /** Emits when the operator confirms a deletion. */
-  @Output() readonly remove = new EventEmitter<void>();
+  // -----------------------------------------------------------------------------------------------------
+  // TEMPLATE HELPERS
+  // -----------------------------------------------------------------------------------------------------
 
   /**
    * Whether a region is currently open.
@@ -440,6 +1536,12 @@ export class ModuleSettingsComponent {
 
   /**
    * Opens a closed region or closes an open one.
+   *
+   * MIGRATION: the legacy toggle was reachable by pointer only - `sectionheadcontrol.ascx` rendered its
+   * toggle with `tabIndex="-1"` (defect D-M12) and `labelcontrol.ascx`'s help toggle was likewise unreachable
+   * from the keyboard (defect D11). Both are annotated as defects; the replacement is a real `button`, which
+   * is keyboard-operable by construction. That is an accessibility gain with no visual cost, not a change to
+   * the screen's behaviour.
    *
    * @param section The region to toggle.
    */
@@ -484,9 +1586,9 @@ export class ModuleSettingsComponent {
   /**
    * The element identifier for a choice group's visible name.
    *
-   * MIGRATION: a radio group's name is carried by a `<label>` with no `for`, referenced through
+   * MIGRATION: a radio group's name is carried by a `label` with no `for`, referenced through
    * `aria-labelledby`. Pointing `for` at the first radio would name the group by side effect and make
-   * clicking its title select an option — which is stronger than the legacy screen managed, since its label
+   * clicking its title select an option - which is stronger than the legacy screen managed, since its label
    * pointed at the table ASP.NET rendered the group as and therefore named nothing.
    *
    * @param field The choice group's field.
@@ -517,43 +1619,121 @@ export class ModuleSettingsComponent {
     return `module-settings-section-${section}`;
   }
 
-  /** Opens the destructive confirmation. */
+  /**
+   * The server-supplied messages for one control, if any.
+   *
+   * MIGRATION: the per-field dictionary is an INDEX SIGNATURE and `noPropertyAccessFromIndexSignature` is
+   * enabled, so an entry is read with an index expression and never with a property access. The keys are
+   * .NET model-state keys and are NOT camel-cased, which is precisely why matching them is delegated to
+   * `core/utils/form-errors.util.ts` rather than attempted here.
+   *
+   * @param field The control to report on.
+   * @returns The messages, or an empty list.
+   */
+  protected serverMessages(field: ModuleSettingsField): readonly string[] {
+    return fieldErrorMessages(this.currentProblem(), field);
+  }
+
+  // -----------------------------------------------------------------------------------------------------
+  // INTENTS
+  // -----------------------------------------------------------------------------------------------------
+
+  /**
+   * Opens the destructive confirmation.
+   *
+   * Reached from an affordance the legacy markup declared with `CausesValidation="False"` (L221-L225), so no
+   * validation is triggered and an incomplete form does not block a removal.
+   */
   protected requestRemoval(): void {
-    this.removalPending = true;
+    this.removalOpen.set(true);
   }
 
   /** Closes the destructive confirmation without acting. */
   protected abandonRemoval(): void {
-    this.removalPending = false;
+    this.removalOpen.set(false);
   }
 
-  /** Closes the destructive confirmation and emits the removal. */
+  /**
+   * Closes the confirmation and removes the placement.
+   *
+   * MIGRATION: the removal is the SOFT one described on this class - the placement row goes and the module is
+   * marked deleted only once it is left on no page. There is no restore path, because no recycle-bin endpoint
+   * exists, so the advisory says what happened rather than implying it can be undone.
+   */
   protected confirmRemoval(): void {
-    this.removalPending = false;
+    this.removalOpen.set(false);
+
+    const id = this.addressedModuleId();
+
+    if (id === undefined) {
+      this.remove.emit();
+      return;
+    }
+
+    // MIGRATION: THE REMOVAL IS SOFT AND THERE IS NO WAY BACK. `cmdDelete_Click` (L300-L312) called
+    // `DeleteTabModule(TabId, ModuleId)` (L837), NOT `DeleteModule` (L819): the placement row goes, the order
+    // is rebuilt, and only once the module is left on no page at all does L837-L860 set `TabID =
+    // Null.NullInteger; IsDeleted = True`. No recycle-bin restore or purge endpoint exists, so the advisory
+    // states what happened rather than implying it can be undone. The comment at L290-L292 claiming this
+    // deletes a PORTAL in SuperUser mode is wrong on both counts - L305 performs no SuperUser check - and is
+    // annotated here rather than reproduced.
+    this.store.deleteModule(id, this.addressedTabModuleId());
+    this.notifications.notify('success', REMOVED_MESSAGE);
     this.remove.emit();
+    this.returnToListing();
   }
 
-  /** Emits the abandonment. */
+  /**
+   * Abandons the form.
+   *
+   * The legacy affordance carried `CausesValidation="False"`, so nothing is validated on the way out.
+   */
   protected onCancel(): void {
     this.cancel.emit();
+    this.returnToListing();
   }
 
   /**
    * The message shown on the destructive confirmation.
    *
-   * The module's own name is interpolated so the target is unambiguous, which the legacy prompt did not do.
-   *
-   * @returns The confirmation message.
+   * @returns The shared wording, with the module's own name interpolated when it has one.
    */
   protected deleteConfirmMessage(): string {
-    const name = this.module?.moduleTitle ?? this.module?.friendlyName ?? '';
+    // The resolved value, for the same reason `onSubmit` reads it: the route path never assigns the input.
+    const current = this.settings;
+
+    if (current === null) {
+      return DELETE_CONFIRM_MESSAGE;
+    }
+
+    const name = current.moduleTitle ?? current.friendlyName ?? '';
+
     return name.length === 0
-      ? 'Are you sure you wish to delete this module?'
-      : `Are you sure you wish to delete the module "${name}"?`;
+      ? DELETE_CONFIRM_MESSAGE
+      : `Are You Sure You Wish To Delete "${name}"?`;
   }
 
   /**
-   * Validates and emits the form.
+   * Validates the form and submits it.
+   *
+   * MIGRATION: THE MEASURED READ-MODIFY-WRITE, WITH EVERY OPTION-STRICT COERCION MADE EXPLICIT.
+   * `ModuleSettings.ascx.vb:L326-L427` guarded on `Page.IsValid` (L328), re-read the module (L341-L343),
+   * overwrote each property from the form and committed with `UpdateModule` (L385). The coercions it
+   * performed implicitly - because `Website/release.config:L125` compiled the admin code-behinds with
+   * `strict="false"` - are performed explicitly here:
+   *
+   *   - `Border = txtBorder.Text` (L347) assigned a RAW STRING into a property that really is declared
+   *     `As String` (`ModuleInfo.vb:L230`) despite being integer-validated. The column is not transported, so
+   *     there is nothing to assign; the inconsistency is recorded rather than reproduced.
+   *   - `CacheTime` (L349-L353) used `Int32.Parse`, NOT `TryParse`, so a value the validator had let through
+   *     could still throw. Here the parse is explicit and its failure is handled: an unparsable or hidden
+   *     field yields 0, which is exactly what the legacy empty-field branch wrote.
+   *   - both dates (L367-L376) used `Convert.ToDateTime` on free text and fell back to `Null.NullDate`. Here
+   *     an unparsable date becomes `null` on the wire rather than a sentinel instant, because the contract's
+   *     members are nullable and `null` is how it expresses "no restriction".
+   *   - `Select Case Int32.Parse(cboVisibility.SelectedItem.Value)` (L359-L363) had NO `Case Else`, so an
+   *     out-of-range code silently left the previous value in place. The typed control cannot hold an
+   *     out-of-range code, so the gap cannot arise.
    *
    * An invalid form is marked touched rather than submitted, so every field-level message becomes visible at
    * once instead of the operator discovering them one at a time.
@@ -564,51 +1744,181 @@ export class ModuleSettingsComponent {
       return;
     }
 
-    // A submission with nothing seeded cannot be composed. `tabId` is a required member of the request
-    // and zero is a legitimate page, so there is no value that could stand in for the page this
-    // placement sits on - and the form holds no page of its own to fall back to. The template only
-    // renders the form once a module has resolved, so this guard is unreachable through the interface;
-    // it is here because a required wire member must never be defaulted, not to handle a known path.
-    const module = this.module;
+    // `this.settings` and NOT the raw signal: the resolution order - a caller's seed first, otherwise the
+    // loaded module - lives in one place, and reading the signal directly here would make a route-driven
+    // submission impossible, because the route path seeds the FORM from the store without ever assigning the
+    // input. Read the resolved value, exactly as the template does.
+    const current = this.settings;
 
-    if (module === null) {
+    // A submission with nothing seeded cannot be composed: `tabId` and the round-tripped columns come from
+    // the loaded state, and 0 is a legitimate page, so no value could stand in for one that was never read.
+    // The template only renders the form once a module has resolved, so this guard is unreachable through the
+    // interface; it is here because a required wire member must never be defaulted.
+    if (current === null) {
       return;
     }
 
-    // getRawValue rather than value: it includes the controls locked by applyPrivilegeLocks, so a caller
-    // without the privilege submits their stored values unchanged instead of clearing them.
-    const raw: ModuleSettingsFormState = this.form.getRawValue();
+    const request = this.toUpdateRequest(current);
 
-    // The single crossing of the form/wire boundary. The adapter projects the fourteen editable values
-    // onto their wire members, collapses emptied text to null, and supplies `tabId` and `isDeleted` from
-    // the seeded state - see module-settings.view-model.ts for the reasoning behind each of the three.
-    this.save.emit(toUpdateModuleRequest(raw, { isDeleted: module.isDeleted }));
+    this.save.emit(request);
+
+    const id = this.addressedModuleId();
+
+    if (id === undefined) {
+      return;
+    }
+
+    const placement = this.addressedTabModuleId();
+
+    this.store.updateModule(id, request, placement);
+    this.persistSettings(placement);
+
+    // Armed AFTER both commands, so the write flags they raise are already set and the observer cannot mistake
+    // a not-yet-started submission for a finished one. The announcement and the return to the listing are
+    // raised there rather than here; see concludeSubmission for why.
+    this.submissionPending.set(true);
+  }
+
+  // -----------------------------------------------------------------------------------------------------
+  // PRIVATE
+  // -----------------------------------------------------------------------------------------------------
+
+  /**
+   * Projects the form onto the update contract.
+   *
+   * Exactly the sixteen members the server declares, and nothing else. A seventeenth member would be an HTTP
+   * 400 under `JsonUnmappedMemberHandling.Disallow`, and an omitted nullable member would CLEAR its column,
+   * because the request is a whole-row replacement - which is what the legacy postback was too, where an
+   * emptied text box posted an empty value.
+   *
+   * @param seed The loaded state the round-tripped columns come from.
+   * @returns The document to submit.
+   */
+  private toUpdateRequest(seed: ModuleSettingsSeed): UpdateModuleRequest {
+    const raw = this.form.getRawValue();
+
+    return {
+      // MIGRATION: the move travels as a FIELD ON THE UPDATE. `ModuleSettings.ascx.vb:L403-L408` performed it
+      // as a separate `MoveModule(ModuleId, TabId, newTabId, "")` call after the update had committed; that
+      // procedure has no endpoint, and inventing `POST /modules/{id}/move` would address a route the API does
+      // not serve. The server reads this member to select the placement being edited.
+      tabId: raw.tabId,
+      moduleTitle: textOrNull(raw.moduleTitle),
+      // Round-tripped: the toggle is not offered, but the stored value must survive the replacement.
+      allTabs: raw.allTabs,
+      header: textOrNull(raw.header),
+      footer: textOrNull(raw.footer),
+      startDate: textOrNull(raw.startDate),
+      endDate: textOrNull(raw.endDate),
+      inheritViewPermissions: raw.inheritViewPermissions,
+      // MIGRATION: PRESERVED, NOT FORCED FALSE. `ModuleSettings.ascx.vb:L364` assigned
+      // `objModule.IsDeleted = False` unconditionally, so every save silently UN-DELETED a module that the
+      // recycle bin held. That is a defect rather than an intention, and the clause C-1 discipline is to
+      // annotate it and carry the stored value through rather than reproduce it.
+      isDeleted: seed.isDeleted,
+      moduleOrder: raw.moduleOrder,
+      cacheTime: this.resolveCacheTime(raw.cacheTime),
+      iconFile: textOrNull(raw.iconFile),
+      visibility: raw.visibility,
+      displayTitle: raw.displayTitle,
+      // Instructions rather than state: sent explicitly rather than omitted, so the intent is unambiguous.
+      setAsDefaultSettings: raw.setAsDefaultSettings,
+      applyToAllModules: raw.applyToAllModules,
+    };
+  }
+
+  /**
+   * Resolves the cache period the update carries.
+   *
+   * Implements the write half of the three-state rule documented on {@link showCacheField}: a hidden field
+   * and an empty field both write 0, matching L349-L353, and a present value is parsed explicitly. The parse
+   * cannot normally fail because the integer data-type check has already passed, but it is handled anyway
+   * rather than assumed - which is the whole point of replacing `Int32.Parse` with something explicit.
+   *
+   * @param text The control's text.
+   * @returns The period in seconds.
+   */
+  private resolveCacheTime(text: string): number {
+    // MIGRATION: a hidden field writes 0, exactly as `ModuleSettings.ascx.vb:L349-L353` did. The zero written
+    // here is a real saved cache period meaning "do not cache this instance"; it is NOT the definition's -1,
+    // which means "this definition does not support caching at all". The two are never conflated.
+    if (!this.showCacheField()) {
+      return 0;
+    }
+
+    const trimmed = text.trim();
+
+    if (trimmed.length === 0) {
+      return 0;
+    }
+
+    // MIGRATION: the Option-Strict coercion made EXPLICIT, with the failure handled. The administration
+    // code-behinds compiled with `strict="false"` (`Website/release.config:L125`), so L349-L353's
+    // `Int32.Parse(txtCacheTime.Text)` on free text was legal and threw on bad input. The integer data-type
+    // check should already have rejected anything unparseable, but the outcome is decided here rather than
+    // assumed - which is the entire reason `Int32.Parse` is not carried across as-is.
+    const parsed = Number(trimmed);
+
+    return Number.isInteger(parsed) ? parsed : 0;
+  }
+
+  /**
+   * Replaces the settings maps with what was read.
+   *
+   * MIGRATION: the two legacy scopes collapse into one whole-object PUT, so a save must send back both maps
+   * or empty them. The bag is echoed unchanged: this screen edits columns on the module and its placement,
+   * not property-bag entries, and no settings key is invented for the six untransported placement values.
+   * When no bag was read there is nothing to replace and the request is not issued at all, because sending an
+   * empty pair would delete settings this screen never showed.
+   *
+   * @param placement The placement addressed, or `undefined` for the module itself.
+   */
+  private persistSettings(placement: number | undefined): void {
+    const bag = this.store.settings();
+
+    if (bag === null) {
+      return;
+    }
+
+    // MIGRATION: TWO LEGACY SETTINGS SCOPES AND SIX PER-KEY MUTATORS COLLAPSE INTO ONE WHOLE-OBJECT PUT.
+    // `ModuleController.vb` exposed `GetModuleSettings(ModuleId)` at L1237 and `GetTabModuleSettings
+    // (TabModuleId)` at L1336 as DISTINCT scopes, each mutated one key at a time through L1283 / L1306 /
+    // L1318 / L1373 / L1395 / L1407. The target endpoint replaces both maps as a single document, so the bag
+    // is read before the save and transmitted whole - otherwise the replacement would empty the keys this
+    // screen never edits.
+    this.store.saveSettings(bag, placement);
   }
 
   /**
    * Re-seeds every control from the supplied state.
    *
-   * MIGRATION: the two intent flags are seeded to unset rather than from the module, because neither is a
-   * column on it — each describes work the server performs after the update, and echoing a previous
+   * MIGRATION: the two instruction flags are seeded UNSET rather than from the module, because neither is a
+   * column on it - each describes work the server performs after the update, and echoing a previous
    * instruction back onto the form would reapply it on the next submission.
    *
    * @param value The state to show.
    */
-  private seed(value: ModuleSettingsViewModel): void {
+  private seed(value: ModuleSettingsSeed): void {
     this.form.reset({
       tabId: value.tabId,
       moduleTitle: value.moduleTitle ?? '',
       moduleOrder: value.moduleOrder,
       allTabs: value.allTabs,
-      inheritViewPermissions: value.inheritViewPermissions ?? true,
+      inheritViewPermissions: value.inheritViewPermissions,
       header: value.header ?? '',
       footer: value.footer ?? '',
+      // Blank for the sentinel, exactly as L152-L157 left the box empty when `Null.IsNull` was true.
       startDate: toDateInputValue(value.startDate),
       endDate: toDateInputValue(value.endDate),
       iconFile: value.iconFile ?? '',
+      // Bound by enumeration member. `None` is a chosen value and 0 is meaningful, so no fallback applies.
       visibility: value.visibility,
       displayTitle: value.displayTitle,
-      cacheTime: value.cacheTime ?? 0,
+      // '0' is a legitimate stored period meaning "not cached" and must render AS 0 rather than as an empty
+      // box - the empty box means "no value was entered", which writes 0 for a different reason. The two are
+      // kept distinguishable, so `String()` is applied to a checked number and never to `null`, which would
+      // put the text 'null' into the control.
+      cacheTime: value.cacheTime === null ? '0' : String(value.cacheTime),
       setAsDefaultSettings: false,
       applyToAllModules: false,
     });
@@ -618,11 +1928,9 @@ export class ModuleSettingsComponent {
   }
 
   /**
-   * Locks or releases the four settings that reach beyond the page being edited.
+   * Locks or releases the controls that reach beyond the page being edited.
    *
-   * The reactive forms API is used rather than a `disabled` attribute binding: binding the attribute on a
-   * control a `formControlName` owns contests the directive for the property and raises Angular's reactive
-   * forms warning. `emitEvent: false` keeps the lock from looking like an edit.
+   * `emitEvent: false` keeps the lock from looking like an edit.
    */
   private applyPrivilegeLocks(): void {
     const gated = [
@@ -640,4 +1948,107 @@ export class ModuleSettingsComponent {
       }
     }
   }
+
+  /**
+   * Reports a failure at the severity the legacy screen used for it.
+   *
+   * A rejected write keeps its problem document so the banner can show the per-field messages; a refusal, a
+   * missing module and a conflict are announced as advisories, at warning severity for the refusal and at
+   * error severity for the rest. The 429 status is deliberately not handled: rate limiting applies to the
+   * authentication endpoints alone, so it cannot arise on this screen and a branch for it would be dead code.
+   *
+   * @param operation The command that failed.
+   * @param problem The problem document, or `null` when the response carried none.
+   * @param code The failure code the server published, or `null`.
+   */
+  private announce(
+    operation: string,
+    problem: ProblemDetails | null,
+    code: string | null,
+  ): void {
+    const status = problem?.status ?? null;
+
+    if (status === FORBIDDEN_STATUS) {
+      this.currentProblem.set(null);
+      this.notifications.notify('warning', problem?.detail ?? problem?.title ?? FORBIDDEN);
+      return;
+    }
+
+    if (status === NOT_FOUND_STATUS) {
+      this.currentProblem.set(null);
+      this.notifications.notify('error', NOT_FOUND);
+      return;
+    }
+
+    if (status === CONFLICT_STATUS) {
+      this.currentProblem.set(null);
+      // The published code is surfaced verbatim when the shared vocabulary has no wording for it, so a
+      // refusal this screen has never seen is still reported exactly as the server named it.
+      this.notifications.notify('error', conflictMessage(code) ?? code ?? CONFLICT);
+      return;
+    }
+
+    // MIGRATION: THE BANNER IS A NET-NEW AFFORDANCE, NOT A TRANSLATION. Everything else - a rejected write
+    // above all - goes to it with the problem document intact, so the per-field messages reach the fields they
+    // belong to. There is no predecessor to port: a case-insensitive census of `asp:ValidationSummary` across
+    // `Website/` returns ZERO occurrences, in this feature and tree-wide, which puts the cited source in the
+    // same vacuous family as the Telerik and COM-interop exclusions. Reported as such rather than invented.
+    this.currentProblem.set(problem);
+
+    if (problem === null) {
+      this.notifications.notify('error', `The ${operation} request could not be completed.`);
+    }
+  }
+
+  /** Returns to the listing, which is what the legacy redirect at L421 did. */
+  private returnToListing(): void {
+    void this.router.navigate([MODULE_LIST_ROUTE]);
+  }
+}
+
+/**
+ * Builds the "Move To Page" options from the tenant's page list.
+ *
+ * The page the module currently occupies is guaranteed present, prepended when the list does not contain it,
+ * so the picker always shows where the module actually is. Deleted pages are excluded, because moving a
+ * module onto a page in the recycle bin is not an outcome an operator can want; the currently occupied page
+ * survives that filter, because showing where the module is takes precedence over hiding a removed page.
+ *
+ * MIGRATION: `parentId` of -1 marks a ROOT-LEVEL page and is not an absence, and `tabId` of 0 is a REAL page
+ * because `dbo.Tabs.TabID` is `IDENTITY(0, 1)`. Neither value is filtered, defaulted or tested for truth.
+ * Depth is expressed by indenting the label with the page's own `level`, which is the flat list's own
+ * hierarchy fact, rather than by rebuilding a tree this picker does not need.
+ *
+ * @param tabs The tenant's pages, unpaged.
+ * @param currentTabId The page the module occupies, or `undefined` when none has resolved.
+ * @returns The options, in list order.
+ */
+function buildPageOptions(
+  tabs: readonly TabListItem[],
+  currentTabId: number | undefined,
+): readonly SelectOption<number>[] {
+  const options: SelectOption<number>[] = [];
+  let currentPresent = false;
+
+  for (const tab of tabs) {
+    const isCurrent = currentTabId !== undefined && tab.tabId === currentTabId;
+
+    if (isCurrent) {
+      currentPresent = true;
+    } else if (tab.isDeleted) {
+      continue;
+    }
+
+    options.push({
+      value: tab.tabId,
+      // `level` is a non-negative depth on the list contract; repeat() on 0 yields an empty prefix.
+      label: `${'\u00a0\u00a0'.repeat(Math.max(tab.level, 0))}${tab.tabName}`,
+    });
+  }
+
+  if (currentTabId !== undefined && !currentPresent) {
+    options.unshift({ value: currentTabId, label: CURRENT_PAGE_LABEL });
+  }
+
+  return options;
 }

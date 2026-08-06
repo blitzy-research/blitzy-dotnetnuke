@@ -1,917 +1,928 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { ChangeDetectionStrategy, type Type } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
+import type { ApiResponse } from '../../../core/models/paged-result.model';
 import {
   PROFILE_VISIBILITY,
   type ProfilePropertyDefinition,
   type UserProfile,
-  type UserProfileSubmission,
   type UserProfileValue,
 } from '../../../core/models/profile.model';
+import type { UserDetail } from '../../../core/models/user.model';
+import { NotificationService } from '../../../core/services/notification.service';
 import { UserProfileComponent } from './user-profile.component';
 
 /**
- * Builds a property declaration, defaulted to the least demanding shape so that each
- * expectation states only what it depends on.
+ * Specification for the dynamic profile editor.
  *
- * @param overrides The members to replace.
- * @returns A declaration.
- */
-function definition(
-  overrides: Partial<ProfilePropertyDefinition> = {},
-): ProfilePropertyDefinition {
-  return {
-    propertyDefinitionId: 1,
-    portalId: 0,
-    moduleDefId: null,
-    dataType: 349,
-    defaultValue: null,
-    propertyCategory: 'Name',
-    propertyName: 'First Name',
-    length: 50,
-    required: false,
-    validationExpression: null,
-    viewOrder: 0,
-    visible: true,
-    visibility: PROFILE_VISIBILITY.adminOnly,
-    ...overrides,
-  };
-}
-
-/**
- * Builds a profile value together with its declaration.
+ * The cases below are chosen around the failure modes this screen actually has rather
+ * than around its members. Four are worth naming because getting them wrong produces a
+ * screen that looks correct and is not:
  *
- * @param declaration The declaration to attach.
- * @param overrides The value members to replace.
- * @returns A profile value.
+ *   - A DECLARED LENGTH OF ZERO MEANS "NO MAXIMUM". The column is
+ *     `Length int NOT NULL ... DEFAULT 0`, so zero is what every property gets when
+ *     nobody chose a bound. A maximum-length validator built from it would mark every
+ *     control invalid and no operator could save anything.
+ *   - THE ROUTE INPUT MUST BE NAMED `userId`. The router binds a route parameter to an
+ *     input by name, so a rename produces no compile error, no runtime error and no data.
+ *   - "NEVER SET" IS NOT "SET TO EMPTY". The legacy accessor could not tell them apart;
+ *     the API can, through `lastUpdatedDate`, and conflating them silently repopulates a
+ *     value the operator deliberately cleared.
+ *   - A STORED VALIDATION PATTERN IS UNTRUSTED. It is authored by an administrator and
+ *     compiled by the browser, so one the browser rejects must degrade one field rather
+ *     than throw and take the screen down.
  */
-function value(
-  declaration: ProfilePropertyDefinition,
-  overrides: Partial<Omit<UserProfileValue, 'definition'>> = {},
-): UserProfileValue {
-  return {
-    propertyDefinitionId: declaration.propertyDefinitionId,
-    propertyValue: '',
-    visibility: declaration.visibility,
-    lastUpdatedDate: null,
-    definition: declaration,
-    ...overrides,
-  };
-}
-
-/**
- * Builds a profile from a list of values.
- *
- * @param values The values to include.
- * @returns A profile for account 7.
- */
-function profileOf(values: readonly UserProfileValue[]): UserProfile {
-  return { userId: 7, properties: values };
-}
-
 describe('UserProfileComponent', () => {
   let fixture: ComponentFixture<UserProfileComponent>;
-  let component: UserProfileComponent;
+  let httpMock: HttpTestingController;
+  let notifications: NotificationService;
+
+  /** The account the fixtures belong to. */
+  const USER_ID = 7;
 
   /**
-   * Sets one of the component's inputs and re-renders.
+   * Narrows a value the DOM or a form reports as possibly absent.
    *
-   * Assignment to the instance field would not re-render: the component declares
-   * on-push change detection, so it must be marked dirty. `setInput` does that and runs
-   * the declared transform.
+   * A helper rather than a non-null assertion, so a fixture that stops matching fails
+   * with a sentence naming what was missing instead of a `TypeError` deep inside an
+   * expectation.
    *
-   * @param name The input to set.
-   * @param inputValue The value to set.
+   * @param value The value to narrow.
+   * @param what What was expected, named in the failure.
+   * @returns The value, guaranteed present.
    */
-  function setInput(
-    name: 'profile' | 'mode' | 'heading' | 'loading' | 'saving' | 'manageVisibility',
-    inputValue: unknown,
-  ): void {
-    fixture.componentRef.setInput(name, inputValue);
+  function present<T>(value: T | null | undefined, what: string): T {
+    if (value === null || value === undefined) {
+      throw new Error(`Expected ${what} to be present.`);
+    }
+
+    return value;
+  }
+
+  /**
+   * Builds a property declaration, defaulting every member so a case states only what it
+   * is about.
+   *
+   * @param overrides The members this case cares about.
+   * @returns A declaration.
+   */
+  function declaration(
+    overrides: Partial<ProfilePropertyDefinition> = {},
+  ): ProfilePropertyDefinition {
+    return {
+      propertyDefinitionId: 1,
+      portalId: 0,
+      moduleDefId: null,
+      dataType: 1,
+      defaultValue: null,
+      propertyCategory: 'Name',
+      propertyName: 'FirstName',
+      length: 0,
+      required: false,
+      validationExpression: null,
+      viewOrder: 0,
+      visible: true,
+      visibility: PROFILE_VISIBILITY.allUsers,
+      ...overrides,
+    };
+  }
+
+  /**
+   * Builds one profile entry.
+   *
+   * @param definition The declaration.
+   * @param overrides The entry members this case cares about.
+   * @returns A profile entry.
+   */
+  function entry(
+    definition: ProfilePropertyDefinition,
+    overrides: Partial<Omit<UserProfileValue, 'definition'>> = {},
+  ): UserProfileValue {
+    return {
+      propertyDefinitionId: definition.propertyDefinitionId,
+      propertyValue: '',
+      visibility: definition.visibility,
+      lastUpdatedDate: null,
+      definition,
+      ...overrides,
+    };
+  }
+
+  /** The account read for the heading. */
+  const account: UserDetail = {
+    userId: USER_ID,
+    portalId: 0,
+    username: 'jsmith',
+    firstName: 'John',
+    lastName: 'Smith',
+    displayName: 'John Smith',
+    email: 'jsmith@example.com',
+    isSuperUser: false,
+    affiliateId: null,
+    isApproved: true,
+    isLockedOut: false,
+  } as UserDetail;
+
+  /**
+   * Answers both reads the screen dispatches and renders the result.
+   *
+   * The account read is answered as well as the profile read because the screen issues
+   * both; leaving one outstanding would make the verification at teardown fail for a
+   * reason unrelated to the case.
+   *
+   * @param properties The profile entries to return.
+   * @param userId The account being read.
+   */
+  function respond(properties: readonly UserProfileValue[], userId: number = USER_ID): void {
+    const profile: UserProfile = { userId, properties };
+
+    // `meta` is stated rather than omitted: the envelope declares it as present-and-nullable
+    // for every response, paged or not, so a fixture that left it out would not be the shape
+    // the client actually receives.
+    httpMock
+      .expectOne(`/api/v1/users/${userId}`)
+      .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
+    httpMock
+      .expectOne(`/api/v1/users/${userId}/profile`)
+      .flush({ data: profile, meta: null } satisfies ApiResponse<UserProfile>);
+
     fixture.detectChanges();
   }
 
   /**
-   * Returns the component's host element.
+   * Points the screen at an account and answers its reads.
+   *
+   * @param properties The profile entries to return.
+   * @param userId The identifier to supply, as the route would.
    */
+  function load(properties: readonly UserProfileValue[], userId: number = USER_ID): void {
+    fixture.componentRef.setInput('userId', String(userId));
+    fixture.detectChanges();
+    respond(properties, userId);
+  }
+
+  /** The host element, typed once so no case repeats the cast. */
   function host(): HTMLElement {
     return fixture.nativeElement as HTMLElement;
   }
 
   /**
-   * Returns every rendered category group.
+   * The rendered value controls, in document order.
+   *
+   * @returns The controls.
    */
-  function groups(): HTMLElement[] {
-    return Array.from(host().querySelectorAll<HTMLElement>('fieldset.user-profile__group'));
-  }
-
-  /**
-   * Returns every rendered collapse toggle.
-   */
-  function toggles(): HTMLButtonElement[] {
-    return Array.from(host().querySelectorAll<HTMLButtonElement>('button.user-profile__toggle'));
-  }
-
-  /**
-   * Returns the single-line and multi-line controls the editor rendered, in order.
-   */
-  function controls(): (HTMLInputElement | HTMLTextAreaElement)[] {
+  function controls(): readonly HTMLInputElement[] {
     return Array.from(
-      host().querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-        '.user-profile__fields input, .user-profile__fields textarea',
-      ),
+      host().querySelectorAll<HTMLInputElement>('input[type="text"], textarea'),
     );
   }
 
   /**
-   * Returns the control rendered for one declaration.
+   * The text of every rendered group legend, in document order.
    *
-   * @param definitionId The declaration identifier.
+   * @returns The headings.
    */
-  function controlFor(definitionId: number): HTMLInputElement | HTMLTextAreaElement | null {
-    return host().querySelector(`#profile-property-${definitionId}`);
+  function headings(): readonly string[] {
+    return Array.from(host().querySelectorAll('legend')).map((legend) =>
+      (legend.textContent ?? '').trim(),
+    );
   }
 
   /**
-   * Returns the validation message rendered for one declaration.
+   * The text of every rendered field label, in document order.
    *
-   * @param definitionId The declaration identifier.
+   * @returns The labels.
    */
-  function messageFor(definitionId: number): HTMLElement | null {
-    return host().querySelector(`#profile-property-${definitionId}-message`);
-  }
-
-  /**
-   * Sets a control's value the way a user would, so the control becomes dirty.
-   *
-   * @param element The control.
-   * @param next The text to enter.
-   */
-  function type(element: HTMLInputElement | HTMLTextAreaElement, next: string): void {
-    element.value = next;
-    element.dispatchEvent(new Event('input'));
-    fixture.detectChanges();
-  }
-
-  /**
-   * Submits the editor form.
-   */
-  function submit(): void {
-    const form = host().querySelector('form');
-    form?.dispatchEvent(new Event('submit'));
-    fixture.detectChanges();
+  function labels(): readonly string[] {
+    return Array.from(host().querySelectorAll('.form-field__label')).map((label) =>
+      (label.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    );
   }
 
   beforeEach(async () => {
-    await TestBed.configureTestingModule({ imports: [UserProfileComponent] }).compileComponents();
+    await TestBed.configureTestingModule({
+      imports: [UserProfileComponent],
+      // The real client first, then the testing backend that displaces it. Reversing the
+      // order leaves the live backend in place and every expectation times out against a
+      // request nothing intercepted. No interceptor is registered: the correlation
+      // identifier, the bearer token and the problem-document translation are three
+      // separately specified units, and running them here would assert several at once.
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
 
     fixture = TestBed.createComponent(UserProfileComponent);
-    component = fixture.componentInstance;
-    fixture.detectChanges();
+    httpMock = TestBed.inject(HttpTestingController);
+    notifications = TestBed.inject(NotificationService);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
   });
 
   describe('construction', () => {
     it('creates', () => {
-      expect(component).toBeTruthy();
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance).toBeTruthy();
     });
 
     it('declares the on-push change detection strategy the migration plan mandates', () => {
-      const meta = (UserProfileComponent as unknown as { ɵcmp?: { onPush?: boolean } }).ɵcmp;
+      const definition = (UserProfileComponent as Type<UserProfileComponent> & {
+        readonly ɵcmp?: { readonly onPush?: boolean };
+      }).ɵcmp;
 
-      expect(meta?.onPush).toBeTrue();
+      expect(present(definition, 'the compiled component definition').onPush).toBeTrue();
     });
 
-    it('is standalone, so the route can load it directly', () => {
-      const meta = (UserProfileComponent as unknown as { ɵcmp?: { standalone?: boolean } }).ɵcmp;
-
-      expect(meta?.standalone).toBeTrue();
-    });
-
-    it('defaults to the editing mode', () => {
-      expect(component.mode).toBe('edit');
-    });
-
-    it('restores safe defaults when route input binding supplies no data', () => {
-      expect(() => {
-        setInput('profile', undefined);
-        setInput('mode', undefined);
-        setInput('heading', undefined);
-      }).not.toThrow();
-
-      expect(component.profile).toBeNull();
-      expect(component.mode).toBe('edit');
-      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe('Profile');
-      expect(host().querySelector('app-empty-state')).not.toBeNull();
-    });
-
-    it('defaults to offering the visibility control', () => {
-      expect(component.manageVisibility).toBeTrue();
-    });
-  });
-
-  describe('screen title', () => {
-    it('renders the shared page header rather than an ad-hoc heading', () => {
-      // The stylesheet names the shared page header as the owner of the title and
-      // explicitly disclaims styling it, so the title must come from that component.
-      expect(host().querySelector('app-page-header')).not.toBeNull();
-    });
-
-    it('renders a default title, so the screen is never untitled', () => {
-      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe('Profile');
-    });
-
-    it('renders a supplied title', () => {
-      fixture.componentRef.setInput('heading', 'Edit Profile');
+    it('dispatches nothing until the route supplies an account', () => {
       fixture.detectChanges();
 
-      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe('Edit Profile');
+      // Asserted through `match` rather than `expectNone`, so the count is a real
+      // expectation. `expectNone` throws on a match but registers no expectation, and a
+      // spec with none silently passes if its subject stops doing anything at all.
+      expect(httpMock.match(() => true).length).toBe(0);
+    });
+  });
+
+  describe('the route contract', () => {
+    it('accepts the account through an input named exactly userId', () => {
+      // The router binds a route parameter to an input BY NAME. If this input were named
+      // anything else this call would throw, which is the only compile-time-free proof
+      // available that the binding the router performs will land.
+      expect(() => fixture.componentRef.setInput('userId', '7')).not.toThrow();
     });
 
-    it('renders the title while the profile is still being fetched', () => {
-      setInput('loading', true);
+    it('declares no input named permission, which route data would otherwise bind', () => {
+      // Component input binding also binds route `data` keys. An input named `permission`
+      // would silently receive the policy name and be mistaken for a real setting.
+      expect(() => fixture.componentRef.setInput('permission', 'PortalAdministrator')).toThrow();
+    });
+
+    it('converts the string a route parameter always is, and reads that account', () => {
+      fixture.componentRef.setInput('userId', '7');
+      fixture.detectChanges();
+
+      httpMock.expectOne('/api/v1/users/7').flush({ data: account });
+      httpMock.expectOne('/api/v1/users/7/profile').flush({ data: null });
+      fixture.detectChanges();
+
+      expect(host().querySelector('app-empty-state')).not.toBeNull();
+    });
+
+    it('treats zero as a real identifier rather than as an absent one', () => {
+      // Accounts seed at one, so zero does not occur naturally - but neighbouring tables
+      // seed at zero and at minus one, and any code that treats a particular integer as
+      // "absent" makes a real row unreachable. Handled defensively.
+      fixture.componentRef.setInput('userId', '0');
+      fixture.detectChanges();
+
+      const reads = httpMock.match(
+        (request) => request.url === '/api/v1/users/0' || request.url === '/api/v1/users/0/profile',
+      );
+
+      expect(reads.map((request) => request.request.url)).toEqual([
+        '/api/v1/users/0',
+        '/api/v1/users/0/profile',
+      ]);
+
+      reads[0]?.flush({ data: account, meta: null });
+      reads[1]?.flush({ data: null, meta: null });
+      fixture.detectChanges();
+    });
+
+    it('dispatches nothing for a value that is not a whole number', () => {
+      fixture.componentRef.setInput('userId', 'not-an-id');
+      fixture.detectChanges();
+
+      expect(httpMock.match(() => true).length).toBe(0);
+    });
+
+    it('reads the second account when the route moves to it', () => {
+      load([entry(declaration())]);
+
+      fixture.componentRef.setInput('userId', '8');
+      fixture.detectChanges();
+
+      const reads = httpMock.match((request) => request.url.startsWith('/api/v1/users/8'));
+
+      expect(reads.map((request) => request.request.url)).toEqual([
+        '/api/v1/users/8',
+        '/api/v1/users/8/profile',
+      ]);
+
+      reads[0]?.flush({ data: account, meta: null });
+      reads[1]?.flush({ data: null, meta: null });
+      fixture.detectChanges();
+    });
+  });
+
+  describe('the heading', () => {
+    it('renders the shared page header rather than an ad-hoc heading', () => {
+      fixture.detectChanges();
 
       expect(host().querySelector('app-page-header')).not.toBeNull();
-      expect(host().querySelector('app-loading-spinner')).not.toBeNull();
+    });
+
+    it('names the account in the legacy title format', () => {
+      load([entry(declaration())]);
+
+      expect(present(host().querySelector('app-page-header'), 'the page header').textContent).toContain(
+        'Edit Profile - jsmith (Id: 7)',
+      );
+    });
+
+    it('is never blank while the account is still being read', () => {
+      fixture.detectChanges();
+
+      expect(
+        (present(host().querySelector('app-page-header'), 'the page header').textContent ?? '').trim()
+          .length,
+      ).toBeGreaterThan(0);
     });
   });
 
-  describe('while the profile is being fetched', () => {
-    beforeEach(() => {
-      setInput('loading', true);
-    });
-
-    it('renders the shared progress indicator', () => {
-      expect(host().querySelector('app-loading-spinner')).not.toBeNull();
-    });
-
-    it('renders no groups, so a half-built form is never shown', () => {
-      expect(groups().length).toBe(0);
-    });
-
-    it('renders the progress indicator even when a profile is already held', () => {
-      setInput('profile', profileOf([value(definition())]));
-      setInput('loading', true);
-
-      expect(host().querySelector('app-loading-spinner')).not.toBeNull();
-      expect(groups().length).toBe(0);
-    });
-  });
-
-  describe('when there is nothing to edit', () => {
-    it('renders the empty state with no profile at all', () => {
-      expect(host().querySelector('app-empty-state')).not.toBeNull();
-    });
-
-    it('renders the empty state when the profile carries no properties', () => {
-      setInput('profile', profileOf([]));
+  describe('when there is nothing to show', () => {
+    it('renders the empty state when the tenant declares no property', () => {
+      load([]);
 
       expect(host().querySelector('app-empty-state')).not.toBeNull();
-    });
-
-    it('renders the empty state when every declared property is hidden', () => {
-      setInput('profile', profileOf([value(definition({ visible: false }))]));
-
-      expect(host().querySelector('app-empty-state')).not.toBeNull();
-      expect(groups().length).toBe(0);
+      expect(host().querySelector('form')).toBeNull();
     });
   });
 
-  describe('grouping', () => {
-    it('renders one group per category, in the order the properties arrive', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyCategory: 'Name' })),
-          value(definition({ propertyDefinitionId: 2, propertyCategory: 'Address' })),
-          value(definition({ propertyDefinitionId: 3, propertyCategory: 'Name' })),
-        ]),
-      );
+  describe('ordering and grouping', () => {
+    it('orders properties by the declared view order, not by arrival order', () => {
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'LastName', viewOrder: 3 })),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'FirstName', viewOrder: 1 })),
+        entry(declaration({ propertyDefinitionId: 3, propertyName: 'Prefix', viewOrder: 2 })),
+      ]);
 
-      expect(groups().length).toBe(2);
-      expect(toggles().map((toggle) => toggle.textContent?.trim())).toEqual(['Name', 'Address']);
+      expect(labels()).toEqual(['First Name', 'Prefix', 'Last Name']);
     });
 
-    it('keeps every property of a category together, even when they are not adjacent', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyCategory: 'Name' })),
-          value(definition({ propertyDefinitionId: 2, propertyCategory: 'Address' })),
-          value(definition({ propertyDefinitionId: 3, propertyCategory: 'Name' })),
-        ]),
-      );
+    it('groups by declared category and heads each group with the category', () => {
+      load([
+        entry(
+          declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', propertyCategory: 'Name', viewOrder: 1 }),
+        ),
+        entry(
+          declaration({ propertyDefinitionId: 2, propertyName: 'City', propertyCategory: 'Address', viewOrder: 2 }),
+        ),
+        entry(
+          declaration({ propertyDefinitionId: 3, propertyName: 'LastName', propertyCategory: 'Name', viewOrder: 3 }),
+        ),
+      ]);
 
-      const firstGroupControls = groups()[0].querySelectorAll('input, textarea');
-
-      expect(firstGroupControls.length).toBe(2);
+      expect(headings()).toEqual(['Name', 'Address']);
+      expect(labels()).toEqual(['First Name', 'Last Name', 'City']);
     });
 
-    it('gives a property with no category a named group rather than a nameless one', () => {
-      setInput('profile', profileOf([value(definition({ propertyCategory: '   ' }))]));
+    it('names a group whose category is blank rather than leaving the legend empty', () => {
+      load([entry(declaration({ propertyCategory: '   ' }))]);
 
-      expect(toggles()[0].textContent?.trim()).toBe('General');
+      expect(headings()).toEqual(['General']);
     });
 
-    it('omits a hidden property from a group it shares with a visible one', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1 })),
-          value(definition({ propertyDefinitionId: 2, visible: false })),
-        ]),
-      );
+    it('renders every property, including one the tenant marked not visible', () => {
+      // `Profile.ascx.vb` L162-L168 set `Visible = True` on every property for an
+      // administrator immediately before binding, and this route is administrator-only.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', visible: true, viewOrder: 1 })),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', visible: false, viewOrder: 2 })),
+      ]);
 
-      expect(groups().length).toBe(1);
-      expect(controlFor(1)).not.toBeNull();
-      expect(controlFor(2)).toBeNull();
-    });
-
-    it('omits a category left with no visible property, rather than rendering an empty box', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyCategory: 'Name' })),
-          value(
-            definition({ propertyDefinitionId: 2, propertyCategory: 'Address', visible: false }),
-          ),
-        ]),
-      );
-
-      expect(groups().length).toBe(1);
-    });
-  });
-
-  describe('editing', () => {
-    beforeEach(() => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyName: 'First Name' }), {
-            propertyValue: 'Grace',
-            lastUpdatedDate: '2026-01-01T00:00:00Z',
-          }),
-          value(
-            definition({
-              propertyDefinitionId: 2,
-              propertyName: 'Biography',
-              propertyCategory: 'Name',
-              length: 3750,
-            }),
-          ),
-        ]),
-      );
-    });
-
-    it('renders one control per visible property', () => {
       expect(controls().length).toBe(2);
+      expect(labels()).toEqual(['First Name', 'Last Name']);
+    });
+  });
+
+  describe('the declared length bound', () => {
+    it('applies NO maximum-length rule when the declared length is zero', () => {
+      // THE MOST CONSEQUENTIAL CASE IN THIS FILE. Zero is the column default and means
+      // "no bound"; treating it as a bound of nothing invalidates every control on every
+      // screen and no operator can save anything at all.
+      load([entry(declaration({ length: 0 }))]);
+
+      const control = controls()[0];
+      present(control, 'the value control').value = 'a value considerably longer than nothing';
+      present(control, 'the value control').dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(host().querySelector('.form-field__error')).toBeNull();
     });
 
-    it('associates each label with its control', () => {
-      const label = host().querySelector<HTMLLabelElement>('label[for="profile-property-1"]');
+    it('publishes no maxlength attribute when the declared length is zero', () => {
+      load([entry(declaration({ length: 0 }))]);
 
-      expect(label).not.toBeNull();
-      expect(label?.textContent?.trim().startsWith('First Name')).toBeTrue();
+      expect(present(controls()[0], 'the value control').hasAttribute('maxlength')).toBeFalse();
     });
 
-    it('starts a control at the value the account already recorded', () => {
-      expect((controlFor(1) as HTMLInputElement).value).toBe('Grace');
+    it('applies the maximum-length rule when a positive length is declared', () => {
+      load([entry(declaration({ length: 4 }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'far too long';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(
+        (present(host().querySelector('.form-field__error'), 'the error message').textContent ?? ''),
+      ).toContain('4 characters or fewer');
     });
 
-    it('renders a single-line control for a short property', () => {
-      expect(controlFor(1)?.tagName.toLowerCase()).toBe('input');
+    it('publishes a declared positive length to the browser as well as to the validator', () => {
+      load([entry(declaration({ length: 40 }))]);
+
+      expect(present(controls()[0], 'the value control').getAttribute('maxlength')).toBe('40');
+    });
+  });
+
+  describe('the declared validation pattern', () => {
+    it('applies a pattern the browser can compile', () => {
+      load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'letters';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(
+        present(host().querySelector('.form-field__error'), 'the error message').textContent ?? '',
+      ).toContain('not in the expected format');
     });
 
-    it('renders a multi-line control for a property with a large declared length', () => {
-      expect(controlFor(2)?.tagName.toLowerCase()).toBe('textarea');
+    it('renders the screen rather than throwing when a stored pattern cannot be compiled', () => {
+      // Authored by an administrator and stored in the database, so it is untrusted input.
+      // An uncompilable pattern must cost one rule, not the whole screen.
+      expect(() =>
+        load([entry(declaration({ validationExpression: '([unclosed' }))]),
+      ).not.toThrow();
+
+      expect(controls().length).toBe(1);
     });
 
-    it('publishes the declared length to the browser as well as to the validator', () => {
-      expect(controlFor(1)?.getAttribute('maxlength')).toBe('50');
+    it('accepts any value for a property whose stored pattern was skipped', () => {
+      load([entry(declaration({ validationExpression: '([unclosed' }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'anything at all';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(host().querySelector('.form-field__error')).toBeNull();
+    });
+  });
+
+  describe('seeding a control', () => {
+    it('seeds from the declared default when nothing has ever been recorded', () => {
+      load([entry(declaration({ defaultValue: 'Ms.' }), { lastUpdatedDate: null, propertyValue: '' })]);
+
+      expect(present(controls()[0], 'the value control').value).toBe('Ms.');
     });
 
-    it('publishes no length bound when the tenant declared none', () => {
-      setInput('profile', profileOf([value(definition({ length: 0 }))]));
+    it('keeps a recorded empty value empty rather than repopulating the default', () => {
+      // The distinction the legacy accessor could not make: `GetPropertyValue` returned the
+      // empty string both for a missing property and for an empty one.
+      load([
+        entry(declaration({ defaultValue: 'Ms.' }), {
+          lastUpdatedDate: '2024-03-01T10:00:00Z',
+          propertyValue: '',
+        }),
+      ]);
 
-      expect(controlFor(1)?.hasAttribute('maxlength')).toBeFalse();
+      expect(present(controls()[0], 'the value control').value).toBe('');
     });
 
-    it('renders the action row', () => {
-      expect(host().querySelector('.user-profile__actions')).not.toBeNull();
-      expect(host().querySelector('button[type="submit"]')).not.toBeNull();
+    it('seeds from the recorded value when there is one', () => {
+      load([
+        entry(declaration({ defaultValue: 'Ms.' }), {
+          lastUpdatedDate: '2024-03-01T10:00:00Z',
+          propertyValue: 'Dr.',
+        }),
+      ]);
+
+      expect(present(controls()[0], 'the value control').value).toBe('Dr.');
     });
 
-    it('disables both actions while a submission is in flight', () => {
-      setInput('saving', true);
+    it('renders the legacy null-date sentinel as nothing rather than as a date', () => {
+      load([
+        entry(declaration({ propertyName: 'Birthday' }), {
+          lastUpdatedDate: '2024-03-01T10:00:00Z',
+          propertyValue: '0001-01-01T00:00:00',
+        }),
+      ]);
 
-      const buttons = Array.from(
-        host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'),
+      expect(present(controls()[0], 'the value control').value).toBe('');
+    });
+
+    it('renders a property whose declared length is large with a multi-line control', () => {
+      load([entry(declaration({ propertyName: 'Biography', length: 3750 }))]);
+
+      expect(host().querySelector('textarea')).not.toBeNull();
+      expect(host().querySelector('input[type="text"]')).toBeNull();
+    });
+  });
+
+  describe('the legacy wording', () => {
+    it('labels a seeded property with the wording the operator already knows', () => {
+      load([entry(declaration({ propertyName: 'PostalCode' }))]);
+
+      expect(labels()).toEqual(['Postal Code']);
+    });
+
+    it('falls back to the property name for a property the tenant added', () => {
+      load([entry(declaration({ propertyName: 'FavouriteColour' }))]);
+
+      expect(labels()).toEqual(['FavouriteColour']);
+    });
+
+    it('preserves the help text that duplicates its own label, defect and all', () => {
+      load([entry(declaration({ propertyName: 'MiddleName' }))]);
+
+      present(host().querySelector<HTMLButtonElement>('.form-field__help-toggle'), 'the help toggle').click();
+      fixture.detectChanges();
+
+      expect(present(host().querySelector('.form-field__help'), 'the help text').textContent).toBe(
+        'Middle Name:',
       );
+    });
 
-      expect(buttons.length).toBe(2);
-      expect(buttons.every((button) => button.disabled)).toBeTrue();
+    it('preserves the legacy misspelling in the unit help text', () => {
+      load([entry(declaration({ propertyName: 'Unit' }))]);
+
+      present(host().querySelector<HTMLButtonElement>('.form-field__help-toggle'), 'the help toggle').click();
+      fixture.detectChanges();
+
+      expect(present(host().querySelector('.form-field__help'), 'the help text').textContent).toContain(
+        'appartment',
+      );
+    });
+
+    it('uses the legacy required message even where it disagrees with the label', () => {
+      load([entry(declaration({ propertyName: 'Cell', required: true }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = '';
+      control.dispatchEvent(new Event('input'));
+      control.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(present(host().querySelector('.form-field__error'), 'the error message').textContent).toBe(
+        'Cell Phone is required',
+      );
+    });
+
+    it('uses the legacy fax message, which names a fax number rather than a fax', () => {
+      load([entry(declaration({ propertyName: 'Fax', required: true }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = '';
+      control.dispatchEvent(new Event('input'));
+      control.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(present(host().querySelector('.form-field__error'), 'the error message').textContent).toBe(
+        'Fax number is required',
+      );
+    });
+
+    it('uses the legacy locale message, whose capitalisation differs from its label', () => {
+      load([entry(declaration({ propertyName: 'PreferredLocale', required: true }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = '';
+      control.dispatchEvent(new Event('input'));
+      control.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(present(host().querySelector('.form-field__error'), 'the error message').textContent).toBe(
+        'Preferred locale is required',
+      );
     });
   });
 
   describe('required properties', () => {
-    beforeEach(() => {
-      setInput(
-        'profile',
-        profileOf([value(definition({ propertyName: 'First Name', required: true }))]),
-      );
+    it('wraps every control in the shared form field rather than a bare label', () => {
+      load([entry(declaration({ required: true }))]);
+
+      expect(host().querySelectorAll('app-form-field').length).toBe(1);
     });
 
-    it('marks the label, and hides the marker from assistive technology', () => {
-      const marker = host().querySelector('.form-required');
+    it('marks the field as required through the shared component', () => {
+      load([entry(declaration({ required: true }))]);
 
-      expect(marker).not.toBeNull();
-      expect(marker?.getAttribute('aria-hidden')).toBe('true');
-    });
-
-    it('announces the requirement on the control itself', () => {
-      expect(controlFor(1)?.getAttribute('aria-required')).toBe('true');
+      expect(host().querySelector('.form-field__required')).not.toBeNull();
     });
 
     it('shows no message before the operator has touched the control', () => {
-      expect(messageFor(1)).toBeNull();
+      load([entry(declaration({ required: true }))]);
+
+      expect(host().querySelector('.form-field__error')).toBeNull();
     });
 
-    it('shows a message once a required value is cleared', () => {
-      type(controlFor(1)!, '');
+    it('marks the control itself invalid, not merely the message region', () => {
+      // The shared field owns the error region and gives it `role="alert"`, but it cannot
+      // mark a projected control. Without `aria-invalid` a screen-reader user hears the
+      // message and finds nothing on the field identifying it as the one at fault.
+      load([entry(declaration({ required: true }))]);
 
-      expect(messageFor(1)?.textContent?.trim()).toBe('First Name is required.');
+      const control = present(controls()[0], 'the value control');
+      expect(control.getAttribute('aria-invalid')).toBeNull();
+
+      control.value = '';
+      control.dispatchEvent(new Event('input'));
+      control.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(present(controls()[0], 'the value control').getAttribute('aria-invalid')).toBe('true');
     });
 
-    it('refuses a value consisting only of white space, which the API also refuses', () => {
-      type(controlFor(1)!, '    ');
+    it('rejects a value of nothing but white space', () => {
+      load([entry(declaration({ required: true }))]);
 
-      expect(messageFor(1)?.textContent?.trim()).toBe('First Name is required.');
-    });
+      const control = present(controls()[0], 'the value control');
+      control.value = '   ';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
 
-    it('marks the control invalid for assistive technology at the same time', () => {
-      type(controlFor(1)!, '');
-
-      expect(controlFor(1)?.getAttribute('aria-invalid')).toBe('true');
-    });
-
-    it('points the control at its message', () => {
-      type(controlFor(1)!, '');
-
-      expect(controlFor(1)?.getAttribute('aria-describedby')).toBe('profile-property-1-message');
-    });
-
-    it('clears the message once a value is supplied', () => {
-      type(controlFor(1)!, '');
-      type(controlFor(1)!, 'Grace');
-
-      expect(messageFor(1)).toBeNull();
-      expect(controlFor(1)?.hasAttribute('aria-invalid')).toBeFalse();
+      expect(host().querySelector('.form-field__error')).not.toBeNull();
     });
   });
 
-  describe('declared bounds and patterns', () => {
-    it('reports a value longer than the declared length', () => {
-      setInput(
-        'profile',
-        profileOf([value(definition({ propertyName: 'Initials', length: 3 }))]),
-      );
+  describe('submitting', () => {
+    /** Submits the rendered form. */
+    function submit(): void {
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+    }
 
-      // The browser's own `maxlength` stops typing, but a paste or a programmatic set
-      // can still exceed it, and the validator is what the submission gate reads.
-      type(controlFor(1)!, 'ABCD');
+    it('writes every declared property, not merely the changed ones', () => {
+      // The write REPLACES rather than merges, so a property left out of the payload is a
+      // property cleared.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', viewOrder: 2 }), {
+          propertyValue: 'Smith',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
 
-      expect(messageFor(1)?.textContent?.trim()).toBe('Initials must be 3 characters or fewer.');
+      submit();
+
+      const request = httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`);
+      expect(request.request.method).toBe('PUT');
+      expect(request.request.body).toEqual({
+        userId: USER_ID,
+        properties: [
+          { propertyDefinitionId: 1, propertyValue: 'John', visibility: PROFILE_VISIBILITY.allUsers },
+          { propertyDefinitionId: 2, propertyValue: 'Smith', visibility: PROFILE_VISIBILITY.allUsers },
+        ],
+      });
+
+      request.flush(null);
+      // The store re-reads the profile after a write, because the response carries no body.
+      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush({ data: { userId: USER_ID, properties: [] } });
+      fixture.detectChanges();
     });
 
-    it('reports a value that does not match a declared pattern', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyName: 'Telephone', validationExpression: '^[0-9]+$' })),
-        ]),
-      );
+    it('carries the visibility a value already had, even with the control not offered', () => {
+      load([
+        entry(declaration({ visibility: PROFILE_VISIBILITY.adminOnly }), {
+          visibility: PROFILE_VISIBILITY.membersOnly,
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
 
-      type(controlFor(1)!, 'not-a-number');
+      submit();
 
-      expect(messageFor(1)?.textContent?.trim()).toBe('Telephone is not in the expected format.');
+      const request = httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`);
+      expect(request.request.body).toEqual({
+        userId: USER_ID,
+        properties: [
+          {
+            propertyDefinitionId: 1,
+            propertyValue: 'John',
+            visibility: PROFILE_VISIBILITY.membersOnly,
+          },
+        ],
+      });
+
+      request.flush(null);
+      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush({ data: { userId: USER_ID, properties: [] } });
+      fixture.detectChanges();
     });
 
-    it('accepts a value that matches a declared pattern', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyName: 'Telephone', validationExpression: '^[0-9]+$' })),
-        ]),
-      );
+    it('does NOT submit an invalid form, so the administrator bypass is not reproduced', () => {
+      // `Profile.ascx.vb` L94-L104 read `If ProfileProperties.IsValid Or IsAdmin`, so an
+      // administrator skipped every declared rule. On an administrator-only route that
+      // would make client validation entirely vacuous, which contradicts the requirement
+      // that validation rules must match. Deliberately not carried across.
+      load([entry(declaration({ required: true }))]);
 
-      type(controlFor(1)!, '5551234');
+      submit();
 
-      expect(messageFor(1)).toBeNull();
+      expect(httpMock.match(`/api/v1/users/${USER_ID}/profile`).length).toBe(0);
     });
 
-    it('ignores a stored pattern this engine cannot compile, leaving the server to judge', () => {
-      // A stored expression is operator-authored and was evaluated by a different
-      // regular-expression engine. An unusable one must not throw and must not refuse
-      // every value; it is skipped, and the API still enforces it.
-      setInput(
-        'profile',
-        profileOf([value(definition({ validationExpression: '(?<unterminated' }))]),
-      );
+    it('reveals the messages for controls the operator never visited', () => {
+      load([entry(declaration({ required: true }))]);
 
-      type(controlFor(1)!, 'anything at all');
+      submit();
 
-      expect(messageFor(1)).toBeNull();
+      expect(host().querySelector('.form-field__error')).not.toBeNull();
     });
 
-    it('ignores a blank stored pattern', () => {
-      setInput('profile', profileOf([value(definition({ validationExpression: '   ' }))]));
+    it('restores the values the profile arrived with when the operator cancels', () => {
+      load([
+        entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
+      ]);
 
-      type(controlFor(1)!, 'anything at all');
+      const control = present(controls()[0], 'the value control');
+      control.value = 'edited';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
 
-      expect(messageFor(1)).toBeNull();
+      const buttons = Array.from(host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'));
+      present(buttons[1], 'the cancel action').click();
+      fixture.detectChanges();
+
+      // Possible in one call only because every control is non-nullable: resetting one
+      // returns it to its construction value rather than to null.
+      expect(present(controls()[0], 'the value control').value).toBe('John');
     });
   });
 
-  describe('per-property visibility', () => {
-    beforeEach(() => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition(), { visibility: PROFILE_VISIBILITY.membersOnly }),
-        ]),
-      );
+  describe('the visibility affordance', () => {
+    it('is not offered by default, matching the legacy condition on this route', () => {
+      // `ShowVisibility` was the tenant setting AND the viewer being the profile's subject.
+      // An administrator editing another account failed the second half.
+      load([entry(declaration())]);
+
+      expect(host().querySelector('select')).toBeNull();
     });
 
-    it('renders a visibility row per property', () => {
-      expect(host().querySelectorAll('.user-profile__visibility').length).toBe(1);
+    it('is offered when a caller asks for it', () => {
+      fixture.componentRef.setInput('manageVisibility', true);
+      load([entry(declaration())]);
+
+      expect(host().querySelector('select')).not.toBeNull();
     });
 
-    it('offers the three choices the legacy editor offered', () => {
-      const options = Array.from(
-        host().querySelectorAll<HTMLOptionElement>('#profile-property-1-visibility option'),
-      );
+    it('offers the three legacy choices', () => {
+      fixture.componentRef.setInput('manageVisibility', true);
+      load([entry(declaration())]);
 
-      expect(options.map((option) => option.textContent?.trim())).toEqual([
+      expect(Array.from(host().querySelectorAll('option')).map((o) => (o.textContent ?? '').trim())).toEqual([
         'All users',
         'Members only',
         'Administrators only',
       ]);
     });
-
-    it('starts at the visibility the value already carried', () => {
-      const select = host().querySelector<HTMLSelectElement>('#profile-property-1-visibility');
-
-      expect(select?.selectedIndex).toBe(PROFILE_VISIBILITY.membersOnly);
-    });
-
-    it('associates the visibility label with its control', () => {
-      const label = host().querySelector<HTMLLabelElement>(
-        'label[for="profile-property-1-visibility"]',
-      );
-
-      expect(label?.textContent?.trim()).toBe('Visible to');
-    });
-
-    it('renders no visibility row when the tenant has switched the affordance off', () => {
-      setInput('manageVisibility', false);
-
-      expect(host().querySelector('.user-profile__visibility')).toBeNull();
-    });
   });
 
-  describe('collapsing a category', () => {
+  describe('view mode', () => {
     beforeEach(() => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyCategory: 'Name' })),
-          value(definition({ propertyDefinitionId: 2, propertyCategory: 'Address' })),
-        ]),
-      );
+      fixture.componentRef.setInput('mode', 'view');
     });
 
-    it('starts every category expanded', () => {
-      expect(toggles().map((toggle) => toggle.getAttribute('aria-expanded'))).toEqual([
-        'true',
-        'true',
-      ]);
-    });
+    it('renders no form and no action row, which is what ShowUpdate="False" asked for', () => {
+      load([entry(declaration())]);
 
-    it('removes the field stack rather than hiding it', () => {
-      toggles()[0].click();
-      fixture.detectChanges();
-
-      // Removal rather than `hidden`, because `.user-profile__fields` declares
-      // `display: grid` and any author rule outranks the user agent's hidden rule.
-      expect(groups()[0].querySelector('.user-profile__fields')).toBeNull();
-      expect(controlFor(1)).toBeNull();
-    });
-
-    it('announces the collapsed state on the toggle', () => {
-      toggles()[0].click();
-      fixture.detectChanges();
-
-      expect(toggles()[0].getAttribute('aria-expanded')).toBe('false');
-    });
-
-    it('leaves the other categories alone', () => {
-      toggles()[0].click();
-      fixture.detectChanges();
-
-      expect(toggles()[1].getAttribute('aria-expanded')).toBe('true');
-      expect(controlFor(2)).not.toBeNull();
-    });
-
-    it('expands again when activated a second time', () => {
-      toggles()[0].click();
-      fixture.detectChanges();
-      toggles()[0].click();
-      fixture.detectChanges();
-
-      expect(toggles()[0].getAttribute('aria-expanded')).toBe('true');
-      expect(controlFor(1)).not.toBeNull();
-    });
-
-    it('resets the collapse state when a different profile arrives', () => {
-      toggles()[0].click();
-      fixture.detectChanges();
-
-      setInput(
-        'profile',
-        profileOf([value(definition({ propertyDefinitionId: 9, propertyCategory: 'Name' }))]),
-      );
-
-      expect(toggles()[0].getAttribute('aria-expanded')).toBe('true');
-    });
-  });
-
-  describe('submission', () => {
-    let submitted: UserProfileSubmission[];
-
-    beforeEach(() => {
-      submitted = [];
-      component.save.subscribe((payload) => {
-        submitted.push(payload);
-      });
-    });
-
-    it('carries the account identifier and every property', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyCategory: 'Name' }), {
-            propertyValue: 'Grace',
-            lastUpdatedDate: '2026-01-01T00:00:00Z',
-          }),
-          value(definition({ propertyDefinitionId: 2, propertyCategory: 'Address' })),
-        ]),
-      );
-
-      submit();
-
-      expect(submitted.length).toBe(1);
-      expect(submitted[0].userId).toBe(7);
-      expect(submitted[0].properties.map((entry) => entry.propertyDefinitionId)).toEqual([1, 2]);
-    });
-
-    it('names the collection exactly as the request body declares it', () => {
-      // The replace verb binds the same contract the read returns, and that contract
-      // spells the collection `properties`. The API refuses an undeclared member rather
-      // than discarding it, so a payload spelling this `values` is answered 400 naming
-      // the member and no profile is written. Nothing in a compiler catches a
-      // cross-language name divergence, so it is pinned here by key rather than by type.
-      setInput('profile', profileOf([value(definition())]));
-
-      submit();
-
-      expect(Object.keys(submitted[0]).sort()).toEqual(['properties', 'userId']);
-      expect('values' in submitted[0]).toBeFalse();
-    });
-
-    it('carries the values the operator entered', () => {
-      setInput('profile', profileOf([value(definition())]));
-
-      type(controlFor(1)!, 'Hopper');
-      submit();
-
-      expect(submitted[0].properties[0].propertyValue).toBe('Hopper');
-    });
-
-    it('carries the visibility the operator chose', () => {
-      setInput('profile', profileOf([value(definition())]));
-
-      const select = host().querySelector<HTMLSelectElement>('#profile-property-1-visibility')!;
-      select.selectedIndex = PROFILE_VISIBILITY.allUsers;
-      select.dispatchEvent(new Event('change'));
-      fixture.detectChanges();
-
-      submit();
-
-      // A number, not the string the browser reports: the option is bound with
-      // `ngValue`, which preserves the declared type all the way to the payload.
-      expect(submitted[0].properties[0].visibility).toBe(PROFILE_VISIBILITY.allUsers);
-      expect(typeof submitted[0].properties[0].visibility).toBe('number');
-    });
-
-    it('carries a collapsed category too, because a write replaces the whole profile', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyCategory: 'Name' })),
-          value(definition({ propertyDefinitionId: 2, propertyCategory: 'Address' })),
-        ]),
-      );
-
-      toggles()[1].click();
-      fixture.detectChanges();
-      submit();
-
-      // Omitting a collapsed group would clear every value in it, because the API
-      // replaces rather than merges.
-      expect(submitted[0].properties.map((entry) => entry.propertyDefinitionId)).toEqual([1, 2]);
-    });
-
-    it('emits nothing while the form is invalid', () => {
-      setInput('profile', profileOf([value(definition({ required: true }))]));
-
-      submit();
-
-      expect(submitted.length).toBe(0);
-    });
-
-    it('reveals every message when an invalid form is submitted', () => {
-      setInput('profile', profileOf([value(definition({ required: true }))]));
-
-      expect(messageFor(1)).toBeNull();
-
-      submit();
-
-      // Marking every control touched is what makes the message appear for a control
-      // the operator never visited.
-      expect(messageFor(1)).not.toBeNull();
-    });
-
-    it('emits nothing while a submission is already in flight', () => {
-      setInput('profile', profileOf([value(definition())]));
-      setInput('saving', true);
-
-      submit();
-
-      expect(submitted.length).toBe(0);
-    });
-
-    it('emits again once the previous submission completes', () => {
-      setInput('profile', profileOf([value(definition())]));
-      setInput('saving', true);
-      submit();
-      setInput('saving', false);
-      submit();
-
-      expect(submitted.length).toBe(1);
-    });
-  });
-
-  describe('cancelling', () => {
-    it('restores every control to the value the profile arrived with', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition(), {
-            propertyValue: 'Grace',
-            lastUpdatedDate: '2026-01-01T00:00:00Z',
-          }),
-        ]),
-      );
-
-      type(controlFor(1)!, 'Edited');
-      expect((controlFor(1) as HTMLInputElement).value).toBe('Edited');
-
-      host()
-        .querySelectorAll<HTMLButtonElement>('.user-profile__actions button')[1]
-        .click();
-      fixture.detectChanges();
-
-      expect((controlFor(1) as HTMLInputElement).value).toBe('Grace');
-    });
-  });
-
-  describe('initial values', () => {
-    it('keeps a value the account deliberately cleared, rather than reapplying the default', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ defaultValue: 'Unknown' }), {
-            propertyValue: '',
-            lastUpdatedDate: '2026-01-01T00:00:00Z',
-          }),
-        ]),
-      );
-
-      expect((controlFor(1) as HTMLInputElement).value).toBe('');
-    });
-
-    it('applies the declared default when the account has never recorded anything', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ defaultValue: 'Unknown' }), {
-            propertyValue: '',
-            lastUpdatedDate: null,
-          }),
-        ]),
-      );
-
-      expect((controlFor(1) as HTMLInputElement).value).toBe('Unknown');
-    });
-
-    it('prefers a recorded value over the declared default', () => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ defaultValue: 'Unknown' }), {
-            propertyValue: 'Grace',
-            lastUpdatedDate: null,
-          }),
-        ]),
-      );
-
-      expect((controlFor(1) as HTMLInputElement).value).toBe('Grace');
-    });
-  });
-
-  describe('viewing', () => {
-    beforeEach(() => {
-      setInput(
-        'profile',
-        profileOf([
-          value(definition({ propertyDefinitionId: 1, propertyName: 'First Name' }), {
-            propertyValue: 'Grace',
-          }),
-          value(
-            definition({
-              propertyDefinitionId: 2,
-              propertyName: 'Nickname',
-              propertyCategory: 'Name',
-              defaultValue: 'Amazing Grace',
-            }),
-          ),
-          value(
-            definition({
-              propertyDefinitionId: 3,
-              propertyName: 'Middle Name',
-              propertyCategory: 'Name',
-            }),
-          ),
-        ]),
-      );
-      setInput('mode', 'view');
-    });
-
-    it('renders a description list rather than controls', () => {
-      expect(host().querySelector('dl.user-profile__values')).not.toBeNull();
-      expect(controls().length).toBe(0);
-    });
-
-    it('pairs every property name with its value', () => {
-      const terms = Array.from(host().querySelectorAll('dt')).map((term) =>
-        term.textContent?.trim(),
-      );
-
-      expect(terms).toEqual(['First Name', 'Nickname', 'Middle Name']);
-    });
-
-    it('shows the recorded value', () => {
-      const values = Array.from(host().querySelectorAll('dd.user-profile__value'));
-
-      expect(values[0].textContent?.trim()).toBe('Grace');
-    });
-
-    it('shows the declared default when nothing was recorded', () => {
-      const values = Array.from(host().querySelectorAll('dd.user-profile__value'));
-
-      expect(values[1].textContent?.trim()).toBe('Amazing Grace');
-    });
-
-    it('shows nothing at all when neither a value nor a default exists', () => {
-      const values = Array.from(host().querySelectorAll('dd.user-profile__value'));
-
-      // Not a placeholder glyph: an em dash would be announced as content, and the
-      // absence of a value is not content.
-      expect(values[2].textContent?.trim()).toBe('');
-    });
-
-    it('renders no action row, which is what the legacy view page asked for', () => {
+      expect(host().querySelector('form')).toBeNull();
       expect(host().querySelector('.user-profile__actions')).toBeNull();
     });
 
-    it('renders no form element, so nothing here can be submitted', () => {
-      expect(host().querySelector('form')).toBeNull();
+    it('renders each property as a term and its value', () => {
+      load([
+        entry(declaration({ propertyName: 'FirstName' }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      expect(present(host().querySelector('dt'), 'the term').textContent).toContain('First Name');
+      expect(present(host().querySelector('dd'), 'the value').textContent).toContain('John');
     });
 
-    it('still allows a category to be collapsed', () => {
-      toggles()[0].click();
+    it('renders the null-date sentinel as nothing', () => {
+      load([
+        entry(declaration({ propertyName: 'Birthday' }), {
+          propertyValue: '0001-01-01',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      expect((present(host().querySelector('dd'), 'the value').textContent ?? '').trim()).toBe('');
+    });
+  });
+
+  describe('collapsing a group', () => {
+    it('hides a group\'s fields and reports the state on the toggle', () => {
+      load([entry(declaration())]);
+
+      const toggle = present(
+        host().querySelector<HTMLButtonElement>('.user-profile__toggle'),
+        'the toggle',
+      );
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+      toggle.click();
       fixture.detectChanges();
 
-      expect(toggles()[0].getAttribute('aria-expanded')).toBe('false');
-      expect(groups()[0].querySelector('dl')).toBeNull();
+      expect(
+        present(host().querySelector<HTMLButtonElement>('.user-profile__toggle'), 'the toggle').getAttribute(
+          'aria-expanded',
+        ),
+      ).toBe('false');
+      expect(controls().length).toBe(0);
+    });
+
+    it('is a real button, reversing the legacy negative tab index', () => {
+      load([entry(declaration())]);
+
+      const toggle = present(
+        host().querySelector<HTMLButtonElement>('.user-profile__toggle'),
+        'the toggle',
+      );
+
+      expect(toggle.tagName).toBe('BUTTON');
+      expect(toggle.hasAttribute('tabindex')).toBeFalse();
+    });
+  });
+
+  describe('failures', () => {
+    it('renders the shared error banner', () => {
+      fixture.detectChanges();
+
+      expect(host().querySelector('app-error-banner')).not.toBeNull();
+    });
+
+    it('surfaces a failed profile read through the banner', () => {
+      fixture.componentRef.setInput('userId', String(USER_ID));
+      fixture.detectChanges();
+
+      httpMock.expectOne(`/api/v1/users/${USER_ID}`).flush({ data: account });
+      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
+        { title: 'Server error', status: 500 },
+        { status: 500, statusText: 'Server Error' },
+      );
+      fixture.detectChanges();
+
+      expect(
+        (present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim().length,
+      ).toBeGreaterThan(0);
+    });
+
+    it('announces a refusal at warning severity rather than as an error', () => {
+      // `AccessDenied.ascx.vb` rendered at the warning message type in BOTH branches of
+      // its load handler, so a permission refusal is a warning here too.
+      fixture.componentRef.setInput('userId', String(USER_ID));
+      fixture.detectChanges();
+
+      httpMock.expectOne(`/api/v1/users/${USER_ID}`).flush({ data: account });
+      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
+        { title: 'Forbidden', status: 403 },
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      const raised = notifications.notifications();
+      expect(raised.length).toBe(1);
+      expect(present(raised[0], 'the notification').severity).toBe('warning');
+    });
+
+    it('shows the server\'s per-field message beside the field it names', () => {
+      load([entry(declaration({ propertyName: 'FirstName', required: true }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'John';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
+        {
+          title: 'One or more validation errors occurred.',
+          status: 400,
+          // A .NET model-state key is Pascal-cased on the wire. Both spellings are probed.
+          errors: { FirstName: ['That name is already taken.'] },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      expect(
+        present(host().querySelector('.form-field__error'), 'the error message').textContent,
+      ).toContain('That name is already taken.');
     });
   });
 });
