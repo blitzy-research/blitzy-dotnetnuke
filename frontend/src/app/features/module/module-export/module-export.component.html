@@ -114,6 +114,29 @@
         `autocomplete="off"` because a document name is not a personal detail a browser should be offering
         from another form, and `spellcheck="false"` because a filename is not prose.
 
+        `aria-required` IS THE CALLER'S RESPONSIBILITY AND CANNOT BE DELEGATED, which is why it appears here
+        rather than being inferred from the `required` passed to the shared field above. That input is a
+        PRESENTATIONAL MARKER - it draws the asterisk and contributes the word to the accessible name - and
+        the shared component says so explicitly: it "cannot make a field required", and the caller "sets each
+        control's own `required` or `aria-required`". Stated as a literal rather than bound, because this
+        field is unconditionally required: the control carries a required validator and the field above is
+        marked required with a constant, so there is no state for a binding to track. It is invisible,
+        changing no rendered pixel, and it matches the form the sibling profile-definition screen already uses
+        for its own unconditionally-required field.
+
+        The NATIVE `required` attribute is deliberately not used in its place. It would re-enter the browser's
+        own constraint validation - which this form suppresses with `novalidate` precisely so the shared
+        field is the single place a message appears - and it would additionally match the `:invalid`
+        pseudo-class from the first render, before the operator has touched anything, which is the
+        pre-emptive marking the `aria-invalid` binding below is careful to avoid.
+
+        `aria-describedby` is NOT set here, and that is the shared component's documented default rather than
+        an omission: it describes the field GROUP that wraps this control, and never emits a reference to a
+        region that is not currently rendered. It exposes its help and error identifiers publicly so a caller
+        MAY describe one control more narrowly instead, and states that both routes are supported - so
+        reaching for the identifiers would add a second reference to what is already announced, and would
+        couple this template to another component's identifier scheme for nothing.
+
         `aria-invalid` carries the failure on the CONTROL, which the message region alone cannot. The shared
         field announces the message once, assertively, at the moment it appears - but a reader who arrives at
         this input later, or returns to it after the announcement has passed, would otherwise find a field
@@ -129,6 +152,7 @@
         [maxlength]="fileNameMaxLength"
         autocomplete="off"
         spellcheck="false"
+        aria-required="true"
         [attr.aria-invalid]="
           (form.controls.fileName.touched || form.controls.fileName.dirty) &&
           form.controls.fileName.invalid

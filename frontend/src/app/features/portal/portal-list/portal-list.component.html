@@ -1,0 +1,300 @@
+<!--
+  The portal (tenant) listing screen, served at /portals.
+
+  MARKUP CONTRACT. Emulated view encapsulation rewrites every class below with this
+  component's own content attribute, so a class name that drifts does not error - it
+  silently matches nothing and the region renders unstyled. The paired stylesheet expects
+  exactly this vocabulary:
+
+      .portal-list
+      .portal-list__filters
+      .portal-list__letters
+      .portal-list__letter
+      .portal-list__search
+      .portal-list__status
+      .portal-list__action
+      .portal-list__row-command
+      .portal-list__row-command--danger
+      .portal-list__aliases
+      .portal-list__alias
+
+  Built-in control flow only - @if, @else and @for - and every @for declares a track
+  expression. Every string is interpolated, so every string is escaped: no raw-HTML
+  binding, no sanitiser bypass and no trusted-HTML wrapper appears anywhere here, which
+  matters because legacy resource values and stored host names both reach this screen and
+  neither may be treated as markup.
+-->
+
+<div class="portal-list">
+  <!--
+    The heading, with the ONE surviving page-level action projected into its slot. The
+    legacy screen declared three (`Portals.ascx.vb:L435-L437`); the template export and
+    the bulk expired-portal deletion have no endpoint in the target and are documented
+    reductions rather than hidden ones.
+
+    An anchor and not a button: this navigates. The legacy action addressed the sign-up
+    screen through `EditUrl("Signup")`, and a navigation affordance is a link.
+  -->
+  <app-page-header [title]="heading">
+    <a class="portal-list__action" [routerLink]="addPortalLink">{{ addPortalLabel }}</a>
+  </app-page-header>
+
+  <!--
+    The two filters, side by side.
+
+    The letter strip is rendered here rather than delegated: none of the ten shared
+    components covers a first-letter filter, and the shared grid exposes no slot for one.
+    A group role with an accessible name rather than a navigation landmark - the
+    application shell already renders the single navigation landmark, and a second one on
+    every list screen would announce a duplicate.
+  -->
+  <div class="portal-list__filters">
+    <div class="portal-list__letters" role="group" [attr.aria-label]="filterStripLabel">
+      <!--
+        Twenty-seven entries: A to Z, then the entry that CLEARS the filter. `All` comes
+        after Z because the legacy list appended it after the twenty-six letters
+        (`Portals.ascx.vb:L170-L179`), and the twenty-eighth legacy entry - `Expired` - is
+        dropped because no endpoint exposes that listing.
+
+        Buttons and not links, because selecting an entry changes client state and no
+        address. The legacy entries were hyperlinks only because the filter round-tripped
+        through the query string (`Portals.ascx.vb:L215-L232`); an anchor with nowhere to
+        go would be a worse translation than a button that does what the control does.
+
+        `aria-pressed` carries the selection to assistive technology, so the state is not
+        conveyed by colour alone.
+      -->
+      @for (option of filterOptions; track option.label) {
+        <button
+          type="button"
+          class="portal-list__letter"
+          [attr.aria-pressed]="isFilterSelected(option)"
+          (click)="onFilterSelected(option)"
+        >
+          {{ option.label }}
+        </button>
+      }
+    </div>
+
+    <!--
+      The free-text name filter. A shared component rather than a bare input, so the
+      control keeps its label association and owns its own debounce. The placeholder
+      promises neither a starts-with nor a contains test, because the matching rule is the
+      server's to state and it has changed since the legacy screen.
+    -->
+    <app-search-input
+      class="portal-list__search"
+      [placeholder]="searchPlaceholder"
+      (search)="onSearch($event)"
+    />
+  </div>
+
+  <!--
+    A reported listing failure. The whole problem document is handed over, which is what
+    preserves the trace and correlation identifiers an operator quotes when reporting a
+    fault; the banner carries its own live region and decides its own severity from the
+    status. The retry and dismiss affordances sit beside it rather than inside it, because
+    the shared banner projects nothing.
+  -->
+  @if (hasListFailure()) {
+    <div class="portal-list__status">
+      @if (listProblem(); as problem) {
+        <app-error-banner [problem]="problem" />
+      } @else {
+        <!--
+          A failure that carried no document at all, which is what a request that never
+          reached the server looks like. Announced politely rather than assertively: the
+          operator has just acted, so they are already looking at this region.
+        -->
+        <p role="status">{{ listFailureMessage() }}</p>
+      }
+
+      <div>
+        <button type="button" class="portal-list__action" (click)="onRetry()">Retry</button>
+        <button type="button" class="portal-list__action" (click)="onFailureDismissed()">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  }
+
+  <!--
+    Three mutually exclusive surfaces: the first read, an empty result, and the grid.
+
+    The indicator replaces the grid only while the FIRST page is being read. A later read -
+    a filter change, a page turn, the re-read after a deletion - keeps the rows on screen
+    and uses the grid's own indicator, so the table an operator is reading is never blanked
+    out from under them.
+  -->
+  @if (showInitialSpinner()) {
+    <app-loading-spinner label="Loading portals…" />
+  } @else if (hasRows()) {
+    <!--
+      The ten-column grid. The caption is projected and clipped, so the table carries an
+      accessible name at no visual cost - the legacy grid declared neither a caption nor a
+      summary attribute and reached assistive technology unnamed.
+
+      No sort is bound and no row selection is bound: the legacy grid declared neither
+      `AllowSorting` nor a selected-item style, and offering a sort would also mean naming
+      a sort field the endpoint may refuse.
+    -->
+    <app-data-table
+      [columns]="columns()"
+      [rows]="portals()"
+      [loading]="loading()"
+    >
+      <span dataTableCaption>{{ gridCaption }}</span>
+    </app-data-table>
+
+    <!--
+      The pager, drawn on the legacy predicate: more records exist than fit on one page.
+      It is handed the same three facts the legacy pager was handed at
+      `Portals.ascx.vb:L148-L150` - the total, the page size in effect, and the page the
+      operator asked for - and reports a zero-based index straight back to the store.
+    -->
+    @if (pagerRequired()) {
+      <app-pagination
+        [page]="pageIndex()"
+        [pageSize]="pageSize()"
+        [totalCount]="totalCount()"
+        (pageChange)="onPageChange($event)"
+      />
+    }
+  } @else {
+    <!--
+      Nothing to draw. The wording distinguishes "nothing matched" from "past the end of the
+      results", which the paging contract treats as genuinely different states, and the
+      remedy offered differs with it: a way back to the first page when the page is past the
+      end, and the add action when the list is simply empty.
+    -->
+    <app-empty-state [message]="emptyMessage()">
+      @if (isPastEnd()) {
+        <button type="button" class="portal-list__action" (click)="onReturnToFirstPage()">
+          First page
+        </button>
+      } @else {
+        <a class="portal-list__action" [routerLink]="addPortalLink">{{ addPortalLabel }}</a>
+      }
+    </app-empty-state>
+  }
+</div>
+
+<!--
+  Presence in the DOM is what OPENS the shared dialog - it calls `showModal()` once it is
+  attached - so it is rendered only while a removal is awaiting confirmation. The dialog
+  brings its own focus trap, its own escape handling and a named cancel affordance, none of
+  which the browser confirmation it replaces offered.
+
+  The message is passed explicitly even though it happens to match the component's own
+  default, so that this screen's wording is traceable to the global resource entry
+  `DeleteItem.Text` that the legacy screen read at `Portals.ascx.vb:L300`. The title and
+  the confirm label are left to the component, whose defaults are "Confirm Delete" and the
+  global `cmdDelete.Text` value of "Delete".
+-->
+@if (pendingRemoval()) {
+  <app-confirm-dialog
+    [message]="deleteConfirmMessage"
+    danger
+    (confirm)="onDeletionConfirmed()"
+    (cancel)="onDeletionCancelled()"
+  />
+}
+
+<!--
+  =============================================================================
+  CELL TEMPLATES
+  =============================================================================
+
+  All four MUST stay at the top level, outside every control-flow block: the component
+  resolves them with static view queries so that the column descriptors can be assembled in
+  `ngOnInit`, and a template nested inside an @if block is not yet in the view at that
+  point. The component reports a missing one by name rather than rendering a blank column.
+
+  Each receives the row as `$implicit`, so `let-portal` binds it with no member name.
+-->
+
+<!--
+  Row 1: the settings affordance.
+
+  An anchor, which is measured rather than assumed - `portals.ascx:L21` declares this column
+  with `EditMode="URL"`, so it rendered a hyperlink driven by a format string. It targets
+  SITE SETTINGS and not a create form, because the legacy column's address was built from
+  the administration page named "Site Settings" carrying a `pid` pair
+  (`Portals.ascx.vb:L303-L311`).
+
+  The painted label is short and repeats down the column, so the accessible name is
+  qualified with the portal's own title; the legacy affordance was an unlabelled image.
+-->
+<ng-template #editCommand let-portal>
+  <a
+    class="portal-list__row-command"
+    [routerLink]="editSettingsLink(portal)"
+    [attr.aria-label]="editCommandName(portal)"
+  >
+    Settings
+  </a>
+</ng-template>
+
+<!--
+  Row 2: the delete affordance.
+
+  A button, which `Portals.ascx.vb:L419-L420` confirms - that column's control really was an
+  image button, since it declared no URL edit mode.
+
+  Rendered only when the row is not the tenant currently being browsed, reproducing
+  `Portals.ascx.vb:L423` exactly. Absent rather than disabled, because the legacy rule set
+  `Visible` to false: a disabled control still announces itself as an unavailable command,
+  whereas the legacy screen offered nothing at all on that row.
+
+  Disabled while a deletion is in flight, so a second confirmation cannot be started against
+  a page that is about to be re-read.
+-->
+<ng-template #deleteCommand let-portal>
+  @if (canDelete(portal)) {
+    <button
+      type="button"
+      class="portal-list__row-command portal-list__row-command--danger"
+      [disabled]="deleting()"
+      [attr.aria-label]="deleteCommandLabel(portal)"
+      (click)="requestDeletion(portal)"
+    >
+      Delete
+    </button>
+  }
+</ng-template>
+
+<!--
+  Row 5: the host names.
+
+  Real anchor elements built from address-and-text pairs, where the legacy cell was a single
+  label holding CONCATENATED HTML (`Portals.ascx.vb:L282`) into which a stored host name was
+  interpolated unescaped. Here the address is a binding and the text is an interpolation, so
+  the host name is escaped and no raw-HTML property, sanitiser bypass or trusted-HTML wrapper
+  is involved.
+
+  A list rather than break-separated text, because that is what a sequence of host names is;
+  the legacy `<BR>` separators become spacing declared in the paired stylesheet. A portal with
+  no host names renders nothing at all, which the empty-list case below produces naturally -
+  no divider is left dangling because no divider is drawn in markup.
+-->
+<ng-template #aliasesCell let-portal>
+  <ul class="portal-list__aliases">
+    @for (alias of aliasLinks(portal); track alias.href) {
+      <li class="portal-list__alias">
+        <a [href]="alias.href" rel="noopener">{{ alias.label }}</a>
+      </li>
+    }
+  </ul>
+</ng-template>
+
+<!--
+  Row 10: the expiry.
+
+  The shared date pipe answers an absent expiry, the legacy minimum-date marker and an
+  unparseable value alike with an empty cell, which is exactly what `FormatExpiryDate`
+  (`Portals.ascx.vb:L250-L260`) did - it seeded its result with the empty string and formatted
+  only a non-marker date. So `01/01/0001` is never painted, and neither is a placeholder word.
+-->
+<ng-template #expiresCell let-portal>
+  {{ portal.expiryDate | dateDisplay }}
+</ng-template>

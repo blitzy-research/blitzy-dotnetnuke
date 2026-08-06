@@ -1,0 +1,868 @@
+<!--
+  THE CREATE-AND-EDIT ACCOUNT SCREEN — routes `/users/new` and `/users/:userId`.
+
+  WHAT THIS TEMPLATE REPLACES
+  ---------------------------
+  Two legacy panels shown side by side by one container. `Website/admin/manageusers.ascx`
+  L59-L63 places `<dnn:user id="ctlUser">` and `<dnn:membership id="ctlMembership">` in a
+  single row named `UserRow`, so the credential form and the membership panel are ONE
+  screen rather than two. That measurement is the reason the membership panel is rendered
+  here and not on a per-tenant settings page.
+
+  MIGRATION: the legacy five-button tab strip (`manageusers.ascx` L11-L47) is replaced by
+  ROUTING. Its `cmdUser` tab is this screen; `cmdProfile` and `cmdPassword` become the two
+  links in the title bar; `cmdRoles` becomes a link to the role listing because no
+  per-user role route exists; and `cmdServices` is dropped outright with `pnlServices`,
+  which has no endpoint behind it.
+
+  MIGRATION: every legacy tabular element on these panels is a LAYOUT table, not a data grid
+  — `manageusers.ascx` L49 `summary="User Design Table"`, `User.ascx` L18 `tblAddUser`
+  `width="250"` and L29 `tblPassword` `summary="Password Management"`. None is reproduced.
+  Layout is grid and flex, declared entirely in the paired stylesheet, so no table element
+  appears anywhere in this file.
+
+  MIGRATION: the legacy collapsible-section control is registered at `User.ascx` L4 and
+  then NEVER USED on this screen — an annotated defect, left as found. The disclosure is
+  rebuilt from semantics the platform already has: a grouped field set whose caption names
+  the group, and a real button carrying `aria-expanded`. The legacy toggle was an anchor
+  with `tabindex="-1"`, which is an accessibility defect rather than a convention, so it is
+  not reproduced; a keyboard user reaches every disclosure here.
+
+  DEFECT, ANNOTATED AND NOT FIXED HERE. `Website/controls/labelcontrol.ascx` L2-L7 puts the
+  help trigger INSIDE the `<label>` that wraps the field, so activating help also activated
+  the label and moved focus into the input — and the trigger carried `tabindex="-1"`, which
+  took it out of the keyboard order entirely. Both are defects rather than conventions. The
+  affordance is OWNED by the shared field component and is deliberately not re-implemented
+  here, so this file neither reproduces the defects nor silently corrects someone else's
+  component; the measurement is recorded where the field is consumed.
+
+  MIGRATION: wording comes from the resource VALUE, never from a markup attribute. The rule
+  is load-bearing rather than tidy: `User.ascx` L64 declares the security-code label as
+  `text="Password:"` while `User.ascx.resx` sets `plCaptcha.Text` to `Security Code:`, and
+  because a label with no explicit resource key falls back to its control identifier the
+  resource wins at run time and the copy-paste defect stays masked. Trusting the attribute
+  would have shipped a second field captioned "Password:".
+
+  MIGRATION: every string is rendered as PLAIN TEXT through interpolation. Legacy resource
+  wording is untrusted content by measurement — 76 values across the 37 in-scope resource
+  files carry a raw HTML tag and 4 carry a live script element — so no raw-markup sink, no
+  sanitiser bypass and no trusted-HTML wrapper is used here, for any value, ever.
+
+  MIGRATION: localisation is not ported. No translation runtime is in the dependency set,
+  so user-facing strings are authored directly and the resource files informed wording only.
+
+  MIGRATION: no permission check is made on this screen. The route's gate is ADVISORY and
+  the server's refusal is the only authority. The permission directive is deliberately not
+  used, because it consumes persisted permission keys and account administration is
+  expressed as a policy name — two closed vocabularies that must not be conflated.
+
+  MIGRATION: no landmark element is emitted here. The application shell owns each landmark
+  exactly once, and a second one would add a duplicate region to the accessibility tree.
+-->
+
+<!--
+  The title is mode-dependent, which the measured resources prove: `AddUser.Text` while
+  creating, and the `UserTitle.Text` format 'Edit User - {0} (Id: {1})' once a record has
+  loaded. The component resolves which one applies; this template only renders it.
+
+  No subtitle is bound. The legacy help row is `trHelp` at `manageusers.ascx` L57, declared
+  `visible="false"` with an empty label, so there was never any supporting text to carry
+  over. Binding an empty subtitle would render an empty paragraph for no reason.
+-->
+<app-page-header [title]="pageTitle()">
+  <!--
+    The three cross-screen actions the legacy tab strip provided, with the measured
+    `.Action` wording from `ManageUsers.ascx.resx` as their accessible names.
+
+    Edit mode only, and that is a correctness requirement rather than a preference: in
+    create mode there is no account identifier to address, so `/users/undefined/profile`
+    is the alternative to withholding them.
+
+    MIGRATION: the role action targets the role listing rather than a per-user route.
+    `Roles.Action` reads 'Manage Roles for this User', but no per-user role route exists in
+    the closed route set, so the link goes where the work can actually be done. The
+    divergence is annotated rather than hidden behind wording that promises more.
+
+    MIGRATION: the legacy actions were image buttons. Their raster assets have no target
+    equivalent — the only static asset this workspace ships is a favicon — so each action
+    is text, which also gives it a discernible accessible name the images often lacked.
+  -->
+  @if (isEditMode()) {
+    <a [routerLink]="['/users', resolvedUserId(), 'profile']">Manage User's Profile</a>
+    <a [routerLink]="['/users', resolvedUserId(), 'password']">Manage User's Password</a>
+    <a routerLink="/roles">Manage Roles for this User</a>
+  }
+</app-page-header>
+
+<!--
+  Covers both halves of the screen's work: the read that fills the membership panel and the
+  write the save action issues. A screen that spun for only one of them would look finished
+  while a request was still outstanding.
+-->
+@if (loading()) {
+  <app-loading-spinner label="Loading user account…" />
+}
+
+<!--
+  DANGER SEVERITY ONLY, and the measured message census is what decides it. Across
+  `ManageUsers.ascx.vb` the permission and lookup outcomes are all YellowWarning —
+  `NoUser` at L207, L221 and L273, `InvalidUser` at L214, `NotAuthorized` at L229 and L240,
+  `UserLockedOut` at L291, and both quota refusals at L372 and L374 — while only the
+  account-creation outcomes at L880 and an unexpected exception at L932 are RedError.
+  `Website/admin/Security/AccessDenied.ascx.vb` sets the same precedent at L43 and L45,
+  where both branches render as a warning.
+
+  So the component's `problem` projection admits error severity alone, and every
+  warning-severity outcome is announced through the notification channel instead. Showing a
+  refusal here would misrepresent a rule as a fault, and showing it in both places would
+  say the same thing twice.
+
+  MIGRATION: this banner is NET-NEW, not a translation. There are zero
+  `<asp:ValidationSummary>` declarations in the whole legacy site tree, so no predecessor
+  exists to port; legacy feedback was per-field and inline only.
+
+  The banner owns its own live region, so no competing one is declared anywhere below.
+-->
+@if (problem()) {
+  <app-error-banner [problem]="problem()" />
+}
+
+@if (userMissing()) {
+  <!--
+    The read succeeded and reported nothing, so there is no record to edit and no problem
+    document to show. The measured `NoUser.Text` wording is rendered in place of the form.
+
+    MIGRATION: this reproduces the measured behaviour exactly. `ManageUsers.ascx.vb` L207
+    and L221 answer a missing or ineligible account by pairing the warning with
+    `DisableForm()`, and `DisableForm()` at L388-L397 sets `Visible = False` on every panel
+    — it HIDES them. Offering an empty credential form for an account that does not exist
+    would invite an operator to type into something that can never be saved.
+
+    No live region is declared here: the component already announces this wording through
+    the notification channel, and a second announcement would repeat it.
+  -->
+  <p>This account doesn't exist</p>
+} @else {
+  <form class="user-form" [formGroup]="form" (ngSubmit)="onSubmit()">
+    @if (formDisabled()) {
+      <!--
+        The server refused the operation or found nothing, so the component has disabled
+        every control and this states why, in the measured wording for the status.
+
+        MIGRATION — A DELIBERATE DIVERGENCE, MEASURED AND ANNOTATED. The legacy
+        `DisableForm()` (`ManageUsers.ascx.vb` L388-L397) is named for disabling but its
+        implementation HIDES all six panels outright, and one branch at L237 redirects
+        instead. This screen keeps the form visible and disabled so the operator can see
+        what the refusal refers to. Withholding the context along with the affordance makes
+        a refusal unreadable, and the disabled state already withholds the affordance.
+
+        Plain text, no live region: the notification channel already announced it.
+      -->
+      <p>{{ refusalMessage() }}</p>
+    }
+
+    <div class="user-form__panels">
+      <!--
+        PANEL 1 — CREDENTIALS.
+
+        The field set is RECOVERED from `User.ascx.resx`, prefix `UserInfo_`, because the
+        legacy rendered these fields through a property editor control that is one of the
+        102 excluded files under the legacy control library. Label, help and required
+        wording all come from the measured resource values.
+
+        The caption is the measured `cmdUser.Text`, 'Manage User Credentials' — the wording
+        the legacy tab strip used for this very panel.
+      -->
+      <fieldset class="user-form__section">
+        <legend class="user-form__legend">Manage User Credentials</legend>
+
+        <!--
+          The disclosure control. It carries the state rather than the group name, because
+          the caption above already names the group and rendering the name twice would be a
+          visual regression against the single legacy section head.
+
+          `aria-controls` is deliberately NOT declared: the body is removed from the
+          document when collapsed, so the reference would dangle and report as an error to
+          any auditing tool. `aria-expanded` alone is accurate in both states.
+        -->
+        <button
+          type="button"
+          class="user-form__section-toggle"
+          [attr.aria-expanded]="credentialsExpanded()"
+          (click)="toggleCredentials()"
+        >
+          <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+            <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+          </svg>
+          {{ credentialsExpanded() ? 'Hide' : 'Show' }} user credentials
+        </button>
+
+        @if (credentialsExpanded()) {
+          <div class="user-form__section-body user-form__grid">
+            <!--
+              The sign-in name. Rendered while editing and DISABLED there by the component,
+              because the legacy marked it read-only and offered no rename and the update
+              contract carries no name member. A disabled control cannot be dirtied, which
+              is what stops a rename that could never be saved.
+            -->
+            <app-form-field
+              label="User Name:"
+              for="user-form-username"
+              help="Enter a username"
+              [required]="true"
+              [error]="messageFor('username')"
+            >
+              <input
+                id="user-form-username"
+                type="text"
+                autocomplete="username"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('username') ? 'true' : null"
+                formControlName="username"
+              />
+            </app-form-field>
+
+            <app-form-field
+              label="First Name:"
+              for="user-form-first-name"
+              help="Enter a First Name"
+              [required]="true"
+              [error]="messageFor('firstName')"
+            >
+              <input
+                id="user-form-first-name"
+                type="text"
+                autocomplete="given-name"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('firstName') ? 'true' : null"
+                formControlName="firstName"
+              />
+            </app-form-field>
+
+            <app-form-field
+              label="Last Name:"
+              for="user-form-last-name"
+              help="Enter a Last Name"
+              [required]="true"
+              [error]="messageFor('lastName')"
+            >
+              <input
+                id="user-form-last-name"
+                type="text"
+                autocomplete="family-name"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('lastName') ? 'true' : null"
+                formControlName="lastName"
+              />
+            </app-form-field>
+
+            <!--
+              No autofill hint on this one. The legacy declared none on any field, so every
+              hint here is an addition; `nickname` is the only one the browser does not act on,
+              and it raised a developer-tools issue on every load while autofilling nothing.
+              An addition that produces a diagnostic and no benefit is withdrawn. The five that
+              the browser does honour are kept.
+            -->
+            <app-form-field
+              label="Display Name:"
+              for="user-form-display-name"
+              help="Provide a Display Name"
+              [required]="true"
+              [error]="messageFor('displayName')"
+            >
+              <input
+                id="user-form-display-name"
+                type="text"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('displayName') ? 'true' : null"
+                formControlName="displayName"
+              />
+            </app-form-field>
+
+            <!--
+              MIGRATION: NO CLIENT-SIDE UNIQUENESS RULE IS RENDERED OR IMPLIED.
+              `Website/release.config` L244 sets `requiresUniqueEmail="false"`, so the
+              address is not a sign-in key and duplicates were legal. Should the server
+              nonetheless answer with a conflict, its problem document carries the measured
+              `EmailError.Text` wording and the banner above shows it; this field does not
+              pre-empt a rule the installation had switched off.
+
+              The address is typed as `email` so the platform offers the right keyboard,
+              while the pattern the component enforces is the MEASURED legacy expression
+              rather than the framework's own — substituting the framework validator would
+              change which addresses are accepted.
+            -->
+            <app-form-field
+              label="Email Address:"
+              for="user-form-email"
+              help="Enter a valid Email address"
+              [required]="true"
+              [error]="messageFor('email')"
+            >
+              <input
+                id="user-form-email"
+                type="email"
+                autocomplete="email"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('email') ? 'true' : null"
+                formControlName="email"
+              />
+            </app-form-field>
+          </div>
+        }
+      </fieldset>
+
+      <!--
+        PANEL 1b — THE CREATE-ONLY CONTROLS, from `pnlAddUser` at `User.ascx` L17, which the
+        legacy declared `visible="False"` and revealed only while adding an account.
+
+        Two groups, matching the two measured layout tables: the activation flags from
+        `tblAddUser` (L18-L27) and the credential fields from `tblPassword` (L29-L69).
+
+        Rendered only in create mode. While editing, the component additionally DISABLES all
+        five of these controls, so neither path can submit a value the update contract has
+        nowhere to put.
+      -->
+      @if (isCreateMode()) {
+        <!--
+          MIGRATION: the caption is AUTHORED. `tblAddUser` is a layout table with no caption
+          of any kind, and there is no resource entry for one, so no measured wording exists
+          to carry over — but a grouped field set needs an accessible name, and inventing
+          nothing would have left the group unnamed. Only the caption is authored; both
+          labels and both help strings below are measured values.
+
+          No disclosure here: the measured markup gave these two rows no section head, so
+          adding a fourth collapsible group would be an affordance the legacy never had.
+        -->
+        <fieldset class="user-form__section">
+          <legend class="user-form__legend">New Account Options</legend>
+
+          <div class="user-form__section-body user-form__grid">
+            <!--
+              `plAuthorize`. Initial value TRUE, from the measured `checked="True"` at
+              `User.ascx` L21, which the code-behind does not override.
+
+              Create-only by design: while editing, authorisation is changed through the
+              membership action below, which is a separate endpoint rather than a form field.
+            -->
+            <app-form-field
+              label="Authorize:"
+              for="user-form-authorize"
+              help="Authorize this user"
+            >
+              <input id="user-form-authorize" type="checkbox" formControlName="authorize" />
+            </app-form-field>
+
+            <!--
+              `plNotify`. Initial value TRUE, from the measured `checked="True"` at
+              `User.ascx` L25.
+            -->
+            <app-form-field
+              label="Notify:"
+              for="user-form-notify"
+              help="Send an email to the user's email address"
+            >
+              <input id="user-form-notify" type="checkbox" formControlName="notify" />
+            </app-form-field>
+          </div>
+        </fieldset>
+
+        <!--
+          The password group. Caption from the measured `Password.Text`.
+        -->
+        <fieldset class="user-form__section">
+          <legend class="user-form__legend">Password</legend>
+
+          <button
+            type="button"
+            class="user-form__section-toggle"
+            [attr.aria-expanded]="passwordExpanded()"
+            (click)="togglePassword()"
+          >
+            <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+              <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+            </svg>
+            {{ passwordExpanded() ? 'Hide' : 'Show' }} password fields
+          </button>
+
+          @if (passwordExpanded()) {
+            <div class="user-form__section-body user-form__grid">
+              <!--
+                The help line is MODE-DEPENDENT in the legacy: `User.ascx.vb` L287 selects
+                `PasswordHelpAdmin.Text` on the administrator path and L284 selects
+                `PasswordHelpUser.Text` ('Enter a password.') on self-registration. This
+                screen IS the administrator path — self-registration is out of scope with
+                `pnlRegister` — so only the administrator wording is carried, and the
+                component holds it so the specification can assert the exact sentence.
+              -->
+              <p>{{ passwordHelp }}</p>
+
+              <!--
+                `plRandom`.
+
+                DEFECT, ANNOTATED AND NOT FIXED: the markup at `User.ascx` L34 declares
+                `checked="True"`, but `User.ascx.vb` L261 forces `chkRandom.Checked = False`
+                on every non-postback, so the state an operator actually saw was UNCHECKED.
+                The code wins at run time, so the control starts unchecked here and the
+                contradiction is left exactly as found rather than resolved in either
+                direction.
+
+                MIGRATION: the legacy also hid this row on the self-registration path
+                (`User.ascx.vb` L280). That path is out of scope, so only the administrator
+                behaviour — the row shown — is reproduced.
+              -->
+              <app-form-field
+                label="Random Password"
+                for="user-form-random-password"
+                help="Check this box to generate a random password"
+              >
+                <input
+                  id="user-form-random-password"
+                  type="checkbox"
+                  formControlName="randomPassword"
+                />
+              </app-form-field>
+
+              <!--
+                WITHHELD WHILE A RANDOM PASSWORD IS REQUESTED, and this reproduces the
+                measured control flow rather than tidying it. `User.ascx.vb` L150 guards the
+                entire password block with `If Not chkRandom.Checked Then`, and L164
+                generates the value server-side instead, so neither field was read and
+                neither was required. Rendering them here would collect two values that are
+                then discarded, and would imply a rule the legacy did not apply.
+
+                MIGRATION: `maxlength="20"` is reproduced from the measured markup at
+                `User.ascx` L39 and L46 (`size="12" maxlength="20"`), which itself mirrors
+                the legacy storage ceiling `[Password] [nvarchar] (20)` in the baseline
+                schema script. It is an HTML INPUT ATTRIBUTE FOR PARITY ONLY: it is
+                deliberately NOT a validator on the control and NOT a constraint on the
+                model or the request contract, because the successor stores a one-way hash
+                whose length has nothing to do with twenty characters. The attribute stops
+                over-typing exactly as the legacy field did; nothing more is claimed for it.
+
+                MIGRATION: the legacy re-populated both boxes across a postback by writing
+                the typed password back into the markup as an attribute value
+                (`User.ascx.vb` L289-L290) — a credential round-tripped through the page.
+                There is no postback here, so the hack is ELIMINATED rather than ported, and
+                the value never leaves the form.
+
+                `autocomplete="new-password"` on both: this is an account being created, so
+                a password manager must offer to generate rather than to fill a remembered
+                credential.
+
+                The invalid state is taken from the GROUP message and NOT from the component's
+                missing-value flag, and that choice was forced by observed behaviour. The flag
+                reports the group's own error key with no interaction gate, and an empty
+                password fails the length rule immediately, so binding it announced both
+                fields as invalid on a form nobody had typed into yet — and the global form
+                stylesheet drew both boxes in the error colour at first paint. The group
+                message applies the measured gate instead, staying empty until a submission has
+                been attempted or the form dirtied, which is the same rule the five credential
+                fields follow. Consistency here is the accessibility requirement: a field must
+                not claim to be invalid before it has been used.
+              -->
+              @if (!form.controls.randomPassword.value) {
+                <app-form-field
+                  label="Password:"
+                  for="user-form-password"
+                  help="Enter a password for this user"
+                  [required]="true"
+                  [error]="messageFor('password')"
+                >
+                  <input
+                    id="user-form-password"
+                    type="password"
+                    autocomplete="new-password"
+                    maxlength="20"
+                    [attr.aria-required]="true"
+                    [attr.aria-invalid]="passwordMessage() ? 'true' : null"
+                    formControlName="password"
+                  />
+                </app-form-field>
+
+                <app-form-field
+                  label="Confirm Password:"
+                  for="user-form-confirm-password"
+                  help="Re-Enter the password to confirm you typed it correctly"
+                  [required]="true"
+                  [error]="messageFor('confirmPassword')"
+                >
+                  <input
+                    id="user-form-confirm-password"
+                    type="password"
+                    autocomplete="new-password"
+                    maxlength="20"
+                    [attr.aria-required]="true"
+                    [attr.aria-invalid]="passwordMessage() ? 'true' : null"
+                    formControlName="confirmPassword"
+                  />
+                </app-form-field>
+              }
+
+              <!--
+                The GROUP-level message, which is what the legacy had too: `valPassword` at
+                `User.ascx` L58-L62 is the single custom validator on the screen, declared
+                with no control to validate precisely because the rule spans two inputs.
+                It renders only once a submission has been attempted or the form dirtied.
+
+                Plain text. The legacy prepended a break tag to this very message at
+                `User.ascx.vb` L187 — an annotated defect shared by 28 of 34 measured
+                messages — and the stripping is owned by the shared error helper the
+                component delegates to. It is not re-implemented here and is never defeated
+                by rendering the value as markup.
+              -->
+              @if (passwordMessage()) {
+                <p role="alert">{{ passwordMessage() }}</p>
+              }
+
+              <!--
+                MIGRATION: THE SECURITY CODE FIELD IS DROPPED. `trCaptcha`, `plCaptcha` and
+                `ctlCaptcha` at `User.ascx` L63-L66 rely on the legacy captcha control, one
+                of the 102 excluded files under the legacy control library. The COMPENSATING
+                CONTROL is server-side and already in place: the API applies an
+                IP-partitioned rate limiter to the authentication routes under the `auth`
+                policy, 10 requests per 60 seconds, which is the only place the interface
+                answers with a too-many-requests status. Measured wording now unused:
+                `plCaptcha.Text` 'Security Code:', `CaptchaText.Text` 'Enter the code shown
+                above in the box below', `InvalidCaptcha.Text` 'Incorrect Security Code'.
+
+                ⚠ The prompt for this file cited a `Captcha.Text` key. No such key exists in
+                `User.ascx.resx`; the measured keys are `plCaptcha.Text` and `plCaptcha.Help`.
+
+                MIGRATION: THE PASSWORD QUESTION AND ANSWER ARE DROPPED, AND DROPPING THEM IS
+                BEHAVIOUR-PRESERVING RATHER THAN A REDUCTION. `trQuestion` and `trAnswer` at
+                `User.ascx` L50-L57 are declared `visible="false"` and were revealed only
+                where the membership provider required a question and answer, which
+                `Website/release.config` L241 sets to `requiresQuestionAndAnswer="false"`.
+                They therefore never rendered in this installation, and no endpoint accepts
+                them. Measured wording now unused: `plQuestion.Text` 'Password Question:',
+                `plAnswer.Text` 'Password Answer:'.
+
+                DEFECT, ANNOTATED AND NOT FIXED: `User.ascx` L51 associates that question
+                label with `controlname="lblQuestion"`, a LABEL, rather than with the
+                `txtQuestion` input beside it — so the association pointed at something that
+                accepts no input. Left as found; the rows it affects are dropped above.
+
+                MIGRATION: PASSWORD RETRIEVAL IS NOT CARRIED FORWARD. The legacy enabled it
+                (`Website/release.config` L239) over a reversibly encrypted store whose key
+                was committed to source control at L91; the successor hashes one-way, so
+                retrieval is impossible by construction. That key is NEVER reproduced, here
+                or anywhere. Password RESET (L240) IS carried forward and must not be
+                conflated with retrieval — it lives on the dedicated password screen, and no
+                forgotten-password affordance is offered here because no endpoint backs one.
+              -->
+            </div>
+          }
+        </fieldset>
+      }
+
+
+      <!--
+        PANEL 2 — MEMBERSHIP. EDIT MODE ONLY, AND READ-ONLY THROUGHOUT.
+
+        `Website/admin/Users/Membership.ascx` L4-L12 is a property editor declared
+        `editmode="View"`, so every field below was display-only in the legacy too. Nothing
+        here is a form control, which is why the panel is a description list rather than a
+        field set of inputs: the values are terms and definitions, not things to type into.
+
+        The field set is RECOVERED from `Membership.ascx.resx`, prefix `UserMembership_`,
+        because the property editor control itself is excluded. Caption from the measured
+        `MembershipTitle.Text`, held by the component.
+
+        Create mode has no account yet, so the panel is absent rather than empty.
+      -->
+      @if (isEditMode()) {
+        <fieldset class="user-form__section user-form__membership">
+          <legend class="user-form__legend">{{ membershipTitle }}</legend>
+
+          <button
+            type="button"
+            class="user-form__section-toggle"
+            [attr.aria-expanded]="membershipExpanded()"
+            (click)="toggleMembership()"
+          >
+            <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+              <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+            </svg>
+            {{ membershipExpanded() ? 'Hide' : 'Show' }} membership information
+          </button>
+
+          @if (membershipExpanded()) {
+            <!--
+              A description list, wrapped one group per row. The wrapper element is the
+              grouping the specification allows inside a description list, so the row can be
+              laid out without giving up the term-and-definition semantics that make each
+              label the accessible name of its value.
+
+              MIGRATION: EVERY DATE RENDERS THROUGH THE SHARED DATE PIPE, WHICH SHOWS THE
+              LEGACY NULL-DATE SENTINEL AS EMPTY. That is PARITY, not an improvement: the
+              legacy display helper already returned an empty string for the minimum date, so
+              a bare '01/01/0001' was never shown to anyone. The sentinel survives on the
+              wire — the interface never omits a member and serialises the minimum date as a
+              real instant — so the erasure stays in the display layer, exactly where the
+              legacy put it.
+
+              MIGRATION: the date-only form is used for all five, because the legacy panel
+              rendered through a view-mode property editor that printed no time of day. The
+              pipe offers a date-and-time form and it is deliberately not requested.
+
+              MIGRATION: each field's measured help text is carried over and rendered beside
+              its value. The legacy panel styled help explicitly, so dropping it would lose
+              wording the operator had. The shared field component owns the help disclosure
+              for real form controls; these are not form controls, so the text is shown
+              outright rather than behind a disclosure that would have nothing to reveal.
+            -->
+            <div class="user-form__section-body">
+              <dl>
+                <!--
+                  MIGRATION: rendered as the measured shared wording 'Yes' and 'No'
+                  (`Yes.Text` and `No.Text` in the global resources) rather than through the
+                  shared boolean pipe. Two independent reasons, both verified: that pipe is
+                  absent from this component's import set, and its parameter is a plain
+                  boolean while these projections are boolean-or-absent. An absent value
+                  renders as nothing, matching how the date pipe treats one, so a panel read
+                  before the record arrives shows blanks rather than a confident 'No'.
+                -->
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Authorized:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (isApproved() === true) {
+                      Yes
+                    } @else if (isApproved() === false) {
+                      No
+                    }
+                    <p>Is the User Authorized for the site.</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Created Date:</dt>
+                  <dd class="user-form__membership-value">
+                    {{ createdDate() | dateDisplay }}
+                    <p>Date this user was created</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Activity Date:</dt>
+                  <dd class="user-form__membership-value">
+                    {{ lastActivityDate() | dateDisplay }}
+                    <p>Date of last activity by this user</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Login Date:</dt>
+                  <dd class="user-form__membership-value">
+                    {{ lastLoginDate() | dateDisplay }}
+                    <p>Date this user last logged in</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Password Change:</dt>
+                  <dd class="user-form__membership-value">
+                    {{ lastPasswordChangeDate() | dateDisplay }}
+                    <p>Date the user last changed his/her password</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Lock-out Date:</dt>
+                  <dd class="user-form__membership-value">
+                    {{ lastLockoutDate() | dateDisplay }}
+                    <p>Date this user was last locked out, due to repetitive failed logins</p>
+                  </dd>
+                </div>
+
+                <!--
+                  MIGRATION: the legacy ALSO signalled this state with an image,
+                  `imgLockedOut` at `manageusers.ascx` L53, declared `visible="False"` until
+                  the account was locked. The raster asset has no target equivalent and an
+                  image alone would make colour-or-icon the sole carrier of meaning, so the
+                  state is surfaced as TEXT in this row instead. Nothing is lost: the image
+                  was redundant with the field it sat beside.
+                -->
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Locked Out:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (isLockedOut() === true) {
+                      Yes
+                    } @else if (isLockedOut() === false) {
+                      No
+                    }
+                    <p>Is the User Locked Out due to too many failed login attempts</p>
+                  </dd>
+                </div>
+
+                <!--
+                  `UserMembership_UpdatePassword`. The measured label carries no colon, unlike
+                  the seven above it; the wording is passed through as measured and the shared
+                  field component normalises punctuation where a label is involved.
+
+                  MIGRATION: the legacy expressed this as one member of a five-value status
+                  field resolved BY PRECEDENCE, so it could report exactly one condition at a
+                  time even when several held at once. The successor carries independent
+                  flags, which can express combinations the legacy field could not. A real
+                  divergence, annotated rather than absorbed.
+                -->
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Update Password</dt>
+                  <dd class="user-form__membership-value">
+                    @if (mustChangePassword() === true) {
+                      Yes
+                    } @else if (mustChangePassword() === false) {
+                      No
+                    }
+                    <p>Force this user to update their password</p>
+                  </dd>
+                </div>
+
+                <!--
+                  MIGRATION: THE NINTH MEASURED FIELD IS DROPPED. `UserMembership_IsOnLine`
+                  ('User Is On Line:') and the `imgOnline` indicator at `manageusers.ascx`
+                  L54 both go, because users-online is out of scope and no endpoint keeps the
+                  value current. The account contract does carry an online member, but a
+                  value the interface cannot refresh is worse than an absent one.
+                -->
+              </dl>
+            </div>
+
+            <!--
+              THE FOUR PER-ACCOUNT ACTIONS, from `Membership.ascx` L13-L28, with the measured
+              `cmdAuthorize`, `cmdUnAuthorize`, `cmdUnLock` and `cmdPassword` wording.
+
+              ⚠ ALL FOUR ARE DECLARED `causesvalidation="False"` IN THE MEASURED MARKUP, and
+              that is reproduced exactly: each is `type="button"`, none is inside the submit
+              path, and NOT ONE is disabled by the form's validity. An account may be
+              unlocked while its credential form still holds an invalid address, which is
+              precisely what the legacy allowed.
+
+              The only condition that withholds them is a refusal from the server, which is
+              the faithful counterpart of the measured `DisableForm()` making this very panel
+              unavailable. Offering an action whose only possible outcome is another refusal
+              is worse than not offering it.
+
+              MIGRATION: each was an image button sharing one icon asset with the other
+              three, so the images distinguished nothing. Text labels carry the distinction
+              the icons never did.
+
+              MIGRATION: 'User successfully Unlocked' — the wording the component announces
+              after the unlock succeeds — is a DEFECT carried across honestly. The legacy
+              referenced a `UserUnLocked` key at `ManageUsers.ascx.vb` L749 that is defined
+              in NO resource file anywhere in the site tree, so the legacy showed the raw key
+              and there is no measured sentence to copy. The wording is authored, and the
+              gap is annotated rather than presented as measured.
+            -->
+            <div class="user-form__membership-actions">
+              <button type="button" [disabled]="formDisabled()" (click)="onAuthorize()">
+                Authorize User
+              </button>
+              <button type="button" [disabled]="formDisabled()" (click)="onUnauthorize()">
+                UnAuthorize User
+              </button>
+              <button type="button" [disabled]="formDisabled()" (click)="onUnlock()">
+                Unlock Account
+              </button>
+              <button type="button" [disabled]="formDisabled()" (click)="onForcePasswordChange()">
+                Force Password Change
+              </button>
+            </div>
+          }
+        </fieldset>
+      }
+    </div>
+
+    <!--
+      The measured `Required.Text` from the global resources, standing in for the two
+      required-marker images at `User.ascx` L40 and L47. The per-field marker itself is the
+      shared field component's own affordance; this sentence explains what the markers mean.
+
+      DEFECT, ANNOTATED AND NOT FIXED: the measured value BEGINS WITH A SPACE. The component
+      holds it verbatim, because the value is the measurement and trimming it would make the
+      constant disagree with the resource file it quotes. It is reproduced here unchanged and
+      NOT trimmed; leading white space collapses when rendered, so preserving it is free.
+
+      DEFECT, ANNOTATED AND NOT FIXED: a neighbouring entry in the same resource file
+      (`SharedResources.resx` line 301) misspells 'Further' as 'Futher'. It belongs to the
+      registration error path, which is out of scope here, so it is recorded rather than
+      corrected — and it is one more reason the resource values are quoted rather than
+      rewritten.
+    -->
+    <p>{{ requiredLegend }}</p>
+
+    <!--
+      THE ACTION BAR, from `pnlUpdate` at `User.ascx` L71-L79.
+
+      The save action is the ONLY thing on this screen declared `causesvalidation="True"`
+      (L76-L78), so it alone submits and validates. It is NOT disabled by the form's
+      validity: the component marks the attempt and surfaces the per-field messages, which
+      is the only way an operator learns what is wrong. It is disabled only while the screen
+      is withheld or a request is outstanding, which is what the component's submit
+      projection expresses.
+
+      Labels are measured and mode-dependent: `CreateUser.Text` 'Create User' while creating,
+      and the shared `cmdUpdate.Text` 'Update' while editing — the resource key the legacy
+      button itself named at L77.
+
+      MIGRATION: both legacy buttons were image buttons whose asset is not carried over, so
+      each action is text. The legacy separated them with three non-breaking spaces (L75);
+      that becomes a gap declared once in the paired stylesheet, because spacing smuggled in
+      as content cannot respond to the layout around it.
+    -->
+    <div class="user-form__actions">
+      <button type="submit" [disabled]="!canSubmit()">
+        @if (isCreateMode()) {
+          Create User
+        } @else {
+          Update
+        }
+      </button>
+
+      <!--
+        THE DESTRUCTIVE ACTION, and its visibility is the component's decision alone.
+        `User.ascx.vb` L264-L268 hides it outright while adding and otherwise tests the
+        account against the tenant administrator and the caller's own identity. Two of those
+        three facts are unavailable on this side, so the component evaluates what it can and
+        deliberately errs towards withholding; the rule is NEVER re-derived here.
+
+        `causesvalidation="False"` at L74 is reproduced: `type="button"`, outside the submit
+        path, and not disabled by the form's validity. The confirmation stands between this
+        trigger and the request.
+
+        MIGRATION: the label resolves to the measured `Delete.Text`. `User.ascx.vb`
+        L270-L274 chose `UnRegister.Text` instead when the account being edited was the
+        caller's own, and that fact is not derivable from this screen's dependencies, so the
+        component holds the measured alternative and reports the gap rather than guessing.
+      -->
+      @if (canDelete()) {
+        <button type="button" [disabled]="formDisabled()" (click)="onDeleteRequested()">
+          {{ deleteLabel }}
+        </button>
+      }
+    </div>
+  </form>
+}
+
+<!--
+  The confirmation, from the shared dialog, which owns its focus trap and its dismissal key.
+
+  The message is the measured global `DeleteItem.Text`. The legacy raised this through a
+  browser confirmation carrying the message and nothing else, so there was no title to
+  measure; the action's own label is used, which names the operation without inventing new
+  wording. `ConfirmUnRegister.Text` is the measured alternative for one's own account and the
+  component holds it against the same unevaluable test as the label above.
+
+  Rendered only while open, so the dialog cannot take focus or trap it when it is not in use.
+-->
+@if (deleteDialogOpen()) {
+  <app-confirm-dialog
+    [title]="deleteLabel"
+    [message]="confirmDeleteMessage"
+    [confirmLabel]="deleteLabel"
+    danger
+    (confirm)="onDeleteConfirmed()"
+    (cancel)="onDeleteCancelled()"
+  />
+}
+

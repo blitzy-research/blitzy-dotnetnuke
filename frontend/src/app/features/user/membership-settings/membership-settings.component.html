@@ -1,0 +1,806 @@
+<!--
+  THE TENANT'S ACCOUNT ADMINISTRATION SETTINGS SCREEN.
+
+  Every bindable name below is declared by the paired component class and nothing
+  else: this template introduces no member, no wording key and no piece of state of
+  its own. The workspace compiles templates with strict checking, so a reference to
+  a member the class does not declare is a build failure rather than a blank on the
+  screen, and that is deliberately the only contract this file has.
+
+  MIGRATION: the transformation plan derives this screen from THREE legacy controls
+  and TWO OF THE THREE ARE WRONG. The correction is recorded on the paired class in
+  full and is repeated here because it is the single most load-bearing fact about
+  this markup - a later reader will otherwise look for nine read-only membership
+  fields and four account commands that are deliberately absent.
+    * `Website/admin/Users/Membership.ascx` is twenty-eight lines and is a
+      read-only PER-ACCOUNT panel, not a tenant policy screen. Its editor is
+      declared in view mode and its four commands - authorise, unauthorise, unlock
+      and force a password change, every one of them declared with validation
+      switched off - act on ONE account. The decisive proof is
+      `Website/admin/Users/manageusers.ascx` L59 to L63, which hosts the account
+      editor and the membership panel SIDE BY SIDE inside one row: the panel is
+      part of the account detail screen, so its fields and commands belong on the
+      account form and none of them is rendered here.
+    * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role
+      subscription - a services table, an invitation code box, a subscribe command
+      and a seven column services grid carrying a trial command. None of it has an
+      endpoint in this API, so there is nothing for a screen to call.
+  This screen therefore derives from `Website/admin/Users/UserSettings.ascx` and
+  the account policy contract ALONE.
+
+  MIGRATION: EVERY STRING RENDERED HERE IS INTERPOLATED PLAIN TEXT, and that is a
+  security boundary rather than a preference. Measured across the thirty-seven
+  in-scope resource files, seventy-six values carry a raw markup tag and one carries
+  a live remote script element, and twenty-nine values open with break markup. The
+  tags are stored escaped, so a naive search returns nothing and would wrongly clear
+  the risk. No trusted-markup binding, no sanitiser and no bypass appears in this
+  file, and the shared field component resolves interior break markup before any
+  value reaches a binding. The legacy application reached the same conclusion by
+  hand at `Website/admin/Security/AccessDenied.ascx.vb` L43, which encodes an
+  untrusted message before displaying it.
+
+  MIGRATION: localisation is not ported. The legacy control resolved every string
+  through its own resource file, and the measured in-scope legacy code performs
+  forty-eight such lookups. None is reproduced: no translation runtime is in the
+  pinned dependency set, so the wording arrives already resolved from the paired
+  class, which recovered it from the eighty-four entry resource file. That file is
+  the authority and the markup attribute is not, proven twice on this very screen -
+  the markup headings read "Provider Settings" and "Password Settings" while the
+  resource values the page actually rendered read "Membership Provider Settings" and
+  "Password Aging Settings".
+
+  MIGRATION: the legacy layout was tables. `UserSettings.ascx` L6 opens
+  `table width="450"` and L12, L35 and L58 nest three more inside it, and the
+  in-scope screens carry sixty-eight layout table attributes against only eight real
+  data grids. Not one table element appears here: there is no tabular data on this
+  screen, so the arrangement is grid and flex in the paired stylesheet. The two
+  spacer rows at L29 and L52, each a table cell whose only content was a ten pixel
+  height, are inter-section spacing expressed as content; they become a spacing
+  token gap in that stylesheet and no empty element is emitted for them.
+
+  MIGRATION: no value in this file is styled here. The template carries no inline
+  style attribute, no colour, no length and no font, and no legacy class name - the
+  legacy vocabulary that carried this screen's appearance does not exist in the
+  target. Class names below are structural hooks for the paired stylesheet, which
+  resolves every one of them to a design token.
+-->
+
+<!--
+  The page title and the one companion action.
+
+  The title is the recovered control title. The shared header owns the page's single
+  top level heading, so nothing here emits a second one, and it strips its own title
+  attribute so the wording can never become a native tooltip.
+
+  MIGRATION: the subtitle is a net addition and is reported as one. The legacy page
+  chrome gave this control no subtitle to render. It names the scope of what is being
+  edited, which matters on a screen whose settings are tenant wide rather than per
+  account, and it is authored on the paired class rather than here so that all
+  wording has one home.
+
+  MIGRATION: the companion link's wording is RECOVERED rather than invented. This
+  screen's own resource file has no action entry at all; the profile properties
+  action is `ManageProfile.Action` in `Website/admin/Users/Users.ascx.resx` and in
+  the sibling account management resource file, where it sat in the same action menu
+  as the entry that led to this screen. It is a link rather than a command because
+  it navigates and changes nothing.
+-->
+<app-page-header [title]="text.title" [subtitle]="text.subtitle">
+  <a class="membership-settings__header-action" [routerLink]="profileDefinitionsPath">
+    Manage Profile Properties
+  </a>
+</app-page-header>
+
+<!--
+  The failure surface, rendered UNCONDITIONALLY and deliberately so.
+
+  The shared banner keeps its announcement region in the document at all times and
+  guards only the contents, which is what lets assistive technology observe the
+  region before anything arrives in it; wrapping the element in a condition here
+  would defeat that by inserting the region and its text in the same pass. The
+  banner shows nothing at all while the bound document is absent, so this costs no
+  pixels.
+
+  MIGRATION: severity is NOT decided here, and that is the point of passing the
+  whole document down. A permission refusal must read as a WARNING rather than an
+  error - `Website/admin/Security/AccessDenied.ascx.vb` L42 to L45 rendered its
+  denial at the legacy yellow warning style in BOTH of its branches, and the
+  measured legacy severity vocabulary is twenty-seven red errors, twenty-one yellow
+  warnings and twelve green confirmations. The shared banner already resolves a
+  refusal to its warning band and a rate limited refusal to its calmest band, so
+  deciding again here would create a second authority free to disagree with it.
+
+  MIGRATION: success is not rendered on this screen. The legacy page showed nothing
+  on success - it redirected straight back to the account listing - so the
+  confirmation is announced through the shared notification channel at the success
+  severity by the paired class, which is the target equivalent of the legacy green
+  confirmation style.
+-->
+<app-error-banner [problem]="problem()" />
+
+<!--
+  The transport failure, for the case the banner cannot cover.
+
+  A failure that never reached the API carries no problem document, so the banner
+  would render nothing and the screen would look as though the save had simply been
+  ignored. The paired class resolves this to null whenever the banner has something
+  to show, so the two can never appear together.
+
+  This is the ONLY announcement region this file emits, and it does not duplicate the
+  banner's: the two are mutually exclusive by construction, so exactly one of them
+  ever carries text. It is declared with the alert role alone rather than with an
+  explicit live region attribute, because a save that failed is the direct result of
+  the reader's own action and must be discoverable without moving focus.
+-->
+@if (failureMessage(); as message) {
+  <p class="membership-settings__transport-failure" role="alert">{{ message }}</p>
+}
+
+@if (loading()) {
+  <!--
+    The policy is being read. The label is what makes the indicator announce
+    anything at all - the shared indicator exposes its status role only while it has
+    label text - and the wording comes from the paired class.
+  -->
+  <app-loading-spinner [label]="text.loadingLabel" />
+} @else {
+  <!--
+    The form replaces the indicator rather than sitting beside it, so the seated
+    defaults are never on screen while the tenant's real policy is still in flight.
+    The control values survive the swap because the form group is a field on the
+    paired class, not something this template owns: a failed save re-renders this
+    block with everything the reader typed still in place, which is exactly what the
+    paired class relies on when it leaves a rejected submission for correction.
+
+    MIGRATION: nothing here is posted back and nothing is serialised into the
+    document. The legacy control rebuilt its editors on every postback and carried
+    their state in the page's hidden view state; the policy is held once, in the
+    account store, and reaches this form through the paired class.
+  -->
+  <form class="membership-settings" [formGroup]="form" (ngSubmit)="submit()">
+    <!--
+      THE SURVIVING SECTION.
+
+      MIGRATION: the legacy screen declared THREE sections - more than any other
+      in-scope screen - and ONE survives.
+        1. "Membership Provider Settings" is DROPPED. Its ten provider fields are
+           absent from the policy contract, and the legacy screen's own help text
+           explains why they were never editable: it states that the default
+           provider requires editing a configuration file, so the settings cannot be
+           updated there. That file does not exist in the target - provider
+           declarations became typed server side options - so the legacy sentence is
+           not merely unhelpful, it is false, and it is deliberately not rendered
+           anywhere. Host level administration is out of scope as well.
+        2. "Password Aging Settings" is DROPPED, and this is a REVERSE DRIFT report
+           rather than a preference: the policy contract carries no expiry member and
+           no expiry reminder member, so there is nothing to render. Consequence
+           worth recording: the two legacy help values for those fields contain the
+           misspellings that a faithful port would have had to preserve, and the
+           rule that an expiry of zero means the password never expires likewise has
+           no field to attach to here. Both are reported rather than absorbed.
+        3. "User Accounts Settings" survives and is the whole of this screen. It was
+           the only section the legacy markup left editable.
+
+      MIGRATION: the legacy section head becomes a native disclosure, and this is a
+      structural decision with three reasons. The shared component library is closed
+      at ten members and contains no collapsible section, so no eleventh is invented.
+      The paired class exposes no collapse state and must not be edited from here, so
+      a scripted toggle would have to lie about its own state. And a native
+      disclosure needs neither: it collapses without script, its summary is in the
+      tab order and is operated by both Enter and Space, and the shared reset already
+      gives every summary the workspace focus ring. It is open on arrival because all
+      three legacy sections were declared expanded.
+
+      MIGRATION: the legacy toggle was withdrawn from the tab order with a negative
+      tab index at `Website/controls/sectionheadcontrol.ascx` L3, so it was operable
+      by pointer only. That defect is deliberately REVERSED here rather than
+      reproduced. Reversing it costs nothing visually, which is why the precedence
+      order permits it.
+
+      The expanded state is bound from the element itself and resynchronised by its
+      own toggle event, so the announced state cannot drift from the rendered one. A
+      static value would be wrong the moment a reader collapsed the section.
+
+      MIGRATION: the legacy control drew a horizontal rule under its title. No rule
+      element is emitted; separation is a token driven border in the paired
+      stylesheet.
+
+      The heading is nested inside the summary, which is the one place a heading is
+      permitted there, so the section keeps its place in the document outline
+      directly under the page heading with no level skipped.
+
+      STYLING CONTRACT for the paired stylesheet, recorded here because the markup
+      cannot express it and runtime inspection proved it necessary. A summary is
+      display list-item by default and a heading is a block, so an UNSTYLED summary
+      puts the native disclosure marker alone on one line and drops the heading to the
+      next. The section summary therefore needs a flex or grid arrangement so the
+      marker and the heading share a row, with the heading's own block behaviour
+      neutralised. The heading is kept rather than reduced to a span because the
+      outline position is an accessibility gain and accessibility outranks visual
+      continuity in the governing precedence order. No length, colour or literal is
+      written here for it: every value belongs to that stylesheet, resolved to a token.
+    -->
+    <details
+      class="membership-settings__section"
+      open
+      #accountsSection
+      (toggle)="accountsSection.open"
+    >
+      <summary
+        class="membership-settings__section-summary"
+        [attr.aria-expanded]="accountsSection.open"
+      >
+        <h2 class="membership-settings__section-heading">{{ text.sectionHeading }}</h2>
+      </summary>
+
+      <div class="membership-settings__section-body">
+        <!--
+          THE NINE ACCOUNT LISTING COLUMN SWITCHES.
+
+          Grouped in their own field set so the cluster carries an accessible name of
+          its own rather than nine unrelated switches in a row, and iterated in one
+          pass over the list the paired class publishes. That list is ordered as the
+          legacy routine that filled in a missing key ordered them
+          (`Library/Components/Users/UserModuleBase.vb` L98 to L124), so an
+          administrator finds the switches where they have always been. Tracking is
+          by the control name, which is the stable identity here; the position is not.
+
+          MIGRATION: these nine are what make the account listing's columns tenant
+          configurable, so they reach further than this screen - the listing reads the
+          same policy.
+
+          MIGRATION: there is no switch for the sign-in name column and none is
+          invented. The legacy routine defines exactly these nine and the sign-in name
+          is not among them, so that column is always shown.
+
+          MIGRATION: the nine carry NO help text, and the omission is a measured
+          reduction rather than an oversight. Every one of their legacy help values is
+          its own label with the trailing colon removed - the address switch's help
+          reads "Show Address Column" against the label "Show Address Column:" - and
+          that holds for all nine without exception. A disclosure whose contents
+          repeat the label beside it adds a control to operate and tells a reader
+          nothing, so the help input is left unbound and the shared field renders no
+          disclosure for it. No information is lost, because none was ever carried.
+
+          MIGRATION: the labels are passed EXACTLY as the resource file wrote them,
+          trailing colon included. The shared field owns label punctuation and removes
+          one trailing colon itself, so removing it here as well would strip a colon
+          the resource file did not have. Measured across the one hundred and
+          eighty-six in-scope legacy labels, the colon was carried on the label
+          declaration forty times, omitted one hundred and thirty-three times and
+          baked into the resource value on the rest, which is why one component owns
+          the rule.
+
+          MIGRATION: the legacy inter-control spacing was content - seventy literal
+          non-breaking space entities across the in-scope admin markup, one of them on
+          this screen between the two commands. Not one is reproduced: spacing is a
+          token driven gap in the paired stylesheet.
+
+          The requirement marker is DERIVED from the control's own validators rather
+          than asserted here, so the marker a reader sees and the rule that would
+          reject a submission cannot disagree. It resolves to false for all nine
+          today; binding it uniformly is what keeps that true if a validator is ever
+          added.
+        -->
+        <fieldset class="membership-settings__columns">
+          <legend class="membership-settings__columns-legend">{{ text.columnsHeading }}</legend>
+
+          @for (field of columnFields; track field) {
+            <app-form-field
+              class="form-field--inline"
+              [label]="labelFor(field)"
+              [for]="controlId(field)"
+              [required]="isRequired(field)"
+              [error]="errorFor(field)"
+            >
+              <input
+                type="checkbox"
+                [id]="controlId(field)"
+                [formControlName]="field"
+                [attr.aria-required]="isRequired(field) ? 'true' : null"
+                [attr.aria-invalid]="errorFor(field) === null ? null : 'true'"
+              />
+            </app-form-field>
+          }
+        </fieldset>
+
+        <!--
+          THE REMAINING FOURTEEN SETTINGS, in the order the legacy routine declared
+          them (`Library/Components/Users/UserModuleBase.vb` L126 to L190): the listing
+          presentation, then the profile defaults, then the three destinations, then
+          the security group. The order is preserved because it is the order an
+          administrator has always read them in.
+
+          MIGRATION: the legacy editor rendered its fields in HASH TABLE enumeration
+          order, which is not a defined order at all, so there was no stable legacy
+          sequence to reproduce. The declaration order of the routine that supplied
+          the defaults is the closest thing to an authored order the legacy code has,
+          and it is what is used.
+
+          EVERY control is wrapped by the shared field component. Nothing on this
+          screen is a bare control, per the design system rule that a raw element is
+          not used where a shared component covers the need; the only bare commands in
+          this file are the two form level ones, which are not fields.
+
+          MIGRATION: none of these fields declared a validator in the legacy markup -
+          there is not one validator across its seventy-four lines and no error style
+          on any of its three editors, because the excluded settings editor validated
+          internally and reported however it chose. The messages surfaced below are the
+          server's own rules resolved by the paired class, and no business rule is
+          invented here. The bounds advertised to the browser are attribute bindings
+          rather than property bindings on purpose: a property binding would register a
+          SECOND validator directive alongside the one the paired class already
+          declares, so the same rule would be applied twice and could be worded two
+          different ways.
+
+          MIGRATION: the caller decides WHEN a message appears, which the paired class
+          settles by returning null while a control is untouched or valid. Every legacy
+          validator in scope was declared to render dynamically - thirty-five of
+          thirty-five - so a message appears only once there is something to say. There
+          is no summary surface: zero validation summaries exist across the
+          thirty-nine in-scope screens, so the field's own message region is the only
+          error surface this UI has and a message dropped there is a message nobody
+          sees.
+        -->
+
+        <!--
+          MIGRATION: the display mode is an integer drawn from a legacy enumeration
+          that was NOT ported as a named type - the contract publishes it as a plain
+          integer - so the choices come from a frozen list on the paired class whose
+          ordinals are the legacy ones. The option value is bound through the forms
+          value binding rather than the plain attribute, which is what keeps a NUMBER a
+          number: the plain attribute would send the digits as text and the contract
+          would reject them.
+
+          MIGRATION: two of this selector's three choices had NO label in the legacy
+          resource file, and one of the two is the shipped default. The file supplies
+          only "First Letter". Wording for the other two is authored on the paired
+          class and both gaps are reported.
+
+          The label carries no trailing colon, exactly as the resource value has it.
+        -->
+        <app-form-field
+          [label]="labelFor('displayMode')"
+          [for]="controlId('displayMode')"
+          [required]="isRequired('displayMode')"
+          [help]="helpFor('displayMode')"
+          [error]="errorFor('displayMode')"
+        >
+          <select
+            [id]="controlId('displayMode')"
+            formControlName="displayMode"
+            [attr.aria-required]="isRequired('displayMode') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('displayMode') === null ? null : 'true'"
+          >
+            @for (option of displayModeOptions; track option.value) {
+              <option [ngValue]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </app-form-field>
+
+        <!--
+          The pager switch. The label keeps its question mark, which is the legacy
+          wording and which the shared field preserves - it removes a trailing colon
+          only.
+        -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('displaySuppressPager')"
+          [for]="controlId('displaySuppressPager')"
+          [required]="isRequired('displaySuppressPager')"
+          [help]="helpFor('displaySuppressPager')"
+          [error]="errorFor('displaySuppressPager')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('displaySuppressPager')"
+            formControlName="displaySuppressPager"
+            [attr.aria-required]="isRequired('displaySuppressPager') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('displaySuppressPager') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          The page size. A GENUINE COUNT, so zero is not "unset" here either - it is a
+          value the range rule refuses, and it is refused by the range rule rather than
+          by the required rule precisely because the framework tests emptiness by
+          length and null rather than by truthiness. The bounds mirror the server's own
+          and both come from the paired class; the lower one is not written as a
+          literal anywhere.
+
+          The legacy default is ten, and it is seated by the paired class from the
+          shared page size constant rather than restated here.
+        -->
+        <app-form-field
+          [label]="labelFor('recordsPerPage')"
+          [for]="controlId('recordsPerPage')"
+          [required]="isRequired('recordsPerPage')"
+          [help]="helpFor('recordsPerPage')"
+          [error]="errorFor('recordsPerPage')"
+        >
+          <input
+            type="number"
+            [id]="controlId('recordsPerPage')"
+            formControlName="recordsPerPage"
+            [attr.min]="minimumRecordsPerPage"
+            [attr.max]="maximumRecordsPerPage"
+            [attr.aria-required]="isRequired('recordsPerPage') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('recordsPerPage') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          The profile visibility default. Same arrangement as the display mode: a
+          legacy enumeration published as a plain integer, choices from a frozen list
+          on the paired class, ordinals unchanged.
+
+          MIGRATION: two of these three choices had no label in the legacy resource
+          file either, and again one of the two is the shipped default - the file
+          supplies only "Members Only". Both authored labels are reported as gaps.
+
+          The label carries no trailing colon, as the resource value has it.
+        -->
+        <app-form-field
+          [label]="labelFor('profileDefaultVisibility')"
+          [for]="controlId('profileDefaultVisibility')"
+          [required]="isRequired('profileDefaultVisibility')"
+          [help]="helpFor('profileDefaultVisibility')"
+          [error]="errorFor('profileDefaultVisibility')"
+        >
+          <select
+            [id]="controlId('profileDefaultVisibility')"
+            formControlName="profileDefaultVisibility"
+            [attr.aria-required]="isRequired('profileDefaultVisibility') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('profileDefaultVisibility') === null ? null : 'true'"
+          >
+            @for (option of profileVisibilityOptions; track option.value) {
+              <option [ngValue]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </app-form-field>
+
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('profileDisplayVisibility')"
+          [for]="controlId('profileDisplayVisibility')"
+          [required]="isRequired('profileDisplayVisibility')"
+          [help]="helpFor('profileDisplayVisibility')"
+          [error]="errorFor('profileDisplayVisibility')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('profileDisplayVisibility')"
+            formControlName="profileDisplayVisibility"
+            [attr.aria-required]="isRequired('profileDisplayVisibility') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('profileDisplayVisibility') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          MIGRATION: this switch is rendered because the policy contract carries it,
+          and it is worth stating that the SECTION it governs is out of scope. The
+          legacy services panel it would reveal on the profile screen has no endpoint
+          in this API, so the setting is stored and honoured by whatever renders that
+          profile, and this screen does no more than record the tenant's choice. It is
+          not silently dropped, because dropping a member the contract carries would
+          make the policy this screen saves incomplete.
+        -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('profileManageServices')"
+          [for]="controlId('profileManageServices')"
+          [required]="isRequired('profileManageServices')"
+          [help]="helpFor('profileManageServices')"
+          [error]="errorFor('profileManageServices')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('profileManageServices')"
+            formControlName="profileManageServices"
+            [attr.aria-required]="isRequired('profileManageServices') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('profileManageServices') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          THE THREE DESTINATIONS, grouped and iterated exactly as the legacy screen
+          grouped them - it attached a page chooser to each of the three
+          (`Website/admin/Users/UserSettings.ascx.vb` L80 to L82). Tracked by the
+          control name, which is the stable identity.
+
+          MIGRATION: a page CHOOSER is not offered and a page identifier is taken
+          instead. The reason is a dependency boundary rather than a preference: the
+          page lookup a chooser would need is not among this screen's declared
+          dependencies, so there is no list to populate one from without reaching
+          outside them. Reported as a deliberate reduction.
+
+          MIGRATION: ZERO IS A REAL PAGE and must never be read as "unset". The page
+          table's identity seeds at zero, which is exactly why the contract's floor is
+          zero rather than one. An EMPTY field is the only expression of "no redirect",
+          and it renders empty because the control's value is null - never because a
+          number was tested for truthiness. Nothing in this file compares a value
+          against zero or against the legacy marker for a missing integer.
+
+          MIGRATION: the legacy routine defaulted all three to MINUS ONE, its whole
+          codebase marker for "no integer". The target models them as nullable page
+          identifiers and REFUSES a negative one, so null is the translation of that
+          same state rather than a loss of it, and minus one is never sent. The floor
+          advertised below comes from the paired class and mirrors the server's rule;
+          the message that appears when it is breached says in words that an empty
+          field means no redirect, so the meaning is carried by text rather than left
+          to be inferred from a blank.
+        -->
+        @for (field of redirectFields; track field) {
+          <app-form-field
+            [label]="labelFor(field)"
+            [for]="controlId(field)"
+            [required]="isRequired(field)"
+            [help]="helpFor(field)"
+            [error]="errorFor(field)"
+          >
+            <input
+              type="number"
+              [id]="controlId(field)"
+              [formControlName]="field"
+              [attr.min]="minimumPageIdentifier"
+              [attr.aria-required]="isRequired(field) ? 'true' : null"
+              [attr.aria-invalid]="errorFor(field) === null ? null : 'true'"
+            />
+          </app-form-field>
+        }
+
+        <!--
+          The address validation expression.
+
+          MIGRATION: rendered as a plain multi-line box, which is a documented
+          functional reduction AND the legacy author's own stated intent. Rich text
+          editing is out of scope because the legacy editor provider is excluded, and
+          `Website/admin/Users/UserSettings.ascx.vb` L83 carries a COMMENTED OUT
+          multi-line editor for exactly this field, so a multi-line box is what the
+          legacy code was reaching for. No editor library is introduced. The shared
+          field's multi-line arrangement is asked for by the modifier class it exposes
+          on its own host, so nothing here reaches into that component to restyle it,
+          and the block size is left to the paired stylesheet rather than expressed as
+          a length in this markup.
+
+          MIGRATION: the value is OPAQUE TEXT. It is a pattern, and nothing here
+          compiles it, executes it or matches anything against it - evaluating a stored
+          pattern in the browser would hand a setting the ability to hang the page. The
+          only rule applied before the server sees it is a length bound, which comes
+          from the paired class.
+
+          MIGRATION: an unset text setting arrives as an EMPTY STRING rather than as
+          null, because the contract serialises nulls instead of omitting members and
+          the legacy marker for a missing string was the empty string. Empty and null
+          therefore render identically here, which they do because the control's value
+          type admits neither distinction.
+        -->
+        <app-form-field
+          class="form-field--multiline"
+          [label]="labelFor('securityEmailValidation')"
+          [for]="controlId('securityEmailValidation')"
+          [required]="isRequired('securityEmailValidation')"
+          [help]="helpFor('securityEmailValidation')"
+          [error]="errorFor('securityEmailValidation')"
+        >
+          <textarea
+            class="membership-settings__expression"
+            spellcheck="false"
+            [id]="controlId('securityEmailValidation')"
+            formControlName="securityEmailValidation"
+            [attr.maxlength]="maximumSettingLength"
+            [attr.aria-required]="isRequired('securityEmailValidation') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityEmailValidation') === null ? null : 'true'"
+          ></textarea>
+        </app-form-field>
+
+        <!--
+          MIGRATION: registration is out of scope as a flow, and this switch is still
+          rendered because the policy contract carries it. What is NOT reproduced is the
+          legacy screen's rule that hid twelve of these fields - this one among them -
+          when the screen was reached through the host menu
+          (`Website/admin/Users/UserSettings.ascx.vb` L87 to L100). The context that
+          rule applied to is out of scope: host level administration is excluded, this
+          screen is reached only as a tenant administrator, and in that context the
+          legacy screen showed everything. Nothing here is conditionally hidden.
+        -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('securityRequireValidProfile')"
+          [for]="controlId('securityRequireValidProfile')"
+          [required]="isRequired('securityRequireValidProfile')"
+          [help]="helpFor('securityRequireValidProfile')"
+          [error]="errorFor('securityRequireValidProfile')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('securityRequireValidProfile')"
+            formControlName="securityRequireValidProfile"
+            [attr.aria-required]="isRequired('securityRequireValidProfile') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityRequireValidProfile') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          MIGRATION: this field's help text reads "before be logged in", which is
+          ungrammatical and is the shipped legacy wording. It is PRESERVED verbatim by
+          the paired class and rendered unaltered here, because correcting it would
+          change text an existing administrator recognises for no behavioural gain.
+
+          MIGRATION: this switch defaults to TRUE while its registration counterpart
+          above defaults to FALSE. That is measured, not a transcription slip, and the
+          two are deliberately not made consistent.
+        -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('securityRequireValidProfileAtLogin')"
+          [for]="controlId('securityRequireValidProfileAtLogin')"
+          [required]="isRequired('securityRequireValidProfileAtLogin')"
+          [help]="helpFor('securityRequireValidProfileAtLogin')"
+          [error]="errorFor('securityRequireValidProfileAtLogin')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('securityRequireValidProfileAtLogin')"
+            formControlName="securityRequireValidProfileAtLogin"
+            [attr.aria-required]="
+              isRequired('securityRequireValidProfileAtLogin') ? 'true' : null
+            "
+            [attr.aria-invalid]="
+              errorFor('securityRequireValidProfileAtLogin') === null ? null : 'true'
+            "
+          />
+        </app-form-field>
+
+        <!--
+          The account selection control used by the role management screen.
+
+          MIGRATION: both of this selector's labels are SHARED resource keys - the
+          legacy file gave "Combo Box" and "Text Box" no owner, so the same two strings
+          served wherever a chooser or box decision appeared, and only "First Letter"
+          belongs to the display mode alone.
+
+          MIGRATION: the legacy default for this setting was DATA DEPENDENT - it chose
+          the box over the chooser once a tenant held more than a thousand accounts
+          (`Library/Components/Users/UserModuleBase.vb` L179 to L183). That threshold is
+          not reproduced and deliberately not: it requires counting the tenant's
+          accounts, which is a server side question, and the server settled it the same
+          way by defaulting to the chooser without counting anything.
+
+          The label carries no trailing colon, as the resource value has it.
+        -->
+        <app-form-field
+          [label]="labelFor('securityUsersControl')"
+          [for]="controlId('securityUsersControl')"
+          [required]="isRequired('securityUsersControl')"
+          [help]="helpFor('securityUsersControl')"
+          [error]="errorFor('securityUsersControl')"
+        >
+          <select
+            [id]="controlId('securityUsersControl')"
+            formControlName="securityUsersControl"
+            [attr.aria-required]="isRequired('securityUsersControl') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityUsersControl') === null ? null : 'true'"
+          >
+            @for (option of usersControlOptions; track option.value) {
+              <option [ngValue]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </app-form-field>
+
+        <!--
+          The display name format.
+
+          MIGRATION: OPAQUE TEXT. The legacy help text names bracketed substitution
+          tokens and they are described rather than made to work: token replacement is
+          an excluded subsystem, so the value is stored and forwarded unchanged and this
+          screen expands nothing. Spell checking is switched off for the same reason it
+          is on the pattern above - the value is not prose.
+
+          MIGRATION: the final sentence of that help text is a genuine CROSS SCREEN
+          constraint rather than advice - a tenant that sets a format makes the display
+          name uneditable on the account form - and it is reported as affecting that
+          screen. Nothing is enforced from here.
+
+          MIGRATION: the legacy save ALSO started a background thread that rewrote
+          every account's display name whenever this format changed
+          (`Website/admin/Users/UserSettings.ascx.vb` L175 to L182). That is not
+          attempted, and must not be: it is a bulk write across a whole tenant, which
+          belongs behind an endpoint rather than in a browser that can be closed
+          halfway through. Reported as a possible gap on the server side.
+        -->
+        <app-form-field
+          [label]="labelFor('securityDisplayNameFormat')"
+          [for]="controlId('securityDisplayNameFormat')"
+          [required]="isRequired('securityDisplayNameFormat')"
+          [help]="helpFor('securityDisplayNameFormat')"
+          [error]="errorFor('securityDisplayNameFormat')"
+        >
+          <input
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            [id]="controlId('securityDisplayNameFormat')"
+            formControlName="securityDisplayNameFormat"
+            [attr.maxlength]="maximumSettingLength"
+            [attr.aria-required]="isRequired('securityDisplayNameFormat') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityDisplayNameFormat') === null ? null : 'true'"
+          />
+        </app-form-field>
+      </div>
+    </details>
+
+    <!--
+      THE TWO FORM COMMANDS.
+
+      MIGRATION: the legacy commands were IMAGE buttons - the update command carried
+      an add glyph and the cancel command a left arrow glyph
+      (`Website/admin/Users/UserSettings.ascx` L72 and L73). Neither raster asset is
+      referenced: the only static binary in scope is the site icon, so both are text
+      commands. No image, no glyph reference and no background asset appears in this
+      file.
+
+      MIGRATION: the cancel command declared validation SWITCHED OFF, so it is declared
+      as a plain button and never as a submit. Abandoning a half filled form must not
+      first be told the form is half filled, and the paired class holds up its end -
+      its cancel path marks nothing touched, recomputes no validity and consults the
+      form's validity not at all. It stays operable while a save is in flight, because
+      it is the reader's way out and the legacy command was never withheld either.
+
+      MIGRATION: BOTH legacy commands navigated away - the cancel handler and the
+      update handler both ended in a redirect back to the account listing - so leaving
+      the reader on this screen after either would be the divergence, not the
+      navigation. Both destinations are the paired class's business; this file only
+      raises the events.
+
+      MIGRATION: the legacy redirects carried the listing's search text forward through
+      the query string and that is not reproduced. It cannot be: the legacy handler read
+      it from the request that had just posted back, and there is no postback here. The
+      listing holds its own search in the account store and still has it.
+
+      MIGRATION: the update command is not gated by a client side permission check, and
+      the omission is deliberate rather than an oversight. The permission directive is
+      not among this component's declared dependencies, so it is not reachable from
+      this template, and gating here would be advisory in any case - the server is
+      authoritative and answers a caller without permission with a refusal, which the
+      shared banner then presents at its warning band.
+
+      Submission is refused while the policy is being read or written, and the refusal
+      is a correctness measure rather than a courtesy: until the tenant's policy has
+      been applied to this form the controls still hold seated defaults, and submitting
+      those would overwrite a live policy with values nobody chose.
+
+      STYLING CONTRACT for the paired stylesheet, recorded because runtime inspection
+      showed the consequence of its absence. The action row needs a flex arrangement
+      with a spacing token gap: unstyled it is a block, so the two commands render
+      flush against one another with no separation at all, which is the same defect the
+      legacy markup papered over with a literal non-breaking space between them. The
+      primary modifier on the submit command likewise needs a visual treatment of its
+      own, since both commands otherwise compute identically and the primary action is
+      indistinguishable from the one that abandons the form. Neither is expressible
+      here: the template carries no length, no colour and no spacing value.
+    -->
+    <div class="membership-settings__actions">
+      <button
+        class="membership-settings__action membership-settings__action--primary"
+        type="submit"
+        [disabled]="canSubmit() === false"
+      >
+        {{ text.submitLabel }}
+      </button>
+
+      <button class="membership-settings__action" type="button" (click)="cancel()">
+        {{ text.cancelLabel }}
+      </button>
+
+      @if (saving()) {
+        <!--
+          The write in flight. Announced rather than merely drawn, which is what the
+          label buys: the shared indicator exposes its status role only while it has
+          label text.
+        -->
+        <app-loading-spinner size="small" [label]="text.savingLabel" />
+      }
+    </div>
+  </form>
+}

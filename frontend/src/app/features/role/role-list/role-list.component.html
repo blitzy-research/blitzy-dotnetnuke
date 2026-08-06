@@ -1,0 +1,618 @@
+<!--
+  THE SECURITY ROLES LISTING SCREEN.
+
+  Migrated from `Website/admin/Security/roles.ascx` (82 lines) and the 317-line
+  `Roles.ascx.vb` behind it. Every region below is derived from measured legacy markup
+  rather than from a redesign, and every string is the verbatim value of a legacy
+  resource key, held as a constant on the sibling component and bound from there so the
+  wording has exactly one home.
+
+  THE HOST IS THE LAYOUT CONTAINER. Each region is a direct child of it and none
+  declares an outer margin of its own, so the paired stylesheet owns the vertical
+  rhythm through the host and never through a wrapper element invented here. No extra
+  wrapping element is emitted for its own sake.
+
+  NO SEMANTIC LANDMARK IS EMITTED HERE. `header`, `main`, `nav` and `footer` belong to
+  `app/layout/**`, which emits each exactly once; this template renders INSIDE the
+  shell's `main`, so repeating one would give the document two of a landmark that must
+  be unique. No heading is emitted either: `app-page-header` renders the single `h1`
+  for the screen, and a second heading would either compete with it or skip a level.
+
+  EVERY STRING IS INTERPOLATED PLAIN TEXT. Legacy resource values are untrusted markup -
+  across the 37 in-scope resource files 76 entries carry an HTML tag and one holds a
+  live third-party advertising script with a remote source, all stored XML-escaped so a
+  naive search clears them wrongly. Nothing here uses a raw-HTML binding, a sanitiser
+  bypass or a trusted-markup wrapper, and `Roles.ascx.resx`'s own `ModuleHelp.Text` -
+  which carries heading and paragraph markup - is deliberately NOT rendered: the closed
+  ten-member component library has no surface for it.
+
+  MIGRATION: the legacy screen was one 100-per-cent-wide LAYOUT table
+  (`roles.ascx` L4-L82) whose first row held the group filter, whose second row was a
+  20-unit-tall spacer and whose third row held the grid. It carried no `summary` on that
+  outer table, no header cells, and two flexible cells holding nothing but a non-breaking
+  space flanking the filter (L6, L15). None of that is structure - it is spacing as markup -
+  so the filter region is laid out with CSS instead, and only `grdRoles` survives as a
+  real table, delegated to `app-data-table`. The 70 literal non-breaking-space separators
+  used across the in-scope screens all become spacing declared in the stylesheet.
+-->
+
+<!--
+  THE PAGE TITLE AND THE THREE PAGE-LEVEL ACTIONS.
+
+  `[title]` is a PROPERTY binding and must stay one. The input is declared required and
+  the component nulls `title` on its own host precisely so the value cannot leak out as
+  the global HTML attribute; written as a static attribute it would become a browser
+  tooltip and never reach the input at all.
+
+  MIGRATION: the three actions are the module actions measured at `Roles.ascx.vb`
+  L304-L312, in their declared order, with the wording taken from the resource keys those
+  lines name - `AddContent.Action`, `AddGroup.Action` and `UserSettings.Action`. They were
+  container-level affordances in the legacy shell, which is why they project into the page
+  header rather than forming an in-page action bar: the legacy command-button bar measured
+  at `editroles.ascx` L178-L190 belongs to the role EDITOR, a form screen, and is not
+  reproduced here.
+
+  MIGRATION: each is a real link carrying a typed route, replacing `EditUrl()`,
+  `EditUrl("EditGroup")` and `EditUrl("UserSettings")` - three query-string URLs built by
+  string substitution. `/settings/membership` is owned by the account feature; a route is
+  a URL and not an import, so linking to it is correct while importing from that feature
+  would not be. No route is declared here - routing belongs to `app.routes.ts` and to this
+  feature's own route file.
+
+  MIGRATION: the legacy actions were raster icons with text. No image asset is referenced
+  anywhere in this workspace, so they are text links; they are deliberately NOT promoted to
+  filled buttons, because a filled-button class existed separately in the legacy stylesheet
+  and these admin action bars did not use it. Their appearance is the paired stylesheet's
+  concern: projected content keeps the encapsulation of the component that declares it, so
+  the page header supplies only the row and its gap and cannot style what it hosts.
+-->
+<app-page-header [title]="pageTitle">
+  <a class="role-list__page-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
+  <a class="role-list__page-action" [routerLink]="addRoleGroupLink">{{ addRoleGroupLabel }}</a>
+  <a class="role-list__page-action" [routerLink]="membershipSettingsLink">{{
+    membershipSettingsLabel
+  }}</a>
+</app-page-header>
+
+<!--
+  THE INLINE FAILURE SURFACE.
+
+  Gated on an explicit null comparison rather than on truthiness, in keeping with the rule
+  this screen applies throughout: identifiers here include legitimate zeroes and negative
+  numbers, so truthiness is never a safe stand-in for presence anywhere in this template.
+
+  The banner takes ONE input and does the rest itself - it derives its own severity, renders
+  the field-error map as a summary, shows the support reference and carries the live region.
+  So nothing here iterates the error map and nothing renders the trace identifier.
+
+  MIGRATION: this surface has no legacy ancestor to translate. There is no validation
+  summary control anywhere in the in-scope screens; the legacy equivalent was the skin's own
+  module-message strip, which lives in an excluded tree. The retry affordance is likewise
+  net-new, and it exists because the sibling component declares a reload command documented
+  as belonging beside a failed listing - a transient fault then costs a press rather than a
+  navigation. Its wording is authored directly: no legacy resource key covers it.
+-->
+@if (loadProblem() !== null) {
+  <div class="role-list__failure">
+    <app-error-banner [problem]="loadProblem()" />
+
+    <button
+      type="button"
+      class="role-list__failure-retry"
+      [disabled]="loading()"
+      (click)="reload()"
+    >
+      Try again
+    </button>
+  </div>
+}
+
+<!--
+  THE ROLE-GROUP FILTER.
+
+  MIGRATION: reproduces `roles.ascx` L5-L16, the server-side row named `trGroups`, as one
+  labelled field rather than as three table cells. The whole region disappears when the
+  portal has no role groups, which is BOTH halves of `Roles.ascx.vb` L110/L127-L131: the
+  legacy set `trGroups.Visible = False` and, in the same branch, forced the effective filter
+  to "all roles". The second half is the easy one to lose - the store applies that fallback
+  itself, so the grid lists every role rather than silently narrowing to the ungrouped subset
+  while the control that would have explained the narrowing is absent.
+
+  ONE LABEL GOVERNS SEVERAL CONTROLS, WHICH IS WHY THEY SHARE ONE FIELD. The closed component
+  library has no selector component and no button component, and the labelled-field component
+  documents this exact legacy row as its proving case for projecting more than one control
+  under a single label. So a native `select` and native `button` elements inside the field's
+  content slot are the compliant composition, not a workaround: what the design system rules
+  forbid is a bare table where the shared grid covers the need, and bare controls with no
+  label association.
+
+  The label is passed VERBATIM, colon included, exactly as `plRoleGroups.Text` stores it on
+  this screen. The field strips one trailing colon itself and applies none of its own, so
+  pre-stripping here would remove nothing and would hide where the punctuation came from.
+  The same resource key reads `Role Group` without a colon on the editor screen; the
+  list-screen value is the one reproduced.
+-->
+@if (filterRowVisible()) {
+  <div class="role-list__filter">
+    <app-form-field
+      [label]="groupFilterLabel"
+      [help]="groupFilterHelp"
+      [for]="groupFilterControlId"
+    >
+      <!--
+        The control row is a child of the slot rather than the slot itself, because the
+        field owns the label-to-control relationship and this element owns only the
+        arrangement of the controls inside it. Its gap replaces the legacy spacer cells.
+      -->
+      <div class="role-list__filter-controls">
+        <!--
+          MIGRATION: the entries are in the legacy `Items.Add` order - `Roles.ascx.vb`
+          L112 adds "all roles", L114-L118 adds "global roles", then L120-L126 adds each
+          group as `GetRoleGroups` returned it. `Items.Insert` is never used, so the two
+          pseudo-entries lead rather than being spliced in afterwards.
+
+          The angle brackets and the spaces inside them are REAL: `SharedResources.resx`
+          stores `< All Roles >` and `< Global Roles >` XML-escaped. Interpolated they
+          render exactly as stored; through a raw-HTML binding they would be parsed as
+          tags and vanish, which is one more reason no such binding appears here.
+
+          MIGRATION - DEFECT D-R3. The legacy marked the "global roles" entry selected
+          with `If RoleGroupId < 0` (`Roles.ascx.vb` L115), a sign test that treats the
+          two sentinels as one, so with "all roles" active the selector read "Global
+          Roles" while the grid listed every role. Selection is bound here to the filter
+          the store actually holds and compared for EQUALITY, so the control and the grid
+          cannot disagree. That is a documented divergence in rendered behaviour, not a
+          repair applied to legacy logic: no legacy branch is altered and the defect is
+          recorded rather than absorbed.
+
+          The value is a string because the DOM requires one; it is parsed back into the
+          typed filter union by the change handler and never travels to the server, where
+          a named scope is sent instead of a negative number.
+        -->
+        <select
+          class="role-list__filter-select"
+          [id]="groupFilterControlId"
+          (change)="onGroupFilterChange($event)"
+        >
+          @for (option of groupOptions(); track option.value) {
+            <option [value]="option.value" [selected]="option.value === groupFilterValue()">
+              {{ option.label }}
+            </option>
+          }
+        </select>
+
+        <!--
+          THE FIRST DELETE GUARD, `Roles.ascx.vb` L79-L81: both affordances disappeared
+          together while either sentinel was selected, because neither pseudo-entry names
+          a group that can be edited or removed. The guard is an explicit presence test on
+          the selected group and never a sign or truthiness test - group zero is a real
+          identifier, `RoleGroups.RoleGroupID` being seeded to start at zero.
+
+          MIGRATION: the legacy edit affordance was a link to a separate `EditGroup`
+          screen (L84). The migrated route table is closed and declares no group-edit
+          route, so this opens the inline editor below instead.
+
+          The glyph is inline vector art, replacing `~/images/edit.gif`; no image asset is
+          referenced and none exists to reference. It is hidden from assistive technology
+          and the accessible name comes from the text beside it, so the affordance is named
+          whether or not the stylesheet chooses to clip that text.
+        -->
+        @if (canEditSelectedGroup()) {
+          <button
+            type="button"
+            class="role-list__filter-action"
+            [disabled]="saving()"
+            (click)="openGroupEditor()"
+          >
+            <svg
+              class="role-list__icon"
+              aria-hidden="true"
+              focusable="false"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M11.2 2.6 L13.4 4.8" />
+              <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
+            </svg>
+            <span class="role-list__action-label">{{ editGroupLabel }}</span>
+          </button>
+        }
+
+        <!--
+          THE SECOND DELETE GUARD, `Roles.ascx.vb` L85:
+          `cmdDelete.Visible = Not (arrRoles.Count > 0)` - removal was offered only while
+          the selected group held no roles.
+
+          This governs the AFFORDANCE only. The server stays authoritative and refuses a
+          group that still classifies roles, and the sibling component handles that refusal
+          whether or not this button was ever shown: hiding a control is not enforcement,
+          and the legacy gap being closed is that any caller issuing the post-back directly
+          walked straight past the hidden button.
+
+          MIGRATION - THE REAL ACCESSIBILITY GAP ON THIS SCREEN. The legacy `cmdDelete`
+          image button (`roles.ascx` L13) carried NEITHER a resource key NOR alternative
+          text, so it reached assistive technology with no accessible name whatsoever: a
+          reader met an unlabelled button that destroyed a record. It is named here. The
+          edit affordance beside it (L11) did carry both `AlternateText` and a resource key
+          resolving through `SharedResources.resx`, so that one was already labelled and
+          this migration claims no credit for it.
+        -->
+        @if (canRemoveSelectedGroup()) {
+          <button
+            type="button"
+            class="role-list__filter-action role-list__filter-action--danger"
+            [disabled]="saving()"
+            (click)="requestGroupRemoval()"
+          >
+            <svg
+              class="role-list__icon"
+              aria-hidden="true"
+              focusable="false"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M2.6 4.4 L13.4 4.4" />
+              <path d="M6 4.4 V2.9 A0.8 0.8 0 0 1 6.8 2.1 L9.2 2.1 A0.8 0.8 0 0 1 10 2.9 V4.4" />
+              <path d="M4 4.4 L4.7 14.4 L11.3 14.4 L12 4.4" />
+              <path d="M6.6 7.2 V11.7" />
+              <path d="M9.4 7.2 V11.7" />
+            </svg>
+            <span class="role-list__action-label">{{ removeGroupLabel }}</span>
+          </button>
+        }
+      </div>
+    </app-form-field>
+  </div>
+}
+
+<!--
+  THE INLINE ROLE-GROUP EDITOR.
+
+  MIGRATION: the legacy filter row linked out to a separate `EditGroup` screen
+  (`Roles.ascx.vb` L84). The migrated route table is closed and declares no group-edit
+  route, so the two facts a group owns are edited in place, COMPOSED from the shared
+  labelled-field component and native controls. Composing was chosen over importing the
+  sibling create screen: importing it would pull a second feature screen into this lazily
+  loaded chunk for the sake of two text controls, and that folder is in any case not yet
+  populated. Creation remains a link to its own route and is already offered as the second
+  page action, so it is not duplicated here.
+
+  The wording comes from `EditGroups.ascx.resx` - `ControlTitle_editgroup.Text`,
+  and the text and help entries of both `plRoleGroupName` and `plDescription` - all held as
+  constants on the sibling component.
+
+  A field set with a legend, not a heading. The legend names the group of controls for
+  assistive technology, which is what a form group needs; a heading would either compete
+  with the page title or skip a level. The screen's single `h1` stays with the page header.
+-->
+@if (groupEditorOpen()) {
+  <form class="role-list__group-editor" [formGroup]="groupForm" (ngSubmit)="submitGroupEditor()">
+    <fieldset class="role-list__group-editor-fields">
+      <legend class="role-list__group-editor-legend">{{ groupEditorLegend }}</legend>
+
+      <!--
+        MIGRATION: the length bound is declared with an ATTRIBUTE binding, deliberately
+        never as a property binding or a literal attribute. Both of those forms match the
+        reactive-forms maximum-length validator selector and would attach a second
+        validator on top of the one the sibling component already declares on this control.
+        The attribute constrains typing and pasting only, which is all that is wanted here.
+
+        MIGRATION: the legacy validator message for this field is `valRoleGroupName.Text`,
+        stored with a leading break tag ahead of the words `You Must Enter a Valid Name`.
+        That break is a layout artefact of the legacy validation strip and carries no
+        meaning beside a field, so it is
+        removed by the workspace's shared normaliser in the sibling component - never in
+        this template, where a function called from a binding would re-run on every
+        change-detection pass.
+
+        The invalid state is announced only WHEN the field is invalid: the attribute is
+        omitted entirely otherwise, rather than asserting a negative on a healthy control.
+      -->
+      <app-form-field
+        [label]="groupNameLabel"
+        [for]="groupNameControlId"
+        [required]="true"
+        [help]="groupNameHelp"
+        [error]="groupNameMessages"
+      >
+        <!--
+          REQUIREDNESS IS DECLARED ON THE CONTROL, NOT ONLY BESIDE IT. The labelled-field
+          component renders the marker and says so itself - "the caller still sets
+          `required` on the control itself; this marker cannot and does not" - so without
+          this attribute a reader using assistive technology would meet requiredness only
+          as trailing words inside the field's NAME and never as the distinct required
+          STATE. The state is announced here.
+
+          Declared as `aria-required` rather than the native attribute, matching the two
+          screens that already do this. A bare `required` attribute would additionally
+          match the reactive-forms required-validator selector and attach a SECOND
+          validator on top of the one the sibling component already declares on this
+          control - the same trap the length bound above avoids.
+        -->
+        <input
+          class="role-list__group-editor-input"
+          type="text"
+          aria-required="true"
+          [id]="groupNameControlId"
+          [formControl]="groupForm.controls.roleGroupName"
+          [attr.maxlength]="groupNameMaxLength"
+          [attr.aria-invalid]="groupNameMessages.length > 0 ? 'true' : null"
+        />
+      </app-form-field>
+
+      <!--
+        A plain multi-line text control. The legacy rich-text editor provider is out of
+        scope and no editor component exists in the closed library, so a description is
+        entered as plain text. Recorded as a deliberate functional reduction.
+      -->
+      <app-form-field
+        [label]="groupDescriptionLabel"
+        [for]="groupDescriptionControlId"
+        [help]="groupDescriptionHelp"
+        [error]="groupDescriptionMessages"
+      >
+        <textarea
+          class="role-list__group-editor-textarea"
+          [id]="groupDescriptionControlId"
+          [formControl]="groupForm.controls.description"
+          [attr.maxlength]="groupDescriptionMaxLength"
+          [attr.aria-invalid]="groupDescriptionMessages.length > 0 ? 'true' : null"
+        ></textarea>
+      </app-form-field>
+    </fieldset>
+
+    <!--
+      MIGRATION: the two commands reproduce the legacy `cmdUpdate` and `cmdCancel` link
+      buttons and their wording, `Update` and `Cancel`, measured at `editroles.ascx` L179
+      and L182 and stored under those names in `SharedResources.resx`. The three literal
+      non-breaking spaces that separated that legacy bar (L181, L184, L187) become the gap
+      this element declares in the paired stylesheet.
+
+      The affirmative command is a real submit control, so the form answers the Enter key
+      with no key handling written here. Both are disabled while a mutation is in flight,
+      which is the same refusal the sibling component applies to a second submission.
+    -->
+    <div class="role-list__group-editor-commands">
+      <button type="submit" class="role-list__command" [disabled]="saving()">Update</button>
+
+      <button
+        type="button"
+        class="role-list__command"
+        [disabled]="saving()"
+        (click)="closeGroupEditor()"
+      >
+        Cancel
+      </button>
+    </div>
+  </form>
+}
+
+<!--
+  THE GRID.
+
+  MIGRATION: replaces the `asp:datagrid` named `grdRoles` (`roles.ascx` L22-L79). The twelve
+  columns, their order and their alignment are assembled by the sibling component and arrive
+  through one input, so this template states the data and not the shape of it.
+
+  THE ACCESSIBLE NAME ARRIVES BY PROJECTION AND SUPPLYING IT IS THIS SCREEN'S OBLIGATION.
+  The shared grid renders the `caption` element itself, already clipped from the painted page
+  by the shared table stylesheet, and projects into it through the `dataTableCaption` slot -
+  so what is written here is the element carrying that attribute, exactly as the shared
+  component's own specification and the sibling portal-alias listing both do it. A literal
+  `caption` element must NOT be written here: it would be projected INSIDE the grid's own
+  caption, which is not conforming markup. Left unprojected the grid falls back to a generic
+  name, which is a floor and not a licence.
+
+  MIGRATION: the legacy named its table with the DEPRECATED `summary` attribute
+  (`roles.ascx` L24) and carried no caption at all - and there is no caption rule anywhere in
+  the 1030-line legacy stylesheet, so caption styling has no legacy provenance to preserve.
+  The caption is therefore a net accessibility addition at zero visual cost, and no `summary`
+  attribute is emitted.
+
+  NO SORT BINDING. The legacy grid offered no sorting, so neither the sort inputs nor the
+  sort output is bound and no column is marked sortable. Adding one would be a capability the
+  screen never had.
+
+  NO PAGER, ANYWHERE. The legacy declared no paging control and no paging flag; its grid bound
+  a plain untyped list and its code-behind held no page index, size or record total. The pager
+  style declared at L32 never rendered. The shared pagination component is therefore not
+  consumed on this screen, and no footer row stands in for it.
+
+  NO TEXT OR LETTER FILTER. Unlike the portal listing, this screen had neither, so the shared
+  search component is not consumed either.
+
+  THE WAITING AND EMPTY STATES ARE DELEGATED. The shared grid renders the progress indicator
+  and the empty state itself, in one spanning row, and lets waiting win over empty - so the
+  waiting flag is passed through and neither component is rendered again here. They are not
+  even in the sibling component's imports, which makes the delegation a compile-time fact. No
+  custom empty wording is supplied: the legacy grid showed no empty message at all, so the
+  shared default is the closest thing to parity available.
+
+  ROW ACTIVATION IS NOT BOUND. The legacy grid had no select command - its selected-item style
+  was declared but unreachable - so nothing listens for a row activation.
+-->
+<app-data-table [columns]="columns()" [rows]="roles()" [loading]="loading()">
+  <span dataTableCaption>{{ pageTitle }}</span>
+</app-data-table>
+
+<!--
+  THE GROUP-REMOVAL CONFIRMATION.
+
+  PRESENCE IN THE DOCUMENT IS WHAT "OPEN" MEANS - the dialog exposes no open input, so the
+  guard is what shows it. Gated on an explicit null comparison for the same reason as the
+  failure surface above.
+
+  MIGRATION: reproduces the confirmation the legacy attached to its delete button through
+  `ClientAPI.AddButtonConfirm`, which it passed the localised `DeleteItem` resource value
+  (`Roles.ascx.vb` L86) - a browser confirm dialog. The message here is that same resource
+  value, passed explicitly so the correspondence is visible even though the component's own
+  default is identical.
+
+  The wording makes no claim about permanence, deliberately. Removing a group releases the
+  roles it classified rather than destroying them, and in this domain removal is not always
+  destruction - cancelling a paid role assignment whose trial has been used sets an expiry
+  date of yesterday and UPDATES the assignment. Language asserting that an action cannot be
+  undone would therefore be false here.
+
+  THE FEATURE OWNS THE FLOW; THE DIALOG ONLY ASKS. Focus trapping, the Escape key, focus
+  capture and restore, the alert-dialog role and the rest of the ARIA wiring are the dialog's
+  own, and none of it is reimplemented here. `[title]` is a property binding for the same
+  reason it is on the page header.
+-->
+@if (pendingGroupRemoval() !== null) {
+  <app-confirm-dialog
+    [title]="removalTitle"
+    [message]="removalMessage"
+    [confirmLabel]="removalConfirmLabel"
+    [danger]="true"
+    (confirm)="onGroupRemovalConfirmed()"
+    (cancel)="onGroupRemovalCancelled()"
+  />
+}
+
+
+<!--
+  ══════════════════════════════════════════════════════════════════════════════════════
+  THE FOUR CELL TEMPLATES.
+
+  These are REAL cell templates, never control flow: `@if` and `@for` are the only branching
+  and repetition used in this file. Each is handed to the shared grid through a column
+  descriptor and rendered by the grid inside the matching cell.
+
+  THEY MUST STAY AT THE TOP LEVEL OF THIS TEMPLATE. The sibling component captures them with
+  STATIC view queries so that the column set can be assembled in its initialisation hook, and
+  a static query only resolves a template that belongs to the component's own view. Moved
+  inside an `@if` or an `@for` - each of which creates an embedded view - they would resolve
+  to nothing and the column set would fail to build.
+
+  A template variable's type cannot be declared on a bare template element in Angular, so
+  `row` is typed dynamically here and the grid's cell-context type is what documents it: the
+  row is a role listing item. Every member reached below exists on that contract.
+  ══════════════════════════════════════════════════════════════════════════════════════
+-->
+
+<!--
+  ROW COMMAND ONE - EDIT. Legacy `dnn:imagecommandcolumn commandname="Edit"` with
+  `editmode="URL"` and `keyfield="RoleID"` (`roles.ascx` L34), which rendered
+  `~/images/edit.gif` and navigated to a query URL built by substituting the row's key into
+  an already-rendered link (`Roles.ascx.vb` L216-L218). It is a real link carrying typed
+  route segments, so the browser can open it in a new tab and assistive technology announces
+  it as a link rather than as a graphic.
+
+  SENTINEL DISCIPLINE. `Roles.RoleID` is seeded to start at ZERO, so a role identifier of
+  zero is a REAL identifier and `/roles/0` is a real address. The link is therefore NEVER
+  guarded on the identifier's truthiness and the identifier is never defaulted, coalesced or
+  passed through an absolute value - any of which would silently misdirect the first role
+  the portal ever created.
+
+  THE ACCESSIBLE NAME NAMES THE ROLE. `Edit` repeated once per row tells a reader moving
+  between links nothing about which role they are on, so the name carries the role's name -
+  and it CONTAINS the visible word, which is what keeps a spoken command matching what is
+  seen. The glyph is inline vector art hidden from assistive technology; the visible text
+  beside it may be clipped by the paired stylesheet without the name changing either way.
+-->
+<ng-template #editCommand let-row>
+  <a
+    class="role-list__row-action"
+    [routerLink]="editRoleLink(row)"
+    [attr.aria-label]="editRoleLabel + ' ' + row.roleName"
+  >
+    <svg
+      class="role-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M11.2 2.6 L13.4 4.8" />
+      <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
+    </svg>
+    <span class="role-list__action-label">{{ editRoleLabel }}</span>
+  </a>
+</ng-template>
+
+<!--
+  ROW COMMAND TWO - MANAGE USERS. Legacy `dnn:imagecommandcolumn commandname="UserRoles"`
+  (`roles.ascx` L35), which rendered the sixteen-pixel `icon_users` glyph and navigated via
+  `NavigateURL(TabId, "User Roles", "RoleId=KEYFIELD")` (`Roles.ascx.vb` L225-L227) - a tab
+  key containing a space, substituted into a query string. The wording is `UserRoles.Text`.
+
+  THERE IS NO THIRD ROW COMMAND, AND THERE IS NO ROW-LEVEL DELETE. The legacy grid declared
+  exactly these two image command columns and no delete command anywhere; role removal lives
+  on the role editor. The dead branch in the code-behind that configured a confirmation for a
+  delete column the markup never declared could not have executed, and is not ported.
+-->
+<ng-template #membersCommand let-row>
+  <a
+    class="role-list__row-action"
+    [routerLink]="manageUsersLink(row)"
+    [attr.aria-label]="manageUsersLabel + ' ' + row.roleName"
+  >
+    <svg
+      class="role-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="6" cy="5.2" r="2.6" />
+      <path d="M1.6 14 V13 A4.4 4.4 0 0 1 6 8.6 A4.4 4.4 0 0 1 10.4 13 V14" />
+      <path d="M10.7 3.1 A2.2 2.2 0 0 1 10.7 7.4" />
+      <path d="M12 8.9 A4 4 0 0 1 14.4 12.5 V14" />
+    </svg>
+    <span class="role-list__action-label">{{ manageUsersLabel }}</span>
+  </a>
+</ng-template>
+
+<!--
+  THE SELF-SUBSCRIPTION CELL. Legacy template column headed `Public` (`roles.ascx` L66-L71).
+
+  MIGRATION: the legacy painted a PAIR of images with opposite visibility - a tick shown when
+  `DataBinder.Eval(Container.DataItem,"IsPublic")="true"` and a cross shown when the same
+  expression matched `"false"` - and NEITHER image carried alternative text, so both states
+  reached assistive technology as an unnamed graphic. One cell of announced text replaces the
+  pair, which closes that gap at no visual cost.
+
+  Those legacy expressions compared a late-bound value against a lower-case string literal.
+  They worked only because the administration pages compiled with strict type checking off,
+  which let the comparison resolve by converting the string to a boolean; the class library
+  itself compiled with binary comparison, under which comparing `"True"` with `"true"` is
+  false. Legacy correctness here was accidental. The equivalent string comparison in
+  TypeScript is unconditionally false, so the value is a boolean and is passed straight to
+  the shared pipe, which tests it by identity. It is never coerced, negated, defaulted or
+  read for truthiness - `false` is DATA here and renders as the negative word rather than as
+  a blank cell, exactly as the legacy cross did.
+
+  A template column rather than a bound one, because the shared grid's bound column accepts
+  text-shaped values only and imports no pipe of its own; the pipe is declared in this
+  screen's own component, which is the context this template compiles in.
+-->
+<ng-template #publicCell let-row>
+  {{ row.isPublic | yesNo }}
+</ng-template>
+
+<!--
+  THE AUTOMATIC-ENROLMENT CELL. Legacy template column headed `Auto` (`roles.ascx` L72-L77),
+  the same image pair over `AutoAssignment` and carrying the same absence of alternative
+  text. Rendered the same way, for the same reasons.
+-->
+<ng-template #autoCell let-row>
+  {{ row.autoAssignment | yesNo }}
+</ng-template>
+

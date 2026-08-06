@@ -1,0 +1,364 @@
+<!--
+  THE PORTAL HTTP-ALIAS SCREEN: the listing, and the create / edit / delete form on the
+  same surface.
+
+  Served by the route /portals/:portalId/aliases and bound by
+  `portal-alias-list.component.ts`. Every member read below is `protected` on that class,
+  so this template is the only thing that can read them; nothing here is invented and
+  nothing here holds state of its own.
+
+  WHY ONE SCREEN CARRIES BOTH. The legacy application split the work across two controls
+  - a listing at `Website/admin/Portal/PortalAlias.ascx.vb` and a separate edit surface at
+  `Website/admin/Portal/EditPortalAlias.ascx.vb` reached through a query string - and the
+  target feature declares no alias-form route for the second one to become. The listing,
+  the create affordance and the edit affordance therefore sit together here, and this
+  screen navigates nowhere.
+
+  MARKUP CONTRACT. Emulated view encapsulation rewrites the paired stylesheet's selectors
+  with this component's content attribute, so a drifted class name does NOT error - it
+  silently matches nothing and the screen renders unstyled. The five class names below are
+  exactly the vocabulary `portal-alias-list.component.scss` publishes:
+
+      .portal-alias-list             the component root
+      .portal-alias-list__header     wraps the shared page header
+      .portal-alias-list__status     the failure surface and the wait indicator
+      .portal-alias-list__edit       the inline create / edit form
+      .portal-alias-list__commands   the form's command row
+
+  MIGRATION: EVERY STRING HERE IS INTERPOLATED PLAIN TEXT, and that is a security boundary
+    rather than a house style. Legacy resource values are UNTRUSTED MARKUP: measured across
+    the 37 in-scope resource files, 76 values carry an HTML tag, and this feature's own
+    `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` holds a live
+    third-party advertising script in `Advertising.Text`. The tags are stored XML-escaped,
+    so a naive search returns nothing and would wrongly clear the risk. No raw-markup sink,
+    no sanitiser and no sanitiser bypass appears anywhere below, and none is even reachable
+    - the component deliberately exposes no pre-escaped member.
+
+  MIGRATION: NO LANDMARK ELEMENT IS EMITTED. The application shell in `app/layout/` owns
+    each landmark exactly once, so this screen's root is a plain container carrying a
+    class. A second landmark of the same kind would give assistive technology two regions
+    where the design has one.
+
+  MIGRATION: localisation is NOT ported. The legacy screens resolved every label through
+    `Localization.GetString` against a per-control resource file, and the grid's headings
+    through `Localization.LocalizeDataGrid` at
+    `Website/admin/Portal/PortalAlias.ascx.vb:L69`. No translation runtime is added and no
+    message identifier is emitted; the English wording is authored on the component from
+    the measured resource VALUES, never from a markup attribute, and this template reads
+    those members rather than restating any string of its own.
+
+  MIGRATION: THE COMMAND SPACING IS A STYLESHEET GAP, NOT CONTENT. The legacy markup
+    separated its three commands with literal non-breaking-space entities
+    (`Website/admin/Portal/editportalalias.ascx:L11` and L12), and opened the edit surface
+    with a bare break element at L3. Neither is reproduced: spacing is the paired
+    stylesheet's token-based `gap`, which survives white-space collapsing and adjusts with
+    the spacing scale.
+-->
+<div class="portal-alias-list">
+  <!--
+    PAGE CHROME. The shared header renders the title and projects this screen's single
+    page-level action into its own slot.
+
+    MIGRATION: the action is the successor of the legacy module action, which was declared
+    at `Website/admin/Portal/PortalAlias.ascx.vb:L90` as an `AddContent` entry at
+    administrator access level whose target was a composed edit address. It opens the
+    inline form instead of navigating, so no address is composed anywhere in this feature.
+    Its wording is the measured `AddContent.Action` value in
+    `Website/admin/Portal/App_LocalResources/PortalAlias.ascx.resx` - "Add New HTTP Alias" -
+    and the title is the measured `ControlTitle_.Text` value from the same file, "Portal
+    Aliases", which the edit surface's own `ControlTitle_edit.Text` matches. Both are read
+    from the component rather than restated here, so one measured value cannot drift into
+    two spellings.
+
+    The button is bare, and deliberately so: the shared inventory is closed at ten members
+    and declares no button among them, while the global form stylesheet already gives every
+    button its appearance and its focus ring. Nothing here restyles a shared component.
+  -->
+  <div class="portal-alias-list__header">
+    <app-page-header [title]="heading">
+      <button type="button" (click)="startCreate()">{{ addActionLabel }}</button>
+    </app-page-header>
+  </div>
+
+  <!--
+    THE STATUS REGION: the failure surface, then the wait indicator.
+
+    The banner is bound UNCONDITIONALLY and that is the deliberate choice. Its own root is
+    a permanently rendered assertive live region whose contents are conditional, so binding
+    it always keeps the region in the document BEFORE any message arrives - which is what
+    makes an announcement reliable. Inserting a live region and its text in the same frame
+    is a well-known way to have neither announced. It renders nothing visible while the
+    problem document is null, derives its own severity, title, message and field list, and
+    carries the only live region on this screen; this template adds no second one.
+
+    MIGRATION: a permission denial is presented as a WARNING and never as a danger-severity
+    fault. Both legacy handlers used the red error severity - the hard-coded view refusal at
+    `Website/admin/Portal/EditPortalAlias.ascx.vb:L67` and the resourced delete refusal at
+    L183 - but the legacy vocabulary was three-valued and its canonical access-denied screen
+    chose the middle value at `Website/admin/Security/AccessDenied.ascx.vb:L43`. The banner
+    classifies severity from the status itself, so a working authorisation decision is not
+    painted as a system fault and this template decides nothing about severity.
+
+    MIGRATION: the wait indicator is a NET ADDITION. The legacy screen was a full postback
+    and showed no progress of any kind. It is the ONLY progress affordance on this screen -
+    the shared grid's own waiting input is deliberately left unbound so that one request
+    cannot raise two indicators at once - and it sits outside the list branches below so it
+    is shown for a read, a create, an update and a delete alike.
+  -->
+  <div class="portal-alias-list__status">
+    <app-error-banner [problem]="bannerProblem()" />
+
+    @if (loading()) {
+      <app-loading-spinner />
+    }
+  </div>
+
+  <!--
+    THE LISTING, in three mutually exclusive states.
+
+    MIGRATION: EXACTLY TWO COLUMNS, AND NO DELETE COLUMN. The legacy grid declared precisely
+    two at `Website/admin/Portal/portalalias.ascx:L4-L18` - a narrow command column holding
+    an edit link, and the host-name column - and the column set is built on the component
+    from that measurement. Deletion is NOT offered per row: it lived on the separate edit
+    surface, at `Website/admin/Portal/EditPortalAlias.ascx.vb:L173-L193`, so it belongs to
+    the form below and nowhere else. There is no row action menu and no bulk delete.
+
+    MIGRATION: the host-name heading comes from the RESOURCE VALUE and not from the markup.
+    The grid declared `HeaderText="HTTP Alias"` inline at
+    `Website/admin/Portal/portalalias.ascx:L14`, but
+    `Localization.LocalizeDataGrid` at `Website/admin/Portal/PortalAlias.ascx.vb:L69`
+    replaced it at run time from the resource key that carries a space in its name. The
+    component supplies the resolved heading, keyed separately from it, so a column's
+    identity is never the text an operator reads.
+
+    MIGRATION: NO PAGER AND NO FILTER. The legacy listing bound a plain unpaged collection
+    at `Website/admin/Portal/PortalAlias.ascx.vb:L42` and declared neither a pager nor a
+    filter control anywhere in `portalalias.ascx`, so neither shared affordance is rendered
+    here. No ordering is bound either: the grid declared no sorting, so the shared grid's
+    ordering inputs are left alone rather than bound to an order nothing can change.
+
+    MIGRATION: THE LEGACY ALTERNATING-ROW TREATMENT IS A DEFECT AND IS NOT REPRODUCED.
+    `Website/Portals/_default/default.css:L131-L137` gave alternating grid rows RED body
+    text, which conveys nothing and reads as an error on every other row; the selected-row
+    rule at L164 of the same file is dead CSS that nothing ever applied. Row striping and
+    selection are the shared grid's own, expressed in design tokens.
+
+    The accessible name reaches the grid by CONTENT PROJECTION rather than through an input,
+    because the grid's public surface is closed at five inputs. The projected element is
+    rendered inside a real caption that is announced and visually hidden, and the grid emits
+    a column scope on every heading cell, so the table is properly named and its headings
+    properly associated without this template reaching into the component.
+  -->
+  @if (routeUsable() === false) {
+    <!--
+      The address carried no usable portal identifier. Said plainly rather than left blank,
+      and said instead of the listing because there is no portal whose host names to read.
+    -->
+    <app-empty-state [message]="unusableRouteMessage" />
+  } @else if (isListEmpty()) {
+    <!--
+      Read, and genuinely empty. The component distinguishes "not yet read" from "read and
+      empty", so this never appears while a request is in flight. The create affordance is
+      repeated into the state's own slot so the operator can act from where they are
+      looking.
+    -->
+    <app-empty-state [message]="emptyMessage">
+      <button type="button" (click)="startCreate()">{{ addActionLabel }}</button>
+    </app-empty-state>
+  } @else {
+    <!--
+      MIGRATION: THE LEGACY VISIBILITY RULE ON THE EDIT AFFORDANCE IS REPORTED AS A GAP,
+      AND NOTHING IS HIDDEN. `Website/admin/Portal/PortalAlias.ascx.vb:L51-L60` hid the edit
+      link for the alias the site was BEING BROWSED THROUGH, comparing each row against the
+      current request's own alias as the page base class had resolved it server-side. That
+      fact is not published by any contract this screen can reach - the current-user document
+      names the account, the portal, its roles and its permissions and no alias; the alias
+      document carries three members and none of them says "in use"; the portal detail
+      document carries the collection but no in-use identifier; and no endpoint offers one.
+      It is deliberately NOT inferred from the browser's own address either: resolution is
+      the server's, performed as an exact match by the alias-resolution middleware, and a
+      client-side guess would hide the wrong row on one deployment and the right row on
+      another. Every row therefore keeps its edit affordance, and an operator who edits the
+      alias they arrived through is answered by the server, which is where the authority is.
+    -->
+    <app-data-table
+      [columns]="columns()"
+      [rows]="rows()"
+      (rowSelect)="editAlias($event)"
+    >
+      <span dataTableCaption>{{ heading }}</span>
+    </app-data-table>
+  }
+
+  <!--
+    THE INLINE CREATE / EDIT FORM.
+
+    MIGRATION: THE LEGACY LAYOUT GRID IS GONE. The edit surface arranged its single label
+    and single box in a two-cell tabular layout declared at
+    `Website/admin/Portal/editportalalias.ascx:L4` with border, cell-spacing and
+    cell-padding attributes and - being a layout device rather than data - carrying no
+    summary attribute. Tabular markup is for tabular data: the arrangement here is the
+    paired stylesheet's grid and flex, every value a design token, and the only real table
+    on this screen is the one the shared grid owns above.
+
+    `[formGroup]` is what supplies the submit event on this element; the control itself is
+    bound by reference rather than by name so the typed, non-nullable control drives it and
+    the binding is checked. No form action and no form method is declared: submission is
+    handled entirely by the component.
+  -->
+  @if (formOpen()) {
+    <form class="portal-alias-list__edit" [formGroup]="form" (ngSubmit)="submit()">
+      <!--
+        The labelled field. The shared component renders the label, associates it with the
+        projected control, marks the field required, owns the validation region and owns the
+        help disclosure; it renders no control of its own, which is why the box below is
+        projected into its slot. A bare box here is exactly what the design system intends -
+        no shared member covers a single-line text entry - and the global form stylesheet
+        gives it its appearance, its invalid state and its focus ring.
+
+        MIGRATION: the help text is re-authored PROSE and the resource markup never reaches
+        the document. The measured `plAlias.Help` value in
+        `Website/admin/Portal/App_LocalResources/EditPortalAlias.ascx.resx` carries five
+        upper-case break tags and a quoted protocol prefix; the component publishes the same
+        six statements as sentences, and the shared field renders them as interpolated plain
+        text in a single paragraph, which is the composition this library dictates. Every
+        fact the legacy value stated survives: the four accepted forms with their examples,
+        and the instruction to omit the protocol prefix.
+
+        MIGRATION: the help is now KEYBOARD REACHABLE, reversing a legacy defect rather than
+        carrying it across. `Website/controls/labelcontrol.ascx` removed the affordance from
+        the tab order twice over - a negative tab index on the help link button at L3 and
+        another on the image nested inside it at L4 - so the guidance was reachable by
+        pointer only. The shared field's toggle is an ordinary button in the tab order that
+        announces its expanded state. Reversing this costs nothing visually.
+
+        MIGRATION: the label's trailing colon is NOT restated here. The legacy label
+        declared it as a separate suffix attribute at
+        `Website/admin/Portal/editportalalias.ascx:L6` while other screens in the same set
+        embedded it in the wording; the shared field normalises the punctuation, so
+        supplying it again would double it.
+      -->
+      <app-form-field
+        [label]="aliasLabel"
+        [for]="aliasControlId"
+        [required]="true"
+        [help]="aliasHelp"
+        [error]="aliasError()"
+      >
+        <!--
+          MIGRATION: the character cap is bound as an ATTRIBUTE and deliberately NOT as a
+          property binding or a literal attribute. Those two forms match the reactive-forms
+          maximum-length validator's own selector on a control-bound element, which would
+          attach a second validator from the template and duplicate the rule the component
+          already declares. The attribute form constrains typing and pasting exactly as
+          `MaxLength="255"` did at `Website/admin/Portal/editportalalias.ascx:L7`, and
+          leaves the component the sole owner of validity.
+
+          The identifier is the one the field's association names, so the two cannot drift.
+          The invalid state is exposed as an attribute because the global stylesheet keys
+          the failed appearance off it, and because it is the state a reader is told about.
+        -->
+        <input
+          type="text"
+          [id]="aliasControlId"
+          [formControl]="form.controls.httpAlias"
+          [attr.maxlength]="aliasInputMaxLength"
+          [attr.aria-invalid]="aliasError().length > 0"
+          (input)="onAliasInput()"
+          (blur)="onAliasBlur()"
+        />
+      </app-form-field>
+
+      <!--
+        THE THREE COMMANDS, in the legacy order.
+
+        MIGRATION: THE SUBMIT LABEL IS MODE-DEPENDENT AND THERE IS NO SEPARATE ADD CONTROL.
+        The legacy markup declared ONE command at
+        `Website/admin/Portal/editportalalias.ascx:L11`, and the handler set its text from
+        the local resource key on both add branches - `Website/admin/Portal/EditPortalAlias.ascx.vb:L83`
+        and L88 - and from the global update key on the edit branch at L75. The two measured
+        values are the local `cmdAdd.Text`, "Add New Alias", for creating, and the global
+        `cmdUpdate.Text`, "Update", for editing; note that `cmdAdd.Text` exists ONLY in the
+        local resource file and has no global fallback, and that the legacy markup gave this
+        command no resource key at all, only an inline text attribute the handler overwrote.
+        The component chooses between the two, so one button carries both labels here too.
+
+        Only the submit is a submit. The legacy cancel and delete commands both declared
+        that they cause no validation, at `editportalalias.ascx:L12` and L13, so both are
+        plain buttons that cannot submit this form.
+
+        MIGRATION: the submit is disabled while a request is in flight and NOT while the
+        entry is invalid. Disabling on invalidity would make the field's own messages
+        unreachable, because the component surfaces them from the submit attempt itself -
+        which is the whole of what it adds over the legacy screen, where a blank entry made
+        the handler body a silent no-op at
+        `Website/admin/Portal/EditPortalAlias.ascx.vb:L209`.
+      -->
+      <div class="portal-alias-list__commands">
+        <button type="submit" [disabled]="loading()">{{ submitLabel() }}</button>
+
+        <button type="button" (click)="cancelEdit()">{{ cancelLabel }}</button>
+
+        <!--
+          MIGRATION: DELETE IS WITHHELD UNDER TWO CONDITIONS, one measured and one a
+          deliberate divergence. The measured rule is the count: `SetDeleteVisibility` hid
+          the command when the portal had no more than one host name -
+          `Website/admin/Portal/EditPortalAlias.ascx.vb:L107` reads a not-greater-than-one
+          test, so nought and one both hid it - and it is the only thing standing between an
+          operator and a portal with no way to reach it, because the delete endpoint
+          declares no conflicting response and answers such a request normally. The
+          divergence is that the command is offered only for a row that EXISTS: legacy
+          called the same helper on its add branches too, at L81 and L86, and so showed a
+          delete button on an unsaved alias whenever the portal already had two or more - a
+          button whose target was a page-state entry that branch had never set.
+        -->
+        @if (deleteAffordanceVisible()) {
+          <button type="button" (click)="requestDelete()">{{ deleteLabel }}</button>
+        }
+      </div>
+    </form>
+  }
+
+  <!--
+    THE DELETION PROMPT.
+
+    MIGRATION: CONFIRMATION IS AN ADDITION. The legacy delete command declared no client-side
+    confirmation at `Website/admin/Portal/editportalalias.ascx:L13` and its handler removed
+    the row on the first click, at `Website/admin/Portal/EditPortalAlias.ascx.vb:L187`. The
+    wording is the measured global `DeleteItem.Text` value, supplied by the component:
+    "Are You Sure You Wish To Delete This Item?"
+    The confirming command reuses the measured
+    global `cmdDelete.Text` value, "Delete". The dialog owns its focus trap and its dismissal
+    key; neither is reimplemented here and nothing here defeats either. The title is left to
+    the dialog's own default rather than invented, because no measured legacy string names
+    this prompt.
+  -->
+  @if (confirmingDelete()) {
+    <app-confirm-dialog
+      [message]="deleteConfirmMessage"
+      [confirmLabel]="deleteLabel"
+      [danger]="true"
+      (confirm)="confirmDelete()"
+      (cancel)="cancelDelete()"
+    />
+  }
+
+  <!--
+    THE PER-ROW COMMAND CELL, and it MUST stay at this template's top level.
+
+    The component resolves it with a static view query, which runs during view creation and
+    does NOT descend into a conditional or a repeated block. Moving it inside one of the
+    branches above would leave the query empty, the command column absent and the grid
+    rendering a single column - a defect no compiler would report.
+
+    MIGRATION: the legacy affordance was an image link whose alternate text came from the
+    global edit key (`Website/admin/Portal/portalalias.ascx:L8-L11`). The raster is not
+    carried across; the command is a real button whose visible text IS its accessible name,
+    so the narrow column - which the legacy grid gave no heading at all - is never reached
+    by an unnamed control. The shared grid stops a command in this cell from also activating
+    its row, so the two paths cannot both fire from one press.
+  -->
+  <ng-template #aliasCommands let-row="row">
+    <button type="button" (click)="editAlias(row)">{{ editLabel }}</button>
+  </ng-template>
+</div>

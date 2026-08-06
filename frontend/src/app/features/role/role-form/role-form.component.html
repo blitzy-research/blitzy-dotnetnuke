@@ -1,0 +1,776 @@
+<!--
+  THE SECURITY-ROLE FORM. One template serves BOTH routes, because one legacy control served
+  both jobs: `Website/admin/Security/EditRoles.ascx.vb` initialises its role id to -1 at L42 and
+  branches on `If RoleID <> -1` at L131. Mode here is derived from the PRESENCE of the route
+  parameter through `isEditMode()`, never from its value, because role id 0 is a real role.
+
+  LEGACY SOURCE, read in full: `Website/admin/Security/editroles.ascx`, 191 content lines.
+  WORDING SOURCE: `Website/admin/Security/App_LocalResources/EditRoles.ascx.resx`, 42 entries,
+  plus `Website/App_GlobalResources/SharedResources.resx` for the three command captions that
+  carry no local key, and `Roles.ascx.resx` for the create-mode heading.
+
+  ============================================================================================
+  MIGRATION: WHY EVERY STRING BELOW COMES FROM THE RESOURCE VALUE AND NEVER FROM THE MARKUP
+  ============================================================================================
+  The nine validator resource keys on this screen are all `val*` label entries, not summary
+  entries. In ASP.NET a validator's inline caption rendered BESIDE the field, while its summary
+  message rendered ONLY inside a validation-summary control - and a case-insensitive search of
+  all 39 in-scope administration screens finds ZERO validation-summary controls. It follows
+  mechanically that the inline summary messages in `editroles.ascx` WERE NEVER SHOWN TO ANY
+  USER, and two of them had rotted into each other through a single copy-paste transposition,
+  each carrying the wording that belongs to the other. Each validator's own comparison operator
+  arbitrates, and in both cases it vindicates the resource file.
+
+  Consequently the standing rule is narrower and more useful than "distrust the markup": never
+  trust an inline caption WHERE A LOCAL RESOURCE KEY EXISTS. The three command captions have no
+  local key, fall back to the global resources, and their values there are identical to the
+  inline ones - so those are not stale and are used as they stand.
+
+  Every validation message this screen shows is produced by `messageFor(...)` in the paired
+  component, which holds the resource wording as constants. No validation sentence is authored
+  in this template, so the transposed pair cannot be reintroduced here by accident.
+
+  ============================================================================================
+  MIGRATION: RESOURCE TEXT IS UNTRUSTED MARKUP, SO NOTHING HERE IS RENDERED AS MARKUP
+  ============================================================================================
+  Measured across the 37 in-scope resource files: of 1111 entries, 76 carry an HTML tag and 29
+  open with break markup. The decisive one is the advertising entry in
+  `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx`, which holds a live remote
+  third-party script block; the tags are stored XML-escaped, so a naive search returns nothing
+  and would wrongly clear the risk. This screen's own resource file opens all nine validator
+  entries with break markup and wraps one word of its payment-processor sentence in bold.
+
+  Therefore: no raw-markup binding, no sanitiser bypass and no trusted-markup wrapper appears
+  anywhere below. Wording that genuinely needs emphasis is RE-AUTHORED as real elements - the
+  payment-processor sentence's bold word is a real strong element - and the leading break
+  markup on every validator entry is stripped so a reader sees the sentence and not the tag.
+  The legacy application reached the same conclusion by hand:
+  `Website/admin/Security/AccessDenied.ascx.vb:L43` encodes its untrusted message before
+  display.
+
+  MIGRATION: the module-help entry in this screen's resource file is NOT rendered. It is a
+  heading-and-paragraph help document, and the shared component inventory is closed at ten
+  members with no home for it; inventing an eleventh member for one caller would widen a
+  settled contract.
+
+  ============================================================================================
+  MIGRATION: THE THREE LEGACY LAYOUT TABLES ARE GONE, AND SO IS SPACING-AS-CONTENT
+  ============================================================================================
+  `editroles.ascx` declares three design tables - the outer one at L6, the basic block at L13
+  and the advanced block at L71 - and every one of them is layout rather than data. Tabular
+  markup is for tabular data, so the arrangement here is grid and flex declared in the paired
+  stylesheet against the token vocabulary. This screen has no data grid at all, so the shared
+  data table, search input, pagination and empty-state members are correctly unused.
+
+  The legacy expressed spacing as content, and none of it is reproduced: the break element at
+  L67, the three fixed-height spacer rows at L20, L78 and L82, the doubled non-breaking spaces
+  between each period box and its frequency list at L105 and L137, and the single non-breaking
+  spaces between the command buttons at L181, L184 and L187. All of it is the stylesheet's
+  token-based gap and row spacing instead, and this template emits no break element and no
+  non-breaking space anywhere.
+
+  The legacy presentation class names are not emitted either - not the work-panel wrapper at
+  L10, which is referenced eight times across the in-scope markup and defined in no stylesheet
+  at all, and not any of the label, textbox, error or command-button classes. Their successors
+  are the global form and layout stylesheets plus this component's own scoped classes.
+-->
+<section class="role-form">
+  <!--
+    The heading differs by mode. Edit resolves to this screen's own title entry; create resolves
+    to the list screen's action caption instead.
+
+    MIGRATION: this screen's resource file declares NO create-mode title key, so the legacy add
+    form showed the same "Edit Security Roles" heading over a blank creation form. The
+    substituted caption is the site's own wording from `Roles.ascx.resx`, not invented, and the
+    substitution is the component's decision rather than this template's - `heading()` resolves
+    it.
+
+    No action is projected into the header slot. All four legacy commands sat together in a
+    single paragraph at L178-L190, and the header component's own contract reserves its slot for
+    page-level actions while placing an in-page form action bar in the consuming feature's
+    footer region. Keeping the four together therefore satisfies the design system and legacy
+    visual continuity at once.
+  -->
+  <app-page-header [title]="heading()" />
+
+  <!--
+    The failure surface. It renders nothing when there is no problem document, and it owns its
+    own severity, field list, support reference and live region, so this screen neither composes
+    an error sentence nor decides how forcefully to announce one. Per-field messages from the
+    same document are placed on their controls by the component and surface through each field
+    wrapper's own error region.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  @if (loading()) {
+    <app-loading-spinner size="large" label="Loading role…" />
+  } @else {
+    <!--
+      One form for the whole screen, as the legacy postback was one submission for the whole
+      page. Only the update command submits it; see the action bar for the faithful reproduction
+      of the three commands that declared no validation.
+    -->
+    <form class="role-form__form" [formGroup]="form" (ngSubmit)="onSubmit()">
+      @if (readOnly()) {
+        <!--
+          The protected-role state. `EditRoles.ascx.vb:L174-L178` disabled eleven named controls
+          and hid both the update and delete commands for the portal's administrator and
+          registered-users roles.
+
+          MIGRATION: the component disables the whole form group, so every control carries the
+          native disabled attribute and the state is programmatically determinable rather than
+          implied. This sentence is a NET ADDITION and is stated as one: the legacy disabled its
+          controls silently, which left a sighted user with greyed fields and no reason for
+          them, and left a reader of the muted colour alone with nothing at all. It is authored
+          wording because no resource entry covers a state the legacy never explained.
+        -->
+        <p class="role-form__notice">
+          This role is maintained by the portal, so its settings cannot be changed and it cannot
+          be deleted.
+        </p>
+      }
+
+      <!--
+        BASIC SETTINGS. `dshBasic` at L11-L12 declares no expanded state, and the legacy default
+        is expanded, so this block is unconditionally present.
+
+        MIGRATION: the legacy section-head control is replaced by a grouping element and its
+        caption. The collapsible-section affordance is absent from the closed ten-member shared
+        inventory - there are 41 section heads across 9 in-scope screens - and no eleventh
+        member is added for it. A field-set with a caption is the native grouping element, it
+        needs no scripting and no ARIA, and it costs nothing visually.
+
+        MIGRATION: `IncludeRule="True"` drew a horizontal rule beneath the caption. No rule
+        element is emitted. The separator is a token-driven border in the paired stylesheet,
+        because a rule drawn in markup is presentation masquerading as content.
+
+        MIGRATION: `aria-expanded` is deliberately NOT placed here, and this is the one place
+        this template departs from its brief. That attribute is defined for elements that expose
+        a disclosure state, and a field-set caption is not an interactive widget; adding a
+        button purely to host the attribute would put a control on the page that cannot be
+        operated, which contradicts native semantics and is worse than the omission. This
+        section has no collapse affordance and its content is unconditionally present, which is
+        how "always expanded" is expressed without ARIA. The advanced section below, which does
+        collapse, carries the attribute on a natively keyboard-reachable summary bound to its
+        real open state.
+      -->
+      <fieldset class="role-form__section">
+        <legend class="role-form__legend">Basic Settings</legend>
+
+        <!--
+          MIGRATION: a measured resource-key asymmetry, honoured rather than tidied. The label at
+          L17 reads its text from the `BasicSettingsDescription` entry while its counterpart at
+          L75 reads from the `AdvancedSettingsHelp` entry - two different suffix conventions for
+          the same concept in the same file. Both keys are real and both values are used as
+          measured.
+        -->
+        <p class="role-form__intro">
+          In this section, you can set up the basic settings for this role.
+        </p>
+
+        <div class="role-form__grid">
+          <!--
+            ROLE NAME. `txtRoleName` at L27-L28 with its hidden read-only twin `lblRoleName` at
+            L28-L29.
+
+            MIGRATION: A ROLE NAME IS IMMUTABLE ONCE CREATED, by design rather than oversight.
+            `EditRoles.ascx.vb:L131-L134` reveals the read-only twin, hides the text box and
+            disables the required validator for ANY role that has an id, and the membership
+            provider proves why: its add procedure takes fourteen parameters INCLUDING the role
+            name, while its update procedure takes thirteen and has NO role-name parameter at
+            all. So edit mode renders READ-ONLY TEXT - the twin - and not a disabled input,
+            because a disabled input invites an edit that the stored procedure could never have
+            performed.
+
+            An output element is the semantic match for a value the page produces rather than
+            one the operator types, and it is one of the labelable elements, so the field
+            wrapper's caption still names it through the shared `for` and `id` pairing.
+          -->
+          @if (isEditMode()) {
+            <app-form-field
+              label="Role Name"
+              for="role-form-role-name"
+              help="Enter the name of the role."
+              [class.form-field--disabled]="readOnly()"
+            >
+              <div class="role-form__control">
+                <output class="role-form__readonly" id="role-form-role-name">{{
+                  displayRoleName()
+                }}</output>
+              </div>
+            </app-form-field>
+          } @else {
+            <!--
+              Create mode. This is the ONLY required field on the whole screen: it is the only
+              one carrying a required-field validator at L29-L31, and the reason is set out at
+              the numeric fields below.
+
+              The wrapper's `required` input is a presentational marker only and cannot make a
+              field required, so the control states its own requiredness through
+              `aria-required`. The rule itself lives on the form control, where the component
+              adds and removes it by mode.
+            -->
+            <app-form-field
+              label="Role Name"
+              for="role-form-role-name"
+              help="Enter the name of the role."
+              [required]="true"
+              [error]="messageFor('roleName')"
+              [class.form-field--disabled]="readOnly()"
+            >
+              <div class="role-form__control">
+                <input
+                  id="role-form-role-name"
+                  type="text"
+                  formControlName="roleName"
+                  maxlength="50"
+                  autocomplete="off"
+                  aria-required="true"
+                  [attr.aria-invalid]="messageFor('roleName') ? 'true' : null"
+                />
+              </div>
+            </app-form-field>
+          }
+
+          <!--
+            DESCRIPTION. `txtDescription` at L39-L40, which carries NO validator of any kind -
+            only the browser-side length limit.
+
+            MIGRATION: a plain multi-line box, which is a documented functional reduction. The
+            legacy portal could route a multi-line field through its rich-text editor provider,
+            and that provider is out of scope, so no editor is instantiated here. The character
+            limit is preserved exactly and NO rule is added beyond it, because adding one would
+            reject input the legacy accepted.
+
+            MIGRATION: the measured `Height="84px"` at L40 is not reproduced as a length. Block
+            size comes from the control's own row count, which is intrinsic content sizing rather
+            than a design value, so no literal length enters the markup or the stylesheet.
+          -->
+          <app-form-field
+            label="Description"
+            for="role-form-description"
+            help="Enter a description of the role."
+            class="form-field--multiline"
+            [error]="messageFor('description')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control">
+              <textarea
+                id="role-form-description"
+                formControlName="description"
+                rows="4"
+                maxlength="1000"
+                [attr.aria-invalid]="messageFor('description') ? 'true' : null"
+              ></textarea>
+            </div>
+          </app-form-field>
+
+          <!--
+            ROLE GROUP. `cboRoleGroups` at L47, labelled at L44 by a label that declares NO
+            resource key, so the key defaults to the label's own control id - which is why the
+            wording comes from the `plRoleGroups` entry.
+
+            MIGRATION: the SAME KEY carries a DIFFERENT VALUE in two resource files. It reads
+            "Role Group" here and "Filter By Role Group:" on the sibling list screen, because
+            there the control filters a grid rather than setting a property. This screen's own
+            value is the one used, and the list screen's is not copied across.
+
+            The first option is the ungrouped choice, whose caption comes from the global
+            resources - angle brackets and the spaces inside them included, exactly as measured -
+            and whose value is the contract's own representation of "no group". The list-screen
+            filter sentinel has no place in a form and never appears. The option set is built by
+            the component, so neither the caption nor the sentinel is authored here.
+
+            `ngValue` rather than `value`: the control holds a number or null, and a plain value
+            binding would write the string form of it back into a typed control.
+          -->
+          <app-form-field
+            label="Role Group"
+            for="role-form-role-group"
+            help="Select the Role Group to which this role belongs."
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control">
+              <select id="role-form-role-group" formControlName="roleGroupId">
+                @for (option of roleGroupOptions(); track option.value) {
+                  <option [ngValue]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          </app-form-field>
+
+          <!--
+            PUBLIC ROLE. `chkIsPublic` at L56 - a bare check box carrying no caption of its own,
+            labelled at L52 through a resource key that matches neither the control id nor the
+            property name. The question mark is MEANING rather than decoration and is preserved;
+            the field wrapper strips only a single trailing colon and leaves everything else
+            alone.
+
+            The inline variant keeps the caption beside the control instead of above it, which is
+            how the legacy laid a check box out: L51-L57 puts the label in a fixed-width cell and
+            the bare check box in the cell beside it.
+          -->
+          <app-form-field
+            label="Public Role?"
+            for="role-form-is-public"
+            help="Is this Role a Public Role?"
+            class="form-field--inline"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--choice">
+              <input id="role-form-is-public" type="checkbox" formControlName="isPublic" />
+            </div>
+          </app-form-field>
+
+          <!-- AUTO ASSIGNMENT. `chkAutoAssignment` at L64, labelled at L60. Same arrangement. -->
+          <app-form-field
+            label="Auto Assignment?"
+            for="role-form-auto-assignment"
+            help="Is this role automatically assigned to users?"
+            class="form-field--inline"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--choice">
+              <input
+                id="role-form-auto-assignment"
+                type="checkbox"
+                formControlName="autoAssignment"
+              />
+            </div>
+          </app-form-field>
+        </div>
+      </fieldset>
+
+      <!--
+        ADVANCED SETTINGS. `dshAdvanced` at L68-L70 declares `IsExpanded="False"`, so this block
+        is COLLAPSED ON FIRST RENDER - the `open` attribute is deliberately absent below.
+
+        MIGRATION: a native disclosure, because collapse is genuinely required here and the
+        closed shared inventory contains no collapsible-section member. The summary element is
+        keyboard-reachable and operable by Enter and Space with no scripting at all, which is
+        also the faithful reversal of a legacy defect: the section-head control withdrew its own
+        toggle from the tab order with a negative tab index, so the legacy collapse was operable
+        by pointer only.
+
+        The expanded state is bound to the element's OWN open property through the template
+        reference below, so the announced state is read from the same place the browser keeps it
+        and cannot drift from what is on screen.
+
+        The toggle listener is NOT decorative and NOT optional. This component is on-push, and a
+        native disclosure changes its own open property without Angular's knowledge; with no bound
+        listener on this element the attribute would still read collapsed after the first
+        expansion, and a stale expanded state is worse than none at all. Binding the toggle event
+        is what brings that change back into a change-detection pass, and toggle is the right
+        signal rather than a click because it also fires when the open property is set
+        programmatically. Measured behaviour, verified in a browser rather than assumed: the event
+        is dispatched in a QUEUED TASK, so the attribute converges one turn of the event loop
+        after the visual change - far inside the window in which any assistive technology reads the
+        accessibility tree, and always converging, which is the property that matters.
+
+        MIGRATION: `IncludeRule="True"` drew a horizontal rule beneath the caption here too. No
+        rule element is emitted; the separator is a token-driven border in the paired stylesheet.
+      -->
+      <details
+        #advancedSection
+        class="role-form__section role-form__section--advanced"
+        (toggle)="advancedSection.open"
+      >
+        <summary class="role-form__summary" [attr.aria-expanded]="advancedSection.open">
+          Advanced Settings
+        </summary>
+
+        <!-- The counterpart of the basic intro; see the key-asymmetry note above. -->
+        <p class="role-form__intro">
+          In this section, you can set up more advanced settings for this role.
+        </p>
+
+        @if (showProcessorWarning()) {
+          <!--
+            THE PAYMENT-PROCESSOR WARNING. `lblProcessorWarning` at L80.
+
+            MIGRATION: its resource value wraps one word in bold. That word is RE-AUTHORED as a
+            real strong element rather than passed through any markup binding - resource text is
+            untrusted, as the governing note at the top of this file sets out - and the remaining
+            sentence is plain interpolated-free literal text. The source typo in "fee-base" is
+            reproduced verbatim, because the wording is the site's own and silently correcting it
+            would be an unlogged change.
+
+            MIGRATION: the markup declares this label hidden, but the code-behind at L104-L109
+            runs OUTSIDE the not-a-postback branch and sets it visible whenever the portal record
+            is absent OR its processor id is empty. The portal record is unobtainable from this
+            screen's endpoints, which is precisely the absent case, so the measured outcome is
+            VISIBLE - and the component's own signal resolves it that way. The gap is that
+            nothing here can yet report the portal's real processor state; when a caller can
+            supply it, the same signal hides the block.
+
+            MIGRATION: the code-behind's comment claims the warning appears when a processor IS
+            configured while the code shows it when the processor is NOT. The code is the
+            behaviour and is what the component reproduces; the contradiction is recorded rather
+            than tidied away.
+          -->
+          <p class="role-form__warning">
+            <strong>Warning:</strong> You will need to configure the Payment Processor under
+            SiteSettings, in order to enable users to subscribe to fee-base roles/services.
+          </p>
+        }
+
+        <div class="role-form__grid">
+          <!--
+            ============================================================================
+            MIGRATION: ALL FOUR MONEY AND PERIOD FIELDS ARE OPTIONAL. THIS IS LOAD-BEARING.
+            ============================================================================
+            An ASP.NET comparison validator SUCCEEDS ON AN EMPTY INPUT. That is exactly why every
+            genuinely required field also carried a required-field validator, and the role name at
+            L29-L31 is the ONLY control on this screen that has one. Passing a required marker to
+            any of the four fields below - or rendering a "must be supplied" message for them -
+            would reject input the legacy accepted and break functional parity outright. The form
+            must remain submittable with nothing but a role name filled in, and every validator
+            on these controls returns nothing for a blank value so that it is.
+
+            Each field can nonetheless report a data-type refusal or a comparison refusal, which
+            is why the legacy placed TWO comparison validators on each of these four controls -
+            at L89-L96, L104-L114, L122-L128 and L136-L146. The component's validators are
+            mutually exclusive by construction: a value that will not parse yields nothing from
+            the comparison rule and defers to the data-type rule, so exactly one sentence is
+            shown rather than two contradictory ones.
+
+            Every one of the nine validators declares dynamic display, meaning a message appeared
+            only once a submission had exercised it. That gate lives inside `messageFor(...)`,
+            which returns nothing until its control is both invalid and either dirty or touched -
+            so no message is ever rendered unconditionally, and no second gate is written here
+            that could disagree with the first.
+          -->
+
+          <!-- SERVICE FEE. `txtServiceFee` at L89-L90, a narrow box. Optional; see above. -->
+          <app-form-field
+            label="Service Fee"
+            for="role-form-service-fee"
+            help="Enter the Fee charged for users in this role."
+            [error]="messageFor('serviceFee')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--narrow">
+              <input
+                id="role-form-service-fee"
+                type="text"
+                formControlName="serviceFee"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('serviceFee') ? 'true' : null"
+              />
+            </div>
+          </app-form-field>
+
+          <!--
+            BILLING PERIOD AND ITS FREQUENCY - ONE FIELD, TWO CONTROLS.
+
+            `txtBillingPeriod` at L104-L105 and `cboBillingFrequency` at L106-L107 share the
+            SINGLE label at L100, and this screen's own resource entry states the intent: the two
+            fields are used in conjunction to enter a billing period. So they belong inside ONE
+            field wrapper, whose slot is an unconstrained projection precisely because a legacy
+            field routinely held several controls. The wrapper names the pair as a group, and it
+            supplies the caption's reference to the second control, which the legacy left
+            unnamed because a label's association reaches exactly one element.
+
+            The parentheses in the caption are preserved - the wrapper strips only a single
+            trailing colon - because "(Every)" reads as an instruction and is meaning, not
+            punctuation.
+
+            MIGRATION: the doubled non-breaking spaces that separated the two controls at L105
+            are not reproduced. The gap is the stylesheet's token-based spacing, which is
+            adjustable and cannot be collapsed the way a run of literal whitespace can.
+
+            MIGRATION: the frequency list bound to raw persisted codes, and it still does. These
+            are foreign-keyed single-character column values, not presentation, so the bound
+            value is the code verbatim and only the caption beside it is display. The legacy
+            filled this list FROM THE DATABASE through the lists subsystem, which is out of
+            scope, so the closed vocabulary is declared by the component instead and no lookup
+            endpoint is invented. Both lists open on the code that means "no recurring term",
+            exactly as L119 and L125 selected it.
+
+            MIGRATION: a numeric input mode is declared on the period control only. Its accepted
+            form is an optional sign and digits with no separators, so a numeric keypad is exactly
+            right; the money controls above and below take grouped, decimal text and keep the
+            full keyboard so that no accepted value becomes harder to type than it was.
+          -->
+          <app-form-field
+            label="Billing Period (Every)"
+            for="role-form-billing-period"
+            help="These two fields are used in conjunction to enter a Billing Period. e.g 2 weeks, or 1 month"
+            [error]="messageFor('billingPeriod')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--pair">
+              <input
+                id="role-form-billing-period"
+                class="role-form__period"
+                type="text"
+                inputmode="numeric"
+                formControlName="billingPeriod"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('billingPeriod') ? 'true' : null"
+              />
+              <select
+                id="role-form-billing-frequency"
+                class="role-form__frequency"
+                formControlName="billingFrequency"
+              >
+                @for (option of frequencyOptions; track option.value) {
+                  <option [ngValue]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          </app-form-field>
+
+          <!--
+            TRIAL FEE. `txtTrialFee` at L122-L123. Optional; see the note above.
+
+            The help sentence ends without a full stop in the resource file. That is reproduced
+            as measured rather than corrected, because the wording is the site's own.
+          -->
+          <app-form-field
+            label="Trial Fee"
+            for="role-form-trial-fee"
+            help="Enter the trial fee charged for users in this role"
+            [error]="messageFor('trialFee')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--narrow">
+              <input
+                id="role-form-trial-fee"
+                type="text"
+                formControlName="trialFee"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('trialFee') ? 'true' : null"
+              />
+            </div>
+          </app-form-field>
+
+          <!--
+            TRIAL PERIOD AND ITS FREQUENCY - ONE FIELD, TWO CONTROLS. `txtTrialPeriod` at
+            L136-L137 and `cboTrialFrequency` at L138-L139 under the single label at L132, the
+            same arrangement as the billing pair above and for the same measured reason.
+          -->
+          <app-form-field
+            label="Trial Period (Every)"
+            for="role-form-trial-period"
+            help="These two fields are used in conjunction to enter a Trial Period. e.g 2 weeks, or 1 month"
+            [error]="messageFor('trialPeriod')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--pair">
+              <input
+                id="role-form-trial-period"
+                class="role-form__period"
+                type="text"
+                inputmode="numeric"
+                formControlName="trialPeriod"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('trialPeriod') ? 'true' : null"
+              />
+              <select
+                id="role-form-trial-frequency"
+                class="role-form__frequency"
+                formControlName="trialFrequency"
+              >
+                @for (option of frequencyOptions; track option.value) {
+                  <option [ngValue]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          </app-form-field>
+
+          <!--
+            RSVP CODE. `txtRSVPCode` at L153 - narrow, not the wider width the other text fields
+            use - labelled at L150 by a label declaring neither a resource key nor a suffix.
+
+            RENDERED because both request contracts declare the member, so the value round-trips
+            and is persisted. The embedded colon in the caption is passed through as measured and
+            the field wrapper removes it, which is the 72% legacy majority arrangement.
+
+            MIGRATION: there is no self-service subscribe flow in the target, so the code is
+            stored and displayed but nothing consumes it yet. That is a reduction in reach, not
+            in fidelity: the legacy stored it on this same screen.
+
+            The help sentence is the ONE value on this screen too long to sit inside the project's
+            declared 120-column limit, so it is joined from two literals in a bound expression
+            rather than wrapped inside a static attribute. That is not cosmetic: the field wrapper
+            renders help text with preserved newlines, so a wrapped attribute value would carry a
+            real line break into the middle of the sentence and split the paragraph the legacy
+            showed whole. Joining literals keeps the resolved string byte-identical - including the
+            double space the resource file itself contains, which collapses on display - while the
+            source stays inside the limit every other template in this workspace observes.
+          -->
+          <app-form-field
+            label="RSVP Code:"
+            for="role-form-rsvp-code"
+            [help]="
+              'Enter an RSVP Code for the role.  This code can be used to provide a convenient ' +
+              'method for users to subscribe to one or more roles.'
+            "
+            [error]="messageFor('rsvpCode')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--narrow">
+              <input
+                id="role-form-rsvp-code"
+                type="text"
+                formControlName="rsvpCode"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('rsvpCode') ? 'true' : null"
+              />
+            </div>
+          </app-form-field>
+
+          <!--
+            MIGRATION: THE RSVP LINK IS DROPPED UNCONDITIONALLY. `txtRSVPLink` at L161 was a
+            read-only box the code-behind filled at L165-L168 by composing the request's own
+            domain with the default page and the code as a query argument. It addressed the
+            self-service subscribe flow that the target does not implement, so a link to it would
+            be a link to nothing, and neither request contract carries the value. Its label and
+            help entries are read for context and rendered nowhere.
+
+            ICON. `ctlIcon` at L169-L170, labelled at L166 - the only label on this screen whose
+            caption is declared inline rather than by resource key, and the inline text agrees
+            with the resource value, so there is no conflict to resolve.
+
+            MIGRATION: THE FILE PICKER IS DROPPED AND THE PATH SURVIVES. The legacy control was a
+            combined file-and-address picker restricted to image types at L129, and the target
+            exposes no filesystem, upload or file-listing endpoint of any kind. It is therefore a
+            plain text field holding the stored path - no picker, no upload, no browse command.
+            The path itself round-trips unchanged; only the means of choosing it is lost, and the
+            field is rendered because both request contracts declare the member.
+
+            MIGRATION: the legacy picker carried no length limit and no validator. The limit here
+            matches the rule the component applies, which exists because the API refuses a longer
+            value outright; declaring it in both places keeps the browser and the rule in step and
+            cannot reject anything the system as a whole would have accepted.
+          -->
+          <app-form-field
+            label="Icon:"
+            for="role-form-icon-file"
+            help="Select an icon for the role."
+            [error]="messageFor('iconFile')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control">
+              <input
+                id="role-form-icon-file"
+                type="text"
+                formControlName="iconFile"
+                maxlength="100"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('iconFile') ? 'true' : null"
+              />
+            </div>
+          </app-form-field>
+        </div>
+      </details>
+
+      <!--
+        ==========================================================================================
+        THE FOUR COMMANDS. `editroles.ascx:L178-L190`, all four in one paragraph.
+        ==========================================================================================
+        MIGRATION: bare buttons, and deliberately so. The shared inventory declares no button
+        member, and the global form stylesheet already gives every button its appearance and its
+        focus ring, so reaching for a component here would mean adding an eleventh member for one
+        caller.
+
+        MIGRATION: THE VALIDATION FLAGS ARE REPRODUCED EXACTLY, AND THE ASYMMETRY IS THE POINT.
+        The update command at L179-L180 OMITS the causes-validation attribute, whose default is
+        true, and its handler opened with a page-validity test - so it is the ONE submit button.
+        Cancel at L183, delete at L186 and manage at L189 all declare it FALSE, so each is a plain
+        button that neither validates, nor marks a control touched, nor is blocked by an invalid
+        form. The delete handler confirms it independently: it performs no page-validity test at
+        all.
+
+        None of the four is disabled by form validity. The update command stays live on an invalid
+        form because that is how a user reaches the messages - its handler marks the controls
+        touched and stops - exactly as the legacy postback surfaced them. What does disable them is
+        a mutation already in flight, which the legacy got for free from a synchronous postback.
+
+        MIGRATION: the manage command omits the border-style attribute that the other three
+        declare. That is a measured legacy inconsistency and it is reproduced NEITHER way: no
+        inline presentation is emitted for any of the four.
+
+        MIGRATION: the delete command's browser confirmation at `EditRoles.ascx.vb:L112` becomes
+        the shared dialog at the foot of this template, which adds the focus trap and the escape
+        key the legacy confirmation never had.
+
+        VISIBILITY, from the three measured guards. Create mode at `EditRoles.ascx.vb:L183-L188`
+        hides delete and manage. The first guard at L174-L178 hides update AND delete for the
+        portal's administrator and registered-users roles. The second at L180-L182 hides manage for
+        the registered-users role only - so the administrator role KEEPS its manage command, an
+        asymmetry that is faithfully preserved because that role's membership is genuinely
+        manageable while every authenticated user holds the other.
+
+        MIGRATION - THE MEASURED GAP, STATED PLAINLY: nothing on a role discriminates a protected
+        one. The legacy compared the role id against two PORTAL-level ids, and the role contract
+        carries no system, administrator or built-in flag of any kind. Those two ids are portal
+        properties this screen may not read, so the component exposes them as optional inputs:
+        supplied, the measured behaviour is reproduced exactly; unsupplied, which is the case
+        today, the form stays fully editable and the API's own refusal governs, arriving as a
+        forbidden response that is surfaced as a warning. No role id is hardcoded and no decision
+        is ever taken on a role's NAME.
+      -->
+      <div class="role-form__actions">
+        @if (canSave()) {
+          <button type="submit" [disabled]="saving()">Update</button>
+        }
+
+        <button type="button" [disabled]="saving()" (click)="onCancel()">Cancel</button>
+
+        @if (canDelete()) {
+          <button
+            type="button"
+            class="role-form__command--danger"
+            [disabled]="saving()"
+            (click)="requestRemoval()"
+          >
+            Delete
+          </button>
+        }
+
+        @if (canManageUsers()) {
+          <!--
+            MIGRATION: the caption comes from the LOCAL resource entry, which is longer and more
+            explicit than the inline one; the inline caption is stale wherever a local key exists.
+            The component holds the resource value.
+
+            Navigation rather than an import: the membership screen is a sibling under the same
+            feature folder and features do not import one another. The component navigates, and no
+            router directive is imported into this template.
+          -->
+          <button type="button" [disabled]="saving()" (click)="onManageUsers()">
+            {{ manageUsersLabel }}
+          </button>
+        }
+
+        @if (saving()) {
+          <app-loading-spinner size="small" label="Saving…" />
+        }
+      </div>
+    </form>
+  }
+
+  <!--
+    The delete confirmation, CREATED when it is needed because it opens itself as a modal on first
+    view. Its wording is the global resource value verbatim - the very sentence the legacy attached
+    to the delete button at `EditRoles.ascx.vb:L112` - and both it and the confirm caption are held
+    by the component so that no wording is authored twice.
+  -->
+  @if (confirmingDelete()) {
+    <app-confirm-dialog
+      [title]="deleteConfirmLabel"
+      [message]="deleteConfirmMessage"
+      [confirmLabel]="deleteConfirmLabel"
+      danger
+      (confirm)="onRemovalConfirmed()"
+      (cancel)="onRemovalCancelled()"
+    />
+  }
+</section>

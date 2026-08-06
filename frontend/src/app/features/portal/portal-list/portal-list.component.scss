@@ -1,0 +1,266 @@
+// Component stylesheet for the portal (tenant) listing screen, served at /portals.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with this
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the region renders unstyled. The paired template must emit
+// exactly this vocabulary:
+//
+//     .portal-list
+//     .portal-list__filters
+//     .portal-list__letters
+//     .portal-list__letter
+//     .portal-list__search
+//     .portal-list__status
+//     .portal-list__action
+//     .portal-list__row-command
+//     .portal-list__row-command--danger
+//     .portal-list__aliases
+//     .portal-list__alias
+//
+// ZERO HARDCODED VALUES. Every declaration resolves to a design token, a shared mixin or
+// one of the permitted keywords - 0, none, auto, inherit, currentColor and transparent.
+// The surface is deliberately flat: one block class plus element classes, no deep
+// descendant chains and no piercing selector. The shared components own their own
+// appearance and this file only places them.
+//
+// LOGICAL PROPERTIES THROUGHOUT. Inline and block replace left/right and top/bottom, so
+// the screen reflows correctly under a right-to-left writing mode without a second rule.
+//
+// MIGRATION: the legacy visual vocabulary for this screen came from
+//   Website/Portals/_default/default.css - .CommandButton for the filter strip's entries and
+//   the .DataGrid_* family for the grid. The grid classes are the shared table's business
+//   and are not restated here; the filter entries are restyled against the token
+//   vocabulary, which is where the measured legacy palette now lives.
+//
+// MIGRATION: THE LEGACY ALTERNATING-ROW TREATMENT IS A DEFECT AND IS NOT REPRODUCED.
+//   Website/Portals/_default/default.css:L131-L137 declares .DataGrid_AlternatingItem with
+//   `background-color: White` AND `color: Red`, so every other row of every legacy grid
+//   painted its text in the colour the design reserves for errors - stating, on half the
+//   rows, that something was wrong when nothing was. Row striping belongs to the shared
+//   table in any case; the point of recording it here is that the omission is deliberate and
+//   measured rather than an oversight.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared on the component root and inherited by every region below rather
+// than restated per rule. Declaring it here rather than relying on a global base rule keeps
+// the component self-sufficient: without it the browser falls back to its own serif default
+// for every cell, label and command.
+.portal-list {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  FILTERS
+// -----------------------------------------------------------------------------
+// The letter strip and the name filter share one row on a wide viewport and stack on a
+// narrow one. Wrapping is what produces the stack, so no media query is needed for it; the
+// one breakpoint below only decides whether the name filter may grow.
+.portal-list__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+// A flex row with a gap rather than the legacy pair of non-breaking spaces between entries.
+// Spacing is a token declared once here, so it is inspectable and adjustable instead of
+// smuggled into the markup as content.
+//
+// The strip centres on a narrow viewport and starts on a wide one: the legacy panel declared
+// `HorizontalAlign="Center"` (portals.ascx:L4), which is the right treatment when the strip
+// is the whole row, and the wrong one once it shares the row with the name filter.
+.portal-list__letters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+
+  @include mx.respond-above('md') {
+    justify-content: start;
+  }
+}
+
+// One entry of the strip. A button reset rather than a button restyle: the control is a
+// button because it changes client state, and it should read as the compact text affordance
+// the legacy hyperlink was.
+.portal-list__letter {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  color: var(--color-primary);
+  font: inherit;
+  line-height: var(--line-height-none);
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    background-color: var(--color-surface);
+  }
+
+  // The applied entry. Selection is carried by aria-pressed, so it is announced as well as
+  // painted and is never conveyed by colour alone; the surface tint and the weight change
+  // give it a second, non-colour cue for a reader who cannot distinguish the two colours.
+  &[aria-pressed='true'] {
+    color: var(--color-primary);
+    font-weight: var(--font-weight-bold);
+    background-color: var(--color-selected);
+  }
+}
+
+// The name filter takes the remaining inline space once the row is wide enough to share.
+.portal-list__search {
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  STATUS
+// -----------------------------------------------------------------------------
+// The failure surface: the shared banner, or a plain sentence when the failure carried no
+// problem document, with the retry and dismiss affordances beneath.
+.portal-list__status {
+  display: grid;
+  gap: var(--space-2);
+}
+
+// -----------------------------------------------------------------------------
+//  ACTIONS
+// -----------------------------------------------------------------------------
+// Used for the page-level action, the empty-state action and the failure affordances, all of
+// which are the same kind of thing: a compact text command.
+//
+// MIGRATION: the legacy admin action affordance is retained as a TEXT affordance and is not
+//   promoted to a filled button. A filled-button class existed separately in the legacy
+//   stylesheet and the admin action bars deliberately did not use it, so promoting them would
+//   be an unrequested visual change.
+//
+// Projected content keeps the style scoping of the component that DECLARES it, which is why
+// these rules live here rather than in the page-header or empty-state stylesheets: this
+// component declares the actions, so this component styles them.
+.portal-list__action {
+  display: inline-block;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  color: var(--color-primary);
+  font: inherit;
+  text-decoration: none;
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    // The primary-hover token rather than the legacy hover colour. The legacy hover colour
+    // for this affordance is the very same value the token vocabulary assigns to the danger
+    // role, which it also uses for error text, so reusing it here would paint an ordinary
+    // action in the colour that means "something went wrong".
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  ROW COMMANDS
+// -----------------------------------------------------------------------------
+// The two projected command cells. They wrap rather than overflow when the column track is
+// tight, which is the shared table's documented expectation of a content-sized commands
+// column.
+//
+// MIGRATION: the legacy raster icons - images/edit.gif and images/delete.gif - are replaced
+//   by text. The legacy image assets have no target equivalent, the only static asset this
+//   workspace ships is a favicon, and neither legacy image carried alternative text, so both
+//   commands reached assistive technology as unnamed graphics. Text closes that gap outright,
+//   and each command additionally carries an accessible name qualified by the row's own title
+//   because the commands repeat down the column.
+.portal-list__row-command {
+  display: inline-block;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  color: var(--color-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  text-decoration: none;
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  // Disabled while a deletion is in flight. Both cues are non-colour - the pointer changes
+  // and interaction is refused - so the state does not rely on the reduced contrast alone.
+  &:disabled {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    cursor: not-allowed;
+  }
+}
+
+// The destructive command. Colour is a reinforcement and never the only signal: the command
+// reads "Delete", its accessible name names the portal, and it opens a confirmation.
+.portal-list__row-command--danger {
+  color: var(--color-danger-text);
+
+  @include mx.hover {
+    color: var(--color-danger);
+  }
+
+  &:disabled {
+    color: var(--color-text-muted);
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  HOST NAMES
+// -----------------------------------------------------------------------------
+// A real list, where the legacy cell was break-separated text inside one label. The legacy
+// `<BR>` separators become a grid gap, so the spacing is a token rather than a content node
+// and the last entry carries no trailing separator - there is nothing to strip because
+// nothing is drawn between the items in markup.
+.portal-list__aliases {
+  display: grid;
+  gap: var(--space-1);
+  margin-block: 0;
+  padding-inline-start: 0;
+  list-style: none;
+}
+
+// A host name can be long and the column shares its track with nine others, so it is allowed
+// to break inside a word rather than force the table wider than its container.
+.portal-list__alias {
+  overflow-wrap: break-word;
+
+  > a {
+    color: var(--color-primary);
+    text-decoration: none;
+
+    @include mx.focus-ring;
+
+    @include mx.hover {
+      color: var(--color-primary-hover);
+      text-decoration: underline;
+    }
+  }
+}

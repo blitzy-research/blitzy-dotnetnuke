@@ -1,0 +1,206 @@
+<!--
+  ADD NEW ROLE GROUP - the create-only replacement for the legacy
+  `Website/admin/Security/EditGroups.ascx` screen, 28 lines and the smallest screen in the
+  legacy Security folder.
+
+  THIS TEMPLATE BINDS AND DOES NOT DECIDE. Every label, help sentence, length bound,
+  document identifier, action word and validation message is a member of the paired
+  component class, so the rendered screen and its specification read the SAME value rather
+  than two copies free to drift apart. Exactly one string is authored here - the in-flight
+  announcement on the progress indicator - because the class exposes none for it.
+
+  MIGRATION: the legacy laid this screen out as two nested layout tables, and the outer one
+  carried a table-description attribute reading "Edit Roles Design Table" - wording
+  copy-pasted from the role editor, which is a DIFFERENT screen. Neither table is
+  reproduced: the fields become a block the paired stylesheet arranges with CSS Grid, and
+  the inaccurate description is dropped along with them rather than carried onto an element
+  that is no longer tabular. The legacy defect is recorded here rather than silently
+  corrected on the legacy side, which this migration does not edit.
+
+  MIGRATION: the legacy registered a collapsible section-head control on its FIRST LINE and
+  then never placed one anywhere in the body. There is therefore NO disclosure on this
+  screen - no collapsing group, no native disclosure element, and no expanded-state
+  attribute of any kind. A plain field group is the faithful translation, and the unused
+  registration is documented rather than honoured.
+
+  MIGRATION: EXACTLY TWO ACTIONS are rendered. The legacy declared three link buttons, but
+  its code-behind hid the third outright in create mode (`EditGroups.ascx.vb:L84`, whose
+  entire create branch does just that), and `role-groups/new` is the only address that
+  reaches this component - so the third action had no reachable state here. The role
+  editor's fourth action never existed on this screen at all. Both surviving actions
+  carried the same legacy style class, so neither is promoted to a visually heavier
+  treatment than the other.
+
+  MIGRATION: the two literal non-breaking-space characters the legacy used to separate its
+  actions are not carried across. Spacing is a gap declared once against the shared spacing
+  scale in the paired stylesheet, so it stays inspectable and adjustable instead of being
+  smuggled into the markup as content.
+
+  MIGRATION: every value reaches the document through ESCAPING INTERPOLATION, and that is a
+  security boundary rather than a preference. Legacy resource values are untrusted markup -
+  measured across the 37 in-scope resource files, 76 values carry an HTML tag once the XML
+  entities are unescaped and four carry a script tag, one of them a live advertising block
+  loading from a remote host. So this template uses no raw-HTML property binding, no
+  sanitiser bypass and no trusted-markup wrapper. This screen's own module-help resource
+  value carries heading and paragraph markup; it is read for context and deliberately NOT
+  rendered, because module help has no home in the shared component set.
+
+  MIGRATION: localisation is not ported. The legacy resolved wording through resource files
+  keyed by control identifier and property; no translation runtime exists in the pinned
+  dependency surface, so wording is authored onto the component class and the resource files
+  informed phrasing only.
+-->
+<section class="role-group-form">
+  <!--
+    THE HEADING ONLY - nothing is projected into the slot. The shared page header reserves
+    that slot for PAGE-level actions and its own documentation excludes an in-page form
+    action bar, which belongs to this feature's own form footer instead. That is also where
+    the legacy put these two actions: inside a paragraph BELOW the fields, not beside the
+    title.
+
+    MIGRATION: the title is taken from a DIFFERENT legacy resource file than the rest of this
+    screen, deliberately. The only title this screen's own resource file declares is the
+    EDIT-mode wording, and this component only ever creates - so the heading is the wording
+    the legacy itself put on the link that reaches creation, the add-group action
+    `Roles.ascx.vb:L308` registers with no identifier argument.
+  -->
+  <app-page-header [title]="pageTitle" />
+
+  <!--
+    BOUND UNCONDITIONALLY, and that is required rather than merely tidy. The shared banner
+    keeps its live region permanently in the document and swaps only its contents, because a
+    live region inserted at the same moment as its first message is announced inconsistently:
+    several screen readers register the region only after insertion and so miss that first
+    message, which is the one that matters. Wrapping this in a conditional block would
+    reintroduce precisely that defect. The banner already emits nothing when there is no
+    problem, and it owns the live region, so no second one is declared here.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  <!--
+    `novalidate` suppresses the browser's own constraint bubbles so they cannot compete with
+    the ported validator wording, which is the only message this screen ever showed.
+  -->
+  <form class="role-group-form__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+    <div class="role-group-form__fields">
+      <!--
+        FIELD 1 - THE GROUP NAME, the only required value on the screen.
+
+        The label is passed BARE. The legacy resource value embeds its own colon, whereas the
+        role editor supplied one through a separate suffix property; the shared field
+        component owns that punctuation, stripping one trailing colon and applying none of
+        its own, so a bare noun is the correct thing to hand it and no second colon can ever
+        appear.
+
+        The messages are bound DIRECTLY from the class rather than gated here. That
+        derivation already withholds the required sentence until the control has been
+        touched, which is what reproduces the legacy validator's dynamic display, and it
+        deliberately does NOT withhold a server-reported message, because a refusal has
+        already happened and hiding its explanation until the operator happens to focus and
+        blur the field would conceal the only account of what went wrong. Re-gating it here
+        would also read a form control - which is not reactive - from a template whose
+        component checks on push, so a later message would silently never appear.
+
+        The length bound is measured from `EditGroups.ascx:L11` and is present as a real
+        attribute, so over-typing is PREVENTED rather than reported afterwards. That is the
+        whole of what the legacy expressed about length here, which is why no length message
+        exists to show.
+
+        The control's name and the input's document identifier are both BOUND FROM THE CLASS
+        rather than repeated as literals, which is what the class's own declarations ask for.
+        The name is load-bearing twice over - the form resolves the control by it and the
+        server's per-field message dictionary is matched against it - so stating it in one
+        place is what keeps a rename from silently severing server messages from the field
+        they describe. The identifier is bound to BOTH the label association and the element,
+        so those two can never drift apart either.
+      -->
+      <app-form-field
+        [label]="roleGroupNameLabel"
+        [for]="roleGroupNameInputId"
+        [required]="true"
+        [help]="roleGroupNameHelp"
+        [error]="roleGroupNameError()"
+      >
+        <input
+          type="text"
+          [formControlName]="roleGroupNameControl"
+          [id]="roleGroupNameInputId"
+          [maxlength]="roleGroupNameMaxLength"
+          [attr.aria-invalid]="roleGroupNameError().length > 0 ? 'true' : null"
+          aria-required="true"
+          autocomplete="off"
+        />
+      </app-form-field>
+
+      <!--
+        FIELD 2 - THE DESCRIPTION, and it carries NO required rule. That asymmetry is the
+        legacy's own, read straight off the markup: `:L12` declares a required-field
+        validator against the name, and `:L17` declares this text box with a length cap, a
+        multi-line mode and a height, and no validator of any kind. So nothing is invented
+        here - the field is genuinely optional and length is its only bound.
+
+        Its message binding therefore carries SERVER-reported messages alone: the class
+        passes no local sentence for this control, so no rule the legacy did not declare can
+        surface. Binding it is nonetheless necessary rather than optional. The shared error
+        interceptor stays silent for a validation document that carries a per-field
+        dictionary, precisely because the form is expected to render those entries against
+        the fields they name; leaving this unbound would let a server-reported message about
+        this field appear nowhere at all.
+
+        MIGRATION: a plain multi-line text box. The legacy rendered it in multi-line mode, so
+        it was never rich text on this screen, and the legacy rich-text editor provider is
+        outside the scope of this migration in any case - a deliberate functional reduction
+        rather than an oversight.
+
+        MIGRATION: the legacy fixed its height at 84 pixels and its width in columns. Those
+        are presentation, so they move to the paired stylesheet and resolve against the
+        shared token scale. The row count below is a semantic fallback for a document
+        rendered without that stylesheet; the visible height is the stylesheet's business.
+      -->
+      <app-form-field
+        [label]="descriptionLabel"
+        [for]="descriptionInputId"
+        [help]="descriptionHelp"
+        [error]="descriptionError()"
+      >
+        <textarea
+          [formControlName]="descriptionControl"
+          rows="4"
+          [id]="descriptionInputId"
+          [maxlength]="descriptionMaxLength"
+          [attr.aria-invalid]="descriptionError().length > 0 ? 'true' : null"
+        ></textarea>
+      </app-form-field>
+    </div>
+
+    <!--
+      THE ACTION ROW - two real buttons, below the fields, exactly where the legacy put its
+      own. Neither carries a style class: the shared form stylesheet styles the elements
+      themselves, and the row's own class is the only hook the paired stylesheet needs.
+
+      The first VALIDATES. The legacy declared its update link with no validation attribute
+      at all, taking that framework's default of true, and guarded the whole handler behind a
+      page-validity check. Its disabled state while a request is in flight prevents a second
+      submission creating a second row; the class enforces the same invariant independently,
+      so the two cannot disagree.
+
+      The second deliberately DOES NOT VALIDATE, reproducing the legacy cancel link's
+      explicit opt-out. It is typed as a plain button so it never submits the form, and it is
+      NEVER disabled - an operator must be able to abandon an incomplete form, and the class
+      navigates away without marking a single control touched or raising a message.
+    -->
+    <div class="role-group-form__actions">
+      <button type="submit" [disabled]="submitting()">{{ updateActionLabel }}</button>
+      <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
+
+      <!--
+        The one string authored in this template, because the class exposes no member for it.
+        Worded with the legacy's own verb for this operation, which its duplicate-name and
+        confirmation sentences both use.
+      -->
+      @if (submitting()) {
+        <app-loading-spinner size="small" label="Adding role group…" />
+      }
+    </div>
+  </form>
+</section>

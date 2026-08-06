@@ -12,6 +12,27 @@
     - aria-controls is deliberately omitted from every head. aria-expanded alone is a complete disclosure
       pattern, and pointing aria-controls at an element that is not in the document would be worse than
       omitting it.
+    - MIGRATION - THE FOUR NESTED HEADS ARE DISAMBIGUATED BY DESCRIPTION, defects D13 and D-M10. The resource
+      file gives four regions only TWO distinct names: GeneralDetails and Appearance both resolve to 'Basic
+      Settings', and Security and OtherSettings both resolve to 'Advanced Settings'. They are separable in
+      the legacy source only by their resource KEYS, which never reach a rendered page, so a screen-reader
+      user working through the head list hears the same name twice with nothing to tell the pair apart.
+      Visual nesting resolves it for a sighted reader and resolves nothing for anyone else. Each nested head
+      therefore points aria-describedby at its PARENT region's head, which appends the parent's name to the
+      accessible description - 'Basic Settings', described by 'Module Settings', against 'Basic Settings',
+      described by 'Page Settings'. The fix reuses names and element ids that already exist, so it invents no
+      wording, alters no visible text and costs nothing visually, which is what AAP 0.3.5 requires of an
+      accessibility measure. The duplication itself is preserved rather than corrected: renaming a region
+      would be an opportunistic fix of a legacy defect, which the Minimal Change Clause forbids.
+    - MIGRATION - SERVER-REJECTED FIELDS REPORT BESIDE THEIR OWN CONTROL. Every editable control renders the
+      messages the server returned for it, resolved from the RFC 7807 problem document by
+      core/utils/form-errors.util.ts through the component's serverMessages(). That utility owns the removal
+      of the leading break tag the legacy resources carry, so nothing is stripped here. This is parity, not
+      an addition: the legacy screen reported each failure next to the field that caused it and summarised
+      nothing, which is why the banner above carries the document-level title and detail only. The messages
+      are announced through role="alert" and are deliberately NOT added to any control's aria-describedby -
+      that attribute names each control's own hint, and a server message is transient rather than a
+      permanent description of the control.
     - Every migrated string is INTERPOLATED from a component constant, never written as template text.
       Angular compiles templates with preserveWhitespaces disabled, which collapses whitespace runs inside a
       text node and would silently rewrite the four legacy help strings that carry two spaces after a
@@ -63,6 +84,7 @@
               type="button"
               [id]="sectionHeadingId('details')"
               [attr.aria-expanded]="isExpanded('details')"
+              [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
               (click)="toggle('details')"
             >
               {{ headings['details'] }}
@@ -103,6 +125,11 @@
                           {{ moduleTitleTooLongMessage }}
                         </small>
                       }
+                      <!-- track $index, not the message: two model-state entries for one key can carry
+                           identical text, and a repeated track expression is a runtime error. -->
+                      @for (message of serverMessages('moduleTitle'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -124,6 +151,9 @@
                         {{ labels['inheritViewPermissions'] }}
                       </label>
                       <small class="form-help" [id]="hintId('permissions')">{{ hints['permissions'] }}</small>
+                      @for (message of serverMessages('inheritViewPermissions'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
                 </div>
@@ -138,6 +168,7 @@
               type="button"
               [id]="sectionHeadingId('security')"
               [attr.aria-expanded]="isExpanded('security')"
+              [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
               (click)="toggle('security')"
             >
               {{ headings['security'] }}
@@ -161,6 +192,9 @@
                           <option [ngValue]="page.value">{{ page.label }}</option>
                         }
                       </select>
+                      @for (message of serverMessages('tabId'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -176,6 +210,9 @@
                         [id]="controlId('allTabs')"
                         [attr.aria-describedby]="hintId('allTabs')"
                       />
+                      @for (message of serverMessages('allTabs'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -193,6 +230,9 @@
                         [id]="controlId('header')"
                         [attr.aria-describedby]="hintId('header')"
                       ></textarea>
+                      @for (message of serverMessages('header'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -208,6 +248,9 @@
                         [id]="controlId('footer')"
                         [attr.aria-describedby]="hintId('footer')"
                       ></textarea>
+                      @for (message of serverMessages('footer'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -234,6 +277,9 @@
                           {{ startDateInvalidMessage }}
                         </small>
                       }
+                      @for (message of serverMessages('startDate'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -256,6 +302,9 @@
                         <small class="form-error" role="alert" [id]="messageId('endDate')">
                           {{ endDateInvalidMessage }}
                         </small>
+                      }
+                      @for (message of serverMessages('endDate'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
                       }
                     </div>
                   </div>
@@ -290,6 +339,7 @@
               type="button"
               [id]="sectionHeadingId('appearance')"
               [attr.aria-expanded]="isExpanded('appearance')"
+              [attr.aria-describedby]="sectionHeadingId('pageSettings')"
               (click)="toggle('appearance')"
             >
               {{ headings['appearance'] }}
@@ -311,6 +361,9 @@
                         [maxlength]="limits.iconFile"
                         [attr.aria-describedby]="hintId('iconFile')"
                       />
+                      @for (message of serverMessages('iconFile'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -345,6 +398,9 @@
                           {{ choice.label }}
                         </label>
                       }
+                      @for (message of serverMessages('visibility'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -360,6 +416,9 @@
                         [id]="controlId('displayTitle')"
                         [attr.aria-describedby]="hintId('displayTitle')"
                       />
+                      @for (message of serverMessages('displayTitle'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -401,6 +460,9 @@
                             {{ cacheTimeInvalidMessage }}
                           </small>
                         }
+                        @for (message of serverMessages('cacheTime'); track $index) {
+                          <small class="form-error" role="alert">{{ message }}</small>
+                        }
                       </div>
                     </div>
                   }
@@ -416,6 +478,7 @@
               type="button"
               [id]="sectionHeadingId('other')"
               [attr.aria-expanded]="isExpanded('other')"
+              [attr.aria-describedby]="sectionHeadingId('pageSettings')"
               (click)="toggle('other')"
             >
               {{ headings['other'] }}
@@ -438,6 +501,9 @@
                         [id]="controlId('setAsDefaultSettings')"
                         [attr.aria-describedby]="hintId('setAsDefaultSettings')"
                       />
+                      @for (message of serverMessages('setAsDefaultSettings'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
 
@@ -455,6 +521,9 @@
                         [id]="controlId('applyToAllModules')"
                         [attr.aria-describedby]="hintId('applyToAllModules')"
                       />
+                      @for (message of serverMessages('applyToAllModules'); track $index) {
+                        <small class="form-error" role="alert">{{ message }}</small>
+                      }
                     </div>
                   </div>
                 </div>
