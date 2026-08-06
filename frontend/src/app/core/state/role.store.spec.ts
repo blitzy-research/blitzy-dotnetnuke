@@ -222,7 +222,12 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { DEFAULT_ROLE_GROUP_FILTER, RoleStore, billingTermsBound } from './role.store';
+import {
+  DEFAULT_ROLE_GROUP_FILTER,
+  ROLES_FETCH_PAGE_SIZE,
+  RoleStore,
+  billingTermsBound,
+} from './role.store';
 
 import { DEFAULT_PAGE_SIZE } from '../models/paged-result.model';
 
@@ -822,7 +827,6 @@ describe('RoleStore', () => {
         'loadAssignments',
         'reloadAssignments',
         'setGroupFilter',
-        'setRolesPage',
         'setRolesSort',
         'setRolesQuery',
         'setAssignmentsPage',
@@ -1198,18 +1202,16 @@ describe('RoleStore', () => {
       expect(store.hasRoleGroups()).toBeTrue();
     });
 
-    it('returns to the first page when the narrowing changes', () => {
-      store.setRolesPage(3);
-      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 40, 3));
-
-      expect(store.rolesPage().pageIndex).toBe(3);
+    it('re-reads the whole listing from the first page when the narrowing changes', () => {
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 40));
 
       store.setGroupFilter({ kind: 'AllRoles' });
 
       const request = expectGet(ROLES_URL);
 
-      // A different narrowing yields a different result set, in which the page the caller
-      // was on has no counterpart.
+      // A different narrowing yields a different result set, and the walk that reads it
+      // always starts at the first page.
       expect(request.request.params.get('pageIndex')).toBe('0');
       request.flush(pageOf([aRoleListItem()], 1));
 
@@ -1222,7 +1224,7 @@ describe('RoleStore', () => {
   // -------------------------------------------------------------------------
 
   describe('paging shapes: the roles and the assignments are paged, the groups are not', () => {
-    it('reads the role listing with a zero-based index and the shared default size', () => {
+    it('reads the role listing from the first page at the largest legal request size', () => {
       store.loadRoles();
 
       const request = expectGet(ROLES_URL);
@@ -1232,34 +1234,71 @@ describe('RoleStore', () => {
       // did page converted a one-based control index by subtracting one; nothing here is
       // one-based, so nothing here needs that conversion.
       expect(request.request.params.get('pageIndex')).toBe('0');
-      expect(request.request.params.get('pageSize')).toBe(String(DEFAULT_PAGE_SIZE));
+      // The server's own maximum, not a comfortable number: the paging validator refuses a
+      // larger page. It reduces the number of round trips the walk has to make and is NOT by
+      // itself the completeness guarantee - see the walk test below.
+      expect(request.request.params.get('pageSize')).toBe(String(ROLES_FETCH_PAGE_SIZE));
       expect(request.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize', 'scope']);
 
+      // A short page - fewer rows than were asked for - is the last page by definition, so
+      // this single response ends the walk.
       request.flush(pageOf([aRoleListItem()], 137));
 
-      expect(store.rolesMeta().pageIndex).toBe(0);
+      expect(store.rolesMeta().pageIndex)
+        .withContext('one envelope holding everything reports the unpaged coordinate')
+        .toBe(0);
       expect(store.rolesMeta().totalCount)
-        .withContext('the total across every page, not the length of the page in hand')
+        .withContext("the SERVER's total, so a shortfall stays visible rather than passing as complete")
         .toBe(137);
     });
 
-    it('carries the requested page index verbatim, including the first', () => {
-      store.setRolesPage(0);
+    it('walks every page and joins them, so no role is silently left off the listing', () => {
+      // ⚠ THE REGRESSION THIS PINS DOWN. The listing endpoint is paged and the screen that
+      // consumes this slice offers no pager, exactly as the legacy screen offered none, so a
+      // single windowed request would present the first page AS the whole set - a silent data
+      // loss rather than a smaller view. Every page is therefore walked and joined here.
+      const firstPage: readonly RoleListItem[] = Array.from(
+        { length: ROLES_FETCH_PAGE_SIZE },
+        (_unused, index) => aRoleListItem({ roleId: index, roleName: `Role ${index}` }),
+      );
+
+      store.loadRoles();
 
       const first = expectGet(ROLES_URL);
 
       expect(first.request.params.get('pageIndex')).toBe('0');
-      first.flush(pageOf([aRoleListItem()], 137, 0));
+      // A FULL page, which is the signal that another may exist.
+      first.flush(pageOf(firstPage, ROLES_FETCH_PAGE_SIZE + 3));
 
-      store.setRolesPage(4);
+      const second = expectGet(ROLES_URL);
 
-      const fifth = expectGet(ROLES_URL);
+      expect(second.request.params.get('pageIndex'))
+        .withContext('the walk continues to the next page rather than stopping at the window')
+        .toBe('1');
+      expect(second.request.params.get('pageSize')).toBe(String(ROLES_FETCH_PAGE_SIZE));
 
-      expect(fifth.request.params.get('pageIndex')).toBe('4');
-      fifth.flush(pageOf([aRoleListItem()], 137, 4));
+      second.flush(
+        pageOf(
+          [
+            aRoleListItem({ roleId: 100, roleName: 'Role 100' }),
+            aRoleListItem({ roleId: 101, roleName: 'Role 101' }),
+            aRoleListItem({ roleId: 102, roleName: 'Role 102' }),
+          ],
+          ROLES_FETCH_PAGE_SIZE + 3,
+          1,
+        ),
+      );
 
-      expect(store.rolesPage().pageIndex).toBe(4);
-      expect(store.rolesMeta().pageIndex).toBe(4);
+      // A short second page ends the walk, so no third request is issued.
+      httpMock.verify();
+
+      expect(store.roleItems().length).toBe(ROLES_FETCH_PAGE_SIZE + 3);
+      expect(store.roleItems()[0]?.roleName).toBe('Role 0');
+      expect(store.roleItems()[ROLES_FETCH_PAGE_SIZE + 2]?.roleName)
+        .withContext('a role beyond the first window is present rather than truncated away')
+        .toBe('Role 102');
+      expect(store.rolesMeta().totalCount).toBe(ROLES_FETCH_PAGE_SIZE + 3);
+      expect(store.rolesLoading()).toBeFalse();
     });
 
     it('carries the ordering members and returns to the first page when they change', () => {
@@ -2914,6 +2953,162 @@ describe('RoleStore', () => {
   // IMMUTABILITY AND LIFECYCLE
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // STALE RESPONSES AND SESSION TEARDOWN
+  // -------------------------------------------------------------------------
+  //
+  // Two properties, one mechanism. Every read holds its handle and abandons the previous
+  // request before dispatching, so a slice is a function of the LATEST request rather than of
+  // whichever response happens to arrive last; and `reset()` abandons everything before
+  // clearing, so no response already on the wire can repopulate what a sign-out discarded.
+  describe('stale responses cannot overwrite newer state', () => {
+    it('abandons a superseded listing read, so a late answer can never land', () => {
+      // ⚠ THE REGRESSION THIS PINS DOWN. Rapid narrowing, ordering or filter changes issue A
+      // then B. Without cancellation, B answering first and A answering second leaves the
+      // slice describing A - the narrowing the operator has already moved on from.
+      store.setRolesQuery('alpha');
+      const first = expectGet(ROLES_URL);
+
+      store.setRolesQuery('beta');
+      const second = expectGet(ROLES_URL);
+
+      expect(first.cancelled)
+        .withContext('the superseded read is abandoned when the next one is dispatched')
+        .toBeTrue();
+
+      // The testing backend refuses to answer a cancelled request at all, which is a stronger
+      // statement than any arrival order this specification could stage: the stale read cannot
+      // deliver a value to this store under ANY interleaving.
+      expect(() => first.flush(pageOf([aRoleListItem({ roleName: 'Alpha' })], 1))).toThrowError(
+        /cancelled/i,
+      );
+
+      second.flush(pageOf([aRoleListItem({ roleId: 1, roleName: 'Beta' })], 1));
+
+      expect(store.roleItems().length).toBe(1);
+      expect(store.roleItems()[0]?.roleName)
+        .withContext('the state describes the latest request, never the last response to arrive')
+        .toBe('Beta');
+    });
+
+    it('abandons a superseded single-role read, including one addressing role zero', () => {
+      store.selectRole(0);
+      const first = expectGet(`${ROLES_URL}/0`);
+
+      store.selectRole(5);
+      const second = expectGet(`${ROLES_URL}/5`);
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(envelopeOf(aRole({ roleId: 5, roleName: 'Five' })));
+
+      // Role ZERO is a real role - `dbo.Roles.RoleID` is `IDENTITY(0, 1)` - so the abandoned
+      // read addressed a legitimate record rather than an absent one, and it still cannot land.
+      expect(() => first.flush(envelopeOf(aRole({ roleId: 0, roleName: 'Zero' })))).toThrowError(
+        /cancelled/i,
+      );
+
+      expect(store.selectedRole()?.roleId).toBe(5);
+    });
+
+    it('does NOT let one read cancel a different slice, because each holds its own handle', () => {
+      // The assignment screen legitimately reads a role and its members at the same time. One
+      // shared handle would make the second dispatch cancel the first and leave that slice empty.
+      store.selectRole(7);
+      const roleCall = expectGet(`${ROLES_URL}/7`);
+
+      store.loadAssignments(7);
+      const membersCall = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(roleCall.cancelled)
+        .withContext('an assignment read must not abandon the single-role read')
+        .toBeFalse();
+
+      roleCall.flush(envelopeOf(aRole({ roleId: 7 })));
+      membersCall.flush(pageOf([anAssignment()], 1));
+
+      expect(store.selectedRole()?.roleId).toBe(7);
+      expect(store.assignmentItems().length).toBe(1);
+    });
+  });
+
+  describe('reset cannot be repopulated by work that was already in flight', () => {
+    it('cancels every read, lowers every flag, and leaves nothing outstanding', () => {
+      store.loadRoles();
+      const rolesCall = expectGet(ROLES_URL);
+
+      store.loadRoleGroups();
+      const groupsCall = expectGet(ROLE_GROUPS_URL);
+
+      store.selectRole(3);
+      const roleCall = expectGet(`${ROLES_URL}/3`);
+
+      store.loadAssignments(7);
+      const membersCall = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      store.reset();
+
+      // ⚠ CLEARING A SLICE WHILE ITS REQUEST IS IN FLIGHT IS THE SAME DISCLOSURE WITH A DELAY IN
+      // FRONT OF IT: the response repopulates exactly what the sign-out discarded. Both halves -
+      // cancel, then clear - are necessary and neither is sufficient.
+      expect(rolesCall.cancelled).toBeTrue();
+      expect(groupsCall.cancelled).toBeTrue();
+      expect(roleCall.cancelled).toBeTrue();
+      expect(membersCall.cancelled).toBeTrue();
+
+      expect(store.rolesLoading()).toBeFalse();
+      expect(store.roleGroupsLoading()).toBeFalse();
+      expect(store.selectedRoleLoading()).toBeFalse();
+      expect(store.assignmentsLoading()).toBeFalse();
+      expect(store.busy()).toBeFalse();
+
+      // Nothing is left outstanding, which the `afterEach` verification would report anyway; it is
+      // asserted here so the failure names this behaviour rather than the next specification.
+      httpMock.verify();
+
+      expect(store.roleItems()).toEqual([]);
+      expect(store.roleGroups()).toEqual([]);
+      expect(store.selectedRole()).toBeNull();
+      expect(store.assignmentItems()).toEqual([]);
+    });
+
+    it('abandons the complete-listing walk mid-flight rather than finishing it', () => {
+      const fullPage: readonly RoleListItem[] = Array.from(
+        { length: ROLES_FETCH_PAGE_SIZE },
+        (_unused, index) => aRoleListItem({ roleId: index, roleName: `Role ${index}` }),
+      );
+
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf(fullPage, ROLES_FETCH_PAGE_SIZE * 3));
+
+      // The walk has issued its second request and is waiting on it.
+      const second = expectGet(ROLES_URL);
+
+      expect(second.request.params.get('pageIndex')).toBe('1');
+
+      store.reset();
+
+      expect(second.cancelled)
+        .withContext('a multi-request walk must be abandonable as one unit')
+        .toBeTrue();
+      expect(store.roleItems()).toEqual([]);
+      expect(store.rolesLoading()).toBeFalse();
+      httpMock.verify();
+    });
+
+    it('releases every handle on teardown', () => {
+      store.loadRoles();
+      const call = expectGet(ROLES_URL);
+
+      store.ngOnDestroy();
+
+      expect(call.cancelled)
+        .withContext('a request left listening across an injector boundary reports into a replaced store')
+        .toBeTrue();
+      httpMock.verify();
+    });
+  });
+
   describe('held state is replaced immutably and can be returned to its initial values', () => {
     it('replaces the listing rather than editing the sequence a consumer already read', () => {
       store.loadRoles();
@@ -2985,9 +3180,6 @@ describe('RoleStore', () => {
       store.setGroupFilter({ kind: 'Group', roleGroupId: 0 });
       expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 0 })], 1));
 
-      store.setRolesPage(2);
-      expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 0 })], 30, 2));
-
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 1));
 
@@ -3006,8 +3198,11 @@ describe('RoleStore', () => {
         .withContext('the reset target is the ungrouped intent, per the measured legacy default')
         .toBe('GlobalRoles');
       expect(store.rolesPage().pageIndex).toBe(0);
-      expect(store.rolesPage().pageSize).toBe(DEFAULT_PAGE_SIZE);
+      // The role listing is read WHOLE, so its coordinate reports the size its requests
+      // actually carry rather than the shared paged default the assignments use.
+      expect(store.rolesPage().pageSize).toBe(ROLES_FETCH_PAGE_SIZE);
       expect(store.assignmentsPage().pageIndex).toBe(0);
+      expect(store.assignmentsPage().pageSize).toBe(DEFAULT_PAGE_SIZE);
     });
 
     it('reports itself busy while a read is in flight and idle once it settles', () => {
@@ -3038,6 +3233,155 @@ describe('RoleStore', () => {
         .withContext('a refused write must still settle the in-flight indicator')
         .toBeFalse();
       expect(store.busy()).toBeFalse();
+    });
+  });
+  // -------------------------------------------------------------------------
+  // SESSION ISOLATION AND READ CONCURRENCY
+  //
+  // This store had a `reset` that cleared its slices and released NOTHING, and no request handles
+  // at all. Two consequences, neither of which looks like a defect from inside one screen:
+  //
+  // Clearing without releasing meant a reset cleared the slices and then let the responses already
+  // in flight repopulate them moments later — so the store ended up holding the PREVIOUS SESSION'S
+  // roles, groups and memberships, with no command issued to explain where they came from.
+  //
+  // No handles meant two reads of the same thing raced, and the winner was whichever response
+  // arrived LAST rather than whichever request was issued last. Responses are not ordered by
+  // request order, so a first request delayed behind a slow query lands after a second and
+  // overwrites the newer page with the older one — a grid showing a page the pager says it is not
+  // on, with nothing reproducible about it.
+  // -------------------------------------------------------------------------
+  describe('session isolation and read concurrency', () => {
+    // The shared helper matches on `request.url`, which is the path WITHOUT its query string, so
+    // the bare paths are what these cases claim. The coordinates and the narrowing the listing
+    // carries are asserted by the cases that exist for that purpose.
+    const ROLES_LISTING_URL = ROLES_URL;
+    const ZERO_MEMBERS_LISTING_URL = ROLE_ZERO_MEMBERS_URL;
+    const SEVEN_MEMBERS_LISTING_URL = ROLE_SEVEN_MEMBERS_URL;
+
+    it('cancels a read in flight on reset, so its answer cannot repopulate the store', () => {
+      store.loadRoles();
+
+      const pending = expectGet(ROLES_LISTING_URL);
+
+      store.reset();
+
+      expect(pending.cancelled)
+        .withContext('the request is abandoned, not merely ignored')
+        .toBeTrue();
+      expect(store.rolesLoading()).toBeFalse();
+      expect(store.roles().items.length).toBe(0);
+    });
+
+    it('cancels a write in flight on reset, so its callback cannot act for the ended session', () => {
+      // A write's callback re-reads the listing and records an outcome. Left listening across a
+      // boundary it would do both on behalf of the session that ended.
+      store.createRole(aCreateRequest());
+
+      const pending = expectPost(ROLES_URL);
+
+      store.reset();
+
+      expect(pending.cancelled).toBeTrue();
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('abandons the earlier role listing read when a second is issued', () => {
+      // ⚠ THE STALE-ANSWER RACE. Both requests answer the same question, so the LAST response to
+      // arrive wins — which is not necessarily the one asked for last.
+      store.loadRoles();
+
+      const first = expectGet(ROLES_LISTING_URL);
+
+      store.loadRoles();
+
+      const second = expectGet(ROLES_LISTING_URL);
+
+      expect(first.cancelled).toBeTrue();
+      expect(second.cancelled).toBeFalse();
+
+      second.flush(pageOf([aRoleListItem({ roleId: 5, roleName: 'Second answer' })], 1));
+
+      expect(store.roles().items.length).toBe(1);
+      expect(store.roles().items[0].roleName).toBe('Second answer');
+    });
+
+    it('abandons the earlier single-role read when another role is selected', () => {
+      // The read most likely to be issued twice in quick succession, because moving between rows
+      // re-issues it — and the two answers describe DIFFERENT roles, so a stale winner shows one
+      // role's billing terms under another role's name.
+      store.selectRole(0);
+
+      const first = expectGet(ROLE_ZERO_URL);
+
+      store.selectRole(7);
+
+      const second = expectGet(ROLE_SEVEN_URL);
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(envelopeOf(aRole({ roleId: 7, roleName: 'The one asked for' })));
+
+      expect(store.selectedRole()?.roleId).toBe(7);
+      expect(store.selectedRoleLoading()).toBeFalse();
+    });
+
+    it('abandons the earlier membership read when another role’s members are listed', () => {
+      store.loadAssignments(0);
+
+      const first = expectGet(ZERO_MEMBERS_LISTING_URL);
+
+      store.loadAssignments(7);
+
+      const second = expectGet(SEVEN_MEMBERS_LISTING_URL);
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      expect(store.assignmentsRoleId()).toBe(7);
+      expect(store.assignments().items.length).toBe(1);
+    });
+
+    it('releases both reads of the combined administration chain', () => {
+      // The chain performs BOTH reads, so its handle occupies both slots. Releasing either must
+      // release the chain, and releasing an already-released subscription must be a no-op.
+      store.loadRoleAdministration();
+
+      const groups = expectGet(ROLE_GROUPS_URL);
+
+      store.reset();
+
+      expect(groups.cancelled).toBeTrue();
+      expect(store.roleGroupsLoading()).toBeFalse();
+      expect(store.rolesLoading()).toBeFalse();
+    });
+
+    it('keeps accepting writes after a reset, which a Subscription container would have broken', () => {
+      // ⚠ A REGRESSION GUARD FOR A REAL TRAP. An RxJS `Subscription` used as a container is CLOSED
+      // once unsubscribed, and anything added afterwards is unsubscribed the instant it is added —
+      // so the FIRST boundary would release the writes correctly and then silently cancel every
+      // subsequent write for the rest of the application's life.
+      store.reset();
+
+      store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
+
+      const pending = expectPost(ROLE_GROUPS_URL);
+
+      expect(pending.cancelled)
+        .withContext('a write issued after a reset must not be cancelled on arrival')
+        .toBeFalse();
+
+      pending.flush(envelopeOf(aRoleGroup({ roleGroupId: 3 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+
+      // The create re-reads the groups, which proves the callback ran rather than being discarded.
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 3 })]));
+
+      expect(store.roleGroups().length).toBe(1);
+      expect(store.saving()).toBeFalse();
     });
   });
 });

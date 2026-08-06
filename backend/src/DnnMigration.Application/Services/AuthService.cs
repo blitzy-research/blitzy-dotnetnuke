@@ -436,6 +436,7 @@ public sealed class AuthService : IAuthService
 
     private readonly IUserRepository _users;
     private readonly IPortalRepository _portals;
+    private readonly IRoleRepository _roles;
     private readonly IPermissionService _permissions;
     private readonly IUserService _accounts;
     private readonly ITokenService _tokens;
@@ -458,6 +459,11 @@ public sealed class AuthService : IAuthService
     /// Tenant resolution. It supplies the tenant name carried on the caller snapshot, the administrator
     /// identifier the lock disclosure is judged against, and the registration mode the approval ladder
     /// reads - the last of which the legacy took ambiently and this service takes from the aggregate.
+    /// </param>
+    /// <param name="roles">
+    /// Role assignments, asked ONE question: does the signed-in caller hold the role this portal designates
+    /// as its administrator, with an assignment that is active at the instant being judged. It is read for
+    /// the advisory administration fact on the caller snapshot and for nothing else.
     /// </param>
     /// <param name="permissions">Tenant-scope permission-key resolution for the claims.</param>
     /// <param name="accounts">
@@ -505,6 +511,7 @@ public sealed class AuthService : IAuthService
     public AuthService(
         IUserRepository users,
         IPortalRepository portals,
+        IRoleRepository roles,
         IPermissionService permissions,
         IUserService accounts,
         ITokenService tokens,
@@ -521,6 +528,7 @@ public sealed class AuthService : IAuthService
     {
         ArgumentNullException.ThrowIfNull(users);
         ArgumentNullException.ThrowIfNull(portals);
+        ArgumentNullException.ThrowIfNull(roles);
         ArgumentNullException.ThrowIfNull(permissions);
         ArgumentNullException.ThrowIfNull(tokens);
         ArgumentNullException.ThrowIfNull(refreshTokens);
@@ -536,6 +544,7 @@ public sealed class AuthService : IAuthService
 
         _users = users;
         _portals = portals;
+        _roles = roles;
         _permissions = permissions;
         _accounts = accounts ?? throw new ArgumentNullException(nameof(accounts));
         _tokens = tokens;
@@ -1935,6 +1944,9 @@ public sealed class AuthService : IAuthService
                 permissions.Reason?.Code);
         }
 
+        bool administersPortal = await IsPortalAdministratorAsync(portal, account, asOfUtc, cancellationToken)
+            .ConfigureAwait(false);
+
         return new CurrentUserDto
         {
             UserId = account.UserId,
@@ -1944,9 +1956,81 @@ public sealed class AuthService : IAuthService
             DisplayName = account.DisplayName,
             Email = account.Email ?? string.Empty,
             IsSuperUser = account.IsSuperUser,
+            IsPortalAdministrator = administersPortal,
             Roles = roles,
             Permissions = permissions.IsSuccess ? permissions.Value : [],
         };
+    }
+
+    /// <summary>
+    /// Whether the account administers the tenant it is signed in to.
+    /// </summary>
+    /// <param name="portal">The tenant the caller is signed in to, already loaded.</param>
+    /// <param name="account">The account.</param>
+    /// <param name="asOfUtc">The instant assignment validity windows are evaluated against.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns><see langword="true"/> when the caller administers that tenant.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE DESIGNATION IS A COLUMN, NEVER A ROLE NAME. <c>Portals.AdministratorRoleId</c> (<c>int NULL</c>)
+    /// names the role that confers administration of THAT portal, and it is the only thing that does. Matching
+    /// a role name instead - which is what the client used to do - is wrong three times over: the name is
+    /// operator-editable, so renaming the role would strip every administrator of their affordances; the
+    /// designated role need not be named anything in particular; and a role of the same name may belong to a
+    /// different tenant entirely, making a name match right about the word and wrong about the portal.
+    /// </para>
+    /// <para>
+    /// WHY THIS IS NOT A SECOND IMPLEMENTATION OF A SECURITY RULE. The enforcing evaluator in the API layer
+    /// answers a materially different question: does the caller administer the portal THE REQUEST ACTS ON,
+    /// which it resolves from the route and then reconciles against the tenant the token was minted for. Here
+    /// the portal is neither taken from a route nor in any doubt - it is the tenant this snapshot is being
+    /// built for, which is the tenant the token names - so the route-resolution and tenant-binding arms have
+    /// nothing to decide and their absence is not an omission. What remains is the designation lookup and the
+    /// active-assignment test, and those are reproduced with the same three answers: a host account is
+    /// admitted, an unset designation denies, and an assignment counts only while its validity window is open.
+    /// </para>
+    /// <para>
+    /// It also could not be delegated even if the questions coincided. The evaluator lives in the API layer
+    /// and this service in Application, and Application may not reference the layer above it (Rule T1) - the
+    /// project reference graph makes the attempt a compile error rather than a review comment.
+    /// </para>
+    /// <para>
+    /// SECURITY: the answer is ADVISORY and is published so a console can hide an affordance. It is never
+    /// consulted to permit anything: every tenant-scoped policy re-evaluates against stored state on each
+    /// request, so a caller who edits this response out of the wire changes a menu and nothing else, and an
+    /// administrator demoted a moment ago is refused however recently this said otherwise.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> IsPortalAdministratorAsync(
+        Portal portal,
+        User account,
+        DateTime asOfUtc,
+        CancellationToken cancellationToken)
+    {
+        if (account.IsSuperUser)
+        {
+            // A host account administers every tenant, which is the same answer the enforcing policy gives.
+            return true;
+        }
+
+        if (portal.AdministratorRoleId is not { } administratorRoleId)
+        {
+            // The portal designates no administrator role. A configuration gap must not grant, and it is
+            // never widened to any other role - not even to one that happens to be named for the purpose.
+            return false;
+        }
+
+        IReadOnlyList<UserRole> assignments = await _roles
+            .GetUserRolesAsync(portal.PortalId, account.UserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // RoleId is compared as an integer and never coerced: role zero is a REAL role, because
+        // Roles.RoleID is IDENTITY (0, 1) (01.00.00.SqlDataProvider L114), so no presence test may read it
+        // as absent. The status test is what makes an assignment whose window has not opened, or has already
+        // closed, count for nothing.
+        return assignments.Any(assignment =>
+            assignment.RoleId == administratorRoleId
+            && assignment.GetStatus(asOfUtc) == RoleStatus.Active);
     }
 
     /// <summary>

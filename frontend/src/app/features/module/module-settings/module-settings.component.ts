@@ -14,7 +14,7 @@ import { Router } from '@angular/router';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 
 import { MODULE_VISIBILITY, ModuleVisibility } from '../../../core/models/module.model';
-import type { UpdateModuleRequest } from '../../../core/models/module.model';
+import type { ModuleSettingsBag, UpdateModuleRequest } from '../../../core/models/module.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { SelectOption } from '../../../core/models/select-option.model';
 import type { TabListItem } from '../../../core/models/tab.model';
@@ -598,6 +598,44 @@ function textOrNull(value: string): string | null {
 }
 
 /**
+ * Whether two property maps hold different content.
+ *
+ * Compared in BOTH directions rather than by size and then by lookup: a map that lost one key and gained
+ * another has the same size as the map it came from, so a one-way walk would report the pair identical. The
+ * key count is checked first because it settles the commonest difference in one step, and then every key of
+ * the reference is looked up in the candidate.
+ *
+ * An absent key and a key holding an empty string are DIFFERENT here, deliberately. The empty string is a
+ * legitimate stored setting value, so `undefined` from a lookup cannot be treated as equal to it.
+ *
+ * @param read The map as the server reported it.
+ * @param candidate The map that would be written.
+ * @returns `true` when the two differ in any key or any value.
+ */
+function mapsDiffer(
+  read: Readonly<Record<string, string>>,
+  candidate: Readonly<Record<string, string>>,
+): boolean {
+  const readKeys = Object.keys(read);
+
+  if (readKeys.length !== Object.keys(candidate).length) {
+    return true;
+  }
+
+  for (const key of readKeys) {
+    if (!Object.prototype.hasOwnProperty.call(candidate, key)) {
+      return true;
+    }
+
+    if (read[key] !== candidate[key]) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Resolves a route-supplied identifier to a number.
  *
  * MIGRATION: EVERY GUARD HERE IS `undefined`-BASED, NEVER TRUTH-BASED, AND THAT IS A SCHEMA CONSTRAINT.
@@ -965,6 +1003,16 @@ export class ModuleSettingsComponent {
   private failureSurfaced: ProblemDetails | null = null;
 
   /**
+   * The settings bag exactly as the server last reported it, or `null` before one has been read.
+   *
+   * The reference {@link settingsBagDiffersFromRead} compares against, which is what lets a save send the
+   * property maps only when this screen has actually altered them. Held as a plain field rather than a signal
+   * because nothing renders it and no derivation depends on it; it is written from the read observer and read
+   * once per submission.
+   */
+  private settingsAsRead: ModuleSettingsBag | null = null;
+
+  /**
    * Whether a submission raised FROM THIS SCREEN is still outstanding.
    *
    * The store is provided at the root, so its write flags settle for reasons this screen did not cause. This
@@ -972,6 +1020,18 @@ export class ModuleSettingsComponent {
    * signal rather than a plain field so that the observer's dependency on it is explicit and tracked.
    */
   private readonly submissionPending = signal(false);
+
+  /**
+   * Whether a removal raised FROM THIS SCREEN is still awaiting its answer.
+   *
+   * The removal counterpart of {@link submissionPending}, and separate from it because the two settle on
+   * different flags and conclude differently: a save waits on both write flags and reports a save, a removal
+   * waits on the module write flag alone and reports a removal.
+   *
+   * Not to be confused with `removalPending`, which reports whether the CONFIRMATION is on screen. This one
+   * reports whether the confirmed command is on the wire.
+   */
+  private readonly removalOutstanding = signal(false);
 
   // -----------------------------------------------------------------------------------------------------
   // ROUTE INPUTS
@@ -1228,9 +1288,10 @@ export class ModuleSettingsComponent {
   /**
    * Issues the reads for the addressed module.
    *
-   * Both the module and its settings are fetched: the settings bag is read so that a save replaces the two
-   * property maps with what the module actually holds rather than emptying them, which a whole-object PUT
-   * would otherwise do.
+   * Both the module and its settings are fetched. The settings bag is read so that this screen can tell
+   * whether it has anything to save at all — see {@link persistSettings} — and, were an editor ever added
+   * here, so that a whole-object replacement would carry the keys the editor did not touch rather than
+   * emptying them.
    */
   private readonly loadAddressedModule = effect(() => {
     const id = this.addressedModuleId();
@@ -1244,6 +1305,16 @@ export class ModuleSettingsComponent {
 
     this.store.loadModule(id, placement);
     this.store.loadSettings(id, placement);
+  });
+
+  /**
+   * Records the settings bag as read, which is the reference a save compares against.
+   *
+   * A genuine side effect — it writes a field outside the reactive graph — and the only place that field is
+   * assigned, so the reference can never drift from the response it came from.
+   */
+  private readonly recordSettingsAsRead = effect(() => {
+    this.settingsAsRead = this.store.settings();
   });
 
   /**
@@ -1358,9 +1429,11 @@ export class ModuleSettingsComponent {
    * `If Page.IsValid Then` / `Try` block after `UpdateModule` had returned, so a postback that threw fell
    * through to `Catch` and never redirected. The faithful port therefore leaves ONLY on success, and the
    * announcement is raised here rather than at the point of submission for the same reason: the legacy
-   * postback was synchronous, so "saved" was never claimed before the write had actually happened. Two
-   * independent writes are in flight - the module replacement and the settings bag - so both write flags must
-   * be clear before either outcome is known.
+   * postback was synchronous, so "saved" was never claimed before the write had actually happened. Up to two
+   * independent writes may be in flight - the module replacement always, and the settings bag only when this
+   * screen has actually changed it (see {@link persistSettings}) - so both write flags must be clear before
+   * either outcome is known. Watching both remains correct when only one was issued: the unused flag is
+   * already clear.
    *
    * A rejected write keeps the operator on the screen, because {@link surfaceFailure} has put the per-field
    * messages on the fields and navigating away would discard them.
@@ -1386,6 +1459,40 @@ export class ModuleSettingsComponent {
     // `Response.Redirect(NavigateURL(), True)` at L421 ran after `UpdateModule` had returned and a throwing
     // postback never reached it. A synchronous postback could not claim "saved" before saving; nor may this.
     this.notifications.notify('success', SAVED_MESSAGE);
+    this.returnToListing();
+  });
+
+  /**
+   * Concludes a removal once the write has settled, then reports, notifies the host and leaves.
+   *
+   * The same reasoning as {@link concludeSubmission}, applied to the destructive command: the legacy
+   * postback at `ModuleSettings.ascx.vb:L300-L312` removed the placement and only then redirected, so a
+   * throwing call left the operator on the screen with the explanation in front of them. One write flag is
+   * watched rather than two, because a removal issues one command.
+   *
+   * A refusal keeps the operator here and announces nothing extra: {@link surfaceFailure} has already
+   * described it, and the departure is what is withheld.
+   */
+  private readonly concludeRemoval = effect(() => {
+    const pending = this.removalOutstanding();
+    const writing = this.store.saving();
+
+    if (!pending || writing) {
+      return;
+    }
+
+    const failure = this.store.failure();
+
+    this.removalOutstanding.set(false);
+
+    // Matched on the OPERATION, not on mere presence: the store re-reads the listing after a successful
+    // removal, and that re-read's failure must not be reported as the removal's.
+    if (failure !== null && failure.operation === 'deleteModule') {
+      return;
+    }
+
+    this.notifications.notify('success', REMOVED_MESSAGE);
+    this.remove.emit();
     this.returnToListing();
   });
 
@@ -1634,6 +1741,97 @@ export class ModuleSettingsComponent {
     return fieldErrorMessages(this.currentProblem(), field);
   }
 
+  /**
+   * The client-side validation message for one control, when one is currently reportable.
+   *
+   * ⚠ THIS EXISTS SO THAT ONE FIELD HAS EXACTLY ONE MESSAGE REGION, WITH EXACTLY ONE IDENTIFIER. The client
+   * message and the server messages were previously two sibling elements that both bound `messageId(field)`,
+   * which is a duplicated identifier for the four controls that carry a client rule — invalid markup, and an
+   * `aria-describedby` that resolves to whichever element the browser happens to find first. Reporting both
+   * kinds through a single region removes the collision at its source rather than papering over it with a
+   * second identifier, and it means a control's description names one element whose content is the complete
+   * set of reasons the value was refused, in the order they were produced: locally first, then by the server.
+   *
+   * Only four of this screen's fields have a client rule at all — the legacy screen declared exactly four
+   * validators (`valtxtStartDate`, `valtxtEndDate`, `valCacheTime` and the title's length bound) — so every
+   * other field returns `null` here and its region carries server messages alone.
+   *
+   * @param field The field to report on.
+   * @returns The message, or `null` when the control has no reportable client failure.
+   */
+  protected clientMessage(field: ModuleSettingsField): string | null {
+    switch (field) {
+      case 'moduleTitle':
+        return this.form.controls.moduleTitle.touched
+          && this.form.controls.moduleTitle.hasError('maxlength')
+          ? this.moduleTitleTooLongMessage
+          : null;
+      case 'startDate':
+        return this.form.controls.startDate.touched
+          && this.form.controls.startDate.hasError('dateDataType')
+          ? this.startDateInvalidMessage
+          : null;
+      case 'endDate':
+        return this.form.controls.endDate.touched
+          && this.form.controls.endDate.hasError('dateDataType')
+          ? this.endDateInvalidMessage
+          : null;
+      case 'cacheTime':
+        return this.form.controls.cacheTime.touched
+          && this.form.controls.cacheTime.hasError('integerDataType')
+          ? this.cacheTimeInvalidMessage
+          : null;
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Whether a field currently has anything to report, from either side.
+   *
+   * This is the single condition that both the message region's presence and the control's
+   * `aria-describedby` are derived from, so the two cannot drift apart: a named region always exists, and an
+   * existing region is always named.
+   *
+   * @param field The field to report on.
+   * @returns `true` when a client or server message is on screen for the field.
+   */
+  protected hasMessages(field: ModuleSettingsField): boolean {
+    return this.clientMessage(field) !== null || this.serverMessages(field).length > 0;
+  }
+
+  /**
+   * The identifiers a control's `aria-describedby` should name: its own hint, and its message region
+   * when there is something to report.
+   *
+   * ⚠ THE MESSAGE REGION HAS TO BE NAMED HERE, AND THE EARLIER REASONING FOR OMITTING IT WAS WRONG. A
+   * `role="alert"` region is announced ONCE, at the moment it appears, and never again — so a person who
+   * hears it, moves to the control to correct the value and then returns is told nothing, and has no way
+   * to reach the message from the control at all. That is the ordinary case rather than an edge one: the
+   * whole purpose of a per-field message is that the person goes to that field.
+   *
+   * The message is also not transient in the sense the earlier note assumed. It stays on screen until the
+   * next save answers, which is exactly as long as the hint does, so for the time it exists it IS part of
+   * the control's description.
+   *
+   * The hint is named first so it is announced first, which keeps the order the same whether or not a
+   * message is present. The region's identifier is omitted entirely when there is no message, rather than
+   * named and empty: naming an element that does not exist leaves a dangling reference.
+   *
+   * @param hintField The field whose hint describes the control.
+   * @param errorField The field messages are reported under, when it differs from the hint's — the
+   * permission switch is described by its region's hint but reports under its own control name.
+   * @returns A space-separated identifier list for `aria-describedby`.
+   */
+  protected describedBy(
+    hintField: ModuleSettingsField,
+    errorField: ModuleSettingsField = hintField,
+  ): string {
+    const hint = this.hintId(hintField);
+
+    return this.hasMessages(errorField) ? `${hint} ${this.messageId(errorField)}` : hint;
+  }
+
   // -----------------------------------------------------------------------------------------------------
   // INTENTS
   // -----------------------------------------------------------------------------------------------------
@@ -1670,6 +1868,10 @@ export class ModuleSettingsComponent {
       return;
     }
 
+    if (this.removalOutstanding()) {
+      return;
+    }
+
     // MIGRATION: THE REMOVAL IS SOFT AND THERE IS NO WAY BACK. `cmdDelete_Click` (L300-L312) called
     // `DeleteTabModule(TabId, ModuleId)` (L837), NOT `DeleteModule` (L819): the placement row goes, the order
     // is rebuilt, and only once the module is left on no page at all does L837-L860 set `TabID =
@@ -1677,10 +1879,15 @@ export class ModuleSettingsComponent {
     // states what happened rather than implying it can be undone. The comment at L290-L292 claiming this
     // deletes a PORTAL in SuperUser mode is wrong on both counts - L305 performs no SuperUser check - and is
     // annotated here rather than reproduced.
+    // MIGRATION: the announcement, the notification of the host and the departure all wait for the SERVER,
+    // and previously did not. The legacy handler was a synchronous postback: L305 called `DeleteTabModule`
+    // and only the statement AFTER it returned redirected, so a throwing call fell through to `Catch` and
+    // the operator stayed on a screen showing an error. Announcing at the point of dispatch claimed a
+    // removal that a refusal - a caller without edit rights on the module, or a placement already gone -
+    // would then contradict, and left the operator on the listing with no way back to the screen holding
+    // the explanation.
+    this.removalOutstanding.set(true);
     this.store.deleteModule(id, this.addressedTabModuleId());
-    this.notifications.notify('success', REMOVED_MESSAGE);
-    this.remove.emit();
-    this.returnToListing();
   }
 
   /**
@@ -1773,9 +1980,11 @@ export class ModuleSettingsComponent {
     this.store.updateModule(id, request, placement);
     this.persistSettings(placement);
 
-    // Armed AFTER both commands, so the write flags they raise are already set and the observer cannot mistake
-    // a not-yet-started submission for a finished one. The announcement and the return to the listing are
-    // raised there rather than here; see concludeSubmission for why.
+    // Armed AFTER the commands, so the write flag the module replacement raises is already set and the
+    // observer cannot mistake a not-yet-started submission for a finished one. The module replacement is
+    // always issued, so there is always one raised flag to wait on even when the settings write is withheld.
+    // The announcement and the return to the listing are raised there rather than here; see
+    // concludeSubmission for why.
     this.submissionPending.set(true);
   }
 
@@ -1863,13 +2072,25 @@ export class ModuleSettingsComponent {
   }
 
   /**
-   * Replaces the settings maps with what was read.
+   * Writes the settings maps, but ONLY when this screen has actually changed them.
    *
-   * MIGRATION: the two legacy scopes collapse into one whole-object PUT, so a save must send back both maps
-   * or empty them. The bag is echoed unchanged: this screen edits columns on the module and its placement,
-   * not property-bag entries, and no settings key is invented for the six untransported placement values.
-   * When no bag was read there is nothing to replace and the request is not issued at all, because sending an
-   * empty pair would delete settings this screen never showed.
+   * MIGRATION: THE UNCHANGED BAG IS NO LONGER RE-SENT, AND THAT IS A CORRECTION RATHER THAN AN
+   * OPTIMISATION. This screen edits columns on the module and its placement; it renders no control over a
+   * property-bag entry, so the bag it would send is the bag it read, byte for byte. Re-sending it turned
+   * every save of an unrelated field into a whole-object replacement of both property maps computed from a
+   * possibly stale read — so a key another operator, another screen or a background job had written between
+   * this screen's read and its save was silently reverted to the value this screen happened to be holding.
+   * A lost update, caused by a request that could not change anything even when it won.
+   *
+   * The suppression is expressed as a genuine comparison against the bag as read rather than as a removed
+   * call, for two reasons. It states the rule — send what changed — instead of encoding today's field set as
+   * an assumption. And it self-arms: the day a settings editor is added here, the comparison starts
+   * reporting a difference and the write resumes with no further change.
+   *
+   * The two legacy scopes still collapse into one whole-object PUT — `ModuleController.vb` exposed
+   * `GetModuleSettings(ModuleId)` at L1237 and `GetTabModuleSettings(TabModuleId)` at L1336 as DISTINCT
+   * scopes, each mutated one key at a time through L1283 / L1306 / L1318 / L1373 / L1395 / L1407 — so when a
+   * write IS warranted it carries both maps whole, because omitting a map would empty it.
    *
    * @param placement The placement addressed, or `undefined` for the module itself.
    */
@@ -1880,13 +2101,50 @@ export class ModuleSettingsComponent {
       return;
     }
 
-    // MIGRATION: TWO LEGACY SETTINGS SCOPES AND SIX PER-KEY MUTATORS COLLAPSE INTO ONE WHOLE-OBJECT PUT.
-    // `ModuleController.vb` exposed `GetModuleSettings(ModuleId)` at L1237 and `GetTabModuleSettings
-    // (TabModuleId)` at L1336 as DISTINCT scopes, each mutated one key at a time through L1283 / L1306 /
-    // L1318 / L1373 / L1395 / L1407. The target endpoint replaces both maps as a single document, so the bag
-    // is read before the save and transmitted whole - otherwise the replacement would empty the keys this
-    // screen never edits.
+    // The store is provided at the root, so the bag it holds may have been read for a DIFFERENT module.
+    // `=== undefined` and never a truth test, and an exact comparison: module 0 is a real module.
+    const addressed = this.addressedModuleId();
+
+    if (addressed === undefined || bag.moduleId !== addressed) {
+      return;
+    }
+
+    if (!this.settingsBagDiffersFromRead(bag)) {
+      return;
+    }
+
     this.store.saveSettings(bag, placement);
+  }
+
+  /**
+   * Whether the bag about to be written differs from the bag that was read.
+   *
+   * A structural comparison over every member the contract declares: the two identifiers and both property
+   * maps, key by key in both directions so that an added, removed or re-valued key is all reported. Nothing
+   * is compared by reference, because a bag rebuilt from an identical response would fail that test and
+   * produce exactly the needless write this guard exists to prevent.
+   *
+   * Reports `true` when no read has been recorded. That is the safe direction: without a reference there is
+   * nothing to prove the bag unchanged, and withholding a write on an unproven assumption would lose an edit.
+   *
+   * @param bag The bag that would be written.
+   * @returns `true` when a write is warranted.
+   */
+  private settingsBagDiffersFromRead(bag: ModuleSettingsBag): boolean {
+    const read = this.settingsAsRead;
+
+    if (read === null) {
+      return true;
+    }
+
+    if (read.moduleId !== bag.moduleId || read.tabModuleId !== bag.tabModuleId) {
+      return true;
+    }
+
+    return (
+      mapsDiffer(read.moduleSettings, bag.moduleSettings) ||
+      mapsDiffer(read.tabModuleSettings, bag.tabModuleSettings)
+    );
   }
 
   /**

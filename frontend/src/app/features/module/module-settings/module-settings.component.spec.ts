@@ -944,8 +944,9 @@ describe('ModuleSettingsComponent', () => {
      * MIGRATION: the legacy redirect at `ModuleSettings.ascx.vb:L421` -
      * `Response.Redirect(NavigateURL(), True)`, commented "Navigate back to admin page" - sat INSIDE the
      * `If Page.IsValid Then` / `Try` block AFTER `UpdateModule` had returned, so a postback that threw fell
-     * through to `Catch` and never redirected. These two specs pin both halves of that: a settled write leaves
-     * for the listing and announces, a rejected one stays put so the per-field messages remain reachable.
+     * through to `Catch` and never redirected. These specs pin both halves of that - a settled write leaves
+     * for the listing and announces, a rejected one stays put so the per-field messages remain reachable - and
+     * the third pins that the unchanged settings bag is never written at all.
      *
      * Driven through the ROUTE path rather than through the seed input, because that is the path the
      * conclusion observer serves: a host that pins `settings` owns its own navigation and is handed the `save`
@@ -1044,22 +1045,43 @@ describe('ModuleSettingsComponent', () => {
       answer('GET', '/api/v1/portals/0/tabs', []);
     });
 
-    it('announces and returns to the listing once both writes have settled', () => {
+    it('announces and returns to the listing once the write has settled', () => {
       submit();
 
-      // Nothing is claimed while either write is still outstanding. The legacy redirect ran after the update
+      // Nothing is claimed while the write is still outstanding. The legacy redirect ran after the update
       // had returned, never before it, so an optimistic announcement would not be the same behaviour.
       expect(notify).not.toHaveBeenCalled();
       expect(navigate).not.toHaveBeenCalled();
 
       expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
 
-      // Still outstanding: the settings bag. One settled write is not a settled submission.
-      expect(navigate).not.toHaveBeenCalled();
-
-      expect(answer('PUT', '/api/v1/modules/0/settings', null)).toBe(1);
-
       expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+      expect(navigate).toHaveBeenCalledWith(['/modules']);
+
+      drain();
+    });
+
+    it('does not write the settings bag, because this screen never changes it', () => {
+      submit();
+
+      // The whole point of the guard: this screen renders no control over a property-bag entry, so the bag it
+      // would send is the bag it read and the request cannot change anything. Re-sending it would replace both
+      // maps from a possibly stale read and silently revert a key another writer had changed in between.
+      expect(
+        http.match(
+          (candidate) => candidate.method === 'PUT' && candidate.url === '/api/v1/modules/0/settings',
+        ).length,
+      ).toBe(0);
+
+      expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
+
+      // Still none after the module write settled, and the submission concluded regardless: waiting on a
+      // write that was never issued would strand the operator on the screen for ever.
+      expect(
+        http.match(
+          (candidate) => candidate.method === 'PUT' && candidate.url === '/api/v1/modules/0/settings',
+        ).length,
+      ).toBe(0);
       expect(navigate).toHaveBeenCalledWith(['/modules']);
 
       drain();
@@ -1070,7 +1092,10 @@ describe('ModuleSettingsComponent', () => {
 
       for (const request of http.match((candidate) => candidate.method === 'PUT')) {
         request.flush(
-          { type: 'about:blank', title: 'Bad Request', status: 400, detail: null, errors: {} },
+          // `detail` omitted rather than null - see the note on `reject()` in 'per-field message
+          // association'. With `detail: null` the document is discarded and the messages this case's own
+          // title calls reachable would not exist at all.
+          { type: 'about:blank', title: 'Bad Request', status: 400, errors: {} },
           { status: 400, statusText: 'Bad Request' },
         );
       }
@@ -1219,6 +1244,291 @@ describe('ModuleSettingsComponent', () => {
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
         expect(control!.getAttribute('aria-describedby')).toBe(`module-settings-${name}-hint`);
       }
+    });
+  });
+
+  describe('choice group naming', () => {
+    /**
+     * MIGRATION - ⚠ THE NATIVE `name` IS LOAD-BEARING, AND `formControlName` DOES NOT SUPPLY IT. The reactive
+     * radio directive groups its members in the MODEL, by the control they share, and writes nothing on to the
+     * element. Every one of the browser's own radio behaviours is keyed off the native attribute instead:
+     * arrow keys moving the selection within the group, and the whole group occupying ONE tab stop rather
+     * than one per option. A group missing it degrades, for anyone navigating by keyboard, into a row of
+     * independent controls - which is a keyboard-operability regression against the legacy screen, whose
+     * `asp:RadioButtonList` rendered a shared name for exactly this reason.
+     *
+     * The name is written as a STATIC attribute equal to the control's own name, so the two cannot drift.
+     */
+    beforeEach(() => {
+      setInput('canManageAllPages', true);
+      setInput('settings', moduleOf());
+      openEverything();
+    });
+
+    it('gives every visibility radio the same native name as its form control', () => {
+      const group = radios('visibility');
+      expect(group.length).withContext('the legacy group declared three options').toBe(3);
+
+      for (const radio of group) {
+        expect(radio.getAttribute('name'))
+          .withContext(`${radio.id} must carry a native name equal to its formControlName`)
+          .toBe(radio.getAttribute('formcontrolname'));
+        expect(radio.getAttribute('name')).toBe('visibility');
+      }
+
+      // One name across the group, not one per option: that single shared value IS what makes the browser
+      // treat the three inputs as one control.
+      expect(new Set(group.map((radio) => radio.name)).size).toBe(1);
+    });
+
+    it('renders no other choice group, so this is the whole obligation on this screen', () => {
+      // Pinned so that a group added later without a name is caught here rather than by a keyboard user.
+      const named = qa<HTMLInputElement>('input[type="radio"]');
+      expect(named.length).toBe(3);
+
+      for (const radio of named) {
+        expect(radio.getAttribute('name'))
+          .withContext(`${radio.id} must carry a native name`)
+          .not.toBeNull();
+      }
+    });
+  });
+
+  describe('per-field message association', () => {
+    /**
+     * MIGRATION - ⚠ A `role="alert"` REGION IS ANNOUNCED ONCE AND NEVER AGAIN, SO IT CANNOT BE THE ONLY ROUTE
+     * TO THE MESSAGE. A person who hears the refusal, moves to the control to correct the value and then
+     * returns is told nothing, because the region has already spoken and nothing associates it with the
+     * control. The control's `aria-describedby` therefore names the region as well as the hint, which is what
+     * makes the message reachable FROM the field on every refocus.
+     *
+     * These cases also pin the identifier's uniqueness. The client message and the server messages were
+     * briefly two sibling elements that both bound `messageId(field)` - a duplicated id on the four controls
+     * that carry a client rule, and an `aria-describedby` resolving to whichever the browser found first.
+     * Both kinds now share ONE region, so the count assertions below are the regression guard for that.
+     *
+     * Driven through the ROUTE path, because a rejected write is what puts a problem document on the screen
+     * and the store's failure observer is only reached that way.
+     */
+    const ECHO = {
+      moduleId: 0,
+      tabModuleId: 31,
+      tabId: 0,
+      portalId: 0,
+      moduleDefId: 14,
+      moduleTitle: 'Latest News',
+      allTabs: true,
+      header: 'Header markup',
+      footer: 'Footer markup',
+      startDate: null,
+      endDate: null,
+      inheritViewPermissions: false,
+      isDeleted: false,
+      moduleOrder: 6,
+      cacheTime: 0,
+      iconFile: 'module.gif',
+      visibility: MODULE_VISIBILITY.none,
+      displayTitle: false,
+      friendlyName: 'Announcements',
+      moduleName: 'DNN_Announcements',
+      description: null,
+      version: '01.00.00',
+      desktopModuleId: 3,
+    };
+
+    let http: HttpTestingController;
+
+    /**
+     * Answers every outstanding request for one method and url.
+     *
+     * @param method The HTTP method to match.
+     * @param url The exact url to match.
+     * @param data The payload to place in the response envelope.
+     */
+    function answer(method: string, url: string, data: unknown): void {
+      for (const request of http.match(
+        (candidate) => candidate.method === method && candidate.url === url,
+      )) {
+        request.flush({ data });
+      }
+
+      fixture.detectChanges();
+    }
+
+    /**
+     * Rejects the outstanding module write with a problem document carrying per-field messages.
+     *
+     * @param errors The model-state dictionary, keyed as the server keys it.
+     */
+    function reject(errors: Readonly<Record<string, readonly string[]>>): void {
+      const outstanding = http.match((candidate) => candidate.method === 'PUT');
+      expect(outstanding.length).withContext('a write must be outstanding to reject').toBe(1);
+
+      outstanding[0].flush(
+        // `detail` is OMITTED, not null. `isProblemDetails` is a conjunction over every member that is
+        // present, so `detail: null` fails the string test and the whole document is discarded in favour of a
+        // status-only fallback carrying no `errors` at all - which is exactly what a per-field assertion must
+        // not be written against. ASP.NET Core omits a null ProblemDetails member rather than emitting it, so
+        // absence is also the shape the server really sends.
+        { type: 'about:blank', title: 'Bad Request', status: 400, errors },
+        { status: 400, statusText: 'Bad Request' },
+      );
+
+      // TWO passes, deliberately. The failure reaches the screen through an EFFECT, so the first pass runs
+      // the effect and the problem document it writes dirties the view only for the pass after it. One pass
+      // would assert against markup rendered from the state as it was BEFORE the refusal was recorded.
+      fixture.detectChanges();
+      fixture.detectChanges();
+    }
+
+    /** Answers whatever the store still has outstanding, so no request is left parked at teardown. */
+    function drain(): void {
+      for (const request of http.match(() => true)) {
+        const url = request.request.url;
+        const body = url.includes('/tabs') || url.includes('module-definitions') ? [] : null;
+        request.flush({ data: body });
+      }
+
+      fixture.detectChanges();
+    }
+
+    beforeEach(() => {
+      http = TestBed.inject(HttpTestingController);
+      spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
+
+      setInput('pages', null);
+      fixture.componentRef.setInput('moduleId', '0');
+      fixture.detectChanges();
+
+      answer('GET', '/api/v1/modules/0', ECHO);
+      answer('GET', '/api/v1/modules/0/settings', {
+        moduleId: 0,
+        tabModuleId: 31,
+        moduleSettings: {},
+        tabModuleSettings: {},
+      });
+      answer('GET', '/api/v1/module-definitions/14', {
+        moduleDefId: 14,
+        friendlyName: 'Announcements',
+        desktopModuleId: 3,
+        defaultCacheTime: 0,
+        moduleName: 'DNN_Announcements',
+        description: null,
+        version: '01.00.00',
+        isPremium: false,
+        isAdmin: false,
+        isPortable: true,
+      });
+      answer('GET', '/api/v1/portals/0/tabs', []);
+      openEverything();
+    });
+
+    it('names the hint alone while there is nothing to report', () => {
+      const control = field<HTMLElement>('moduleTitle');
+      expect(control).not.toBeNull();
+      expect(control!.getAttribute('aria-describedby')).toBe('module-settings-moduleTitle-hint');
+
+      // Named and absent would be a dangling reference, so the region is not emitted at all.
+      expect(qa('#module-settings-moduleTitle-message').length).toBe(0);
+
+      drain();
+    });
+
+    it('associates a server message with the control that was refused', () => {
+      submit();
+      reject({ ModuleTitle: ['A module title is required.'] });
+
+      const region = q('#module-settings-moduleTitle-message');
+      expect(region).withContext('the refused control must render its message').not.toBeNull();
+      expect(region!.getAttribute('role')).toBe('alert');
+      expect((region!.textContent ?? '').trim()).toBe('A module title is required.');
+
+      const control = field<HTMLElement>('moduleTitle');
+      expect(control).not.toBeNull();
+      // The hint is named FIRST, so the order of the description does not change when a message appears.
+      expect(control!.getAttribute('aria-describedby'))
+        .toBe('module-settings-moduleTitle-hint module-settings-moduleTitle-message');
+
+      drain();
+    });
+
+    it('associates every refused control, not only the first', () => {
+      submit();
+      reject({
+        ModuleTitle: ['A module title is required.'],
+        CacheTime: ['Cache duration must not be negative.'],
+      });
+
+      for (const name of ['moduleTitle', 'cacheTime']) {
+        const control = field<HTMLElement>(name);
+        expect(control).withContext(`${name} must be rendered`).not.toBeNull();
+        expect(control!.getAttribute('aria-describedby'))
+          .withContext(`${name} must name its own message region`)
+          .toBe(`module-settings-${name}-hint module-settings-${name}-message`);
+      }
+
+      drain();
+    });
+
+    it('renders two messages for one control in one region', () => {
+      submit();
+      reject({ ModuleTitle: ['A module title is required.', 'Title must be 256 characters or fewer.'] });
+
+      // One region, so one identifier and one description - not one region per message.
+      expect(qa('#module-settings-moduleTitle-message').length).toBe(1);
+
+      const messages = qa('#module-settings-moduleTitle-message .form-error');
+      expect(messages.map((element) => (element.textContent ?? '').trim())).toEqual([
+        'A module title is required.',
+        'Title must be 256 characters or fewer.',
+      ]);
+
+      drain();
+    });
+
+    it('reports a client and a server message through the SAME region, local reason first', () => {
+      submit();
+      reject({ CacheTime: ['Cache duration must not be negative.'] });
+
+      // The server's message is on screen; now make the control fail locally as well. The problem document is
+      // held until the next save answers, so both reasons are live at once - which is precisely the state that
+      // duplicated the identifier when the two were separate elements.
+      type('cacheTime', 'abc');
+      // `touched`, not `dirty`, is what the client rule reports on, and dispatching `input` sets only the
+      // latter - the same explicit mark every other validation case on this screen makes.
+      component['form'].controls.cacheTime.markAsTouched();
+      fixture.detectChanges();
+
+      expect(qa('#module-settings-cacheTime-message').length)
+        .withContext('two elements sharing one id is invalid markup and an ambiguous description')
+        .toBe(1);
+
+      const messages = qa('#module-settings-cacheTime-message .form-error');
+      expect(messages.map((element) => (element.textContent ?? '').trim())).toEqual([
+        'Invalid Cache Time',
+        'Cache duration must not be negative.',
+      ]);
+
+      const control = field<HTMLElement>('cacheTime');
+      expect(control).not.toBeNull();
+      expect(control!.getAttribute('aria-describedby'))
+        .toBe('module-settings-cacheTime-hint module-settings-cacheTime-message');
+
+      drain();
+    });
+
+    it('describes the permission switch by its region hint and its own message key', () => {
+      submit();
+      reject({ InheritViewPermissions: ['The inherit flag could not be applied.'] });
+
+      const control = field<HTMLElement>('inheritViewPermissions');
+      expect(control).withContext('the inherit switch must be rendered').not.toBeNull();
+      // The switch sits in the permissions region and is described by THAT hint, but the server reports it
+      // under its own control name - so the two identifiers deliberately differ.
+      expect(control!.getAttribute('aria-describedby'))
+        .toBe('module-settings-permissions-hint module-settings-inheritViewPermissions-message');
+
+      drain();
     });
   });
 

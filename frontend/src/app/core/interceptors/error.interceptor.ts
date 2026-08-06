@@ -82,7 +82,7 @@ import { catchError, throwError } from 'rxjs';
 
 import { isProblemDetails } from '../models/problem-details.model';
 import type { ProblemDetails } from '../models/problem-details.model';
-import { NotificationService } from '../services/notification.service';
+import { NotificationService, PRESENTED_IN_CONTEXT } from '../services/notification.service';
 import type { NotificationSeverity } from '../services/notification.service';
 import {
   isValidationProblemDetails,
@@ -117,15 +117,13 @@ import type { ProblemSummary } from '../utils/form-errors.util';
  */
 const NETWORK_UNAVAILABLE = 'The server could not be reached. Check your connection and try again.';
 
-/**
- * Introduces the server's trace identifier when one is quoted.
- *
- * Deliberately terse and deliberately not an explanation. The identifier is a
- * diagnostic to repeat in a report, not a description of what went wrong, so the
- * sentence that precedes it carries the meaning and this label only marks what
- * follows as a reference.
- */
-const REFERENCE_LABEL = 'Reference:';
+// MIGRATION: the `Reference:` label that used to be declared here now lives in
+// `core/services/notification.service.ts`, beside the bounding it has to survive.
+// Deciding WHETHER to quote a reference is a transport-status question and stays in this
+// file - see `resolveReference` - but composing the label into the displayed sentence is
+// the queue's job, because the queue is what applies the length bound and only the party
+// applying the bound can guarantee the suffix outlives it. The wording is unchanged, so
+// no rendered message differs; the label is simply declared once, where it is used.
 
 /**
  * The statuses at which the server is REFUSING rather than FAILING.
@@ -246,18 +244,37 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
   // what keeps this module free of state and therefore safe under parallel tests.
   const notifications = inject(NotificationService);
 
+  // MIGRATION: THIS INTERCEPTOR IS NOW THE FALLBACK ANNOUNCER, NOT THE UNIVERSAL ONE,
+  //   and that is the whole of the change. It used to announce EVERY failed response,
+  //   while the root signal stores simultaneously retained the same failure on their own
+  //   `failure`/`problem` slices for a screen to bind to `error-banner`. One refusal
+  //   therefore produced two independently-worded, independently-dismissible reports of
+  //   a single incident, and no operator could tell whether they were looking at one
+  //   problem or two. The legacy surface it replaces had exactly one message channel -
+  //   `AddModuleMessage` rendered a single module message per page render - so two
+  //   publishers preserves nothing.
+  //
+  // The marker is read from the request CONTEXT rather than inferred from the URL or the
+  // caller, because only the caller knows whether it presents its own failures. Reading
+  // it here, once, before anything else happens, is what makes the arbitration rule
+  // stated on `PRESENTED_IN_CONTEXT` a single decision in a single place. The default is
+  // "not presented", so a caller that forgets the marker is announced twice rather than
+  // not at all.
+  const presentedByCaller: boolean = req.context.get(PRESENTED_IN_CONTEXT);
+
   return next(req).pipe(
     catchError((error: unknown) => {
       // Narrowed rather than assumed. A failure reaching an interceptor is not
       // necessarily an `HttpErrorResponse` - an operator or an inner interceptor can
       // throw anything at all - and reading `.status` off such a value would yield
       // `undefined` and silently compare unequal to every branch below.
-      if (error instanceof HttpErrorResponse) {
+      if (error instanceof HttpErrorResponse && !presentedByCaller) {
         announce(notifications, error);
       }
 
-      // The single exit, taken on every path. A failure that has been announced is
-      // still a failure the caller asked about.
+      // The single exit, taken on every path, and it is UNCONDITIONAL. Suppressing the
+      // announcement changes who tells the operator; it never changes what the caller
+      // hears, so a store still receives the failure it is expected to present.
       return throwError(() => error);
     }),
   );
@@ -326,7 +343,8 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
   // permissive `isProblemDetails` accepts - so reading the body first would mistake
   // a transport failure for a problem document that happens to say nothing.
   if (status === 0) {
-    notifications.notify(severity, NETWORK_UNAVAILABLE);
+    // No response arrived, so there is no server-side reference to quote.
+    notifications.notify(severity, NETWORK_UNAVAILABLE, null);
 
     return;
   }
@@ -350,7 +368,13 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
     return;
   }
 
-  notifications.notify(severity, quoteReference(summary.message, summary.supportReference, status));
+  // The reference is handed over as its OWN argument rather than concatenated into the
+  // sentence. See `resolveReference` for why that matters.
+  notifications.notify(
+    severity,
+    summary.message,
+    resolveReference(summary.supportReference, status),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -406,15 +430,24 @@ function readProblem(error: HttpErrorResponse): ProblemDetails | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Appends the server's trace identifier to a message, when one should be quoted.
+ * Decides whether the server's trace identifier should be quoted, and normalises it.
  *
  * The identifier is the only join key between what an operator saw in the browser
  * and the request as the server recorded it. The client's own correlation header
  * round-trips into it server-side, and the successful-response envelope
  * deliberately carries no such member, so a problem document is the only place it
- * ever appears. It is carried in the message string because the notification queue
- * holds a severity and a message and nothing else - by design, since a trace
- * identifier belongs to a problem document, which that service never sees.
+ * ever appears.
+ *
+ * MIGRATION: THIS FUNCTION USED TO CONCATENATE THE REFERENCE ONTO THE MESSAGE, AND THAT
+ *   IS WHY THE REFERENCE COULD DISAPPEAR. The composed string was then bounded by the
+ *   notification queue at its maximum message length, and bounding removes a SUFFIX — so
+ *   on precisely the failures whose server `detail` is long, which are the unexpected
+ *   ones worth reporting, the identifier was the first thing discarded. An operator was
+ *   left with an unbounded server sentence and nothing to look it up by. The reference is
+ *   now returned on its own and passed to the queue as a separate argument, which bounds
+ *   the message and the reference independently and appends the reference afterwards. The
+ *   rendered wording for every message short enough to survive the bound — which is every
+ *   message this application composes itself — is byte-for-byte what it was.
  *
  * MIGRATION: the identifier is normalised through `stripLegacyBreakTags` before it
  * is quoted, even though it cannot legitimately contain markup. Every other
@@ -424,19 +457,21 @@ function readProblem(error: HttpErrorResponse): ProblemDetails | null {
  * makes "no server-supplied text reaches a notification unnormalised" true without
  * an exception, and an exception is what a later reader would have to rediscover.
  *
- * @param message The already-composed sentence.
+ * A value that normalises to nothing is reported as absent rather than as an empty
+ * reference, so no `Reference:` label is ever left with nothing after it.
+ *
  * @param reference The support identifier from the problem document, or null when absent.
  * @param status The transport status of the failed response.
- * @returns The message, with the reference appended only when one is warranted.
+ * @returns The normalised identifier, or null when none should be quoted.
  */
-function quoteReference(message: string, reference: string | null, status: number): string {
+function resolveReference(reference: string | null, status: number): string | null {
   if (reference === null || isRefusal(status)) {
-    return message;
+    return null;
   }
 
   const quoted = stripLegacyBreakTags(reference);
 
-  return quoted.length > 0 ? `${message} ${REFERENCE_LABEL} ${quoted}` : message;
+  return quoted.length > 0 ? quoted : null;
 }
 
 /**

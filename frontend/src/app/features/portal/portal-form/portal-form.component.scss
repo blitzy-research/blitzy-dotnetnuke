@@ -1,0 +1,150 @@
+// Component stylesheet for the tenant create-and-edit form, served by the routes
+// /portals/new and /portals/:portalId.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .portal-form
+//     .portal-form__form
+//     .portal-form__section
+//     .portal-form__legend
+//     .portal-form__grid
+//     .portal-form__choices
+//     .portal-form__choice
+//     .portal-form__note
+//     .portal-form__actions
+//
+// The surface is deliberately flat - one block class plus element and modifier classes,
+// no deep descendant chains and no piercing selector. Shared components own their own
+// appearance; this file only places them. Focus indication is deliberately absent and
+// must stay absent: _reset.scss applies the shared focus-ring mixin to every anchor,
+// button, input, select, textarea and summary, so the design system owns focus and a
+// feature screen consumes it rather than redeclaring it.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared on the component root and inherited by every region below rather
+// than restated per rule: without it the browser falls back to its own serif default for
+// every legend, label, help string and note on the screen.
+.portal-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// The template renders EITHER the create form or the edit form, never both, so this rule
+// applies to whichever one is present rather than to a pair.
+.portal-form__form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  SECTIONS
+// -----------------------------------------------------------------------------
+// A bordered fieldset per group of related fields, which is what carries the grouping
+// that the legacy screen expressed with a nested layout table. A `legend` is painted by
+// the browser as part of its fieldset's border, so its inline padding is what opens the
+// gap in that border - a margin would move the text without breaking the line.
+.portal-form__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+.portal-form__legend {
+  padding-inline: var(--space-1);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// -----------------------------------------------------------------------------
+//  FIELD GRID
+// -----------------------------------------------------------------------------
+// One column until there is room for two, so a label never sits above a control that has
+// been squeezed to a few characters. The breakpoint comes from the shared scale through
+// the mixin rather than from a hand-written query, which is what keeps every screen in
+// this workspace breaking at the same widths. `minmax(0, 1fr)` rather than `1fr` because
+// a grid track's automatic minimum is its content, and a long unbroken host name in one
+// column would otherwise push the other column off the screen.
+.portal-form__grid {
+  display: grid;
+  gap: var(--space-3);
+
+  @include mx.respond-above('md') {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  EXCLUSIVE CHOICES
+// -----------------------------------------------------------------------------
+// One choice per line, because the template's options are whole sentences rather than
+// single words and a row would truncate them at the narrow widths this screen must still
+// work at. Baseline alignment puts the control on the first line of a wrapped label
+// instead of centring it against the whole block. The `fieldset` is stripped of its own
+// border and padding: the group it fences is already inside a bordered section, and a
+// second frame around it would read as a nesting level that does not exist.
+.portal-form__choices {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.portal-form__choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+// A capped measure, because an explanatory note that runs the full width of a desktop
+// viewport is measurably harder to read than one that wraps at a comfortable line length.
+.portal-form__note {
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives
+// white-space collapsing, and wrapping is intrinsic so the cancel link drops below the
+// submit button on a narrow viewport instead of overflowing.
+.portal-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy creation screen (`Website/admin/Portal/signup.ascx` L5-L6, L10-L11,
+// L75-L76) was three nested layout tables at fixed pixel widths, each declaring a `summary`
+// that described it as a "Design Table" - the tell that they carried layout and not data.
+// None of them survives: the field pairs become a CSS grid and the fixed widths become a
+// fluid measure capped at a declared breakpoint step. The two-column collapse below that
+// step is a net addition, because the legacy stylesheets declare no media query anywhere.
+//
+// MIGRATION: every spacing value resolves to the shared spacing scale and every rounded
+// corner to the shared radius scale, both of which are NET ADDITIONS - the legacy design
+// is square-cornered and has no spacing system. No elevation is introduced. All of this is
+// intentional visual refinement that alters no behaviour, and is recorded with the rest in
+// MIGRATION_NOTES.md.
+// =============================================================================

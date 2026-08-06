@@ -1,4 +1,5 @@
 using DnnMigration.Domain.Abstractions.Repositories;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -151,6 +152,16 @@ internal sealed class ModuleRepository : IModuleRepository
     /// a <see cref="DbSet{TEntity}"/> or a transaction through this repository.
     /// </summary>
     private readonly DnnDbContext _dbContext;
+
+    /// <summary>
+    /// The module property a placement listing orders by when the caller names none.
+    /// </summary>
+    /// <remarks>
+    /// The title, which is what the legacy administration grid presented the collection in. Named rather
+    /// than written as a bare string at the switch's default arm, so the default is stated once and the
+    /// arm that applies it is visibly the same arm an unrecognised name falls to.
+    /// </remarks>
+    private const string DefaultPlacementSortProperty = "ModuleTitle";
 
     /// <summary>Initialises a new instance of the <see cref="ModuleRepository"/> class.</summary>
     /// <param name="dbContext">
@@ -366,18 +377,28 @@ internal sealed class ModuleRepository : IModuleRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// The hard delete that empties the recycle bin, distinct from the soft delete described on
     /// <see cref="UpdateAsync"/>. The row is located first because the contract addresses its target by
-    /// identifier, as the legacy procedure did; when the caller already holds the entity this resolves
-    /// from the change tracker without a round trip. Cascading to placements and settings is the
-    /// schema's existing foreign-key behaviour, which this refactor does not alter.
+    /// identifier, as the legacy procedure did. Cascading to placements and settings is the schema's
+    /// existing foreign-key behaviour, which this refactor does not alter.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the lookup is <c>FindAsync</c> rather than a predicated first-match, and the difference
+    /// is a round trip rather than a style. <c>FindAsync</c> consults the change tracker BEFORE the store
+    /// and returns an already-tracked entity without querying at all, whereas a predicated query always
+    /// issues a statement however many of its rows are already in memory. The remark here previously
+    /// claimed the tracker was consulted; it was not, which is why a caller holding a set of modules paid
+    /// one lookup per row. A caller that holds the entities should use <see cref="DeleteRangeAsync"/>,
+    /// which issues no read at all; this member remains the right shape for the by-identifier contract.
+    /// </para>
     /// </remarks>
     // MIGRATION: replaces `DeleteModule(ByVal ModuleId As Integer)` (DataProvider.vb:L134). The removal
     // is staged rather than executed, so it commits with whatever else the unit of work carries.
     public async Task DeleteAsync(int moduleId, CancellationToken cancellationToken = default)
     {
         Module? module = await _dbContext.Modules
-            .FirstOrDefaultAsync(candidate => candidate.ModuleId == moduleId, cancellationToken)
+            .FindAsync(new object?[] { moduleId }, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null)
@@ -388,6 +409,34 @@ internal sealed class ModuleRepository : IModuleRepository
         }
 
         _dbContext.Modules.Remove(module);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Staging only, and reading nothing: the entities are the caller's own, so there is no row to locate.
+    /// An empty set stages nothing, which keeps the member callable without a guard at the call site.
+    /// </remarks>
+    // MIGRATION: net-new. It exists because tenant deletion must remove the tenant's modules explicitly -
+    // FK_Modules_Portals is the one foreign key into dbo.Portals that carries no cascade clause in the
+    // terminal schema - and it already holds every module entity when it does so. Asking this repository
+    // to find each of those rows again by identifier, inside the serialisable transaction the tenant
+    // removal holds open, made the lock duration grow with the tenant's size for no information the caller
+    // did not already have.
+    public Task DeleteRangeAsync(
+        IReadOnlyCollection<Module> modules,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(modules);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (modules.Count == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        _dbContext.Modules.RemoveRange(modules);
+
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
@@ -527,6 +576,174 @@ internal sealed class ModuleRepository : IModuleRepository
             .ThenBy(placement => placement.TabModuleId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Read-only, so the rows are not tracked: the one call site projects them onto data transfer objects
+    /// and reads the total, and it mutates nothing. Tracking a page of placements together with their
+    /// modules, definitions and packages would populate the change tracker with the whole projection on
+    /// every listing request for no benefit.
+    /// </para>
+    /// <para>
+    /// EVERY NARROWING IS RELATIONAL AND HAPPENS BEFORE THE WINDOW. The tenant predicate, the recycle-bin
+    /// predicate and the title fragment all reach through the required <c>ModuleID</c> relationship, which
+    /// Entity Framework renders as an inner join onto <c>dbo.Modules</c> - the same join the legacy
+    /// procedure performed - so the store decides which placements qualify. The count is taken over that
+    /// same filtered query, so the total describes exactly the set the window was drawn from, and the
+    /// window is a <c>Skip</c>/<c>Take</c> the store translates rather than an enumeration this process
+    /// walks. Two round trips serve any page.
+    /// </para>
+    /// <para>
+    /// The title fragment is matched with a relational containment test over folded case, which is the
+    /// same shape <c>PortalRepository.ListAsync</c> uses and it is chosen for the same two reasons: the
+    /// caller's text stays DATA, so a per-cent or underscore in it matches literally instead of widening
+    /// the search into a pattern, and folding both sides makes the answer independent of the collation the
+    /// installation happens to carry. The legacy comparison was also case-insensitive.
+    /// </para>
+    /// <para>
+    /// MIGRATION: ordering moves from this process back into the statement, and the one observable
+    /// consequence is recorded rather than absorbed. The composition this replaces ordered titles in
+    /// memory with an ordinal, case-insensitive comparer; the store orders them by the column's own
+    /// collation. Under the collation this schema is installed with the two agree on case, which is the
+    /// property the ordering was chosen for, but they can disagree on how punctuation and accented
+    /// characters sort. Ordering in the store is nevertheless the correct side of the boundary, because
+    /// ordering in this process is only possible if this process has already read every row - which is
+    /// precisely the cost being removed - and because the legacy read ordered in SQL too.
+    /// </para>
+    /// </remarks>
+    public async Task<PagedResult<TabModule>> ListPlacementsAsync(
+        int portalId,
+        int? tabId,
+        bool includeDeleted,
+        string? titleQuery,
+        string? sortBy,
+        bool descending,
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<TabModule> query = _dbContext.TabModules
+            .AsNoTracking()
+            .Where(placement => placement.Module.PortalId == portalId);
+
+        if (!includeDeleted)
+        {
+            query = query.Where(placement => !placement.Module.IsDeleted);
+        }
+
+        if (tabId is int addressedTab)
+        {
+            // The presence of a value selects the filter, never its magnitude: TabID is IDENTITY(0, 1),
+            // so a page identifier of zero addresses a real page and must not read as "unspecified".
+            query = query.Where(placement => placement.TabId == addressedTab);
+        }
+
+        if (!string.IsNullOrWhiteSpace(titleQuery))
+        {
+            // ModuleTitle permits null, so the null test precedes the comparison.
+            string wanted = titleQuery.Trim().ToLowerInvariant();
+            query = query.Where(placement =>
+                placement.Module.ModuleTitle != null
+                && placement.Module.ModuleTitle.ToLower().Contains(wanted));
+        }
+
+        query = ApplyPlacementOrder(query, sortBy, descending);
+
+        // The module, its definition and the package behind it are loaded WITH THE WINDOW, so the graph is
+        // hydrated for the rows being returned and for no others. This is the distinction the aggregate
+        // reads above cannot make: they have no window, so a graph loaded there is a graph loaded for the
+        // whole tenant.
+        IQueryable<TabModule> projection = query
+            .Include(placement => placement.Module)
+                .ThenInclude(module => module.ModuleDefinition)
+                    .ThenInclude(definition => definition.DesktopModule);
+
+        if (pageSize == 0)
+        {
+            // Every matching row was asked for, which is the same convention the other paged reads on
+            // these contracts carry. Routed through Unpaged because the total of an unpaged read is the
+            // row count itself, so no separate counting round trip is issued for this branch.
+            List<TabModule> all = await projection.ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            return PagedResult<TabModule>.Unpaged(all);
+        }
+
+        int totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+
+        List<TabModule> rows = await projection
+            .Skip(Paging.SkipCount(pageIndex, pageSize))
+            .Take(pageSize)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return PagedResult<TabModule>.Create(rows, totalCount, pageIndex, pageSize);
+    }
+
+    /// <summary>
+    /// Applies the caller's chosen module ordering to a placement query, then the fixed placement
+    /// tie-break.
+    /// </summary>
+    /// <param name="query">The filtered placement query.</param>
+    /// <param name="sortBy">The module property to order by, or <see langword="null"/> for the default.</param>
+    /// <param name="descending">Whether the module ordering runs downwards.</param>
+    /// <returns>The ordered query.</returns>
+    /// <remarks>
+    /// <para>
+    /// An ordering is applied unconditionally, and every arm terminates on the module's own key, so the
+    /// order is TOTAL: without that, two modules sharing a title have no defined relative position and
+    /// the same page coordinates can return different rows on two calls, which makes a pager unable to
+    /// enumerate the collection. An unrecognised name falls to the default rather than being rejected
+    /// here, because refusing a sort field is a request-validation decision and the layer that owns the
+    /// paging request has already made it against that collection's own permitted set.
+    /// </para>
+    /// <para>
+    /// The placement tie-break runs UPWARDS whichever direction the module ordering runs. It orders the
+    /// placements OF a module rather than the modules themselves, so reversing it with the module
+    /// ordering would reverse each module's own pages against the sequence the page tree defines.
+    /// </para>
+    /// </remarks>
+    private static IQueryable<TabModule> ApplyPlacementOrder(
+        IQueryable<TabModule> query,
+        string? sortBy,
+        bool descending)
+    {
+        string property = string.IsNullOrWhiteSpace(sortBy)
+            ? DefaultPlacementSortProperty
+            : sortBy.Trim();
+
+        IOrderedQueryable<TabModule> ordered = property.ToUpperInvariant() switch
+        {
+            "MODULEID" => descending
+                ? query.OrderByDescending(placement => placement.Module.ModuleId)
+                : query.OrderBy(placement => placement.Module.ModuleId),
+            "ISDELETED" => descending
+                ? query.OrderByDescending(placement => placement.Module.IsDeleted)
+                    .ThenByDescending(placement => placement.Module.ModuleId)
+                : query.OrderBy(placement => placement.Module.IsDeleted)
+                    .ThenBy(placement => placement.Module.ModuleId),
+            "STARTDATE" => descending
+                ? query.OrderByDescending(placement => placement.Module.StartDate)
+                    .ThenByDescending(placement => placement.Module.ModuleId)
+                : query.OrderBy(placement => placement.Module.StartDate)
+                    .ThenBy(placement => placement.Module.ModuleId),
+            "ENDDATE" => descending
+                ? query.OrderByDescending(placement => placement.Module.EndDate)
+                    .ThenByDescending(placement => placement.Module.ModuleId)
+                : query.OrderBy(placement => placement.Module.EndDate)
+                    .ThenBy(placement => placement.Module.ModuleId),
+            _ => descending
+                ? query.OrderByDescending(placement => placement.Module.ModuleTitle)
+                    .ThenByDescending(placement => placement.Module.ModuleId)
+                : query.OrderBy(placement => placement.Module.ModuleTitle)
+                    .ThenBy(placement => placement.Module.ModuleId),
+        };
+
+        return ordered
+            .ThenBy(placement => placement.TabId)
+            .ThenBy(placement => placement.ModuleOrder)
+            .ThenBy(placement => placement.TabModuleId);
     }
 
     /// <inheritdoc />

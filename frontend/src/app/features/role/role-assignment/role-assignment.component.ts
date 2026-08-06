@@ -62,14 +62,30 @@
  * ## Why this screen reads the membership listing itself
  *
  * The shared role store exposes an assignment listing, but its page coordinate is private
- * and fixed at the default page size with only a page-INDEX setter. The legacy grid is
- * unpaged — `securityroles.ascx:L56` declares no `AllowPaging`, no pager style and
- * `enableviewstate="false"` — so consuming that listing would either truncate the grid and
- * put an eleventh member's Delete command out of reach, or force a pager the legacy screen
- * never had. This component therefore reads the listing through the same interface the
- * store itself uses, asking for the largest page the contract allows and following on for
- * any further pages the server reports, and holds the result in its own signals. No URL is
+ * with only a page-INDEX setter, so a screen that also has to prefill from one account's
+ * membership cannot drive it. This component therefore reads the listing through the same
+ * interface the store itself uses and holds ONE page of it in its own signals. No URL is
  * built here, no HTTP client is touched here, and no header is set here.
+ *
+ * ## Why the grid is paged even though the legacy grid was not
+ *
+ * MIGRATION: the legacy grid was UNPAGED — `securityroles.ascx:L56` declares no
+ * `AllowPaging`, no pager style and `enableviewstate="false"` — and the first port
+ * reproduced that literally: it asked for the largest page the contract allows and then
+ * followed every further page the server reported, concurrently, holding the union. That
+ * is not a faithful reproduction of an unpaged grid, it is an unbounded read: the listing
+ * behind it counts and windows in SQL per request, so following N pages costs N windowed
+ * queries whose retained result grows without limit, and a mis-reported page count turned
+ * one screen into a fan-out. One ACTIVE page is rendered instead, with the shared pager
+ * making the rest reachable, and the page a read answers replaces the one before it rather
+ * than accumulating. Every membership remains reachable, so no Delete command goes out of
+ * reach; what changes is that reaching the eleventh one takes a pager click, which is the
+ * affordance the rest of this application already uses for exactly this situation.
+ *
+ * The two places that needed the WHOLE set — the action's label and the date prefill — do
+ * not read the visible page. They ask the server about the one account that was chosen, so
+ * their answer is the same whichever page happens to be on screen; see
+ * {@link RoleAssignmentComponent.selectUser}.
  */
 
 import {
@@ -94,13 +110,11 @@ import {
   type ValidationErrors,
 } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { forkJoin, map, of, switchMap, type Observable } from 'rxjs';
+import type { Subscription } from 'rxjs';
 
 import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
-  toPagedResult,
-  type PagedResult,
 } from '../../../core/models/paged-result.model';
 import { isProblemDetails, type ProblemDetails } from '../../../core/models/problem-details.model';
 import type { Role, RoleAssignmentRequest, UserRole } from '../../../core/models/role.model';
@@ -127,6 +141,7 @@ import {
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 
@@ -187,6 +202,22 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
 
   /** `SendNotification.Text`. */
   notifyLabel: 'Send Notification?',
+
+  /**
+   * The sentence stating why the notification choice cannot be made.
+   *
+   * MIGRATION: `SecurityRoles.ascx.vb:L542` and `:L569` passed this choice to a routine that mailed the
+   * account holder, and the assignment contract still carries the member - so the member is transmitted
+   * rather than dropped. What is NOT carried is the mail subsystem, which this migration excludes
+   * wholesale, so no notification is sent for any value of the flag.
+   *
+   * SAID HERE, BEFORE THE DECISION, RATHER THAN NOT AT ALL. The control used to arrive TICKED and its
+   * true value was transmitted, so the operator asked for a notification, received a success, and had
+   * every reason to believe one had gone out. Stating the gap beside the control is the honest
+   * alternative, and it is the same treatment the account editor's notify control receives.
+   */
+  notifyHelp:
+    'Unavailable: this installation exposes no mail endpoint, so no notification e-mail can be sent.',
 
   /** `AddUser.Text` — the action's label while the chosen account holds no membership. */
   addUser: 'Add User to Role',
@@ -439,14 +470,31 @@ const USER_LOOKUP_PAGE_SIZE = DEFAULT_PAGE_SIZE;
  */
 const PROTECTED_ASSIGNMENT_CODE = 'role_assignment.protected';
 
+/** The first page of any listing, counted from nought as the paging contract counts. */
+const FIRST_PAGE_INDEX = 0;
+
 /**
- * Upper bound on how many membership pages this screen will follow.
+ * How many memberships one page of the grid holds.
  *
- * The listing is unpaged on screen, so every page the server reports is fetched; this cap
- * exists only so a mis-reported page count cannot turn one screen into unbounded traffic.
- * At the largest page the contract allows it covers a hundred thousand memberships.
+ * The application's default rather than a size chosen here, so this grid pages on the same
+ * coordinate as every other listing in the workspace and an operator meets one pager
+ * behaviour throughout. Exactly ONE page is held at a time; see the note on the class.
  */
-const MAX_MEMBERSHIP_PAGES = 1000;
+const MEMBERSHIP_PAGE_SIZE = DEFAULT_PAGE_SIZE;
+
+/**
+ * The page size of the single-account membership probe.
+ *
+ * The probe filters the role's memberships by the chosen account's login name, which the
+ * listing matches as a case-insensitive substring of either the login name or the display
+ * name, so a handful of rows can come back for a name that is a fragment of another. The
+ * largest page the contract allows is asked for so that the one row being looked for cannot
+ * fall off the end of the answer in any realistic tenant; when the server reports that even
+ * that was truncated, the probe reports "not known" rather than "no membership", which
+ * {@link RoleAssignmentComponent.applyProbeAnswer} treats as the empty prefill the legacy
+ * screen showed for an account it had no row for.
+ */
+const MEMBERSHIP_PROBE_PAGE_SIZE = MAX_PAGE_SIZE;
 
 
 /**
@@ -695,6 +743,7 @@ function pairingKey(roleId: number, userId: number): string {
     FormFieldComponent,
     SearchInputComponent,
     DataTableComponent,
+    PaginationComponent,
     ConfirmDialogComponent,
     DateDisplayPipe,
   ],
@@ -721,6 +770,9 @@ export class RoleAssignmentComponent {
   // MIGRATION: 13. 'Security Role' column omitted because role-centric mode hid it; :L245.
   // MIGRATION: 14. no required validator on the account field; :L520-L521 was a guard clause.
   // MIGRATION: 15. silent blank on a failed lookup -> visible no-matches state; :L476-L488.
+  // MIGRATION: 16. unpaged grid -> one page plus the shared pager; :L56; see the class note.
+  // MIGRATION: 17. whole-set scans for the label and the prefill -> one keyed server probe;
+  // MIGRATION:     :L253, :L273-L303, :L656-L658; see selectUser and probeMembership.
 
   private readonly roleService = inject(RoleService);
   private readonly userService = inject(UserService);
@@ -760,6 +812,59 @@ export class RoleAssignmentComponent {
     null,
   );
 
+  /** The page of memberships on screen, counted from nought. */
+  private readonly pageIndexSignal: WritableSignal<number> = signal(FIRST_PAGE_INDEX);
+
+  /** How many memberships the role has in total, as the last read reported it. */
+  private readonly totalCountSignal: WritableSignal<number> = signal(0);
+
+  /**
+   * The chosen account's existing membership of this role, as the probe answered.
+   *
+   * `null` means "no membership is known", which covers three cases the screen treats
+   * identically because the legacy screen did: no account is chosen, the account holds no
+   * membership, and the probe could not settle the question. All three show empty bounds and
+   * the 'Add User' label — the state the legacy grid showed when no row matched.
+   */
+  private readonly selectedMembershipSignal: WritableSignal<UserRole | null> =
+    signal<UserRole | null>(null);
+
+  /**
+   * The in-flight read of each slice, held so a NEW read can cancel the one it replaces.
+   *
+   * Destruction-time cleanup alone is not enough: within one mounted screen the addressed
+   * role, the page, the search term and the chosen account all change while a read is in
+   * flight, and an HTTP answer that arrives after its request stopped being the current one
+   * would overwrite newer state with older. One handle per slice, unsubscribed before it is
+   * replaced, makes that impossible — unsubscribing a request observable both abandons the
+   * exchange and detaches this observer, so a late answer reaches nothing.
+   *
+   * A read is still piped through {@link takeUntilDestroyed} as well, so nothing survives
+   * the screen itself; these handles govern replacement WITHIN its lifetime.
+   */
+  private roleRequest: Subscription | null = null;
+
+  /** @see roleRequest */
+  private assignmentsRequest: Subscription | null = null;
+
+  /** @see roleRequest */
+  private userLookupRequest: Subscription | null = null;
+
+  /** @see roleRequest */
+  private membershipProbeRequest: Subscription | null = null;
+
+  /**
+   * Which addressed role the screen's state belongs to.
+   *
+   * A counter rather than a flag, and advanced by {@link resetForRole}, so an answer can be
+   * matched against the role it was asked for instead of merely against "some role is
+   * addressed". Unsubscribing already stops a superseded read from landing; this is the
+   * second fence, and it is the one that holds if a read is ever composed in a way that
+   * escapes its handle — a deferred callback, a retry, or a stream that completes
+   * synchronously before its handle has been assigned.
+   */
+  private roleGeneration = 0;
+
   /**
    * The screen's typed form.
    *
@@ -787,7 +892,11 @@ export class RoleAssignmentComponent {
         nonNullable: true,
         validators: [calendarDateValidator],
       }),
-      notify: new FormControl<boolean>(true, { nonNullable: true }),
+      // UNTICKED AND DISABLED, departing from the measured initial state deliberately. The
+      // contract's member is still transmitted - a disabled control reports its value like any
+      // other - but it now carries FALSE, which is the truthful request: nothing is asking for a
+      // notification, because nothing can send one. See notifyHelp above.
+      notify: new FormControl<boolean>({ value: false, disabled: true }, { nonNullable: true }),
     },
     { validators: [dateOrderValidator] },
   );
@@ -804,12 +913,37 @@ export class RoleAssignmentComponent {
   /** Whether the addressed role is still being fetched. */
   public readonly roleLoading: Signal<boolean> = this.roleLoadingSignal.asReadonly();
 
-  /** Every membership of the addressed role, unpaged. */
+  /** The page of memberships on screen. Exactly one page is held; the pager reaches the rest. */
   public readonly assignments: Signal<readonly UserRole[]> = this.assignmentsSignal.asReadonly();
 
   /** Whether the membership listing is in flight. */
   public readonly assignmentsLoading: Signal<boolean> =
     this.assignmentsLoadingSignal.asReadonly();
+
+  /** The page on screen, counted from nought, for the shared pager's `page` input. */
+  public readonly pageIndex: Signal<number> = this.pageIndexSignal.asReadonly();
+
+  /** The page size in effect, for the shared pager's `pageSize` input. */
+  public readonly pageSize: Signal<number> = signal(MEMBERSHIP_PAGE_SIZE).asReadonly();
+
+  /** How many memberships the role has, for the shared pager's `totalCount` input. */
+  public readonly totalCount: Signal<number> = this.totalCountSignal.asReadonly();
+
+  /**
+   * Whether the pager has anything to offer.
+   *
+   * The same predicate the rest of the workspace draws its pager on — more memberships exist
+   * than fit on one page — so a role with ten or fewer members renders exactly what the
+   * unpaged legacy grid rendered, with no pager in sight. This says whether the control has
+   * work to do; whether it is DRAWN is the template's decision and the control's own.
+   */
+  public readonly pagerRequired: Signal<boolean> = computed(
+    () => MEMBERSHIP_PAGE_SIZE < this.totalCountSignal(),
+  );
+
+  /** The chosen account's existing membership of this role, or `null` when none is known. */
+  public readonly selectedMembership: Signal<UserRole | null> =
+    this.selectedMembershipSignal.asReadonly();
 
   /** Whether a write is in flight, so the action can be held. */
   public readonly saving: Signal<boolean> = this.savingSignal.asReadonly();
@@ -897,14 +1031,22 @@ export class RoleAssignmentComponent {
    * `SecurityRoles.ascx.vb:L650` tested the role identifier against the null sentinel, which
    * is false here, so `:L651-L653` was dead code on this screen; `:L656` tested the ACCOUNT
    * identifier, which is true here, and `:L657-L658` is the branch that ran — it relabelled
-   * the action when a grid row's account matched the chosen one. That is reproduced exactly.
+   * the action when a grid row's account matched the chosen one.
+   *
+   * MIGRATION: the fact is read from the SERVER'S answer about the chosen account rather than
+   * by scanning the rendered rows. The legacy grid held every membership, so "a rendered row
+   * matches" and "the account holds this role" were the same statement there; with one page
+   * rendered they are not, and scanning the page would relabel the action according to which
+   * page happens to be on screen. The probe answers the question the legacy test was actually
+   * asking, so the label is right on page one and on page nine alike.
    */
   public readonly actionLabel: Signal<string> = computed(() => {
     const chosen = this.formStateSignal().userId;
     if (chosen === null) {
       return ROLE_ASSIGNMENT_TEXT.addUser;
     }
-    const holdsRole = this.assignmentsSignal().some((row) => row.userId === chosen);
+    const membership = this.selectedMembershipSignal();
+    const holdsRole = membership !== null && membership.userId === chosen;
     return holdsRole ? ROLE_ASSIGNMENT_TEXT.updateUserRole : ROLE_ASSIGNMENT_TEXT.addUser;
   });
 
@@ -1209,10 +1351,17 @@ export class RoleAssignmentComponent {
    * The term is sent RAW. The listing matches on a prefix, so appending a wildcard would
    * search for the wildcard itself.
    *
+   * Each lookup CANCELS the one before it. The operator types, so terms supersede one another
+   * quickly and the answers need not come back in the order they were asked for; without the
+   * cancellation a slow answer to 'a' could land after the answer to 'ann' and put the wider
+   * match list back under the narrower term.
+   *
    * @param term The name fragment the operator typed.
    */
   public onUserSearch(term: string): void {
     const query = term.trim();
+    this.userLookupRequest?.unsubscribe();
+    this.userLookupRequest = null;
     this.userLookupTermSignal.set(query);
     if (query.length === 0) {
       this.userLookupLoadingSignal.set(false);
@@ -1221,19 +1370,31 @@ export class RoleAssignmentComponent {
     }
     this.userLookupLoadingSignal.set(true);
     const request: UserListQuery = {
-      pageIndex: 0,
+      pageIndex: FIRST_PAGE_INDEX,
       pageSize: USER_LOOKUP_PAGE_SIZE,
       userName: query,
     };
-    this.userService
+    const generation = this.roleGeneration;
+    this.userLookupRequest = this.userService
       .list(request)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (page): void => {
+          if (this.roleGeneration !== generation) {
+            return;
+          }
+          this.userLookupRequest = null;
           this.userLookupLoadingSignal.set(false);
-          this.userMatchesSignal.set(toPagedResult(page).items);
+          // The service decodes its own answer against the published contract, so the page
+          // arrives already framed AND record-checked. Re-framing it here would erase the
+          // record type and re-do a validation the service boundary owns.
+          this.userMatchesSignal.set(page.items);
         },
         error: (error: unknown): void => {
+          if (this.roleGeneration !== generation) {
+            return;
+          }
+          this.userLookupRequest = null;
           this.userLookupLoadingSignal.set(false);
           this.userMatchesSignal.set([]);
           this.raise(this.failureNotice(error));
@@ -1248,6 +1409,15 @@ export class RoleAssignmentComponent {
    * branch is reproduced. Where a membership already exists the legacy screen showed its two
    * bounds, skipping either one the null test reported as unset (`:L281-L286`); that is done
    * here, from the values the membership contract publishes.
+   *
+   * MIGRATION: the membership is asked of the SERVER rather than found among the rendered
+   * rows. The legacy screen looked it up in a grid that held every membership
+   * (`:L253` bound the account's whole role set), so a lookup over what was on screen was a
+   * lookup over everything; with one page on screen it no longer is, and an account whose
+   * membership sits on another page would have been prefilled with nothing. One keyed read
+   * restores the legacy answer without restoring the unbounded set that used to back it. The
+   * bounds are cleared FIRST, so the previous account's dates never sit under a new name
+   * while the read is in flight.
    *
    * MIGRATION: the second branch — the DERIVED DEFAULT EXPIRY at `:L290-L296` — is
    * deliberately NOT reproduced, and this is a reduction rather than an omission. That branch
@@ -1266,18 +1436,21 @@ export class RoleAssignmentComponent {
   public selectUser(user: UserListItem): void {
     this.selectedUserSignal.set(user);
     this.form.controls.userId.setValue(user.userId);
-    this.applyPrefill(user.userId);
+    this.applyProbeAnswer(null, true);
+    const roleId = this.roleIdSignal();
+    if (roleId === null) {
+      return;
+    }
+    this.probeMembership(roleId, user, true);
   }
 
   /** Forgets the chosen account and clears the bounds that were prefilled from it. */
   public clearSelectedUser(): void {
+    this.membershipProbeRequest?.unsubscribe();
+    this.membershipProbeRequest = null;
     this.selectedUserSignal.set(null);
     this.form.controls.userId.setValue(null);
-    this.form.controls.effectiveDate.setValue(NO_DATE);
-    this.form.controls.expiryDate.setValue(NO_DATE);
-    this.form.controls.effectiveDate.markAsUntouched();
-    this.form.controls.expiryDate.markAsUntouched();
-    this.formStateSignal.set(this.readFormState());
+    this.applyProbeAnswer(null, true);
   }
 
   /**
@@ -1323,6 +1496,7 @@ export class RoleAssignmentComponent {
         next: (): void => {
           this.savingSignal.set(false);
           this.loadAssignments(roleId, null);
+          this.reprobeSelectedMembership();
         },
         error: (error: unknown): void => {
           this.savingSignal.set(false);
@@ -1394,6 +1568,7 @@ export class RoleAssignmentComponent {
         next: (): void => {
           this.savingSignal.set(false);
           this.loadAssignments(roleId, null);
+          this.reprobeSelectedMembership();
         },
         error: (error: unknown): void => {
           this.savingSignal.set(false);
@@ -1421,6 +1596,26 @@ export class RoleAssignmentComponent {
     }
     this.problemSignal.set(null);
     this.loadRole(roleId);
+    this.loadAssignments(roleId, null);
+    this.reprobeSelectedMembership();
+  }
+
+  /**
+   * Moves the grid to another page of memberships.
+   *
+   * The index is passed through untouched: the shared pager reports a ZERO-BASED index and the
+   * listing takes one, so there is no base to convert between. The read that follows cancels
+   * whichever page read was in flight, so clicking through the pager cannot leave an earlier
+   * page's answer to land on top of a later one.
+   *
+   * @param pageIndex The page to read, counted from nought.
+   */
+  public onPageChange(pageIndex: number): void {
+    const roleId = this.roleIdSignal();
+    if (roleId === null || pageIndex === this.pageIndexSignal()) {
+      return;
+    }
+    this.pageIndexSignal.set(pageIndex);
     this.loadAssignments(roleId, null);
   }
 
@@ -1459,36 +1654,78 @@ export class RoleAssignmentComponent {
     return fieldErrorMessages(problem, controlName);
   }
 
-  /** Returns the screen to its initial state, which a change of addressed role requires. */
+  /**
+   * Returns the screen to its initial state, which a change of addressed role requires.
+   *
+   * Every in-flight read is CANCELLED first and the generation is advanced, so nothing asked
+   * for on behalf of the previous role can repopulate the state that was just cleared. Both
+   * matter for the same reason: this method runs from the route-input setter, so a role change
+   * arrives while the previous role's role read, page read, account lookup and membership
+   * probe may all still be outstanding.
+   */
   private resetForRole(): void {
+    this.cancelReads();
+    this.roleGeneration += 1;
     this.roleSignal.set(null);
     this.roleLoadingSignal.set(false);
     this.assignmentsSignal.set([]);
     this.assignmentsLoadingSignal.set(false);
+    this.pageIndexSignal.set(FIRST_PAGE_INDEX);
+    this.totalCountSignal.set(0);
     this.savingSignal.set(false);
     this.problemSignal.set(null);
     this.userMatchesSignal.set([]);
     this.userLookupLoadingSignal.set(false);
     this.userLookupTermSignal.set('');
     this.selectedUserSignal.set(null);
+    this.selectedMembershipSignal.set(null);
     this.pendingRemovalSignal.set(null);
     this.protectedPairingsSignal.set(new Set<string>());
     this.form.reset();
     this.formStateSignal.set(this.readFormState());
   }
 
-  /** Fetches the addressed role, which supplies the heading's name. */
+  /** Abandons every read this screen has outstanding, and forgets their handles. */
+  private cancelReads(): void {
+    this.roleRequest?.unsubscribe();
+    this.roleRequest = null;
+    this.assignmentsRequest?.unsubscribe();
+    this.assignmentsRequest = null;
+    this.userLookupRequest?.unsubscribe();
+    this.userLookupRequest = null;
+    this.membershipProbeRequest?.unsubscribe();
+    this.membershipProbeRequest = null;
+  }
+
+  /**
+   * Fetches the addressed role, which supplies the heading's name.
+   *
+   * Cancels whichever role read was outstanding, so a slow answer for the role the operator
+   * has navigated away from cannot put its name back into the heading.
+   *
+   * @param roleId The addressed role.
+   */
   private loadRole(roleId: number): void {
+    this.roleRequest?.unsubscribe();
     this.roleLoadingSignal.set(true);
-    this.roleService
+    const generation = this.roleGeneration;
+    this.roleRequest = this.roleService
       .getRole(roleId)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (envelope): void => {
+          if (this.roleGeneration !== generation) {
+            return;
+          }
+          this.roleRequest = null;
           this.roleLoadingSignal.set(false);
           this.roleSignal.set(envelope.data);
         },
         error: (error: unknown): void => {
+          if (this.roleGeneration !== generation) {
+            return;
+          }
+          this.roleRequest = null;
           this.roleLoadingSignal.set(false);
           this.raise(this.failureNotice(error));
         },
@@ -1496,33 +1733,70 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Reads every membership of the addressed role and raises any deferred message afterwards.
+   * Reads ONE page of the addressed role's memberships and raises any deferred message
+   * afterwards.
    *
-   * MIGRATION: the grid is UNPAGED, as `securityroles.ascx:L56` declares it, so the listing is
-   * requested at the largest page the contract permits and any further pages the server
-   * reports are followed and appended. The follow-on count is capped so a mis-reported page
-   * count cannot turn one screen into unbounded traffic; at the largest page that cap covers
-   * far more memberships than a tenant will hold. Nothing here consumes the shared pager,
-   * because the legacy grid had none.
+   * One request, whatever the role's size. The page coordinate comes from the screen's own
+   * state, so this one method serves the initial read, a pager click, a retry and the re-read
+   * that follows every write, and each of those cancels whichever page read was still in
+   * flight rather than racing it.
+   *
+   * MIGRATION: the total the server reports is kept, because it is what tells the pager
+   * whether there is anything beyond this page. It is read from the answer and never
+   * accumulated from the rows on screen.
+   *
+   * A page can be left PAST THE END by a removal — take the only member of the last page away
+   * and the coordinate the operator is standing on no longer exists. The legacy grid could not
+   * reach that state, because it had no pages; here the read that discovers it steps back to
+   * the last page that does exist and asks once more. That correction is deliberately bounded:
+   * the corrective read is issued with clamping disabled, so a listing that keeps shrinking
+   * underneath the screen produces at most one extra request per read and never a loop. A
+   * deferred message rides along with the correction rather than being raised twice, which
+   * keeps the legacy ordering — the grid is refreshed, and only then is the message shown.
    *
    * @param roleId The addressed role.
    * @param notice A message to raise once the read has settled, or `null`.
+   * @param allowClamp Whether a past-the-end answer may issue one corrective read.
    */
-  private loadAssignments(roleId: number, notice: DeferredNotice | null): void {
+  private loadAssignments(
+    roleId: number,
+    notice: DeferredNotice | null,
+    allowClamp = true,
+  ): void {
+    this.assignmentsRequest?.unsubscribe();
     this.assignmentsLoadingSignal.set(true);
-    this.roleService
-      .listUsers(roleId, { pageIndex: 0, pageSize: MAX_PAGE_SIZE })
-      .pipe(
-        switchMap((firstPage) => this.followRemainingPages(roleId, toPagedResult(firstPage))),
-        takeUntilDestroyed(this.destroyRef),
-      )
+    const generation = this.roleGeneration;
+    const requestedPageIndex = this.pageIndexSignal();
+    this.assignmentsRequest = this.roleService
+      .listUsers(roleId, { pageIndex: requestedPageIndex, pageSize: MEMBERSHIP_PAGE_SIZE })
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (rows): void => {
+        next: (response): void => {
+          if (this.roleGeneration !== generation) {
+            return;
+          }
+          this.assignmentsRequest = null;
+          const page = response;
+          this.totalCountSignal.set(page.meta.totalCount);
+          const pastTheEnd =
+            page.items.length === 0 &&
+            requestedPageIndex > FIRST_PAGE_INDEX &&
+            page.meta.totalCount > 0;
+          if (allowClamp && pastTheEnd) {
+            const lastPageIndex = Math.max(page.meta.totalPages - 1, FIRST_PAGE_INDEX);
+            this.pageIndexSignal.set(lastPageIndex);
+            this.loadAssignments(roleId, notice, false);
+            return;
+          }
           this.assignmentsLoadingSignal.set(false);
-          this.assignmentsSignal.set(rows);
+          this.assignmentsSignal.set(page.items);
           this.raise(notice);
         },
         error: (error: unknown): void => {
+          if (this.roleGeneration !== generation) {
+            return;
+          }
+          this.assignmentsRequest = null;
           this.assignmentsLoadingSignal.set(false);
           this.raise(notice);
           this.raise(this.failureNotice(error));
@@ -1531,41 +1805,93 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Appends every page after the first, so the caller sees one unpaged list.
+   * Asks the server whether one account already holds the addressed role, and on what terms.
+   *
+   * The listing's free-text filter is a case-insensitive SUBSTRING match against either the
+   * login name or the display name, so filtering by the chosen account's login name narrows
+   * the role's memberships to a handful and the wanted row is then picked out by identifier —
+   * the name is the filter, the identifier is the match. A name is not an identifier, which is
+   * why the identifier decides and the name only reduces what has to be looked through.
    *
    * @param roleId The addressed role.
-   * @param first The first page, already normalised.
-   * @returns Every membership across every reported page.
+   * @param user The account the operator chose.
+   * @param prefillBounds Whether the answer may also write the two date boxes.
    */
-  private followRemainingPages(
-    roleId: number,
-    first: PagedResult<UserRole>,
-  ): Observable<readonly UserRole[]> {
-    const reported = Math.min(first.meta.totalPages, MAX_MEMBERSHIP_PAGES);
-    const followers: number[] = [];
-    for (let pageIndex = 1; pageIndex < reported; pageIndex += 1) {
-      followers.push(pageIndex);
-    }
-    if (followers.length === 0) {
-      return of(first.items);
-    }
-    return forkJoin(
-      followers.map((pageIndex) =>
-        this.roleService.listUsers(roleId, { pageIndex, pageSize: MAX_PAGE_SIZE }),
-      ),
-    ).pipe(
-      map((pages): readonly UserRole[] => [
-        ...first.items,
-        ...pages.flatMap((page) => toPagedResult(page).items),
-      ]),
-    );
+  private probeMembership(roleId: number, user: UserListItem, prefillBounds: boolean): void {
+    this.membershipProbeRequest?.unsubscribe();
+    const generation = this.roleGeneration;
+    this.membershipProbeRequest = this.roleService
+      .listUsers(roleId, {
+        pageIndex: FIRST_PAGE_INDEX,
+        pageSize: MEMBERSHIP_PROBE_PAGE_SIZE,
+        query: user.username,
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (response): void => {
+          if (this.roleGeneration !== generation || this.selectedUserSignal() !== user) {
+            return;
+          }
+          this.membershipProbeRequest = null;
+          const page = response;
+          const found = page.items.find((row) => row.userId === user.userId);
+          this.applyProbeAnswer(found ?? null, prefillBounds);
+        },
+        error: (error: unknown): void => {
+          if (this.roleGeneration !== generation || this.selectedUserSignal() !== user) {
+            return;
+          }
+          this.membershipProbeRequest = null;
+          // A failed probe leaves the screen in the state it shows for an account with no
+          // membership - empty bounds and the 'Add User' label - because that is the state the
+          // legacy screen showed whenever its lookup found no row, and because the write is an
+          // upsert either way: the server settles which of the two it is. The failure is still
+          // reported, so the operator is not left thinking the account definitely has none.
+          this.applyProbeAnswer(null, prefillBounds);
+          this.raise(this.failureNotice(error));
+        },
+      });
   }
 
-  /** Prefills the two bounds from the chosen account's existing membership, if it has one. */
-  private applyPrefill(userId: number): void {
-    const existing = this.assignmentsSignal().find((row) => row.userId === userId);
-    const effective = existing === undefined ? NO_DATE : toCalendarDateValue(existing.effectiveDate);
-    const expiry = existing === undefined ? NO_DATE : toCalendarDateValue(existing.expiryDate);
+  /**
+   * Re-asks whether the chosen account holds the role, after a write may have changed it.
+   *
+   * MIGRATION: this refreshes the FACT and deliberately leaves the two date boxes alone. The
+   * legacy handler did not touch the form after a write — `SecurityRoles.ascx.vb:L546` rebound
+   * the grid and nothing else — so an operator who left the expiry empty and let the server
+   * derive one saw an empty box afterwards, not the derived value. Writing the stored bounds
+   * back here would put a value the operator never typed into a box that a second submit would
+   * then send explicitly, which is a change to what gets STORED and not merely to what is
+   * shown. Only the label's fact is refreshed, which is the one thing the legacy rebind did
+   * change.
+   */
+  private reprobeSelectedMembership(): void {
+    const roleId = this.roleIdSignal();
+    const user = this.selectedUserSignal();
+    if (roleId === null || user === null) {
+      return;
+    }
+    this.probeMembership(roleId, user, false);
+  }
+
+  /**
+   * Records the probe's answer, and prefills the two bounds from it when asked to.
+   *
+   * Passing `null` is how the screen expresses "no membership is known", and with prefilling
+   * on it produces exactly the state the legacy screen showed for an account with no row: both
+   * boxes empty and neither of them marked as visited, so no dynamic validator has anything to
+   * say about a value the operator never typed.
+   *
+   * @param membership The chosen account's membership of this role, or `null`.
+   * @param prefillBounds Whether the two date boxes are written from the answer.
+   */
+  private applyProbeAnswer(membership: UserRole | null, prefillBounds: boolean): void {
+    this.selectedMembershipSignal.set(membership);
+    if (prefillBounds === false) {
+      return;
+    }
+    const effective = membership === null ? NO_DATE : toCalendarDateValue(membership.effectiveDate);
+    const expiry = membership === null ? NO_DATE : toCalendarDateValue(membership.expiryDate);
     this.form.controls.effectiveDate.setValue(effective);
     this.form.controls.expiryDate.setValue(expiry);
     this.form.controls.effectiveDate.markAsUntouched();
@@ -1629,9 +1955,16 @@ export class RoleAssignmentComponent {
    */
   private removalNotice(problem: ProblemDetails | null, code: string | null): DeferredNotice {
     if (code === PROTECTED_ASSIGNMENT_CODE) {
+      // The WORDING is the conflict vocabulary's, because that is where the legacy `RoleRemoveError`
+      // sentence lives. The SEVERITY is the shared summariser's, for the reason set out on
+      // {@link failureNotice}: this refusal arrives as `403` - the vocabulary records that explicitly,
+      // since every other conflict code arrives as `409` - and an access failure is a WARNING rather
+      // than an error in the three-valued vocabulary the legacy screens used. Hard-coding a severity
+      // here would give one decision two homes that could disagree.
       const published = conflictMessage(code);
+      const refusal = summarizeProblem(problem);
       return {
-        severity: 'error',
+        severity: refusal.severity,
         message: published === null ? ROLE_ASSIGNMENT_TEXT.removalRefused : published,
       };
     }

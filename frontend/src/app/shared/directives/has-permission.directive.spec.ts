@@ -8,6 +8,7 @@ import type { ComponentFixture } from '@angular/core/testing';
 // and identity shapes are erased at compile time, so this file pulls no runtime code out
 // of the model.
 import type { AuthSession, CurrentUser } from '../../core/models/auth.model';
+import type { PermissionKey } from '../../core/models/permission.model';
 import { TokenStorageService } from '../../core/services/token-storage.service';
 
 import { HasPermissionDirective } from './has-permission.directive';
@@ -53,11 +54,46 @@ import { HasPermissionDirective } from './has-permission.directive';
 })
 class HostComponent {
   /**
-   * Typed exactly as the directive's input is — a plain `string`, so a call site is free
-   * to bind a key this file has never heard of, which is precisely the case the denial
-   * expectations below exercise.
+   * Typed exactly as the directive's input now is — {@link PermissionKey}, the closed
+   * vocabulary, rather than a plain `string`.
+   *
+   * The narrowing is the point of the change under test. A call site can no longer bind a
+   * policy name, a permission code or an installation-specific key here without the
+   * compiler objecting, which removes a whole class of vocabulary confusion before it can
+   * reach a permission decision. The run-time fail-closed behaviour is still exercised
+   * below, through {@link UntypedHostComponent}, because a static type is a claim about the
+   * source and not a fact about the value.
    */
-  required = 'EDIT';
+  required: PermissionKey = 'EDIT';
+}
+
+/**
+ * A host that binds the directive through a deliberately WIDENED expression.
+ *
+ * This is how the run-time half of the fail-closed rule is exercised. The directive's input
+ * is statically a {@link PermissionKey}, so a well-typed host cannot express "bind an
+ * unknown key" at all — which is the improvement. But a static type constrains the SOURCE,
+ * not the value: a template expression can widen, a view model can be loosely typed, and
+ * route data is `unknown` at the edges. The cast below reproduces exactly that situation, so
+ * the specifications using this host prove the directive still refuses an unrecognised value
+ * that reached it despite the type.
+ */
+@Component({
+  standalone: true,
+  imports: [HasPermissionDirective],
+  template: ` <button *hasPermission="widened" class="guarded" type="button">Edit</button> `,
+})
+class UntypedHostComponent {
+  /** The value actually bound, held as an open string. */
+  raw = 'EDIT';
+
+  /**
+   * The widened binding. The assertion is confined to this one accessor rather than
+   * scattered across the template, so the deliberate loosening is visible in one place.
+   */
+  get widened(): PermissionKey {
+    return this.raw as PermissionKey;
+  }
 }
 
 function userWith(permissions: readonly string[], isSuperUser = false): CurrentUser {
@@ -71,6 +107,9 @@ function userWith(permissions: readonly string[], isSuperUser = false): CurrentU
     displayName: 'Operator',
     email: 'operator@example.test',
     isSuperUser,
+    // Follows the host flag, matching what the server reports: a host account administers every
+    // tenant. The directive reads neither member, which these cases rely on.
+    isPortalAdministrator: isSuperUser,
     roles: ['Administrators'],
     permissions,
   };
@@ -98,9 +137,29 @@ describe('HasPermissionDirective', () => {
     return fixture.nativeElement.querySelector('.guarded');
   }
 
+  /**
+   * Renders the directive with a required key that bypassed the static type.
+   *
+   * Every expectation about an UNRECOGNISED required key runs through here rather than
+   * through the well-typed host, because the well-typed host can no longer express one. The
+   * fixture is built and settled in one call so the tests below read as a single statement
+   * about the verdict.
+   *
+   * @param raw The value bound as the required key, unconstrained.
+   * @returns The gated element, or null when the directive refused it.
+   */
+  function renderWidened(raw: string): HTMLElement | null {
+    const widened = TestBed.createComponent(UntypedHostComponent);
+
+    widened.componentInstance.raw = raw;
+    widened.detectChanges();
+
+    return (widened.nativeElement as HTMLElement).querySelector('.guarded');
+  }
+
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HostComponent],
+      imports: [HostComponent, UntypedHostComponent],
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
 
@@ -186,11 +245,13 @@ describe('HasPermissionDirective', () => {
     });
 
     it('refuses a required key spelled in a different case from the granted one', () => {
-      fixture.componentInstance.required = 'edit';
       tokenStorage.store(sessionWith(['EDIT']));
-      fixture.detectChanges();
 
-      expect(guarded()).toBeNull();
+      // Bound through the widened host, because `'edit'` is not a member of the closed
+      // vocabulary and the well-typed host can no longer express it. That the compiler now
+      // rejects it at the call site is the primary defence; this proves the run-time
+      // refusal that backs it up.
+      expect(renderWidened('edit')).toBeNull();
     });
 
     it('refuses a granted key padded with whitespace rather than trimming it', () => {
@@ -217,37 +278,56 @@ describe('HasPermissionDirective', () => {
 
   describe('denial', () => {
     it('refuses an unrecognised required key', () => {
-      fixture.componentInstance.required = 'MANAGE';
       tokenStorage.store(sessionWith(['VIEW', 'EDIT']));
-      fixture.detectChanges();
 
-      expect(guarded()).toBeNull();
+      expect(renderWidened('MANAGE')).toBeNull();
     });
 
     it('refuses the empty string rather than reading it as a wildcard', () => {
       // The legacy catalogue read an empty key as "any key". That wildcard is a
       // server-side query convenience and is deliberately not honoured here.
-      fixture.componentInstance.required = '';
       tokenStorage.store(sessionWith(['VIEW', 'EDIT', 'READ', 'WRITE']));
-      fixture.detectChanges();
 
-      expect(guarded()).toBeNull();
+      expect(renderWidened('')).toBeNull();
     });
 
     it('refuses the empty string even when the granted list is also empty', () => {
-      fixture.componentInstance.required = '';
       tokenStorage.store(sessionWith([]));
-      fixture.detectChanges();
 
-      expect(guarded()).toBeNull();
+      expect(renderWidened('')).toBeNull();
     });
 
     it('does not throw when the key is unrecognised, absent or blank', () => {
-      fixture.componentInstance.required = '';
-
       // A denial must never take down the surrounding screen.
-      expect(() => fixture.detectChanges()).not.toThrow();
-      expect(guarded()).toBeNull();
+      expect(() => renderWidened('')).not.toThrow();
+      expect(() => renderWidened('MANAGE')).not.toThrow();
+    });
+
+    // The regression this whole change exists to prevent. An authorisation POLICY name is a
+    // different vocabulary from a persisted permission key, and a caller holding a policy
+    // name in their granted list must not thereby be admitted to an element that asked for
+    // one. Both halves are narrowed, so neither side can supply the match.
+    it('refuses a policy name bound where a permission key belongs', () => {
+      tokenStorage.store(sessionWith(['PortalAdministrator']));
+
+      expect(renderWidened('PortalAdministrator')).toBeNull();
+    });
+
+    it('refuses a permission code bound where a permission key belongs', () => {
+      tokenStorage.store(sessionWith(['SYSTEM_FOLDER']));
+
+      expect(renderWidened('SYSTEM_FOLDER')).toBeNull();
+    });
+
+    // Fails closed on the required side specifically: the granted list here holds every real
+    // key, so a naive membership test over unnarrowed strings would still refuse - but a
+    // parser that COERCED the requirement (trimming, upper-casing) would admit it. This
+    // pins the refusal.
+    it('refuses a padded required key rather than trimming it into a match', () => {
+      tokenStorage.store(sessionWith(['VIEW', 'EDIT', 'READ', 'WRITE']));
+
+      expect(renderWidened(' EDIT')).toBeNull();
+      expect(renderWidened('EDIT ')).toBeNull();
     });
   });
 
@@ -269,11 +349,19 @@ describe('HasPermissionDirective', () => {
 
   describe('roles are not permissions', () => {
     it('is not admitted by a role name, even the administrator role', () => {
-      fixture.componentInstance.required = 'Administrators';
+      // The identity below carries `roles: ['Administrators']` and no permission keys, so a
+      // directive that consulted roles would admit this. Bound through the widened host,
+      // because a role name is not a member of the permission vocabulary and the compiler
+      // now says so at the call site.
       tokenStorage.store(sessionWith([]));
-      fixture.detectChanges();
 
-      expect(guarded()).toBeNull();
+      expect(renderWidened('Administrators')).toBeNull();
+    });
+
+    it('is not admitted by a role name even when that name is also a granted value', () => {
+      tokenStorage.store(sessionWith(['Administrators']));
+
+      expect(renderWidened('Administrators')).toBeNull();
     });
   });
 

@@ -17,7 +17,7 @@ import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { Router } from '@angular/router';
-import { of, throwError } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 
 import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
 import { NotificationService } from '../../../core/services/notification.service';
@@ -546,6 +546,75 @@ describe('PortalSettingsComponent', () => {
       expect(notifications.warning).toHaveBeenCalled();
       expect(text()).toContain('list of pages could not be loaded');
     });
+
+    // ⚠️ TEARDOWN, WHICH NOTHING IN THIS FILE ASSERTED. The page listing is read through a
+    // subscription tied to the component's own lifetime, and the property that matters is what happens
+    // when the answer arrives AFTER the screen has gone: an operator who navigates away while the
+    // listing is still outstanding must not have a warning raised at them on a screen they are no
+    // longer looking at, and the discarded component must not write its own state. The mechanism is
+    // sound in the production code, but a mechanism nothing exercises is a mechanism that can be
+    // removed in a refactor without a single test noticing - which is exactly what these two cases
+    // close. The listing is answered from a hand-controlled subject so the answer can be emitted after
+    // destruction rather than before it, which no `of(...)` fixture can do.
+    it('ignores a page listing that answers after the screen has been destroyed', () => {
+      const late = new Subject<readonly TabListItem[]>();
+      pages.getByPortal.and.returnValue(late.asObservable());
+
+      route('3');
+      fixture.detectChanges();
+
+      expect(pages.getByPortal).toHaveBeenCalledWith(3);
+      expect(late.observed)
+        .withContext('the read is outstanding, so there is something to abandon')
+        .toBeTrue();
+
+      fixture.destroy();
+
+      expect(late.observed)
+        .withContext('destroying the screen releases the subscription tied to its lifetime')
+        .toBeFalse();
+
+      const warningsBefore: number = notifications.warning.calls.count();
+
+      late.next([pageFixture({ tabId: 42, tabName: 'Answered too late' })]);
+      late.complete();
+
+      // NO NOTIFICATION, because there is no screen to explain one to...
+      expect(notifications.warning.calls.count()).toBe(warningsBefore);
+      // ...and NO STATE WRITTEN. Read through the component's own private slice rather than through the
+      // DOM, because a destroyed fixture renders nothing and the DOM would agree either way and prove
+      // nothing. The slice is the one the four selectors are built from, so a value landing in it is
+      // exactly what would have reached the screen had it survived.
+      expect(
+        (
+          fixture.componentInstance as unknown as {
+            readonly _pageRows: () => readonly TabListItem[];
+          }
+        )._pageRows().length,
+      )
+        .withContext('a released subscription cannot write the state of a discarded screen')
+        .toBe(0);
+    });
+
+    it('ignores a page-listing FAILURE that arrives after the screen has been destroyed', () => {
+      // The failure arm needs the same guarantee as the success arm, and for a sharper reason: this arm
+      // RAISES A NOTIFICATION, so a leak here is not a silent state write but a warning appearing over
+      // whatever screen the operator has moved on to.
+      const late = new Subject<readonly TabListItem[]>();
+      pages.getByPortal.and.returnValue(late.asObservable());
+
+      route('4');
+      fixture.detectChanges();
+      fixture.destroy();
+
+      const warningsBefore: number = notifications.warning.calls.count();
+
+      late.error(new Error('unreachable'));
+
+      expect(notifications.warning.calls.count())
+        .withContext('no warning may surface on a screen the operator has already left')
+        .toBe(warningsBefore);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -860,15 +929,51 @@ describe('PortalSettingsComponent', () => {
       expect(router.navigateByUrl).not.toHaveBeenCalled();
     });
 
-    it('uses the shared wording for the last-remaining-portal refusal', () => {
+    it('surfaces the last-remaining-portal refusal at ERROR severity, with the shared wording', () => {
+      // ⚠️ THE SEVERITY WAS THE DEFECT, AND IT WAS INVISIBLE BECAUSE THE FIXTURE SUPPLIED IT. The
+      // previous revision of this case handed the failure a severity of `warning` and then asserted
+      // only the wording - so the value under test was being provided by the test itself, and a screen
+      // that routed this refusal down the wrong channel would have passed. The severity is not a free
+      // choice: the shared classifier softens exactly four statuses to a warning - 401, 403, 404 and
+      // 429 - and `409` is not among them, so a conflict is an ERROR. The legacy screen agrees: it
+      // surfaced this sentence through its red-error channel, not its yellow-warning one.
+      //
+      // The rest of the document is the live one: `portal.last_remaining` is the code the server
+      // publishes, the `last_remaining` token in it is what the status translator reads to answer 409,
+      // and the detail is the sentence the legacy global resource carried under the key `LastPortal`.
       portals.detailFailure.set(
-        failureFixture({ status: 409, conflictCode: 'portal.last_remaining', severity: 'warning' }),
+        failureFixture({
+          problem: {
+            type: 'urn:dnnmigration:error:portal.last_remaining',
+            title: 'Conflict',
+            status: 409,
+            detail: 'You Can Not Delete The Last Portal In Your Database',
+            traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+            correlationId: '5c1d8e42-7b39-4a06-8f2d-91e4c7b0a583',
+          },
+          status: 409,
+          severity: 'error',
+          conflictCode: 'portal.last_remaining',
+          supportReference: '5c1d8e42-7b39-4a06-8f2d-91e4c7b0a583',
+        }),
       );
       fixture.detectChanges();
 
-      expect(notifications.notify.calls.mostRecent().args[1]).toBe(
-        'You Can Not Delete The Last Portal In Your Database',
-      );
+      const [severity, message] = notifications.notify.calls.mostRecent().args as [string, string];
+
+      expect(severity)
+        .withContext('409 is not one of the four statuses that soften to a warning')
+        .toBe('error');
+      expect(message).toBe('You Can Not Delete The Last Portal In Your Database');
+
+      // VISIBLE STATE: the failure reaches the shared banner as well as the announcement channel, so
+      // an operator who dismissed the notification can still read what happened.
+      expect(fixture.debugElement.query(By.css('app-error-banner'))).not.toBeNull();
+
+      // AND NOTHING WAS DELETED, so the screen stays where it is and the store is not asked again.
+      expect(router.navigateByUrl).not.toHaveBeenCalled();
+      expect(portals.deletePortal).not.toHaveBeenCalled();
+      expect(portals.clearFailures).not.toHaveBeenCalled();
     });
 
     it('hands the problem document to the shared failure surface untouched', () => {
@@ -1066,6 +1171,91 @@ describe('PortalSettingsComponent', () => {
       const actions = fixture.debugElement.queryAll(By.css('.portal-settings__actions button'));
 
       expect(actions.every((action) => (action.nativeElement as HTMLButtonElement).disabled)).toBeTrue();
+    });
+  });
+  // -------------------------------------------------------------------------
+  describe('native radio grouping', () => {
+    /**
+     * MIGRATION - ⚠ THE NATIVE `name` IS LOAD-BEARING, AND `formControlName` DOES NOT SUPPLY IT. The reactive
+     * radio directive groups its members in the MODEL, by the control they share, and writes nothing on to
+     * the element. Every one of the browser's own radio behaviours is keyed off the native attribute instead:
+     * arrow keys moving the selection within the group, and the group occupying ONE tab stop rather than one
+     * per option. Without it, a keyboard user meets three or four independent controls where the legacy
+     * `asp:RadioButtonList` presented one - a keyboard-operability regression, not a cosmetic one.
+     *
+     * The two groups never coexist in the document: `bannerAdvertising` sits in the marketing section of the
+     * basic tab and `userRegistration` in the security section of the advanced tab, so each is asserted on
+     * the tab that renders it.
+     */
+
+    /**
+     * The radios of one group.
+     *
+     * Matched on the attribute the template writes STATICALLY, so a group whose name became a binding - and
+     * could therefore differ per option - would not be found here at all.
+     *
+     * @param controlName The form control the group writes.
+     * @returns The radio inputs, in document order.
+     */
+    function radios(controlName: string): HTMLInputElement[] {
+      return fixture.debugElement
+        .queryAll(By.css(`input[type="radio"][formcontrolname="${controlName}"]`))
+        .map((candidate) => candidate.nativeElement as HTMLInputElement);
+    }
+
+    beforeEach(() => {
+      route('0');
+      portals.settings.set(settingsFixture());
+      fixture.detectChanges();
+    });
+
+    it('gives every banner radio the same native name as its form control', () => {
+      const group = radios('bannerAdvertising');
+      expect(group.length).withContext('the legacy list declared three items').toBe(3);
+
+      for (const radio of group) {
+        expect(radio.getAttribute('name'))
+          .withContext('the native name must equal the formControlName')
+          .toBe('bannerAdvertising');
+      }
+
+      // One name across the group, not one per option: that single shared value IS what makes the browser
+      // treat the three inputs as one control.
+      expect(new Set(group.map((radio) => radio.name)).size).toBe(1);
+    });
+
+    it('gives every registration radio the same native name as its form control', () => {
+      fixture.debugElement.queryAll(By.css('[role="tab"]'))[1]?.triggerEventHandler('click');
+      fixture.detectChanges();
+
+      const group = radios('userRegistration');
+      expect(group.length).withContext('the legacy list declared four items').toBe(4);
+
+      for (const radio of group) {
+        expect(radio.getAttribute('name'))
+          .withContext('the native name must equal the formControlName')
+          .toBe('userRegistration');
+      }
+
+      expect(new Set(group.map((radio) => radio.name)).size).toBe(1);
+    });
+
+    it('leaves no radio anywhere on the screen without a native name', () => {
+      // Both tabs, so a group added later to either one is caught here rather than by a keyboard user.
+      for (const index of [0, 1]) {
+        fixture.debugElement.queryAll(By.css('[role="tab"]'))[index]?.triggerEventHandler('click');
+        fixture.detectChanges();
+
+        const present = fixture.debugElement.queryAll(By.css('input[type="radio"]'));
+        expect(present.length).withContext(`tab ${index} must render a choice group`).toBeGreaterThan(0);
+
+        for (const radio of present) {
+          const element = radio.nativeElement as HTMLInputElement;
+          expect(element.getAttribute('name'))
+            .withContext(`a radio writing ${element.getAttribute('formcontrolname')} must carry a name`)
+            .toBe(element.getAttribute('formcontrolname'));
+        }
+      }
     });
   });
 });

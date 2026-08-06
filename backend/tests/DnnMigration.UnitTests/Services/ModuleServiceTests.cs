@@ -493,36 +493,73 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The tenant's modules are read once for the addressed portal, and a named page is resolved through
-    /// the page repository rather than by reading each candidate module's placements in turn.
+    /// The page is read ONCE, from the store, with every narrowing the request carried handed to it - and
+    /// nothing tenant-wide is read at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the fact that pins the fix for the listing's cost. Every argument is checked because each one
+    /// that failed to travel would be silently applied by nobody: a tenant read plus in-process narrowing
+    /// produced the same rows for a small tenant, which is exactly why the old shape survived. The two
+    /// negative assertions are the substance - neither the tenant's whole module set nor the addressed
+    /// page's whole placement set is read, so the work is bounded by the page rather than by the tenant.
+    /// </remarks>
     [Fact]
-    public async Task ListModules_ReadsTheTenantOnceAndResolvesTheNamedPageThroughThePageStore()
+    public async Task ListModules_ReadsOnePageFromTheStoreAndNothingTenantWide()
     {
         Harness harness = Harness.Ready();
 
         await harness.Service.ListModulesAsync(
             PortalId,
-            new PagedRequest { PageIndex = 2, PageSize = 20, Query = "wel" },
+            new PagedRequest
+            {
+                PageIndex = 2,
+                PageSize = 20,
+                Query = "wel",
+                SortBy = "ModuleId",
+                SortDir = SortDirection.Descending,
+            },
             TabId,
             includeDeleted: true,
             CancellationToken.None);
 
         harness.Modules.Verify(
-            m => m.GetByPortalIdAsync(PortalId, It.IsAny<CancellationToken>()),
+            m => m.ListPlacementsAsync(
+                PortalId,
+                TabId,
+                true,
+                "wel",
+                "ModuleId",
+                true,
+                2,
+                20,
+                It.IsAny<CancellationToken>()),
             Times.Once);
+
+        harness.Modules.Verify(
+            m => m.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Modules.Verify(
+            m => m.GetTabModulesByModuleIdsAsync(
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
         harness.Tabs.Verify(
-            t => t.GetTabModulesAsync(TabId, It.IsAny<CancellationToken>()),
-            Times.Once);
+            t => t.GetTabModulesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
-    /// No page filter means the page repository is never consulted, because there is no page to resolve.
+    /// A request naming no ordering, no page and no query hands the store the absences as absences rather
+    /// than as blank text or a magic number, and still reads nothing tenant-wide.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// One canonical representation of "not stated" reaches the store, so the store has one default to
+    /// apply rather than three spellings of nothing to recognise.
+    /// </remarks>
     [Fact]
-    public async Task ListModules_ConsultsNoPageStoreWhenNoPageWasNamed()
+    public async Task ListModules_PassesTheAbsencesThroughAsAbsences()
     {
         Harness harness = Harness.Ready();
 
@@ -532,6 +569,19 @@ public class ModuleServiceTests
             null,
             false,
             CancellationToken.None);
+
+        harness.Modules.Verify(
+            m => m.ListPlacementsAsync(
+                PortalId,
+                null,
+                false,
+                null,
+                null,
+                false,
+                0,
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
 
         harness.Tabs.Verify(
             t => t.GetTabModulesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
@@ -4035,6 +4085,104 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// The document ceiling is exactly the number the import contract publishes: a document AT it is
+    /// accepted and a document one character past it is refused.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The boundary is asserted from both sides and against the PUBLISHED constant rather than a literal,
+    /// which is the whole point of the transfer contract this number anchors. Every other limit on the path
+    /// is derived from it - the client's file-byte limit, the API's per-action body limit and the reverse
+    /// proxy's body limit - so a ceiling that had quietly moved would leave three derived numbers describing
+    /// a contract that no longer existed. Asserting a literal here would let exactly that happen: the literal
+    /// and the constant would drift apart and this fact would keep passing.
+    /// </para>
+    /// <para>
+    /// The refused half deliberately does NOT assert the ceiling in the caller-facing message. The parse
+    /// refusal publishes one fixed sentence and keeps the diagnostic in the protected audit channel, which is
+    /// a deliberate information-disclosure decision asserted by its own fact; the number reaches the caller
+    /// through the published contract constant instead, which is what the client checks its file against.
+    /// </para>
+    /// <para>
+    /// THE PAYLOAD IS SPREAD ACROSS SEVERAL TEXT NODES, AND THAT IS A PROPERTY OF THE CONTRACT RATHER THAN A
+    /// CONVENIENCE OF THE FIXTURE. A separate parse-work budget bounds any ONE text-like node well below the
+    /// document ceiling, so a document that is a single enormous run of text is refused by that budget however
+    /// small the transfer limits are. The two bounds answer different questions - one bounds the TRANSFER, the
+    /// other bounds the WORK a single node can demand - and this fact is about the first, so its fixture
+    /// satisfies the second rather than colliding with it. Measured, not assumed: a fixture built as one
+    /// 1 048 576-character text node is refused, which is how the distinction was found.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ImportModule_BoundsTheDocumentAtExactlyThePublishedCharacterCeiling()
+    {
+        const string opening = TypedDocumentPrefix + ">";
+        const string closing = "</content>";
+        const string itemOpening = "<i>";
+        const string itemClosing = "</i>";
+        const int itemCount = 8;
+
+        static string DocumentOf(long totalCharacters)
+        {
+            long payloadBudget = totalCharacters
+                - opening.Length
+                - closing.Length
+                - (itemCount * (itemOpening.Length + itemClosing.Length));
+
+            long each = payloadBudget / itemCount;
+            long remainder = payloadBudget - (each * itemCount);
+
+            var document = new System.Text.StringBuilder(opening, (int)totalCharacters);
+
+            for (int item = 0; item < itemCount; item++)
+            {
+                long length = item == itemCount - 1 ? each + remainder : each;
+
+                document.Append(itemOpening).Append('a', (int)length).Append(itemClosing);
+            }
+
+            return document.Append(closing).ToString();
+        }
+
+        string atTheCeiling = DocumentOf(ModuleImportRequest.ContentCharacterMaximum);
+        string oneOver = DocumentOf(ModuleImportRequest.ContentCharacterMaximum + 1);
+
+        atTheCeiling.Length.Should().Be((int)ModuleImportRequest.ContentCharacterMaximum);
+        oneOver.Length.Should().Be((int)ModuleImportRequest.ContentCharacterMaximum + 1);
+
+        Harness accepting = Harness.Ready();
+        accepting.BusinessControllers
+            .Setup(f => f.ImportModuleContentAsync(
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        Result accepted = await accepting.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = atTheCeiling },
+            CancellationToken.None);
+
+        accepted.IsSuccess.Should().BeTrue(
+            "a document AT the published ceiling must be accepted, or the number published to every other "
+            + "layer of the transfer path overstates what this one takes");
+
+        Harness refusing = Harness.Ready();
+
+        Result refused = await refusing.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = oneOver },
+            CancellationToken.None);
+
+        refused.IsFailure.Should().BeTrue();
+        refused.Reason!.Code.Should().Be(ContentInvalidCode);
+    }
+
+    /// <summary>
     /// Exporting content records the movement on the audit trail, carrying the payload's LENGTH and no
     /// part of the payload itself.
     /// </summary>
@@ -5130,6 +5278,103 @@ public class ModuleServiceTests
         }
 
         /// <summary>
+        /// Composes one page of placement rows from the harness's module and placement world, reproducing
+        /// the semantics <see cref="IModuleRepository.ListPlacementsAsync"/> documents.
+        /// </summary>
+        /// <param name="tabId">Restrict to one page, or <see langword="null"/> for every page.</param>
+        /// <param name="includeDeleted">Whether recycle-bin modules contribute rows.</param>
+        /// <param name="titleQuery">A title fragment, or <see langword="null"/> for no title restriction.</param>
+        /// <param name="sortBy">The module property to order by, or <see langword="null"/> for the default.</param>
+        /// <param name="descending">Whether the module ordering runs downwards.</param>
+        /// <param name="pageIndex">The page to return, counted from zero.</param>
+        /// <param name="pageSize">The page width, or zero for every matching row.</param>
+        /// <returns>The window and the total, exactly as the store would report them.</returns>
+        /// <remarks>
+        /// The tenant argument is deliberately ignored, matching the tenant-wide module stub above: the
+        /// harness holds one tenant's world, and the facts that exercise tenant resolution do it through
+        /// the portal existence seam rather than by seeding two tenants. Each returned row carries its
+        /// module, which is what the real read's eager graph guarantees and what the projection needs.
+        /// </remarks>
+        public PagedResult<TabModule> ComposePlacementPage(
+            int? tabId,
+            bool includeDeleted,
+            string? titleQuery,
+            string? sortBy,
+            bool descending,
+            int pageIndex,
+            int pageSize)
+        {
+            IEnumerable<Module> candidates = ModulePage.Items;
+
+            if (!includeDeleted)
+            {
+                candidates = candidates.Where(module => !module.IsDeleted);
+            }
+
+            if (!string.IsNullOrWhiteSpace(titleQuery))
+            {
+                string wanted = titleQuery.Trim();
+                candidates = candidates.Where(module =>
+                    module.ModuleTitle is not null
+                    && module.ModuleTitle.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+            }
+
+            string property = string.IsNullOrWhiteSpace(sortBy) ? "MODULETITLE" : sortBy.Trim().ToUpperInvariant();
+
+            IOrderedEnumerable<Module> ordered = property switch
+            {
+                "MODULEID" => descending
+                    ? candidates.OrderByDescending(module => module.ModuleId)
+                    : candidates.OrderBy(module => module.ModuleId),
+                "ISDELETED" => descending
+                    ? candidates.OrderByDescending(module => module.IsDeleted).ThenByDescending(module => module.ModuleId)
+                    : candidates.OrderBy(module => module.IsDeleted).ThenBy(module => module.ModuleId),
+                "STARTDATE" => descending
+                    ? candidates.OrderByDescending(module => module.StartDate).ThenByDescending(module => module.ModuleId)
+                    : candidates.OrderBy(module => module.StartDate).ThenBy(module => module.ModuleId),
+                "ENDDATE" => descending
+                    ? candidates.OrderByDescending(module => module.EndDate).ThenByDescending(module => module.ModuleId)
+                    : candidates.OrderBy(module => module.EndDate).ThenBy(module => module.ModuleId),
+                _ => descending
+                    ? candidates.OrderByDescending(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
+                        .ThenByDescending(module => module.ModuleId)
+                    : candidates.OrderBy(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(module => module.ModuleId),
+            };
+
+            var rows = new List<TabModule>();
+            foreach (Module module in ordered)
+            {
+                if (!PlacementsByModuleId.TryGetValue(module.ModuleId, out List<TabModule>? placements))
+                {
+                    continue;
+                }
+
+                foreach (TabModule placement in placements
+                    .Where(candidate => tabId is null || candidate.TabId == tabId.Value)
+                    .OrderBy(candidate => candidate.TabId)
+                    .ThenBy(candidate => candidate.ModuleOrder)
+                    .ThenBy(candidate => candidate.TabModuleId))
+                {
+                    placement.Module = module;
+                    rows.Add(placement);
+                }
+            }
+
+            if (pageSize == 0)
+            {
+                return PagedResult<TabModule>.Unpaged(rows);
+            }
+
+            List<TabModule> window = rows
+                .Skip(Paging.SkipCount(pageIndex, pageSize))
+                .Take(pageSize)
+                .ToList();
+
+            return PagedResult<TabModule>.Create(window, rows.Count, pageIndex, pageSize);
+        }
+
+        /// <summary>
         /// Sets the answer the permission evaluator gives for both the page and the module edit questions.
         /// </summary>
         /// <param name="granted">Whether the caller is to be reported as holding the edit grant.</param>
@@ -5358,11 +5603,45 @@ public class ModuleServiceTests
                         ? (IReadOnlyList<TabModuleSetting>)found
                         : Array.Empty<TabModuleSetting>());
 
-            // The repository contract carries no paging member, so the tenant's modules arrive whole and
-            // the service composes the page. ModulePage remains the harness's seam for that world.
             harness.Modules
                 .Setup(m => m.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ModulePage.Items);
+
+            // THE LISTING'S PAGE NOW COMES FROM THE STORE, filtered, ordered, counted and windowed there,
+            // so the seam the listing facts exercise is this one rather than the tenant-wide module read
+            // above. This fake reproduces the contract's documented semantics over the SAME module and
+            // placement world every other stub serves, which is what keeps those facts describing the
+            // listing's observable behaviour rather than describing a stub's canned answer: seed a module,
+            // seed its placements, and the row set, its order, its total and its window all follow from
+            // them exactly as the statement makes them follow.
+            harness.Modules
+                .Setup(m => m.ListPlacementsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int _,
+                    int? tabId,
+                    bool includeDeleted,
+                    string? titleQuery,
+                    string? sortBy,
+                    bool descending,
+                    int pageIndex,
+                    int pageSize,
+                    CancellationToken _) => harness.ComposePlacementPage(
+                        tabId,
+                        includeDeleted,
+                        titleQuery,
+                        sortBy,
+                        descending,
+                        pageIndex,
+                        pageSize));
 
             harness.Modules
                 .Setup(m => m.AddAsync(It.IsAny<Module>(), It.IsAny<CancellationToken>()))

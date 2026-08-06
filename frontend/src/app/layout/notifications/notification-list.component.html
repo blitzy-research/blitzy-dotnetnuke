@@ -1,0 +1,88 @@
+<!--
+  THE APPLICATION'S NOTIFICATION SURFACE.
+
+  Renders the queue the notification service publishes: one row per entry, each stating its
+  severity as a word, its already-composed sentence, and a control that removes it.
+
+  Every value arrives ready to render. Nothing is computed here — no severity rule, no string
+  work, no truthiness test and no ordering decision — because the service composes the message
+  and chooses the severity, and its order is the order the operator caused the outcomes in.
+
+  Every string is placed with escaping interpolation and NOTHING is bound as markup. A message
+  can originate in a server problem document whose wording descends from legacy resource files
+  in which raw markup is commonplace, so a value still carrying a tag renders as visible, inert
+  text and creates no element.
+-->
+
+<!--
+  A PERSISTENT live region: the element is always in the document and only its contents change.
+  A region inserted at the same moment as its first message is announced inconsistently across
+  screen readers, and the first message is the one that matters — so the `@for` is INSIDE the
+  region and never wrapped around it.
+
+  `role="status"` carries the announcement semantics; `aria-live` and `aria-atomic` state the
+  same values that role already implies, so the behaviour is legible to a reader of this
+  template and cannot shift with a browser's role mapping. Polite, not assertive: an
+  announcement here reports the outcome of something the operator just did and must not
+  interrupt them mid-sentence. `aria-atomic="false"` is deliberate and is the opposite of the
+  error banner's choice — entries arrive one at a time and each is its own announcement, so
+  re-announcing the whole queue every time one is appended would read old messages out again.
+
+  While the queue is empty the region paints nothing: the stylesheet gives it no padding, no
+  border and no background, and an empty element with no content resolves to zero height.
+-->
+<div
+  class="notification-list"
+  role="status"
+  aria-live="polite"
+  aria-atomic="false"
+  [attr.aria-label]="regionLabel"
+>
+  @for (entry of entries(); track entry.id) {
+    <!--
+      Tracked by the service's own identifier, which it documents as never reissued for the
+      lifetime of the service — not even after a dismissal or a clear. Tracking by the message
+      text instead would collapse two identical announcements into one rendered row and silently
+      drop a message the application deliberately raised twice; the service explicitly does not
+      de-duplicate, so identical pairs are ordinary input here rather than a theoretical case.
+
+      The severity is a data attribute rather than a class list because the band is a four-way
+      state, not four independent booleans: one binding cannot leave two bands applied at once,
+      and it states the state in the same form as the shared primitives' own `data-severity`.
+    -->
+    <div class="notification-list__item" [attr.data-severity]="entry.severity">
+      <!--
+        The severity as a WORD. Not decoration: it is the cue that makes the band perceivable
+        without perceiving the colour, and it is read out with the message.
+      -->
+      <p class="notification-list__severity">{{ labelFor(entry.severity) }}</p>
+
+      <!--
+        The sentence. Guaranteed by the service to carry visible text — it refuses a blank or
+        whitespace-only message outright — so no emptiness guard is written here.
+      -->
+      <p class="notification-list__message">{{ entry.message }}</p>
+
+      <!--
+        The dismissal. A real `button` with an explicit `type`, so it is a tab stop, is operable
+        by Enter and Space without a key handler, and cannot submit a form it happens to be
+        rendered inside.
+
+        The visible glyph is a multiplication sign — the typographic character rather than the
+        letter x — and it is `aria-hidden`, because a screen reader announcing "multiplication
+        sign" says nothing useful. The accessible name comes from the label attribute instead,
+        so the control is announced by what it DOES. There is deliberately no auto-dismiss
+        timer anywhere in this surface: a person reading slowly, or reading with a screen
+        reader, must not lose a message before finishing it.
+      -->
+      <button
+        type="button"
+        class="notification-list__dismiss"
+        [attr.aria-label]="dismissLabel"
+        (click)="dismiss(entry.id)"
+      >
+        <span aria-hidden="true">&times;</span>
+      </button>
+    </div>
+  }
+</div>

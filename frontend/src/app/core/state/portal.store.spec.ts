@@ -711,10 +711,19 @@ function portalSettings(
  * @param portalId The portal the alias resolves to.
  * @param portalAliasId The alias identifier.
  * @param httpAlias The host name, optionally with a port.
+ * @param isCurrent Whether the request that read the row resolved the tenant through it.
  * @returns The alias.
  */
-function portalAlias(portalId: number, portalAliasId: number, httpAlias: string): PortalAlias {
-  return { portalAliasId, portalId, httpAlias };
+// The current-alias flag defaults to FALSE, which is the answer for every row a fixture
+// builds unless it says otherwise: it is the server's per-request projection, and a
+// helper that defaulted it to true would arrange the withheld case by accident.
+function portalAlias(
+  portalId: number,
+  portalAliasId: number,
+  httpAlias: string,
+  isCurrent = false,
+): PortalAlias {
+  return { portalAliasId, portalId, httpAlias, isCurrent };
 }
 
 /**
@@ -3011,9 +3020,17 @@ describe('PortalStore', () => {
       expect(readEarlier.length)
         .withContext('and the array read earlier still reports what it reported')
         .toBe(2);
+      // Deep equality rather than identity, and the distinction is worth stating. The
+      // transport now DECODES every response against the contract its model publishes, so
+      // what the store holds is a value this client constructed after checking every
+      // member — not a reference to whatever object the network handed it. Asserting
+      // identity with the literal that was flushed would therefore be asserting the
+      // absence of validation. What matters here is unchanged and is still proven: the
+      // record the earlier array reports at that position is still the one that was
+      // unbound, unaffected by the removal.
       expect(readEarlier[1])
         .withContext('holding the very record that was unbound')
-        .toBe(going);
+        .toEqual(going);
       expect(store.aliasCount()).toBe(1);
     });
 
@@ -3044,4 +3061,3 @@ describe('PortalStore', () => {
     });
   });
 });
-

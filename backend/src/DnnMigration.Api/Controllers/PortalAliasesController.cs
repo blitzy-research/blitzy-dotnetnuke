@@ -135,6 +135,20 @@ namespace DnnMigration.Api.Controllers;
 /// decision rather than an omission; a caller that unbinds a portal's only alias is answered
 /// <c>204</c>, exactly as the legacy write path answered.
 /// </para>
+/// <para>
+/// MIGRATION: THE ACTIVE ALIAS IS A DIFFERENT MATTER, AND IT IS REFUSED. The legacy screen hid the EDIT
+/// affordance for the alias the request itself arrived through - <c>IsNotCurrent</c> at
+/// <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60, bound to the hyperlink's <c>Visible</c>
+/// property at <c>portalalias.ascx</c> L8 - and, as with the last-alias rule, enforced nothing. Here the
+/// rule IS enforced, because the consequence is unrecoverable rather than merely unwise: renaming or
+/// unbinding the host name the current session is arriving through stops the tenant resolving for every
+/// caller using it, including the operator who did it, so the screen that would undo the change becomes
+/// unreachable. Both writes therefore answer <c>409</c> carrying
+/// <c>portal.alias_in_use.conflict</c> when addressed at that row, and every alias projection carries an
+/// <c>isCurrent</c> flag so a client can withhold the affordance before it is attempted. The widened
+/// enforcement - legacy hid edit only, this refuses removal too - is a deliberate divergence recorded in
+/// <c>MIGRATION_NOTES.md</c>.
+/// </para>
 /// </remarks>
 [ApiController]
 [ApiVersion("1.0")]
@@ -392,8 +406,11 @@ public sealed class PortalAliasesController : ControllerBase
     /// </response>
     /// <response code="404">No alias bears that identifier within that portal.</response>
     /// <response code="409">
-    /// The new host name is already bound to another alias. The body carries
-    /// <c>portal.alias_duplicate</c> as its problem type.
+    /// Either the new host name is already bound to another alias, in which case the body carries
+    /// <c>portal.alias_duplicate</c> as its problem type; or the addressed alias is the one this very
+    /// request resolved the tenant through, in which case it carries
+    /// <c>portal.alias_in_use.conflict</c>. Both are well-formed, authorised requests that the state of
+    /// the resource declines, which is what distinguishes them from a <c>400</c> and from a <c>403</c>.
     /// </response>
     /// <remarks>
     /// MIGRATION: the legacy update reported every caught exception as a duplicate alias. Here a duplicate
@@ -441,6 +458,13 @@ public sealed class PortalAliasesController : ControllerBase
     /// The caller is authenticated but does not administer the portal this request addresses.
     /// </response>
     /// <response code="404">No alias bears that identifier within that portal.</response>
+    /// <response code="409">
+    /// The addressed alias is the one this very request resolved the tenant through, so unbinding it would
+    /// stop the tenant resolving at the host name the caller is using. The body carries
+    /// <c>portal.alias_in_use.conflict</c> as its problem type. Reaching the portal through one of its
+    /// other host names makes the identical request succeed, which is what makes this a conflict rather
+    /// than a refusal of authority.
+    /// </response>
     /// <remarks>
     /// MIGRATION: the legacy delete affordance was super-user gated
     /// (<c>EditPortalAlias.ascx.vb:L181-L186</c>); a portal administrator reaches it here for its own portal
@@ -454,6 +478,7 @@ public sealed class PortalAliasesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult> DeleteForPortalAsync(
         int portalId,
         int portalAliasId,

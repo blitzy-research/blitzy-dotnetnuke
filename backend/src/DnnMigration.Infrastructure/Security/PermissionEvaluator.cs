@@ -478,6 +478,157 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             : Result<bool>.Success(Holds(matched, permissionKey));
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// FOUR READS, WHATEVER THE PAGE COUNT, and each one is the set-based form of a read the single-page
+    /// collector performs once per page: the pages themselves, the caller's roles within the owning tenant,
+    /// the page-scope catalogue, and the grants. The single-page collector's own cost is four reads, so
+    /// asking it once per page cost four reads PER PAGE - which for a module placed on every page of a tenant
+    /// made one authorisation check proportional to the page tree.
+    /// </para>
+    /// <para>
+    /// The verdict is composed PER PAGE and then disjoined, which is what makes this exactly equivalent to
+    /// asking the single-page member once per page. Grouping the grants by page before judging them is the
+    /// part that matters: pooling them instead would let an ALLOW on one page cancel a DENY on another, and
+    /// deny precedence is decided WITHIN a page's grant set, so a pooled set would answer a question nobody
+    /// asked.
+    /// </para>
+    /// <para>
+    /// The catalogue read is issued ONCE, for a page already proven to exist, and that is exact rather than an
+    /// approximation: the catalogue reader's page argument is an EXISTENCE guard rather than a filter - it
+    /// returns the whole page-scope catalogue whenever the named page exists - so one call for any surviving
+    /// page returns precisely what a call per page would have returned. A set holding no page that exists
+    /// never reaches it.
+    /// </para>
+    /// <para>
+    /// The principal is built per DISTINCT owning tenant rather than once, because role names resolve to role
+    /// identifiers within a tenant and a set of pages is not guaranteed to share one. In the path this member
+    /// exists for they always do - the placements of one module belong to one tenant - so this is one read in
+    /// practice and correct in principle.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<bool>> HasAnyTabPermissionAsync(
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tabIds);
+        ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (tabIds.Count == 0)
+        {
+            // No page can grant anything, so no read is issued. This is an ordinary state rather than an
+            // error: a module placed nowhere is administered from nowhere.
+            return Result<bool>.Success(false);
+        }
+
+        IReadOnlyList<Tab> pages = await _tabs.GetByIdsAsync(tabIds, cancellationToken).ConfigureAwait(false);
+
+        if (pages.Count == 0)
+        {
+            // Every named page is absent, which is the same closed default the single-page member reports
+            // for one absent page.
+            return Result<bool>.Success(false);
+        }
+
+        // One principal per distinct owning tenant. Cached so a set of pages sharing a tenant - which is
+        // every set this member is asked about - resolves the caller's roles exactly once. A host page
+        // carries no portal at all, and that scope is held separately rather than as a null dictionary key,
+        // because a host page resolves NO named role and must not be conflated with a tenant that does.
+        Dictionary<int, Principal> principalsByPortal = new();
+        Principal? hostScopePrincipal = null;
+
+        IReadOnlyList<Permission> catalogue = await _permissions
+            .GetByTabIdAsync(pages[0].TabId, cancellationToken)
+            .ConfigureAwait(false);
+
+        Dictionary<int, PermissionKey> applicable = NarrowCatalogue(catalogue, permissionKey, IsTabScoped);
+
+        if (applicable.Count == 0)
+        {
+            // Nothing in the catalogue confers the key being asked about, so no grant could match it and the
+            // grant read is not issued at all.
+            return Result<bool>.Success(false);
+        }
+
+        IReadOnlyList<TabPermission> grants = await _permissions
+            .GetTabPermissionsByTabIdsAsync(
+                pages.Select(page => page.TabId).ToList(),
+                AnyPermissionId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var grantsByTabId = new Dictionary<int, List<TabPermission>>();
+        foreach (TabPermission grant in grants)
+        {
+            if (!grantsByTabId.TryGetValue(grant.TabId, out List<TabPermission>? group))
+            {
+                group = new List<TabPermission>();
+                grantsByTabId[grant.TabId] = group;
+            }
+
+            group.Add(grant);
+        }
+
+        foreach (Tab page in pages)
+        {
+            if (!grantsByTabId.TryGetValue(page.TabId, out List<TabPermission>? pageGrants))
+            {
+                // A page with no grant at all confers nothing, which is the same verdict the single-page
+                // member reaches from an empty matched set.
+                continue;
+            }
+
+            Principal principal;
+            if (page.PortalId is int owningPortalId)
+            {
+                if (!principalsByPortal.TryGetValue(owningPortalId, out principal))
+                {
+                    principal = await BuildPrincipalAsync(owningPortalId, userId, roleNames, cancellationToken)
+                        .ConfigureAwait(false);
+                    principalsByPortal[owningPortalId] = principal;
+                }
+            }
+            else
+            {
+                hostScopePrincipal ??= await BuildPrincipalAsync(null, userId, roleNames, cancellationToken)
+                    .ConfigureAwait(false);
+                principal = hostScopePrincipal.Value;
+            }
+
+            var matched = new List<MatchedGrant>(pageGrants.Count);
+            foreach (TabPermission grant in pageGrants)
+            {
+                if (!applicable.TryGetValue(grant.PermissionId, out PermissionKey key))
+                {
+                    continue;
+                }
+
+                if (Matches(grant.RoleId, grant.UserId, principal))
+                {
+                    matched.Add(new MatchedGrant(
+                        PermissionScope.Tab,
+                        grant.TabId,
+                        key,
+                        grant.AllowAccess));
+                }
+            }
+
+            // Judged with the SAME rule and within the SAME page as the single-page member applies, so deny
+            // precedence stays a within-page decision.
+            if (Holds(matched, permissionKey))
+            {
+                return Result<bool>.Success(true);
+            }
+        }
+
+        return Result<bool>.Success(false);
+    }
+
     /// <summary>Collects the grants on one module that the given caller reaches.</summary>
     /// <param name="moduleId">The module being evaluated.</param>
     /// <param name="permissionKey">

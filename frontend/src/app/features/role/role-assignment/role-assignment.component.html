@@ -237,7 +237,11 @@
       colon, so the label reads as the resource file holds it.
     -->
     <div class="role-assignment__notify">
-      <app-form-field [label]="text.notifyLabel" [for]="controlId.notify">
+      <app-form-field
+        [label]="text.notifyLabel"
+        [for]="controlId.notify"
+        [help]="text.notifyHelp"
+      >
         <input
           class="role-assignment__notify-control"
           type="checkbox"
@@ -271,10 +275,19 @@
     would be a column the legacy screen never showed, so `SecurityRole.Header` is deliberately
     unused. The columns themselves are assembled in the class.
 
-    MIGRATION: the grid is UNSORTED and UNPAGED by parity. `securityroles.ascx:L56` declares
-    neither sorting nor paging, no pager style and no alternating-item style, so nothing here
-    binds a sort field or a sort direction, nothing handles a sort request, no column is marked
-    sortable and no pager component is rendered. There is no row striping to reproduce either.
+    MIGRATION: the grid is UNSORTED by parity. `securityroles.ascx:L56` declares no
+    `AllowSorting`, so nothing here binds a sort field or a sort direction, nothing handles a
+    sort request and no column is marked sortable. There is no row striping to reproduce either,
+    since no alternating-item style was declared.
+
+    MIGRATION: the grid IS paged, and the legacy one was not. The same declaration carries no
+    `AllowPaging` and no pager style, and the first port reproduced that by reading every page
+    the server reported and rendering the union - an unbounded read of a listing that counts and
+    windows per request. One page is rendered instead and the shared pager reaches the rest, so
+    every membership is still addressable and no Delete command is out of reach. The pager is
+    drawn on the same predicate as every other listing here: only when more memberships exist
+    than fit on one page, which means a role small enough to have fitted in the legacy grid
+    renders with no pager at all and looks exactly as it did.
 
     The loading and empty presentations belong to the shared grid, which renders both from the
     inputs below. Neither is duplicated here, and the empty wording is not settable by a
@@ -297,6 +310,21 @@
       -->
       <span dataTableCaption>{{ text.caption }}</span>
     </app-data-table>
+
+    <!--
+      The pager, handed the three facts its contract declares - the page the operator asked for,
+      the size in effect and the total the server reported - and reporting a zero-based index
+      straight back. It is mounted only when it has somewhere to go, so the common case of a
+      role whose members fit on one page renders the bare grid.
+    -->
+    @if (pagerRequired()) {
+      <app-pagination
+        [page]="pageIndex()"
+        [pageSize]="pageSize()"
+        [totalCount]="totalCount()"
+        (pageChange)="onPageChange($event)"
+      />
+    }
   </section>
 
   <!--

@@ -112,6 +112,8 @@ import { NotificationService } from '../../../core/services/notification.service
 import { AuthStore } from '../../../core/state/auth.store';
 import { UserStore } from '../../../core/state/user.store';
 import type { UserOperation } from '../../../core/state/user.store';
+import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
+import { isRouteId, parseRouteId } from '../../../core/utils/route-id.util';
 import {
   PASSWORD_UPDATE_MESSAGE,
   fieldErrorMessage,
@@ -535,31 +537,25 @@ function readControlValue(group: AbstractControl, name: CredentialField): string
  * @returns The account key, or `Number.NaN` when the value names none.
  */
 function parseRouteUserId(value: unknown): number {
+  // DELEGATES TO core/utils/route-id.util.ts RATHER THAN RESTATING THE GRAMMAR. The five screens
+  // that parse a route identifier each carried their own version and they disagreed with one
+  // another; the grammar now lives in one place, and it bounds the result to the range the schema
+  // columns permit as well as refusing every spelling that is not a plain signed decimal integer.
+  //
+  // The rejection that used to be written out here is preserved by that parser and then some: it
+  // refuses a numeric prefix with a tail (the reason this test existed), and also the surrounding
+  // whitespace and the leading plus this body used to tolerate — two spellings of one key are two
+  // ways to name one record, which is what a single grammar exists to prevent.
+  //
+  // A NUMBER is still accepted so a programmatic binding need not stringify one, but it is
+  // VALIDATED against the same bounds rather than merely tested for finiteness.
   if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : Number.NaN;
+    return isRouteId(value) ? value : Number.NaN;
   }
-
   if (typeof value !== 'string') {
     return Number.NaN;
   }
-
-  const trimmed = value.trim();
-
-  if (trimmed.length === 0) {
-    return Number.NaN;
-  }
-
-  // Rejected before parsing rather than after, because `Number.parseInt` stops at the
-  // first character it cannot use and would read '12abc' as 12 — an account key the
-  // caller never asked for. An optional sign is admitted so that a negative key stays
-  // expressible.
-  if (!/^[+-]?\d+$/.test(trimmed)) {
-    return Number.NaN;
-  }
-
-  const parsed = Number.parseInt(trimmed, 10);
-
-  return Number.isFinite(parsed) ? parsed : Number.NaN;
+  return parseRouteId(value) ?? Number.NaN;
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +839,22 @@ export class UserPasswordComponent {
   // -------------------------------------------------------------------------
   // THE FORM
   // -------------------------------------------------------------------------
+
+  /**
+   * The typing ceiling emitted on all three credential inputs.
+   *
+   * Shared from `core/utils/credential-bounds.util.ts`, which holds the API's own bound
+   * and the reasoning behind it, so this screen cannot drift away from the server rule.
+   *
+   * MIGRATION: THE LEGACY CEILING OF 20 IS DELIBERATELY NOT PRESERVED, and this screen is
+   * where reproducing it did the most damage. `admin/Users/Password.ascx` L35, L39 and L43
+   * each declare `maxlength="20"`, mirroring the legacy `Password nvarchar(20)` storage
+   * width. Applied to the CURRENT credential, that ceiling means an account whose password
+   * is longer than twenty characters — which the API's 256-byte bound permits — can never
+   * type its existing credential in full, and so can never change its own password. That
+   * is a lockout rather than a typing affordance.
+   */
+  readonly credentialMaxLength = CREDENTIAL_MAX_LENGTH;
 
   /**
    * The credential form.

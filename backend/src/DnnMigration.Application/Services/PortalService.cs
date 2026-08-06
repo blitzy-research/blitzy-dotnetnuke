@@ -131,6 +131,37 @@ public sealed class PortalService : IPortalService
     /// <summary>Reason code reported when removal is refused to keep one portal in the installation.</summary>
     private const string LastRemainingCode = "portal.last_remaining";
 
+    /// <summary>
+    /// Reason code reported when a rename or a removal is addressed at the alias the CURRENT REQUEST
+    /// resolved through.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this restores a legacy affordance as a server-side RULE. The legacy screen hid the edit
+    /// affordance for the alias the request arrived through - <c>IsNotCurrent</c> at
+    /// <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60, bound to the hyperlink's
+    /// <c>Visible</c> property at <c>portalalias.ascx</c> L8 - but it enforced nothing: the legacy edit
+    /// control would have honoured a hand-composed request perfectly well. Hiding a control is not a
+    /// rule, so the rule is stated here, where a crafted call reaches it too.
+    /// </para>
+    /// <para>
+    /// WHAT IT PREVENTS. An alias is what tenant resolution matches on. Renaming or unbinding the alias
+    /// the current session is using re-points that host name at nothing, so the tenant stops resolving
+    /// for every caller arriving through it - and the operator who did it cannot reach the screen that
+    /// would undo it, because reaching that screen requires the tenant to resolve. It is a
+    /// self-inflicted denial of service with no in-application recovery, which is why it is refused
+    /// rather than merely discouraged.
+    /// </para>
+    /// <para>
+    /// The <c>conflict</c> token places it on <c>409</c>: the request is well formed and the caller is
+    /// authorised, but the addressed row is in a state that forbids the operation. It is deliberately
+    /// NOT a <c>403</c>, which would say the caller lacks authority over a row it fully administers, and
+    /// deliberately not a <c>404</c>, which would deny the row exists when the response body must
+    /// explain precisely which row it is and why.
+    /// </para>
+    /// </remarks>
+    private const string AliasInUseConflictCode = "portal.alias_in_use.conflict";
+
     /// <summary>Reason code reported when a member's live sessions could not be ended before removal.</summary>
     private const string MemberSessionRevocationFailedCode =
         "portal.member.session.revocation_store_unavailable";
@@ -475,14 +506,28 @@ public sealed class PortalService : IPortalService
             request.SortDir == SortDirection.Descending,
             cancellationToken).ConfigureAwait(false);
 
-        // Aliases are not loaded by the listing read, so the whole installation's aliases are fetched
-        // once and grouped, rather than read per row.
-        // MIGRATION: the installation-wide read is its own member. The legacy code asked this question by
-        // passing -1 to the portal-scoped read, where the procedure's own predicate turned it into a
-        // wildcard; -1 is also a real portal identifier in this schema, so the two questions are now
-        // separate members and the intent of this call site is visible without knowing that.
-        IReadOnlyList<PortalAlias> allAliases = await _aliases
-            .GetAllAsync(cancellationToken)
+        // The distinct tenants the WINDOW actually contains. Resolved before the alias read below because
+        // that read is keyed by them, and reused by the two tally reads further down, so the page's identity
+        // set is established once.
+        IReadOnlyCollection<int> pagePortalIds = page.Items
+            .Select(portal => portal.PortalId)
+            .Distinct()
+            .ToList();
+
+        // Aliases are not loaded by the listing read, so they are fetched once for THE TENANTS ON THIS PAGE
+        // and grouped - not per row, and not for the whole installation.
+        //
+        // MIGRATION: the read is keyed by the page's own identifiers rather than being installation-wide, and
+        // the difference is the whole point. This call site used to ask for every alias the installation holds
+        // and then group the lot, of which it kept at most one group per row it was about to project - so a
+        // request for a page of fifty tenants read, materialised and grouped the alias table of every tenant
+        // in the installation, and the response gave no indication that it had. A page's auxiliary reads must
+        // be bounded by the page. Note what has NOT changed: the wildcard the legacy code expressed by passing
+        // -1 to the portal-scoped read is still not reachable, because -1 is a real portal identifier in this
+        // schema and this member reads every value as the tenant bearing it; the installation-wide question
+        // remains its own member for the callers that genuinely ask it.
+        IReadOnlyList<PortalAlias> pageAliases = await _aliases
+            .GetByPortalIdsAsync(pagePortalIds, cancellationToken)
             .ConfigureAwait(false);
 
         // MIGRATION: dbo.PortalAlias.HTTPAlias permits null - the column is declared without a NOT NULL
@@ -494,7 +539,7 @@ public sealed class PortalService : IPortalService
         // yields the empty string, so a row holding no host name appeared in the list as an empty entry
         // rather than being dropped. Preserving that keeps both the entry and the alias tally identical
         // to what the legacy screen showed, which is what Rule T7 asks of a DTO boundary.
-        Dictionary<int, List<string>> aliasesByPortal = allAliases
+        Dictionary<int, List<string>> aliasesByPortal = pageAliases
             .GroupBy(alias => alias.PortalId)
             .ToDictionary(
                 group => group.Key,
@@ -507,13 +552,9 @@ public sealed class PortalService : IPortalService
         // ONE STATEMENT, at no round-trip cost. Reproducing "per row" literally, by asking the
         // single-portal tally members once per row from here, would turn a page of fifty tenants into a
         // hundred round trips for figures the store can group in two, and would make the cost of the
-        // listing a function of its page size. The batched members exist for exactly this call site: the
-        // distinct identifiers of the page are resolved in one read each, then joined in memory below.
-        IReadOnlyCollection<int> pagePortalIds = page.Items
-            .Select(portal => portal.PortalId)
-            .Distinct()
-            .ToList();
-
+        // listing a function of its page size. The batched members exist for exactly this call site, and
+        // they are keyed by the same page identity set the alias read above is keyed by - resolved once,
+        // above, then handed to all three reads.
         IReadOnlyDictionary<int, int> usersByPortal = await _portals
             .CountUsersForPortalsAsync(pagePortalIds, cancellationToken)
             .ConfigureAwait(false);
@@ -1269,14 +1310,20 @@ public sealed class PortalService : IPortalService
         //
         // Staged inside the transaction already open above, so a later refusal rolls the module removals back
         // with everything else and the tenant is left exactly as it was.
+        //
+        // MIGRATION: the removals are staged from the entities ALREADY IN HAND, in one call, rather than one
+        // identifier at a time. The loop this replaces read the tenant's modules and then asked the module
+        // contract to FIND EACH OF THOSE SAME ROWS AGAIN by identifier - one round trip per module, every one
+        // of them issued inside the serialisable transaction opened above, so the time this transaction held
+        // its locks grew with the size of the tenant being removed for no information this method did not
+        // already have. The read above is tracked, which is what makes the range removal possible without a
+        // second read; the removals are still STAGED rather than executed, so the transactional shape is
+        // unchanged and a later refusal rolls them back with everything else.
         IReadOnlyList<Module> portalModules = await _modules
             .GetByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (Module module in portalModules)
-        {
-            await _modules.DeleteAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
-        }
+        await _modules.DeleteRangeAsync(portalModules, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<User> portalMembers = await _users
             .ListPortalMembersForRemovalAsync(portalId, cancellationToken)
@@ -1494,8 +1541,13 @@ public sealed class PortalService : IPortalService
             ? await _aliases.GetByPortalIdAsync(wantedPortalId, cancellationToken).ConfigureAwait(false)
             : await _aliases.GetAllAsync(cancellationToken).ConfigureAwait(false);
 
+        // Each row is told which alias the CURRENT REQUEST resolved through, so the one that must not be
+        // renamed or removed identifies itself. See CurrentPortalAliasId for why the answer is the
+        // server's to give.
+        int? currentAliasId = CurrentPortalAliasId();
+
         IReadOnlyList<PortalAliasDto> rows = aliases
-            .Select(PortalMappings.ToDto)
+            .Select(alias => PortalMappings.ToDto(alias, currentAliasId))
             .ToList();
 
         return Result<IReadOnlyList<PortalAliasDto>>.Success(rows);
@@ -1519,7 +1571,7 @@ public sealed class PortalService : IPortalService
         // deliberate mode rather than a missing argument.
         return alias is null || (portalId is int scopedPortalId && alias.PortalId != scopedPortalId)
             ? Result<PortalAliasDto?>.Success(null)
-            : Result<PortalAliasDto?>.Success(PortalMappings.ToDto(alias));
+            : Result<PortalAliasDto?>.Success(PortalMappings.ToDto(alias, CurrentPortalAliasId()));
     }
 
     /// <inheritdoc />
@@ -1586,7 +1638,11 @@ public sealed class PortalService : IPortalService
         _cache.InvalidateHost();
         _cache.InvalidatePortal(portalId);
 
-        return Result<PortalAliasDto>.Success(PortalMappings.ToDto(created));
+        // A freshly bound alias cannot be the one this request resolved through - resolution happened
+        // before it existed - so the flag comes back false. It is still resolved rather than hard-coded,
+        // because a literal here would be a second statement of the rule, free to disagree with the one
+        // above the day the read path changes.
+        return Result<PortalAliasDto>.Success(PortalMappings.ToDto(created, CurrentPortalAliasId()));
     }
 
     /// <inheritdoc />
@@ -1613,6 +1669,21 @@ public sealed class PortalService : IPortalService
         if (stored is null || (portalId is int scopedPortalId && stored.PortalId != scopedPortalId))
         {
             return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
+        }
+
+        // MIGRATION: the alias the CURRENT REQUEST resolved through cannot be renamed, which restores the
+        // legacy screen's IsNotCurrent affordance (PortalAlias.ascx.vb L51-L60) as an enforced rule rather
+        // than a hidden control. Refused AFTER ownership is settled and BEFORE the duplicate check,
+        // because the answer does not depend on the submitted host name at all: a rename to the value the
+        // row already holds is still a write against the row resolution is using, and reporting a
+        // duplicate first would explain the wrong thing. See AliasInUseConflictCode for why unbinding the
+        // host name a session is arriving through has no in-application recovery.
+        if (IsCurrentPortalAlias(portalAliasId))
+        {
+            return Result.Failure(
+                AliasInUseConflictCode,
+                "This host name is the one the current request reached the portal through, so it cannot " +
+                "be renamed. Reach the portal through one of its other host names and try again.");
         }
 
         bool aliasTaken = await _aliases
@@ -1669,6 +1740,21 @@ public sealed class PortalService : IPortalService
         if (stored is null || (portalId is int scopedPortalId && stored.PortalId != scopedPortalId))
         {
             return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
+        }
+
+        // MIGRATION: removal of the alias the CURRENT REQUEST resolved through is refused as well, and
+        // this half goes BEYOND the legacy screen rather than reproducing it. Legacy hid the EDIT
+        // affordance for the current row and left removal governed only by a count - SetDeleteVisibility
+        // at EditPortalAlias.ascx.vb L107 hid the button when the portal held one alias or fewer - so an
+        // operator on a portal with several aliases could unbind the very one they had arrived through.
+        // The consequence is strictly worse than a rename, because there is no row left to correct, and
+        // the deliberate divergence is recorded in MIGRATION_NOTES.md rather than absorbed silently.
+        if (IsCurrentPortalAlias(portalAliasId))
+        {
+            return Result.Failure(
+                AliasInUseConflictCode,
+                "This host name is the one the current request reached the portal through, so it cannot " +
+                "be removed. Reach the portal through one of its other host names and try again.");
         }
 
         int owningPortalId = stored.PortalId;
@@ -1750,7 +1836,11 @@ public sealed class PortalService : IPortalService
             administratorRoleName,
             registeredRoleName,
             administratorEmail,
-            superTabId);
+            superTabId,
+            // The detail contract carries the portal's aliases in full, so each of them is told which one
+            // the current request resolved through for the same reason the alias collection endpoint is:
+            // a screen rendering this projection must be able to withhold the affordance on that row.
+            CurrentPortalAliasId());
     }
 
     /// <summary>
@@ -1987,6 +2077,60 @@ public sealed class PortalService : IPortalService
             IsPublic = isPublic,
             AutoAssignment = autoAssignment,
         };
+
+    /// <summary>
+    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when
+    /// the request resolved no tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the target's equivalent of <c>PortalSettings.PortalAlias.PortalAliasID</c>, the
+    /// single fact the legacy alias administration screen read from the resolved alias entity —
+    /// <c>IsNotCurrent</c> at <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60. Legacy reached
+    /// it through ambient per-request page state; here it is read from the resolved tenant snapshot,
+    /// which the API's alias-resolution stage builds once per request.
+    /// </para>
+    /// <para>
+    /// WHY THE ANSWER IS THE SERVER'S TO GIVE AND NOT THE BROWSER'S TO INFER. Resolution matches the
+    /// request's host, port included, against stored aliases exactly and refuses an ambiguous match; a
+    /// reverse proxy may present the API with a host the browser never saw; and stored casing need not
+    /// match what a caller submitted, because the legacy write path lower-cased while its reader did not.
+    /// A client-side guess from the address bar would therefore be right on one deployment and wrong on
+    /// another, and being wrong means either withholding the affordance from a row that is safe to edit
+    /// or offering it on the one row that is not.
+    /// </para>
+    /// <para>
+    /// NULL IS A DECIDED ANSWER, NOT A GAP. An unresolved request — a host with no alias row, or an
+    /// installation-wide caller addressing the collection without a tenant — arrived through no alias, so
+    /// no row is the current one and every row is safe to rename. The refusals that consume this answer
+    /// therefore permit the write in that case, which is correct rather than lenient: the write cannot
+    /// unbind a host name the request is not using.
+    /// </para>
+    /// <para>
+    /// Synchronous by construction, and no I/O means no <see cref="Task"/>. Tenant resolution happens once
+    /// per request in the API layer and is memoised, so reading it here costs nothing; this member
+    /// deliberately does not resolve on demand, which would need the incoming address and so would put
+    /// request state in the application layer (Rule T1).
+    /// </para>
+    /// </remarks>
+    /// <returns>The resolved alias key, or <see langword="null"/> when no tenant was resolved.</returns>
+    private int? CurrentPortalAliasId() =>
+        _portalContext.IsResolved ? _portalContext.Current.PortalAliasId : null;
+
+    /// <summary>
+    /// Whether one alias is the alias the CURRENT REQUEST resolved through.
+    /// </summary>
+    /// <remarks>
+    /// Compared for EQUALITY against the resolved key, never by magnitude and never by truthiness.
+    /// <c>PortalAlias.PortalAliasID</c> is <c>IDENTITY (1, 1)</c> so no legal key collides with the legacy
+    /// absent-integer sentinel, but the discipline is applied anyway because every sibling key this
+    /// service handles — portal, role, page and module — is seeded at zero or minus one and is compared by
+    /// the same code paths.
+    /// </remarks>
+    /// <param name="portalAliasId">The alias key to test.</param>
+    /// <returns><see langword="true"/> when it is the resolved alias.</returns>
+    private bool IsCurrentPortalAlias(int portalAliasId) =>
+        CurrentPortalAliasId() is int resolved && resolved == portalAliasId;
 
     /// <summary>
     /// Resolves the host name a new portal will actually be reachable at.

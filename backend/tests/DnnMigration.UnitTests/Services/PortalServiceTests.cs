@@ -66,6 +66,23 @@ public class PortalServiceTests
 
     private const int PortalAliasId = 4;
 
+    /// <summary>
+    /// A SECOND alias row of the same portal, standing in for the host name a request arrived through when
+    /// that host name is deliberately NOT the row the test is about to write.
+    /// </summary>
+    /// <remarks>
+    /// Held as its own pair of constants rather than derived from <see cref="PortalAliasId"/> because the
+    /// active-alias refusal turns "which row did this request arrive through" into a load-bearing fact: a
+    /// test that reused the row under test here would be arranging the REFUSED case by accident and would
+    /// then prove nothing about the path it names. The host name is distinct from the
+    /// <c>"other.example"</c> the cross-tenant assertions use, so a same-portal arrangement can never be
+    /// confused with a foreign-tenant one.
+    /// </remarks>
+    private const int SparePortalAliasId = 5;
+
+    /// <inheritdoc cref="SparePortalAliasId"/>
+    private const string SpareHostAlias = "spare.example";
+
     private const int AdministratorId = 7;
 
     /// <summary>
@@ -3054,6 +3071,198 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// Every projected alias reports whether it is the one THIS REQUEST resolved the tenant through, so a
+    /// screen can withhold the affordance on that row before it is attempted.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: restores the legacy affordance at <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to
+    /// L60, where <c>IsNotCurrent</c> compared each grid row's key against
+    /// <c>Me.PortalAlias.PortalAliasID()</c> and <c>portalalias.ascx</c> L8 bound the answer to the edit
+    /// hyperlink's <c>Visible</c> property. The comparison is by KEY, never by host name: the legacy write
+    /// path lower-cased on insert and update while its reader did not, so two spellings of one alias are
+    /// both legitimate stored values and a string comparison would need a casing rule of its own.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListPortalAliases_MarksOnlyTheAliasThisRequestResolvedThrough()
+    {
+        Harness harness = Harness.Ready();
+        harness.AllAliases.Clear();
+        harness.AllAliases.AddRange(
+        [
+            Alias(PortalAliasId, PortalId, HostAlias),
+            Alias(SparePortalAliasId, PortalId, SpareHostAlias),
+        ]);
+
+        harness.ContextResolved = true;
+        harness.ResolvedContext = ResolvedTenant(HostAlias, PortalAliasId);
+
+        Result<IReadOnlyList<PortalAliasDto>> rows = await harness.Service
+            .ListPortalAliasesAsync(PortalId, CancellationToken.None);
+
+        rows.IsSuccess.Should().BeTrue();
+        rows.Value.Should().HaveCount(2);
+        rows.Value.Single(alias => alias.PortalAliasId == PortalAliasId).IsCurrent
+            .Should().BeTrue("this is the row the request resolved through");
+        rows.Value.Single(alias => alias.PortalAliasId == SparePortalAliasId).IsCurrent
+            .Should().BeFalse("every other row remains safe to rename and to unbind");
+    }
+
+    /// <summary>
+    /// A request that resolved no tenant reports every row as not current, which is a decided answer rather
+    /// than a fallback: it arrived through no alias, so no row is the one it is using.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListPortalAliases_ReportsNoCurrentAliasWhenTheRequestResolvedNoTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.AllAliases.Clear();
+        harness.AllAliases.Add(Alias(PortalAliasId, PortalId, HostAlias));
+        harness.ContextResolved = false;
+
+        Result<IReadOnlyList<PortalAliasDto>> rows = await harness.Service
+            .ListPortalAliasesAsync(PortalId, CancellationToken.None);
+
+        rows.Value.Single().IsCurrent.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Renaming the alias the current request resolved through is REFUSED, with a stable conflict code.
+    /// </summary>
+    /// <remarks>
+    /// The consequence is unrecoverable rather than merely unwise: the host name the session is arriving
+    /// through would stop resolving to the tenant, for every caller using it, and the screen that would
+    /// undo the change becomes unreachable. The refusal is checked BEFORE the duplicate check because it
+    /// does not depend on the submitted value - a rename to the value the row already holds is still a
+    /// write against the row resolution is using.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalAlias_RefusesTheAliasThisRequestResolvedThrough()
+    {
+        Harness harness = Harness.Ready();
+        harness.ContextResolved = true;
+        harness.ResolvedContext = ResolvedTenant(HostAlias, PortalAliasId);
+
+        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
+            PortalAliasId,
+            new UpdatePortalAliasRequest { HttpAlias = "renamed.example" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse();
+        outcome.Error!.Code.Should().Be("portal.alias_in_use.conflict");
+        harness.UpdatedAliases.Should().BeEmpty("the row must not be written at all");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The refusal is by KEY and is unaffected by the value submitted, including the row's own host name.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalAlias_RefusesTheActiveAliasEvenWhenTheValueIsUnchanged()
+    {
+        Harness harness = Harness.Ready();
+        harness.ContextResolved = true;
+        harness.ResolvedContext = ResolvedTenant(HostAlias, PortalAliasId);
+
+        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
+            PortalAliasId,
+            new UpdatePortalAliasRequest { HttpAlias = HostAlias },
+            CancellationToken.None);
+
+        outcome.Error!.Code.Should().Be("portal.alias_in_use.conflict");
+    }
+
+    /// <summary>
+    /// A row the request did NOT arrive through remains editable, so the rule withholds exactly one row.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalAlias_PermitsARowThisRequestDidNotResolveThrough()
+    {
+        Harness harness = Harness.Ready();
+
+        // The request arrived through a DIFFERENT alias row of the same portal.
+        ArrivedThroughAnotherAlias(harness);
+
+        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
+            PortalAliasId,
+            new UpdatePortalAliasRequest { HttpAlias = "renamed.example" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.UpdatedAliases.Should().ContainSingle().Which.HttpAlias.Should().Be("renamed.example");
+    }
+
+    /// <summary>
+    /// A request that resolved no tenant may rename any row, because it is using none of them.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalAlias_PermitsEveryRowWhenTheRequestResolvedNoTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.ContextResolved = false;
+
+        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
+            PortalAliasId,
+            new UpdatePortalAliasRequest { HttpAlias = "renamed.example" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Unbinding the alias the current request resolved through is refused with the same code.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this half goes BEYOND the legacy screen rather than reproducing it. Legacy hid the edit
+    /// affordance for the current row and governed removal only by a count
+    /// (<c>EditPortalAlias.ascx.vb</c> L107), so an operator on a portal with several aliases could unbind
+    /// the very one they had arrived through - and the consequence is strictly worse than a rename, because
+    /// no row is left to correct. The divergence is deliberate and recorded in <c>MIGRATION_NOTES.md</c>.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortalAlias_RefusesTheAliasThisRequestResolvedThrough()
+    {
+        Harness harness = Harness.Ready();
+        harness.ContextResolved = true;
+        harness.ResolvedContext = ResolvedTenant(HostAlias, PortalAliasId);
+
+        Result outcome = await harness.Service
+            .DeletePortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse();
+        outcome.Error!.Code.Should().Be("portal.alias_in_use.conflict");
+        harness.RemovedAliases.Should().BeEmpty("the row must not be removed at all");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A row the request did NOT arrive through remains removable.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortalAlias_PermitsARowThisRequestDidNotResolveThrough()
+    {
+        Harness harness = Harness.Ready();
+        ArrivedThroughAnotherAlias(harness);
+
+        Result outcome = await harness.Service
+            .DeletePortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.RemovedAliases.Should().ContainSingle().Which.Should().BeSameAs(harness.LookupAlias);
+    }
+
+    /// <summary>
     /// A single host name is reported as absent when it does not exist, and projected otherwise.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -3283,6 +3492,7 @@ public class PortalServiceTests
     public async Task UpdatePortalAlias_ExcludesTheRowItselfFromTheDuplicateCheck()
     {
         Harness harness = Harness.Ready();
+        ArrivedThroughAnotherAlias(harness);
 
         Result permitted = await harness.Service.UpdatePortalAliasAsync(
             PortalId,
@@ -3323,6 +3533,7 @@ public class PortalServiceTests
     public async Task UpdatePortalAlias_RefusesAHostNameBoundBetweenTheCheckAndTheCommit()
     {
         Harness harness = Harness.Ready();
+        ArrivedThroughAnotherAlias(harness);
         harness.UnitOfWork
             .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
             .ThrowsAsync(DuplicateKeyException.ForConstraint("IX_PortalAlias", null));
@@ -3351,6 +3562,7 @@ public class PortalServiceTests
     public async Task UpdatePortalAlias_DoesNotMoveTheHostNameBetweenTenants()
     {
         Harness harness = Harness.Ready();
+        ArrivedThroughAnotherAlias(harness);
 
         Result outcome = await harness.Service.UpdatePortalAliasAsync(
             PortalId,
@@ -3392,6 +3604,7 @@ public class PortalServiceTests
     public async Task DeletePortalAlias_ReleasesTheHostNameAndDiscardsItsTenantsCache()
     {
         Harness harness = Harness.Ready();
+        ArrivedThroughAnotherAlias(harness);
 
         Result outcome = await harness.Service
             .DeletePortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
@@ -3553,18 +3766,26 @@ public class PortalServiceTests
     /// composed beneath.
     /// </summary>
     /// <param name="httpAlias">The resolved tenant's own host name.</param>
+    /// <param name="portalAliasId">
+    /// Surrogate key of the alias row the request resolved through. This is the fact the active-alias
+    /// refusal and the <c>IsCurrent</c> projection both read, so a test naming a different key is
+    /// describing a request that arrived through a different host name.
+    /// </param>
     /// <returns>A resolved tenant context.</returns>
     /// <remarks>
     /// The alias is the only member the composition reads, but the whole contract is answered so the double
     /// cannot be mistaken for a partially-populated context. It stands in for the legacy
     /// <c>Globals.GetDomainName(Request)</c> reading that <c>Signup.ascx.vb:L232</c> composed beneath.
     /// </remarks>
-    private static IPortalContext ResolvedTenant(string httpAlias = HostAlias)
+    private static IPortalContext ResolvedTenant(
+        string httpAlias = HostAlias,
+        int portalAliasId = PortalAliasId)
     {
         var context = new Mock<IPortalContext>(MockBehavior.Loose);
         context.SetupGet(tenant => tenant.PortalId).Returns(PortalId);
         context.SetupGet(tenant => tenant.PortalName).Returns(PortalName);
         context.SetupGet(tenant => tenant.PortalAlias).Returns(httpAlias);
+        context.SetupGet(tenant => tenant.PortalAliasId).Returns(portalAliasId);
         context.SetupGet(tenant => tenant.AdministratorId).Returns(AdministratorId);
         context.SetupGet(tenant => tenant.AdministratorRoleId).Returns(AdministratorRoleId);
         context.SetupGet(tenant => tenant.AdministratorRoleName).Returns("Administrators");
@@ -3572,6 +3793,25 @@ public class PortalServiceTests
         context.SetupGet(tenant => tenant.RegisteredRoleName).Returns("Registered Users");
 
         return context.Object;
+    }
+
+    /// <summary>
+    /// Arranges the harness as a request that reached the tenant through a host name OTHER than the alias
+    /// row the test is about to rename or unbind.
+    /// </summary>
+    /// <param name="harness">The harness to arrange.</param>
+    /// <remarks>
+    /// <see cref="Harness.Ready"/> resolves the fixture's single alias row, which is the honest default: a
+    /// request that reached a one-alias portal did arrive through that row. Every write against that row is
+    /// therefore refused, so a test about the DUPLICATE check, the unique-index race, the rename write or
+    /// the removal write has to say explicitly that it arrived somewhere else - otherwise it exercises the
+    /// active-alias refusal instead of the path it is named for. The fact is stated here once so each such
+    /// test needs a single line and the reason lives in one place.
+    /// </remarks>
+    private static void ArrivedThroughAnotherAlias(Harness harness)
+    {
+        harness.ContextResolved = true;
+        harness.ResolvedContext = ResolvedTenant(SpareHostAlias, SparePortalAliasId);
     }
 
     /// <summary>
@@ -4175,6 +4415,16 @@ public class PortalServiceTests
                 .Setup(a => a.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int portalId, CancellationToken _) =>
                     harness.AllAliases.Where(alias => alias.PortalId == portalId).ToList());
+            // The SET-based read the tenant listing uses: it asks for the aliases of the tenants on its
+            // page rather than for every alias in the installation. Served from the same alias world as the
+            // other two reads, and honouring the same rule as the single-portal read - every value denotes
+            // the tenant bearing it, so no member of the set is a wildcard.
+            harness.Aliases
+                .Setup(a => a.GetByPortalIdsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<int> portalIds, CancellationToken _) =>
+                    harness.AllAliases.Where(alias => portalIds.Contains(alias.PortalId)).ToList());
             harness.Aliases
                 .Setup(a => a.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.LookupAlias);

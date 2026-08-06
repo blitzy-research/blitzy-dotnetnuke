@@ -138,6 +138,32 @@
 }
 
 // -----------------------------------------------------------------------------
+//  THE TEXT AFFORDANCES, GROUPED
+// -----------------------------------------------------------------------------
+// The page and empty-state actions, the row commands and the host-name links are the same kind
+// of thing - a compact text affordance - and each declared these two emissions verbatim. They are
+// emitted ONCE here instead of three times, which is what keeps this stylesheet inside the 4 kB
+// component budget; the budget itself is never raised to accommodate duplication.
+//
+// The primary-hover token is used rather than the legacy hover colour. That legacy colour is the
+// very same value the token vocabulary assigns to the danger role, and reuses for error text, so
+// reusing it here would paint an ordinary action in the colour that means "something went wrong".
+//
+// POSITION IS LOAD-BEARING. `.portal-list__row-command--danger:hover` has the SAME specificity as
+// `.portal-list__row-command:hover`, so only source order decides between them. This rule must stay
+// ahead of the danger variant below, or the variant's own hover would lose.
+.portal-list__action,
+.portal-list__row-command,
+.portal-list__alias > a {
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// -----------------------------------------------------------------------------
 //  ACTIONS
 // -----------------------------------------------------------------------------
 // Used for the page-level action, the empty-state action and the failure affordances, all of
@@ -163,16 +189,6 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
 
-  @include mx.focus-ring;
-
-  @include mx.hover {
-    // The primary-hover token rather than the legacy hover colour. The legacy hover colour
-    // for this affordance is the very same value the token vocabulary assigns to the danger
-    // role, which it also uses for error text, so reusing it here would paint an ordinary
-    // action in the colour that means "something went wrong".
-    color: var(--color-primary-hover);
-    text-decoration: underline;
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -202,13 +218,6 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
 
-  @include mx.focus-ring;
-
-  @include mx.hover {
-    color: var(--color-primary-hover);
-    text-decoration: underline;
-  }
-
   // Disabled while a deletion is in flight. Both cues are non-colour - the pointer changes
   // and interaction is refused - so the state does not rely on the reduced contrast alone.
   &:disabled {
@@ -223,12 +232,27 @@
 .portal-list__row-command--danger {
   color: var(--color-danger-text);
 
+  // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text is
+  // 10px, so it needs 4.5:1, and the bright danger token measures 4.00:1 on the plain row, 3.45:1
+  // on the alternating surface and 2.61:1 on the selected tint - failing on every row background,
+  // and failing worst on the row the operator has actually selected. The darker text token measures
+  // 7.20:1, 6.21:1 and 4.70:1 against those same three, so it passes everywhere.
+  //
+  // The hover therefore changes the UNDERLINE rather than the colour, which is the cue the
+  // non-destructive command beside it already uses - so the two read as one family - and which is
+  // visible to a person who cannot distinguish the two reds at all.
   @include mx.hover {
-    color: var(--color-danger);
+    // ⚠ RE-DECLARED, NOT INHERITED. The grouped rule above sets `color: var(--color-primary-hover)`
+    // on `.portal-list__row-command:hover`, which has exactly this selector's specificity, so
+    // omitting the colour here does not "keep" the danger colour - it hands the destructive command
+    // the ordinary action's blue on hover. Naming it makes the intent true rather than merely stated.
+    color: var(--color-danger-text);
+    text-decoration: underline;
   }
 
   &:disabled {
     color: var(--color-text-muted);
+    text-decoration: none;
   }
 }
 
@@ -256,11 +280,11 @@
     color: var(--color-primary);
     text-decoration: none;
 
-    @include mx.focus-ring;
-
-    @include mx.hover {
-      color: var(--color-primary-hover);
-      text-decoration: underline;
-    }
   }
+}
+
+// The new-context announcement beside each host name: present for assistive technology, absent from the
+// drawing, so the cell looks exactly as it did.
+.portal-list__new-context {
+  @include mx.visually-hidden;
 }

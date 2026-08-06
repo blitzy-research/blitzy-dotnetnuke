@@ -1586,9 +1586,10 @@ describe('ModuleExportComponent', () => {
     it('chooses the severity from the status, so a refusal is never dressed as a fault', () => {
       // A denial and a missing item mean "not you" and "not there"; neither is a fault, and the legacy
       // access-denied screen used the warning presentation in BOTH branches of its page load. A rate-limit
-      // refusal means "you are early", which is why it joins them: it is the compensating control for the
-      // legacy image-verification field this migration removed, and reporting it as an error would report a
-      // fault where the system is working exactly as configured.
+      // refusal means "you are early", which is quieter still: it is the compensating control for the
+      // legacy image-verification field this migration removed, so it is announced informationally rather
+      // than as a warning, and reporting it as an error would report a fault where the system is working
+      // exactly as configured. Every severity here is the shared classifier's answer, never this screen's.
       const expected: readonly { readonly status: number; readonly severity: NotificationSeverity }[] =
         [
           { status: 400, severity: 'error' },
@@ -1596,7 +1597,7 @@ describe('ModuleExportComponent', () => {
           { status: 404, severity: 'warning' },
           { status: 409, severity: 'error' },
           { status: 422, severity: 'error' },
-          { status: 429, severity: 'warning' },
+          { status: 429, severity: 'info' },
           { status: 500, severity: 'error' },
         ];
 
@@ -1619,7 +1620,6 @@ describe('ModuleExportComponent', () => {
 
       // Every severity used is a member of the four-valued vocabulary, and none of these is a success.
       expect(raisedSeverities()).not.toContain('success');
-      expect(raisedSeverities()).not.toContain('info');
       expect(downloadAttempts).toEqual([]);
     });
   });
@@ -1687,12 +1687,48 @@ describe('ModuleExportComponent', () => {
 
       // DELIBERATELY NOT RELEASED THE INSTANT THE ACTIVATION RETURNS. An object URL withdrawn in the same
       // task as the activation can be taken away before the browser has finished resolving it, which turns a
-      // working download into a silent failure on some engines. The release is deferred instead - but only
-      // onto paths that cannot be skipped, of which teardown is the last.
+      // working download into a silent failure on some engines. Nothing is revoked within this task, which is
+      // what this assertion pins; the release happens one turn later, and the case below proves that.
       expect(revokedObjectUrls).toEqual([]);
 
+      // Teardown remains the last unskippable path, and it is what releases an entry whose scheduled release
+      // has not run yet - a screen closed inside the turn.
       fixture.destroy();
 
+      expect(revokedObjectUrls).toEqual([objectUrl]);
+    });
+
+    it('releases the object URL one turn later, without waiting for teardown', async () => {
+      openOn();
+      typeFileName('Backup');
+      exportSucceedsWith('<content />');
+
+      const objectUrl: string = requireSingleObjectUrl();
+
+      // The activation has happened, so the browser has begun resolving the entry.
+      expect(clickSpy).toHaveBeenCalled();
+      expect(revokedObjectUrls).toEqual([]);
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // ⚠ RELEASED WHILE THE SCREEN IS STILL OPEN, which is the whole correction. The entry used to be held
+      // until the next export or until the screen went away, so an administration screen left open after one
+      // export kept the whole exported document pinned in memory for as long as the operator stayed there.
+      expect(revokedObjectUrls).toEqual([objectUrl]);
+    });
+
+    it('revokes exactly once when teardown races the scheduled release', async () => {
+      openOn();
+      typeFileName('Backup');
+      exportSucceedsWith('<content />');
+
+      const objectUrl: string = requireSingleObjectUrl();
+
+      fixture.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Teardown cancels the pending release, so the entry is not revoked a second time and no stray callback
+      // runs against a component that no longer exists.
       expect(revokedObjectUrls).toEqual([objectUrl]);
     });
 
@@ -1974,5 +2010,110 @@ describe('ModuleExportComponent', () => {
       expect(raisedNotifications()).toEqual([]);
     });
   });
-});
 
+  // ---------------------------------------------------------------------------------------------------
+  // STALENESS ACROSS A ROUTE MOVE
+  // ---------------------------------------------------------------------------------------------------
+  /**
+   * ⚠ THE EXFILTRATION RACE, and the sink it guards cannot be undone once it fires.
+   *
+   * `/modules/7/export` and `/modules/9/export` resolve to the SAME route configuration, so moving
+   * between them changes the bound input WITHOUT recreating this component. The store it reads is
+   * root-provided and shared with every other module screen, so what it publishes is whatever was read
+   * LAST — by this screen or by another.
+   *
+   * Two consequences follow, and both put tenant data in the wrong place:
+   *
+   * - The composed filename is derived from the LOADED module's name. A detail describing module 7 while
+   *   the route names module 9 labels module 9's document with module 7's name.
+   * - An export requested for module 7 can settle after the route has moved to module 9. Delivering it
+   *   then writes module 7's serialised data into a file the operator will read as module 9's, and
+   *   nothing downstream can detect the substitution.
+   */
+  describe('staleness across a route move', () => {
+    it('does not seed the filename from a module the address no longer names', () => {
+      openOn({ moduleTitle: 'Announcements', moduleName: 'Announcements' });
+
+      expect(requireFileInput().value)
+        .withContext('precondition: the suggestion comes from the addressed module')
+        .toBe('Announcements');
+
+      // The route moves. The store still holds module 7 until module 9's read answers, and that held
+      // detail must not seed this form.
+      addressModule(String(MODULE_ID + 2));
+
+      const stale = requireFileInput().value;
+
+      expect(stale)
+        .withContext("the previous module's title must not survive the address change")
+        .not.toBe('Announcements');
+
+      answerModuleRead(
+        moduleOf({ moduleId: MODULE_ID + 2, moduleTitle: 'Links', moduleName: 'Links' }),
+        MODULE_ID + 2,
+      );
+
+      expect(requireFileInput().value)
+        .withContext('the newly addressed module seeds the suggestion instead')
+        .toBe('Links');
+    });
+
+    it('does not download a document that finished after the address moved', () => {
+      openOn({ moduleTitle: 'Announcements', moduleName: 'Announcements' });
+      typeFileName('Announcements');
+      submitForm();
+
+      const inFlight = expectExportRequest();
+
+      // The operator moves to a different module while the export is still running.
+      addressModule(String(MODULE_ID + 2));
+      expectModuleRead(MODULE_ID + 2).flush({ data: moduleOf({ moduleId: MODULE_ID + 2 }), meta: null });
+      fixture.detectChanges();
+
+      // Leaving the address abandons the transfer, so the request is cancelled outright and its answer
+      // is never delivered. That is the strongest available outcome: the document cannot be mishandled
+      // because it never arrives.
+      expect(inFlight.cancelled)
+        .withContext('the export is abandoned when its module stops being addressed')
+        .toBeTrue();
+
+      // Flushed anyway where the transport still permits it, so the guards behind cancellation are
+      // exercised rather than assumed.
+      if (!inFlight.cancelled) {
+        inFlight.flush('<content><secret>module seven data</secret></content>');
+      }
+
+      fixture.detectChanges();
+
+      // ⚠ NOTHING REACHES THE DEVICE. Without a guard this is module 7's data in a file the operator
+      // will read as module 9's.
+      expect(document.body.querySelectorAll('a[download]').length)
+        .withContext('no file is handed over for a module the operator has left')
+        .toBe(0);
+
+      // WHICH guard stops it is deliberately not asserted, because TWO do and they are layered.
+      // Changing the address withdraws the pending filename, so the delivery is refused on that
+      // ground first; the captured-module comparison behind it is the backstop for any path that
+      // reaches a delivery with a name still pending. Asserting the outcome rather than the mechanism
+      // is what keeps this case honest if either layer is ever reorganised.
+      expect(requireFileInput().value)
+        .withContext('and the form now belongs to the newly addressed module')
+        .not.toBe('Announcements');
+    });
+
+    it('still downloads a document that finishes while its own module is addressed', () => {
+      // The positive control. A guard like this most easily regresses by being too strict, so the
+      // legitimate delivery is asserted rather than assumed.
+      openOn({ moduleTitle: 'Announcements', moduleName: 'Announcements' });
+      typeFileName('Announcements');
+      submitForm();
+
+      expectExportRequest().flush('<content>module seven data</content>');
+      fixture.detectChanges();
+
+      expect(requireSingleDownload().fileName)
+        .withContext('the addressed module\u2019s own export is delivered normally')
+        .toContain('Announcements');
+    });
+  });
+});

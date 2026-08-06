@@ -228,6 +228,35 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<PortalAlias>> GetByPortalIdsAsync(
+        IReadOnlyCollection<int> portalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(portalIds);
+
+        if (portalIds.Count == 0)
+        {
+            // Asking for no portals is answered without a statement. It is a legitimate request: a listing
+            // whose window landed past the end of the collection has no tenant to name.
+            return Array.Empty<PortalAlias>();
+        }
+
+        int[] wanted = portalIds.Distinct().ToArray();
+
+        // MIGRATION: net-new, and no wildcard is reachable through it. Every member of the set denotes the
+        // portal bearing it, exactly as the single-portal read does, so -1 and 0 address those tenants rather
+        // than widening the answer; "every alias in the installation" remains GetAllAsync. The ordering
+        // matches the other two alias reads, so a caller grouping these rows sees each tenant's aliases in
+        // the same sequence whichever member produced them.
+        return await _dbContext.PortalAliases
+            .AsNoTracking()
+            .Where(alias => wanted.Contains(alias.PortalId))
+            .OrderBy(alias => alias.PortalAliasId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<PortalAlias>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         // MIGRATION: the other half of that split, and the explicit form of what the legacy code

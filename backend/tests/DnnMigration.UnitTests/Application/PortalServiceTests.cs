@@ -396,6 +396,11 @@ public class PortalServiceApplicationTests
                 .Setup(aliases => aliases.GetAllAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Array.Empty<PortalAlias>());
             subject.Aliases
+                .Setup(aliases => aliases.GetByPortalIdsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Array.Empty<PortalAlias>());
+            subject.Aliases
                 .Setup(aliases => aliases.AddAsync(It.IsAny<PortalAlias>(), It.IsAny<CancellationToken>()))
                 .Callback<PortalAlias, CancellationToken>((alias, _) =>
                 {

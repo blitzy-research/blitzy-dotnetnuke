@@ -80,6 +80,8 @@ import { UserStore } from '../../../core/state/user.store';
 import type { UserOperation } from '../../../core/state/user.store';
 import { stripLegacyBreakTags, userCreateMessage } from '../../../core/utils/form-errors.util';
 import type { ProblemSeverity } from '../../../core/utils/form-errors.util';
+import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
+import { parseRouteId } from '../../../core/utils/route-id.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -145,6 +147,41 @@ const NON_ALPHANUMERIC_PATTERN = /[^0-9a-zA-Z]/g;
  * expression matches.
  */
 const EMAIL_PATTERN = /^[\w.-]+(\+[\w-]*)?@([\w-]+\.)+[\w-]+$/;
+
+/**
+ * The maximum length of each identity field, in characters.
+ *
+ * MIGRATION: THE AUTHORITY IS THE COLUMN AND THE API RULE, BECAUSE THE MARKUP HAS NONE. `User.ascx`
+ * declares `maxlength` on exactly four boxes — the credential, its confirmation, the password question
+ * and its answer, all at 20 — and NOTHING on the five identity boxes, so the legacy screen accepted
+ * text of any length and let the write refuse it. Each figure below is therefore the terminal column
+ * width, which the API's create and update rules bind to exactly:
+ *
+ * - `Username nvarchar(100) NOT NULL`
+ * - `FirstName nvarchar(50) NOT NULL` and `LastName nvarchar(50) NOT NULL`
+ * - `DisplayName nvarchar(128)`
+ * - `Email nvarchar(256)`, widened from its original 100 during the upgrade chain
+ *
+ * Stating them here changes the MECHANISM by which an over-long value is refused, not WHETHER it is:
+ * a value that used to travel and come back as a model-state failure is now refused beside the box
+ * that holds it. Nothing accepted before is refused now, because the bounds are the server's own.
+ */
+const IDENTITY_MAX_LENGTH = Object.freeze({
+  /** `Username nvarchar(100) NOT NULL`; `CreateUserRequest` caps the member at the same figure. */
+  username: 100,
+
+  /** `FirstName nvarchar(50) NOT NULL`. */
+  firstName: 50,
+
+  /** `LastName nvarchar(50) NOT NULL`. */
+  lastName: 50,
+
+  /** `DisplayName nvarchar(128)`. */
+  displayName: 128,
+
+  /** `Email nvarchar(256)`. */
+  email: 256,
+});
 
 // ---------------------------------------------------------------------------
 // MEASURED WORDING — LABELS AND TITLES
@@ -415,33 +452,48 @@ export const EXCEEDED_USER_QUOTA_MESSAGE =
 // ---------------------------------------------------------------------------
 
 /**
- * Advisory raised when an account is created with a generated password.
+ * The sentence shown beside a generated password at the moment it is revealed.
  *
- * MIGRATION: the legacy generated the password on the SERVER —
- * `User.ascx.vb:L164` calls `UserController.GeneratePassword()` — and then e-mailed it
- * to the new account holder. The account-creation contract carries no
- * generate-a-password field and there is no mail endpoint, so neither half of that is
- * available. The generated password is therefore never disclosed to anyone, and an
- * administrative password reset is the only way the account becomes usable. Saying so
- * is the honest alternative to leaving an operator with an account nobody can sign in
- * to.
+ * MIGRATION: the legacy generated the password on the SERVER — `User.ascx.vb:L164` calls
+ * `UserController.GeneratePassword()` — and then e-mailed it to the new account holder.
+ * The creation contract carries no generate-a-password field and there is no mail
+ * endpoint, so BOTH halves of that had to be answered differently: the value is generated
+ * in the browser, and it is handed to the operator on screen instead of being posted.
+ *
+ * ⚠ THE EARLIER ARRANGEMENT GENERATED A CREDENTIAL AND THEN DISCARDED IT, which left the
+ * operator with an account nobody on earth could sign in to and no indication of that until
+ * after the account existed. Revealing it once to the administrator who just created the
+ * account grants no authority they did not already hold — that same administrator can reset
+ * the credential at will — and it is what makes the created account usable.
+ *
+ * The reveal is deliberately bounded: it happens only after the server has CONFIRMED the
+ * creation, it happens on this screen rather than through any announcement channel, the
+ * value is never written to storage, a URL, a log or a notification, and dismissing the
+ * panel discards it and completes the redirect the screen would otherwise have made.
  */
 export const RANDOM_PASSWORD_ADVISORY =
-  'A password was generated for this account. It is not displayed and no notification can be ' +
-  'sent, so use Manage User\u2019s Password to set a password the account holder will know.';
+  'This password is shown once and is not stored anywhere in this screen. No notification e-mail can ' +
+  'be sent, so give it to the account holder now \u2014 otherwise the only remedy is an ' +
+  'administrative password reset.';
 
 /**
- * Advisory raised when the notify box is ticked.
+ * The help text on the notify control, which states its unavailability BEFORE it is used.
  *
  * MIGRATION: `plNotify` is a measured control (`User.ascx:L24-L25`) whose purpose was to
- * e-mail the new account holder, and the account-creation contract carries NO notify
- * member. The control is retained because it is part of the agreed member contract that
- * the paired template and specification bind to, but its value cannot be transmitted.
- * The gap is surfaced to the operator rather than swallowed: a tick that silently does
- * nothing is worse than a tick that says it did nothing.
+ * e-mail the new account holder, and the creation contract carries NO notify member. The
+ * control is retained because it is part of the agreed member contract that the paired
+ * template and specification bind to, but its value cannot be transmitted.
+ *
+ * ⚠ IT IS RENDERED DISABLED AND UNTICKED, AND THE SENTENCE IS SHOWN BESIDE IT RATHER THAN
+ * AFTER A SUBMISSION. The earlier arrangement kept the measured initial state — ticked — and
+ * raised a warning once the account had already been created, so the operator ticked a box
+ * that asserted an action the installation cannot perform, submitted, and only then learned
+ * that no notification went out. A control that cannot act must say so while there is still
+ * a decision to make. The initial value therefore departs from the measured `checked="True"`,
+ * deliberately: a ticked box that does nothing is a false statement about what will happen.
  */
 export const NOTIFY_UNAVAILABLE_ADVISORY =
-  'No notification e-mail was sent: this installation exposes no mail endpoint.';
+  'Unavailable: this installation exposes no mail endpoint, so no notification e-mail can be sent.';
 
 /**
  * Advisory raised after authorising an account.
@@ -578,6 +630,30 @@ const SCREEN_OPERATIONS: readonly UserOperation[] = Object.freeze<UserOperation[
   'unlockUser',
   'requirePasswordChange',
 ]);
+
+/**
+ * A membership action awaiting its outcome, together with what to say once it has one.
+ *
+ * The store's failure record names the OPERATION that failed, which is what identifies the
+ * outcome as this action's rather than a sibling command's. It does not carry the argument the
+ * command was given, so the wording cannot be re-derived from it: `onAuthorize` and
+ * `onUnauthorize` both issue `setApproval` and differ only in the state they asked for.
+ */
+interface AwaitedMembershipAction {
+  /** The store operation whose settling reports this action. */
+  readonly operation: UserOperation;
+
+  /** The wording to announce at success severity once the action is confirmed. */
+  readonly success: string;
+
+  /**
+   * A caveat to raise at warning severity alongside the success, or `null`.
+   *
+   * Only the authorising action carries one: the legacy handler also sent mail, and there is no
+   * mail endpoint, so the reduction is stated to the operator instead of dropped in silence.
+   */
+  readonly advisory: string | null;
+}
 
 /**
  * The alphabet a generated password draws from.
@@ -1005,24 +1081,20 @@ export class UserFormComponent {
    */
   protected readonly resolvedUserId: Signal<number | undefined> = computed<number | undefined>(
     () => {
-      const raw: string | undefined = this.userId();
-
-      // An explicit presence test. Never `if (raw)`, which would discard '0'.
-      if (raw === undefined) {
-        return undefined;
-      }
-
-      // MIGRATION: an explicit coercion the Option Strict asymmetry forces. The legacy
-      // read this from the request collection and used it as a number with no
-      // conversion written down; the radix is stated so a leading zero cannot be read
-      // as octal by any engine.
-      const parsed: number = Number.parseInt(raw, 10);
-
-      if (!Number.isInteger(parsed)) {
-        return undefined;
-      }
-
-      return parsed;
+      // MIGRATION: an explicit coercion the Option Strict asymmetry forces — the legacy
+      // read this from the request collection and used it as a number with no conversion
+      // written down — and it is delegated to the one parser in the workspace that makes
+      // it. This screen previously used `Number.parseInt` with no shape test of its own,
+      // which read '12abc' as 12 and dispatched a request against an account the operator
+      // never named; the shared parser refuses a partial parse outright. It also applies
+      // the API's 32-bit range and the safe-integer ceiling, neither of which was checked
+      // here before.
+      //
+      // Absence is `undefined` on this screen because that is what the optional route
+      // input carries, and `isCreateMode` tests exactly that. The nullish coalescing is
+      // safe for a sentinel: it fires only on `null`, so identifier `0` — and `-1` —
+      // survive it untouched.
+      return parseRouteId(this.userId()) ?? undefined;
     },
   );
 
@@ -1039,7 +1111,40 @@ export class UserFormComponent {
   // -------------------------------------------------------------------------
 
   /** The account being edited, or null while creating or before the read returns. */
+  /**
+   * A generated credential awaiting the server's answer, or null.
+   *
+   * A PLAIN FIELD RATHER THAN A SIGNAL, and deliberately not exposed: nothing may render it while the
+   * creation is still outstanding, because a credential shown for an account that was then refused is a
+   * credential shown for no account at all. It is cleared on either outcome — moved to
+   * {@link revealedCredential} on a confirmed creation, discarded on a refusal.
+   */
+  private heldCredential: string | null = null;
+
+  /**
+   * The generated credential currently on screen, or null.
+   *
+   * Written exactly once per creation, from the settled-outcome effect, and cleared by
+   * {@link UserFormComponent.dismissCredential}. It is never persisted, never placed in a URL, never
+   * logged and never passed to the announcement channel — see {@link RANDOM_PASSWORD_ADVISORY}.
+   */
+  private readonly _revealedCredential = signal<string | null>(null);
+
   protected readonly selectedUser: Signal<UserDetail | null> = this.store.selectedUser;
+
+  /**
+   * The generated credential to hand over, or null when there is none on screen.
+   *
+   * Exposed read-only; only the settled-outcome effect and {@link UserFormComponent.dismissCredential}
+   * write it.
+   */
+  protected readonly revealedCredential: Signal<string | null> = this._revealedCredential.asReadonly();
+
+  /** @see RANDOM_PASSWORD_ADVISORY — the sentence shown beside the revealed credential. */
+  protected readonly credentialAdvisory = RANDOM_PASSWORD_ADVISORY;
+
+  /** @see NOTIFY_UNAVAILABLE_ADVISORY — the help text stating why the notify control cannot act. */
+  protected readonly notifyUnavailableHelp = NOTIFY_UNAVAILABLE_ADVISORY;
 
   /**
    * Whether a read or a write for this screen is outstanding.
@@ -1105,6 +1210,29 @@ export class UserFormComponent {
   // form's presentation travels to the server and back.
 
   /** Whether a submission has been attempted, so messages appear only after one. */
+  /**
+   * The typing ceiling emitted on the credential inputs.
+   *
+   * Shared from `core/utils/credential-bounds.util.ts`, which holds the API's own bound and
+   * the reasoning behind it, so this screen cannot drift away from the server rule.
+   *
+   * MIGRATION: THE LEGACY CEILING OF 20 IS DELIBERATELY NOT PRESERVED. `User.ascx:L39`
+   * declares `maxlength="20"`, mirroring the legacy `Password nvarchar(20)` storage width
+   * rather than any rule the legacy applied to a credential; the measured legacy policy
+   * declares no maximum at all, and the successor stores a one-way hash.
+   *
+   * ⚠ IT IS EMITTED AS `[attr.maxlength]`, NEVER AS A LITERAL `maxlength` ATTRIBUTE, and
+   * the difference is load-bearing. A literal attribute matches the selector of the
+   * framework's own maximum-length validator directive,
+   * `[maxlength][formControlName]`, and its value binds that directive's input — which
+   * silently attaches a length validator this component declares nowhere. An over-long
+   * credential would then make the control invalid while `firstValidatorMessage` returns
+   * null for the `maxlength` key, so the form would refuse to submit and display no
+   * reason. The attribute binding sets the DOM attribute without matching that selector,
+   * which was confirmed by measurement rather than assumed.
+   */
+  protected readonly credentialMaxLength = CREDENTIAL_MAX_LENGTH;
+
   protected readonly submitAttempted = signal(false);
 
   /** Whether the destructive-action confirmation is open. */
@@ -1122,11 +1250,26 @@ export class UserFormComponent {
   /** Set while a create is in flight, so its outcome can be acted on exactly once. */
   private readonly createSubmitted = signal(false);
 
+
   /** Set while an update is in flight. */
   private readonly updateSubmitted = signal(false);
 
   /** Set while a removal is in flight. */
   private readonly deleteSubmitted = signal(false);
+
+  /**
+   * The membership action in flight, or `null` when none is.
+   *
+   * Held so that the four membership actions announce only what the server actually did. Each
+   * one previously announced the moment it dispatched, which reports a success the server may
+   * be about to refuse — and on this screen a refusal is genuinely expected: the state-setting
+   * endpoint answers a conflict when the account already holds the state that was asked for.
+   *
+   * The wording travels with the marker rather than being re-derived on settling, because the
+   * two authorisation actions share ONE store operation and are told apart only by the argument
+   * they sent, which the recorded failure does not echo back.
+   */
+  private readonly awaitedMembershipAction = signal<AwaitedMembershipAction | null>(null);
 
   /**
    * The account whose details were last hydrated into the form.
@@ -1157,27 +1300,37 @@ export class UserFormComponent {
     {
       username: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required],
+        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.username)],
       }),
       firstName: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required],
+        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.firstName)],
       }),
       lastName: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required],
+        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.lastName)],
       }),
       displayName: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required],
+        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.displayName)],
       }),
       email: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required, Validators.pattern(EMAIL_PATTERN)],
+        validators: [
+          Validators.required,
+          Validators.maxLength(IDENTITY_MAX_LENGTH.email),
+          Validators.pattern(EMAIL_PATTERN),
+        ],
       }),
       // Initial TRUE, from the measured markup, which the code-behind does not override.
       authorize: new FormControl<boolean>(true, { nonNullable: true }),
-      notify: new FormControl<boolean>(true, { nonNullable: true }),
+      // ⚠ DISABLED AND UNTICKED, DEPARTING FROM THE MEASURED INITIAL STATE ON PURPOSE. See
+      // {@link NOTIFY_UNAVAILABLE_ADVISORY}: there is no mail endpoint, so a control that
+      // could be ticked would promise something the installation cannot do. It is retained
+      // rather than removed because it is part of the agreed member contract, and a disabled
+      // control still reports its value through `getRawValue`, so nothing downstream changes
+      // shape.
+      notify: new FormControl<boolean>({ value: false, disabled: true }, { nonNullable: true }),
       // Initial FALSE. DEFECT 6: the markup says checked and `User.ascx.vb:L262`
       // unchecks it on every non-postback, so the behaviour is unchecked.
       randomPassword: new FormControl<boolean>(false, { nonNullable: true }),
@@ -1228,6 +1381,15 @@ export class UserFormComponent {
 
   /** The help line above the password section. Administrator wording only. */
   protected readonly passwordHelp: string = PASSWORD_HELP;
+
+  /**
+   * @see IDENTITY_MAX_LENGTH — bound to each identity box's native attribute.
+   *
+   * The attribute is an ASSIST and never the rule: a value pasted past it, or delivered by an autofill
+   * that ignores it, is still refused by the validator and again by the server. Stating the bound in
+   * the markup simply stops the overflow happening rather than describing it afterwards.
+   */
+  protected readonly maxLengths = IDENTITY_MAX_LENGTH;
 
   /** The legend recording that the marked fields are required. */
   protected readonly requiredLegend: string = REQUIRED_LEGEND;
@@ -1456,6 +1618,7 @@ export class UserFormComponent {
         this.createSubmitted.set(false);
         this.updateSubmitted.set(false);
         this.deleteSubmitted.set(false);
+        this.awaitedMembershipAction.set(null);
 
         if (id === undefined) {
           this.hydratedUserId = undefined;
@@ -1536,6 +1699,23 @@ export class UserFormComponent {
         this.createSubmitted.set(false);
 
         if (failure !== null || created === null) {
+          // ⚠ A REFUSED CREATION DISCLOSES NOTHING. The held credential belongs to an account that does
+          // not exist, so it is discarded rather than shown.
+          this.heldCredential = null;
+
+          return;
+        }
+
+        const generated: string | null = this.heldCredential;
+        this.heldCredential = null;
+
+        if (generated !== null) {
+          // ⚠ THE REDIRECT IS DEFERRED, NOT DROPPED. This screen is the only place the credential can be
+          // handed over, and navigating now would destroy it before it had been read. Dismissing the
+          // panel discards the value and performs the redirect — see
+          // {@link UserFormComponent.dismissCredential}.
+          this._revealedCredential.set(generated);
+
           return;
         }
 
@@ -1587,6 +1767,43 @@ export class UserFormComponent {
         }
 
         void this.router.navigate(['/users']);
+      });
+    });
+
+    // Settles a membership action. MIGRATION: the announcement now waits for the SERVER, which
+    // it previously did not — the four actions announced success the moment they dispatched, so
+    // a refusal produced a green "user authorized" beside a yellow refusal describing the
+    // opposite. A refusal is not hypothetical here: the state-setting endpoint answers a
+    // conflict when the account already holds the state that was asked for, which is exactly
+    // what a double click produces.
+    //
+    // Nothing is announced on the failure path. The refusal announcement is already made by the
+    // failure effect above, which covers every operation this screen issues, so announcing here
+    // as well would say it twice.
+    //
+    // The re-read the panel needs remains DELEGATED to the store, which reconciles the selected
+    // account after each of the three transition commands.
+    effect(() => {
+      const awaited: AwaitedMembershipAction | null = this.awaitedMembershipAction();
+      const saving: boolean = this.store.saving();
+      const failure = this.store.failure();
+
+      if (awaited === null || saving) {
+        return;
+      }
+
+      untracked(() => {
+        this.awaitedMembershipAction.set(null);
+
+        if (failure !== null && failure.operation === awaited.operation) {
+          return;
+        }
+
+        this.notifications.success(awaited.success);
+
+        if (awaited.advisory !== null) {
+          this.notifications.warning(awaited.advisory);
+        }
       });
     });
 
@@ -1724,6 +1941,15 @@ export class UserFormComponent {
   // is reported as a conflict — an answer that is only meaningful if the caller said which
   // state it meant. Both actions below therefore call the same command with opposite
   // arguments, and false is transmitted as DATA rather than treated as an absence.
+  //
+  // MIGRATION: ALL FOUR REFUSE TO OVERLAP, and that is parity rather than caution. Each was a
+  // postback that replaced the whole page, so a second could not be raised while the first was
+  // in flight. Here they are four ordinary controls on a live document, none of which validates
+  // or is disabled, so two can be pressed in succession — and the outcome the store reports
+  // carries no argument distinguishing them, which is precisely why the wording travels on the
+  // marker. Allowing an overlap would let the second action's marker replace the first's, so the
+  // first action's outcome would be announced with the second's wording and one of the two would
+  // be reported as something it was not.
 
   /**
    * Authorises the account. `cmdAuthorize`, labelled `Authorize User`.
@@ -1736,25 +1962,32 @@ export class UserFormComponent {
   onAuthorize(): void {
     const id: number | undefined = this.resolvedUserId();
 
-    if (id === undefined) {
+    if (id === undefined || this.awaitedMembershipAction() !== null) {
       return;
     }
 
+    this.awaitedMembershipAction.set({
+      operation: 'setApproval',
+      success: USER_AUTHORIZED_MESSAGE,
+      advisory: AUTHORIZE_MAIL_ADVISORY,
+    });
     this.store.setApproval(id, true);
-    this.notifications.success(USER_AUTHORIZED_MESSAGE);
-    this.notifications.warning(AUTHORIZE_MAIL_ADVISORY);
   }
 
   /** Withdraws authorisation. `cmdUnAuthorize`, labelled `UnAuthorize User`. */
   onUnauthorize(): void {
     const id: number | undefined = this.resolvedUserId();
 
-    if (id === undefined) {
+    if (id === undefined || this.awaitedMembershipAction() !== null) {
       return;
     }
 
+    this.awaitedMembershipAction.set({
+      operation: 'setApproval',
+      success: USER_UNAUTHORIZED_MESSAGE,
+      advisory: null,
+    });
     this.store.setApproval(id, false);
-    this.notifications.success(USER_UNAUTHORIZED_MESSAGE);
   }
 
   /**
@@ -1766,12 +1999,16 @@ export class UserFormComponent {
   onUnlock(): void {
     const id: number | undefined = this.resolvedUserId();
 
-    if (id === undefined) {
+    if (id === undefined || this.awaitedMembershipAction() !== null) {
       return;
     }
 
+    this.awaitedMembershipAction.set({
+      operation: 'unlockUser',
+      success: USER_UNLOCKED_MESSAGE,
+      advisory: null,
+    });
     this.store.unlockUser(id);
-    this.notifications.success(USER_UNLOCKED_MESSAGE);
   }
 
   /**
@@ -1785,12 +2022,16 @@ export class UserFormComponent {
   onForcePasswordChange(): void {
     const id: number | undefined = this.resolvedUserId();
 
-    if (id === undefined) {
+    if (id === undefined || this.awaitedMembershipAction() !== null) {
       return;
     }
 
+    this.awaitedMembershipAction.set({
+      operation: 'requirePasswordChange',
+      success: PASSWORD_CHANGE_REQUIRED_MESSAGE,
+      advisory: null,
+    });
     this.store.requirePasswordChange(id);
-    this.notifications.success(PASSWORD_CHANGE_REQUIRED_MESSAGE);
   }
 
   // -------------------------------------------------------------------------
@@ -1820,6 +2061,22 @@ export class UserFormComponent {
   /** Expands or collapses the membership section. */
   toggleMembership(): void {
     this.membershipExpanded.update((expanded) => !expanded);
+  }
+
+  /**
+   * Takes the revealed credential off the screen and completes the redirect.
+   *
+   * ⚠ THE REDIRECT LIVES HERE BECAUSE IT WAS DEFERRED, not because dismissal navigates by nature. A
+   * confirmed creation redirects to the account listing; when a credential has to be handed over, that
+   * redirect waits until the operator says they have taken it, so the two steps together are exactly the
+   * one step the screen made before — with the credential disclosed in between.
+   *
+   * The value is dropped before the navigation is requested, so nothing carries it onwards.
+   */
+  dismissCredential(): void {
+    this._revealedCredential.set(null);
+
+    void this.router.navigate(['/users']);
   }
 
   // -------------------------------------------------------------------------
@@ -1951,19 +2208,13 @@ export class UserFormComponent {
       authorize: raw.authorize,
     };
 
+    // ⚠ HELD, NOT ANNOUNCED, AND NOT YET SHOWN. The credential is disclosed only once the server has
+    // confirmed that the account exists; the settled-outcome effect below moves it onto the screen or
+    // discards it. Announcing here would describe an account that may never have been created.
+    this.heldCredential = generate ? password : null;
+
     this.createSubmitted.set(true);
     this.store.createUser(request);
-
-    if (generate) {
-      this.notifications.warning(RANDOM_PASSWORD_ADVISORY);
-    }
-
-    // MIGRATION: the notify box has no member on the creation contract, so its value
-    // cannot be transmitted. The control is retained because it is part of the agreed
-    // member contract, and the gap is surfaced rather than swallowed.
-    if (raw.notify) {
-      this.notifications.warning(NOTIFY_UNAVAILABLE_ADVISORY);
-    }
   }
 
   /**
@@ -2080,6 +2331,14 @@ export class UserFormComponent {
 
     this.form.enable(options);
 
+    // ⚠ RE-APPLIED AFTER EVERY BLANKET ENABLE, AND THAT IS WHY THIS LINE EXISTS AT ALL. The notify
+    // control is disabled for the whole life of the screen rather than by mode — there is no mail
+    // endpoint, so it can never act — and `enable()` on the group re-enables every descendant
+    // indiscriminately. Without this, the create route handed the operator a tickable box that promises
+    // an e-mail the installation cannot send. It is the one control whose availability is not a function
+    // of the mode. See {@link NOTIFY_UNAVAILABLE_ADVISORY}.
+    this.form.controls.notify.disable(options);
+
     if (!isEditing) {
       return;
     }
@@ -2125,6 +2384,19 @@ export class UserFormComponent {
     // measured wording is supplied rather than read out of it.
     if (errors['pattern'] !== undefined) {
       return EMAIL_PATTERN_MESSAGE;
+    }
+
+    // The column bound. Composed from the length the framework REPORTS rather than from a table looked
+    // up by control, so the sentence and the rule can never name different numbers. The payload is
+    // narrowed rather than trusted, because a shape change must not put `undefined` into a sentence.
+    const overlong: unknown = errors['maxlength'];
+
+    if (typeof overlong === 'object' && overlong !== null) {
+      const bound: unknown = (overlong as { requiredLength?: number }).requiredLength;
+
+      if (typeof bound === 'number') {
+        return `Enter at most ${String(bound)} characters.`;
+      }
     }
 
     return null;

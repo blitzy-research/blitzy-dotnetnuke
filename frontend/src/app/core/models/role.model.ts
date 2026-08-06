@@ -16,11 +16,25 @@
  * composes.
  *
  * This file declares types and nothing else. It contains no class, no function,
- * no decorator and no code table, so it emits no runtime JavaScript at all and it
- * has no paired spec — the compiler is the whole of its verification. It also
- * imports nothing: the workspace configures neither `baseUrl` nor `paths`, so
- * every import in this application is relative, and a contract this low in the
- * dependency graph should not need one.
+ * no decorator and no code table. It declares one RUNTIME DECODER per contract that
+ * is read, and nothing else that executes.
+ *
+ * ## Why the decoders exist
+ *
+ * A TypeScript interface is erased at compile time, so `http.get<Role>(…)` compiles
+ * to `http.get(…)`: nothing inspects the body, and the value is trusted purely
+ * because a developer wrote a type where a value was expected. That is especially
+ * dangerous for this contract, because its most consequential member is a SINGLE
+ * CHARACTER. A `billingFrequency` of `"m"`, `"Monthly"` or the number `2` would
+ * every one of them read as a `BillingFrequency` to the compiler and then fall
+ * through the fee-schedule switch to its default branch, quietly charging a paid
+ * role on the wrong cycle. Each contract that is read therefore carries a decoder
+ * declared FROM its interface — forgetting a member is a compile error — and the
+ * transport refuses a response that does not match. Refusals name the member and
+ * the expected type, never the value.
+ *
+ * The write contracts carry no decoder: this client composes them, so there is
+ * nothing untrusted to check.
  *
  * ## An absent value is a member present and `null`, never a missing member
  *
@@ -63,6 +77,18 @@
  * below; a second copy of an envelope would be indistinguishable to a type checker
  * from the first and would drift from it silently.
  */
+
+import {
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeNumber,
+  decodeString,
+  nullable,
+  objectOf,
+  oneOf,
+  type Decoder,
+} from '../utils/decode.util';
 
 /**
  * How often a paid role is billed, and how long its trial period runs.
@@ -136,6 +162,15 @@
  * never the name.
  */
 export type BillingFrequency = 'N' | 'O' | 'D' | 'W' | 'M' | 'Y';
+
+/**
+ * The six published billing codes, as an array the decoders close over.
+ *
+ * Spelled out rather than derived, because a union type does not exist at runtime. The
+ * codes are load-bearing DATA — `Roles.BillingFrequency` is `char(1)` — so they are
+ * preserved verbatim and never translated to a name or an ordinal.
+ */
+const BILLING_CODES: readonly BillingFrequency[] = ['N', 'O', 'D', 'W', 'M', 'Y'];
 
 /**
  * The temporal state of one user-to-role assignment.
@@ -731,3 +766,83 @@ export interface UpdateRoleGroupRequest {
   /** The group's description, at most 1000 characters, or `null`. */
   readonly description: string | null;
 }
+
+/**
+ * Decodes one listed role row.
+ *
+ * ⚠ THE TWO FREQUENCY MEMBERS ARE REFUSED WHEN THE CODE IS UNRECOGNISED. They are single
+ * characters, so `"m"`, `"Monthly"` and the number `2` would all pass a type assertion and
+ * then fall through the fee-schedule switch to its default branch — charging a paid role on
+ * the wrong cycle, or on none. Refusing is the only outcome that cannot be mistaken for a
+ * correct answer.
+ *
+ * Every fee and period is nullable because an unpaid role has none, and the fees are decoded
+ * as numbers rather than integers: a service fee is a money amount and carries a fraction.
+ */
+export const decodeRoleListItem: Decoder<RoleListItem> = objectOf<RoleListItem>({
+  roleId: decodeInteger,
+  roleName: decodeString,
+  description: nullable(decodeString),
+  serviceFee: nullable(decodeNumber),
+  billingPeriod: nullable(decodeInteger),
+  billingFrequency: nullable(oneOf(BILLING_CODES)),
+  trialFee: nullable(decodeNumber),
+  trialPeriod: nullable(decodeInteger),
+  trialFrequency: nullable(oneOf(BILLING_CODES)),
+  isPublic: decodeBoolean,
+  autoAssignment: decodeBoolean,
+});
+
+/**
+ * Decodes one role in full.
+ *
+ * `roleId` uses {@link decodeInteger} with no positivity test: the schema declares
+ * `Roles.RoleID` as `IDENTITY(0, 1)`, so ZERO is the first role ever created and an ordinary
+ * identifier. `roleGroupId` is nullable because a role need not belong to a group, and that
+ * null is the only expression of "ungrouped" — it is never coalesced to zero, which would
+ * silently move the role into the first group.
+ */
+export const decodeRole: Decoder<Role> = objectOf<Role>({
+  roleId: decodeInteger,
+  roleGroupId: nullable(decodeInteger),
+  roleName: decodeString,
+  description: nullable(decodeString),
+  billingFrequency: nullable(oneOf(BILLING_CODES)),
+  serviceFee: nullable(decodeNumber),
+  trialFrequency: nullable(oneOf(BILLING_CODES)),
+  trialPeriod: nullable(decodeInteger),
+  billingPeriod: nullable(decodeInteger),
+  trialFee: nullable(decodeNumber),
+  isPublic: decodeBoolean,
+  autoAssignment: decodeBoolean,
+  rsvpCode: nullable(decodeString),
+  iconFile: nullable(decodeString),
+});
+
+/** Decodes one role group. */
+export const decodeRoleGroup: Decoder<RoleGroup> = objectOf<RoleGroup>({
+  roleGroupId: decodeInteger,
+  portalId: decodeInteger,
+  roleGroupName: decodeString,
+  description: nullable(decodeString),
+});
+
+/**
+ * Decodes one user-to-role assignment.
+ *
+ * ⚠ BOTH DATE BOUNDS ARE NULLABLE, AND THE STATUS IS DERIVED FROM THEM. An assignment with
+ * no bounds is permanently active; one with an expiry in the past is expired. A malformed
+ * date reaching that derivation would classify the assignment by comparing against
+ * `Invalid Date`, whose every comparison is false — so an expired membership would be
+ * presented as active, and the person would keep an entitlement they had lost.
+ */
+export const decodeUserRole: Decoder<UserRole> = objectOf<UserRole>({
+  userRoleId: decodeInteger,
+  userId: decodeInteger,
+  username: decodeString,
+  displayName: decodeString,
+  roleId: decodeInteger,
+  roleName: decodeString,
+  effectiveDate: nullable(decodeDateString),
+  expiryDate: nullable(decodeDateString),
+});

@@ -3,7 +3,11 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 
+import type { Observable } from 'rxjs';
+
 import { RoleService } from './role.service';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
+import { isContractViolation } from '../utils/decode.util';
 
 import type {
   ApiResponse,
@@ -1572,6 +1576,38 @@ describe('RoleService', () => {
   // CROSS-CUTTING: WHAT THE SERVICE MUST NOT ADD
   // -------------------------------------------------------------------------
 
+  /** The five operations of the eleven below whose endpoint answers with a payload. */
+  const RETURNS_A_PAYLOAD: ReadonlySet<string> = new Set([
+    `GET ${ROLE_ZERO_URL}`,
+    `POST ${ROLES_URL}`,
+    `PUT ${ROLE_URL}`,
+    `GET ${ROLE_GROUPS_URL}`,
+    `POST ${ROLE_GROUPS_URL}`,
+    `GET ${ROLE_GROUP_URL}`,
+    `PUT ${ROLE_GROUP_URL}`,
+  ]);
+
+  /**
+   * The body the named endpoint answers with, so a fixture is as demanding as the server.
+   *
+   * @param method The request method.
+   * @param url The request url, without its query string.
+   * @returns The response body, or null for the operations that answer with none.
+   */
+  function bodyFor(method: string, url: string): object | null {
+    const operation = `${method} ${url}`;
+
+    if (operation === `GET ${ROLE_GROUPS_URL}`) {
+      return envelope([roleGroup(0)]);
+    }
+
+    if (operation.endsWith(ROLE_GROUPS_URL) || url.startsWith(ROLE_GROUPS_URL)) {
+      return RETURNS_A_PAYLOAD.has(operation) ? envelope(roleGroup(0)) : null;
+    }
+
+    return RETURNS_A_PAYLOAD.has(operation) ? envelope(ROLE) : null;
+  }
+
   describe('header discipline', () => {
     it('sets neither a bearer token nor a correlation identifier on any operation', async () => {
       // The bearer token and the correlation identifier are applied by two of the three
@@ -1606,7 +1642,19 @@ describe('RoleService', () => {
         expect(request.request.headers.has('X-Correlation-Id'))
           .withContext(`${request.request.method} ${request.request.url} must not set a trace id`)
           .toBeFalse();
-        request.flush(null, { status: 204, statusText: 'No Content' });
+
+        // Answered as each endpoint really answers, rather than with one 204 for all eleven.
+        // The shortcut of flushing an empty body everywhere was only viable while nothing
+        // inspected it; the transport now DECODES every payload it declares, so a read
+        // answered with `null` is refused at the boundary exactly as a drifted server response
+        // would be — and this case would then fail for a reason that has nothing to do with
+        // the headers it exists to assert.
+        request.flush(bodyFor(request.request.method, request.request.url), {
+          status: RETURNS_A_PAYLOAD.has(request.request.method + ' ' + request.request.url)
+            ? 200
+            : 204,
+          statusText: 'OK',
+        });
       }
 
       await Promise.all(settled);
@@ -1629,5 +1677,189 @@ describe('RoleService', () => {
       await expectAsync(members).toBeResolved();
     });
   });
-});
+  // -------------------------------------------------------------------------
+  // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
+  //
+  // The most consequential member of this contract is a SINGLE CHARACTER. `"m"`, `"Monthly"`
+  // and the number `2` would every one of them read as a `BillingFrequency` to the compiler —
+  // the interface is erased — and then fall through the fee-schedule switch to its default
+  // branch, charging a paid role on the wrong cycle or on none at all. Nothing downstream
+  // could ever reveal it. These cases require the OBSERVABLE TO FAIL instead.
+  // -------------------------------------------------------------------------
+  describe('refuses a response that does not match its contract', () => {
+    // The shared paged request carries an ordering and a search as well as its two
+    // coordinates, so the url the backend receives carries all five. Matching on a partial
+    // query string finds nothing.
+    const PAGED_QUERY =
+      `?pageIndex=${PAGED_REQUEST.pageIndex}&pageSize=${PAGED_REQUEST.pageSize}` +
+      `&sortBy=${PAGED_REQUEST.sortBy}&sortDir=${PAGED_REQUEST.sortDir}` +
+      `&query=${PAGED_REQUEST.query}`;
+    const PAGED_ROLES_URL = `${ROLES_URL}${PAGED_QUERY}`;
+    const PAGED_MEMBERS_URL = `${ROLE_MEMBERS_URL}${PAGED_QUERY}`;
 
+    /**
+     * Asserts that answering the one pending request with `body` fails at `path`.
+     *
+     * @param source The call under test.
+     * @param url The url the call addresses.
+     * @param body The malformed body to answer with.
+     * @param path The member path the violation must name.
+     */
+    function expectViolationAt(
+      source: Observable<unknown>,
+      url: string,
+      body: object,
+      path: string,
+    ): void {
+      const values: unknown[] = [];
+      const failures: unknown[] = [];
+
+      source.subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      httpMock.expectOne(url).flush(body);
+
+      expect(values).toEqual([]);
+      expect(failures.length).toBe(1);
+      expect(isContractViolation(failures[0])).toBeTrue();
+
+      if (isContractViolation(failures[0])) {
+        expect(failures[0].path).toBe(path);
+      }
+    }
+
+    it('refuses a billing frequency spelled as a word', () => {
+      expectViolationAt(
+        service.getRole(ROLE_ID_ZERO),
+        ROLE_ZERO_URL,
+        envelope({ ...ROLE, billingFrequency: 'Monthly' }),
+        'response.data.billingFrequency',
+      );
+    });
+
+    it('refuses a billing frequency in the wrong case', () => {
+      // ⚠ THE SUBTLEST OF THE THREE. A lower-case `m` is one character, satisfies every type
+      // assertion, and matches no arm of the fee-schedule switch.
+      expectViolationAt(
+        service.getRole(ROLE_ID_ZERO),
+        ROLE_ZERO_URL,
+        envelope({ ...ROLE, billingFrequency: 'm' }),
+        'response.data.billingFrequency',
+      );
+    });
+
+    it('refuses a billing frequency sent as its ordinal', () => {
+      expectViolationAt(
+        service.getRole(ROLE_ID_ZERO),
+        ROLE_ZERO_URL,
+        envelope({ ...ROLE, trialFrequency: 2 }),
+        'response.data.trialFrequency',
+      );
+    });
+
+    it('admits every published code, and a null for an unpaid role', () => {
+      // The counterpart case: the decoder must admit the whole published vocabulary, not
+      // merely reject outside it. `N` is the unpaid code and `null` means no term at all.
+      for (const code of ['N', 'O', 'D', 'W', 'M', 'Y', null]) {
+        const values: unknown[] = [];
+
+        service.getRole(ROLE_ID_ZERO).subscribe({
+          next: (value: unknown) => values.push(value),
+        });
+
+        httpMock
+          .expectOne(ROLE_ZERO_URL)
+          .flush(envelope({ ...ROLE, billingFrequency: code, trialFrequency: code }));
+
+        expect(values.length)
+          .withContext(`the code ${String(code)} must be admitted`)
+          .toBe(1);
+      }
+    });
+
+    it('admits role zero, which is the first role the schema ever creates', () => {
+      // `Roles.RoleID` is `IDENTITY(0, 1)`, so zero is an ordinary identifier and no decoder
+      // may treat it as absent.
+      const values: unknown[] = [];
+
+      service.getRole(ROLE_ID_ZERO).subscribe({ next: (v: unknown) => values.push(v) });
+
+      httpMock.expectOne(ROLE_ZERO_URL).flush(envelope({ ...ROLE, roleId: 0 }));
+
+      expect(values.length).toBe(1);
+    });
+
+    it('refuses a membership whose expiry is not a date', () => {
+      // ⚠ AN ASSIGNMENT'S STATUS IS DERIVED FROM ITS TWO BOUNDS. A malformed date would be
+      // compared against `Invalid Date`, whose every comparison is false — so an EXPIRED
+      // membership would be presented as active and the person would keep an entitlement
+      // they had lost.
+      expectViolationAt(
+        service.listUsers(ROLE_ID, PAGED_REQUEST),
+        PAGED_MEMBERS_URL,
+        {
+          items: [{ ...USER_ROLE, expiryDate: 'whenever' }],
+          meta: { totalCount: 1, pageIndex: 0, pageSize: PAGED_REQUEST.pageSize, totalPages: 1 },
+        },
+        'response.items[0].expiryDate',
+      );
+    });
+
+    it('refuses a role page with no metadata', () => {
+      expectViolationAt(
+        service.listRoles(PAGED_REQUEST),
+        PAGED_ROLES_URL,
+        { items: [ROLE_LIST_ITEM] },
+        'response.meta',
+      );
+    });
+
+    it('refuses a role-group list that is not an array', () => {
+      expectViolationAt(
+        service.listRoleGroups(),
+        ROLE_GROUPS_URL,
+        envelope(roleGroup(0)),
+        'response.data',
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHO ANNOUNCES A FAILURE
+  // -------------------------------------------------------------------------
+  describe('marks every request as presented by its caller', () => {
+    it('marks every one of the thirteen operations', () => {
+      const swallow = { error: () => undefined };
+
+      service.listRoles(PAGED_REQUEST).subscribe(swallow);
+      service.getRole(ROLE_ID).subscribe(swallow);
+      service.createRole(CREATE_ROLE_REQUEST).subscribe(swallow);
+      service.updateRole(ROLE_ID, UPDATE_ROLE_REQUEST).subscribe(swallow);
+      service.deleteRole(ROLE_ID).subscribe(swallow);
+      service.listUsers(ROLE_ID, PAGED_REQUEST).subscribe(swallow);
+      service.assignUser(ROLE_ID, ASSIGNMENT_REQUEST).subscribe(swallow);
+      service.removeUser(ROLE_ID, USER_ID).subscribe(swallow);
+      service.listRoleGroups().subscribe(swallow);
+      service.createRoleGroup(CREATE_ROLE_GROUP_REQUEST).subscribe(swallow);
+      service.getRoleGroup(ROLE_GROUP_ID).subscribe(swallow);
+      service.updateRoleGroup(ROLE_GROUP_ID, UPDATE_ROLE_GROUP_REQUEST).subscribe(swallow);
+      service.deleteRoleGroup(ROLE_GROUP_ID).subscribe(swallow);
+
+      const issued = httpMock.match(() => true);
+
+      expect(issued.length).toBe(13);
+
+      for (const pending of issued) {
+        expect(pending.request.context.get(PRESENTED_IN_CONTEXT))
+          .withContext(`${pending.request.method} ${pending.request.urlWithParams} is unmarked`)
+          .toBeTrue();
+      }
+
+      for (const pending of issued) {
+        pending.flush(null, { status: 500, statusText: 'Server Error' });
+      }
+    });
+  });
+});

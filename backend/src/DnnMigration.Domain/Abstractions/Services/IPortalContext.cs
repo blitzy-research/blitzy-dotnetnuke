@@ -243,6 +243,43 @@ public interface IPortalContext
     string PortalAlias { get; }
 
     /// <summary>
+    /// Surrogate key of the <c>dbo.PortalAlias</c> row that this call was resolved by.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Legacy origin: <c>PortalSettings.PortalAlias.PortalAliasID</c>, reached through the alias
+    /// entity the legacy member at <c>PortalSettings.vb</c> L411 exposed. The legacy alias
+    /// administration screen read exactly this value and nothing else from it:
+    /// <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60 declares
+    /// <c>IsNotCurrent(Id)</c>, which parses each grid row's key and answers
+    /// <see langword="false"/> when it equals <c>Me.PortalAlias.PortalAliasID()</c>, and
+    /// <c>portalalias.ascx</c> L8 binds that answer to the edit hyperlink's <c>Visible</c>
+    /// property. The row a request arrived through therefore offered no edit affordance.
+    /// </para>
+    /// <para>
+    /// <b>WHY THE IDENTIFIER AND NOT THE HOST NAME.</b> <see cref="PortalAlias"/> is already
+    /// published, so "is this row the current one" could in principle be answered by comparing
+    /// host names — and must not be. Stored casing need not match what a caller submitted: the
+    /// legacy write path lower-cased on insert and update
+    /// (<c>Library/Components/Portal/PortalAliasController.vb</c> L31 and L97) while the reader
+    /// assigned the property unchanged (L75), so two spellings of one alias are both legitimate
+    /// stored values. A string comparison would then have to choose a casing rule, and whichever
+    /// it chose would be a second, independent answer to a question the resolver has already
+    /// answered exactly. The surrogate key admits no such ambiguity.
+    /// </para>
+    /// <para>
+    /// Non-nullable, because a call that has reached a consumer resolved through exactly one alias
+    /// row. Every value it can hold is a real key: <c>PortalAlias.PortalAliasID</c> is declared
+    /// <c>IDENTITY (1, 1)</c> at
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/02.02.02.SqlDataProvider</c> L3805, so no
+    /// legal value coincides with the legacy absent-integer sentinel — but migration note 6 above
+    /// still governs, and a consumer must compare this value for equality rather than test its
+    /// magnitude or its truthiness.
+    /// </para>
+    /// </remarks>
+    int PortalAliasId { get; }
+
+    /// <summary>
     /// Numeric key of the account designated administrator of the resolved portal, or
     /// <see langword="null"/> when the portal designates none.
     /// </summary>

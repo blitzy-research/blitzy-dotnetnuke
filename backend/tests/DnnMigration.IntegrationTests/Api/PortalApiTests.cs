@@ -120,6 +120,18 @@ public sealed class PortalApiTests
     private const string DuplicateAliasProblemType = "urn:dnnmigration:error:portal.alias_duplicate";
 
     /// <summary>
+    /// Problem type carried by the refusal to rename or unbind the alias the CURRENT REQUEST resolved the
+    /// tenant through.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: restores the legacy screen's <c>IsNotCurrent</c> affordance
+    /// (<c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51-L60) as an enforced rule. Deliberately distinct
+    /// from <see cref="DuplicateAliasProblemType"/>, because a client can act on this one - reach the portal
+    /// through another of its host names - whereas a duplicate requires a different value.
+    /// </remarks>
+    private const string ActiveAliasProblemType = "urn:dnnmigration:error:portal.alias_in_use.conflict";
+
+    /// <summary>
     /// Problem type carried when a request that can only learn its tenant from the host name is refused
     /// because the host name identified none.
     /// </summary>
@@ -2472,6 +2484,122 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// The alias the CURRENT REQUEST resolved the tenant through is reported as current, and both a rename
+    /// and an unbinding of it answer <c>409 Conflict</c> while leaving the row exactly as it was - whereas a
+    /// second alias the request did not arrive through stays fully writable.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the end-to-end proof of the restored <c>IsNotCurrent</c> rule from
+    /// <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51-L60, where the legacy grid compared each row's key
+    /// against the ambient <c>PortalAlias.PortalAliasID</c> and <c>portalalias.ascx</c> L8 bound the answer to
+    /// the edit hyperlink's visibility. The consequence of losing it is unrecoverable rather than merely
+    /// untidy: the host name the operator is arriving through stops resolving to the tenant, for every caller
+    /// using it, and the screen that would undo the change becomes unreachable.
+    /// </para>
+    /// <para>
+    /// Both halves are asserted in one test on purpose. The refusal and the <c>IsCurrent</c> flag are two
+    /// statements of one fact, and a suite that proved them separately could pass while they disagreed - a
+    /// screen that hid the affordance on the wrong row, or showed it on a row the server would refuse, is
+    /// exactly the defect this rule exists to prevent.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task PortalAlias_TheRequestResolvedThrough_IsCurrentAndCannotBeRenamedOrUnbound()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) =
+            await CreatePortalWithRequestAsync(host);
+
+        // Addressed through the created tenant's OWN alias, which is precisely what makes that row current.
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
+
+        var aliasCollection = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/aliases",
+            UriKind.Relative);
+
+        // A SECOND alias of the same portal, which this request did NOT arrive through.
+        string spare = "spare-" + Suffix() + ".local";
+
+        using HttpResponseMessage addedSpare = await client.PostAsJsonAsync(
+            aliasCollection,
+            new CreatePortalAliasRequest { HttpAlias = spare },
+            ApiTestFixture.Json);
+
+        addedSpare.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        PortalAliasDto? spareAlias = await addedSpare.Content.ReadEnvelopeAsync<PortalAliasDto>();
+        spareAlias.Should().NotBeNull();
+        spareAlias!.IsCurrent.Should().BeFalse(
+            "resolution happened before this row existed, so it cannot be the one the request used");
+
+        using HttpResponseMessage listed = await client.GetAsync(aliasCollection);
+        listed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        IReadOnlyList<PortalAliasDto>? rows = await listed.Content
+            .ReadEnvelopeAsync<IReadOnlyList<PortalAliasDto>>();
+
+        rows.Should().NotBeNull();
+        rows!.Should().HaveCount(2, "the tenant holds the alias it was created with plus the spare");
+
+        PortalAliasDto current = rows.Should().ContainSingle(row => row.IsCurrent).Subject;
+        current.HttpAlias.Should().Be(
+            createRequest.PortalAlias,
+            "the marked row is the one the request's host name resolved through");
+
+        var currentRoute = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/aliases/{Route(current.PortalAliasId)}",
+            UriKind.Relative);
+
+        using HttpResponseMessage renamed = await client.PutAsJsonAsync(
+            currentRoute,
+            new UpdatePortalAliasRequest { HttpAlias = "renamed-" + Suffix() + ".local" },
+            ApiTestFixture.Json);
+
+        renamed.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        ProblemDetails? renameProblem = await renamed.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        renameProblem.Should().NotBeNull();
+        renameProblem!.Type.Should().Be(ActiveAliasProblemType);
+
+        using HttpResponseMessage unbound = await client.DeleteAsync(currentRoute);
+        unbound.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        ProblemDetails? unbindProblem = await unbound.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        unbindProblem.Should().NotBeNull();
+        unbindProblem!.Type.Should().Be(ActiveAliasProblemType);
+
+        // The row survives BOTH refusals under its original host name. A refusal that still wrote would be
+        // no refusal at all, and the tenant would already be unreachable by the time the assertion ran.
+        using HttpResponseMessage reread = await client.GetAsync(currentRoute);
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PortalAliasDto? persisted = await reread.Content.ReadEnvelopeAsync<PortalAliasDto>();
+        persisted.Should().NotBeNull();
+        persisted!.HttpAlias.Should().Be(createRequest.PortalAlias);
+        persisted.IsCurrent.Should().BeTrue();
+
+        // The spare row stays writable, so the rule withholds exactly one row rather than freezing the
+        // collection - which is the difference between restoring the legacy affordance and losing a feature.
+        var spareRoute = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/aliases/{Route(spareAlias.PortalAliasId)}",
+            UriKind.Relative);
+
+        using HttpResponseMessage spareUpdate = await client.PutAsJsonAsync(
+            spareRoute,
+            new UpdatePortalAliasRequest { HttpAlias = "spare-renamed-" + Suffix() + ".local" },
+            ApiTestFixture.Json);
+
+        spareUpdate.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage spareRemoved = await client.DeleteAsync(spareRoute);
+        spareRemoved.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    /// <summary>
     /// An administrator of one portal cannot read, rename or unbind an alias belonging to another, even when it
     /// knows the alias's identifier - which it can, because the identifier is an installation-wide surrogate.
     /// </summary>
@@ -4010,6 +4138,18 @@ public sealed class PortalApiTests
     /// tenant so that an operator can bind a new one. The recovery path is asserted, which is what makes
     /// permitting the removal defensible rather than merely permissive.
     /// </para>
+    /// <para>
+    /// MIGRATION: the removal is therefore issued by a caller that did NOT reach the installation through the
+    /// alias being removed, and the distinction is the whole reason this test still stands. There is no
+    /// last-alias rule - that is what is asserted here - but there IS an active-alias rule: the row the
+    /// CURRENT REQUEST resolved through cannot be renamed or unbound, restoring the legacy screen's
+    /// <c>IsNotCurrent</c> affordance (<c>PortalAlias.ascx.vb</c> L51-L60) and proven by
+    /// <see cref="PortalAlias_TheRequestResolvedThrough_IsCurrentAndCannotBeRenamedOrUnbound"/>. The two facts
+    /// are orthogonal and only LOOK contradictory when a single-alias portal is addressed through its own
+    /// alias, where both would bite at once. Removing the last address is permitted; removing the address you
+    /// are standing on is not, because that refusal has no in-application recovery for the caller who made
+    /// the request.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task DeletePortalAlias_OfTheOnlyRemainingAlias_IsPermittedAndTheAddressCanBeRebound()
@@ -4030,7 +4170,14 @@ public sealed class PortalApiTests
         PortalAliasDto only = aliases!.Should().ContainSingle(
             "a create binds exactly one address to the new portal").Subject;
 
-        using HttpResponseMessage removed = await client.DeleteAsync(
+        only.IsCurrent.Should().BeTrue(
+            "read through the created tenant's own alias, that row is the one resolution used - which is why " +
+            "the removal below is issued by a caller standing somewhere else");
+
+        // Issued by the HOST client, which reached the installation through the SEEDED portal's alias and so
+        // is not standing on the row it is removing. Through the tenant's own client this same call is
+        // refused as an active-alias conflict, which is a different rule and is proven separately.
+        using HttpResponseMessage removed = await host.DeleteAsync(
             new Uri($"{aliasCollection}/{Route(only.PortalAliasId)}", UriKind.Relative));
 
         removed.StatusCode.Should().Be(

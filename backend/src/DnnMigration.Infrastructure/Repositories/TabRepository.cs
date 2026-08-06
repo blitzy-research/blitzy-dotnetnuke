@@ -169,6 +169,32 @@ internal sealed class TabRepository : ITabRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// Read-only and ordered by key, so a caller receives the same sequence for the same set whichever order
+    /// the keys arrived in. Duplicated keys are collapsed rather than yielding a row twice.
+    /// </remarks>
+    public async Task<IReadOnlyList<Tab>> GetByIdsAsync(
+        IReadOnlyCollection<int> tabIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tabIds);
+
+        if (tabIds.Count == 0)
+        {
+            return Array.Empty<Tab>();
+        }
+
+        int[] wanted = tabIds.Distinct().ToArray();
+
+        return await _context.Tabs
+            .AsNoTracking()
+            .Where(tab => wanted.Contains(tab.TabId))
+            .OrderBy(tab => tab.TabId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// <para>
     /// Ports <c>GetTabs</c>, whose terminal definition filtered on the portal alone and ordered by
     /// <c>TabOrder, TabName</c> (04.04.00.SqlDataProvider lines 440-448). The primary key is appended to

@@ -8,6 +8,7 @@ using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Filters;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Serialization;
 using DnnMigration.Application.Validation;
@@ -106,10 +107,68 @@ public static class ServiceCollectionExtensions
     /// <para>
     /// An endpoint that must accept more - a module import carrying a package, for
     /// instance - raises the limit for itself with the framework's per-action request
-    /// size attribute rather than raising this value for everything.
+    /// size attribute rather than raising this value for everything. See
+    /// <see cref="MaximumImportRequestBodyBytes"/>, which is the one such endpoint.
     /// </para>
     /// </remarks>
     public const long MaximumRequestBodyBytes = 1L * 1024L * 1024L;
+
+    /// <summary>
+    /// Worst-case bytes one document character occupies once JSON-encoded: six.
+    /// </summary>
+    /// <remarks>
+    /// MEASURED FROM THE SERIALISER'S OWN ESCAPING RULES, not estimated. The default
+    /// JSON encoder escapes every character it cannot prove safe to the six-byte form
+    /// <c>\uXXXX</c> - which covers the control characters, the quote, <c>&lt;</c>,
+    /// <c>&gt;</c>, <c>&amp;</c>, the apostrophe and every non-ASCII character - and a
+    /// character outside the basic plane travels as a surrogate pair, which is two code
+    /// units at six bytes each and therefore the same six bytes per code unit. The
+    /// characters an XML document is largely MADE of are exactly the escaped ones, so
+    /// this is a realistic bound for this payload rather than a pathological one.
+    /// </remarks>
+    private const long MaximumJsonBytesPerCharacter = 6L;
+
+    /// <summary>
+    /// Headroom, in bytes, for everything in an import body that is not the document:
+    /// sixty-four kibibytes.
+    /// </summary>
+    /// <remarks>
+    /// The four member names, their quotes and separators, the module identifier and the
+    /// descriptive file name. Generous by three orders of magnitude against the few
+    /// hundred bytes those actually occupy, because the cost of over-providing here is
+    /// nothing and the cost of under-providing is a refusal a caller cannot diagnose.
+    /// </remarks>
+    private const long ImportEnvelopeAllowanceBytes = 64L * 1024L;
+
+    /// <summary>
+    /// Largest request body the module import action accepts, computed from the document
+    /// ceiling the import contract publishes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// COMPUTED, NEVER WRITTEN DOWN, and that is the fix rather than a nicety. This
+    /// endpoint previously declared the global one-mebibyte limit while the service
+    /// accepted a document of 1 048 576 CHARACTERS: a document at the accepted ceiling
+    /// could not physically fit through the body limit in front of it once the member
+    /// names, the quotes and the escaping were counted, so the two limits described
+    /// different contracts and the larger one was unreachable. Deriving this value from
+    /// <see cref="ModuleImportRequest.ContentCharacterMaximum"/> means the arithmetic
+    /// cannot drift: lowering the document ceiling lowers this in the same edit.
+    /// </para>
+    /// <para>
+    /// The global limit above is deliberately left alone. Raising it would hand the
+    /// same allowance to every other endpoint, including the unauthenticated ones,
+    /// whereas a per-action limit is reachable only on the action that declares it -
+    /// and this one is reachable only by an authenticated tenant administrator. The
+    /// reverse proxy in front of the API bounds the body first and must therefore be at
+    /// least this large; <c>docker/nginx.conf</c> sets its API location's
+    /// <c>client_max_body_size</c> to exactly this value, because nginx's own default
+    /// is one mebibyte and would otherwise be the binding limit of the whole path.
+    /// </para>
+    /// </remarks>
+    public const long MaximumImportRequestBodyBytes =
+        (ModuleImportRequest.ContentCharacterMaximum * MaximumJsonBytesPerCharacter)
+        + ImportEnvelopeAllowanceBytes;
 
     /// <summary>
     /// Configuration key listing the addresses of reverse proxies whose forwarded
@@ -607,9 +666,18 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The container being populated.</param>
     /// <remarks>
+    /// <para>
     /// Applied to the web server's own limits rather than through a filter, so it is
     /// enforced while the body is still being read off the socket. A limit applied
     /// after model binding would be applied after the allocation it exists to prevent.
+    /// </para>
+    /// <para>
+    /// This is the limit for EVERY endpoint, and it stays at one mebibyte. The single
+    /// action that needs more raises it for itself with the per-action attribute, which
+    /// the framework applies by replacing the request's own maximum before the body is
+    /// read - so the larger allowance is reachable on that action and nowhere else. See
+    /// <see cref="MaximumImportRequestBodyBytes"/>.
+    /// </para>
     /// </remarks>
     private static void AddRequestLimits(IServiceCollection services)
     {

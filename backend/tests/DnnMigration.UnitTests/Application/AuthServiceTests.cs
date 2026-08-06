@@ -71,6 +71,17 @@ public class AuthServiceApplicationTests
     /// <summary>The account identifier every resolved account carries.</summary>
     private const int UserId = 41;
 
+    /// <summary>
+    /// The role identifier a tenant designates as conferring its administration.
+    /// </summary>
+    /// <remarks>
+    /// ZERO ON PURPOSE. <c>Roles.RoleID</c> is declared <c>IDENTITY (0, 1)</c>
+    /// (01.00.00.SqlDataProvider L114), so zero is the FIRST REAL ROLE rather than an absent value. A suite
+    /// that used a comfortable positive number would pass against a derivation that tested the designation
+    /// for truthiness, or coalesced it, and so read the first role in the installation as no role at all.
+    /// </remarks>
+    private const int AdministratorRoleId = 0;
+
     /// <summary>The account name submitted by every test that does not care about the name.</summary>
     private const string AccountName = "measured_member";
 
@@ -1712,6 +1723,97 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
+    /// The caller snapshot answers portal administration from the tenant's own designation, and never from a
+    /// role name.
+    /// </summary>
+    /// <returns>A task representing the assertions.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FIRST TWO CASES ARE THE POINT OF THIS TEST AND THEY DISAGREE WITH EACH OTHER ON PURPOSE. Both
+    /// arrange a caller holding a role NAMED <c>Administrators</c>; they differ only in whether the tenant's
+    /// <c>AdministratorRoleId</c> column names the role the caller actually holds. A client that decided
+    /// administration by testing the published role list for that literal name - which is what the console
+    /// used to do - would answer both identically and be wrong about one of them.
+    /// </para>
+    /// <para>
+    /// The name is operator-editable, the designated role need not be named anything in particular, and a
+    /// role of the same name may belong to another tenant entirely; so the name is evidence of nothing and
+    /// the column is evidence of everything. The published names are asserted to be UNCHANGED in each case,
+    /// which is what shows the new fact is derived independently of them rather than summarising them.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetCurrentUserAsync_DecidesPortalAdministrationFromTheDesignationAndNotFromARoleName()
+    {
+        // The designated role is the one the caller holds, and its assignment window is open.
+        SignInHarness designated = SignInHarness.Ready();
+        designated.CallerIsSignedIn = true;
+        designated.Portal.AdministratorRoleId = AdministratorRoleId;
+        designated.RoleNames = ["Administrators"];
+        designated.RoleAssignments = [ActiveAssignment(AdministratorRoleId)];
+
+        Result<CurrentUserDto?> admitted =
+            await designated.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        admitted.IsSuccess.Should().BeTrue();
+        admitted.Value!.IsPortalAdministrator.Should().BeTrue();
+        admitted.Value.Roles.Should().Equal(designated.RoleNames);
+
+        // The SAME published role name, and the same held role - but the tenant designates a DIFFERENT role.
+        // A name match would admit this caller; the designation refuses them.
+        SignInHarness misnamed = SignInHarness.Ready();
+        misnamed.CallerIsSignedIn = true;
+        misnamed.Portal.AdministratorRoleId = AdministratorRoleId + 1;
+        misnamed.RoleNames = ["Administrators"];
+        misnamed.RoleAssignments = [ActiveAssignment(AdministratorRoleId)];
+
+        Result<CurrentUserDto?> refused = await misnamed.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        refused.IsSuccess.Should().BeTrue();
+        refused.Value!.IsPortalAdministrator.Should().BeFalse(
+            "the designation names a role this caller does not hold, whatever the role they do hold is called");
+        refused.Value.Roles.Should().Equal(
+            misnamed.RoleNames,
+            "the published names are unchanged, so the new fact is derived rather than summarised");
+
+        // An unset designation is a configuration gap. A gap must not grant, and it is never widened to any
+        // other role - not even to one named for the purpose.
+        SignInHarness undesignated = SignInHarness.Ready();
+        undesignated.CallerIsSignedIn = true;
+        undesignated.Portal.AdministratorRoleId = null;
+        undesignated.RoleNames = ["Administrators"];
+        undesignated.RoleAssignments = [ActiveAssignment(AdministratorRoleId)];
+
+        Result<CurrentUserDto?> ungranted =
+            await undesignated.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        ungranted.Value!.IsPortalAdministrator.Should().BeFalse();
+
+        // Holding the designated role is not enough on its own: an assignment whose window has already closed
+        // counts for nothing, which is what stops a lapsed administrator from being reported as a current one.
+        SignInHarness lapsed = SignInHarness.Ready();
+        lapsed.CallerIsSignedIn = true;
+        lapsed.Portal.AdministratorRoleId = AdministratorRoleId;
+        lapsed.RoleAssignments = [ExpiredAssignment(AdministratorRoleId)];
+
+        Result<CurrentUserDto?> stale = await lapsed.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        stale.Value!.IsPortalAdministrator.Should().BeFalse();
+
+        // A host account administers every tenant, which is the answer the enforcing policy gives too. It
+        // holds no assignment at all here, so nothing but the host flag can be producing the answer.
+        SignInHarness host = SignInHarness.Ready();
+        host.CallerIsSignedIn = true;
+        host.Account.IsSuperUser = true;
+        host.Portal.AdministratorRoleId = null;
+        host.RoleAssignments = [];
+
+        Result<CurrentUserDto?> hostOutcome = await host.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        hostOutcome.Value!.IsPortalAdministrator.Should().BeTrue();
+    }
+
+    /// <summary>
     /// A caller whose account has since been removed is told so, rather than being described as an account
     /// that no longer exists.
     /// </summary>
@@ -1808,6 +1910,37 @@ public class AuthServiceApplicationTests
         /// <summary>The account has not yet been admitted to the tenant.</summary>
         AwaitingApproval = 5,
     }
+    /// <summary>
+    /// An assignment of one role whose validity window is open at the instant the tests judge.
+    /// </summary>
+    /// <param name="roleId">The role held.</param>
+    /// <returns>The assignment.</returns>
+    /// <remarks>
+    /// Both bounds are stated rather than left absent, so the case proves the window is EVALUATED and not
+    /// merely ignored: an implementation that never looked at the dates would pass an open-ended assignment
+    /// just as readily.
+    /// </remarks>
+    private static UserRole ActiveAssignment(int roleId) => new()
+    {
+        UserId = UserId,
+        RoleId = roleId,
+        EffectiveDate = Now.AddDays(-1),
+        ExpiryDate = Now.AddDays(1),
+    };
+
+    /// <summary>
+    /// An assignment of one role whose validity window has already closed.
+    /// </summary>
+    /// <param name="roleId">The role formerly held.</param>
+    /// <returns>The assignment.</returns>
+    private static UserRole ExpiredAssignment(int roleId) => new()
+    {
+        UserId = UserId,
+        RoleId = roleId,
+        EffectiveDate = Now.AddDays(-30),
+        ExpiryDate = Now.AddDays(-1),
+    };
+
 
     /// <summary>
     /// Assembles the service over substituted abstractions, with every default set to the state a shipped
@@ -1877,10 +2010,12 @@ public class AuthServiceApplicationTests
             TokenSettings = new JwtOptions();
             AuditRecords = [];
             RoleNames = [];
+            RoleAssignments = [];
             PermissionKeys = [];
 
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
+            Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Accounts = new Mock<IUserService>(MockBehavior.Loose);
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
@@ -1904,6 +2039,7 @@ public class AuthServiceApplicationTests
             Service = new AuthService(
                 Users.Object,
                 Portals.Object,
+                Roles.Object,
                 Permissions.Object,
                 Accounts.Object,
                 Tokens.Object,
@@ -1940,6 +2076,17 @@ public class AuthServiceApplicationTests
 
         /// <summary>The role names the account holds in this tenant.</summary>
         public IReadOnlyList<string> RoleNames { get; set; }
+
+        /// <summary>
+        /// The role assignments the role store answers with for the signed-in caller.
+        /// </summary>
+        /// <remarks>
+        /// Held apart from <see cref="RoleNames"/> deliberately. The names are what the snapshot PUBLISHES;
+        /// these carry the role KEYS and the validity windows the advisory administration fact is decided
+        /// from, and the two are not interchangeable - the designation is a column naming a role identifier,
+        /// so a test that arranged only a name could not exercise the decision at all.
+        /// </remarks>
+        public IReadOnlyList<UserRole> RoleAssignments { get; set; }
 
         /// <summary>The permission keys effective for the account in this tenant.</summary>
         public IReadOnlyList<string> PermissionKeys { get; set; }
@@ -2018,6 +2165,13 @@ public class AuthServiceApplicationTests
 
         /// <summary>The tenant store.</summary>
         public Mock<IPortalRepository> Portals { get; }
+
+        /// <summary>
+        /// The role store, asked only whether the caller holds the role the tenant designates as its
+        /// administrator. Loose by default, so it answers with an empty assignment list and the advisory
+        /// administration fact is reported false unless a test arranges otherwise.
+        /// </summary>
+        public Mock<IRoleRepository> Roles { get; }
 
         /// <summary>Effective-permission resolution.</summary>
         public Mock<IPermissionService> Permissions { get; }
@@ -2159,6 +2313,13 @@ public class AuthServiceApplicationTests
                     It.IsAny<DateTime>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RoleNames);
+
+            harness.Roles
+                .Setup(roles => roles.GetUserRolesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.RoleAssignments);
 
             harness.Permissions
                 .Setup(permissions => permissions.GetEffectivePermissionKeysAsync(

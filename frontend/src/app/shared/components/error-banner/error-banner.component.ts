@@ -52,15 +52,6 @@ export interface FieldErrorGroup {
 const FORM_LEVEL_LABEL = 'This form';
 
 /**
- * The status the credential rate limiter refuses with.
- *
- * Named rather than written inline because it is the single value that separates the
- * calm band from the warning band, and a bare `429` at that comparison would read as
- * arbitrary.
- */
-const TOO_MANY_REQUESTS = 429;
-
-/**
  * Wording for each band, shown as text beside the message.
  *
  * Present because the severity must NOT be carried by colour alone. That is a
@@ -265,11 +256,15 @@ export class ErrorBannerComponent {
    * because how loudly to paint something is this component's business and not the
    * utility's.
    *
-   * One refinement is applied on top of the imported classification: a rate-limit
-   * refusal takes the calm band rather than the warning band. The utility groups it
-   * with the other refusals, which is right for a domain classification — nothing has
-   * failed — and its own wording for that status is annotated "Calm on purpose". This
-   * component has a third band available to honour that intent literally, so it does.
+   * ⚠ NO REFINEMENT IS APPLIED ON TOP OF THE IMPORTED CLASSIFICATION, and one used to be:
+   * this member intercepted a rate-limit refusal ahead of the imported function and
+   * chose the calm band itself. The intent was right and the placement was wrong. The
+   * same status was reaching an operator as a warning through the notification queue and
+   * as a calm notice through this banner, on the same screen, from two rules that had no
+   * way of knowing about each other. The intent now lives in the imported function, which
+   * resolves that status to the informational severity, and this member does nothing but
+   * map the three severities onto the three bands. A band this component wants for a
+   * status it is given is a change to that function, never a test here.
    *
    * The status is read as the plain number it is and is deliberately NOT narrowed to a
    * union of the statuses this API is known to return. The status is chosen by the
@@ -286,13 +281,7 @@ export class ErrorBannerComponent {
    * absent status is a fault.
    */
   readonly severity: Signal<ErrorBannerSeverity> = computed(() => {
-    const status: number | null = this.summary().status;
-
-    if (status === TOO_MANY_REQUESTS) {
-      return 'calm';
-    }
-
-    const domain: ProblemSeverity = problemSeverity(status);
+    const domain: ProblemSeverity = problemSeverity(this.summary().status);
 
     switch (domain) {
       case 'warning':
@@ -300,11 +289,10 @@ export class ErrorBannerComponent {
         // YellowWarning evidence in this class's migration notes speaks to.
         return 'warning';
       case 'info':
-        // Declared by the imported severity type but never currently returned by the
-        // function that produces it - the rate-limit case, which is the one that would
-        // most plausibly earn it, is already intercepted above. Mapped rather than left
-        // to the catch-all so that the day it IS returned, an informational
-        // classification lands in the calm band rather than being painted as a fault.
+        // The quietest classification, and the arm a rate-limit refusal now arrives
+        // through: nothing was rejected on its merits, the caller is early, and the only
+        // action is to wait. This is where the override that used to sit above this
+        // `switch` has gone.
         return 'calm';
       case 'error':
         return 'danger';

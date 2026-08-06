@@ -18,7 +18,9 @@ import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/fo
 
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
+import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
 import { conflictMessage, fieldErrorMessage, summarizeProblem } from '../../../core/utils/form-errors.util';
+import { parseRouteId } from '../../../core/utils/route-id.util';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -130,19 +132,70 @@ const PERSON_NAME_MAX_LENGTH = 50;
 const USERNAME_MAX_LENGTH = 100;
 
 /**
- * Administrator password and its confirmation, 20 characters.
+ * Administrator password and its confirmation.
  *
- * MIGRATION: PRESERVED AT THE LEGACY FIGURE AND DELIBERATELY NOT WIDENED.
- * `signup.ascx:L94` and `L100` declare `maxlength="20"`, mirroring the legacy
- * `Users.Password nvarchar(20)` column. That column is gone — the API stores a
- * one-way hash and bounds a submitted credential at 256 UTF-8 bytes instead — so 20
- * is no longer a storage constraint and widening it would be accepted by the API.
- * It is kept anyway: raising it is an improvement to the security posture, the
- * migration discipline forbids opportunistic improvement, and because the API's
- * bound is the larger of the two this cap can never cause a submission to be
- * refused. It constrains only what may be typed, exactly as the legacy screen did.
+ * MIGRATION: THE LEGACY FIGURE OF 20 IS DELIBERATELY NOT PRESERVED. `signup.ascx:L94`
+ * and `L100` declare `maxlength="20"`, but that figure mirrored the legacy STORAGE
+ * width `Users.Password nvarchar(20)` rather than any rule the legacy applied to a
+ * credential. The measured legacy password policy is the three settings in
+ * `Website/release.config` — `minRequiredPasswordLength="7"`,
+ * `minRequiredNonalphanumericCharacters="0"` and `requiresUniqueEmail="false"` — and
+ * it declares NO MAXIMUM. The successor stores a one-way BCrypt hash, so the column
+ * that produced the 20 no longer exists.
+ *
+ * Reproducing it would therefore preserve an artefact of a deleted constraint, not a
+ * behaviour, while capping the entropy of every administrator credential this screen
+ * creates at twenty characters. The ceiling is instead the API's own bound, shared
+ * from `core/utils/credential-bounds.util.ts`, which documents why a limit counted in
+ * UTF-16 code units can never refuse a credential the API's 256-BYTE rule accepts.
  */
-const PASSWORD_MAX_LENGTH = 20;
+const PASSWORD_MAX_LENGTH = CREDENTIAL_MAX_LENGTH;
+
+/**
+ * The shortest administrator password the API accepts.
+ *
+ * The MEASURED LEGACY POLICY and not a tightening of it: `Website/release.config:L241` declares
+ * `minRequiredPasswordLength="7"`, the API's creation rule binds that same policy value, and the
+ * legacy screen enforced it only by letting the server refuse. Stating it here spends no request to
+ * learn what is already knowable, and it is deliberately NOT raised — a stronger requirement would
+ * refuse credentials the legacy application accepted, which the migration discipline forbids.
+ *
+ * The complementary non-alphanumeric requirement is NOT expressed, because the measured policy sets it
+ * to zero (`Website/release.config:L243`) and a rule that can never fail is a rule that can only
+ * mislead. The API expresses it for the case where a deployment configures it; the client would then
+ * simply let that refusal arrive, exactly as the legacy screen did for the length.
+ */
+const PASSWORD_MIN_LENGTH = 7;
+
+/**
+ * The pattern an administrator mail address must match.
+ *
+ * MIGRATION: THE AUTHORITY IS THE DOMAIN ATTRIBUTE, NOT THIS SCREEN'S MARKUP, because the markup has
+ * nothing to say: `signup.ascx:L106` declares a `requiredfieldvalidator` on the address and NO
+ * regular-expression validator at all, so the legacy screen accepted any non-empty text and let the
+ * write refuse it. The rule that refused it is the one attached to the property being written —
+ * `UserInfo.vb:L122` carries `RegularExpressionValidator(glbEmailRegEx)`, whose expression is declared
+ * once at `Library/Components/Shared/Globals.vb:L132` as
+ * `\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b`.
+ *
+ * Three deliberate differences from that measured string, each of which would otherwise be a defect:
+ *
+ * - ANCHORED with `^` and `$` in place of the word boundaries. Angular anchors a pattern supplied as a
+ *   string but leaves a `RegExp` exactly as written, and `\b` matches a position rather than the ends
+ *   of the value — so the expression as measured would accept any text merely CONTAINING an address.
+ * - the final label's upper bound is 63 rather than 4. The legacy `{2,4}` predates every long
+ *   top-level domain, so reproducing it would refuse addresses the API accepts — its own value object
+ *   preserves the lower half and replaces the upper half in exactly this way, and a client stricter
+ *   than the server produces a refusal the operator has no way to work around.
+ * - the redundant escapes on `-` inside the character classes are dropped, which does not change the
+ *   language matched: a hyphen at the end of a class is already literal.
+ *
+ * Anything narrower is not attempted. The API's value object applies further rules — a leading
+ * character class, per-label lengths, a letters-only final label — and reproducing them here would put
+ * the same rule in two places with two chances of drifting. The client refuses what is obviously
+ * malformed; the server remains the authority.
+ */
+const EMAIL_PATTERN = /^[a-zA-Z0-9._%+'-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,63}$/;
 
 /**
  * Administrator mail address, 100 characters.
@@ -228,6 +281,33 @@ const CONFIRM_REQUIRED_MESSAGE = 'Password Confirmation Is Required.';
 
 /** `valEmail.ErrorMessage` — `signup.ascx:L107`. */
 const EMAIL_REQUIRED_MESSAGE = 'Email Is Required.';
+
+/**
+ * The wording for a credential shorter than the configured minimum.
+ *
+ * The API'S OWN SENTENCE, reproduced with the configured length substituted into it, because the API
+ * composes it from the same legacy template — `InvalidPassword.Text` from the shared resource file,
+ * whose two bracketed tokens it fills from the bound policy. A person who trips the rule before the
+ * request leaves therefore reads exactly what they would have read had it left.
+ *
+ * The non-alphanumeric half of the sentence is kept even though the measured policy sets that
+ * requirement to zero: the sentence is the legacy sentence, the API says the same, and rewording it
+ * here would put two descriptions of one rule in front of the same operator.
+ */
+const PASSWORD_TOO_SHORT_MESSAGE =
+  'The password specified is invalid.  Please specify a valid password.  Passwords must be at ' +
+  `least ${String(PASSWORD_MIN_LENGTH)} characters in length and contain at least 0 ` +
+  'non-alphanumeric characters.';
+
+/**
+ * The wording for a malformed mail address.
+ *
+ * `EmailValidation.Text` from the shared resource file, which is the sentence the API reports for the
+ * same rule. Taken verbatim, including its double space, so client and server describe one rule with
+ * one sentence.
+ */
+const EMAIL_INVALID_MESSAGE =
+  'The email address specified is invalid.  Please specify a valid email address.';
 
 /**
  * `InvalidName.Text` — `Signup.ascx.resx:L234-L236`, verbatim.
@@ -581,32 +661,27 @@ const CREATE_REQUIRED_MESSAGE: Readonly<Record<PortalCreateField, string | null>
  *     supplies no `portalId` segment at all, so the input keeps its initial value;
  *     that distinct absence is what {@link PortalFormComponent.isEditMode} tests;
  *   * a MALFORMED segment also becomes `undefined` rather than `NaN`, so no arithmetic
- *     or comparison downstream can encounter one. `Number` is used rather than
- *     `Number.parseInt` because the latter reads `'5abc'` as `5`, silently addressing
- *     a portal the operator did not name.
+ *     or comparison downstream can encounter one.
+ *
+ * ⚠ THE PARSE ITSELF IS DELEGATED, and that closed a real gap rather than tidying one.
+ * This function used to convert with `Number`, which accepts far more than a decimal
+ * integer: `'0x10'` became `16`, `'1e3'` became `1000` and `'1.0'` became `1`, so a
+ * malformed address silently addressed a tenant the operator never named. It also
+ * checked neither the safe-integer ceiling nor the API's 32-bit range. `parseRouteId` is
+ * the one parser in the workspace that makes this conversion, and it reproduces exactly
+ * what `int.TryParse` under `NumberStyles.Integer` accepts server-side. This function
+ * remains because the ABSENCE REPRESENTATION is this screen's own — the creation route
+ * supplies no segment, and `isEditMode` tests `undefined` — and because its name is part
+ * of the input contract the route table binds through.
  *
  * @param value The raw route parameter, or a value bound programmatically.
  * @returns The identifier, or `undefined` when none was supplied or the value does not
  * denote a whole number.
  */
 export function toOptionalPortalId(value: string | number | null | undefined): number | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? value : undefined;
-  }
-
-  const trimmed = value.trim();
-
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-
-  const parsed = Number(trimmed);
-
-  return Number.isInteger(parsed) ? parsed : undefined;
+  // Coalescing on `null` alone, so `0` and `-1` — both real portal identifiers — pass
+  // through untouched. A `||` here would erase identifier zero.
+  return parseRouteId(value) ?? undefined;
 }
 
 /**
@@ -1161,15 +1236,30 @@ export class PortalFormComponent {
         }),
         password: new FormControl<string>('', {
           nonNullable: true,
-          validators: [Validators.required, Validators.maxLength(PASSWORD_MAX_LENGTH)],
+          validators: [
+            Validators.required,
+            Validators.minLength(PASSWORD_MIN_LENGTH),
+            Validators.maxLength(PASSWORD_MAX_LENGTH),
+          ],
         }),
+        // The confirmation carries the SAME bounds as the credential it confirms. Omitting the minimum
+        // here would let the two boxes disagree about what is acceptable, so a credential of six
+        // characters typed identically twice would report the fault against one box and not the other.
         confirm: new FormControl<string>('', {
           nonNullable: true,
-          validators: [Validators.required, Validators.maxLength(PASSWORD_MAX_LENGTH)],
+          validators: [
+            Validators.required,
+            Validators.minLength(PASSWORD_MIN_LENGTH),
+            Validators.maxLength(PASSWORD_MAX_LENGTH),
+          ],
         }),
         email: new FormControl<string>('', {
           nonNullable: true,
-          validators: [Validators.required, Validators.maxLength(EMAIL_MAX_LENGTH)],
+          validators: [
+            Validators.required,
+            Validators.maxLength(EMAIL_MAX_LENGTH),
+            Validators.pattern(EMAIL_PATTERN),
+          ],
         }),
       },
       { validators: [passwordsMatchValidator] },
@@ -1659,6 +1749,18 @@ export class PortalFormComponent {
       if (typeof requested === 'number') {
         return `Enter at most ${requested} characters.`;
       }
+    }
+
+    // The credential minimum. Reported by its OWN sentence rather than by a length template, because
+    // the API answers this rule with the legacy policy sentence and the two must not differ.
+    if (errors['minlength'] !== undefined) {
+      return PASSWORD_TOO_SHORT_MESSAGE;
+    }
+
+    // The mail-address format. Only one control on either form carries a pattern rule, so no
+    // per-control discrimination is needed and none is invented.
+    if (errors['pattern'] !== undefined) {
+      return EMAIL_INVALID_MESSAGE;
     }
 
     return GENERIC_FIELD_MESSAGE;

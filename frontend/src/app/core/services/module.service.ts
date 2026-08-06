@@ -3,8 +3,22 @@ import { Injectable, inject } from '@angular/core';
 import { map } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
+import {
+  decodeModuleDefinition,
+  decodeModuleDetail,
+  decodeModuleListItem,
+  decodeModuleSettingsBag,
+} from '../models/module.model';
+import {
+  arrayOf,
+  decodeResponse,
+  decodeString,
+  envelopeOf,
+  nullable,
+  pageOf,
+} from '../utils/decode.util';
 import { moduleListParams, modulePlacementParams } from '../utils/http-params.util';
-import { toPagedResult } from '../models/paged-result.model';
+import { presentedInContext } from './notification.service';
 
 import type { HttpParams } from '@angular/common/http';
 import type { Observable } from 'rxjs';
@@ -20,12 +34,34 @@ import type {
   ModuleDetail,
   ModuleExportRequest,
   ModuleImportRequest,
-  ModuleListItem,
   ModuleListPage,
   ModuleSettingsBag,
   UpdateModuleRequest,
 } from '../models/module.model';
-import type { ApiResponse, PagedResponse } from '../models/paged-result.model';
+import type { Decoder } from '../utils/decode.util';
+
+/**
+ * One decoder per response shape this transport reads, composed once at module scope.
+ *
+ * Two of them are `nullable`, and that mirrors the contract rather than being defensive: the
+ * module-settings read and the single-definition read both publish a null payload for a target
+ * the caller may address but the server may not resolve, and the methods that return them are
+ * declared `| null` for the same reason.
+ */
+const MODULE_PAGE: Decoder<ModuleListPage> = pageOf(decodeModuleListItem);
+const MODULE_DETAIL_RESPONSE: Decoder<ModuleDetail> = envelopeOf(decodeModuleDetail);
+const NULLABLE_MODULE_DETAIL_RESPONSE: Decoder<ModuleDetail | null> = envelopeOf(
+  nullable(decodeModuleDetail),
+);
+const MODULE_SETTINGS_RESPONSE: Decoder<ModuleSettingsBag | null> = envelopeOf(
+  nullable(decodeModuleSettingsBag),
+);
+const MODULE_DEFINITION_LIST_RESPONSE: Decoder<readonly ModuleDefinition[]> = envelopeOf(
+  arrayOf(decodeModuleDefinition),
+);
+const NULLABLE_MODULE_DEFINITION_RESPONSE: Decoder<ModuleDefinition | null> = envelopeOf(
+  nullable(decodeModuleDefinition),
+);
 
 /**
  * Typed transport for the module placement and module definition endpoints.
@@ -61,20 +97,39 @@ import type { ApiResponse, PagedResponse } from '../models/paged-result.model';
  *   renewal has been attempted.
  *
  * ---------------------------------------------------------------------------
- * THE ENVELOPE IS UNWRAPPED, AND THAT IS TRANSPORT SHAPE RATHER THAN A DECISION
+ * THE ENVELOPE IS UNWRAPPED AND THE BODY IS CHECKED, AND NEITHER IS A DECISION
  * ---------------------------------------------------------------------------
- * Single-payload endpoints answer inside the shared success envelope, so each such
- * call is typed as that envelope and the payload is lifted out of it. Typing a call
- * as the bare payload instead compiles and then fails in the quietest possible way:
- * every member reads as undefined and the result is a shape-correct blank. Lifting a
- * declared member out of the transport wrapper invents nothing and is the convention
- * the sibling authentication service already follows.
+ * Single-payload endpoints answer inside the shared success envelope, so each such call
+ * reads the envelope and hands back the payload. Typing a call as the bare payload
+ * instead compiles and then fails in the quietest possible way: every member reads as
+ * undefined and the result is a shape-correct blank.
  *
- * The paged listing is the one endpoint that answers WITHOUT that wrapper — its page
- * envelope is the body — and it is normalised through the paging model's own
- * completion function, which fills in a page count the body may omit using the
- * server's own arithmetic. Nothing else about the page is computed, and the input and
- * output of that function are the same declared type.
+ * ⚠ AND A TYPE ARGUMENT IS NOT A CHECK. `http.get<ModuleDetail>(...)` compiles to
+ * `http.get(...)`: the interface is erased, nothing inspects the body, and the value is
+ * trusted purely because a developer wrote a type where a value was expected. Every
+ * response is therefore read as `unknown` and passed through the decoder its contract
+ * publishes, so a renamed member, a wrong primitive, an unrecognised visibility code or a
+ * page with no metadata FAILS THE OBSERVABLE at this boundary with the member path named.
+ * Refusals carry the expected type and never the value, which matters most here: the
+ * settings maps and the exported document are module CONTENT, and a violation must not
+ * copy them into a log.
+ *
+ * The paged listing is the one endpoint that answers WITHOUT the success wrapper — its
+ * page envelope is the body — and it is decoded by the page decoder the paging contract
+ * owns, so the one place a page count may be derived from a total and a size stays the one
+ * place that documents deriving it. A body missing `items` or `meta` is REFUSED rather
+ * than completed as an empty first page.
+ *
+ * ---------------------------------------------------------------------------
+ * WHO ANNOUNCES A FAILURE
+ * ---------------------------------------------------------------------------
+ * Every request below is marked as PRESENTED BY ITS CALLER. Without that mark the global
+ * error interceptor queues a transient notification for every failed response while
+ * `module.store` ALSO records the same problem document for its screen to render as an
+ * in-page banner — one failure, shown twice. The caller wins: it has the context to word
+ * the failure as the legacy screen worded it, and an in-page block beside the form is what
+ * the legacy actually did through `UI.Skins.Skin.AddModuleMessage`, never a transient
+ * global message. The interceptor still re-throws, so nothing is swallowed.
  *
  * ---------------------------------------------------------------------------
  * SENTINELS: NO IDENTIFIER IS EVER GUARDED, DEFAULTED OR COALESCED HERE
@@ -140,14 +195,19 @@ export class ModuleService {
   ): Observable<ModuleListPage> {
     const params: HttpParams = moduleListParams(request, filter);
 
-    // The paged listing is the one endpoint here whose body IS the envelope, so no
-    // payload member is lifted out of it. It is passed through the paging model's own
-    // completion function, whose input and output are the same declared type: the only
-    // value it can add is a page count the body omitted, computed the way the server
-    // computes it, so a pager never divides by a page size of zero.
+    // The paged listing is the one endpoint here whose body IS the envelope, so no payload
+    // member is lifted out of it. It is DECODED by the page decoder the paging contract
+    // owns: `items` and `meta` are both required, every row is checked against the listing
+    // contract, and the only value the decoder adds is a page count the body omitted,
+    // computed the way the server computes it so a pager never divides by a page size of
+    // zero. A body missing either member is refused rather than reported as an empty first
+    // page, which would have told an operator the tenant has no modules.
     return this.http
-      .get<PagedResponse<ModuleListItem>>(API_ENDPOINTS.modules.collection(), { params })
-      .pipe(map((page) => toPagedResult(page)));
+      .get<unknown>(API_ENDPOINTS.modules.collection(), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MODULE_PAGE, body)));
   }
 
   /**
@@ -191,8 +251,11 @@ export class ModuleService {
     const params: HttpParams = modulePlacementParams(placement);
 
     return this.http
-      .get<ApiResponse<ModuleDetail | null>>(API_ENDPOINTS.modules.byId(moduleId), { params })
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.modules.byId(moduleId), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(NULLABLE_MODULE_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -216,8 +279,10 @@ export class ModuleService {
    */
   createModule(request: CreateModuleRequest): Observable<ModuleDetail> {
     return this.http
-      .post<ApiResponse<ModuleDetail>>(API_ENDPOINTS.modules.collection(), request)
-      .pipe(map((envelope) => envelope.data));
+      .post<unknown>(API_ENDPOINTS.modules.collection(), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MODULE_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -244,8 +309,10 @@ export class ModuleService {
     request: UpdateModuleRequest,
   ): Observable<ModuleDetail | null> {
     return this.http
-      .put<ApiResponse<ModuleDetail | null>>(API_ENDPOINTS.modules.byId(moduleId), request)
-      .pipe(map((envelope) => envelope.data));
+      .put<unknown>(API_ENDPOINTS.modules.byId(moduleId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(NULLABLE_MODULE_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -280,7 +347,10 @@ export class ModuleService {
   ): Observable<void> {
     const params: HttpParams = modulePlacementParams(placement);
 
-    return this.http.delete<void>(API_ENDPOINTS.modules.byId(moduleId), { params });
+    return this.http.delete<void>(API_ENDPOINTS.modules.byId(moduleId), {
+      params,
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -305,10 +375,11 @@ export class ModuleService {
     const params: HttpParams = modulePlacementParams(placement);
 
     return this.http
-      .get<
-        ApiResponse<ModuleSettingsBag | null>
-      >(API_ENDPOINTS.modules.settings(moduleId), { params })
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.modules.settings(moduleId), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MODULE_SETTINGS_RESPONSE, body)));
   }
 
   /**
@@ -338,7 +409,10 @@ export class ModuleService {
   ): Observable<void> {
     const params: HttpParams = modulePlacementParams(placement);
 
-    return this.http.put<void>(API_ENDPOINTS.modules.settings(moduleId), settings, { params });
+    return this.http.put<void>(API_ENDPOINTS.modules.settings(moduleId), settings, {
+      params,
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -390,9 +464,18 @@ export class ModuleService {
    * @returns The exported document as text, which may legitimately be empty.
    */
   exportModule(moduleId: number, request: ModuleExportRequest): Observable<string> {
-    return this.http.post(API_ENDPOINTS.modules.export(moduleId), request, {
-      responseType: 'text',
-    });
+    // `responseType: 'text'` makes the client hand back a string rather than parse JSON,
+    // but "rather than parse" is not "rather than check": a misconfigured endpoint answering
+    // JSON, or an empty 204 the client surfaces as null, would flow on as a value the export
+    // screen writes to a file. The decoder is `decodeString` alone — an EMPTY document is
+    // legitimate and must pass, because a module with no content exports nothing — so this
+    // asserts the type and imposes no minimum length.
+    return this.http
+      .post(API_ENDPOINTS.modules.export(moduleId), request, {
+        responseType: 'text',
+        context: presentedInContext(),
+      })
+      .pipe(map((document) => decodeResponse(decodeString, document)));
   }
 
   /**
@@ -440,7 +523,9 @@ export class ModuleService {
    * @returns Completion, with no payload.
    */
   importModule(request: ModuleImportRequest): Observable<void> {
-    return this.http.post<void>(API_ENDPOINTS.modules.import(), request);
+    return this.http.post<void>(API_ENDPOINTS.modules.import(), request, {
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -485,10 +570,10 @@ export class ModuleService {
    */
   listModuleDefinitions(): Observable<readonly ModuleDefinition[]> {
     return this.http
-      .get<
-        ApiResponse<readonly ModuleDefinition[]>
-      >(API_ENDPOINTS.moduleDefinitions.collection())
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.moduleDefinitions.collection(), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MODULE_DEFINITION_LIST_RESPONSE, body)));
   }
 
   /**
@@ -509,10 +594,10 @@ export class ModuleService {
    */
   getModuleDefinition(moduleDefinitionId: number): Observable<ModuleDefinition | null> {
     return this.http
-      .get<
-        ApiResponse<ModuleDefinition | null>
-      >(API_ENDPOINTS.moduleDefinitions.byId(moduleDefinitionId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.moduleDefinitions.byId(moduleDefinitionId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(NULLABLE_MODULE_DEFINITION_RESPONSE, body)));
   }
 
   /**
@@ -539,9 +624,9 @@ export class ModuleService {
     desktopModuleId: number,
   ): Observable<readonly ModuleDefinition[]> {
     return this.http
-      .get<
-        ApiResponse<readonly ModuleDefinition[]>
-      >(API_ENDPOINTS.moduleDefinitions.forDesktopModule(desktopModuleId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.moduleDefinitions.forDesktopModule(desktopModuleId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MODULE_DEFINITION_LIST_RESPONSE, body)));
   }
 }

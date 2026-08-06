@@ -179,6 +179,7 @@ import {
   type ProblemSummary,
 } from '../utils/form-errors.util';
 
+
 // ---------------------------------------------------------------------------
 // THE SEARCH AXIS, AS A TYPED DISCRIMINATOR
 // ---------------------------------------------------------------------------
@@ -665,6 +666,23 @@ function withObservedStatus(
 export class UserStore implements OnDestroy {
   private readonly transport = inject(UserService);
 
+  /*
+   * ⚠ THIS STORE HOLDS THE MOST SENSITIVE STATE IN THE APPLICATION: names, email addresses,
+   * telephone numbers, postal addresses and free-text profile answers, for accounts belonging
+   * to ONE TENANT and read on the authority of ONE OPERATOR. Ending a session discards the
+   * credential; it does not discard anything read with it, so without an explicit discard a
+   * previous operator's account listing and the profile last opened would still be here for
+   * whoever signs in next.
+   *
+   * That discard is not arranged here. `core/state/session-teardown.service.ts` and
+   * `core/state/session-lifecycle.service.ts` each call this store's own `reset()` — the
+   * first from the transport layer when a renewal is refused and from the identity store, the
+   * second from the shell on a deliberate sign-out — and `reset()` cancels the in-flight reads
+   * and writes before clearing the slices, so nothing still in the air can refill them.
+   *
+   * ⚠ DO NOT ADD A REGISTRATION CALL HERE; see the note in `portal.store.ts` for why the
+   * fan-out belongs to the two services and not to the stores.
+   */
   // -------------------------------------------------------------------------
   // WRITABLE SLICES
   // -------------------------------------------------------------------------
@@ -794,14 +812,20 @@ export class UserStore implements OnDestroy {
   private definitionRequest: Subscription | null = null;
 
   /*
-   * A container for WRITES, which are deliberately never cancelled. Abandoning a write
-   * client-side does not undo it server-side, so cancelling one would leave this store
-   * confident about a change it can no longer observe. Concurrency is instead surfaced
-   * through the saving flag, which a form binds to disable its own submit. The container
-   * exists only so that teardown can release anything still outstanding; a completed
-   * child detaches itself from it.
+   * Every WRITE still outstanding. A write is never superseded by a later one: abandoning a
+   * write client-side does not undo it server-side, so cancelling one because a second was
+   * issued would leave this store confident about a change it can no longer observe.
+   * Concurrency is instead surfaced through the saving flag, which a form binds to disable its
+   * own submit. The handles exist so that a SESSION BOUNDARY and teardown can release them.
+   *
+   * ⚠ A `Set` OF HANDLES RATHER THAN ONE `Subscription` CONTAINER, AND THE CHANGE FIXES A REAL
+   * TRAP. An RxJS `Subscription` used as a container is CLOSED once unsubscribed, and anything
+   * added to a closed container is unsubscribed the instant it is added. With a container, the
+   * first session boundary would release the writes correctly and then silently cancel EVERY
+   * SUBSEQUENT WRITE for the remaining life of the application — every save after one sign-out
+   * would appear to be dispatched and never report an outcome. A set is emptied and reused.
    */
-  private readonly writeRequests = new Subscription();
+  private readonly writeRequests = new Set<Subscription>();
 
   // -------------------------------------------------------------------------
   // PUBLISHED STATE
@@ -1179,7 +1203,7 @@ export class UserStore implements OnDestroy {
    */
   ngOnDestroy(): void {
     this.cancelReads();
-    this.writeRequests.unsubscribe();
+    this.cancelWrites();
   }
 
   // -------------------------------------------------------------------------
@@ -1422,7 +1446,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.create(request).subscribe({
         next: (created: UserDetail) => {
           this._saving.set(false);
@@ -1466,7 +1490,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.update(userId, request).subscribe({
         next: (written: UserDetail) => {
           this._saving.set(false);
@@ -1506,7 +1530,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.delete(userId).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1559,7 +1583,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.updateProfile(userId, submission).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1611,7 +1635,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.changePassword(userId, request).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1645,7 +1669,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.passwordReset(userId, request).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1681,7 +1705,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.setApproval(userId, isApproved).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1708,7 +1732,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.unlock(userId).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1748,7 +1772,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.requirePasswordChange(userId).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1799,7 +1823,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.updateMembershipSettings(request).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1879,7 +1903,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.createProfileDefinition(request).subscribe({
         next: (created: ProfilePropertyDefinition) => {
           this._saving.set(false);
@@ -1920,7 +1944,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.updateProfileDefinition(propertyDefinitionId, request).subscribe({
         next: (written: ProfilePropertyDefinition) => {
           this._saving.set(false);
@@ -1952,7 +1976,7 @@ export class UserStore implements OnDestroy {
     this._failure.set(null);
     this._saving.set(true);
 
-    this.writeRequests.add(
+    this.track(
       this.transport.deleteProfileDefinition(propertyDefinitionId).subscribe({
         next: () => {
           this._saving.set(false);
@@ -1989,7 +2013,13 @@ export class UserStore implements OnDestroy {
    * it server-side.
    */
   reset(): void {
+    // ⚠ WRITES ARE RELEASED HERE TOO, WHICH READS ALONE DID NOT DO. A write's callback selects
+    // an account, re-reads the listing and records an outcome; left listening across a session
+    // boundary it performs all three on behalf of the session that ended, repopulating slices
+    // this method has just cleared with the PREVIOUS OPERATOR'S accounts — personal data, shown
+    // to whoever signed in next, with no command issued to explain where it came from.
     this.cancelReads();
+    this.cancelWrites();
 
     this._users.set(emptyPagedResult<UserListItem>());
     this._requestedPageIndex.set(0);
@@ -2265,6 +2295,45 @@ export class UserStore implements OnDestroy {
       summary: summarizeProblem(problem),
       code: failureCode(problem),
     });
+  }
+
+  /**
+   * Holds a write's handle until it settles, so a session boundary and teardown can release it.
+   *
+   * ⚠ THE COMPLETION TEARDOWN IS WHAT MAKES A SET SAFE HERE. An RxJS `Subscription` container
+   * detached a finished child by itself; a set does not, so a handle is removed on completion
+   * explicitly. Without that the set would grow for the life of the application, one entry per
+   * write ever issued.
+   *
+   * @param request The handle to hold.
+   */
+  private track(request: Subscription): void {
+    if (request.closed) {
+      return;
+    }
+
+    this.writeRequests.add(request);
+    request.add(() => {
+      this.writeRequests.delete(request);
+    });
+  }
+
+  /**
+   * Releases every write handle.
+   *
+   * Only for a session boundary and for teardown, for the reason recorded on the handles: a
+   * write in flight is not otherwise abandoned, because releasing the handle stops the client
+   * listening without undoing anything the server may already have committed.
+   *
+   * Iterated over a COPY, because each release removes its own handle from the set through the
+   * teardown registered alongside it, and mutating a set while iterating it skips entries.
+   */
+  private cancelWrites(): void {
+    for (const request of [...this.writeRequests]) {
+      request.unsubscribe();
+    }
+
+    this.writeRequests.clear();
   }
 
   /** Abandons every read in flight, leaving writes alone. */

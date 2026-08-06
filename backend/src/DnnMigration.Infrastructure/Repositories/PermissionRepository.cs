@@ -652,6 +652,36 @@ internal sealed class PermissionRepository : IPermissionRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// MIGRATION: the terminal <c>DeleteRole</c> procedure (<c>03.00.10.SqlDataProvider</c>) removed this
+    /// family by role identifier alone, and so does this. There is deliberately NO tenant predicate: a
+    /// role belongs to exactly one tenant, so its identifier already bounds the removal, whereas the
+    /// account-scoped sibling above needs one because an account belongs to many.
+    /// </para>
+    /// <para>
+    /// MIGRATION: only grants ADDRESSED TO the role go. The role column is nullable and is compared to a
+    /// plain value, so an account-addressed grant is not matched, and neither is a grant addressed to one
+    /// of the negative pseudo-principals the terminal schema persists in this column - those name no
+    /// <c>Roles</c> row, so no role removal can be the reason to discard them.
+    /// </para>
+    /// <para>
+    /// ONE set-based delete, issued when this member is called rather than when changes are flushed, and
+    /// no load: the number of grants a role holds is unbounded and none of their values is needed in order
+    /// to remove them. Immediacy makes a transaction the caller's responsibility rather than an option -
+    /// this member is one third of a three-table cleanup that must stand or fall with the role removal
+    /// itself, and a set-based delete enlists in the transaction the context already has open, so all four
+    /// statements sit inside one rollback boundary. The caller opens that boundary explicitly.
+    /// </para>
+    /// </remarks>
+    public Task DeleteModulePermissionsByRoleIdAsync(int roleId, CancellationToken cancellationToken = default)
+    {
+        return _dbContext.ModulePermissions
+            .Where(grant => grant.RoleId == roleId)
+            .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// MIGRATION: staged for removal, with the row loaded WITH change tracking because the change tracker
     /// needs the instance it is being asked to act on. An identifier naming no row stages nothing and is
     /// not a fault.
@@ -817,6 +847,44 @@ internal sealed class PermissionRepository : IPermissionRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// The same predicate and the same wildcard convention as the single-page member, widened to a set, with
+    /// the page leading the ordering so each page's slice reads identically to what that member would return.
+    /// </remarks>
+    public async Task<IReadOnlyList<TabPermission>> GetTabPermissionsByTabIdsAsync(
+        IReadOnlyCollection<int> tabIds,
+        int permissionId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tabIds);
+
+        if (tabIds.Count == 0)
+        {
+            return Array.Empty<TabPermission>();
+        }
+
+        int[] wanted = tabIds.Distinct().ToArray();
+
+        IQueryable<TabPermission> query = _dbContext.TabPermissions
+            .AsNoTracking()
+            .Where(grant => wanted.Contains(grant.TabId));
+
+        if (permissionId != AnyPermissionId)
+        {
+            query = query.Where(grant => grant.PermissionId == permissionId);
+        }
+
+        return await query
+            .OrderBy(grant => grant.TabId)
+            .ThenBy(grant => grant.PermissionId)
+            .ThenBy(grant => grant.RoleId)
+            .ThenBy(grant => grant.UserId)
+            .ThenBy(grant => grant.TabPermissionId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// <para>
     /// MIGRATION: the terminal bulk removal filters on the page column alone and removes the matching rows
     /// in one statement, which is what this issues - ONE set-based delete carrying that predicate, with no
@@ -861,6 +929,68 @@ internal sealed class PermissionRepository : IPermissionRepository
         return _dbContext.TabPermissions
             .Where(grant => grant.UserId == userId && grant.Tab.PortalId == portalId)
             .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the page-scoped half of the role cleanup the terminal <c>DeleteRole</c> procedure
+    /// performed (<c>03.00.10.SqlDataProvider</c>), by role identifier alone. Every consideration recorded
+    /// on the module counterpart applies unchanged - no tenant predicate is needed because a role belongs
+    /// to one tenant, account-addressed grants and the negative pseudo-principals are not matched, and the
+    /// set-based delete is immediate, so the caller's transaction is what makes the three-table cleanup and
+    /// the role removal one outcome.
+    /// </remarks>
+    public Task DeleteTabPermissionsByRoleIdAsync(int roleId, CancellationToken cancellationToken = default)
+    {
+        return _dbContext.TabPermissions
+            .Where(grant => grant.RoleId == roleId)
+            .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the folder-scoped cleanup the terminal <c>DeleteRole</c> procedure performed, and the
+    /// first statement in its body (<c>03.00.10.SqlDataProvider</c>). It is issued as a statement against
+    /// the table rather than through a <c>DbSet</c> because the folder grant table is not part of the
+    /// mapped model - file management is outside this migration's scope - while still being present in
+    /// every upgraded DotNetNuke database this solution binds to.
+    /// </para>
+    /// <para>
+    /// THE TABLE'S EXISTENCE IS TESTED BY THE STATEMENT ITSELF, in one round trip, and nothing is created,
+    /// altered or dropped either way. A database that lacks the table is left untouched and the member
+    /// reports success, because a role in such a database cannot hold a folder grant and so has nothing to
+    /// lose; a database that has it loses exactly the rows the legacy procedure removed. Probing first and
+    /// deleting second would be two round trips and a race, and issuing the delete unconditionally would
+    /// fault the enclosing transaction on the greenfield schema.
+    /// </para>
+    /// <para>
+    /// The provider guard is not defensive dressing: <c>OBJECT_ID</c> is a SQL Server function, and the
+    /// integration suites that run against another relational provider would fault on the statement rather
+    /// than skip it. The same guard, for the same reason, protects the external membership statements in
+    /// <c>Persistence/MembershipStore.cs</c>.
+    /// </para>
+    /// <para>
+    /// The role identifier crosses as a bound parameter through interpolated composition, so no value is
+    /// concatenated into the statement text. The predicate is the legacy predicate exactly - equality on
+    /// the role column - so a grant addressed to an account, and a grant addressed to one of the negative
+    /// pseudo-principals, are both left alone.
+    /// </para>
+    /// </remarks>
+    public async Task DeleteFolderPermissionsByRoleIdAsync(int roleId, CancellationToken cancellationToken = default)
+    {
+        if (!_dbContext.Database.IsSqlServer())
+        {
+            return;
+        }
+
+        _ = await _dbContext.Database
+            .ExecuteSqlInterpolatedAsync(
+                $@"
+IF OBJECT_ID(N'[dbo].[FolderPermission]', N'U') IS NOT NULL
+    DELETE FROM [dbo].[FolderPermission] WHERE [RoleID] = {roleId};",
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />

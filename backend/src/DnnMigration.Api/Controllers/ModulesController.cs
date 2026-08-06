@@ -613,9 +613,19 @@ public sealed class ModulesController : ControllerBase
     //            The legacy page had no in-code role check of its own at all, taking its protection from the
     //            permissions of the administration page hosting it, so an explicit policy replaces an ambient
     //            one here rather than a stated one.
+    //
+    // MIGRATION: H10. THE BODY LIMIT IS THE IMPORT'S OWN, NOT THE GLOBAL ONE. This action used to declare the
+    //            global one-mebibyte ceiling while the service accepted a document of 1 048 576 CHARACTERS,
+    //            so a document at the accepted ceiling could not fit through the limit in front of it once
+    //            JSON member names, quotes and escaping were counted - the two numbers described different
+    //            contracts and the larger was unreachable. The limit declared here is computed from the
+    //            document ceiling the import contract publishes, so the two cannot disagree, and it is
+    //            declared PER ACTION rather than raised globally because every other endpoint - including
+    //            the unauthenticated ones - is correctly bounded at a mebibyte. Reaching this allowance
+    //            requires the tenant-administrator policy above.
     [HttpPost("import")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
-    [RequestSizeLimit(ServiceCollectionExtensions.MaximumRequestBodyBytes)]
+    [RequestSizeLimit(ServiceCollectionExtensions.MaximumImportRequestBodyBytes)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]

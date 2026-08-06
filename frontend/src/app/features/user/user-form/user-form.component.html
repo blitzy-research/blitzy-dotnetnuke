@@ -127,6 +127,41 @@
   <app-error-banner [problem]="problem()" />
 }
 
+<!--
+  THE ONE-TIME CREDENTIAL HAND-OVER.
+
+  Rendered only after the server has CONFIRMED the creation, and only when the operator asked for a
+  generated password. The value is held by the component for the duration of the request and is moved
+  here on success; a refused creation discloses nothing.
+
+  ⚠ WHY IT IS ON SCREEN AT ALL. The legacy generated the credential on the server and e-mailed it
+  (`User.ascx.vb:L164`). There is no mail endpoint here, so an account created with a generated
+  credential that nobody ever saw could not be signed in to by anyone — the screen produced an unusable
+  account and said so only afterwards. The administrator who just created the account can reset its
+  credential at will, so showing it to them grants no authority they did not hold; it is simply the only
+  remaining way to hand it over.
+
+  ⚠ WHY IT IS NOT A NOTIFICATION. The announcement channel is a shell-level live region: it is read
+  aloud, it is shared with every other screen and its dismissal is not this screen's to control. A
+  credential belongs in a region the operator dismisses deliberately, which is what this is.
+
+  The value is interpolated, so it is escaped, and it is rendered in a `<code>` element so that every
+  character is unambiguous — the generated alphabet already omits the characters that are easy to
+  misread. Dismissing discards the value and performs the redirect the screen deferred.
+-->
+@if (revealedCredential(); as credential) {
+  <section class="user-form__credential" role="group" aria-labelledby="user-form-credential-title">
+    <h2 id="user-form-credential-title" class="user-form__credential-title">
+      Password for this account
+    </h2>
+    <p class="user-form__credential-advisory">{{ credentialAdvisory }}</p>
+    <p class="user-form__credential-value"><code>{{ credential }}</code></p>
+    <div class="user-form__credential-actions">
+      <button type="button" (click)="dismissCredential()">I have copied this password</button>
+    </div>
+  </section>
+}
+
 @if (userMissing()) {
   <!--
     The read succeeded and reported nothing, so there is no record to edit and no problem
@@ -218,6 +253,7 @@
                 autocomplete="username"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('username') ? 'true' : null"
+                [attr.maxlength]="maxLengths.username"
                 formControlName="username"
               />
             </app-form-field>
@@ -235,6 +271,7 @@
                 autocomplete="given-name"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('firstName') ? 'true' : null"
+                [attr.maxlength]="maxLengths.firstName"
                 formControlName="firstName"
               />
             </app-form-field>
@@ -252,6 +289,7 @@
                 autocomplete="family-name"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('lastName') ? 'true' : null"
+                [attr.maxlength]="maxLengths.lastName"
                 formControlName="lastName"
               />
             </app-form-field>
@@ -275,6 +313,7 @@
                 type="text"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('displayName') ? 'true' : null"
+                [attr.maxlength]="maxLengths.displayName"
                 formControlName="displayName"
               />
             </app-form-field>
@@ -305,6 +344,7 @@
                 autocomplete="email"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('email') ? 'true' : null"
+                [attr.maxlength]="maxLengths.email"
                 formControlName="email"
               />
             </app-form-field>
@@ -354,13 +394,20 @@
             </app-form-field>
 
             <!--
-              `plNotify`. Initial value TRUE, from the measured `checked="True"` at
-              `User.ascx` L25.
+              `plNotify`. ⚠ RENDERED DISABLED AND UNTICKED, DEPARTING FROM THE MEASURED
+              `checked="True"` at `User.ascx` L25 on purpose: there is no mail endpoint, so a
+              tickable box would promise something the installation cannot perform. The help
+              text states that while there is still a decision to make, replacing a warning
+              that used to arrive only after the account had been created. The control itself
+              is retained because it is part of the agreed member contract.
+
+              The disabled attribute comes from the control's own state rather than from a
+              binding here, so the reason lives in one place — the component.
             -->
             <app-form-field
               label="Notify:"
               for="user-form-notify"
-              help="Send an email to the user's email address"
+              [help]="notifyUnavailableHelp"
             >
               <input id="user-form-notify" type="checkbox" formControlName="notify" />
             </app-form-field>
@@ -411,10 +458,16 @@
                 (`User.ascx.vb` L280). That path is out of scope, so only the administrator
                 behaviour — the row shown — is reproduced.
               -->
+              <!--
+                ⚠ THE HELP TEXT NOW STATES THE OUTCOME BEFORE THE DECISION. The measured wording
+                — "Check this box to generate a random password" — was true and incomplete: it did
+                not say that no notification can be sent, which is the part that decides whether
+                the operator should tick it at all.
+              -->
               <app-form-field
                 label="Random Password"
                 for="user-form-random-password"
-                help="Check this box to generate a random password"
+                help="Check this box to generate a random password. It will be shown to you once when the account is created; no notification e-mail can be sent."
               >
                 <input
                   id="user-form-random-password"
@@ -431,14 +484,25 @@
                 neither was required. Rendering them here would collect two values that are
                 then discarded, and would imply a rule the legacy did not apply.
 
-                MIGRATION: `maxlength="20"` is reproduced from the measured markup at
-                `User.ascx` L39 and L46 (`size="12" maxlength="20"`), which itself mirrors
-                the legacy storage ceiling `[Password] [nvarchar] (20)` in the baseline
-                schema script. It is an HTML INPUT ATTRIBUTE FOR PARITY ONLY: it is
-                deliberately NOT a validator on the control and NOT a constraint on the
-                model or the request contract, because the successor stores a one-way hash
-                whose length has nothing to do with twenty characters. The attribute stops
-                over-typing exactly as the legacy field did; nothing more is claimed for it.
+                MIGRATION: `maxlength="20"` IS DELIBERATELY NOT REPRODUCED. The measured markup at
+                `User.ascx` L39 and L46 declares `size="12" maxlength="20"`, but that figure
+                mirrors the legacy storage ceiling `[Password] [nvarchar] (20)` in the
+                baseline schema script rather than any rule the legacy applied to a
+                credential — the measured legacy policy declares no maximum at all. The
+                successor stores a one-way hash and bounds a credential at 256 UTF-8 bytes,
+                so reproducing the twenty would cap the entropy of every account this screen
+                creates against a constraint that no longer exists. The ceiling bound below
+                is the API's own; see `core/utils/credential-bounds.util.ts`.
+
+                ⚠ IT IS EMITTED AS `[attr.maxlength]`, NEVER AS A LITERAL `maxlength`
+                ATTRIBUTE. A literal attribute matches the selector of the framework's own
+                maximum-length validator, `[maxlength][formControlName]`, and binds that
+                directive's input — silently attaching a length validator this component
+                declares nowhere, whose `maxlength` error key `firstValidatorMessage` does
+                not render. The form would then refuse to submit and show no reason. The
+                attribute binding sets the DOM attribute without matching that selector,
+                which was confirmed by measurement. It stops over-typing and claims nothing
+                more; the length rule itself belongs to the API.
 
                 MIGRATION: the legacy re-populated both boxes across a postback by writing
                 the typed password back into the markup as an attribute value
@@ -473,7 +537,7 @@
                     id="user-form-password"
                     type="password"
                     autocomplete="new-password"
-                    maxlength="20"
+                    [attr.maxlength]="credentialMaxLength"
                     [attr.aria-required]="true"
                     [attr.aria-invalid]="passwordMessage() ? 'true' : null"
                     formControlName="password"
@@ -491,7 +555,7 @@
                     id="user-form-confirm-password"
                     type="password"
                     autocomplete="new-password"
-                    maxlength="20"
+                    [attr.maxlength]="credentialMaxLength"
                     [attr.aria-required]="true"
                     [attr.aria-invalid]="passwordMessage() ? 'true' : null"
                     formControlName="confirmPassword"
@@ -865,4 +929,3 @@
     (cancel)="onDeleteCancelled()"
   />
 }
-

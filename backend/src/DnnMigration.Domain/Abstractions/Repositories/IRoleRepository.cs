@@ -1,3 +1,4 @@
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 
 namespace DnnMigration.Domain.Abstractions.Repositories;
@@ -157,6 +158,61 @@ public interface IRoleRepository
     /// installation defines none.
     /// </returns>
     Task<IReadOnlyList<Role>> GetByPortalIdAsync(int portalId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns one page of the roles a portal OWNS, filtered, ordered, counted and windowed by the store.
+    /// </summary>
+    /// <param name="portalId">
+    /// The owning portal, matched by STRICT equality. Minus one and zero are both real portals, and a null
+    /// column never equals an identifier - so the installation-wide roles that <see cref="GetByPortalIdAsync"/>
+    /// admits are excluded here. That is deliberate and is the behaviour the administration screen this read
+    /// serves has always had: it lists the roles the portal itself owns.
+    /// </param>
+    /// <param name="roleGroupId">
+    /// Restrict to one role group, or <see langword="null"/> for no group restriction.
+    /// <c>RoleGroupID</c> is <c>IDENTITY(0, 1)</c>, so the PRESENCE of a value selects the filter and its
+    /// magnitude never does.
+    /// </param>
+    /// <param name="ungroupedOnly">
+    /// Restrict to the roles belonging to no group at all - the legacy "global roles" selection. Tests for
+    /// ABSENCE of a group, because <c>Roles.RoleGroupID</c> is nullable and an ungrouped role stores SQL
+    /// null there; it is not a test for any particular number. Ignored when
+    /// <paramref name="roleGroupId"/> names a group, since naming one is the narrower instruction.
+    /// </param>
+    /// <param name="nameQuery">
+    /// A fragment the role name must contain, case-insensitively, or <see langword="null"/> for no name
+    /// restriction. The value is data and never a pattern.
+    /// </param>
+    /// <param name="sortBy">The role property to order by, or <see langword="null"/> for the default.</param>
+    /// <param name="descending">Whether the ordering runs downwards.</param>
+    /// <param name="pageIndex">The page to return, counted from zero.</param>
+    /// <param name="pageSize">The page width, or zero for every matching row.</param>
+    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
+    /// <returns>
+    /// The requested window together with the total number of roles the whole filtered set holds. Each role
+    /// carries its group, because the projection reports the group's name.
+    /// </returns>
+    /// <remarks>
+    /// MIGRATION: net-new, and it replaces an Application-layer composition rather than a legacy procedure -
+    /// the legacy membership provider's entire role-listing surface was <c>GetPortalRoles(PortalId)</c>
+    /// (<c>DataProvider.vb:L91</c>), which returned every row, and the group restriction, the name search and
+    /// the page were the admin screen's own work. Reproducing that literally meant materialising the whole
+    /// role set on every request and narrowing it in this process, which bounds the RESPONSE by the page
+    /// while leaving the read, the sort and the allocation bounded only by the tenant. Every one of those
+    /// narrowings is relational, so they belong in the statement; the caller's choice of ordering travels as
+    /// data. The reads are two, fixed: one count and one window, or one window alone when every row was
+    /// asked for.
+    /// </remarks>
+    Task<PagedResult<Role>> ListAsync(
+        int portalId,
+        int? roleGroupId,
+        bool ungroupedOnly,
+        string? nameQuery,
+        string? sortBy,
+        bool descending,
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Returns every role in the installation, across all portals.
@@ -523,6 +579,51 @@ public interface IRoleRepository
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
     /// <returns>The matching assignments; an empty list when there are none.</returns>
     Task<IReadOnlyList<UserRole>> GetUserRolesByUsernameAsync(int portalId, string? username, string? roleName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns one page of one role's assignments, filtered, ordered, counted and windowed by the store.
+    /// </summary>
+    /// <param name="portalId">The portal to confine the answer to.</param>
+    /// <param name="roleName">
+    /// The single role whose assignments are wanted, matched case-insensitively. Required here, unlike on
+    /// <see cref="GetUserRolesByUsernameAsync"/>: this read serves one role's membership screen, so "every
+    /// role" is not a question it is ever asked. An empty name is a legally representable legacy name and
+    /// therefore narrows to it rather than widening.
+    /// </param>
+    /// <param name="accountQuery">
+    /// A fragment that the account's display name OR its login name must contain, case-insensitively, or
+    /// <see langword="null"/> for no account restriction. Both are considered because the grid shows the
+    /// former while a caller who knows the account knows the latter, and honouring only one of the two
+    /// would make the same account findable only by luck. The value is data and never a pattern.
+    /// </param>
+    /// <param name="sortBy">The account property to order by, or <see langword="null"/> for the default.</param>
+    /// <param name="descending">Whether the ordering runs downwards.</param>
+    /// <param name="pageIndex">The page to return, counted from zero.</param>
+    /// <param name="pageSize">The page width, or zero for every matching row.</param>
+    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
+    /// <returns>
+    /// The requested window together with the total number of assignments the whole filtered set holds.
+    /// Each assignment carries its role and its account, because all three records compose the answer -
+    /// the two assignment dates the screen renders live on the assignment and exist nowhere else, while the
+    /// name it renders lives on the account.
+    /// </returns>
+    /// <remarks>
+    /// MIGRATION: net-new, for the same reason as <see cref="ListAsync"/>. The terminal
+    /// <c>GetUserRolesByUsername</c> statement answered a null login name by returning EVERY assignment in
+    /// the portal joined to its account and its role, and the account filter, the ordering and the page were
+    /// composed above it - so a page of ten memberships materialised every membership of the role, with its
+    /// account graph, and sorted the lot. This member asks the same question of the same join and lets the
+    /// store settle all four.
+    /// </remarks>
+    Task<PagedResult<UserRole>> ListRoleMembershipsAsync(
+        int portalId,
+        string roleName,
+        string? accountQuery,
+        string? sortBy,
+        bool descending,
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stages a new role assignment for insertion.

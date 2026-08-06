@@ -10,6 +10,7 @@ import {
   type UserProfile,
   type UserProfileValue,
 } from '../../../core/models/profile.model';
+import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserProfileComponent } from './user-profile.component';
@@ -41,6 +42,48 @@ describe('UserProfileComponent', () => {
 
   /** The account the fixtures belong to. */
   const USER_ID = 7;
+
+  /**
+   * The reason phrase the API publishes as the problem `title`, keyed by status.
+   *
+   * ⚠️ NOT FREE TEXT. A refusal reaches the wire through one shared problem factory that fills the
+   * title from a status-keyed vocabulary and fills an unspecified type from the same vocabulary's
+   * default code - so a document carrying a bespoke title such as `'Server error'`, or carrying no
+   * `type` at all, describes no response this server can produce. Worse, such a fixture silently
+   * exercises the message-precedence rule (detail, then title, then a fallback) and the failure-code
+   * reader against values no operator will ever see.
+   */
+  const PROBLEM_TITLE: Readonly<Record<number, string>> = Object.freeze({
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    409: 'Conflict',
+    500: 'Internal Server Error',
+  });
+
+  /**
+   * A problem document as this API publishes one: complete, coherent and emittable.
+   *
+   * There is deliberately no `instance` member - every call site supplies null for it and the
+   * framework's problem type omits a null one per member - and both identifiers are present, because
+   * the pipeline attaches both.
+   *
+   * @param status The status the server answered with.
+   * @param code The failure code, carried behind the URN prefix.
+   * @param detail The authored explanation.
+   * @returns The document.
+   */
+  function problemOf(status: number, code: string, detail: string): ProblemDetails {
+    return {
+      type: `urn:dnnmigration:error:${code}`,
+      title: PROBLEM_TITLE[status] ?? 'Error',
+      status,
+      detail,
+      traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      correlationId: '6e2b0c94-3f57-4a81-b2d6-84c1f9e50a7b',
+    };
+  }
 
   /**
    * Narrows a value the DOM or a form reports as possibly absent.
@@ -111,6 +154,12 @@ describe('UserProfileComponent', () => {
   }
 
   /** The account read for the heading. */
+  // Declared WITHOUT a type assertion, so the compiler requires every member the contract
+  // declares. The previous `as UserDetail` cast admitted an object missing eight of them,
+  // which made this fixture a less demanding stand-in for the server than the server is: the
+  // transport now decodes each response against the published contract, and a body missing
+  // `roles`, `isOnline`, `mustChangePassword` or any of the audit instants is refused at the
+  // boundary exactly as a drifted server response would be.
   const account: UserDetail = {
     userId: USER_ID,
     portalId: 0,
@@ -123,7 +172,15 @@ describe('UserProfileComponent', () => {
     affiliateId: null,
     isApproved: true,
     isLockedOut: false,
-  } as UserDetail;
+    isOnline: false,
+    mustChangePassword: false,
+    createdDate: '2024-01-05T09:15:00Z',
+    lastLoginDate: '2024-03-02T11:40:00Z',
+    lastActivityDate: '2024-03-02T11:52:00Z',
+    lastLockoutDate: null,
+    lastPasswordChangeDate: '2024-01-05T09:20:00Z',
+    roles: ['Registered Users'],
+  };
 
   /**
    * Answers both reads the screen dispatches and renders the result.
@@ -264,11 +321,26 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', '7');
       fixture.detectChanges();
 
-      httpMock.expectOne('/api/v1/users/7').flush({ data: account });
-      httpMock.expectOne('/api/v1/users/7/profile').flush({ data: null });
+      // ⚠️ A 404, NOT A 200 CARRYING `data: null`. The shared result translator turns a SUCCESSFUL
+      // outcome carrying no value into a `404` under `resource.not_found` - with a detail naming
+      // neither the identifier nor the resource kind, so an unauthorised caller cannot tell "this
+      // exists but is not yours" from "this does not exist" - so a 200 with a null payload cannot
+      // leave this API for ANY single-resource route. An earlier revision modelled one, which proved
+      // the screen copes with a shape nothing sends while leaving the shape it does send untested.
+      httpMock
+        .expectOne('/api/v1/users/7')
+        .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
+      httpMock
+        .expectOne('/api/v1/users/7/profile')
+        .flush(problemOf(404, 'resource.not_found', 'The requested resource does not exist.'), {
+          status: 404,
+          statusText: 'Not Found',
+        });
       fixture.detectChanges();
 
-      expect(host().querySelector('app-empty-state')).not.toBeNull();
+      // The account identifier still reached the wire as the number the route's string names, which is
+      // what this case exists to prove - the refusal that followed does not change that.
+      expect(host().querySelector('app-error-banner')).not.toBeNull();
     });
 
     it('treats zero as a real identifier rather than as an absent one', () => {
@@ -288,7 +360,14 @@ describe('UserProfileComponent', () => {
       ]);
 
       reads[0]?.flush({ data: account, meta: null });
-      reads[1]?.flush({ data: null, meta: null });
+      // A declared-nothing profile is an EMPTY property list, not a null payload. An account with no
+      // values still HAS a profile resource; the only way this API can answer null is by answering
+      // 404, which would mean the resource does not exist at all - a different fact, and one the
+      // screen renders differently.
+      reads[1]?.flush({
+        data: { userId: 0, properties: [] },
+        meta: null,
+      } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
     });
 
@@ -313,7 +392,10 @@ describe('UserProfileComponent', () => {
       ]);
 
       reads[0]?.flush({ data: account, meta: null });
-      reads[1]?.flush({ data: null, meta: null });
+      reads[1]?.flush({
+        data: { userId: 8, properties: [] },
+        meta: null,
+      } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
     });
   });
@@ -440,8 +522,26 @@ describe('UserProfileComponent', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // THE TENANT'S VALIDATION EXPRESSION IS NOT RUN HERE
+  // ---------------------------------------------------------------------------
+  //
+  // ⚠ THIS BLOCK ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE VULNERABILITY. The expression is
+  // administrator-authored data, so it is untrusted input to whatever engine runs it, and it was being
+  // compiled and executed synchronously on the UI thread on every keystroke — on controls whose length is
+  // frequently unbounded, because a declared length of zero means no maximum. A catastrophically
+  // backtracking pattern therefore froze the browser tab with no way out, and the tenant who authored the
+  // declaration is not necessarily the operator who suffers it.
+  //
+  // The server is not merely a second authority here, it is the only party that can run these safely: it
+  // compiles with a fifty-millisecond match timeout, a length ceiling and a bounded cache. The browser's
+  // engine exposes no timeout at all, so a client-side evaluation cannot be bounded — only avoided.
+  //
+  // These cases therefore pin the ABSENCE of the rule, which is deliberately not the same thing as the
+  // rule being unenforced: it is enforced by the endpoint, and reported per field through the server's own
+  // model-state message, which this screen already renders.
   describe('the declared validation pattern', () => {
-    it('applies a pattern the browser can compile', () => {
+    it('does not evaluate a stored expression in the browser', () => {
       load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
 
       const control = present(controls()[0], 'the value control');
@@ -449,14 +549,42 @@ describe('UserProfileComponent', () => {
       control.dispatchEvent(new Event('input'));
       fixture.detectChanges();
 
-      expect(
-        present(host().querySelector('.form-field__error'), 'the error message').textContent ?? '',
-      ).toContain('not in the expected format');
+      // A value the expression plainly refuses, and nothing is reported beside the box: the rule is the
+      // server's, and the operator learns of it from the server's answer.
+      expect(host().querySelector('.form-field__error')).toBeNull();
     });
 
-    it('renders the screen rather than throwing when a stored pattern cannot be compiled', () => {
-      // Authored by an administrator and stored in the database, so it is untrusted input.
-      // An uncompilable pattern must cost one rule, not the whole screen.
+    it('is not blocked from submitting by a value the stored expression would refuse', () => {
+      load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'letters';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      // The value travels, and the endpoint decides. A client-side rule here would have to be exactly as
+      // strict as a .NET expression evaluated by a different engine, which is not something a browser can
+      // promise — and being stricter would refuse values the server accepts.
+      const written = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === `/api/v1/users/${USER_ID}/profile`,
+      );
+      expect((written.request.body as { properties: readonly { propertyValue: string }[] }).properties[0].propertyValue).toBe('letters');
+
+      written.flush(null);
+      httpMock
+        .match(() => true)
+        .forEach((outstanding) =>
+          outstanding.flush({ data: { userId: USER_ID, properties: [] } }),
+        );
+      fixture.detectChanges();
+    });
+
+    it('renders the screen for an expression no engine could compile', () => {
+      // Nothing compiles it any longer, so an uncompilable one costs nothing at all — but the case is kept
+      // because it is the shape of stored data most likely to be present.
       expect(() =>
         load([entry(declaration({ validationExpression: '([unclosed' }))]),
       ).not.toThrow();
@@ -464,7 +592,7 @@ describe('UserProfileComponent', () => {
       expect(controls().length).toBe(1);
     });
 
-    it('accepts any value for a property whose stored pattern was skipped', () => {
+    it('accepts any value whatever the stored expression says', () => {
       load([entry(declaration({ validationExpression: '([unclosed' }))]);
 
       const control = present(controls()[0], 'the value control');
@@ -685,9 +813,19 @@ describe('UserProfileComponent', () => {
         ],
       });
 
-      request.flush(null);
-      // The store re-reads the profile after a write, because the response carries no body.
-      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush({ data: { userId: USER_ID, properties: [] } });
+      // ⚠️ `204` WITH A NULL BODY, STATED EXPLICITLY. Letting the status default to 200 encoded the
+      // wrong contract and still passed: `PUT /api/v1/users/{userId}/profile` returns an outcome that
+      // carries no value, and the shared translator answers such an outcome with `204` - which HTTP
+      // forbids from having a body at all. That is precisely WHY the store re-reads the profile
+      // afterwards, so a fixture that answered 200 was quietly removing the reason for the follow-up
+      // it then went on to expect.
+      request.flush(null, { status: 204, statusText: 'No Content' });
+      httpMock
+        .expectOne(`/api/v1/users/${USER_ID}/profile`)
+        .flush({
+          data: { userId: USER_ID, properties: [] },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
     });
 
@@ -714,8 +852,13 @@ describe('UserProfileComponent', () => {
         ],
       });
 
-      request.flush(null);
-      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush({ data: { userId: USER_ID, properties: [] } });
+      request.flush(null, { status: 204, statusText: 'No Content' });
+      httpMock
+        .expectOne(`/api/v1/users/${USER_ID}/profile`)
+        .flush({
+          data: { userId: USER_ID, properties: [] },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
     });
 
@@ -868,16 +1011,29 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', String(USER_ID));
       fixture.detectChanges();
 
-      httpMock.expectOne(`/api/v1/users/${USER_ID}`).flush({ data: account });
+      httpMock
+        .expectOne(`/api/v1/users/${USER_ID}`)
+        .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
+      // The live document, complete: an unhandled fault leaves the type unspecified so the shared
+      // factory fills it from the status - `server.unexpected_failure` - and the title is the reason
+      // phrase for 500, not the bespoke `'Server error'` the previous fixture invented.
       httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
-        { title: 'Server error', status: 500 },
-        { status: 500, statusText: 'Server Error' },
+        problemOf(
+          500,
+          'server.unexpected_failure',
+          'An unexpected error occurred while processing the request.',
+        ),
+        { status: 500, statusText: 'Internal Server Error' },
       );
       fixture.detectChanges();
 
-      expect(
-        (present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim().length,
-      ).toBeGreaterThan(0);
+      // The BANNER carries the server's own sentence, which is what the message-precedence rule
+      // resolves to when a detail is present - and a fixture without one could never have shown that.
+      expect(present(host().querySelector('app-error-banner'), 'the banner').textContent).toContain(
+        'An unexpected error occurred while processing the request.',
+      );
+      // And the form is not rendered, because there is no profile to edit.
+      expect(host().querySelector('form')).toBeNull();
     });
 
     it('announces a refusal at warning severity rather than as an error', () => {
@@ -886,16 +1042,29 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', String(USER_ID));
       fixture.detectChanges();
 
-      httpMock.expectOne(`/api/v1/users/${USER_ID}`).flush({ data: account });
+      httpMock
+        .expectOne(`/api/v1/users/${USER_ID}`)
+        .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
+      // `auth.not_permitted` is the code the authorisation result handler publishes for every refused
+      // policy in this API, with exactly this detail.
       httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
-        { title: 'Forbidden', status: 403 },
+        problemOf(
+          403,
+          'auth.not_permitted',
+          'The authenticated caller is not permitted to perform this operation.',
+        ),
         { status: 403, statusText: 'Forbidden' },
       );
       fixture.detectChanges();
 
       const raised = notifications.notifications();
       expect(raised.length).toBe(1);
-      expect(present(raised[0], 'the notification').severity).toBe('warning');
+      expect(present(raised[0], 'the notification').severity)
+        .withContext('403 is one of the four statuses that soften to a warning')
+        .toBe('warning');
+      expect(present(raised[0], 'the notification').message).toContain(
+        'not permitted to perform this operation',
+      );
     });
 
     it('shows the server\'s per-field message beside the field it names', () => {
@@ -909,11 +1078,18 @@ describe('UserProfileComponent', () => {
       present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
       fixture.detectChanges();
 
+      // A model-state refusal, complete. `request.invalid` is the status vocabulary's own default code
+      // for a 400 and is what the model-binding path publishes; the title is the framework's fixed
+      // sentence for this one document shape; and the per-field map is Pascal-cased because its keys
+      // name model members rather than JSON members, so the camel-case body policy does not reach them.
       httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
         {
+          type: 'urn:dnnmigration:error:request.invalid',
           title: 'One or more validation errors occurred.',
           status: 400,
-          // A .NET model-state key is Pascal-cased on the wire. Both spellings are probed.
+          detail: 'The request could not be processed as submitted.',
+          traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          correlationId: '6e2b0c94-3f57-4a81-b2d6-84c1f9e50a7b',
           errors: { FirstName: ['That name is already taken.'] },
         },
         { status: 400, statusText: 'Bad Request' },
@@ -925,4 +1101,111 @@ describe('UserProfileComponent', () => {
       ).toContain('That name is already taken.');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // A VALUE THAT IS PRESENT IS NEVER REPLACED BY A DEFAULT
+  // ---------------------------------------------------------------------------
+  //
+  // The seeding rule decided on the audit timestamp alone: no timestamp meant "never recorded", so the
+  // declaration's default was seeded. This screen submits EVERY property it renders, so a property that
+  // arrived carrying content but no timestamp was rendered as the default and the operator's next save
+  // wrote that default straight over the content — silent loss, on a screen that looked as though it had
+  // loaded correctly.
+  //
+  // The current projection cannot produce that combination: the entity's column is `NOT NULL` and the
+  // mapper emits `stored?.LastUpdatedDate`, so a null timestamp means precisely "no row". These cases are
+  // therefore about the ORDER OF EVIDENCE — a value present outweighs metadata about it — which costs
+  // nothing today and forecloses an unrecoverable failure if the contract ever changes shape.
+  describe('seeding when the audit metadata disagrees with the value', () => {
+    it('keeps a supplied value even with no recorded timestamp', () => {
+      load([
+        entry(declaration({ defaultValue: 'Ms.' }), {
+          propertyValue: 'Dr.',
+          lastUpdatedDate: null,
+        }),
+      ]);
+
+      // ⚠ 'Dr.', NOT 'Ms.'. Seeding the default here is what the operator's next save would then persist.
+      expect(present(controls()[0], 'the value control').value).toBe('Dr.');
+    });
+
+    it('still seeds the default when nothing at all was supplied', () => {
+      load([
+        entry(declaration({ defaultValue: 'Ms.' }), { propertyValue: '', lastUpdatedDate: null }),
+      ]);
+
+      // No row and no value: there is nothing to lose, and the legacy behaviour is to offer the default.
+      expect(present(controls()[0], 'the value control').value).toBe('Ms.');
+    });
+
+    it('keeps a deliberately cleared value that carries a timestamp', () => {
+      load([
+        entry(declaration({ defaultValue: 'Ms.' }), {
+          propertyValue: '',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      // A stored empty string is a value. Repopulating it would undo the operator's own clearing every
+      // time the screen was opened.
+      expect(present(controls()[0], 'the value control').value).toBe('');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE WRITE'S OWN PROPERTY LIMIT
+  // ---------------------------------------------------------------------------
+  //
+  // The endpoint refuses a profile write carrying more than sixty-four properties, and this screen submits
+  // every declared property on every save because the write replaces rather than merges. So for a tenant
+  // declaring more than that, NO save on this screen can succeed — and the operator used to discover it by
+  // filling the form in and being refused whole, with nothing to say which end was at fault.
+  describe('a tenant declaring more properties than one write may carry', () => {
+    /** One entry per declaration, each with its own identifier and view order. */
+    function manyProperties(count: number): readonly UserProfileValue[] {
+      return Array.from({ length: count }, (unused, index) =>
+        entry(
+          declaration({
+            propertyDefinitionId: index + 1,
+            propertyName: `Property${String(index + 1)}`,
+            viewOrder: index,
+          }),
+        ),
+      );
+    }
+
+    it('withholds the form and says which numbers are in play', () => {
+      load(manyProperties(65));
+
+      // No controls at all: offering them would invite typing into something that cannot be saved.
+      expect(controls().length).toBe(0);
+
+      const notice = host().querySelector('app-empty-state')?.textContent ?? '';
+      expect(notice).toContain('65');
+      expect(notice).toContain('64');
+      expect(notice).toContain('Profile Properties');
+    });
+
+    it('renders the form at exactly the bound, because the bound is inclusive', () => {
+      load(manyProperties(64));
+
+      // A client limit stricter than the endpoint's would withhold a form that saves perfectly well.
+      expect(controls().length).toBe(64);
+    });
+
+    it('refuses to write even if a submission is raised', () => {
+      load(manyProperties(65));
+
+      const form = host().querySelector('form');
+
+      // The branch withholds the form, so there is nothing to submit through — which is the primary
+      // protection. The component's own guard is the second, for a submission raised while a re-read is in
+      // flight, and it is asserted by the absence of any write here.
+      form?.dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      expect(httpMock.match((request) => request.method === 'PUT').length).toBe(0);
+    });
+  });
+
 });

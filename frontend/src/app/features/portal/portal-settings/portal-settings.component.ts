@@ -174,6 +174,7 @@ import {
   viewChildren,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import type { Subscription } from 'rxjs';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
@@ -1033,6 +1034,23 @@ export class PortalSettingsComponent {
    * an ordinary field rather than a signal because nothing renders it.
    */
   private hydratedFrom: PortalSettings | null = null;
+
+  /**
+   * The page listing read in flight, held so that a NEW read can cancel the one it replaces.
+   *
+   * Destruction-time cleanup alone was not enough. The portal identifier arrives as a route input, so
+   * moving from one portal's settings to another's re-runs the setter WITHOUT the component being
+   * recreated - the case `takeUntilDestroyed` cannot cover. A slow answer for the portal just left would
+   * then fill all four page selectors with pages that belong to a different tenant, which is worse than
+   * a stale list: a page identifier means nothing outside its own portal, so saving afterwards would
+   * write a reference the new portal cannot resolve. Cancelling the previous read first makes that
+   * impossible.
+   *
+   * The two store-owned reads this setter also starts - the settings resource and the portal detail -
+   * already replace on the same terms inside the store, so this handle completes the boundary rather
+   * than duplicating it.
+   */
+  private pagesRequest: Subscription | null = null;
 
   /**
    * The failures already announced, held by identity so the same one is not announced
@@ -1978,22 +1996,50 @@ export class PortalSettingsComponent {
    * @param portalId The portal whose pages to read.
    */
   private loadPages(portalId: number): void {
+    this.pagesRequest?.unsubscribe();
     this._pageRows.set([]);
     this._pagesFailed.set(false);
 
-    this.pages
+    this.pagesRequest = this.pages
       .getByPortal(portalId)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (rows: readonly TabListItem[]) => {
+          if (this.portalChanged(portalId)) {
+            return;
+          }
+          this.pagesRequest = null;
           this._pageRows.set(rows);
           this._pagesFailed.set(false);
         },
         error: () => {
+          if (this.portalChanged(portalId)) {
+            return;
+          }
+          this.pagesRequest = null;
           this._pageRows.set([]);
           this._pagesFailed.set(true);
           this.notifications.warning(PAGES_UNAVAILABLE_MESSAGE);
         },
       });
+  }
+
+  /**
+   * Whether the address has moved to a different portal since a page read was started.
+   *
+   * The fence is KEYED on the portal rather than counted, because the portal IS the identity of the
+   * answer: a page list is adopted when it belongs to the portal now addressed and dropped when it does
+   * not. Cancelling the superseded read already stops it arriving; this is the second fence, and it is
+   * the one that holds for anything that arrives regardless.
+   *
+   * Compared with an exact `!==` against a value that may legitimately be MINUS ONE or ZERO, since
+   * `dbo.Portals.PortalID` is declared `IDENTITY (-1, 1)` and both are real portals. A truthiness test
+   * would read the first two portals of an installation as no portal at all.
+   *
+   * @param portalId The portal the read was issued for.
+   * @returns `true` when the answer must be ignored.
+   */
+  private portalChanged(portalId: number): boolean {
+    return this._portalId() !== portalId;
   }
 }

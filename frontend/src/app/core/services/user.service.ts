@@ -86,7 +86,19 @@ import { Injectable, inject } from '@angular/core';
 import { type Observable, map } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
-import type { ApiResponse } from '../models/paged-result.model';
+import {
+  decodeProfilePropertyDefinition,
+  decodeUserProfile,
+} from '../models/profile.model';
+import {
+  decodeMembershipSettings,
+  decodeUserDetail,
+  decodeUserListItem,
+} from '../models/user.model';
+import { arrayOf, decodeResponse, envelopeOf, nullable, pageOf } from '../utils/decode.util';
+import { presentedInContext } from './notification.service';
+
+import type { Decoder } from '../utils/decode.util';
 import type {
   CreateProfilePropertyDefinitionRequest,
   ProfilePropertyDefinition,
@@ -104,6 +116,33 @@ import type {
   UserListQuery,
 } from '../models/user.model';
 import { userApprovalParams, userListParams } from '../utils/http-params.util';
+
+/**
+ * One decoder per response shape this transport reads, composed once at module scope.
+ *
+ * Several are `nullable`, and each mirrors its contract rather than being defensive: the
+ * account read, the profile read, the membership settings and the single declaration read all
+ * publish a null payload for a target the caller may address but the server may not resolve,
+ * and the methods returning them are declared `| null` for the same reason.
+ */
+const USER_PAGE: Decoder<PagedUserList> = pageOf(decodeUserListItem);
+const USER_DETAIL_RESPONSE: Decoder<UserDetail> = envelopeOf(decodeUserDetail);
+const NULLABLE_USER_DETAIL_RESPONSE: Decoder<UserDetail | null> = envelopeOf(
+  nullable(decodeUserDetail),
+);
+const NULLABLE_USER_PROFILE_RESPONSE: Decoder<UserProfile | null> = envelopeOf(
+  nullable(decodeUserProfile),
+);
+const NULLABLE_MEMBERSHIP_SETTINGS_RESPONSE: Decoder<MembershipSettings | null> = envelopeOf(
+  nullable(decodeMembershipSettings),
+);
+const PROFILE_DEFINITION_RESPONSE: Decoder<ProfilePropertyDefinition> = envelopeOf(
+  decodeProfilePropertyDefinition,
+);
+const NULLABLE_PROFILE_DEFINITION_RESPONSE: Decoder<ProfilePropertyDefinition | null> =
+  envelopeOf(nullable(decodeProfilePropertyDefinition));
+const PROFILE_DEFINITION_LIST_RESPONSE: Decoder<readonly ProfilePropertyDefinition[]> =
+  envelopeOf(arrayOf(decodeProfilePropertyDefinition));
 
 /**
  * Transport for accounts, profiles, the tenant's account policy and the profile
@@ -270,7 +309,12 @@ export class UserService {
   list(query: UserListQuery): Observable<PagedUserList> {
     const params: HttpParams = userListParams(query, query);
 
-    return this.http.get<PagedUserList>(API_ENDPOINTS.users.collection(), { params });
+    return this.http
+      .get<unknown>(API_ENDPOINTS.users.collection(), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(USER_PAGE, body)));
   }
 
   /**
@@ -301,8 +345,8 @@ export class UserService {
    */
   getById(userId: number): Observable<UserDetail | null> {
     return this.http
-      .get<ApiResponse<UserDetail | null>>(API_ENDPOINTS.users.byId(userId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.users.byId(userId), { context: presentedInContext() })
+      .pipe(map((body) => decodeResponse(NULLABLE_USER_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -324,8 +368,10 @@ export class UserService {
    */
   create(request: CreateUserRequest): Observable<UserDetail> {
     return this.http
-      .post<ApiResponse<UserDetail>>(API_ENDPOINTS.users.collection(), request)
-      .pipe(map((envelope) => envelope.data));
+      .post<unknown>(API_ENDPOINTS.users.collection(), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(USER_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -345,8 +391,10 @@ export class UserService {
    */
   update(userId: number, request: UpdateUserRequest): Observable<UserDetail> {
     return this.http
-      .put<ApiResponse<UserDetail>>(API_ENDPOINTS.users.byId(userId), request)
-      .pipe(map((envelope) => envelope.data));
+      .put<unknown>(API_ENDPOINTS.users.byId(userId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(USER_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -361,7 +409,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   delete(userId: number): Observable<void> {
-    return this.http.delete<void>(API_ENDPOINTS.users.byId(userId));
+    return this.http.delete<void>(API_ENDPOINTS.users.byId(userId), {
+      context: presentedInContext(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -382,8 +432,8 @@ export class UserService {
    */
   getProfile(userId: number): Observable<UserProfile | null> {
     return this.http
-      .get<ApiResponse<UserProfile | null>>(API_ENDPOINTS.users.profile(userId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.users.profile(userId), { context: presentedInContext() })
+      .pipe(map((body) => decodeResponse(NULLABLE_USER_PROFILE_RESPONSE, body)));
   }
 
   /**
@@ -402,7 +452,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   updateProfile(userId: number, submission: UserProfileSubmission): Observable<void> {
-    return this.http.put<void>(API_ENDPOINTS.users.profile(userId), submission);
+    return this.http.put<void>(API_ENDPOINTS.users.profile(userId), submission, {
+      context: presentedInContext(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -446,7 +498,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   changePassword(userId: number, request: ChangePasswordRequest): Observable<void> {
-    return this.http.post<void>(API_ENDPOINTS.users.password(userId), request);
+    return this.http.post<void>(API_ENDPOINTS.users.password(userId), request, {
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -481,7 +535,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   passwordReset(userId: number, request: ChangePasswordRequest): Observable<void> {
-    return this.http.post<void>(API_ENDPOINTS.users.passwordReset(userId), request);
+    return this.http.post<void>(API_ENDPOINTS.users.passwordReset(userId), request, {
+      context: presentedInContext(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -510,7 +566,10 @@ export class UserService {
   setApproval(userId: number, isApproved: boolean): Observable<void> {
     const params: HttpParams = userApprovalParams(isApproved);
 
-    return this.http.put<void>(API_ENDPOINTS.users.approval(userId), null, { params });
+    return this.http.put<void>(API_ENDPOINTS.users.approval(userId), null, {
+      params,
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -523,7 +582,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   unlock(userId: number): Observable<void> {
-    return this.http.post<void>(API_ENDPOINTS.users.unlock(userId), null);
+    return this.http.post<void>(API_ENDPOINTS.users.unlock(userId), null, {
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -546,7 +607,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   requirePasswordChange(userId: number): Observable<void> {
-    return this.http.post<void>(API_ENDPOINTS.users.requirePasswordChange(userId), null);
+    return this.http.post<void>(API_ENDPOINTS.users.requirePasswordChange(userId), null, {
+      context: presentedInContext(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -587,8 +650,10 @@ export class UserService {
    */
   getMembershipSettings(): Observable<MembershipSettings | null> {
     return this.http
-      .get<ApiResponse<MembershipSettings | null>>(API_ENDPOINTS.users.membershipSettings())
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.users.membershipSettings(), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(NULLABLE_MEMBERSHIP_SETTINGS_RESPONSE, body)));
   }
 
   /**
@@ -623,7 +688,9 @@ export class UserService {
    * @returns Completion. No payload.
    */
   updateMembershipSettings(request: MembershipSettings): Observable<void> {
-    return this.http.put<void>(API_ENDPOINTS.users.membershipSettings(), request);
+    return this.http.put<void>(API_ENDPOINTS.users.membershipSettings(), request, {
+      context: presentedInContext(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -645,10 +712,10 @@ export class UserService {
    */
   listProfileDefinitions(): Observable<readonly ProfilePropertyDefinition[]> {
     return this.http
-      .get<ApiResponse<readonly ProfilePropertyDefinition[]>>(
-        API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection(),
-      )
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection(), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PROFILE_DEFINITION_LIST_RESPONSE, body)));
   }
 
   /**
@@ -678,11 +745,12 @@ export class UserService {
     request: CreateProfilePropertyDefinitionRequest,
   ): Observable<ProfilePropertyDefinition> {
     return this.http
-      .post<ApiResponse<ProfilePropertyDefinition>>(
+      .post<unknown>(
         API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection(),
         request,
+        { context: presentedInContext() },
       )
-      .pipe(map((envelope) => envelope.data));
+      .pipe(map((body) => decodeResponse(PROFILE_DEFINITION_RESPONSE, body)));
   }
 
   /**
@@ -702,10 +770,11 @@ export class UserService {
     propertyDefinitionId: number,
   ): Observable<ProfilePropertyDefinition | null> {
     return this.http
-      .get<ApiResponse<ProfilePropertyDefinition | null>>(
+      .get<unknown>(
         API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId),
+        { context: presentedInContext() },
       )
-      .pipe(map((envelope) => envelope.data));
+      .pipe(map((body) => decodeResponse(NULLABLE_PROFILE_DEFINITION_RESPONSE, body)));
   }
 
   /**
@@ -741,11 +810,12 @@ export class UserService {
     request: UpdateProfilePropertyDefinitionRequest,
   ): Observable<ProfilePropertyDefinition> {
     return this.http
-      .put<ApiResponse<ProfilePropertyDefinition>>(
+      .put<unknown>(
         API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId),
         request,
+        { context: presentedInContext() },
       )
-      .pipe(map((envelope) => envelope.data));
+      .pipe(map((body) => decodeResponse(PROFILE_DEFINITION_RESPONSE, body)));
   }
 
   /**
@@ -762,6 +832,7 @@ export class UserService {
   deleteProfileDefinition(propertyDefinitionId: number): Observable<void> {
     return this.http.delete<void>(
       API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId),
+      { context: presentedInContext() },
     );
   }
 }

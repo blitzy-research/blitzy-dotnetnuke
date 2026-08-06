@@ -183,13 +183,16 @@
  */
 
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { finalize, switchMap, tap } from 'rxjs';
+import { EMPTY, expand, finalize, reduce, switchMap, tap } from 'rxjs';
 
 import { emptyPagedResult, toPagedResult, DEFAULT_PAGE_SIZE } from '../models/paged-result.model';
 import { isProblemDetails } from '../models/problem-details.model';
 import { RoleService } from '../services/role.service';
 import { failureCode, isConflictCode, summarizeProblem } from '../utils/form-errors.util';
 
+import type { OnDestroy } from '@angular/core';
+import type { Observable, Subscription } from 'rxjs';
+import type { PagedResponse } from '../models/paged-result.model';
 import type { ApiMeta, PagedResult, SortDirection } from '../models/paged-result.model';
 import type { ProblemDetails } from '../models/problem-details.model';
 import type {
@@ -438,6 +441,16 @@ export interface RoleStoreFailure {
   readonly operation: RoleStoreOperation;
 
   /**
+   * The transport status, or `null` when the failure carried none at all.
+   *
+   * Published SEPARATELY from {@link RoleStoreFailure.problem} because the two go missing
+   * independently: a transport failure has a status and no document, and a document may omit
+   * its own status member. A screen reproducing the legacy wording branches on the status, and
+   * reading it off the document instead would collapse exactly that distinction.
+   */
+  readonly status: number | null;
+
+  /**
    * Severity, wording and per-field messages, produced by the module that owns them.
    *
    * Its `severity` is what a banner should honour; its `supportReference` is the
@@ -520,6 +533,56 @@ export interface RolePageCoordinate {
 const INITIAL_PAGE_COORDINATE: RolePageCoordinate = Object.freeze({
   pageIndex: 0,
   pageSize: DEFAULT_PAGE_SIZE,
+  sortBy: null,
+  sortDir: null,
+  query: null,
+});
+
+/**
+ * How many roles one request of the complete-listing walk asks for.
+ *
+ * ⚠ THE SERVER'S OWN MAXIMUM, AND NOT A NUMBER CHOSEN FOR COMFORT. The paging validator
+ * refuses a larger page outright — `Application/Validation/PagedRequestValidator.cs`
+ * declares `MaximumPageSize = 100` and reports "The page size may not exceed 100." — so
+ * this is the largest legal request and asking for more would earn a 422 rather than a
+ * bigger page.
+ *
+ * ⚠ AND IT IS NOT, BY ITSELF, THE FIX. A single request of this size is still a WINDOW: a
+ * portal with more than a hundred roles would be silently truncated at the hundredth,
+ * which is the same defect one order of magnitude further out. The size only reduces the
+ * number of round trips the walk in {@link RoleStore.readEveryRole} has to make; the walk
+ * is what makes the listing complete.
+ */
+export const ROLES_FETCH_PAGE_SIZE = 100;
+
+/**
+ * The hard ceiling on how many pages one complete-listing walk will request.
+ *
+ * A walk driven by the server's own record total needs no ceiling to terminate under
+ * correct behaviour, and this exists for the case where that assumption fails: a server
+ * that kept reporting full pages would otherwise have this client request pages until the
+ * tab died. At {@link ROLES_FETCH_PAGE_SIZE} records a page this admits two hundred
+ * thousand roles, which is several orders of magnitude above any real portal — the legacy
+ * product shipped six stock roles per tenant — so no genuine installation can reach it.
+ *
+ * The bound never hides a shortfall: {@link RoleStore.rolesMeta} reports the total the
+ * SERVER stated rather than the number of records gathered, so a truncated walk is visible
+ * as a total larger than the row count rather than passing as a complete answer.
+ */
+const MAXIMUM_ROLE_PAGES = 2000;
+
+/**
+ * The coordinate the ROLE listing starts at.
+ *
+ * Distinct from {@link INITIAL_PAGE_COORDINATE}, which seeds the ASSIGNMENT listing, and
+ * the difference is the page size alone. The assignment listing is genuinely paged and
+ * takes the shared default; the role listing is read whole, so its coordinate reports the
+ * size its requests actually carry rather than a default it never uses. Publishing a size
+ * the requests do not use would make {@link RoleStore.rolesPage} a lie.
+ */
+const INITIAL_ROLES_COORDINATE: RolePageCoordinate = Object.freeze({
+  pageIndex: 0,
+  pageSize: ROLES_FETCH_PAGE_SIZE,
   sortBy: null,
   sortDir: null,
   query: null,
@@ -626,8 +689,55 @@ function readStatus(error: unknown): number | null {
  * interceptor and no component. The dependency direction is one-way by design.
  */
 @Injectable({ providedIn: 'root' })
-export class RoleStore {
+export class RoleStore implements OnDestroy {
   private readonly roleService = inject(RoleService);
+
+  // -------------------------------------------------------------------------
+  // REQUEST HANDLES
+  // -------------------------------------------------------------------------
+  //
+  // One handle per INDEPENDENT read, plus one set holding every write in flight. They exist
+  // so that a read can be ABANDONED, which is what makes each slice a function of the
+  // latest request rather than of whichever response happens to arrive last.
+  //
+  // ⚠ WHY A HANDLE PER READ RATHER THAN ONE FOR ALL OF THEM. Each read writes a DIFFERENT
+  // slice and several are legitimately outstanding at once — the list screen reads the
+  // groups and the roles together, and the assignment screen reads a role and its members
+  // together. Sharing one handle would let the second read cancel the first and leave that
+  // slice permanently empty. Sharing is correct only between requests that write the SAME
+  // slice, which is why the complete-listing walk and the plain listing read share one.
+  //
+  // ⚠ A READ IS CANCELLED, A WRITE IS NOT. Abandoning a read discards an answer nobody is
+  // waiting for. Abandoning a write would stop this client listening WITHOUT undoing
+  // anything the server may already have committed, so writes are released only on teardown
+  // and on a reset that is discarding the whole store.
+  //
+  // MIGRATION: the legacy screen could not have this defect, so there is no legacy rule to
+  // preserve here. `Website/admin/Security/Roles.ascx.vb` rebuilt its grid synchronously
+  // inside each post-back, so a second read could not overtake a first. Once reads became
+  // asynchronous the ordering that arrangement gave away for free had to be stated, and this
+  // is where it is stated.
+
+  /** The role listing read, whether the complete walk or a single request within it. */
+  private rolesRequest: Subscription | null = null;
+
+  /** The role-group listing read. */
+  private roleGroupsRequest: Subscription | null = null;
+
+  /** The single-role read. */
+  private selectedRoleRequest: Subscription | null = null;
+
+  /** The assignment listing read. */
+  private assignmentsRequest: Subscription | null = null;
+
+  /**
+   * Every write in flight.
+   *
+   * A set rather than a single handle, because two writes may legitimately overlap and
+   * neither should cancel the other. Each entry removes itself once it settles, so the set
+   * cannot grow without bound.
+   */
+  private readonly writeRequests = new Set<Subscription>();
 
   // -------------------------------------------------------------------------
   // WRITABLE SLICES — private without exception
@@ -666,8 +776,14 @@ export class RoleStore {
    */
   private readonly _assignmentsRoleId = signal<number | null>(null);
 
-  /** The coordinate the role listing was last read at. */
-  private readonly _rolesPage = signal<RolePageCoordinate>(INITIAL_PAGE_COORDINATE);
+  /**
+   * The ordering, filter and request size the role listing was last read with.
+   *
+   * Its page index is permanently nought, because the role listing is read WHOLE — see
+   * {@link RoleStore.readEveryRole}. The member survives because the coordinate type is
+   * shared with the assignment listing, which is genuinely paged.
+   */
+  private readonly _rolesPage = signal<RolePageCoordinate>(INITIAL_ROLES_COORDINATE);
 
   /** The coordinate the assignment listing was last read at. */
   private readonly _assignmentsPage = signal<RolePageCoordinate>(INITIAL_PAGE_COORDINATE);
@@ -1011,6 +1127,7 @@ export class RoleStore {
 
     this._failure.set({
       operation,
+      status,
       summary: summarizeProblem(described),
       problem,
       conflict: isConflictCode(code) ? code : null,
@@ -1061,11 +1178,18 @@ export class RoleStore {
    * failed, rather than as two independent failures a screen would have to reconcile.
    */
   loadRoleAdministration(): void {
+    // Both reads this command owns are abandoned first, so a slower pair issued for an
+    // earlier narrowing cannot land after this one and leave the groups and the roles
+    // describing different narrowings.
+    this.roleGroupsRequest?.unsubscribe();
+    this.rolesRequest?.unsubscribe();
     this._roleGroupsLoading.set(true);
     this._rolesLoading.set(true);
     this.clearFailure();
 
-    this.roleService
+    // ONE handle for the chain, held as the roles handle because the roles read is its
+    // tail: cancelling it abandons whichever half is still outstanding.
+    this.rolesRequest = this.roleService
       .listRoleGroups()
       .pipe(
         tap((response) => {
@@ -1073,15 +1197,15 @@ export class RoleStore {
           this._roleGroupsLoading.set(false);
           this.applyNoGroupsFallback(response.data);
         }),
-        switchMap(() => this.roleService.listRoles(this._rolesPage(), this.narrowingFor(this._groupFilter()))),
+        switchMap(() => this.readEveryRole()),
         finalize(() => {
           this._roleGroupsLoading.set(false);
           this._rolesLoading.set(false);
         }),
       )
       .subscribe({
-        next: (response) => {
-          this._roles.set(toPagedResult(response));
+        next: (page) => {
+          this._roles.set(page);
         },
         error: (error: unknown) => {
           this.recordFailure(this._roleGroups().length === 0 ? 'loadRoleGroups' : 'loadRoles', error);
@@ -1090,21 +1214,34 @@ export class RoleStore {
   }
 
   /**
-   * Reads the current page of roles under the current narrowing.
+   * Reads EVERY role under the current narrowing, not merely the first page of them.
    *
    * Legacy: `Roles.ascx.vb:L72-L77`, whose two-armed query choice is now the narrowing
    * translation in {@link RoleStore.narrowingFor}.
+   *
+   * ⚠ COMPLETE, AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A PREFERENCE. The legacy
+   * screen was UNPAGED — `roles.ascx` declares no paging control and no `AllowPaging`, its
+   * grid bound a plain untyped list at `Roles.ascx.vb:L77`, and the code-behind carries no
+   * page index, page size or record total anywhere — so the screen that consumes this slice
+   * offers no pager and no way to reach a second page. A single windowed request would
+   * therefore not produce an unpaged view; it would produce a SILENTLY TRUNCATED one, in
+   * which a portal's later roles simply do not exist as far as an operator can tell. The
+   * endpoint is paged and cannot be asked for everything at once, so completeness is
+   * assembled here — see {@link RoleStore.readEveryRole} for the walk and its bound.
+   *
+   * The narrowing, the ordering and the free-text filter are all still the server's work and
+   * are forwarded on every request of the walk; only the WINDOW is removed.
    */
   loadRoles(): void {
+    this.rolesRequest?.unsubscribe();
     this._rolesLoading.set(true);
     this.clearFailure();
 
-    this.roleService
-      .listRoles(this._rolesPage(), this.narrowingFor(this._groupFilter()))
+    this.rolesRequest = this.readEveryRole()
       .pipe(finalize(() => this._rolesLoading.set(false)))
       .subscribe({
-        next: (response) => {
-          this._roles.set(toPagedResult(response));
+        next: (page) => {
+          this._roles.set(page);
         },
         error: (error: unknown) => {
           this.recordFailure('loadRoles', error);
@@ -1118,10 +1255,11 @@ export class RoleStore {
    * Legacy: `Roles.ascx.vb:L108`. Unpaged, and no coordinate is held for it.
    */
   loadRoleGroups(): void {
+    this.roleGroupsRequest?.unsubscribe();
     this._roleGroupsLoading.set(true);
     this.clearFailure();
 
-    this.roleService
+    this.roleGroupsRequest = this.roleService
       .listRoleGroups()
       .pipe(finalize(() => this._roleGroupsLoading.set(false)))
       .subscribe({
@@ -1146,10 +1284,11 @@ export class RoleStore {
    * `0`, so it is neither inspected nor defaulted.
    */
   selectRole(roleId: number): void {
+    this.selectedRoleRequest?.unsubscribe();
     this._selectedRoleLoading.set(true);
     this.clearFailure();
 
-    this.roleService
+    this.selectedRoleRequest = this.roleService
       .getRole(roleId)
       .pipe(finalize(() => this._selectedRoleLoading.set(false)))
       .subscribe({
@@ -1178,11 +1317,12 @@ export class RoleStore {
    * @param roleId The role whose assignments to read.
    */
   loadAssignments(roleId: number): void {
+    this.assignmentsRequest?.unsubscribe();
     this._assignmentsRoleId.set(roleId);
     this._assignmentsLoading.set(true);
     this.clearFailure();
 
-    this.roleService
+    this.assignmentsRequest = this.roleService
       .listUsers(roleId, this._assignmentsPage())
       .pipe(finalize(() => this._assignmentsLoading.set(false)))
       .subscribe({
@@ -1234,15 +1374,24 @@ export class RoleStore {
     this.loadRoles();
   }
 
-  /**
-   * Moves the role listing to a page and re-reads it.
-   *
-   * @param pageIndex The page to move to, counted from zero.
-   */
-  setRolesPage(pageIndex: number): void {
-    this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex }));
-    this.loadRoles();
-  }
+  // ⚠ THERE IS DELIBERATELY NO `setRolesPage`, AND ITS ABSENCE IS THE POINT.
+  //
+  // The role listing is read WHOLE — see {@link RoleStore.loadRoles} and
+  // {@link RoleStore.readEveryRole} — because the screen that consumes it offers no pager,
+  // exactly as the legacy screen it replaces offered none (`roles.ascx` declares no paging
+  // control and no `AllowPaging`; `Roles.ascx.vb` holds no page index, page size or record
+  // total anywhere). A command that moved an unpaged listing to a page could not be honoured
+  // by the read behind it, so publishing one would invite precisely the defect this store was
+  // corrected for: a caller asks for a page, believes it received one, and every role beyond
+  // that window silently ceases to exist for the operator reading the screen.
+  //
+  // A future screen that genuinely wants a window must add a SEPARATE windowed read with its
+  // own slice, rather than narrowing this one — two consumers with different completeness
+  // requirements cannot share one slice.
+  //
+  // The page index on {@link RolePageCoordinate} therefore stays at nought for the role
+  // listing. The member remains on the type because the ASSIGNMENT listing, which shares the
+  // type, is genuinely paged and moves through it with {@link RoleStore.setAssignmentsPage}.
 
   /**
    * Re-orders the role listing and re-reads it from the first page.
@@ -1298,18 +1447,20 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .createRole(request)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: (response) => {
-          this._selectedRole.set(response.data);
-          this.loadRoles();
-        },
-        error: (error: unknown) => {
-          this.recordFailure('createRole', error);
-        },
-      });
+    this.track(
+      this.roleService
+        .createRole(request)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: (response) => {
+            this._selectedRole.set(response.data);
+            this.loadRoles();
+          },
+          error: (error: unknown) => {
+            this.recordFailure('createRole', error);
+          },
+        }),
+    );
   }
 
   /**
@@ -1334,26 +1485,28 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .updateRole(roleId, request)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: (response) => {
-          const updated: Role = response.data;
+    this.track(
+      this.roleService
+        .updateRole(roleId, request)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: (response) => {
+            const updated: Role = response.data;
 
-          this._selectedRole.set(updated);
-          this._roles.update((page) => ({
-            ...page,
-            items: page.items.map((item) =>
-              item.roleId === updated.roleId ? this.projectListItem(updated) : item,
-            ),
-          }));
-          this.loadRoles();
-        },
-        error: (error: unknown) => {
-          this.recordFailure('updateRole', error);
-        },
-      });
+            this._selectedRole.set(updated);
+            this._roles.update((page) => ({
+              ...page,
+              items: page.items.map((item) =>
+                item.roleId === updated.roleId ? this.projectListItem(updated) : item,
+              ),
+            }));
+            this.loadRoles();
+          },
+          error: (error: unknown) => {
+            this.recordFailure('updateRole', error);
+          },
+        }),
+    );
   }
 
   /**
@@ -1373,23 +1526,25 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .deleteRole(roleId)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: () => {
-          const selected = this._selectedRole();
+    this.track(
+      this.roleService
+        .deleteRole(roleId)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: () => {
+            const selected = this._selectedRole();
 
-          if (selected !== null && selected.roleId === roleId) {
-            this._selectedRole.set(null);
-          }
+            if (selected !== null && selected.roleId === roleId) {
+              this._selectedRole.set(null);
+            }
 
-          this.loadRoles();
-        },
-        error: (error: unknown) => {
-          this.recordFailure('deleteRole', error);
-        },
-      });
+            this.loadRoles();
+          },
+          error: (error: unknown) => {
+            this.recordFailure('deleteRole', error);
+          },
+        }),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1420,18 +1575,20 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .assignUser(roleId, request)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: () => {
-          this._assignmentsRoleId.set(roleId);
-          this.loadAssignments(roleId);
-        },
-        error: (error: unknown) => {
-          this.recordFailure('assignUser', error);
-        },
-      });
+    this.track(
+      this.roleService
+        .assignUser(roleId, request)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: () => {
+            this._assignmentsRoleId.set(roleId);
+            this.loadAssignments(roleId);
+          },
+          error: (error: unknown) => {
+            this.recordFailure('assignUser', error);
+          },
+        }),
+    );
   }
 
   /**
@@ -1471,19 +1628,21 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .removeUser(roleId, userId)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: () => {
-          // Deliberately a re-read and not a removal. See the note above: the row may
-          // still exist, expired as of yesterday, and an empty success cannot say.
-          this.loadAssignments(roleId);
-        },
-        error: (error: unknown) => {
-          this.recordFailure('removeAssignment', error);
-        },
-      });
+    this.track(
+      this.roleService
+        .removeUser(roleId, userId)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: () => {
+            // Deliberately a re-read and not a removal. See the note above: the row may
+            // still exist, expired as of yesterday, and an empty success cannot say.
+            this.loadAssignments(roleId);
+          },
+          error: (error: unknown) => {
+            this.recordFailure('removeAssignment', error);
+          },
+        }),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1502,17 +1661,19 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .createRoleGroup(request)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: () => {
-          this.loadRoleGroups();
-        },
-        error: (error: unknown) => {
-          this.recordFailure('createRoleGroup', error);
-        },
-      });
+    this.track(
+      this.roleService
+        .createRoleGroup(request)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: () => {
+            this.loadRoleGroups();
+          },
+          error: (error: unknown) => {
+            this.recordFailure('createRoleGroup', error);
+          },
+        }),
+    );
   }
 
   /**
@@ -1531,21 +1692,23 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .updateRoleGroup(roleGroupId, request)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: (response) => {
-          const updated: RoleGroup = response.data;
+    this.track(
+      this.roleService
+        .updateRoleGroup(roleGroupId, request)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: (response) => {
+            const updated: RoleGroup = response.data;
 
-          this._roleGroups.update((groups) =>
-            groups.map((group) => (group.roleGroupId === updated.roleGroupId ? updated : group)),
-          );
-        },
-        error: (error: unknown) => {
-          this.recordFailure('updateRoleGroup', error);
-        },
-      });
+            this._roleGroups.update((groups) =>
+              groups.map((group) => (group.roleGroupId === updated.roleGroupId ? updated : group)),
+            );
+          },
+          error: (error: unknown) => {
+            this.recordFailure('updateRoleGroup', error);
+          },
+        }),
+    );
   }
 
   /**
@@ -1580,35 +1743,37 @@ export class RoleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.roleService
-      .deleteRoleGroup(roleGroupId)
-      .pipe(finalize(() => this._saving.set(false)))
-      .subscribe({
-        next: () => {
-          // The legacy reset target is the UNGROUPED intent, per `:L295`.
-          this._groupFilter.set({ kind: 'GlobalRoles' });
-          this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex: 0 }));
-          this.loadRoleAdministration();
-        },
-        error: (error: unknown) => {
-          // A conflict means the group still classifies at least one role, so what is held
-          // was stale and re-reading corrects the affordance.
-          //
-          // THE ORDER MATTERS AND IS NOT COSMETIC. Both read commands begin by discarding
-          // the held failure, because a command a user starts deserves a clean slate — but
-          // a refresh the store starts in response to a failure is not a new user command,
-          // and letting it run after the failure was recorded would erase the very
-          // conflict it exists to explain. So the refresh is dispatched first and the
-          // failure recorded afterwards, which is correct whether the reads answer
-          // synchronously or not.
-          if (this.isConflictFailure(error)) {
-            this.loadRoleGroups();
-            this.loadRoles();
-          }
+    this.track(
+      this.roleService
+        .deleteRoleGroup(roleGroupId)
+        .pipe(finalize(() => this._saving.set(false)))
+        .subscribe({
+          next: () => {
+            // The legacy reset target is the UNGROUPED intent, per `:L295`.
+            this._groupFilter.set({ kind: 'GlobalRoles' });
+            this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex: 0 }));
+            this.loadRoleAdministration();
+          },
+          error: (error: unknown) => {
+            // A conflict means the group still classifies at least one role, so what is held
+            // was stale and re-reading corrects the affordance.
+            //
+            // THE ORDER MATTERS AND IS NOT COSMETIC. Both read commands begin by discarding
+            // the held failure, because a command a user starts deserves a clean slate — but
+            // a refresh the store starts in response to a failure is not a new user command,
+            // and letting it run after the failure was recorded would erase the very
+            // conflict it exists to explain. So the refresh is dispatched first and the
+            // failure recorded afterwards, which is correct whether the reads answer
+            // synchronously or not.
+            if (this.isConflictFailure(error)) {
+              this.loadRoleGroups();
+              this.loadRoles();
+            }
 
-          this.recordFailure('deleteRoleGroup', error);
-        },
-      });
+            this.recordFailure('deleteRoleGroup', error);
+          },
+        }),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1627,16 +1792,34 @@ export class RoleStore {
    * narrowing returns to {@link DEFAULT_ROLE_GROUP_FILTER} — the ungrouped intent, per the
    * measured legacy default — and both coordinates return to the first page.
    *
+   * ⚠ IN-FLIGHT WORK IS ABANDONED FIRST, AND THAT ORDERING IS THE WHOLE POINT. This store is
+   * registered at the application root, so it outlives every screen and every session and
+   * nothing destroys it when an operator signs out. Clearing the slices without abandoning
+   * the requests behind them would let a response that was already on the wire repopulate
+   * exactly what the reset discarded — one operator's roles, role groups and member
+   * assignments becoming visible to whoever signs in next, with a delay in front of it
+   * instead of no delay at all. `core/state/session-lifecycle.service.ts` is what calls this,
+   * on an explicit sign-out, on a terminal refusal, and whenever the identity or tenant
+   * behind the session is replaced.
+   *
+   * Writes are released as well, because this is discarding the whole store rather than
+   * superseding one request with another. Releasing a write handle stops this client
+   * listening; it does not undo anything the server has already committed, and the reset
+   * makes clear that nothing held here describes the new session either way.
+   *
    * Not a cache eviction: there is no cache to evict. See MIGRATION note 14.
    */
   reset(): void {
+    this.cancelReads();
+    this.cancelWrites();
+
     this._roles.set(emptyPagedResult<RoleListItem>());
     this._roleGroups.set([]);
     this._groupFilter.set(DEFAULT_ROLE_GROUP_FILTER);
     this._selectedRole.set(null);
     this._assignments.set(emptyPagedResult<UserRole>());
     this._assignmentsRoleId.set(null);
-    this._rolesPage.set(INITIAL_PAGE_COORDINATE);
+    this._rolesPage.set(INITIAL_ROLES_COORDINATE);
     this._assignmentsPage.set(INITIAL_PAGE_COORDINATE);
     this._rolesLoading.set(false);
     this._roleGroupsLoading.set(false);
@@ -1644,5 +1827,174 @@ export class RoleStore {
     this._assignmentsLoading.set(false);
     this._saving.set(false);
     this._failure.set(null);
+  }
+
+  /**
+   * Releases every request handle when the injector holding this store is destroyed.
+   *
+   * A root-provided store lives as long as the application, so in production this runs on
+   * teardown. It matters most in a specification, where each one builds its own injector and
+   * a request left listening across that boundary would report into a store the next
+   * specification has already replaced.
+   */
+  ngOnDestroy(): void {
+    this.cancelReads();
+    this.cancelWrites();
+  }
+
+  // -------------------------------------------------------------------------
+  // PRIVATE — THE COMPLETE-LISTING WALK AND THE REQUEST HANDLES
+  // -------------------------------------------------------------------------
+
+  /**
+   * Emits ONE envelope carrying every role the current narrowing matches.
+   *
+   * WHY A WALK AND NOT A SINGLE REQUEST. The endpoint is paged and its validator caps a page
+   * at {@link ROLES_FETCH_PAGE_SIZE} records, so "every role" is not a request this client
+   * can make. The screen that consumes the result offers no pager — the legacy screen it
+   * replaces had none either — so a single request would present the first page AS the whole
+   * set, which is a silent data loss rather than a smaller view. The pages are therefore
+   * walked here and joined into one unpaged envelope, and the walk is the only place in this
+   * store that issues more than one request for one slice.
+   *
+   * HOW IT TERMINATES, in three independent ways, so that no server behaviour can leave it
+   * spinning:
+   *
+   *   1. A SHORT PAGE ends it. A page carrying fewer records than were asked for is the last
+   *      page by definition. This is the condition that normally ends the walk, and it is the
+   *      only one a correct server ever reaches.
+   *   2. THE SERVER'S OWN TOTAL ends it, once as many records have been gathered as the
+   *      server said exist. Belt and braces against a server that padded a final page.
+   *   3. THE PAGE CEILING ends it — see {@link MAXIMUM_ROLE_PAGES}, which no real
+   *      installation can approach.
+   *
+   * ⚠ THE TOTAL REPORTED IS THE SERVER'S, NOT THE ROW COUNT. Publishing the number of rows
+   * gathered would make a truncated walk indistinguishable from a complete one, which is the
+   * very defect this method exists to remove. Reporting what the server said leaves any
+   * shortfall visible as a total larger than the rows in hand.
+   *
+   * ⚠ NOTHING IS SORTED, FILTERED OR DE-DUPLICATED HERE. The narrowing, the ordering and the
+   * free-text filter are the server's, are forwarded on every request of the walk, and the
+   * pages are concatenated in the order they were requested — so the assembled order is the
+   * server's order. A client-side sort would be a second, disagreeing opinion about an
+   * ordering the API already owns.
+   *
+   * @returns The complete listing as one envelope. Cold: nothing is requested until it is
+   * subscribed, which is what lets the caller own the handle and cancel the whole walk.
+   */
+  private readEveryRole(): Observable<PagedResult<RoleListItem>> {
+    const coordinate: RolePageCoordinate = this._rolesPage();
+    const narrowing = this.narrowingFor(this._groupFilter());
+
+    const requestPage = (pageIndex: number): Observable<PagedResponse<RoleListItem>> =>
+      this.roleService.listRoles(
+        {
+          pageIndex,
+          pageSize: ROLES_FETCH_PAGE_SIZE,
+          sortBy: coordinate.sortBy,
+          sortDir: coordinate.sortDir,
+          query: coordinate.query,
+        },
+        narrowing,
+      );
+
+    let gathered = 0;
+
+    return requestPage(0).pipe(
+      // `expand` re-enters with each emission, so this is the walk: every page it emits is
+      // both a result to accumulate and the input that decides whether another is needed.
+      expand((response: PagedResponse<RoleListItem>, index: number) => {
+        const page: PagedResult<RoleListItem> = toPagedResult(response);
+
+        gathered += page.items.length;
+
+        const shortPage: boolean = page.items.length < ROLES_FETCH_PAGE_SIZE;
+        const complete: boolean = gathered >= page.meta.totalCount;
+        const atCeiling: boolean = index + 1 >= MAXIMUM_ROLE_PAGES;
+
+        // An empty inner observable is how `expand` is told to stop: it emits nothing and
+        // completes, so the outer stream completes with the pages already emitted.
+        return shortPage || complete || atCeiling ? EMPTY : requestPage(index + 1);
+      }),
+      reduce<PagedResponse<RoleListItem>, PagedResult<RoleListItem>>(
+        (accumulated, response) => {
+          const page: PagedResult<RoleListItem> = toPagedResult(response);
+
+          return {
+            items: [...accumulated.items, ...page.items],
+            meta: {
+              // The server's total, deliberately: see the note above.
+              totalCount: page.meta.totalCount,
+              // Nought and "one page holding everything" are the coordinates the paging
+              // contract publishes for an unpaged answer, so a consumer cannot tell this
+              // envelope from one the server assembled unpaged.
+              pageIndex: 0,
+              pageSize: accumulated.items.length + page.items.length,
+              totalPages: accumulated.items.length + page.items.length > 0 ? 1 : 0,
+            },
+          };
+        },
+        emptyPagedResult<RoleListItem>(),
+      ),
+    );
+  }
+
+  /**
+   * Holds a write's handle until it settles, so that teardown can release it.
+   *
+   * A write is never cancelled by a later request, so the handle is discarded when the write
+   * FINISHES rather than when the next one starts, which is what keeps the set from growing
+   * without bound. A handle that is already closed — which happens whenever a response
+   * arrives synchronously, as it does under test — is not held at all.
+   *
+   * @param request The handle to hold.
+   */
+  private track(request: Subscription): void {
+    if (request.closed) {
+      return;
+    }
+
+    this.writeRequests.add(request);
+    request.add(() => {
+      this.writeRequests.delete(request);
+    });
+  }
+
+  /**
+   * Abandons every read in flight and forgets its handle.
+   *
+   * The loading flags come down with them, because a cancelled read never lowers its own and
+   * a flag left raised presents as a screen that is permanently busy.
+   */
+  private cancelReads(): void {
+    this.rolesRequest?.unsubscribe();
+    this.rolesRequest = null;
+    this.roleGroupsRequest?.unsubscribe();
+    this.roleGroupsRequest = null;
+    this.selectedRoleRequest?.unsubscribe();
+    this.selectedRoleRequest = null;
+    this.assignmentsRequest?.unsubscribe();
+    this.assignmentsRequest = null;
+
+    this._rolesLoading.set(false);
+    this._roleGroupsLoading.set(false);
+    this._selectedRoleLoading.set(false);
+    this._assignmentsLoading.set(false);
+  }
+
+  /**
+   * Releases every write handle.
+   *
+   * Only for teardown and for a reset that is discarding the whole store. A write in flight is
+   * not otherwise abandoned, because releasing the handle stops this client listening without
+   * undoing anything the server may already have committed.
+   */
+  private cancelWrites(): void {
+    for (const request of [...this.writeRequests]) {
+      request.unsubscribe();
+    }
+
+    this.writeRequests.clear();
+    this._saving.set(false);
   }
 }

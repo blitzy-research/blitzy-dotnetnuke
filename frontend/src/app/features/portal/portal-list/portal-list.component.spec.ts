@@ -179,7 +179,20 @@ describe('PortalListComponent', () => {
         provideRouter([]),
         {
           provide: AuthStore,
-          useValue: { portalId: sessionPortalId.asReadonly() },
+          // This screen reads exactly ONE member of the identity store — the browsed tenant's
+          // identifier — so that is all the double supplies.
+          //
+          // ⚠ AND NOTHING MORE, DELIBERATELY. `useValue` is not checked against the token it
+          // stands in for, so a member added here "just in case" is never reported as unused and
+          // survives long after the code that wanted it has gone. This double previously carried a
+          // session-boundary callback for a coordinator the stores registered themselves with;
+          // teardown is now driven from `session-teardown.service.ts` and
+          // `session-lifecycle.service.ts`, which call each store's own `reset()`, and no domain
+          // store imports the identity store at all. Keeping the member would have described an
+          // arrangement that no longer exists.
+          useValue: {
+            portalId: sessionPortalId.asReadonly(),
+          },
         },
       ],
     });
@@ -446,14 +459,50 @@ describe('PortalListComponent', () => {
     });
 
     it('targets the settings route with the identifier untouched, including -1 and 0', () => {
-      settleFirstPage([portalRow()]);
+      settleFirstPage([
+        portalRow({ portalId: FIRST_PORTAL_ID }),
+        portalRow({ portalId: SECOND_PORTAL_ID }),
+      ]);
 
-      expect(
-        invoke<(string | number)[]>('editSettingsLink', portalRow({ portalId: FIRST_PORTAL_ID })),
-      ).toEqual(['/portals', -1, 'settings']);
-      expect(
-        invoke<(string | number)[]>('editSettingsLink', portalRow({ portalId: SECOND_PORTAL_ID })),
-      ).toEqual(['/portals', 0, 'settings']);
+      // Read through the precomputed lookup the template indexes, so the assertion exercises
+      // the same path the rendered link takes. A NEGATIVE key is a legitimate key here.
+      const links: Record<number, (string | number)[]> =
+        member<() => Record<number, (string | number)[]>>('editSettingsLinks')();
+
+      expect(links[FIRST_PORTAL_ID]).toEqual(['/portals', -1, 'settings']);
+      expect(links[SECOND_PORTAL_ID]).toEqual(['/portals', 0, 'settings']);
+    });
+
+    it('renders the settings target for a portal keyed -1 and for one keyed 0', () => {
+      settleFirstPage([
+        portalRow({ portalId: FIRST_PORTAL_ID }),
+        portalRow({ portalId: SECOND_PORTAL_ID }),
+      ]);
+
+      const hrefs: readonly string[] = Array.from(
+        host().querySelectorAll<HTMLAnchorElement>('a.portal-list__row-command'),
+      ).map((anchor) => anchor.getAttribute('href') ?? '');
+
+      expect(hrefs).toContain('/portals/-1/settings');
+      expect(hrefs).toContain('/portals/0/settings');
+    });
+
+    it('hands the same link instance back on a later change-detection pass', () => {
+      settleFirstPage([portalRow({ portalId: FIRST_PORTAL_ID })]);
+
+      const before: (string | number)[] | undefined = member<
+        () => Record<number, (string | number)[]>
+      >('editSettingsLinks')()[FIRST_PORTAL_ID];
+      fixture.detectChanges();
+      fixture.detectChanges();
+      const after: (string | number)[] | undefined = member<
+        () => Record<number, (string | number)[]>
+      >('editSettingsLinks')()[FIRST_PORTAL_ID];
+
+      // Identity, not equality. A link array rebuilt per row per pass would satisfy `toEqual`
+      // and fail this, and it is identity that decides whether the router re-parses a target
+      // that has not changed - once per row, on every pass, under push change detection.
+      expect(after).toBe(before);
     });
 
     it('renders the absent-integer marker in the account and page counts as received', () => {
@@ -509,11 +558,33 @@ describe('PortalListComponent', () => {
   // -------------------------------------------------------------------------
 
   describe('host names', () => {
+    /**
+     * An anchor's visible text, with the visually-hidden new-context phrase removed.
+     *
+     * The phrase is deliberately part of the anchor's ACCESSIBLE NAME - that is how the change of context is
+     * announced - so `textContent` is no longer the host name on its own. Reading the label through a clone
+     * keeps the two concerns separate: this returns what a sighted reader sees, and the case below asserts
+     * the accessible name in full.
+     *
+     * @param anchor The anchor to read, or `undefined` when the row rendered none.
+     * @returns The trimmed visible text, or the empty string.
+     */
+    function visibleLabel(anchor: HTMLAnchorElement | undefined): string {
+      if (anchor === undefined) {
+        return '';
+      }
+
+      const clone = anchor.cloneNode(true) as HTMLAnchorElement;
+      clone.querySelector('.portal-list__new-context')?.remove();
+
+      return (clone.textContent ?? '').trim();
+    }
+
     it('renders one anchor per host name, prefixing a scheme only when none is stated', () => {
       settleFirstPage([
         portalRow({
           portalId: SECOND_PORTAL_ID,
-          aliases: ['localhost:4200', 'https://secure.example', 'mailto:host@example.com', ''],
+          aliases: ['localhost:4200', 'https://secure.example', ''],
         }),
       ]);
 
@@ -521,13 +592,85 @@ describe('PortalListComponent', () => {
         '.portal-list__alias > a',
       );
 
-      expect(anchors.length).toBe(3);
+      expect(anchors.length).toBe(2);
       expect(anchors[0]?.getAttribute('href')).toBe('http://localhost:4200');
-      // Already absolute - left exactly as stored.
+      // Already absolute - left exactly as stored, not re-serialised by the parser: normalising would
+      // lower-case the host and append a trailing slash, so the address in the status bar would stop
+      // being the value the operator actually stored.
       expect(anchors[1]?.getAttribute('href')).toBe('https://secure.example');
-      expect(anchors[2]?.getAttribute('href')).toBe('mailto:host@example.com');
-      // The host name is the anchor's TEXT, escaped by interpolation.
-      expect(anchors[0]?.textContent?.trim()).toBe('localhost:4200');
+      // The empty host name produced NO entry, where the legacy screen appended an empty anchor with
+      // no emptiness test — a focusable, unlabelled link pointing at the current page.
+      // The host name is the anchor's TEXT, escaped by interpolation. Read WITHOUT the visually-hidden
+      // new-context phrase, which is part of the accessible name and not part of the host name.
+      expect(visibleLabel(anchors[0])).toBe('localhost:4200');
+    });
+
+    it('renders a host name whose scheme is not http as INERT TEXT rather than as a link', () => {
+      // ⚠ AN ALLOWLIST OF TWO SCHEMES, AND THE REFUSED VALUES REACH THE DOM AS TEXT. The legacy screen
+      // built the anchor by string concatenation at `Portals.ascx.vb:L282` and assigned the result to a
+      // label's `Text`, so a stored host name became markup unexamined and unescaped. Enumerating the
+      // schemes to refuse is a losing game — `javascript:`, `data:`, `vbscript:`, `blob:` and `file:`
+      // are merely the ones anybody thinks of, and mixed case or percent-encoding slips past a
+      // fragment test — so exactly `http:` and `https:` are admitted and everything else yields no
+      // href at all.
+      //
+      // ⚠ AND THE VALUE IS STILL SHOWN. Dropping it would hide stored state from the operator
+      // administering it, which is the one thing this screen exists to report. It is shown as text,
+      // which the framework escapes through an ordinary interpolation, so it is readable and inert.
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: [
+            'mailto:host@example.com',
+            'javascript:alert(1)',
+            'data:text/html,<script>alert(1)</script>',
+            'vbscript:msgbox(1)',
+            'file:///etc/passwd',
+            '\\\\fileserver\\share',
+            '~/app-relative',
+          ],
+        }),
+      ]);
+
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a'))
+        .withContext('not one of these may be navigable')
+        .toHaveSize(0);
+
+      const shown = queryAll<HTMLElement>('.portal-list__alias').map((node) =>
+        (node.textContent ?? '').trim(),
+      );
+
+      expect(shown).toContain('mailto:host@example.com');
+      expect(shown).toContain('javascript:alert(1)');
+      expect(shown).toContain('vbscript:msgbox(1)');
+      expect(shown).toContain('file:///etc/passwd');
+      expect(shown).toContain('~/app-relative');
+    });
+
+    it('opens a host name in a new context, and says so in the accessible name', () => {
+      // MIGRATION - ⚠ THE `target` IS THE HALF TO ADD, NOT THE `rel` THE HALF TO DELETE. The address leaves
+      // this application entirely, and the session's token is held in memory alone, so a same-tab navigation
+      // signs the operator out of the console they were administering. `rel` states BOTH keywords rather than
+      // relying on a modern browser's implicit `noopener`: `noreferrer` additionally withholds the console's
+      // own address from the site being opened, which is a tenant's public site and not necessarily trusted.
+      settleFirstPage([
+        portalRow({ portalId: SECOND_PORTAL_ID, aliases: ['localhost:4200'] }),
+      ]);
+
+      const anchor: HTMLAnchorElement | undefined = queryAll<HTMLAnchorElement>(
+        '.portal-list__alias > a',
+      )[0];
+
+      expect(anchor).withContext('a host name must render an anchor').not.toBeUndefined();
+      expect(anchor?.getAttribute('target')).toBe('_blank');
+      expect(anchor?.getAttribute('rel')).toBe('noopener noreferrer');
+
+      // The change of context is ANNOUNCED rather than left to be discovered: a link that behaves unlike
+      // every other link on the screen has to say so, and the phrase is hidden visually so nothing moves.
+      const context: HTMLElement | null = anchor?.querySelector('.portal-list__new-context') ?? null;
+      expect(context).withContext('the new context must be stated').not.toBeNull();
+      expect((context?.textContent ?? '').trim()).toBe('(opens in a new tab)');
+      expect((anchor?.textContent ?? '').trim()).toBe('localhost:4200 (opens in a new tab)');
     });
 
     it('renders nothing for a portal with no host names', () => {

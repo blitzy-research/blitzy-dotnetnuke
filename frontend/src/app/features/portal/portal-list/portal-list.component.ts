@@ -334,10 +334,35 @@ export interface PortalFilterOption {
  *   wrapper is used anywhere in this feature.
  */
 export interface PortalAliasLink {
-  /** The address the anchor navigates to, with a scheme guaranteed. */
-  readonly href: string;
+  /**
+   * The address the anchor navigates to, or `null` when the stored value is not one.
+   *
+   * ⚠ NULLABLE, AND THE NULL ARM IS A SECURITY BOUNDARY RATHER THAN A CONVENIENCE. A stored
+   * host name is operator-supplied data, and the legacy address helper this projection
+   * reproduces left a value alone whenever it contained any of four fragments — one of which
+   * is the bare `://`. That exclusion admits far more than an address: `javascript://` and
+   * `data://` both contain it, so a stored alias could previously be emitted verbatim as the
+   * target of a link, and an application-relative `~/…` or a network share `\\host\share`
+   * could be emitted as an address that is not one.
+   *
+   * The projection now ALLOWLISTS: a value is an address only if it parses as an absolute URL
+   * whose scheme is `http:` or `https:` and which names a host. Everything else yields `null`
+   * and the paired template renders the label as plain text instead of a link. Refusing to
+   * link is the correct outcome for a value that does not describe somewhere to go — an
+   * operator still sees exactly what is stored, which is what the screen exists to show.
+   *
+   * This is the resolution of review finding F13.
+   */
+  readonly href: string | null;
 
-  /** The host name as stored, rendered as escaped text. */
+  /**
+   * The host name as stored, rendered as escaped text.
+   *
+   * ⚠ UNCHANGED BY THE ALLOWLIST ABOVE, DELIBERATELY. The label is what the operator stored
+   * and the screen's job is to report it; rewriting, truncating or annotating a value because
+   * it could not be linked would misreport the stored state and make the row disagree with the
+   * edit screen. Only the ADDRESS is withheld.
+   */
   readonly label: string;
 }
 
@@ -403,21 +428,78 @@ const PORTAL_FILTER_OPTIONS: readonly PortalFilterOption[] = buildFilterOptions(
  * @param alias The host name exactly as stored.
  * @returns The address to navigate to.
  */
-function toAliasHref(alias: string): string {
+function toAliasHref(alias: string): string | null {
   // The legacy helper's own outer test, `If strURL <> ""`, kept for fidelity to the function
   // being reproduced. Defence in depth rather than a live path: the one caller below drops an
   // empty host name before it reaches here, so this arm is not reachable through it.
   if (alias.length === 0) {
-    return alias;
+    return null;
   }
 
   for (const marker of ABSOLUTE_ADDRESS_MARKERS) {
     if (alias.includes(marker)) {
-      return alias;
+      // The stored value already claims to be absolute, so no scheme is prefixed - exactly as the
+      // legacy helper behaved. Whether it is an ADDRESS is a separate question, answered below:
+      // a mail address, an application-relative path and a network share all reach this arm and
+      // none of them is somewhere this link may navigate to.
+      return allowedHostAddress(alias);
     }
   }
 
-  return `${HTTP_SCHEME_PREFIX}${alias}`;
+  return allowedHostAddress(`${HTTP_SCHEME_PREFIX}${alias}`);
+}
+
+/**
+ * The candidate address, or `null` when it is not an `http`/`https` address naming a host.
+ *
+ * ⚠ AN ALLOWLIST, NOT A DENYLIST, AND THAT DIRECTION IS THE WHOLE POINT. Enumerating the schemes
+ * that must be refused is a losing game: `javascript:`, `data:`, `vbscript:`, `blob:` and `file:`
+ * are only the ones anybody thinks of, and a stored value can be spelled with mixed case, leading
+ * whitespace or percent-encoded control characters to slip past a fragment test. Admitting exactly
+ * two schemes and refusing everything else needs no such enumeration and cannot be outflanked by a
+ * spelling.
+ *
+ * The parse is delegated to the platform URL parser rather than performed with a pattern, because
+ * the parser is the thing that decides what a scheme and a host actually are - and it is the same
+ * decision the browser makes when the anchor is followed. A pattern would be a second opinion.
+ *
+ * A HOST IS GUARANTEED BY THE PARSE ITSELF for the two admitted schemes, which is why no separate
+ * emptiness test appears below. `http:` and `https:` are special schemes to the parser: it REFUSES
+ * `http://`, `https://`, `http:///` and `http://:8080` outright rather than parsing them with an empty
+ * host, so anything reaching the return names somewhere. An explicit host test was written here first
+ * and removed once measured, because it could not fail and a guard that cannot fail invites the reader
+ * to believe it is doing something. Should a third scheme ever be admitted, the test has to come back:
+ * `file:`, `blob:`, `about:` and `tel:` all parse with an empty host.
+ *
+ * MIGRATION: no legacy counterpart, and its absence was a real exposure rather than a simplification.
+ * `Portals.ascx.vb:L282` built an anchor by string concatenation and assigned the result to a
+ * label's `Text`, so a stored value went into markup unescaped and unexamined. Nothing here uses a
+ * raw-HTML binding, a sanitiser bypass or a trusted-value wrapper; the framework escapes the label
+ * through an ordinary interpolation, and this function decides whether there is an address at all.
+ *
+ * @param candidate The address to admit or refuse.
+ * @returns The address when it is one, or null.
+ */
+function allowedHostAddress(candidate: string): string | null {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    // Not an absolute address at all. An application-relative path and a network share both land
+    // here, as does anything the parser cannot make sense of.
+    return null;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return null;
+  }
+
+  // The value as STORED is returned, not the parser's normalised serialisation. Normalising would
+  // append a trailing slash, lower-case the host and re-encode the path, so the address in the
+  // status bar would no longer be the value the operator stored - and this screen exists to report
+  // stored state faithfully. The parse above has already established that it is safe to navigate to.
+  return candidate;
 }
 
 /**
@@ -507,7 +589,7 @@ function stripLeadingBreakTags(message: string): string {
  *
  * | Reference          | Renders                                                     |
  * | ------------------ | ----------------------------------------------------------- |
- * | `#editCommand`     | the row's settings link, bound to `editSettingsLink(row)`    |
+ * | `#editCommand`     | the row's settings link, indexed from `editSettingsLinks()`  |
  * | `#deleteCommand`   | the row's delete button, guarded by `canDelete(row)`         |
  * | `#aliasesCell`     | the row's host names, from `aliasLinks(row)`                 |
  * | `#expiresCell`     | the row's expiry, through the shared date pipe              |
@@ -1018,7 +1100,20 @@ export class PortalListComponent implements OnInit {
   // -------------------------------------------------------------------------
 
   /**
-   * The route the row's settings affordance targets.
+   * The settings route of every portal on the page, keyed by identifier.
+   *
+   * PRECOMPUTED ONCE PER PAGE rather than per row per change-detection pass, and bound as an
+   * index rather than called. The template renders one of these arrays into a router link on
+   * every row, and a link input is compared by IDENTITY: an array built afresh each pass is a
+   * new reference every time, so the router re-parses a target that has not changed, for
+   * every row, on every pass - work that grows with the page size and that push change
+   * detection is supposed to avoid. Deriving the whole lookup from the page means the
+   * references change only when the rows do.
+   *
+   * A plain object rather than a map, because a template can index one and cannot call
+   * `Map.get`; the point is to remove the per-pass call, so an indexed read is what the
+   * binding needs. Bounded by construction: it holds one entry per row of the CURRENT page
+   * and is rebuilt, not appended to, whenever the page changes.
    *
    * MIGRATION: NO NUMERIC GUARD IS APPLIED TO THE IDENTIFIER, and that is a correctness
    *   requirement rather than terseness. `Portals.PortalID` is declared
@@ -1028,14 +1123,19 @@ export class PortalListComponent implements OnInit {
    *   therefore means both "the first portal" and "no portal", and nothing a component can
    *   see distinguishes them. A truthiness test would drop the second portal, a magnitude
    *   test would drop both, and a comparison against the marker would drop the first. The
-   *   value is interpolated exactly as received.
-   *
-   * @param portal The row.
-   * @returns The route segments, with the identifier as a number.
+   *   value is used as the key and interpolated into the route exactly as received, and a
+   *   negative key is a legitimate one.
    */
-  protected editSettingsLink(portal: PortalListItem): (string | number)[] {
-    return [PORTALS_SEGMENT, portal.portalId, SETTINGS_SEGMENT];
-  }
+  protected readonly editSettingsLinks: Signal<Readonly<Record<number, (string | number)[]>>> =
+    computed(() => {
+      const links: Record<number, (string | number)[]> = {};
+
+      for (const portal of this.portals()) {
+        links[portal.portalId] = [PORTALS_SEGMENT, portal.portalId, SETTINGS_SEGMENT];
+      }
+
+      return links;
+    });
 
   /**
    * Whether the row may offer a delete affordance.
@@ -1150,7 +1250,7 @@ export class PortalListComponent implements OnInit {
    *   belongs.
    *
    * The identifier is passed exactly as received - see the note on
-   * {@link PortalListComponent.editSettingsLink} for why no guard may be applied to it.
+   * {@link PortalListComponent.editSettingsLinks} for why no guard may be applied to it.
    */
   protected onDeletionConfirmed(): void {
     const portal: PortalListItem | null = this.pendingDeletion();

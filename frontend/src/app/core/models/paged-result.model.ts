@@ -2,10 +2,11 @@
  * The paging, sorting and filtering contract shared by every collection endpoint,
  * together with the success-envelope companions that describe a response.
  *
- * This module is type declarations plus three small constants and two factories. It
- * imports nothing: the workspace configures neither `baseUrl` nor `paths`, so every
- * import in this application is relative, and a contract this low in the dependency
- * graph should not need one at all.
+ * This module is type declarations plus three small constants and two factories, over
+ * one import. The workspace configures neither `baseUrl` nor `paths`, so that import is
+ * relative, and it is the single one this contract needs: the shared page validator in
+ * `core/utils/decode.util.ts`, which exists so that "is this a page?" has exactly one
+ * answer in the workspace rather than one here and a second at the service boundary.
  *
  * ## The paging facts are NESTED under `meta`
  *
@@ -145,6 +146,9 @@
  * decided on the strength of the count. A status argument is in any case not
  * expressible over HTTP, so the total has to travel inside the body or not at all.
  */
+
+import { decodePageStructure } from '../utils/decode.util';
+
 
 /**
  * The direction in which a sort field is applied.
@@ -467,8 +471,8 @@ export interface EmptyApiResponse {
 export type PagedResponse<T> = PagedResult<T>;
 
 /**
- * Normalises a paged response into a complete envelope, deriving the page count when the
- * body did not carry one.
+ * Validates a paged response and completes the one coordinate the server is permitted
+ * to omit.
  *
  * The paging coordinates belong to the response rather than to the records, and every
  * coordinate a consumer reads is one the server sent — with one exception, stated here so
@@ -482,35 +486,63 @@ export type PagedResponse<T> = PagedResult<T>;
  * decided by whoever renders the pager, from the same two coordinates, and publishing them
  * as if the server had sent them would put a client-side derivation on the wire contract.
  *
- * An absent or partial metadata object is tolerated rather than faulted, and reported as an
- * empty first page: a paged endpoint always sends metadata, so a body without it is a
- * contract failure the error interceptor surfaces, and a model that threw here would turn
- * that into an unhandled exception inside a component.
+ * MIGRATION: THIS FUNCTION USED TO FABRICATE A SUCCESSFUL EMPTY PAGE, AND THAT WAS THE
+ *   DEFECT. It read `response?.items ?? []` and `response?.meta?.totalCount ?? 0` and so
+ *   on, so a body with no `items`, a body with no `meta`, a body that was `null`, and a
+ *   genuinely empty first page were ALL reported as `{ items: [], meta: { 0, 0, 0, 0 } }`.
+ *   A root store then adopted that as state and a screen told an operator there were no
+ *   portals, no roles, no accounts — the one answer indistinguishable from the truth, and
+ *   the one a person acts on. Response drift became "no records", which is worse than an
+ *   error because nobody investigates it. The tolerance was justified on the grounds that
+ *   throwing "would turn a contract failure into an unhandled exception inside a
+ *   component"; that reasoning had the ownership backwards. This function is called inside
+ *   an observable pipeline, so a throw here FAILS THE OBSERVABLE, and the store error
+ *   handlers and the `ProblemDetails` presentation path that already exist are exactly the
+ *   machinery for reporting it. Nothing reaches a component uncaught.
  *
- * @param response The response body as received.
+ * What is required, and why each one:
+ *
+ * - the body is an object. `null` is what `HttpClient` hands back for an empty body, and
+ *   an empty body is not an empty page;
+ * - `items` is an array. A missing collection is drift; an EMPTY array is a legitimate
+ *   empty page and passes;
+ * - `meta` is an object carrying integer `totalCount`, `pageIndex` and `pageSize`. These
+ *   are the three facts the legacy pager consumed and the three a pager cannot be
+ *   rendered without;
+ * - `totalPages`, when present, is an integer. When absent it is derived, which is the
+ *   single tolerance retained and the only one the server's own contract allows.
+ *
+ * Sentinel safety: no coordinate is subjected to a truthiness test or a `> 0` check as a
+ * validity test. `totalCount: 0` and `pageIndex: 0` are ordinary values for a first page
+ * with no matches.
+ *
+ * The element type is NOT inspected. Records are decoded by the caller's own decoder at
+ * the service boundary — see `core/utils/decode.util.ts` — because this function is
+ * generic and has no way to know what a row should look like.
+ *
+ * @param response The response body as received, which is why the parameter is `unknown`
+ *   rather than the declared page type: the declared type is the claim being checked.
  * @returns The same page, with every coordinate present.
+ * @throws ContractViolationError When the body is not a page.
  */
-export function toPagedResult<T>(response: PagedResponse<T>): PagedResult<T> {
-  const items = response?.items ?? [];
-  const totalCount = response?.meta?.totalCount ?? 0;
-  const pageIndex = response?.meta?.pageIndex ?? 0;
-  const pageSize = response?.meta?.pageSize ?? 0;
-  const totalPages =
-    response?.meta?.totalPages ??
-    (pageSize > 0 && totalCount > 0
-      ? Math.floor(totalCount / pageSize) + (totalCount % pageSize > 0 ? 1 : 0)
-      : 0);
+export function toPagedResult<T>(response: unknown): PagedResult<T> {
+  const page = decodePageStructure(response, PAGE_ROOT);
 
-  return {
-    items,
-    meta: {
-      totalCount,
-      pageIndex,
-      pageSize,
-      totalPages,
-    },
-  };
+  // The records are handed back undecoded, and the cast records that this function
+  // validates FRAMING only. Deciding whether a record is a `T` requires knowing what a
+  // `T` looks like, which a generic function cannot; that decision belongs to the
+  // service boundary, where `pageOf` in `core/utils/decode.util.ts` composes this same
+  // framing check with a record decoder. A caller that needs both uses `pageOf`.
+  return { items: page.items as readonly T[], meta: page.meta };
 }
+
+/**
+ * The position name used when describing a malformed page.
+ *
+ * Spelled once so that every violation raised from this contract reads the same way in
+ * a log, rather than each call site inventing a root.
+ */
+const PAGE_ROOT = 'page';
 
 /**
  * The page size to send when the caller expresses no preference.

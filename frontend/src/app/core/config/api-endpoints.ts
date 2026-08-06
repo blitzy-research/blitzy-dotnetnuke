@@ -772,8 +772,14 @@ export const API_ENDPOINTS = {
       member: ({ roleId, userId }: RoleMemberScope): string =>
         apiUrl(`${SEGMENT.roles}/${roleId}/${SEGMENT.users}/${userId}`),
 
-      /** `GET` the roles held by one account. */
-      forUser: (userId: number): string => apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.roles}`),
+      // ⚠ THE ROLES-HELD-BY-ONE-ACCOUNT READ IS DELIBERATELY NOT DECLARED HERE, and its absence is the
+      // resolution rather than an omission. The endpoint exists — `GET /api/v1/users/{userId}/roles` — but
+      // no screen in this application reads it: the account editor shows an account's roles from the
+      // `roles` member the account's own detail contract already carries, and no per-account role route is
+      // declared anywhere in the route table. A template with no consumer is a claim about the wire that
+      // nothing exercises, so it can drift from its controller silently — which is exactly the failure this
+      // file's own preamble warns about. Declaring it belongs with the screen that needs it, on the day one
+      // does.
     },
   },
 

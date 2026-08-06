@@ -67,8 +67,17 @@
   the page header supplies only the row and its gap and cannot style what it hosts.
 -->
 <app-page-header [title]="pageTitle">
-  <a class="role-list__page-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
-  <a class="role-list__page-action" [routerLink]="addRoleGroupLink">{{ addRoleGroupLabel }}</a>
+  <!--
+    The two CREATE affordances are gated on the edit key; the settings link below is not, because
+    reaching a settings screen is not itself a mutation and the screen refuses its own save.
+    This is an affordance only — the API re-authorises every request and its verdict governs.
+  -->
+  <a *hasPermission="'EDIT'" class="role-list__page-action" [routerLink]="addRoleLink">{{
+    addRoleLabel
+  }}</a>
+  <a *hasPermission="'EDIT'" class="role-list__page-action" [routerLink]="addRoleGroupLink">{{
+    addRoleGroupLabel
+  }}</a>
   <a class="role-list__page-action" [routerLink]="membershipSettingsLink">{{
     membershipSettingsLabel
   }}</a>
@@ -522,7 +531,7 @@
 <ng-template #editCommand let-row>
   <a
     class="role-list__row-action"
-    [routerLink]="editRoleLink(row)"
+    [routerLink]="editRoleLinks()[row.roleId]"
     [attr.aria-label]="editRoleLabel + ' ' + row.roleName"
   >
     <svg
@@ -557,7 +566,7 @@
 <ng-template #membersCommand let-row>
   <a
     class="role-list__row-action"
-    [routerLink]="manageUsersLink(row)"
+    [routerLink]="manageUsersLinks()[row.roleId]"
     [attr.aria-label]="manageUsersLabel + ' ' + row.roleName"
   >
     <svg
@@ -615,4 +624,3 @@
 <ng-template #autoCell let-row>
   {{ row.autoAssignment | yesNo }}
 </ng-template>
-

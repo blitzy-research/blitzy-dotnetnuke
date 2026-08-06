@@ -1,0 +1,76 @@
+// Component stylesheet for the role-group create form, served by the route
+// /role-groups/new.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .role-group-form
+//     .role-group-form__form
+//     .role-group-form__fields
+//     .role-group-form__actions
+//
+// Focus indication is deliberately absent and must stay absent: the global reset applies
+// the shared focus-ring mixin to every anchor, button, input, select and textarea, so the
+// design system owns focus and this file only places components.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared on the component root and inherited below rather than left to a
+// global base rule, which keeps the component self-sufficient.
+.role-group-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE FORM AND ITS TWO FIELDS
+// -----------------------------------------------------------------------------
+// The measure is capped at the small step rather than set to a fixed width, so a group
+// name and its description stay fluid on a handset and readable on a wide desktop. The
+// `fieldset` carries no border here because the form has exactly one group of fields and
+// a border around the whole of a single group frames nothing.
+.role-group-form__form {
+  display: grid;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+.role-group-form__fields {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+// Wrapping is intrinsic so the cancel link drops below the submit button on a narrow
+// viewport rather than overflowing, and the gap then supplies row spacing as well as
+// column spacing.
+.role-group-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screen (`Website/admin/Security/EditGroups.ascx`) was a layout
+// table with a fixed pixel width. The width becomes a maximum expressed as the declared
+// small breakpoint step - a deliberate SNAP to the shared scale rather than a pixel match -
+// and the table itself does not survive, because it carried no header cells and described
+// no relationships. Both are intentional refinements that alter no behaviour.
+// =============================================================================

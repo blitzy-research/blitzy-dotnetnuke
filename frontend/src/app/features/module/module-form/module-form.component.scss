@@ -1,0 +1,152 @@
+// Component stylesheet for the module placement create-and-edit form, served by the
+// routes /modules/new and /modules/:moduleId.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .module-form
+//     .module-form__body
+//     .module-form__group
+//     .module-form__group--nested
+//     .module-form__group-title
+//     .module-form__group-title--nested
+//     .module-form__choices
+//     .module-form__choice
+//     .module-form__notice
+//     .module-form__action
+//     .module-form__action--primary
+//     .module-form__action--danger
+//
+// The block class sits on the `form` element itself, which IS the root of this template,
+// so no `:host` rule is needed: a single flow container cannot be split across the host
+// and the form without one of the two acquiring a gap it has nothing to apply it to.
+//
+// The surface is deliberately flat - one block class plus element and modifier classes,
+// no deep descendant chains and no piercing selector. Shared components own their own
+// appearance; this file only places them. Focus indication is deliberately absent and
+// must stay absent: _reset.scss applies the shared focus-ring mixin to every anchor,
+// button, input, select, textarea and summary, so the design system owns focus and a
+// feature screen consumes it rather than redeclaring it.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared here and inherited by every region below rather than restated
+// per rule, and it is declared on the component root rather than left to a global base
+// rule: that keeps the component self-sufficient, because without it the browser falls
+// back to its own serif default for every legend, label and help string on the screen.
+.module-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.module-form__body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  GROUPS, INCLUDING EXACTLY ONE LEVEL OF NESTING
+// -----------------------------------------------------------------------------
+// A fieldset per group of related settings. The nested modifier exists because the
+// permission sub-groups sit INSIDE the group they qualify, and the nesting is expressed
+// by a lighter surface and tighter padding rather than by a descendant selector: a
+// descendant selector would couple the two levels and stop matching the moment the
+// markup was reordered, which is precisely the failure this contract is written to
+// prevent.
+.module-form__group {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+.module-form__group--nested {
+  padding: var(--space-3);
+  border-color: var(--color-border-strong);
+  background-color: var(--color-surface);
+}
+
+// A `legend` is rendered by the browser as part of its fieldset's border, so its inline
+// padding is what opens the gap in that border rather than a margin.
+.module-form__group-title {
+  padding-inline: var(--space-1);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+.module-form__group-title--nested {
+  font-size: var(--font-size-md);
+  color: var(--color-text-muted);
+}
+
+// -----------------------------------------------------------------------------
+//  CHOICES
+// -----------------------------------------------------------------------------
+// One choice per line, because the options are sentences rather than single words and a
+// row would truncate them at the narrow widths this screen must still work at. Baseline
+// alignment puts the control on the first line of a wrapped label instead of centring it
+// against the whole block.
+.module-form__choices {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.module-form__choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.module-form__notice {
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// -----------------------------------------------------------------------------
+//  COMMANDS
+// -----------------------------------------------------------------------------
+// These sit inside the page header's action slot, so their arrangement belongs to that
+// shared component and is not restated here. What IS declared here is the one thing the
+// shared component cannot know: which command is primary and which is destructive.
+//
+// Both modifiers are a TYPE change only. A destructive command that also moved or
+// resized would be a different affordance in a different place, which is exactly how a
+// reader mis-clicks the one command that cannot be undone.
+.module-form__action--primary {
+  font-weight: var(--font-weight-bold);
+}
+
+.module-form__action--danger {
+  color: var(--color-danger-text);
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: every spacing value above resolves to the shared spacing scale, and that
+// scale is itself a NET ADDITION - the legacy stylesheets declare no spacing system,
+// only ad-hoc values. The radius scale is a net addition for the same reason, and it is
+// used here only to distinguish the two nesting levels of a settings group. Both are
+// intentional visual refinements that alter no behaviour.
+//
+// MIGRATION: the legacy screen laid its settings out as nested layout tables. Those are
+// spacing as markup, not structure, so they become CSS grid and flow here and no table
+// survives. This is recorded in MIGRATION_NOTES.md with the rest of the visual
+// refinements.
+// =============================================================================

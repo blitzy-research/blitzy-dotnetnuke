@@ -1,0 +1,213 @@
+// Component stylesheet for the account create-and-edit form, served by the routes
+// /users/new and /users/:userId.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .user-form
+//     .user-form__panels
+//     .user-form__section
+//     .user-form__section-toggle
+//     .user-form__section-body
+//     .user-form__legend
+//     .user-form__grid
+//     .user-form__membership
+//     .user-form__membership-row
+//     .user-form__membership-term
+//     .user-form__membership-value
+//     .user-form__membership-actions
+//     .user-form__actions
+//
+// The block class sits on the `form`, which is NOT the root of the template - the page
+// header precedes it - so the host is styled as well, and the two rules have distinct jobs:
+// the host owns the rhythm between the header and the form, the block owns the rhythm inside
+// the form.
+//
+// The surface is deliberately flat, and focus indication is deliberately absent: the global
+// reset applies the shared focus-ring mixin to every anchor, button, input, select, textarea
+// and summary, so the design system owns focus and this file only places components.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT - THE HOST AND THE FORM
+// -----------------------------------------------------------------------------
+// A custom element defaults to `display: inline` and would not contain its block-level
+// children correctly, so a box-generating display is required on the host regardless of
+// layout. Body type is declared here and inherited by every region below rather than
+// restated per rule: without it the browser falls back to its own serif default for every
+// legend, label, term and value on the screen.
+:host {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.user-form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.user-form__panels {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  SECTIONS AND THEIR DISCLOSURES
+// -----------------------------------------------------------------------------
+// A bordered fieldset per group of related facts. Three of the four carry a toggle that
+// collapses the body; the section frame stays identical either way, because a collapsed
+// group must read as a closed region and not as a different KIND of region.
+.user-form__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+// A `legend` is painted by the browser as part of its fieldset's border, so inline padding
+// is what opens the gap in that border - a margin would move the text without breaking the
+// line.
+.user-form__legend {
+  padding-inline: var(--space-1);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// The toggle is a real button holding a decorative chevron. It is reset to the surrounding
+// type and given a start-aligned full-width box so the whole row is a press target rather
+// than just the glyph, and the pointer cursor is added because a button that looks like a
+// heading otherwise gives no sign that it is operable.
+.user-form__section-toggle {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  inline-size: var(--size-full);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.user-form__section-body {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  FIELD GRID
+// -----------------------------------------------------------------------------
+// One column until there is room for two, so a label never sits above a control squeezed to
+// a few characters. `minmax(0, 1fr)` rather than `1fr` because a grid track's automatic
+// minimum is its content, and one long unbroken address would otherwise push the second
+// column off the screen. The breakpoint comes from the shared scale through the mixin rather
+// than from a hand-written query, which is what keeps every screen breaking at the same
+// widths.
+//
+// The class is applied TOGETHER with `__section-body` in the template, so both rules are in
+// effect on the same element: the body supplies the stacked default and this supplies the
+// two-column arrangement above the step. Declaring `display` in both is intentional and
+// idempotent.
+.user-form__grid {
+  display: grid;
+  gap: var(--space-3);
+
+  @include mx.respond-above('md') {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  MEMBERSHIP FACTS
+// -----------------------------------------------------------------------------
+// A real description list rendered as a term-and-detail grid. The two tracks are the shared
+// PAIR - the token vocabulary documents them as meaningless apart, because the proportion
+// between them is the design value and neither number carries it alone - so this screen and
+// the profile screen read at the same proportion instead of each choosing its own. Baseline
+// alignment keeps a term level with the first line of a value that has wrapped.
+.user-form__membership {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// The narrow layout is authored unconditionally and the two-column one layered over it
+// through the shared mixin, which is the documented direction and the same shape the profile
+// screen's own value list uses. Below the step a term sits above its value rather than being
+// squeezed into a fifth of a handset's width.
+.user-form__membership-row {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-1);
+
+  @include mx.respond-above('sm') {
+    grid-template-columns: var(--grid-track-term) var(--grid-track-detail);
+    column-gap: var(--space-4);
+    align-items: baseline;
+  }
+}
+
+.user-form__membership-term {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-muted);
+}
+
+// A stored date or a lock-out reason can be long and has no natural break, so it wraps rather
+// than overflowing its track.
+.user-form__membership-value {
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+}
+
+.user-form__membership-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives white-space
+// collapsing, and wrapping is intrinsic so the last command stays reachable at every width.
+.user-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screen (`Website/admin/Users/User.ascx` inside `ManageUsers.ascx`)
+// presented the credential fields, the account options, the password fields and the
+// membership facts as one undifferentiated run of layout-table rows. Grouping them into four
+// framed sections with collapsible bodies is a NET ADDITION: every field remains present,
+// reachable and bound exactly as before, and no group is collapsed in a way that hides a
+// value the operator must act on.
+//
+// MIGRATION: the membership facts were legacy table rows of label and value. They become a
+// real description list, which is a SEMANTIC improvement rather than a visual one - the pairs
+// were always a term-and-value relationship and the legacy table asserted a tabular one it
+// did not have.
+//
+// MIGRATION: the spacing, radius and surface scales every value above resolves to are net
+// additions - the legacy design is square-cornered, flat and has no spacing system - as is the
+// two-column collapse, because the legacy stylesheets declare no media query anywhere. All of
+// it is intentional visual refinement that alters no behaviour, recorded with the rest in
+// MIGRATION_NOTES.md.
+// =============================================================================

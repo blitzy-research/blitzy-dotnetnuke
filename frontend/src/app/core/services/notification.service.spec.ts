@@ -369,7 +369,24 @@ describe('NotificationService', () => {
 
       service.error('Something failed');
 
-      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed');
+      // The explicit third argument is the ABSENCE of a support reference, forwarded
+      // rather than omitted. `error` is the one alias that accepts a reference, because
+      // a failure is the only outcome that has one to quote, and it passes on whatever
+      // it was given - here, nothing. "Adds nothing else" is therefore still exactly
+      // what this asserts: no severity substitution, no wording change, and no
+      // reference invented on the caller's behalf.
+      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', null);
+    });
+
+    it('error() forwards a support reference when one is supplied', () => {
+      const notify = spyOn(service, 'notify').and.callThrough();
+
+      service.error('Something failed', 'abc123');
+
+      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', 'abc123');
+      expect(service.notifications()[0].reference)
+        .withContext('the reference is retained as its own member, not only in the text')
+        .toBe('abc123');
     });
 
     it('queues one entry per alias, each at its own severity and in call order', () => {
@@ -473,6 +490,77 @@ describe('NotificationService', () => {
       // The aliases must remain thin: bounding lives in `notify`, so an alias
       // inherits it rather than carrying a second, possibly divergent, copy.
       expect(service.notifications()[0].message.length).toBe(MAX_MESSAGE_LENGTH);
+    });
+  });
+
+  describe('support reference', () => {
+    // The defect these specs pin: the reference used to be concatenated onto the
+    // message by the caller and the composed string was bounded afterwards, so
+    // truncation removed the reference from exactly the long-`detail` failures that
+    // most needed it. The reference is now bounded separately and appended after the
+    // message has been cut, which is what makes it unreachable by the cut.
+
+    it('survives truncation of an over-long message', () => {
+      const overLong = 'a'.repeat(MAX_MESSAGE_LENGTH * 4);
+
+      service.notify('error', overLong, 'trace-0001');
+
+      const stored: AppNotification = service.notifications()[0];
+
+      expect(stored.reference)
+        .withContext('the reference is a member of its own and cannot be truncated away')
+        .toBe('trace-0001');
+      expect(stored.message.endsWith('Reference: trace-0001'))
+        .withContext('the reference is appended AFTER the message is bounded')
+        .toBeTrue();
+      expect(stored.message.startsWith('a'.repeat(MAX_MESSAGE_LENGTH)))
+        .withContext('the whole bounded message is retained ahead of the reference')
+        .toBeTrue();
+    });
+
+    it('composes the label exactly once, with a single separating space', () => {
+      service.notify('error', 'Something failed.', 'abc123');
+
+      expect(service.notifications()[0].message).toBe('Something failed. Reference: abc123');
+    });
+
+    it('reports no reference when none is supplied', () => {
+      service.notify('error', 'Something failed.');
+
+      const stored: AppNotification = service.notifications()[0];
+
+      expect(stored.reference).toBeNull();
+      expect(stored.message).toBe('Something failed.');
+    });
+
+    it('treats a blank reference as absent rather than quoting an empty one', () => {
+      service.notify('error', 'Something failed.', '   ');
+
+      const stored: AppNotification = service.notifications()[0];
+
+      // A dangling `Reference:` label with nothing after it would instruct an operator
+      // to report an identifier that was never issued.
+      expect(stored.reference).toBeNull();
+      expect(stored.message).toBe('Something failed.');
+    });
+
+    it('refuses a blank message even when a reference accompanies it', () => {
+      service.notify('error', '   ', 'abc123');
+
+      // A notification reading only `Reference: abc123` says nothing about what
+      // happened, so the blank-message refusal takes precedence over the reference.
+      expect(service.notifications()).toEqual([]);
+    });
+
+    it('bounds an over-long reference so the queue stays finite', () => {
+      // The reference is remote input on the same footing as the message: it is read
+      // from a response body, and a proxy is free to put anything there.
+      service.notify('error', 'Something failed.', 'r'.repeat(4096));
+
+      const stored: AppNotification = service.notifications()[0];
+
+      expect(stored.reference?.length).toBe(128);
+      expect(stored.message).toBe(`Something failed. Reference: ${'r'.repeat(128)}`);
     });
   });
 

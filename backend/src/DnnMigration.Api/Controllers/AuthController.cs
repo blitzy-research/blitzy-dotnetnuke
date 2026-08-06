@@ -419,8 +419,13 @@ public sealed class AuthController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("logout")]
-    [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
-    // Withdraws a token derived from a credential.
+    // A BUDGET OF ITS OWN, NOT THE ONE SIGN-IN DRAWS ON. While this shared
+    // AuthenticationPolicyName, a burst of failed sign-in attempts from any peer sharing the caller's
+    // address could spend the window and leave a token that its owner had asked to revoke live until it
+    // expired. See RateLimitingExtensions.RevocationPolicyName.
+    [EnableRateLimiting(RateLimitingExtensions.RevocationPolicyName)]
+    // Withdraws a token derived from a credential. RETAINED: this is what keeps the concurrency bound
+    // and the request-body limit on this action; only the window it draws on has changed.
     [CredentialEndpoint]
     [RemediationAllowed]
     [AllowAnonymous]

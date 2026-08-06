@@ -165,7 +165,29 @@
  * enumeration in `user.model.ts` treats 13 as success while 0 names an operation
  * rather than an outcome. Publishing an ordinal from any of them behind a bare
  * number would put three mutually incompatible conventions behind one field.
+ *
+ * ## One behaviour beyond declaration, and why it lives here
+ *
+ * The file also exports the RUNTIME DECODERS for the two response shapes —
+ * {@link decodeCurrentUser} and {@link decodeLoginResponse} — beside the declarations
+ * they check. Declaring a shape and validating it are the same contract stated twice, and
+ * separating them is how the two drift apart; keeping them adjacent is also what makes a
+ * new member impossible to add without deciding how it is validated, because
+ * `objectOf` requires one decoder per declared member and a forgotten member is a
+ * compile error rather than a silently-unchecked one.
  */
+
+import {
+  arrayOf,
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeString,
+  nonEmptyString,
+  objectOf,
+  type Decoder,
+} from '../utils/decode.util';
+
 
 /**
  * The outcome of a single legacy sign-in attempt, ported for vocabulary and for
@@ -547,6 +569,36 @@ export interface CurrentUser {
   readonly isSuperUser: boolean;
 
   /**
+   * Whether the account administers the resolved tenant, as decided by the server.
+   *
+   * ⚠ THIS IS AN ANSWER, NOT AN INPUT, AND IT MUST NOT BE RE-DERIVED FROM {@link roles}.
+   * The console previously decided tenant administration by testing that list for the
+   * literal role name `Administrators`, which is wrong three times over. The designation
+   * is a per-tenant COLUMN — `Portals.AdministratorRoleId` — naming whichever role confers
+   * administration, so it is fixed to no name at all; the name is operator-editable,
+   * because `Roles.RoleName` is an ordinary updatable column, so renaming the role
+   * silently stripped every administrator of their affordances; and a role of the same
+   * name may belong to a DIFFERENT tenant, which makes a name match right about the word
+   * and wrong about the portal. The server resolves the column and publishes the verdict.
+   *
+   * A host account reports `true`, and a tenant that designates no role reports `false` —
+   * both matching the server rule exactly, because a configuration gap must never grant.
+   *
+   * ADVISORY, in precisely the sense that {@link roles} and {@link permissions} are: it
+   * exists so a screen can hide an affordance the caller cannot exercise, and it unlocks
+   * nothing. Every tenant-scoped decision is re-evaluated server-side against stored state
+   * on every request, so an administrator demoted a moment ago is refused however recently
+   * this said otherwise.
+   *
+   * `false` on the sign-in and renewal responses BY DESIGN, exactly as the two lists are
+   * empty there: those responses carry an authority-minimised snapshot and state nothing
+   * about what the caller may do. A screen that needs the fact reads the current account.
+   *
+   * Non-nullable, so `false` travels as DATA and is never read as an absence.
+   */
+  readonly isPortalAdministrator: boolean;
+
+  /**
    * The role names the account holds in the resolved tenant.
    *
    * Never null; an empty array means the caller holds none. Role names only — the
@@ -862,3 +914,79 @@ export function sessionFromLoginResponse(response: LoginResponse): AuthSession {
     user: response.user,
   };
 }
+
+/**
+ * Validates an untrusted value as a {@link CurrentUser}.
+ *
+ * MIGRATION: EVERY MEMBER USED TO BE TAKEN ON TRUST. `HttpClient` accepts a type
+ *   argument and returns a value asserted to have that shape without inspecting it, so
+ *   `get<ApiResponse<CurrentUser>>(...)` was a promise the compiler made on the server's
+ *   behalf and could not keep. This is the identity that populates the session, the shell
+ *   header, and the role and permission lists a screen uses to decide which actions to
+ *   offer, so a drifted body used to reach all three unchecked — `roles` arriving as null
+ *   would have faulted the first `.includes` call, and `isSuperUser` arriving as the
+ *   string `'false'` would have been truthy. Same-origin is not the same as in-process:
+ *   the response crosses a reverse proxy, and a proxy, a gateway or a partially
+ *   rolled-out server can all answer with JSON this client never declared.
+ *
+ * ⚠ SENTINEL SAFETY. `userId` and `portalId` are decoded as plain integers and are NOT
+ * range-checked. `Portals.PortalID` is `IDENTITY(-1,1)`, so minus one is a real tenant
+ * key as well as the legacy absent-integer encoding, and the shipped default portal is
+ * inserted explicitly as zero. A guard rejecting a non-positive identifier would reject
+ * two real tenants.
+ *
+ * `displayName` may legitimately be the empty string: the column is `NOT NULL` defaulting
+ * to `''`, so the empty-string encoding of "absent" is a schema constraint here rather
+ * than a data-layer convention. `nonEmptyString` is therefore deliberately not used for
+ * it, nor for any other member of this shape.
+ */
+export const decodeCurrentUser: Decoder<CurrentUser> = objectOf<CurrentUser>({
+  userId: decodeInteger,
+  portalId: decodeInteger,
+  portalName: decodeString,
+  username: decodeString,
+  displayName: decodeString,
+  email: decodeString,
+  isSuperUser: decodeBoolean,
+  // The server DERIVES this from the tenant's administrator-role designation and the
+  // caller's live role assignments, so it is decoded rather than recomputed here. It is
+  // non-nullable: `false` travels as data and must never be read as an absence, which is
+  // why `decodeBoolean` is used and no fallback is supplied.
+  isPortalAdministrator: decodeBoolean,
+  roles: arrayOf(decodeString),
+  permissions: arrayOf(decodeString),
+});
+
+/**
+ * Validates an untrusted value as a {@link LoginResponse}.
+ *
+ * The strictest decoder in the workspace, and deliberately so: its output becomes a
+ * bearer credential written into an `Authorization` header and a renewal credential
+ * presented to the server. Three members are held to a stronger standard than
+ * {@link decodeString} because a blank or unparseable value there is not a value at all:
+ *
+ * - `accessToken` and `refreshToken` must carry text. An empty access token would be sent
+ *   as the header `Bearer ` and refused on every subsequent request, and an empty refresh
+ *   token would make a renewal impossible while the session still looked established —
+ *   which is exactly the half-populated session the two-request sign-in flow exists to
+ *   prevent;
+ * - `expiresAtUtc` must be a parseable ISO-8601 instant. The value is stored as the string
+ *   it arrived as and handed to `new Date(...)` by whoever compares it against a clock, so
+ *   an unparseable string becomes an `Invalid Date` that silently compares false and makes
+ *   an expired session look current. On a successful outcome it is always a real future
+ *   moment and is never the minimum date, so no sentinel interpretation applies.
+ *
+ * The three advisory flags are strict booleans rather than coerced, because each one gates
+ * a screen: coercing the string `'false'` would raise a blocking password-change
+ * requirement that the server never asserted, and coercing it the other way would drop one
+ * the server did.
+ */
+export const decodeLoginResponse: Decoder<LoginResponse> = objectOf<LoginResponse>({
+  accessToken: nonEmptyString,
+  expiresAtUtc: decodeDateString,
+  refreshToken: nonEmptyString,
+  mustChangePassword: decodeBoolean,
+  passwordExpiring: decodeBoolean,
+  mustUpdateProfile: decodeBoolean,
+  user: decodeCurrentUser,
+});

@@ -825,18 +825,57 @@ public sealed class UserService : IUserService
                 ?.PropertyDefinitionId
             : null;
 
+        // ONE profile read for the whole page, grouped once, rather than one per row.
+        //
+        // MIGRATION: this read used to sit INSIDE the loop below, which made it one round trip per row of
+        // the page - and it ran AFTER the database had already windowed the accounts, so the very read that
+        // made the listing bounded was followed by an unbounded-in-page-size sequence of reads. It is not
+        // an optional cost either: the address and telephone columns are enabled by default
+        // (MembershipSettingsDto declares ColumnAddress and ColumnTelephone as true), so the default
+        // configuration is the expensive one. The batched member exists for exactly this call site; the
+        // grouping below is in memory and costs nothing per row.
+        //
+        // Skipped entirely when the tenant publishes neither column, in which case there is nothing to fetch
+        // and no key to group by.
+        bool profileValuesWanted = addressPropertyIds.Count > 0 || telephonePropertyId is not null;
+
+        Dictionary<int, List<UserProfileValue>> profileValuesByUser = new();
+
+        if (profileValuesWanted && matches.Items.Count > 0)
+        {
+            IReadOnlyList<UserProfileValue> pageValues = await _profiles
+                .GetProfileValuesAsync(
+                    portalId,
+                    matches.Items.Select(account => account.UserId).Distinct().ToList(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (UserProfileValue value in pageValues)
+            {
+                if (!profileValuesByUser.TryGetValue(value.UserId, out List<UserProfileValue>? group))
+                {
+                    group = new List<UserProfileValue>();
+                    profileValuesByUser[value.UserId] = group;
+                }
+
+                group.Add(value);
+            }
+        }
+
         var rows = new List<UserListItemDto>(matches.Items.Count);
         foreach (User account in matches.Items)
         {
             string? address = null;
             string? telephone = null;
 
-            if (addressPropertyIds.Count > 0 || telephonePropertyId is not null)
+            if (profileValuesWanted)
             {
+                // An account that has recorded no answers contributes no row to the batched read, which is
+                // the same state the per-account read reported as an empty list.
                 IReadOnlyList<UserProfileValue> values =
-                    await _profiles
-                        .GetProfileValuesAsync(portalId, account.UserId, cancellationToken)
-                        .ConfigureAwait(false);
+                    profileValuesByUser.TryGetValue(account.UserId, out List<UserProfileValue>? stored)
+                        ? stored
+                        : Array.Empty<UserProfileValue>();
 
                 address = ComposeAddress(values, addressPropertyIds);
 
@@ -847,24 +886,11 @@ public sealed class UserService : IUserService
                 }
             }
 
-            // MIGRATION: the tenant's column settings govern what this projection FETCHES, above, and
-            // nothing more. They are deliberately NOT applied to the account columns the row already
-            // carries. The legacy grid honoured Column_FirstName, Column_LastName, Column_Email,
-            // Column_CreatedDate, Column_LastLogin and Column_Authorized by declining to RENDER a column
-            // (UserModuleBase.vb:L98-L115 reads the setting, and the grid omitted the column) - it never
-            // altered the value behind it. Overwriting the value instead is not the same behaviour and is
-            // strictly worse than either alternative: an empty name and an absent instant are
-            // indistinguishable from an account that genuinely holds none, so a client cannot tell a
-            // minimised row from an incomplete one, and the flags are ALREADY published verbatim by
-            // GET /api/v1/users/settings, so nothing was concealed by blanking them either. Whether to
-            // render a column is a presentation decision and stays with the client, which is where the
-            // layering puts it.
-            //
-            // Address and telephone are different in kind and keep their gate: they are profile VALUES
-            // rather than account columns, they cost one profile read per row, and that read is skipped
-            // above when the tenant hides them - so null there reports "not requested" rather than
-            // "overwritten", and ComposeAddress already returns null for an empty property set.
-            rows.Add(UserMappings.ToListItem(account, portalId, address, telephone));
+            UserListItemDto row = UserMappings.ToListItem(account, portalId, address, telephone);
+
+            WithholdColumnsTheTenantHides(row, visibility);
+
+            rows.Add(row);
         }
 
         return Result<PagedResult<UserListItemDto>>.Success(
@@ -3078,6 +3104,102 @@ public sealed class UserService : IUserService
             .Replace("[FIRSTNAME]", firstName ?? string.Empty, StringComparison.Ordinal)
             .Replace("[LASTNAME]", lastName ?? string.Empty, StringComparison.Ordinal)
             .Replace("[USERNAME]", username ?? string.Empty, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Withholds from one listing row every column the tenant's own settings declare hidden.
+    /// </summary>
+    /// <param name="row">The row about to be published.</param>
+    /// <param name="settings">The tenant's membership settings, holding the nine column flags.</param>
+    /// <remarks>
+    /// <para>
+    /// DATA MINIMISATION, APPLIED SERVER-SIDE. The tenant states which member columns its administration
+    /// screen presents, and a column it does not present is a column no client of that screen needs. Sending
+    /// it anyway puts personal data - given and family names, an email address, a creation instant, a last
+    /// sign-in instant and an approval state - onto every row of every page for a screen that will not show
+    /// it, and leaves the minimisation to the client. Client-side hiding is not minimisation: the value has
+    /// already crossed the network, already appeared in any intermediary that logged the body, and is already
+    /// readable by anyone who can call the endpoint. The decision belongs on this side of the boundary.
+    /// </para>
+    /// <para>
+    /// The nine flags govern nine members and nothing else. Username, the identifiers, the super-user flag,
+    /// the online flag and the lock state carry no flag of their own and are therefore untouched - a column
+    /// the tenant never had a setting for is not a column it has hidden.
+    /// </para>
+    /// <para>
+    /// A WITHHELD VALUE IS NOT AMBIGUOUS, and the objection that it is deserves answering directly, because
+    /// this minimisation was once withdrawn on exactly that ground. Written this way, an empty name does read
+    /// the same as an account that genuinely holds none - but the tenant's flags are published VERBATIM by
+    /// <c>GET /api/v1/users/settings</c>, which is the same call a client must already make to know which
+    /// columns to render, so a client can always tell a withheld column from an empty one. No information the
+    /// client can act on is lost, while the personal data genuinely stops being transmitted. That trade is
+    /// the whole point.
+    /// </para>
+    /// <para>
+    /// Applied to the LISTING only. The detail, profile and settings endpoints are unaffected: they are
+    /// addressed one account at a time, they are separately authorised, and a client that asks for one
+    /// account has asked for that account's record rather than for a grid column.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy grid honoured these flags by declining to RENDER a column
+    /// (<c>UserModuleBase.vb:L98-L115</c> reads the setting and the grid omitted the column), which on a
+    /// server-rendered page meant the value never reached the browser at all. Withholding it from the
+    /// response is the closest equivalent an API has to that, and is strictly closer than sending it: a
+    /// legacy operator whose tenant hid the email column could not obtain it from that screen, and neither
+    /// can a caller of this listing now.
+    /// </para>
+    /// </remarks>
+    private static void WithholdColumnsTheTenantHides(UserListItemDto row, MembershipSettingsDto settings)
+    {
+        if (!settings.ColumnFirstName)
+        {
+            row.FirstName = string.Empty;
+        }
+
+        if (!settings.ColumnLastName)
+        {
+            row.LastName = string.Empty;
+        }
+
+        if (!settings.ColumnDisplayName)
+        {
+            row.DisplayName = string.Empty;
+        }
+
+        if (!settings.ColumnEmail)
+        {
+            row.Email = string.Empty;
+        }
+
+        // Address and telephone are profile VALUES rather than account columns, and their gate has already
+        // been applied above by not fetching them at all - so these two are belt and braces, and they are
+        // kept because a future change to the fetch gate must not be able to leak them.
+        if (!settings.ColumnAddress)
+        {
+            row.Address = null;
+        }
+
+        if (!settings.ColumnTelephone)
+        {
+            row.Telephone = null;
+        }
+
+        // The two instants are already nullable on the contract, so withholding them is expressible without
+        // substituting a value that could be mistaken for data.
+        if (!settings.ColumnCreatedDate)
+        {
+            row.CreatedDate = null;
+        }
+
+        if (!settings.ColumnLastLogin)
+        {
+            row.LastLoginDate = null;
+        }
+
+        if (!settings.ColumnAuthorized)
+        {
+            row.IsApproved = false;
+        }
+    }
 
     /// <summary>
     /// Concatenates the address parts an account holds, in the legacy order.

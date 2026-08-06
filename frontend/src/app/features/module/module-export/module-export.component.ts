@@ -244,6 +244,26 @@ const NOT_PORTABLE_CODE = 'module.not_portable';
 const NO_MODULE_ADDRESSED_MESSAGE = 'This address does not name a module to export.';
 
 /**
+ * Reported when the loaded module does not describe the module this address names.
+ *
+ * The store is shared, so it can be holding another screen's module. Refusing is correct because the
+ * composed filename is derived from the loaded module's name, and proceeding would label one module's
+ * document with another module's name.
+ */
+const STALE_MODULE_MESSAGE =
+  'The module on screen no longer matches this address, so nothing was exported. Please try again.';
+
+/**
+ * Reported when an exported document arrives after the address has moved to a different module.
+ *
+ * The document is discarded rather than delivered. An export is tenant data leaving the application for
+ * the operator's device, and a file that claims to be one module while containing another cannot be
+ * corrected after the fact.
+ */
+const STALE_EXPORT_MESSAGE =
+  'The export finished after you moved to a different module, so the file was not downloaded. Please export again.';
+
+/**
  * What the progress indicator announces while the module is being read.
  *
  * MIGRATION: NET-NEW, because the legacy screen had nothing to announce. It read the module during its own
@@ -705,16 +725,43 @@ export class ModuleExportComponent {
   private pendingFileName: string | null = null;
 
   /**
+   * The module the outstanding export was requested for, or null when none is outstanding.
+   *
+   * Captured at dispatch beside {@link pendingFileName} and checked again at delivery. The pair exists
+   * because this screen is NOT recreated when the route moves from one module to another - both visits
+   * resolve to the same route configuration - so an export can settle after the address has changed
+   * underneath it. The name alone cannot detect that: it would still be a perfectly well-formed name,
+   * just for the wrong module.
+   */
+  private pendingExportModuleId: number | null = null;
+
+  /**
    * The object URL currently backing a downloaded document, or null when none is outstanding.
    *
    * OWNED RATHER THAN LEAKED, AND DELIBERATELY NOT REVOKED THE INSTANT THE CLICK RETURNS. An object URL
    * revoked in the same task as the click can be withdrawn before the browser has finished resolving it,
-   * which turns a working download into a silent failure on some engines. Revoking it later, but on a path
-   * that cannot be skipped, avoids that race without leaving the entry behind: at most one is ever alive,
-   * a new export releases the previous one first, a failed attempt releases immediately, and teardown
-   * releases whatever is outstanding. Every path therefore ends in a revocation.
+   * which turns a working download into a silent failure on some engines.
+   *
+   * ⚠ IT IS RELEASED ON THE NEXT TASK TURN INSTEAD, WHICH IS AS PROMPT AS IS SAFE. The earlier arrangement
+   * held the entry until the next export or until teardown, so a screen left open after one export kept a
+   * whole exported document pinned in memory indefinitely — for as long as the operator stayed, which on an
+   * administration screen can be all day. Waiting one turn clears the race (the browser has begun resolving
+   * the URL by then, synchronously, during the click) without keeping anything.
+   *
+   * Every path still ends in a revocation, and that is what makes the deferral safe rather than hopeful: the
+   * scheduled release, a new export releasing the previous entry first, an immediate release on failure, and
+   * teardown releasing whatever is outstanding.
    */
   private liveObjectUrl: string | null = null;
+
+  /**
+   * The pending release of {@link liveObjectUrl}, or null when none is scheduled.
+   *
+   * Held so that teardown can cancel it. Without that, a screen destroyed within the turn would leave a
+   * callback to run against a component that no longer exists — harmless in effect, because the release is
+   * idempotent and teardown has already performed it, but a stray timer nonetheless.
+   */
+  private revocationTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     // Teardown. The revocation here is what makes the deliberate deferral described above safe: whatever
@@ -763,6 +810,16 @@ export class ModuleExportComponent {
         }
 
         if (detail !== null) {
+          // ⚠ THE STORE IS SHARED AND ROOT-PROVIDED, so what it publishes is whatever was read LAST -
+          // by this screen or by any other module screen. A detail describing a different module must
+          // not seed this form: the composed filename is built from `moduleName`, so module A's name
+          // would end up labelling module B's exported document, and nothing downstream could detect
+          // the substitution. Treated as "not yet read" rather than as an absent module, because the
+          // read for THIS module may still be in flight.
+          if (detail.moduleId !== this.moduleId()) {
+            return;
+          }
+
           this.seedFileName(detail.moduleTitle);
 
           return;
@@ -798,6 +855,7 @@ export class ModuleExportComponent {
         }
 
         this.pendingFileName = null;
+        this.pendingExportModuleId = null;
         this.announceFailure(failure);
       });
     });
@@ -907,6 +965,16 @@ export class ModuleExportComponent {
       return;
     }
 
+    // ⚠ THE DETAIL MUST DESCRIBE THE MODULE THIS SCREEN ADDRESSES. It comes from a shared store, so a
+    // detail left there by another module screen - or by a read for the module this route used to name -
+    // would otherwise supply `moduleName` for the composed filename while the request below carries a
+    // different identifier. The result is module B's data delivered under module A's filename.
+    if (detail.moduleId !== id) {
+      this._notice.set(STALE_MODULE_MESSAGE);
+
+      return;
+    }
+
     if (this.form.invalid) {
       // Marking everything touched makes every field-level message visible at once, rather than revealing
       // them one at a time as the operator visits each field.
@@ -921,6 +989,11 @@ export class ModuleExportComponent {
     // unambiguously to this request: the module could in principle be re-read while the export is in
     // flight, and a name derived after the fact could then describe a different module.
     this.pendingFileName = this.composeFileName(detail.moduleName, typedName);
+
+    // Captured alongside the name, for the same reason and checked at delivery: the route can move to
+    // another module while an export is in flight, and a document must never be handed over unless it
+    // is still the module the operator is looking at.
+    this.pendingExportModuleId = id;
 
     // The operator's text travels exactly as typed. The API neither derives a name from it nor stores
     // anything under it - it labels the response and is validated for presence - so sanitising it before
@@ -972,6 +1045,7 @@ export class ModuleExportComponent {
   private resetForAddress(): void {
     this.releaseObjectUrl();
     this.pendingFileName = null;
+    this.pendingExportModuleId = null;
     this._notice.set(null);
 
     this.store.clearFailure();
@@ -1056,6 +1130,7 @@ export class ModuleExportComponent {
    */
   private deliver(content: string): void {
     const fileName: string | null = this.pendingFileName;
+    const exportedModuleId: number | null = this.pendingExportModuleId;
 
     // Not this screen's document. The store is shared and may already hold an export performed elsewhere,
     // and pushing a file at an operator who merely navigated here would be a surprise at best.
@@ -1063,7 +1138,24 @@ export class ModuleExportComponent {
       return;
     }
 
+    // ⚠ THE EXFILTRATION GUARD. This is the one sink on this screen that puts tenant data onto the
+    // operator's device, and it cannot be taken back once it fires. The route can move from one module
+    // to another WITHOUT this component being recreated - both visits resolve to the same route
+    // configuration - so an export requested for module A can settle after the screen has moved to
+    // module B. Delivering it then writes A's data to a file the operator will read as B's.
+    //
+    // The captured identifier is compared against the route rather than against the store, because the
+    // route is what the operator is actually looking at.
+    if (exportedModuleId !== this.moduleId()) {
+      this.pendingFileName = null;
+      this.pendingExportModuleId = null;
+      this._notice.set(STALE_EXPORT_MESSAGE);
+
+      return;
+    }
+
     this.pendingFileName = null;
+    this.pendingExportModuleId = null;
 
     // MIGRATION: AN EMPTY DOCUMENT IS THE LEGACY "no content" OUTCOME, PRESERVED ON THIS SIDE. The legacy
     //   branch at `Export.ascx.vb:L159` tested the module's payload before wrapping it and reported the
@@ -1213,6 +1305,11 @@ export class ModuleExportComponent {
       anchor.click();
 
       this.notifications.success(exportCompleteMessage(fileName));
+
+      // Released on the next turn rather than held: see the note on `liveObjectUrl`. Scheduled AFTER the
+      // announcement so a throw from the announcement cannot leave the entry unscheduled — the catch below
+      // releases it at once in that case.
+      this.scheduleObjectUrlRelease(objectUrl);
     } catch {
       // Nothing was handed to the browser, so there is no download left racing this and the object URL can
       // be released at once. The document itself is not lost: it is still in the store, and activating the
@@ -1234,6 +1331,10 @@ export class ModuleExportComponent {
    * live and be attempted a second time.
    */
   private releaseObjectUrl(): void {
+    // Cancelled first, so a release that has already happened cannot be attempted again by a timer that was
+    // still pending. Clearing a timer that is not set is a no-op.
+    this.cancelScheduledRelease();
+
     const objectUrl: string | null = this.liveObjectUrl;
 
     if (objectUrl === null) {
@@ -1244,5 +1345,35 @@ export class ModuleExportComponent {
 
     URL.revokeObjectURL(objectUrl);
   }
-}
 
+  /**
+   * Schedules the release of one object URL for the next task turn.
+   *
+   * The URL is compared before releasing, so a release scheduled for one document cannot revoke a different
+   * document's entry — which is what would happen if a second export began within the turn. In that case the
+   * second export has already released the first entry itself, and this callback correctly does nothing.
+   *
+   * @param objectUrl The entry this release belongs to.
+   */
+  private scheduleObjectUrlRelease(objectUrl: string): void {
+    this.cancelScheduledRelease();
+
+    this.revocationTimer = setTimeout(() => {
+      this.revocationTimer = null;
+
+      if (this.liveObjectUrl === objectUrl) {
+        this.releaseObjectUrl();
+      }
+    }, 0);
+  }
+
+  /** Cancels a pending release, if one is scheduled. Idempotent. */
+  private cancelScheduledRelease(): void {
+    if (this.revocationTimer === null) {
+      return;
+    }
+
+    clearTimeout(this.revocationTimer);
+    this.revocationTimer = null;
+  }
+}

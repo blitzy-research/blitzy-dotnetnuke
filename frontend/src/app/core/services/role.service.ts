@@ -1,9 +1,20 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 
-import { API_ENDPOINTS } from '../config/api-endpoints';
-import { pagedRequestParams, roleListParams } from '../utils/http-params.util';
+import { map } from 'rxjs';
 
+import { API_ENDPOINTS } from '../config/api-endpoints';
+import {
+  decodeRole,
+  decodeRoleGroup,
+  decodeRoleListItem,
+  decodeUserRole,
+} from '../models/role.model';
+import { arrayOf, decodeResponse, pageOf, responseOf } from '../utils/decode.util';
+import { pagedRequestParams, roleListParams } from '../utils/http-params.util';
+import { presentedInContext } from './notification.service';
+
+import type { Decoder } from '../utils/decode.util';
 import type { ApiResponse, PagedResponse } from '../models/paged-result.model';
 import type {
   CreateRoleGroupRequest,
@@ -18,6 +29,23 @@ import type {
 } from '../models/role.model';
 import type { PagedRequestParams, RoleListFilter } from '../utils/http-params.util';
 import type { Observable } from 'rxjs';
+
+/**
+ * One decoder per response shape this transport reads, composed once at module scope.
+ *
+ * The single-payload decoders are built with `responseOf` rather than `envelopeOf` because the
+ * published signatures of the methods below RETURN THE ENVELOPE. Validating without changing
+ * that shape is deliberate: handing back the bare payload instead would be a contract change
+ * rippling into `role.store` and three screens that read `.data`, which is a refactor rather
+ * than the validation this is for.
+ */
+const ROLE_PAGE: Decoder<PagedResponse<RoleListItem>> = pageOf(decodeRoleListItem);
+const MEMBERSHIP_PAGE: Decoder<PagedResponse<UserRole>> = pageOf(decodeUserRole);
+const ROLE_RESPONSE: Decoder<ApiResponse<Role>> = responseOf(decodeRole);
+const ROLE_GROUP_RESPONSE: Decoder<ApiResponse<RoleGroup>> = responseOf(decodeRoleGroup);
+const ROLE_GROUP_LIST_RESPONSE: Decoder<ApiResponse<readonly RoleGroup[]>> = responseOf(
+  arrayOf(decodeRoleGroup),
+);
 
 /**
  * The application's only client for the role resource, its groupings, and the
@@ -264,10 +292,12 @@ export class RoleService {
   ): Observable<PagedResponse<RoleListItem>> {
     const params: HttpParams = roleListParams(request, filter);
 
-    return this.http.get<PagedResponse<RoleListItem>>(
-      API_ENDPOINTS.roles.forCurrentPortal.collection(),
-      { params },
-    );
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roles.forCurrentPortal.collection(), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_PAGE, body)));
   }
 
   /**
@@ -283,7 +313,11 @@ export class RoleService {
    * @returns The role, in the single-payload wire envelope.
    */
   getRole(roleId: number): Observable<ApiResponse<Role>> {
-    return this.http.get<ApiResponse<Role>>(API_ENDPOINTS.roles.forCurrentPortal.byId(roleId));
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roles.forCurrentPortal.byId(roleId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_RESPONSE, body)));
   }
 
   /**
@@ -306,10 +340,11 @@ export class RoleService {
    * @returns The created role, in the single-payload wire envelope.
    */
   createRole(request: CreateRoleRequest): Observable<ApiResponse<Role>> {
-    return this.http.post<ApiResponse<Role>>(
-      API_ENDPOINTS.roles.forCurrentPortal.collection(),
-      request,
-    );
+    return this.http
+      .post<unknown>(API_ENDPOINTS.roles.forCurrentPortal.collection(), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_RESPONSE, body)));
   }
 
   /**
@@ -329,10 +364,11 @@ export class RoleService {
    * @returns The updated role, in the single-payload wire envelope.
    */
   updateRole(roleId: number, request: UpdateRoleRequest): Observable<ApiResponse<Role>> {
-    return this.http.put<ApiResponse<Role>>(
-      API_ENDPOINTS.roles.forCurrentPortal.byId(roleId),
-      request,
-    );
+    return this.http
+      .put<unknown>(API_ENDPOINTS.roles.forCurrentPortal.byId(roleId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_RESPONSE, body)));
   }
 
   /**
@@ -348,7 +384,9 @@ export class RoleService {
    * @returns Completion, with no payload.
    */
   deleteRole(roleId: number): Observable<void> {
-    return this.http.delete<void>(API_ENDPOINTS.roles.forCurrentPortal.byId(roleId));
+    return this.http.delete<void>(API_ENDPOINTS.roles.forCurrentPortal.byId(roleId), {
+      context: presentedInContext(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -374,10 +412,12 @@ export class RoleService {
   listUsers(roleId: number, request: PagedRequestParams): Observable<PagedResponse<UserRole>> {
     const params: HttpParams = pagedRequestParams(request);
 
-    return this.http.get<PagedResponse<UserRole>>(
-      API_ENDPOINTS.roles.forCurrentPortal.members(roleId),
-      { params },
-    );
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roles.forCurrentPortal.members(roleId), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MEMBERSHIP_PAGE, body)));
   }
 
   /**
@@ -443,7 +483,9 @@ export class RoleService {
    * @returns Completion, with no payload.
    */
   assignUser(roleId: number, request: RoleAssignmentRequest): Observable<void> {
-    return this.http.post<void>(API_ENDPOINTS.roles.forCurrentPortal.members(roleId), request);
+    return this.http.post<void>(API_ENDPOINTS.roles.forCurrentPortal.members(roleId), request, {
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -481,7 +523,10 @@ export class RoleService {
    * @returns Completion, with no payload.
    */
   removeUser(roleId: number, userId: number): Observable<void> {
-    return this.http.delete<void>(API_ENDPOINTS.roles.forCurrentPortal.member({ roleId, userId }));
+    return this.http.delete<void>(
+      API_ENDPOINTS.roles.forCurrentPortal.member({ roleId, userId }),
+      { context: presentedInContext() },
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -518,9 +563,11 @@ export class RoleService {
    * @returns The tenant's role groups, in the single-payload wire envelope.
    */
   listRoleGroups(): Observable<ApiResponse<readonly RoleGroup[]>> {
-    return this.http.get<ApiResponse<readonly RoleGroup[]>>(
-      API_ENDPOINTS.roleGroups.forCurrentPortal.collection(),
-    );
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roleGroups.forCurrentPortal.collection(), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_GROUP_LIST_RESPONSE, body)));
   }
 
   /**
@@ -537,10 +584,11 @@ export class RoleService {
    * @returns The created group, in the single-payload wire envelope.
    */
   createRoleGroup(request: CreateRoleGroupRequest): Observable<ApiResponse<RoleGroup>> {
-    return this.http.post<ApiResponse<RoleGroup>>(
-      API_ENDPOINTS.roleGroups.forCurrentPortal.collection(),
-      request,
-    );
+    return this.http
+      .post<unknown>(API_ENDPOINTS.roleGroups.forCurrentPortal.collection(), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_GROUP_RESPONSE, body)));
   }
 
   /**
@@ -556,9 +604,11 @@ export class RoleService {
    * @returns The group, in the single-payload wire envelope.
    */
   getRoleGroup(roleGroupId: number): Observable<ApiResponse<RoleGroup>> {
-    return this.http.get<ApiResponse<RoleGroup>>(
-      API_ENDPOINTS.roleGroups.forCurrentPortal.byId(roleGroupId),
-    );
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roleGroups.forCurrentPortal.byId(roleGroupId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_GROUP_RESPONSE, body)));
   }
 
   /**
@@ -576,10 +626,11 @@ export class RoleService {
     roleGroupId: number,
     request: UpdateRoleGroupRequest,
   ): Observable<ApiResponse<RoleGroup>> {
-    return this.http.put<ApiResponse<RoleGroup>>(
-      API_ENDPOINTS.roleGroups.forCurrentPortal.byId(roleGroupId),
-      request,
-    );
+    return this.http
+      .put<unknown>(API_ENDPOINTS.roleGroups.forCurrentPortal.byId(roleGroupId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(ROLE_GROUP_RESPONSE, body)));
   }
 
   /**
@@ -614,6 +665,8 @@ export class RoleService {
    * @returns Completion, with no payload.
    */
   deleteRoleGroup(roleGroupId: number): Observable<void> {
-    return this.http.delete<void>(API_ENDPOINTS.roleGroups.forCurrentPortal.byId(roleGroupId));
+    return this.http.delete<void>(API_ENDPOINTS.roleGroups.forCurrentPortal.byId(roleGroupId), {
+      context: presentedInContext(),
+    });
   }
 }

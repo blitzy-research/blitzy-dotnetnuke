@@ -187,10 +187,13 @@ import {
 import type { OnInit, Signal } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import type { AbstractControl, ValidationErrors } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
 import type { LoginRequest } from '../../../core/models/auth.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type { LoginPortalSelector } from '../../../core/utils/http-params.util';
+import { REVOCATION_FAILED_MESSAGE } from '../../../core/services/auth.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import {
   TOO_MANY_ATTEMPTS,
@@ -239,6 +242,29 @@ export const RETURN_URL_QUERY_KEY = 'returnUrl';
  * `Request.QueryString("username")` and assigned it to the account-name box.
  */
 export const USERNAME_QUERY_KEY = 'username';
+
+/**
+ * The query key naming the tenant being signed in to.
+ *
+ * ⚠ SPELLED AS THE SERVER SPELLS IT, because the value is forwarded to the endpoint under
+ * this exact name. The sign-in endpoint binds the tenant from an optional query parameter
+ * called `portalId`, and it consults it ONLY when the request host matched no configured
+ * alias — the host takes precedence, so naming a tenant does not override one that
+ * resolved.
+ *
+ * WHY THE SCREEN NEEDS IT AT ALL. An account exists within one tenant, so a sign-in that
+ * addresses the wrong one is refused with the same generic denial as a wrong password.
+ * Where the console is served from an origin that is not itself a configured alias —
+ * which is every origin until an operator adds one — the host resolves nothing and there
+ * would otherwise be no way to say which tenant was meant, leaving sign-in unreachable
+ * with no diagnosable cause.
+ *
+ * MIGRATION: no legacy counterpart, and the reason is structural rather than an omission.
+ * The legacy sign-in was a control hosted INSIDE a portal's own page, so the tenant was
+ * whichever portal had rendered it and could not be in doubt. A single-page console served
+ * from one origin has no such context, so the fact has to be stated.
+ */
+export const PORTAL_ID_QUERY_KEY = 'portalId';
 
 /**
  * The query key that seeds the verification code.
@@ -365,6 +391,117 @@ export const LOGIN_REQUIRED_MESSAGES = Object.freeze({
   verificationCode: 'Verification Code is required.',
 });
 
+/**
+ * The longest account name the sign-in contract accepts.
+ *
+ * Mirrors `DnnMigration.Application/Validation/LoginRequestValidator.cs`, whose username rule is
+ * `NotEmpty().MaximumLength(100)`. Restated rather than imported because no contract member carries
+ * it; the number is a boundary the server owns and this screen reproduces.
+ */
+export const LOGIN_USERNAME_MAX_LENGTH = 100;
+
+/**
+ * The largest credential the sign-in contract accepts, counted in UTF-8 BYTES.
+ *
+ * ⚠ BYTES, NOT CHARACTERS, AND THE DIFFERENCE IS OBSERVABLE. The server measures with
+ * `Encoding.UTF8.GetByteCount`, so a credential of emoji costs four bytes a character and 65 of them
+ * exceed this bound while numbering 65 characters. A character-counting rule here — which is all
+ * `Validators.maxLength` can express — would pass such a credential to a server that refuses it, and
+ * would equally refuse a 200-character Latin credential the server accepts. Neither direction is
+ * acceptable, so the count is performed the same way the server performs it.
+ */
+export const LOGIN_PASSWORD_MAX_BYTES = 256;
+
+/** The error key the account-name length rule reports. */
+const USERNAME_TOO_LONG_ERROR = 'usernameTooLong';
+
+/** The error key the blank-account-name rule reports. */
+const USERNAME_BLANK_ERROR = 'usernameBlank';
+
+/** The error key the credential byte-length rule reports. */
+const PASSWORD_TOO_LONG_ERROR = 'passwordTooLong';
+
+/**
+ * Wording for each bound this screen enforces ahead of the server.
+ *
+ * The two length sentences are the SERVER'S OWN, reproduced verbatim, so that a person who trips the
+ * bound before the request leaves reads exactly what they would have read had it left — the
+ * alternative is two sentences for one rule, differing by which layer noticed first.
+ *
+ * The blank sentence is the required sentence, because that is what the condition is: the server's
+ * `NotEmpty()` rejects a value made only of whitespace, whereas Angular's own required rule accepts
+ * it, so a box holding three spaces looked complete here and was refused there. Naming it as
+ * "required" describes the situation the person is actually in.
+ */
+export const LOGIN_BOUND_MESSAGES = Object.freeze({
+  /** Reproduces `LoginRequestValidator`'s username length message with its bound substituted. */
+  usernameTooLong: `A username cannot be longer than ${String(LOGIN_USERNAME_MAX_LENGTH)} characters.`,
+
+  /** Reproduces `CredentialBounds.MaximumByteLengthMessage` verbatim. */
+  passwordTooLong: `The password supplied is too long. A password may be at most ${String(
+    LOGIN_PASSWORD_MAX_BYTES,
+  )} bytes when encoded as UTF-8.`,
+});
+
+/**
+ * Refuses an account name made only of whitespace, WITHOUT trimming it.
+ *
+ * The distinction matters twice over. The server's `NotEmpty()` rejects such a value, so accepting it
+ * here spends a request to learn what was already knowable. And trimming it instead of refusing it
+ * would change WHICH credentials succeed — the legacy screen passed the box through untouched, so a
+ * name whose stored form carries a trailing space must keep it.
+ *
+ * Silent on an empty value, which is the required rule's business: one condition, one message.
+ *
+ * @param control The account-name control.
+ * @returns The blank error, or `null`.
+ */
+function nonBlankUsernameValidator(control: AbstractControl<string>): ValidationErrors | null {
+  const value = control.value;
+
+  if (value.length === 0) {
+    return null;
+  }
+
+  return value.trim().length === 0 ? { [USERNAME_BLANK_ERROR]: true } : null;
+}
+
+/**
+ * Refuses an account name longer than the contract accepts.
+ *
+ * Expressed here rather than with `Validators.maxLength` so that both length rules on this screen read
+ * the same way and report keys this file owns, which is what lets one message be chosen per failing
+ * rule rather than one message per control.
+ *
+ * @param control The account-name control.
+ * @returns The length error, or `null`.
+ */
+function usernameLengthValidator(control: AbstractControl<string>): ValidationErrors | null {
+  return control.value.length > LOGIN_USERNAME_MAX_LENGTH
+    ? { [USERNAME_TOO_LONG_ERROR]: true }
+    : null;
+}
+
+/**
+ * Refuses a credential exceeding the contract's UTF-8 byte ceiling.
+ *
+ * Counted with `TextEncoder`, which is the platform's UTF-8 encoder and therefore agrees with
+ * `Encoding.UTF8.GetByteCount` by construction. The value is neither logged nor echoed; only its
+ * length leaves this function.
+ *
+ * @param control The credential control.
+ * @returns The length error, or `null`.
+ */
+function passwordByteLengthValidator(control: AbstractControl<string>): ValidationErrors | null {
+  if (control.value.length === 0) {
+    return null;
+  }
+
+  const bytes = new TextEncoder().encode(control.value).length;
+
+  return bytes > LOGIN_PASSWORD_MAX_BYTES ? { [PASSWORD_TOO_LONG_ERROR]: true } : null;
+}
+
 // ---------------------------------------------------------------------------
 // THE FORM MODEL
 // ---------------------------------------------------------------------------
@@ -473,6 +610,25 @@ export class LoginComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
 
   /**
+   * Whether the sign-out that sent the operator here failed to end the session on the server.
+   *
+   * Shown as a calm notice rather than as a refusal: nothing the operator did was rejected, and
+   * the local sign-out did succeed. What it reports is that the renewal credential may still be
+   * live on the server, together with the action that genuinely exists for that.
+   */
+  protected readonly revocationOutstanding: Signal<boolean> = this.store.revocationOutstanding;
+
+  /**
+   * The sentence shown when {@link revocationOutstanding} is true.
+   *
+   * Imported rather than authored here, for the same reason the rate-limiter sentence is: one
+   * situation must not be described two different ways depending on which layer noticed it. The
+   * authentication client raises it through the notification channel as well, and both readers
+   * therefore say exactly the same thing.
+   */
+  protected readonly revocationMessage = REVOCATION_FAILED_MESSAGE;
+
+  /**
    * This component's own element, used only to locate a control for focus.
    *
    * Scoping the search to the host is what keeps focus management from reaching a
@@ -525,11 +681,11 @@ export class LoginComponent implements OnInit {
   protected readonly form = new FormGroup<LoginFormModel>({
     username: new FormControl<string>('', {
       nonNullable: true,
-      validators: [Validators.required],
+      validators: [Validators.required, nonBlankUsernameValidator, usernameLengthValidator],
     }),
     password: new FormControl<string>('', {
       nonNullable: true,
-      validators: [Validators.required],
+      validators: [Validators.required, passwordByteLengthValidator],
     }),
     verificationCode: new FormControl<string>('', { nonNullable: true }),
   });
@@ -540,6 +696,9 @@ export class LoginComponent implements OnInit {
 
   /** The `id` of each control, so the template and the label association cannot diverge. */
   protected readonly controlIds = LOGIN_CONTROL_IDS;
+
+  /** @see LOGIN_USERNAME_MAX_LENGTH — bound to the account-name box's native attribute. */
+  protected readonly usernameMaxLength = LOGIN_USERNAME_MAX_LENGTH;
 
   /**
    * The calm sentence shown when the rate limiter refuses the attempt.
@@ -976,8 +1135,12 @@ export class LoginComponent implements OnInit {
     // cold by design so that a command nobody subscribed to changes no state. Bounded to
     // this component's lifetime, because the store is root-provided and would never end
     // the subscription itself if the person navigated away mid-request.
+    // The tenant selector is resolved at SUBMIT time rather than on activation, unlike the three
+    // parameters that seed the form. Those seed a control the person may then edit, so reading them
+    // once is the point; this one is not presentation at all - it is part of the request - so it is
+    // read where the request is built and is never held in form state a submission could stale.
     this.store
-      .login(request)
+      .login(request, this.resolvePortalSelector())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => this.leaveForReturnUrl(),
@@ -1077,12 +1240,37 @@ export class LoginComponent implements OnInit {
     const collected: string[] = [];
 
     if (this.submitAttempted() && control.invalid) {
-      collected.push(requiredMessage);
+      // ⚠ THE MESSAGE IS CHOSEN BY WHICH RULE FAILED, not by the control being invalid. Each box now
+      // carries more than one rule — an account name must be present, non-blank AND within the
+      // contract's length, and a credential must be present AND within its byte ceiling — so a single
+      // sentence per control would describe a full box as empty the moment it grew too long.
+      collected.push(this.boundMessageFor(control) ?? requiredMessage);
     }
 
     collected.push(...fieldErrorMessages(this.store.problem(), serverFieldKey));
 
     return collected;
+  }
+
+  /**
+   * The sentence for whichever bound the control has broken, or `null` when none has.
+   *
+   * Returns `null` for an empty or blank box so that the caller falls back to the required sentence,
+   * which is the wording the legacy field labels supply for exactly that condition.
+   *
+   * @param control The control whose errors are being described.
+   * @returns The bound's own sentence, or `null`.
+   */
+  private boundMessageFor(control: FormControl<string>): string | null {
+    if (control.hasError(USERNAME_TOO_LONG_ERROR)) {
+      return LOGIN_BOUND_MESSAGES.usernameTooLong;
+    }
+
+    if (control.hasError(PASSWORD_TOO_LONG_ERROR)) {
+      return LOGIN_BOUND_MESSAGES.passwordTooLong;
+    }
+
+    return null;
   }
 
   // -------------------------------------------------------------------------
@@ -1219,6 +1407,54 @@ export class LoginComponent implements OnInit {
     if (seededCode !== null) {
       this.form.controls.verificationCode.setValue(seededCode);
     }
+
+    // Consumed above, and now removed from the address. Both values are in the form, which is
+    // the only place they are needed.
+    if (seededUsername !== null || seededCode !== null) {
+      this.scrubSeededQueryParameters();
+    }
+  }
+
+  /**
+   * Removes the seeded account name and verification code from the browser's address.
+   *
+   * ⚠ AN ADDRESS IS NOT A PRIVATE CHANNEL, WHICH IS WHY THIS EXISTS. A query string is
+   * persisted in the browser's own history, is offered by the address bar's autocomplete to
+   * whoever next uses the machine, is handed to third-party origins in the `Referer` header
+   * of any subsequent request, and is the single most commonly recorded part of a request in
+   * proxy and server access logs. A verification code is single-use authentication material
+   * and an account name identifies its holder, so neither belongs in any of those places one
+   * moment longer than it takes to read it.
+   *
+   * The legacy screen could not have done this. `Login.ascx.vb:L104-L116` read the values
+   * during a full page render, and the only address the browser ever held was the one the
+   * verification e-mail supplied; there was no client-side history to rewrite. This is
+   * therefore a DELIBERATE DIVERGENCE rather than a port, and it is recorded as one.
+   *
+   * ⚠ `replaceUrl` IS THE LOAD-BEARING OPTION. Without it the router PUSHES a second entry
+   * and the original address — material and all — stays one press of Back away, and stays in
+   * session history for as long as the tab lives. Replacing consumes the entry instead.
+   *
+   * Only the two sensitive keys are dropped. `queryParamsHandling: 'merge'` preserves
+   * everything else, which matters because {@link RETURN_URL_QUERY_KEY} may be present and is
+   * still needed after a successful attempt — this scrub must not become a redirect bug.
+   *
+   * The form is untouched. Re-seeding cannot undo it either: {@link readQueryParameter} reads
+   * the ACTIVATION SNAPSHOT and is reached only from `ngOnInit`, so a query change does not
+   * re-run the seed and cannot blank a field the operator has since typed into.
+   */
+  private scrubSeededQueryParameters(): void {
+    void this.router
+      .navigate([], {
+        relativeTo: this.route,
+        queryParams: {
+          [USERNAME_QUERY_KEY]: null,
+          [VERIFICATION_CODE_QUERY_KEY]: null,
+        },
+        queryParamsHandling: 'merge',
+        replaceUrl: true,
+      })
+      .catch(() => false);
   }
 
   /**
@@ -1239,6 +1475,46 @@ export class LoginComponent implements OnInit {
    */
   private readQueryParameter(key: string): string | null {
     return this.route.snapshot.queryParamMap.get(key);
+  }
+
+  /**
+   * The tenant selector to send with the credentials, or null when the request host resolves it.
+   *
+   * ⚠ SENTINEL DISCIPLINE, AND IT IS LOAD-BEARING HERE RATHER THAN CEREMONIAL. `Portals.PortalID`
+   * is declared `IDENTITY(-1, 1)`, so MINUS ONE names the first tenant and ZERO the second — and
+   * minus one is also the legacy stand-in for an absent integer. Presence is therefore tested
+   * EXPLICITLY: a truthiness test would discard tenant zero, a `> 0` test would discard both real
+   * seeds, and a `?? -1` fallback would manufacture the very value that causes the confusion.
+   * `Number.isInteger` accepts both seeds and rejects `NaN`, which is what a non-numeric segment
+   * and the empty string both parse to.
+   *
+   * A malformed value yields NO selector rather than a refusal or a guessed tenant. The parameter is
+   * untrusted — anyone can put anything in a query string — and the server's own precedence already
+   * covers the case: with no selector it resolves the tenant from the host exactly as it does for a
+   * sign-in that named none, and if that resolves nothing the sign-in is refused by the server with
+   * its own message. Refusing here instead would invent a client-side error the server does not have,
+   * and forwarding a non-numeric value would earn a 400 that says nothing useful to the person.
+   *
+   * @returns The selector, or null to send none.
+   */
+  private resolvePortalSelector(): LoginPortalSelector | null {
+    const raw: string | null = this.readQueryParameter(PORTAL_ID_QUERY_KEY);
+
+    // An explicit presence test. Never `if (raw)`, which would discard the string '0'.
+    if (raw === null) {
+      return null;
+    }
+
+    // MIGRATION: an explicit coercion the Option Strict asymmetry forces. The legacy pages compiled
+    // with strict conversion OFF and used request values as numbers with no conversion written down;
+    // the radix is stated so a leading zero cannot be read as octal by any engine.
+    const parsed: number = Number.parseInt(raw, 10);
+
+    if (!Number.isInteger(parsed)) {
+      return null;
+    }
+
+    return { portalId: parsed };
   }
 
   // -------------------------------------------------------------------------

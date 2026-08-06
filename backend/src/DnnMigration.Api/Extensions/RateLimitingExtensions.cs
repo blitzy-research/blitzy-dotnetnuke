@@ -169,6 +169,38 @@ public static class RateLimitingExtensions
     public const string SessionReadPolicyName = "session-read";
 
     /// <summary>
+    /// Policy name for session revocation: <c>POST /auth/logout</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// SEC: REVOCATION MUST NOT BE STARVABLE BY SIGN-IN TRAFFIC. Withdrawing a refresh token is the one
+    /// operation whose whole purpose is to shut a session down, so refusing it is not a neutral outcome -
+    /// it leaves a token the caller has asked to have revoked live until it expires on its own. While it
+    /// shared <see cref="AuthenticationPolicyName"/>, a burst of failed sign-in attempts spent the very
+    /// window revocation needed, and because the window partitions on the caller's address, that burst
+    /// did not even have to come from the same person: any peer sharing an address - everyone behind one
+    /// NAT or one corporate egress - could exhaust it. Credential GUESSING could therefore suppress
+    /// credential WITHDRAWAL, which inverts what the limiter is for.
+    /// </para>
+    /// <para>
+    /// This is the same separation, for the same reason, that <see cref="SessionReadPolicyName"/> already
+    /// makes for the caller-description read; that policy's remarks describe the coupling in full. As
+    /// there, the window SIZE is taken from the same configuration section because the traffic is of the
+    /// same order, and what makes the budget independent is the partition key prefix - see
+    /// <see cref="RevocationPartitionKeyPrefix"/>.
+    /// </para>
+    /// <para>
+    /// Revocation stays BOUNDED rather than becoming exempt. The endpoint is <c>AllowAnonymous</c> by
+    /// design, so that a caller whose access token has already expired can still withdraw its refresh
+    /// token, which means an unbounded revocation endpoint would be an unauthenticated one that anybody
+    /// could hammer. It also keeps its <c>CredentialEndpoint</c> mark, so the concurrency bound and the
+    /// body limit that protect this process's own processor and memory continue to apply: this changes
+    /// WHICH budget revocation draws on, and nothing else about how it is protected.
+    /// </para>
+    /// </remarks>
+    public const string RevocationPolicyName = "revocation";
+
+    /// <summary>
     /// Policy name for profile replacements that evaluate tenant-authored regular expressions.
     /// </summary>
     public const string ProfileWritePolicyName = "profile-write";
@@ -276,6 +308,18 @@ public static class RateLimitingExtensions
     /// </remarks>
     private const string SessionReadPartitionKeyPrefix = "session-read-window:";
 
+    /// <summary>
+    /// Prefix distinguishing the revocation window's partitions from the credential window's.
+    /// </summary>
+    /// <remarks>
+    /// This constant IS the separation. Two partitions keyed by the same caller address but under
+    /// different prefixes are two independent budgets, so sign-in traffic and revocation traffic can no
+    /// longer exhaust one another. Changing this to match <see cref="ClientPartitionKeyPrefix"/> would
+    /// silently re-merge them and restore the starvation described on
+    /// <see cref="RevocationPolicyName"/> - with nothing failing to compile.
+    /// </remarks>
+    private const string RevocationPartitionKeyPrefix = "revocation-window:";
+
     /// <summary>Prefix separating profile-validation work from every credential/session budget.</summary>
     private const string ProfileWritePartitionKeyPrefix = "profile-write-window:";
 
@@ -381,6 +425,13 @@ public static class RateLimitingExtensions
                 SessionReadPolicyName,
                 context => BuildWindowPartition(context, permitLimit, window, SessionReadPartitionKeyPrefix));
 
+            // Same window, separate partition prefix, therefore a separate budget. See
+            // RevocationPolicyName for why withdrawing a refresh token must not be starvable by the
+            // sign-in traffic it used to share a window with.
+            options.AddPolicy(
+                RevocationPolicyName,
+                context => BuildWindowPartition(context, permitLimit, window, RevocationPartitionKeyPrefix));
+
             options.AddPolicy(
                 ProfileWritePolicyName,
                 context => BuildWindowPartition(
@@ -465,7 +516,46 @@ public static class RateLimitingExtensions
             return RateLimitPartition.GetNoLimiter(UnlimitedPartitionKey);
         }
 
-        return BuildWindowPartition(context, permitLimit, window);
+        // SEC: THE GLOBAL LIMITER MUST AGREE WITH THE NAMED POLICY, OR THE NAMED POLICY IS COSMETIC.
+        // A named policy does NOT replace this limiter - the framework applies BOTH - so an endpoint
+        // given a budget of its own above is still charged HERE, and charging it under the default
+        // prefix would put it straight back into the window it was just separated from. Revocation is
+        // the case that exposes this: unlike the caller-description read, which is a GET and so is
+        // never credential-bearing, revocation is credential-bearing on two independent grounds - its
+        // CredentialEndpoint mark and its path with a POST - so it reaches this line every time.
+        return BuildWindowPartition(context, permitLimit, window, ResolveCredentialPartitionPrefix(context));
+    }
+
+    /// <summary>
+    /// Chooses which window an endpoint's requests are charged to.
+    /// </summary>
+    /// <remarks>
+    /// Read from the endpoint's OWN rate-limit declaration rather than from a second list of routes kept
+    /// here. That is what keeps this limiter and the named policy in step by construction: the action
+    /// declares <see cref="RevocationPolicyName"/> once, and both the policy and this partition follow
+    /// from that single statement. A route list duplicated here could disagree with the attribute
+    /// silently, and the symptom - a separated budget quietly re-merged - is invisible until something
+    /// exhausts it.
+    /// </remarks>
+    /// <param name="context">The request being classified.</param>
+    /// <returns>The partition key prefix, and therefore the budget, for this request.</returns>
+    private static string ResolveCredentialPartitionPrefix(HttpContext context)
+    {
+        IReadOnlyList<EnableRateLimitingAttribute>? declared = context.GetEndpoint()?.Metadata
+            .GetOrderedMetadata<EnableRateLimitingAttribute>();
+
+        if (declared is not null)
+        {
+            foreach (EnableRateLimitingAttribute declaration in declared)
+            {
+                if (string.Equals(declaration.PolicyName, RevocationPolicyName, StringComparison.Ordinal))
+                {
+                    return RevocationPartitionKeyPrefix;
+                }
+            }
+        }
+
+        return ClientPartitionKeyPrefix;
     }
 
     /// <summary>

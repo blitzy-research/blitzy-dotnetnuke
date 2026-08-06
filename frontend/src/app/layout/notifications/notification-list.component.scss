@@ -1,0 +1,244 @@
+// =============================================================================
+//  THE NOTIFICATION SURFACE — component-scoped presentation
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  Styles exactly what `notification-list.component.html` renders and nothing else:
+//  the persistent live region, one banded row per queued entry, the severity word,
+//  the sentence, and the dismissal control.
+//
+//  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
+//  ------------------------------------------------
+//  The rules document reports that no user rules were provided, which is not
+//  treated as licence to lower the bar. What governs instead is the migration
+//  plan's own normative sections and its enterprise baseline, in the plan's
+//  precedence order: design-system compliance, then visual continuity with the
+//  legacy portal, then accessibility, then responsive behaviour, then code
+//  quality.
+//
+//  ZERO HARDCODED VALUES
+//  ---------------------
+//  Every property value resolves to a design token declared in
+//  `src/styles/_tokens.scss` or to one of the six literals the plan permits — 0,
+//  none, auto, inherit, currentColor, transparent. There is no colour literal, no
+//  length literal, no bare numeric transparency, no importance flag and no asset
+//  reference anywhere in this file. `flex`, `grid`, `start`, `center` and
+//  `space-between` name layout mechanisms rather than measured design decisions and
+//  have no token to resolve to.
+//
+//  ⚠ NO RAW `@media` — the workspace permits one only in `_mixins.scss`, and
+//  responsive behaviour is obtained by `@include`-ing a mixin from there. This
+//  surface needs none: it is a single column at every width, which is what a
+//  message region should be, so no breakpoint is consulted and none is restated.
+//
+//  THE FOUR BANDS, AND WHERE EACH VALUE COMES FROM
+//  ----------------------------------------------
+//  The bands deliberately reuse the shared error banner's own band vocabulary, so
+//  that one application does not paint the same condition two ways:
+//
+//    error    danger accent + accessible danger ink on the page background.
+//             `--color-danger` (#FF0000, the measured legacy error red) renders at
+//             4.0:1 on the background — clear of the 3:1 floor for a non-text UI
+//             component such as a border, and BELOW the 4.5:1 minimum for normal
+//             text — so the border takes it and the TEXT takes
+//             `--color-danger-text` instead, measured at 7.20:1 on
+//             `--color-background`. This is the same split, for the same reason, as
+//             `error-banner.component.scss`.
+//
+//    warning  brand accent + the informational hint surface. Measured: the legacy
+//             `YellowWarning` styled its message with the ordinary `.Normal` class
+//             rather than the red one, so a refusal was deliberately NOT painted as
+//             a fault, and the pale yellow is the measured legacy hint surface.
+//
+//    info     the quiet band: the neutral border and the secondary surface, with
+//             inherited ink. It has no legacy counterpart — the legacy
+//             `ModuleMessageType` enumeration declares exactly three members and no
+//             informational one — and exists because the credential rate limiter
+//             refuses with "you are early", which must not be dressed as a failure.
+//
+//    success  the brand accent on the page background, with inherited ink. MIGRATION:
+//             the legacy success band carried its colour ENTIRELY IN A RASTER ICON —
+//             `~/images/green-ok.gif` at `ModuleMessage.vb:L134` — while its text used
+//             the ordinary `.Normal` class. Measured, there is no green anywhere in
+//             `Website/Portals/_default/default.css`, so no green token exists to
+//             resolve to and inventing one would be a design-system change with no
+//             measured source. The icon is not carried across either: the design system
+//             permits no CSS asset reference. The band is therefore stated by the accent
+//             plus the severity WORD, which is how it stays perceivable without colour.
+//
+//  ⚠ SUCCESS AND WARNING SHARE THE BAND HUE, AND THAT IS A CONSEQUENCE OF THE TOKEN
+//  VOCABULARY RATHER THAN AN OVERSIGHT. Runtime measurement confirms both bands compute
+//  to #003366; they are separated by their SURFACE — page background against the pale
+//  hint yellow — and, decisively, by the severity word each row states in bold. The
+//  vocabulary this workspace is permitted to draw on is fixed at the nine measured legacy
+//  colours, and none of them is a success colour, for the reason recorded immediately
+//  above: the legacy success band held its colour in a raster image, not in CSS. Adding a
+//  tenth colour would be a design-system change with no measured source, so the band hue
+//  is shared and the distinction is carried by the two cues that are available. No
+//  severity anywhere in this surface is distinguished by colour alone, which is the
+//  property that actually matters.
+//
+//  SELECTOR CONTRACT — shared verbatim with notification-list.component.html
+//  -----------------------------------------------------------------------
+//  `.notification-list` is the persistent live region; `.notification-list__item`
+//  one entry, carrying `data-severity`; `.notification-list__severity` the word;
+//  `.notification-list__message` the sentence; `.notification-list__dismiss` the
+//  control. Emulated view encapsulation rewrites every selector with this
+//  component's own content attribute, so none of these rules can reach a feature
+//  screen's markup.
+
+// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available
+// here; a `@use` elsewhere does not.
+@use '../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  THE LIVE REGION
+// -----------------------------------------------------------------------------
+//  It is in the document at all times — a region inserted with its first message is
+//  announced inconsistently — so while the queue is empty it must paint NOTHING.
+//  That is why it carries no padding, no border, no background and no minimum
+//  size: an empty element with no content resolves to zero height, and `gap`
+//  contributes nothing with fewer than two children.
+.notification-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+// -----------------------------------------------------------------------------
+//  ONE ENTRY
+// -----------------------------------------------------------------------------
+//  Three columns: the severity word, the sentence taking the remainder, and the
+//  dismissal at the trailing edge. Flexbox rather than Grid, per the plan's
+//  division — Grid places the shell's regions in two dimensions, components lay
+//  their own contents out with Flexbox.
+.notification-list__item {
+  display: flex;
+  align-items: start;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  padding-inline: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  // The accent is the leading edge only, which is the same emphasis the shared
+  // error banner uses and the same one the legacy validation-message vocabulary
+  // used. Widened to the first spacing step so it reads as an accent rather than
+  // as a hairline.
+  border-inline-start-width: var(--space-1);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+  box-shadow: var(--elevation-1);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+}
+
+// The danger band. Both the accent and the ink change, for the contrast reason
+// recorded in the band table above.
+.notification-list__item[data-severity='error'] {
+  border-color: var(--color-danger);
+  color: var(--color-danger-text);
+}
+
+// The refusal band: brand accent, hint surface, inherited ink.
+.notification-list__item[data-severity='warning'] {
+  border-inline-start-color: var(--color-primary);
+  background-color: var(--color-surface-hint);
+}
+
+// The quiet band.
+.notification-list__item[data-severity='info'] {
+  border-inline-start-color: var(--color-text-muted);
+  background-color: var(--color-surface);
+}
+
+// The confirmation band.
+.notification-list__item[data-severity='success'] {
+  border-inline-start-color: var(--color-primary);
+}
+
+// -----------------------------------------------------------------------------
+//  THE SEVERITY WORD
+// -----------------------------------------------------------------------------
+//  Bold and non-shrinking, so a long sentence cannot squeeze the cue that carries
+//  the band without colour. `flex-shrink: 0` is expressed through the shared
+//  flex token vocabulary's absence of a "fill" role here: the word takes its
+//  intrinsic width and nothing more.
+.notification-list__severity {
+  flex: none;
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+}
+
+// -----------------------------------------------------------------------------
+//  THE SENTENCE
+// -----------------------------------------------------------------------------
+//  Takes the remaining inline space from zero, so a single long unbroken token
+//  cannot force the row wider than its container. `overflow-wrap` is what lets
+//  such a token break rather than overflow — a message can be remote text and its
+//  shape is not this application's to choose.
+.notification-list__message {
+  flex: var(--flex-fill-from-zero);
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  THE DISMISSAL
+// -----------------------------------------------------------------------------
+//  A real button, so it is styled down to a glyph rather than up from a span. The
+//  focus ring is the shared one, applied on `:focus-visible` only, so a pointer
+//  activation does not leave a ring behind while a keyboard activation always
+//  shows one.
+//
+//  ⚠ THE TARGET IS SIZED, NOT LEFT TO THE GLYPH. Measured at runtime, the glyph alone
+//  gave this control a hit area of roughly seven by twelve pixels — the multiplication
+//  sign is a narrow character and the base type scale is small — which is far below the
+//  twenty-four-pixel minimum target size. A minimum box on both axes raises it to
+//  exactly that minimum WITHOUT enlarging the glyph, so nothing about the appearance of
+//  the row changes except that the control becomes reliably hittable with a finger or an
+//  imprecise pointer. `--space-6` is the token that measures twenty-four pixels at the
+//  root size, so the floor is expressed in the scale rather than as a literal.
+//
+//  The box is centred with `inline-flex` rather than by line-height arithmetic, because a
+//  glyph centred by line height drifts the moment the type scale is retuned, whereas a
+//  centred flex box does not. The declared `inline-flex` computes to `flex` at runtime
+//  because a flex item's display type is blockified by the specification; the formatting
+//  context and the centring are unaffected, and the longhand is written as the author
+//  intends it rather than as the cascade reports it.
+//
+//  A CONSEQUENCE, MEASURED AND ACCEPTED: this box is now the tallest item in the row, so
+//  the row grew from 34.5px to 42px — exactly the difference between the 24px floor and
+//  the 16.5px text line. Because the row stays top-aligned, the whole increase lands below
+//  the text and the glyph settles a few pixels under the sentence's optical centre.
+//  Centring the ROW instead would close that gap and open a worse one: a message running
+//  to several lines would then centre its severity word against the whole block, when the
+//  word belongs beside the first line. Top alignment is kept for that reason, and the
+//  residual offset is consistent on every row.
+.notification-list__dismiss {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--space-6);
+  min-block-size: var(--space-6);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-none);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  // Hover is a REINFORCEMENT and never the only signal: the control has an
+  // accessible name, a pointer cursor and a focus ring, so an operator who cannot
+  // perceive the hover tint loses nothing. Applied through the shared mixin, which
+  // confines it to devices that genuinely hover — on a touch device a `:hover`
+  // rule sticks after a tap and leaves the control looking permanently active.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+}

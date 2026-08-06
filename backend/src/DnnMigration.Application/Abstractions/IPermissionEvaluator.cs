@@ -200,4 +200,46 @@ public interface IPermissionEvaluator
         int? userId,
         IReadOnlyCollection<string> roleNames,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Determines whether a caller holds one specific key on AT LEAST ONE of several pages, at a cost that
+    /// does not grow with how many pages are named.
+    /// </summary>
+    /// <param name="tabIds">
+    /// The pages to consider. Every value denotes exactly the page bearing it - the page identity seeds at 0
+    /// - and a page naming no row simply cannot grant anything. An empty set holds no grant and is answered
+    /// <see langword="false"/> without any read.
+    /// </param>
+    /// <param name="permissionKey">The key to test.</param>
+    /// <param name="userId">Account identifier, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="roleNames">The role names the caller holds.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A successful outcome carrying <see langword="true"/> when at least one named page grants the key to
+    /// the caller. A denial is <see langword="false"/> on a successful outcome, never a failure.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// EXISTENTIAL, AND EXISTENTIAL PER PAGE. A page is judged exactly as
+    /// <see cref="HasTabPermissionAsync"/> judges it - so a page that denies the key contributes nothing
+    /// rather than vetoing the answer - and the verdict is true if any page's own verdict is true. Asking
+    /// this member is therefore equivalent to asking the single-page member once per page and disjoining the
+    /// answers; what differs is the cost, which is a fixed number of reads instead of a fixed number PER
+    /// PAGE.
+    /// </para>
+    /// <para>
+    /// It exists for the module authorisation path. A module placed on every page of a tenant is an ordinary
+    /// configuration, and deciding "may this caller administer it from a page it can edit" by testing each
+    /// placement in turn made one authorisation check proportional to the tenant's page tree. It is
+    /// deliberately NOT a general-purpose bulk API: nothing here reports WHICH page granted the key, because
+    /// no caller needs to know and reporting it would invite a caller to re-derive a decision this member
+    /// has already made.
+    /// </para>
+    /// </remarks>
+    Task<Result<bool>> HasAnyTabPermissionAsync(
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken = default);
 }

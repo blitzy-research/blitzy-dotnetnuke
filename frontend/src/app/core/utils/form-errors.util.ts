@@ -380,6 +380,21 @@ export function isValidationProblemDetails(value: unknown): value is ValidationP
  * and an absent status - resolves to `'error'`, because a failure nobody
  * anticipated is the one most worth showing.
  *
+ * ⚠ THIS IS THE ONLY PLACE A RESPONSE STATUS BECOMES A SEVERITY. It was not, and the
+ * divergence was visible to an operator: the shared error banner used to intercept a
+ * rate-limit refusal ahead of this function and paint it in its calmest band, so the
+ * same 429 was announced as a warning by the interceptor and shown as a calm notice by
+ * the banner on the same screen. Rather than delete the banner's intent, the intent is
+ * moved HERE, where every surface can see it: a rate-limit refusal now resolves to
+ * `'info'`, and each surface maps that member onto its own quietest band. No consumer
+ * may re-derive or override the result - a surface that disagrees with this function
+ * must change this function, so that the disagreement is resolved once for all of them.
+ *
+ * That also makes {@link ProblemSeverity} total: `'info'` was declared by the type and
+ * returned by nothing, and the rate-limit case is precisely what it was declared for.
+ * {@link STATUS_MESSAGE} already words that status as "Calm on purpose", so this aligns
+ * the severity with wording that has always said what it wanted.
+ *
  * @param status The status code from the problem document or the failed response.
  * @returns The severity to present at.
  */
@@ -398,10 +413,63 @@ export function problemSeverity(status: number | null | undefined): ProblemSever
     case 404:
       return 'warning';
     case 429:
-      return 'warning';
+      // The quietest of the three, and quieter than the other refusals on purpose:
+      // nothing was rejected on its merits and nothing is misconfigured - the caller is
+      // simply early, and the only action is to wait.
+      return 'info';
     default:
       return 'error';
   }
+}
+
+/**
+ * The statuses at which the server is REFUSING rather than FAILING.
+ *
+ * A different question from severity, and answered separately for that reason: severity
+ * says how forcefully to present a failure, whereas this says whether the failure is
+ * self-explanatory to the operator who provoked it. A refusal is - a duplicate name, a
+ * missing record, a permission they do not hold, a rate limit they have reached - and a
+ * fault is not.
+ *
+ * The two answers are related but not derivable from one another. A validation refusal
+ * and a conflict are both refusals here while resolving to `'error'` in
+ * {@link problemSeverity}, on the measured legacy evidence recorded there, so deriving
+ * one from the other would force one of the two rules to be wrong.
+ *
+ * 401 is absent deliberately. It is the one status no surface words at all: the session
+ * is either being renewed behind the scenes or gone, and the sign-in screen is the
+ * message.
+ *
+ * Typed `readonly number[]` rather than a literal tuple on purpose. A frozen tuple of
+ * literal types would narrow `includes` to accept only those six literals and would
+ * reject the plain `number` a server actually sends, which is strict typing producing
+ * exactly the unsafety it exists to remove.
+ */
+const REFUSAL_STATUSES: readonly number[] = Object.freeze([400, 403, 404, 409, 422, 429]);
+
+/**
+ * Whether a status means the server refused the request rather than failed it.
+ *
+ * Declared here, beside {@link problemSeverity}, because both classify a response status
+ * and a reader deciding how to treat a failure needs to see the two rules together. It
+ * previously lived privately inside the error interceptor, which made it invisible to
+ * every other surface and made the interceptor look like a second classification
+ * authority; only the response path uses it today, but where it LIVES is what decides
+ * whether the next surface that needs it reaches for this one or writes a third.
+ *
+ * An absent status resolves to false, matching {@link problemSeverity}'s treatment of the
+ * same input: a failure whose status cannot be read cannot be shown to be self-explanatory,
+ * and the safe answer is to treat it as a fault worth diagnosing.
+ *
+ * @param status The transport status of the failed response, or null when unreadable.
+ * @returns True for a refusal, false for a fault or an unanticipated status.
+ */
+export function isRefusalStatus(status: number | null | undefined): boolean {
+  if (status === null || status === undefined) {
+    return false;
+  }
+
+  return REFUSAL_STATUSES.includes(status);
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,17 +1532,23 @@ export function userCreateMessage(code: string | null | undefined): string | nul
 // ---------------------------------------------------------------------------
 
 /**
- * The state-refusal codes for which the legacy application had wording.
+ * The state refusals this application words for itself.
  *
- * NINE. "Conflict" is the historical name of this vocabulary and it is retained, but
- * the set is not one status: the server derives a status from a reason token, so the
- * duplicate and last-remaining codes arrive as `409`, the protected-assignment code as
- * `403` (its token is `protected`), and the page-name and module-content codes as
- * `400`. What the nine have in common is not a status but a shape - each is a refusal
- * the person can act on, by renaming the thing, choosing a different file or picking
- * another page - which is why {@link problemSeverity} presents the statuses that carry
- * them as errors rather than warnings, matching the red message type the legacy
- * administration pages used at every site that named one.
+ * TEN. "Conflict" is the historical name of this vocabulary and it is retained, but the
+ * set is not one status: the server derives a status from a reason token, so the
+ * duplicate, active-alias and last-remaining codes arrive as `409`, the
+ * protected-assignment code as `403` (its token is `protected`), and the page-name and
+ * module-content codes as `400`. What the ten have in common is not a status but a
+ * shape - each is a refusal the person can act on, by renaming the thing, choosing a
+ * different file, picking another page or reaching the portal by another address -
+ * which is why {@link problemSeverity} presents the statuses that carry them as errors
+ * rather than warnings, matching the red message type the legacy administration pages
+ * used at every site that named one.
+ *
+ * NINE OF THE TEN CARRY LEGACY WORDING and one does not: the active-alias refusal had
+ * no legacy sentence because the legacy screen HID the affordance instead of refusing
+ * the request. Its wording is authored, and the reason is recorded beside it in
+ * {@link CONFLICT_MESSAGE}.
  *
  * Each code carries a full stop as part of the code itself. It is ONE string, not a
  * path into a nested structure, and it must not be split.
@@ -1501,20 +1575,39 @@ export function userCreateMessage(code: string | null | undefined): string | nul
  * `Localization.GetString("LastPortal")` with no local resource file. The wording is
  * taken from that key; the code is what the server publishes.
  *
- * MIGRATION: several emitted refusals have no legacy wording at all - a role group
- * still classifying roles, a duplicate portal administrator, an approval state already
- * set, a store-level write conflict. None appears here; {@link problemMessage} shows
- * the server's own `detail` for them.
+ * MIGRATION: several emitted refusals have no legacy wording at all - a duplicate portal
+ * administrator, an approval state already set, a store-level write conflict. Those do not
+ * appear here; {@link problemMessage} shows the server's own `detail` for them.
+ *
+ * MIGRATION: `role_group.in_use` IS listed, and its wording is AUTHORED rather than
+ * measured, which makes it the one exception to the rule above. The legacy screen never
+ * produced this refusal - `EditGroups.ascx.vb` deleted a group without consulting the roles
+ * classified by it - so there is no legacy resource key to quote and none was invented as
+ * one. It is listed because the code is recognisable and actionable: the server publishes
+ * `role_group.in_use` on `DELETE /api/v1/role-groups/{roleGroupId}` (the `in_use` token is
+ * what the shared status translator reads to answer `409`), and the operator's next step -
+ * move or delete the roles first - is not something the server's own detail states. Leaving
+ * it out had a measurable cost: `RoleStoreFailure.conflict` resolved to null for the
+ * refusal, so the role-listing screen carried a private copy of the wording keyed off the
+ * bare status instead, which is a second vocabulary in a feature folder.
  */
 export const CONFLICT_CODES = Object.freeze([
   /** Legacy `DuplicatePortalAlias`, and `DuplicateAlias` with it. */
   'portal.alias_duplicate',
+  /**
+   * The alias the current request resolved the tenant through, refused for a rename
+   * and for an unbinding alike. NO LEGACY RESOURCE KEY, for the reason on
+   * {@link CONFLICT_MESSAGE}.
+   */
+  'portal.alias_in_use.conflict',
   /** Legacy `LastPortal`. */
   'portal.last_remaining',
   /** Legacy `DuplicateRole`. */
   'role.name_duplicate',
   /** Legacy `DuplicateRoleGroup`. */
   'role_group.name_duplicate',
+  /** No legacy antecedent; authored. Arrives as `409` from the `in_use` token. */
+  'role_group.in_use',
   /** Legacy `RoleRemoveError`. Arrives as `403`, not `409`. */
   'role_assignment.protected',
   /** Legacy `InvalidTabName`, the reserved-device-name refusal. */
@@ -1541,10 +1634,22 @@ export type ConflictCode = (typeof CONFLICT_CODES)[number];
 export const CONFLICT_MESSAGE: Readonly<Record<ConflictCode, string>> = Object.freeze({
   'portal.alias_duplicate':
     'The Portal Alias Name You Specified Already Exists. Please Choose A Different Portal Alias.',
+  // MIGRATION: AUTHORED WORDING, because no legacy sentence exists to reproduce. The legacy screen
+  //   did not refuse this - it HID the affordance, at
+  //   Website/admin/Portal/PortalAlias.ascx.vb:L51-L60, so no resource key was ever needed for a
+  //   refusal that could not be reached from the console. The rule is now enforced server-side as
+  //   well, so a refusal IS reachable - by a crafted call, or by a stale row set - and it needs a
+  //   sentence. It names the recovery, because the refusal is actionable: the same change succeeds
+  //   from a request that arrived through another of the portal's host names.
+  'portal.alias_in_use.conflict':
+    'This is the host name your request reached this portal through, so it cannot be changed or ' +
+    'removed. Reach the portal through one of its other host names and try again.',
   'portal.last_remaining': 'You Can Not Delete The Last Portal In Your Database',
   'role.name_duplicate': 'A role with the same name already exists. The role was not added.',
   'role_group.name_duplicate':
     'A role group with the same name already exists. The new group was not added.',
+  'role_group.in_use':
+    'That role group still contains roles, so it was not removed. Move or delete its roles first.',
   'role_assignment.protected':
     'You Can Not Remove The Portal Administrator Or The Registered Users Role',
   'tab.name_reserved': 'This is an invalid Page Name',
@@ -1558,7 +1663,7 @@ export const CONFLICT_MESSAGE: Readonly<Record<ConflictCode, string>> = Object.f
  * Narrows a string to a state-refusal code.
  *
  * @param value A code from the server, or anything else.
- * @returns True when the value names one of the nine codes.
+ * @returns True when the value names one of the ten codes.
  */
 export function isConflictCode(value: string | null | undefined): value is ConflictCode {
   return (
@@ -1571,7 +1676,7 @@ export function isConflictCode(value: string | null | undefined): value is Confl
  * Wording for a state-refusal code.
  *
  * @param code The code the server reported, as {@link failureCode} returns it.
- * @returns The message, or null when the code is not one of the nine.
+ * @returns The message, or null when the code is not one of the ten.
  */
 export function conflictMessage(code: string | null | undefined): string | null {
   if (typeof code !== 'string') {
@@ -1581,6 +1686,35 @@ export function conflictMessage(code: string | null | undefined): string | null 
   const normalised = normaliseFailureCode(code);
 
   return isConflictCode(normalised) ? CONFLICT_MESSAGE[normalised] : null;
+}
+
+/**
+ * Whether a narrowed refusal code is the duplicate-host-name refusal.
+ *
+ * @param code A refusal code a store has already narrowed, or null.
+ * @returns True for the duplicate-host-name refusal and false for anything else.
+ */
+// Exported so that no screen has to write a code literal of its own. The portal-alias
+// screen presents this refusal in the terser wording its own legacy control used rather
+// than the shared sentence, so it must be able to TELL THE TWO ALIAS REFUSALS APART -
+// and until this predicate existed the only way to do that was a string comparison in
+// the component, duplicating the vocabulary this file owns and free to drift from it.
+export function isDuplicateAliasCode(code: ConflictCode | null): boolean {
+  return code === 'portal.alias_duplicate';
+}
+
+/**
+ * Whether a narrowed refusal code is the refusal to write the alias the current request
+ * resolved the tenant through.
+ *
+ * @param code A refusal code a store has already narrowed, or null.
+ * @returns True for the active-alias refusal and false for anything else.
+ */
+// Both alias endpoints can now answer `409` for TWO different reasons, so a status is no
+// longer diagnostic on that screen and the code has to be read. See
+// {@link isDuplicateAliasCode} for why the comparison lives here.
+export function isAliasInUseCode(code: ConflictCode | null): boolean {
+  return code === 'portal.alias_in_use.conflict';
 }
 
 // ---------------------------------------------------------------------------

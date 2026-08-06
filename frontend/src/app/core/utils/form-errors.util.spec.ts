@@ -86,6 +86,10 @@ import {
   fieldErrorMessages,
   fieldMessages,
   formLevelMessages,
+  isConflictCode,
+  isRefusalStatus,
+  isAliasInUseCode,
+  isDuplicateAliasCode,
   isValidationProblemDetails,
   passwordUpdateMessage,
   problemMessage,
@@ -478,8 +482,24 @@ describe('form-errors.util', () => {
       expect(problemSeverity(403)).toBe('warning');
     });
 
-    it('presents a rate-limit refusal as a warning, because nothing has failed', () => {
-      expect(problemSeverity(429)).toBe('warning');
+    it('presents a rate-limit refusal as INFORMATIONAL, quieter than the other refusals', () => {
+      // The quietest of the three severities, and the reason the informational member
+      // exists at all. Nothing was rejected on its merits and nothing is misconfigured -
+      // the caller is early, and the only action is to wait. This is also the single
+      // authority the shared error banner used to override with a local test of its own,
+      // which is how the same status came to be announced as a warning and painted as a
+      // calm notice on one screen.
+      expect(problemSeverity(429)).toBe('info');
+    });
+
+    it('is the only classifier, so no surface may re-derive or override its answer', () => {
+      // The banner maps three severities onto three bands and tests no status itself, and
+      // the interceptor announces at whatever this returns. Both are asserted in their own
+      // specifications; what is asserted here is that the informational member is REACHABLE
+      // from a real status, because an unreachable member is what invited the override.
+      expect(problemSeverity(429)).toBe('info');
+      expect(problemSeverity(403)).toBe('warning');
+      expect(problemSeverity(500)).toBe('error');
     });
 
     it('presents an unauthenticated and a not-found response as warnings', () => {
@@ -505,6 +525,52 @@ describe('form-errors.util', () => {
       expect(problemSeverity(undefined)).toBe('error');
       expect(problemSeverity(0)).toBe('error');
       expect(problemSeverity(418)).toBe('error');
+    });
+  });
+
+  describe('isRefusalStatus', () => {
+    it('reports every status at which the server refuses rather than fails', () => {
+      // The six the API actually refuses with. Declared beside the severity rule so a
+      // reader deciding how to treat a failure sees both classifications together, and
+      // exported so the response path consumes it rather than keeping a private copy -
+      // which is what made the interceptor look like a second classification authority.
+      for (const status of [400, 403, 404, 409, 422, 429]) {
+        expect(isRefusalStatus(status))
+          .withContext(`${status} is a refusal the operator provoked`)
+          .toBeTrue();
+      }
+    });
+
+    it('reports a fault and an unanticipated status as NOT a refusal', () => {
+      for (const status of [500, 502, 503, 405, 406, 415, 418]) {
+        expect(isRefusalStatus(status))
+          .withContext(`${status} is a fault worth a diagnostic identifier`)
+          .toBeFalse();
+      }
+    });
+
+    it('excludes an unauthenticated response, which no surface words at all', () => {
+      expect(isRefusalStatus(401)).toBeFalse();
+    });
+
+    it('reports the no-response zero as NOT a refusal', () => {
+      // Nothing was rejected, because nothing was received.
+      expect(isRefusalStatus(0)).toBeFalse();
+    });
+
+    it('reports an absent status as NOT a refusal, matching the severity rule', () => {
+      expect(isRefusalStatus(null)).toBeFalse();
+      expect(isRefusalStatus(undefined)).toBeFalse();
+    });
+
+    it('is a DIFFERENT question from severity, and the two deliberately disagree', () => {
+      // A validation refusal and a conflict are refusals here while resolving to the error
+      // severity, on the measured legacy evidence. Deriving either rule from the other
+      // would force one of them to be wrong.
+      expect(isRefusalStatus(400)).toBeTrue();
+      expect(problemSeverity(400)).toBe('error');
+      expect(isRefusalStatus(409)).toBeTrue();
+      expect(problemSeverity(409)).toBe('error');
     });
   });
 
@@ -740,7 +806,9 @@ describe('form-errors.util', () => {
 
     it('uses the status wording when the document carries no text', () => {
       expect(summarizeProblem({ status: 429 }).message).toBe(TOO_MANY_ATTEMPTS);
-      expect(summarizeProblem({ status: 429 }).severity).toBe('warning');
+      // Informational rather than a warning: the wording for this status has always been
+      // annotated "calm on purpose", and the severity now says the same thing.
+      expect(summarizeProblem({ status: 429 }).severity).toBe('info');
     });
 
     it('prefers a supplied fallback over the status wording, and ignores a blank one', () => {
@@ -1077,7 +1145,8 @@ describe('form-errors.util', () => {
       const registrationError = userCreateMessage('user.create.provider_error');
 
       expect(registrationError).toBe(
-        'An Unexpected Error Occurred During Registration. Please Contact The Portal Administrator For Further Information.',
+        'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
+          'Administrator For Further Information.',
       );
       expect(userCreateMessage('user.create.portal_assignment_failed')).toBe(registrationError);
     });
@@ -1151,13 +1220,16 @@ describe('form-errors.util', () => {
         'A User Already Exists For the Username Specified. Please Register Again Using A Different Username.',
       );
       expect(userCreateMessage('user.create.duplicate_email')).toBe(
-        'A user already exists for the email address specified. Please login using the registered account of that email address.',
+        'A user already exists for the email address specified. Please login using the ' +
+          'registered account of that email address.',
       );
       expect(userCreateMessage('user.create.provider_error')).toBe(
-        'An Unexpected Error Occurred During Registration. Please Contact The Portal Administrator For Further Information.',
+        'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
+          'Administrator For Further Information.',
       );
       expect(passwordUpdateMessage('user.password.invalid')).toBe(
-        'You must enter a valid password. Please check with the Portal Administrator if you do not know the password requirements.',
+        'You must enter a valid password. Please check with the Portal Administrator if you ' +
+          'do not know the password requirements.',
       );
       expect(conflictMessage('role_group.name_duplicate')).toBe(
         'A role group with the same name already exists. The new group was not added.',
@@ -1185,19 +1257,84 @@ describe('form-errors.util', () => {
   // STATE-REFUSAL CODES, SPELLED AS THE API PUBLISHES THEM
   // -------------------------------------------------------------------------
   describe('conflict vocabulary', () => {
-    it('carries the nine codes that have legacy wording', () => {
+    it('carries the eleven codes a screen can act on, in publication order', () => {
+      // ⚠️ ELEVEN, AND TWO OF THEM ARE WORTH EXPLAINING. Nine of these have legacy
+      // wording behind them and are listed for that reason. `role_group.in_use` has NONE - the
+      // legacy screen deleted a role group without consulting the roles classified by it, so the
+      // refusal did not exist to be worded - and it is listed anyway because the server publishes
+      // it and an operator can act on it. Omitting it was not neutral: the code resolved to no
+      // conflict at all, so the role-listing screen kept a private copy of the wording keyed off
+      // the bare `409`, which is a second vocabulary living in a feature folder. The order is the
+      // publication order and is asserted as a sequence so a code cannot be appended silently.
       expect([...CONFLICT_CODES]).toEqual([
         'portal.alias_duplicate',
+        'portal.alias_in_use.conflict',
         'portal.last_remaining',
         'role.name_duplicate',
         'role_group.name_duplicate',
+        'role_group.in_use',
         'role_assignment.protected',
         'tab.name_reserved',
         'module.content_invalid',
         'module.content_type_mismatch',
         'module.not_portable',
       ]);
-      expect(CONFLICT_CODES.length).toBe(9);
+      expect(CONFLICT_CODES.length).toBe(11);
+    });
+
+    it('recognises the group-in-use refusal and words the operator\'s next step', () => {
+      // The server publishes this on `DELETE /api/v1/role-groups/{roleGroupId}`; the `in_use`
+      // token in the code is what the shared status translator reads to answer `409`. The wording
+      // is authored rather than measured, and it says what the server's own detail does not: what
+      // to do next. Asserted verbatim, because a screen renders it verbatim.
+      expect(isConflictCode('role_group.in_use')).toBeTrue();
+      expect(conflictMessage('role_group.in_use')).toBe(
+        'That role group still contains roles, so it was not removed. Move or delete its roles first.',
+      );
+    });
+
+    it('keeps the two role-group refusals apart', () => {
+      // They arrive at the same status from the same resource and mean opposite things: one says
+      // the name is taken, the other that the group is still doing its job. Collapsing them onto
+      // one message would tell an operator to rename a group they were trying to delete.
+      expect(conflictMessage('role_group.in_use')).not.toBe(
+        conflictMessage('role_group.name_duplicate'),
+      );
+      expect(conflictMessage('role_group.name_duplicate')).toBe(
+        'A role group with the same name already exists. The new group was not added.',
+      );
+    });
+
+    it('tells the two portal-alias refusals apart by code and not by status', () => {
+      // MIGRATION 17: both alias refusals arrive as 409, so a screen that branched on the
+      // status alone would show the duplicate wording for the active-alias refusal. The
+      // predicates exist so that no screen has to write a code literal, and they are
+      // asserted against EACH OTHER rather than only against themselves: a pair that both
+      // answered true would be worse than useless.
+      expect(isDuplicateAliasCode('portal.alias_duplicate')).toBeTrue();
+      expect(isDuplicateAliasCode('portal.alias_in_use.conflict')).toBeFalse();
+
+      expect(isAliasInUseCode('portal.alias_in_use.conflict')).toBeTrue();
+      expect(isAliasInUseCode('portal.alias_duplicate')).toBeFalse();
+
+      // Absence is not either refusal. A failure the store did not recognise arrives with
+      // no code, and neither predicate may claim it.
+      expect(isDuplicateAliasCode(null)).toBeFalse();
+      expect(isAliasInUseCode(null)).toBeFalse();
+
+      // Nor is an unrelated refusal that happens to share the vocabulary.
+      expect(isDuplicateAliasCode('portal.last_remaining')).toBeFalse();
+      expect(isAliasInUseCode('portal.last_remaining')).toBeFalse();
+    });
+
+    it('words the active-alias refusal, which has no legacy antecedent', () => {
+      // The legacy screen HID the affordance instead of refusing the request, so there is
+      // no resource key to be faithful to. The sentence must still name the recovery,
+      // because the refusal is actionable.
+      const worded = conflictMessage('portal.alias_in_use.conflict') ?? '';
+
+      expect(worded.length).toBeGreaterThan(0);
+      expect(worded).toContain('other host names');
     });
 
     it('treats a dotted code as ONE string, not as a path', () => {
@@ -1389,7 +1526,9 @@ describe('form-errors.util', () => {
         ...CONFLICT_CODES,
       ];
 
-      expect(keys.length).toBe(27);
+      // Twenty-nine across the four tables: the conflict vocabulary carries ELEVEN, having
+      // gained both the group-in-use refusal and the active-alias refusal.
+      expect(keys.length).toBe(29);
 
       for (const key of keys) {
         expect(key).withContext(`${key} must be a published failure code`).toMatch(/^[a-z0-9_]+(\.[a-z0-9_]+)+$/);

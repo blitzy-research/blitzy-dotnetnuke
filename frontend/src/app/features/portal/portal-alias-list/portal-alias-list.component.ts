@@ -50,10 +50,10 @@
 //              submitLabel()
 //    listing   columns(), rows(), loading(), listReady(), isListEmpty(),
 //              routeUsable()
-//    form      form, formOpen(), editing(), aliasError(), bannerProblem(),
-//              deleteAffordanceVisible(), confirmingDelete()
-//    commands  startCreate(), editAlias(row), submit(), cancelEdit(),
-//              requestDelete(), confirmDelete(), cancelDelete(),
+//    form      form, formOpen(), editing(), editingCurrentAlias(), aliasError(),
+//              bannerProblem(), deleteAffordanceVisible(), confirmingDelete()
+//    commands  startCreate(), rowEditable(row), editAlias(row), submit(),
+//              cancelEdit(), requestDelete(), confirmDelete(), cancelDelete(),
 //              onAliasInput(), onAliasBlur()
 //
 //  THE SIBLING TEMPLATE IS A SEPARATELY OWNED FILE. `portal-alias-list.component.html`
@@ -152,9 +152,11 @@
 //        }
 //
 //        <ng-template #aliasCommands let-row="row">
-//          <button type="button" (click)="editAlias(row)">
-//            {{ editLabel }}
-//          </button>
+//          @if (rowEditable(row)) {
+//            <button type="button" (click)="editAlias(row)">
+//              {{ editLabel }}
+//            </button>
+//          }
 //        </ng-template>
 //      </div>
 //
@@ -214,7 +216,7 @@
 //  from a portal-alias request.
 //
 // =============================================================================
-//  MIGRATION INDEX - SIXTEEN DELIBERATE DIFFERENCES, EACH CITED AND EACH
+//  MIGRATION INDEX - SEVENTEEN DELIBERATE DIFFERENCES, EACH CITED AND EACH
 //  DEVELOPED IN FULL AT ITS OWN SITE BELOW
 // =============================================================================
 //
@@ -247,7 +249,9 @@
 //
 //   6. MIGRATION: the last-alias guard is CLIENT-SIDE ONLY. Legacy hid the button
 //      at `EditPortalAlias.ascx.vb:L107` (`Count <= 1`) and the delete endpoint
-//      declares no conflict response at all. Developed at
+//      declares no conflict response for it - removing a portal's last address is
+//      permitted deliberately. NOT to be confused with MIGRATION 17, which is a
+//      different removal rule and IS enforced. Developed at
 //      `deleteAffordanceVisible`.
 //
 //   7. MIGRATION: `plAlias.Help` is RE-AUTHORED AS PROSE because resource text is
@@ -296,6 +300,18 @@
 //      no escape sequences and the legacy `+ 2` offset proves it
 //      (`EditPortalAlias.ascx.vb:L213-L215`). Developed at SHARE_PREFIX.
 //
+//  17. MIGRATION: the legacy `IsNotCurrent` rule is RESTORED, and it now withholds
+//      the DELETE command as well as the edit one. `PortalAlias.ascx.vb:L51-L60`
+//      compared each row against the request's own alias and `portalalias.ascx:L8`
+//      bound the answer to the edit hyperlink's visibility; legacy left removal to
+//      the count rule alone, so an operator could unbind the very address they had
+//      arrived through. The alias contract now publishes the answer per row,
+//      computed server-side per request, and the server refuses both writes with a
+//      `409` and its own reason code so the withheld affordance is not the only
+//      thing enforcing it. Developed at `rowEditable`, at `editAlias`, at
+//      `editingCurrentAlias`, at `deleteAffordanceVisible`, at `confirmDelete`, at
+//      `isActiveAliasRefusal` and at CURRENT_ALIAS_MESSAGE.
+//
 // =============================================================================
 //  IMPLICIT COERCIONS MADE EXPLICIT (the Option Strict asymmetry)
 // =============================================================================
@@ -309,8 +325,10 @@
 //
 //    * `Int32.Parse(Id)` on a `String` parameter
 //      (`Website/admin/Portal/PortalAlias.ascx.vb:L53`) - part of the
-//      `IsNotCurrent` rule, which is reported as a gap rather than reproduced, so
-//      the coercion has no successor at all.
+//      `IsNotCurrent` rule, which IS reproduced (MIGRATION 17). The coercion has no
+//      successor because the comparison moved to the server, which holds both sides
+//      as integers already: the alias contract reports the outcome as a boolean and
+//      nothing here parses a row identifier out of text.
 //    * `Int32.Parse(Request.QueryString("pid"))`
 //      (`Website/admin/Portal/PortalAlias.ascx.vb:L85`) - becomes
 //      {@link toPortalIdentifier}, a total parse that refuses anything which is
@@ -359,7 +377,11 @@ import type { AbstractControl, ValidationErrors } from '@angular/forms';
 
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
-import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
+import {
+  fieldErrorMessage,
+  isAliasInUseCode,
+  isDuplicateAliasCode,
+} from '../../../core/utils/form-errors.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
@@ -375,6 +397,7 @@ import type {
 } from '../../../core/models/portal.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { PortalFailure } from '../../../core/state/portal.store';
+import { isRouteId, parseRouteId } from '../../../core/utils/route-id.util';
 import type {
   DataTableCellContext,
   DataTableColumn,
@@ -518,6 +541,27 @@ const SAVED_MESSAGE = 'The Portal Alias has been saved.';
  * shown is the one this screen measured. Recorded rather than absorbed.
  */
 const DUPLICATE_ALIAS_MESSAGE = 'The Portal Alias already exists.';
+
+/**
+ * Why the host name this request arrived through offers neither command, shown beside
+ * the control when the server refuses a write to it and announced when an operator
+ * presses the row it belongs to.
+ *
+ * MIGRATION 17: THIS SENTENCE HAS NO LEGACY ANTECEDENT, and it could not have one. The
+ * legacy listing did not refuse the write - it HID the affordance, at
+ * `Website/admin/Portal/PortalAlias.ascx.vb:L51-L60`, so the situation was unreachable
+ * from the console and no resource key was ever needed. The rule is now enforced by the
+ * server as well, which is what makes the refusal reachable at all, so it needs words.
+ *
+ * The wording matches the shared vocabulary's sentence for the same refusal rather than
+ * diverging from it: unlike the duplicate refusal above, this screen has no measured
+ * wording of its own to be faithful to, so a second spelling would be invention for its
+ * own sake. It states the recovery because the refusal is actionable - the same change
+ * succeeds from a request that reached the portal through another of its host names.
+ */
+const CURRENT_ALIAS_MESSAGE =
+  'This is the host name your request reached this portal through, so it cannot be ' +
+  'changed or removed. Reach the portal through one of its other host names and try again.';
 
 /**
  * Announced when the server refuses a READ of this portal's host names.
@@ -690,10 +734,10 @@ const ALIAS_MAX_LENGTH = 200;
 //   * the update action answers 204 NO CONTENT (L406), not 200. The store's
 //     update command already accounts for it by re-reading rather than
 //     reconstructing, so nothing here depends on a body.
-//   * the delete action declares NO 409 (L450-L456). See MIGRATION 6.
-
-/** A refusal on grounds of stored state. Only ever the duplicate host name here. */
-const CONFLICT_STATUS = 409;
+//   * the delete action DOES now declare a 409, and this note used to record that
+//     it declared none. The active-alias refusal introduced it - see MIGRATION 6
+//     and MIGRATION 17 - so both write actions and the removal can each answer a
+//     conflict, for two different reasons.
 
 /** A refusal on grounds of permission. The successor of both legacy denials. */
 const FORBIDDEN_STATUS = 403;
@@ -708,17 +752,38 @@ const FORBIDDEN_STATUS = 403;
  * here would duplicate that mapping and could silently drift from it, which is
  * exactly the kind of divergence no compiler reports.
  *
- * The status is accepted as corroboration because these endpoints declare only ONE
- * cause of conflict: the create and update actions each name a single conflict
- * response and it is the duplicate host name
- * (`Api/Controllers/PortalAliasesController.cs:L296` and
- * L411), and the delete action names none at all.
+ * MIGRATION 17: THE TRANSPORT STATUS IS NO LONGER ACCEPTED AS CORROBORATION, and
+ * removing it is a correction rather than a tightening. This test used to read
+ * `conflictCode !== null || status === 409`, on the stated ground that these endpoints
+ * declared exactly ONE cause of conflict. That ground no longer holds: the active-alias
+ * refusal answers `409` from the update AND from the delete, so a status of 409 would
+ * now claim a duplicate for a refusal that is not one, and would show an operator the
+ * wrong sentence beside the wrong field. The narrowed code is the only sound
+ * discriminator, and the comparison against it lives in the shared vocabulary - see
+ * `isDuplicateAliasCode` - so this file still writes no code string.
  *
  * @param failure The classified failure the store published.
  * @returns True when the failure is the duplicate-host-name refusal.
  */
 function isDuplicateRefusal(failure: PortalFailure): boolean {
-  return failure.conflictCode !== null || failure.status === CONFLICT_STATUS;
+  return isDuplicateAliasCode(failure.conflictCode);
+}
+
+/**
+ * Whether a failure is the server refusing a write to the host name the request
+ * arrived through.
+ *
+ * MIGRATION 17: the enforced half of the restored legacy affordance. The flag on each
+ * row is what WITHHOLDS the two commands; this is what happens when the withholding is
+ * bypassed - a crafted call, or a row set read before the operator's own address
+ * changed - and it exists so that the screen can say which of the two conflicts it
+ * received rather than guessing from the status.
+ *
+ * @param failure The classified failure the store published.
+ * @returns True when the failure is the active-alias refusal.
+ */
+function isActiveAliasRefusal(failure: PortalFailure): boolean {
+  return isAliasInUseCode(failure.conflictCode);
 }
 
 /**
@@ -858,8 +923,6 @@ const MAX_PORT_NUMBER = 65535;
 /** The greatest number of digits a port may carry. */
 const MAX_PORT_DIGITS = 5;
 
-/** Matches a whole decimal integer, with an optional leading minus and no more. */
-const WHOLE_INTEGER = /^-?\d+$/u;
 
 /** Matches one ASCII letter or digit, and nothing else - no Unicode letters. */
 const ASCII_ALPHANUMERIC = /^[0-9A-Za-z]$/u;
@@ -1122,19 +1185,25 @@ export function isAcceptableHttpAlias(alias: string): boolean {
  * @returns The identifier, or `NaN` when the segment does not carry one.
  */
 export function toPortalIdentifier(value: unknown): number {
+  // DELEGATES TO core/utils/route-id.util.ts RATHER THAN RESTATING THE GRAMMAR. The five screens
+  // that parse a route identifier each carried their own version and they disagreed with one
+  // another; the grammar now lives in one place, and it bounds the result to the range the schema
+  // columns permit as well as refusing every spelling that is not a plain signed decimal integer.
+  //
+  // The rejection that used to be written out here is preserved by that parser and then some: it
+  // refuses a numeric prefix with a tail (the reason this test existed), and also the surrounding
+  // whitespace and the leading plus this body used to tolerate — two spellings of one key are two
+  // ways to name one record, which is what a single grammar exists to prevent.
+  //
+  // A NUMBER is still accepted so a programmatic binding need not stringify one, but it is
+  // VALIDATED against the same bounds rather than merely tested for finiteness.
   if (typeof value === 'number') {
-    return Number.isInteger(value) ? value : Number.NaN;
+    return isRouteId(value) ? value : Number.NaN;
   }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-
-    if (WHOLE_INTEGER.test(trimmed)) {
-      return Number.parseInt(trimmed, 10);
-    }
+  if (typeof value !== 'string') {
+    return Number.NaN;
   }
-
-  return Number.NaN;
+  return parseRouteId(value) ?? Number.NaN;
 }
 
 // -----------------------------------------------------------------------------
@@ -1629,6 +1698,42 @@ export class PortalAliasListComponent implements OnInit {
   );
 
   /**
+   * The row the form is open on, or null when it is open to add one.
+   *
+   * Resolved from the GUARDED row set rather than from the store's collection, so a row
+   * belonging to a different portal can never be the answer for the same reason
+   * {@link rows} states. Null therefore covers three distinct situations - nothing is
+   * selected, the selection names a row this portal does not hold, and the collection
+   * has not been read - and every one of them means "no row to reason about".
+   */
+  private readonly selectedAlias = computed<PortalAlias | null>(() => {
+    const chosen = this.store.selectedAliasId();
+
+    if (chosen === undefined) {
+      return null;
+    }
+
+    const found = this.rows().find((alias) => alias.portalAliasId === chosen);
+
+    return found === undefined ? null : found;
+  });
+
+  /**
+   * Whether the row the form is open on is the one this request arrived through.
+   *
+   * MIGRATION 17: FAIL CLOSED. Absence of a row answers FALSE, because the add path has
+   * no row to be current and a create is never refused on these grounds - the alias
+   * being bound does not exist yet, so resolution cannot have used it. That is a
+   * decided answer rather than a default, and it is the only situation in which "no
+   * row" and "not current" mean the same thing on this screen.
+   */
+  protected readonly editingCurrentAlias = computed<boolean>(() => {
+    const chosen = this.selectedAlias();
+
+    return chosen !== null && chosen.isCurrent;
+  });
+
+  /**
    * The submit command's label, chosen by mode.
    *
    * ONE control with TWO labels, exactly as the legacy screen had it: the markup
@@ -1644,7 +1749,7 @@ export class PortalAliasListComponent implements OnInit {
   /**
    * Whether the delete command is offered.
    *
-   * MIGRATION 6: TWO CONDITIONS, and only one of them is the legacy rule.
+   * MIGRATION 6: THREE CONDITIONS, and only one of them is the legacy count rule.
    *
    * The legacy rule is the count: `SetDeleteVisibility` read the portal's aliases and
    * hid the button when there were not more than one -
@@ -1654,23 +1759,36 @@ export class PortalAliasListComponent implements OnInit {
    * it is measured on the GUARDED row set so it counts this portal's aliases and not
    * whichever collection the store last read.
    *
-   * THE SERVER DOES NOT ENFORCE IT. The delete action declares 200-class success plus
-   * 401, 403 and 404 and NO 409 at all
-   * (`Api/Controllers/PortalAliasesController.cs:L450-L456`),
-   * and the store records the same: unbinding a portal's last host name is answered
-   * normally. So this guard is an AFFORDANCE and not a constraint, and it is the only
-   * thing standing between an operator and a portal with no way to reach it. Recorded
-   * rather than assumed - the sibling portal listing has a real server-side refusal for
-   * its equivalent rule, and this one does not.
+   * THE SERVER STILL DOES NOT ENFORCE THE COUNT RULE, and that is worth keeping
+   * straight now that it enforces a different one. Unbinding a portal's LAST host name
+   * is answered normally - the service declares no such refusal and an integration test
+   * asserts the permission deliberately, on the ground that inventing a rule the legacy
+   * console did not have would refuse a save an operator could previously make. So this
+   * first condition remains an AFFORDANCE rather than a constraint, and it is the only
+   * thing standing between an operator and a portal with no way to reach it.
    *
    * The second condition is a DELIBERATE DIVERGENCE. Legacy called
    * `SetDeleteVisibility` on the add paths too (L81 and L86), so a brand-new unsaved
    * alias showed a Delete button whenever the portal already had two or more - a button
    * that acted on `ViewState("PortalAliasID")`, which on that path was absent. Here the
    * command is offered only for a row that exists.
+   *
+   * MIGRATION 17: THE THIRD CONDITION IS THE ONE THE SERVER DOES ENFORCE. The row this
+   * request arrived through offers no delete command, and a call that reaches the
+   * endpoint anyway is refused with `409` and the active-alias code. This is the
+   * stronger of the two removal rules and it is worth seeing why they are different: the
+   * count rule guards a portal from having no address at all, which a host-level
+   * operator can repair from another tenant; this one guards the address the operator is
+   * STANDING ON, whose loss leaves them no route back to the screen that would repair
+   * it. Only the second has no in-application recovery, which is why only the second is
+   * refused server-side.
    */
   protected readonly deleteAffordanceVisible = computed<boolean>(() => {
     if (this.editing() === false) {
+      return false;
+    }
+
+    if (this.editingCurrentAlias()) {
       return false;
     }
 
@@ -1711,6 +1829,14 @@ export class PortalAliasListComponent implements OnInit {
 
     if (isDuplicateRefusal(failure)) {
       return DUPLICATE_ALIAS_MESSAGE;
+    }
+
+    // MIGRATION 17: the second state refusal these endpoints can answer. Shown beside
+    // the control rather than in the banner because the operator's next action is on
+    // this very field - or on the row they chose - and because the screen's rule is one
+    // message per outcome.
+    if (isActiveAliasRefusal(failure)) {
+      return CURRENT_ALIAS_MESSAGE;
     }
 
     return fieldErrorMessage(failure.problem, ALIAS_CONTROL_NAME);
@@ -1870,31 +1996,57 @@ export class PortalAliasListComponent implements OnInit {
   }
 
   /**
-   * Opens the form to edit one existing host name.
+   * Whether one row offers the edit command.
    *
-   * MIGRATION: THE LEGACY `IsNotCurrent` RULE IS NOT REPRODUCED, AND NOTHING IS HIDDEN.
-   *
+   * MIGRATION 17: THE LEGACY `IsNotCurrent` RULE IS REPRODUCED.
    * `Website/admin/Portal/PortalAlias.ascx.vb:L51-L60` hid the edit affordance for the
    * alias through which the site was BEING BROWSED, comparing each row's identifier
-   * against `Me.PortalAlias.PortalAliasID()` - the current request's own alias, resolved
-   * server-side by the page base class. That comparison needs a fact the browser cannot
-   * derive, and the fact is not published: the current-user contract carries the account,
-   * the portal and its name, its roles and its permissions and no alias at all; the
-   * alias contract carries three members and none of them says "in use"; the portal
-   * detail contract carries the alias collection but no current-alias identifier; and no
-   * endpoint offers one.
+   * against `Me.PortalAlias.PortalAliasID()` - the current request's own alias, as the
+   * page base class had resolved it server-side - and `portalalias.ascx:L8` bound the
+   * answer to the hyperlink's visibility.
    *
-   * So the rule is REPORTED AS A GAP rather than approximated. It is deliberately NOT
-   * inferred from the browser's own address: the resolution rule is the server's, this
-   * screen performs no host-name matching for the reasons recorded on the class, and a
-   * client-side guess would hide the wrong row - or, worse, hide the right row on one
-   * deployment and the wrong one on another. Every row therefore keeps its edit
-   * affordance, and an operator who edits the alias they arrived through is answered by
-   * the server, which is where the authority sits.
+   * The comparison is the SERVER'S, and that is what changed to make this possible. The
+   * alias contract now carries the answer per row, computed for each request from the
+   * resolved portal context, so this screen reads a published fact instead of deriving
+   * one. It is still deliberately NOT inferred from the browser's own address: the SPA
+   * is served through a proxy, so the address in the location bar need not be the host
+   * name the API matched, and the legacy write path folded case on insert while its
+   * reader did not, so two spellings of one host name are both legitimate stored values.
+   * A client-side comparison would need a casing rule of its own and would hide the
+   * right row on one deployment and the wrong one on another.
+   *
+   * @param alias One row of the listing.
+   * @returns True when the row may be renamed.
+   */
+  protected rowEditable(alias: PortalAlias): boolean {
+    return alias.isCurrent === false;
+  }
+
+  /**
+   * Opens the form to edit one existing host name.
+   *
+   * MIGRATION 17: REFUSES THE ROW THIS REQUEST ARRIVED THROUGH, and the guard is not
+   * redundant with the withheld button. The listing offers TWO ways to reach this
+   * command - the per-row button, which is withheld, and pressing the row itself, which
+   * is a net addition of this screen and reaches every row - so hiding the button alone
+   * would leave the affordance fully available by the other path. The server refuses the
+   * write regardless, so the guard exists to keep the screen from opening a form whose
+   * only possible outcome is a refusal.
+   *
+   * The attempt is ANNOUNCED rather than silently dropped. The legacy row had no press
+   * behaviour at all, so an empty command cell was the whole of the feedback it needed;
+   * here a press that did nothing would read as a broken screen. The announcement names
+   * the recovery, which is the same sentence the server's own refusal carries.
    *
    * @param alias The row to edit.
    */
   protected editAlias(alias: PortalAlias): void {
+    if (this.rowEditable(alias) === false) {
+      this.notifications.warning(CURRENT_ALIAS_MESSAGE);
+
+      return;
+    }
+
     this.store.clearFailures();
     this.store.selectAlias(alias.portalAliasId);
     this.resetEntry(aliasText(alias));
@@ -2047,6 +2199,17 @@ export class PortalAliasListComponent implements OnInit {
     const chosen = this.store.selectedAliasId();
 
     if (Number.isNaN(target) || chosen === undefined) {
+      return;
+    }
+
+    // MIGRATION 17: re-tested at the moment of the write rather than trusted from the
+    // moment the prompt opened. The prompt is a second deliberate action, and the row
+    // set can be re-read between the two - by a concurrent navigation, or by the
+    // operator's own address changing - so a check made only at `requestDelete` would
+    // act on a fact that had since stopped being true.
+    if (this.editingCurrentAlias()) {
+      this.notifications.warning(CURRENT_ALIAS_MESSAGE);
+
       return;
     }
 

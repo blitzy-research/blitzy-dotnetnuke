@@ -509,6 +509,101 @@ public sealed class CredentialRateLimitTests
         }
     }
 
+    /// <summary>
+    /// Revocation draws on a window OF ITS OWN, so sign-in traffic cannot starve it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Both halves matter and a single assertion proves neither. Spending the whole credential window and
+    /// then finding revocation still permitted is what shows the budgets are separate; finding revocation
+    /// itself refused once ITS window is spent is what shows it is still bounded, so the fix did not simply
+    /// exempt it. An exempt revocation endpoint would be worse than the coupling: it is
+    /// <c>AllowAnonymous</c> by design - so that a caller whose access token has already expired can still
+    /// withdraw its refresh token - and therefore an unbounded one is an unauthenticated endpoint anybody
+    /// may hammer.
+    /// </para>
+    /// <para>
+    /// The starvation this rules out did not require the same person. The window partitions on the caller's
+    /// address, so any peer sharing one - everyone behind a single NAT or corporate egress - could spend it
+    /// by guessing credentials, and thereby suppress a revocation somebody else was trying to perform.
+    /// </para>
+    /// <para>
+    /// Every request here is refused on its merits rather than succeeding: the credentials are deliberately
+    /// wrong and the token deliberately unknown, so nothing is authorised and no row is touched. What is
+    /// asserted is only WHICH refusal arrives - a limiter refusal is <c>429</c>, and any other status proves
+    /// the limiter permitted the request and the application then judged it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Revocation_IsNotStarvedByTheCredentialBudget()
+    {
+        using (ApiTestFixture.OverrideEnvironment(TightConfiguration()))
+        {
+            await using var host = new TightlyLimitedHost();
+            using HttpClient client = host.CreateClient();
+
+            var signIn = new Uri("/api/v1/auth/login", UriKind.Relative);
+            var revoke = new Uri("/api/v1/auth/logout", UriKind.Relative);
+
+            // Spend the credential window exactly as a burst of failed sign-in attempts would.
+            for (int permitted = 0; permitted < TightPermitLimit; permitted++)
+            {
+                using HttpResponseMessage attempt = await client.PostAsJsonAsync(
+                    signIn,
+                    new { username = "nobody", password = "not-a-password" },
+                    ApiTestFixture.Json);
+
+                attempt.StatusCode.Should().NotBe(
+                    HttpStatusCode.TooManyRequests,
+                    "the first attempts are within the window and must be judged on their merits");
+            }
+
+            using HttpResponseMessage signInRefused = await client.PostAsJsonAsync(
+                signIn,
+                new { username = "nobody", password = "not-a-password" },
+                ApiTestFixture.Json);
+
+            signInRefused.StatusCode.Should().Be(
+                HttpStatusCode.TooManyRequests,
+                "the credential window is now spent, which is the precondition this fact needs");
+
+            // THE FINDING, STATED AS BEHAVIOUR: revocation must still be reachable.
+            using HttpResponseMessage revocation = await client.PostAsJsonAsync(
+                revoke,
+                new { refreshToken = "not-a-token", clientBinding = string.Empty },
+                ApiTestFixture.Json);
+
+            revocation.StatusCode.Should().NotBe(
+                HttpStatusCode.TooManyRequests,
+                "withdrawing a refresh token must not draw on the window sign-in attempts spend, or "
+                + "credential guessing would suppress credential withdrawal");
+
+            // AND IT IS STILL BOUNDED. Spend revocation's own window and it refuses in its turn.
+            for (int permitted = 1; permitted < TightPermitLimit; permitted++)
+            {
+                using HttpResponseMessage allowed = await client.PostAsJsonAsync(
+                    revoke,
+                    new { refreshToken = "not-a-token", clientBinding = string.Empty },
+                    ApiTestFixture.Json);
+
+                allowed.StatusCode.Should().NotBe(
+                    HttpStatusCode.TooManyRequests,
+                    "the remainder of revocation's own window must still be honoured");
+            }
+
+            using HttpResponseMessage revocationRefused = await client.PostAsJsonAsync(
+                revoke,
+                new { refreshToken = "not-a-token", clientBinding = string.Empty },
+                ApiTestFixture.Json);
+
+            revocationRefused.StatusCode.Should().Be(
+                HttpStatusCode.TooManyRequests,
+                "revocation must remain bounded: it is anonymous by design, so an unbounded endpoint "
+                + "would be one anybody could hammer without limit");
+        }
+    }
+
     /// <summary>Builds the fixture's configuration with the window tightened.</summary>
     /// <returns>The environment the tightly limited host reads.</returns>
     private Dictionary<string, string?> TightConfiguration() =>

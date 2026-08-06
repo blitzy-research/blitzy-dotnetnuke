@@ -1,0 +1,515 @@
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { Router, provideRouter } from '@angular/router';
+
+import { AuthStore } from './auth.store';
+import { ModuleStore } from './module.store';
+import { PortalStore } from './portal.store';
+import { RoleStore } from './role.store';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { UserStore } from './user.store';
+import { AUTH_ENDPOINTS } from '../config/api-endpoints';
+import { authInterceptor } from '../interceptors/auth.interceptor';
+import { NotificationService } from '../services/notification.service';
+import { TokenStorageService } from '../services/token-storage.service';
+
+import type { TestRequest } from '@angular/common/http/testing';
+import type { AuthSession, CurrentUser } from '../models/auth.model';
+
+const PORTALS_URL = '/api/v1/portals';
+const USERS_URL = '/api/v1/users';
+const ROLES_URL = '/api/v1/roles';
+const MODULES_URL = '/api/v1/modules';
+
+/** The first operator's identity. */
+const OPERATOR_A: CurrentUser = {
+  userId: 0,
+  portalId: -1,
+  portalName: 'Measured Portal',
+  username: 'ann.admin',
+  displayName: 'Ann Admin',
+  email: 'ann.admin@example.test',
+  isSuperUser: false,
+  isPortalAdministrator: false,
+  roles: ['Administrators'],
+  permissions: ['EDIT'],
+};
+
+/** The second operator's identity, who signs in on the same browser afterwards. */
+const OPERATOR_B: CurrentUser = {
+  userId: 7,
+  portalId: -1,
+  portalName: 'Measured Portal',
+  username: 'bob.editor',
+  displayName: 'Bob Editor',
+  email: 'bob.editor@example.test',
+  isSuperUser: false,
+  isPortalAdministrator: false,
+  roles: ['Administrators'],
+  permissions: ['EDIT'],
+};
+
+/** A session for one identity, with tokens named after it so a leak is legible. */
+function sessionFor(user: CurrentUser): AuthSession {
+  return {
+    accessToken: `${user.username}-access-token`,
+    refreshToken: `${user.username}-refresh-token`,
+    expiresAtUtc: '2030-01-01T00:00:00Z',
+    mustChangePassword: false,
+    mustUpdateProfile: false,
+    passwordExpiring: false,
+    user,
+  };
+}
+
+/**
+ * THE CROSS-SESSION ISOLATION PROPERTY.
+ *
+ * ⚠ WHAT THIS FILE ASSERTS THAT NO OTHER FILE DOES. Each store's own specification proves
+ * that its `reset()` clears every slice it owns, and the coordinator's specification proves
+ * that ending a session calls all four and cancels the work in flight. Neither of those
+ * stages a SECOND OPERATOR. This file does: it loads one operator's records, ends the session
+ * the way the application really ends it — a terminal refusal arriving through the live
+ * interceptor chain, and separately an explicit sign-out — then signs a DIFFERENT operator in
+ * for real and asserts that nothing the first operator could see is legible to the second.
+ *
+ * ⚠ WHY THAT IS A DISCLOSURE RATHER THAN UNTIDINESS. The four domain stores are
+ * root-provided, so they outlive any component and any session. A single-page application
+ * never reloads the document, so whatever a slice still holds when one operator leaves is
+ * rendered to whoever signs in next at the same browser. Account rows carry names and e-mail
+ * addresses; a queued notification can name a portal, an account or a role.
+ *
+ * ⚠ THE INTERCEPTOR CHAIN IS REAL HERE, deliberately. The terminal path is not invoked
+ * directly: a store read is refused, the interceptor attempts the one renewal it is allowed,
+ * the renewal is refused, and the coordinator runs as a consequence. That is the only way to
+ * assert that the production wiring — not merely the coordinator — actually isolates the two
+ * sessions.
+ */
+describe('cross-session isolation', () => {
+  let httpMock: HttpTestingController;
+  let tokens: TokenStorageService;
+  let authStore: AuthStore;
+  let portals: PortalStore;
+  let users: UserStore;
+  let roles: RoleStore;
+  let modules: ModuleStore;
+  let notifications: NotificationService;
+  let session: SessionLifecycleService;
+  let navigate: jasmine.Spy;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        // The real client FIRST and the testing backend SECOND: `provideHttpClientTesting()`
+        // REPLACES the backend the real client installed, so reversing the two would leave
+        // the live backend in place and every expectation below would find nothing.
+        provideHttpClient(withInterceptors([authInterceptor])),
+        provideHttpClientTesting(),
+      ],
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+    tokens = TestBed.inject(TokenStorageService);
+    authStore = TestBed.inject(AuthStore);
+    portals = TestBed.inject(PortalStore);
+    users = TestBed.inject(UserStore);
+    roles = TestBed.inject(RoleStore);
+    modules = TestBed.inject(ModuleStore);
+    notifications = TestBed.inject(NotificationService);
+    session = TestBed.inject(SessionLifecycleService);
+
+    // The interceptor routes to the sign-in screen when it ends a session. Spied before
+    // anything runs so no navigation escapes into the empty route table, and resolved
+    // rather than stubbed because a `catch` is chained onto the returned promise.
+    navigate = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  /** Claims the one open request at a path, whatever its method. */
+  function expectOne(url: string): TestRequest {
+    return httpMock.expectOne((candidate) => candidate.url === url);
+  }
+
+  /** A paged envelope. ⚠ The body is at the TOP LEVEL for a collection, never under `data`. */
+  function page(items: readonly unknown[]): Record<string, unknown> {
+    return {
+      items,
+      meta: { totalCount: items.length, pageIndex: 0, pageSize: 10, totalPages: 1 },
+    };
+  }
+
+  /** Establishes a held session directly, as the sign-in flow would. */
+  function holdSessionFor(user: CurrentUser): void {
+    tokens.store(sessionFor(user));
+  }
+
+  /**
+   * Signs an operator in through the real two-request flow.
+   *
+   * ⚠ A SIGN-IN IS TWO REQUESTS. The credential is posted, and the identity is then read on
+   * the freshly issued token BEFORE anything is stored, so the session does not exist until
+   * both have been answered.
+   */
+  function signIn(user: CurrentUser): void {
+    authStore.login({ username: user.username, password: 'measured-secret' }).subscribe({
+      error: () => undefined,
+    });
+
+    httpMock.expectOne(AUTH_ENDPOINTS.login).flush({ data: sessionFor(user), meta: null });
+    httpMock.expectOne(AUTH_ENDPOINTS.me).flush({ data: user, meta: null });
+  }
+
+  /** Loads one record into each of the four domain stores and queues a notification. */
+  function loadRecordsFor(operator: string): void {
+    portals.loadPortals();
+    expectOne(PORTALS_URL).flush(
+      page([
+        {
+          portalId: -1,
+          portalName: `${operator} Portal`,
+          aliases: ['localhost'],
+          users: 3,
+          pages: 12,
+          hostSpace: 0,
+          hostFee: 0,
+          expiryDate: null,
+        },
+      ]),
+    );
+
+    // The unfiltered listing, which is the one command that really asks the server for every
+    // account. The filtered read dispatches nothing until a search has been chosen, so it
+    // would leave this store empty and prove nothing about a discard.
+    users.showAllAccounts();
+    expectOne(USERS_URL).flush(
+      page([
+        {
+          userId: 7,
+          portalId: -1,
+          username: `${operator.toLowerCase()}.account`,
+          firstName: operator,
+          lastName: 'Account',
+          displayName: `${operator} Account`,
+          address: null,
+          telephone: null,
+          email: `${operator.toLowerCase()}@example.invalid`,
+          createdDate: '2024-01-05T09:15:00Z',
+          lastLoginDate: null,
+          isApproved: true,
+          isOnline: false,
+          isSuperUser: false,
+          isLockedOut: false,
+        },
+      ]),
+    );
+
+    roles.loadRoles();
+    expectOne(ROLES_URL).flush(
+      page([
+        {
+          roleId: 0,
+          portalId: -1,
+          roleGroupId: null,
+          roleName: `${operator} Administrators`,
+          description: 'Held while the session was open',
+          isPublic: false,
+          autoAssignment: false,
+          serviceFee: 0,
+          billingFrequency: 'N',
+          billingPeriod: null,
+          trialFee: null,
+          trialPeriod: null,
+          trialFrequency: null,
+        },
+      ]),
+    );
+
+    modules.loadModules();
+    expectOne(MODULES_URL).flush(
+      page([
+        {
+          moduleId: 0,
+          tabModuleId: 0,
+          tabId: 0,
+          portalId: -1,
+          moduleDefId: 1,
+          moduleTitle: `${operator} Announcements`,
+          moduleOrder: 1,
+          paneName: 'ContentPane',
+          allTabs: false,
+          visibility: 0,
+          isDeleted: false,
+          displayTitle: true,
+          startDate: null,
+          endDate: null,
+          friendlyName: 'Announcements',
+          desktopModuleId: 2,
+          moduleName: 'Announcements',
+          description: null,
+          version: '01.00.00',
+        },
+      ]),
+    );
+
+    notifications.notify('success', `${operator} saved a role`);
+  }
+
+  /** Every slice a screen would render, gathered so emptiness can be asserted in one place. */
+  function visibleRecordCounts(): Record<string, number> {
+    return {
+      portals: portals.portals().length,
+      users: users.userRows().length,
+      roles: roles.roleItems().length,
+      modules: modules.modules().length,
+      notifications: notifications.notifications().length,
+    };
+  }
+
+  /**
+   * Ends the session the way the application really ends it.
+   *
+   * A store read is refused, the interceptor spends its single renewal, the renewal is
+   * refused, and the coordinator runs as a consequence. The refused read's own failure is
+   * absorbed by the store, which records it rather than rethrowing.
+   */
+  function sufferTerminalRefusal(): void {
+    portals.reloadPortals();
+    expectOne(PORTALS_URL).flush(null, { status: 401, statusText: 'Unauthorized' });
+    httpMock
+      .expectOne(AUTH_ENDPOINTS.refresh)
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+  }
+
+  describe('after a terminal refusal, the next operator starts from nothing', () => {
+    beforeEach(() => {
+      holdSessionFor(OPERATOR_A);
+      loadRecordsFor('Ann');
+    });
+
+    it('discards every record the first operator could see', () => {
+      // Loaded for real first, so what follows is a discard rather than a store that was
+      // empty all along.
+      expect(visibleRecordCounts()).toEqual({
+        portals: 1,
+        users: 1,
+        roles: 1,
+        modules: 1,
+        notifications: 1,
+      });
+
+      sufferTerminalRefusal();
+
+      expect(visibleRecordCounts()).toEqual({
+        portals: 0,
+        users: 0,
+        roles: 0,
+        modules: 0,
+        notifications: 0,
+      });
+      expect(navigate).toHaveBeenCalled();
+    });
+
+    it('presents the second operator with empty slices at the moment they sign in', () => {
+      sufferTerminalRefusal();
+      signIn(OPERATOR_B);
+
+      // ⚠ THE ASSERTION THAT MATTERS. Signing in must not make the previous operator's
+      // records visible again, and a store that merely cleared its credential while keeping
+      // its rows would fail here and nowhere else.
+      expect(visibleRecordCounts()).toEqual({
+        portals: 0,
+        users: 0,
+        roles: 0,
+        modules: 0,
+        notifications: 0,
+      });
+      expect(authStore.currentUser()?.username).toBe(OPERATOR_B.username);
+    });
+
+    it('shows the second operator their own records and none of the first operator\'s', () => {
+      sufferTerminalRefusal();
+      signIn(OPERATOR_B);
+      loadRecordsFor('Bob');
+
+      expect(portals.portals()[0]?.portalName).toBe('Bob Portal');
+      expect(users.userRows()[0]?.username).toBe('bob.account');
+      expect(roles.roleItems()[0]?.roleName).toBe('Bob Administrators');
+      expect(modules.modules()[0]?.moduleTitle).toBe('Bob Announcements');
+
+      const rendered = JSON.stringify([
+        portals.portals(),
+        users.userRows(),
+        roles.roleItems(),
+        modules.modules(),
+        notifications.notifications(),
+      ]);
+
+      // ⚠ ASSERTED ON WHOLE VALUES, NOT ON THE OPERATOR'S NAME. A bare search for "Ann"
+      // matches the module named "Announcements" and would fail for a resemblance rather
+      // than a leak — measured, not hypothetical.
+      expect(rendered).not.toContain('Ann Portal');
+      expect(rendered).not.toContain('Ann Administrators');
+      expect(rendered).not.toContain('ann.account');
+      expect(rendered).not.toContain('ann@example.invalid');
+      expect(rendered).not.toContain('Ann saved a role');
+    });
+
+    it('presents the second operator\'s credential, never the first operator\'s', () => {
+      sufferTerminalRefusal();
+      signIn(OPERATOR_B);
+
+      portals.loadPortals();
+
+      const read = expectOne(PORTALS_URL);
+
+      expect(read.request.headers.get('Authorization')).toBe(
+        `Bearer ${OPERATOR_B.username}-access-token`,
+      );
+      expect(read.request.headers.get('Authorization')).not.toContain(OPERATOR_A.username);
+
+      read.flush(page([]));
+    });
+  });
+
+  describe('a straggling response from the ended session', () => {
+    it('cannot repopulate a slice after the second operator has signed in', () => {
+      holdSessionFor(OPERATOR_A);
+
+      // Issued in the first session and deliberately left unanswered.
+      users.showAllAccounts();
+
+      const strandedRead = expectOne(USERS_URL);
+
+      loadRecordsFor('Ann');
+      sufferTerminalRefusal();
+      signIn(OPERATOR_B);
+
+      // ⚠ CLEARING THE SLICES WITHOUT ABANDONING THE REQUESTS IS THE SAME LEAK WITH A DELAY
+      // IN FRONT OF IT. The testing backend refuses to answer a cancelled request at all,
+      // which is a stronger statement than any arrival order this case could stage.
+      expect(strandedRead.cancelled).toBeTrue();
+      expect(() => strandedRead.flush(page([]))).toThrowError(/cancelled/i);
+      expect(users.userRows()).toEqual([]);
+    });
+
+    it('cannot repopulate a DETAIL slice either', () => {
+      holdSessionFor(OPERATOR_A);
+
+      users.selectUser(5);
+
+      const accountRead = httpMock.expectOne(`${USERS_URL}/5`);
+
+      roles.selectRole(3);
+
+      const roleRead = httpMock.expectOne(`${ROLES_URL}/3`);
+
+      session.endSession();
+      signIn(OPERATOR_B);
+
+      expect(accountRead.cancelled).toBeTrue();
+      expect(roleRead.cancelled).toBeTrue();
+      expect(users.selectedUser()).toBeNull();
+      expect(roles.selectedRole()).toBeNull();
+    });
+  });
+
+  describe('an explicit sign-out isolates the sessions just as a refusal does', () => {
+    it('discards the first operator\'s records and admits the second cleanly', () => {
+      holdSessionFor(OPERATOR_A);
+      loadRecordsFor('Ann');
+
+      session.signOut().subscribe({ error: () => undefined });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(visibleRecordCounts()).toEqual({
+        portals: 0,
+        users: 0,
+        roles: 0,
+        modules: 0,
+        notifications: 0,
+      });
+
+      signIn(OPERATOR_B);
+      loadRecordsFor('Bob');
+
+      expect(portals.portals().length).toBe(1);
+      expect(portals.portals()[0]?.portalName).toBe('Bob Portal');
+    });
+
+    it('isolates the sessions even when the revocation itself fails', () => {
+      // A revocation that never reached the server leaves the server-side renewal credential
+      // alive, which is a reason to end the local session rather than a reason to keep it.
+      holdSessionFor(OPERATOR_A);
+      loadRecordsFor('Ann');
+
+      session.signOut().subscribe({ error: () => undefined });
+      httpMock
+        .expectOne(AUTH_ENDPOINTS.logout)
+        .flush(null, { status: 500, statusText: 'Server Error' });
+
+      expect(visibleRecordCounts()).toEqual({
+        portals: 0,
+        users: 0,
+        roles: 0,
+        modules: 0,
+        notifications: 0,
+      });
+      expect(tokens.accessToken()).toBeNull();
+
+      signIn(OPERATOR_B);
+
+      expect(authStore.isAuthenticated()).toBeTrue();
+      expect(authStore.currentUser()?.username).toBe(OPERATOR_B.username);
+    });
+  });
+
+  describe('the query state the first operator chose', () => {
+    it('does not narrow or page what the second operator reads', () => {
+      holdSessionFor(OPERATOR_A);
+
+      // ⚠ THE TWO STORES DIFFER IN WHETHER CHOOSING A RESTRICTION ISSUES A READ. Naming a
+      // portal filter dispatches immediately, because the store resets the page and reloads;
+      // choosing a module query only records it, and the read is issued separately. Both are
+      // measured, and driving both the same way would leave one request unclaimed.
+      portals.setNameFilter('Ann');
+      expectOne(PORTALS_URL).flush(page([]));
+
+      modules.setQuery('announcements');
+      modules.loadModules();
+
+      const narrowedModuleRead = expectOne(MODULES_URL);
+
+      expect(narrowedModuleRead.request.params.get('query')).toBe('announcements');
+      narrowedModuleRead.flush(page([]));
+
+      session.endSession();
+      signIn(OPERATOR_B);
+
+      expect(portals.nameFilter()).toBeNull();
+      expect(modules.query().query ?? null).toBeNull();
+      expect(modules.query().pageIndex).toBe(0);
+
+      portals.loadPortals();
+
+      const portalRead = expectOne(PORTALS_URL);
+
+      // A residual filter would silently hide records the second operator is entitled to see,
+      // which reads as missing data rather than as a leak and is therefore harder to notice.
+      expect(portalRead.request.params.has('name')).toBeFalse();
+      expect(portalRead.request.params.get('pageIndex')).toBe('0');
+      portalRead.flush(page([]));
+
+      modules.loadModules();
+
+      const moduleRead = expectOne(MODULES_URL);
+
+      expect(moduleRead.request.params.has('query')).toBeFalse();
+      moduleRead.flush(page([]));
+    });
+  });
+});

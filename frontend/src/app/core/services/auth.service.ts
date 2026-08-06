@@ -1,5 +1,5 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Injectable, inject } from '@angular/core';
+import { Injectable, Signal, inject, signal } from '@angular/core';
 import {
   Observable,
   catchError,
@@ -13,6 +13,7 @@ import {
 } from 'rxjs';
 
 import { AUTH_ENDPOINTS } from '../config/api-endpoints';
+import { type LoginPortalSelector, loginParams } from '../utils/http-params.util';
 import {
   AuthSession,
   CurrentUser,
@@ -22,9 +23,24 @@ import {
   sessionFromLoginResponse,
 } from '../models/auth.model';
 import { ApiResponse } from '../models/paged-result.model';
+import { NotificationService } from './notification.service';
 import { TokenStorageService } from './token-storage.service';
 
 const AUTHORIZATION_HEADER = 'Authorization';
+
+/**
+ * Raised when a sign-out could not withdraw its renewal credential on the server.
+ *
+ * ⚠ DELIBERATELY FREE OF DETAIL. It carries no status code, none of the server's own wording
+ * and nothing derived from the credential, because this is a failure report about a credential
+ * operation and the person reading it can act on the ADVICE without any of that. What it must
+ * do is not lie: the previous behaviour reported a clean sign-out, and the renewal credential
+ * was still live.
+ */
+export const REVOCATION_FAILED_MESSAGE =
+  'You have been signed out on this device, but the server could not confirm that the session ' +
+  'was ended. It will expire on its own; if you are concerned that it may be used, change your ' +
+  'password.';
 
 /**
  * Owns the authentication surface: sign in, refresh, sign out, and describe the caller.
@@ -228,10 +244,12 @@ const AUTHORIZATION_HEADER = 'Authorization';
  * revoked is transmitted, and discarding local state is this client's separate
  * responsibility.
  */
+
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly tokenStorage = inject(TokenStorageService);
+  private readonly notifications = inject(NotificationService);
 
   /**
    * The refresh currently in progress, or null when none is.
@@ -245,6 +263,9 @@ export class AuthService {
    * because the client tried to keep them signed in.
    */
   private refreshInFlight: Observable<AuthSession> | null = null;
+
+  /** Backing state for {@link revocationOutstanding}. Holds a BOOLEAN and never a credential. */
+  private readonly _revocationOutstanding = signal(false);
 
   /** The signed-in identity, or null. Re-exposed so consumers need one injection. */
   readonly currentUser = this.tokenStorage.currentUser;
@@ -273,24 +294,66 @@ export class AuthService {
    * @param request The credentials, optionally naming the tenant.
    * @returns The signed-in identity.
    */
-  login(request: LoginRequest): Observable<CurrentUser> {
+  login(
+    request: LoginRequest,
+    selector?: LoginPortalSelector | null,
+  ): Observable<CurrentUser> {
     this.tokenStorage.clear();
+
+    /*
+     * Captured AFTER the clear above, so the epoch this attempt owns is the one the clear
+     * just produced. Capturing before would compare against a value this attempt itself
+     * superseded, and every commit below would be suppressed.
+     *
+     * Sign-in needs the same conditioning as renewal, for the same reason and with a second
+     * scenario of its own — an ACCOUNT SWITCH. Two sign-ins can overlap, whether because an
+     * operator submitted twice or because they signed in as somebody else before the first
+     * attempt settled, and each takes two round trips. Unconditional commits then produce:
+     *
+     *   - the LATE SUCCESS: attempt A's session stored after attempt B's has been
+     *     established, so the operator is silently returned to the account they switched
+     *     away from, holding B's screens;
+     *   - the LATE FAILURE: attempt A's rejection clearing B's live session, signing out an
+     *     operator whose own sign-in succeeded.
+     *
+     * Both are closed by testing the captured epoch before writing. The observable still
+     * emits or throws unchanged in either case, so the caller learns its own outcome; only
+     * the write to shared state is suppressed.
+     */
+    const startedAt = this.tokenStorage.generation();
 
     // The payload arrives inside the shared success envelope, so it is unwrapped before
     // anything reads it. Typing the call as the bare payload instead would compile and
     // then fail at run time in the quietest possible way: every member of the session
     // would read as undefined, and the stored session would be a shape-correct blank.
-    return this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.login, request).pipe(
+    return this.http
+      .post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.login, request, {
+        // The tenant selector travels as a QUERY parameter, not in the body: the endpoint
+        // resolves the tenant from the arrival host and admits `?portalId=` only as the
+        // fallback for a host with no alias row. `loginParams` transmits -1 and 0 as data,
+        // because `Portals.PortalID` is `IDENTITY(-1,1)` and both name real tenants.
+        params: loginParams(selector),
+      })
+      .pipe(
       map((envelope) => sessionFromLoginResponse(envelope.data)),
       switchMap((session) =>
         this.loadCurrentUser(session.accessToken).pipe(
           map((user) => ({ ...session, user })),
         ),
       ),
-      tap((session) => this.tokenStorage.store(session)),
+      tap((session) => {
+        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+          this.tokenStorage.store(session);
+        }
+      }),
       map((session) => session.user),
       catchError((error: unknown) => {
-        this.tokenStorage.clear();
+        // Conditioned for the LATE FAILURE above: an older attempt's rejection must not
+        // discard the session a newer one has already established.
+        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+          this.tokenStorage.clear();
+        }
+
         return throwError(() => error);
       }),
     );
@@ -328,6 +391,22 @@ export class AuthService {
 
     const body: RefreshTokenRequest = { refreshToken };
 
+    /*
+     * The epoch this renewal belongs to, captured before the request is issued.
+     *
+     * A renewal takes two round trips, and a sign-out or a sign-in can happen during either
+     * of them. `shareReplay({ refCount: false })` keeps the source subscribed even when every
+     * subscriber has gone, so the renewal WILL arrive and WILL run its operators regardless —
+     * which is what made the unconditional commits below a resurrection: a renewal begun
+     * before a sign-out stored its rotated pair afterwards, handing back a session the
+     * operator had just ended.
+     *
+     * `TokenStorageService.clear()` advances the epoch, so testing it here is what makes such
+     * a renewal inert without cancelling it — the answer is still delivered to whoever is
+     * still waiting, and only the write to shared state is withheld.
+     */
+    const startedAt = this.tokenStorage.generation();
+
     const request = this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.refresh, body).pipe(
       map((envelope) => sessionFromLoginResponse(envelope.data)),
       switchMap((session) =>
@@ -338,9 +417,20 @@ export class AuthService {
       // Storing here rather than at the call site is what guarantees the rotated
       // refresh token replaces the consumed one exactly once, however many
       // subscribers are sharing this request.
-      tap((session) => this.tokenStorage.store(session)),
+      //
+      // Conditioned on the epoch: a renewal that began before a sign-out or a sign-in must
+      // not write its pair over whatever replaced it.
+      tap((session) => {
+        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+          this.tokenStorage.store(session);
+        }
+      }),
       catchError((error: unknown) => {
-        this.tokenStorage.clear();
+        // Equally conditioned, and this direction matters just as much: a refused renewal
+        // from a superseded session must not clear the session that superseded it.
+        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+          this.tokenStorage.clear();
+        }
 
         return throwError(() => error);
       }),
@@ -348,8 +438,16 @@ export class AuthService {
       // 401 starts a fresh refresh rather than replaying this one's outcome
       // forever. Placed before `shareReplay` so it observes the source, not each
       // subscriber.
+      // Released by OBJECT IDENTITY, never by epoch. The question this asks is whether the slot
+      // still holds THIS request, which is a question about identity and not about the session.
+      // An epoch test would be wrong in both directions: a renewal that completes after a
+      // sign-out still needs to release its own slot, or the slot stays held by a settled
+      // observable forever and no future renewal can start; while a renewal whose slot has
+      // already been claimed by a successor must not clear it even if the epoch happens to match.
       finalize(() => {
-        this.refreshInFlight = null;
+        if (this.refreshInFlight === request) {
+          this.refreshInFlight = null;
+        }
       }),
       // `refCount: false` keeps the single subscription to the HTTP request alive
       // even if every current subscriber unsubscribes, so a cancelled request does
@@ -436,6 +534,16 @@ export class AuthService {
    * lifetime is short. The legacy `FormsAuthentication.SignOut` cleared a cookie
    * and took effect at once.
    */
+  /**
+   * Whether the last sign-out failed to withdraw its renewal credential on the server.
+   *
+   * A BOOLEAN, deliberately, and not the failure. The status code, the server's wording and the
+   * credential itself are all withheld: a screen needs only to know that the withdrawal is
+   * unconfirmed in order to say so, and anything richer would put failure detail about a
+   * credential operation into a template or a log. Reset by the next sign-out that succeeds.
+   */
+  readonly revocationOutstanding: Signal<boolean> = this._revocationOutstanding.asReadonly();
+
   logout(): Observable<void> {
     const refreshToken = this.tokenStorage.refreshToken();
 
@@ -451,9 +559,45 @@ export class AuthService {
     // No envelope here, and none is expected. Sign-out answers 204, which HTTP forbids
     // from carrying a body, so there is nothing to unwrap - see the note on
     // EmptyApiResponse, which is why that shape has no producer.
+    /*
+     * ⚠ THE STREAM STILL COMPLETES SUCCESSFULLY, AND THAT MUST NOT CHANGE. Local sign-out has
+     * already happened unconditionally above, and the caller navigates away from the signed-in
+     * shell when this completes. Turning a failed withdrawal into an error here would leave
+     * somebody who asked to sign out looking at a screen that behaves as though they had not -
+     * which is why the original absorbed the failure.
+     *
+     * What was wrong was DISCARDING it as well as absorbing it. A 429, a 503 or a dropped
+     * connection means the renewal credential is still live on the server for its full lifetime -
+     * precisely the outcome signing out exists to prevent - and `catchError(() => of(undefined))`
+     * made that indistinguishable from a clean withdrawal. So the failure is now RECORDED and
+     * REPORTED instead of discarded, which is the substance of the defect: not that sign-out
+     * absorbed the failure, but that it claimed success.
+     *
+     * ⚠ NO RETRY IS OFFERED HERE, AND NO CREDENTIAL IS CACHED TO MAKE ONE POSSIBLE. Both are
+     * ruled out by this class's own design rather than overlooked. A client-side retry would need
+     * either a retry folded into this service or the renewal credential copied into a field of it
+     * so a later attempt could re-send it - and this service is deliberately closed against both,
+     * because authentication is where that kind of creep does the most damage and is hardest to
+     * see in a diff. Custody of the credential belongs to TokenStorageService alone.
+     *
+     * What makes that acceptable is the other half of the same fix, on the server: revocation now
+     * draws on a budget of its own rather than the one sign-in attempts spend, so the 429 that
+     * made this failure common - any peer sharing the caller's address exhausting the shared
+     * window by guessing credentials - can no longer be caused by traffic that has nothing to do
+     * with this caller. The report below names the action that genuinely exists for the residue.
+     */
     return this.http.post<void>(AUTH_ENDPOINTS.logout, body).pipe(
-      map(() => undefined),
-      catchError(() => of(undefined)),
+      map(() => {
+        this._revocationOutstanding.set(false);
+
+        return undefined;
+      }),
+      catchError(() => {
+        this._revocationOutstanding.set(true);
+        this.notifications.warning(REVOCATION_FAILED_MESSAGE);
+
+        return of(undefined);
+      }),
     );
   }
 }

@@ -13941,3 +13941,1444 @@ declaration belongs "on the tenant", and the null was there only because `-1` us
 — so both now scope it to the resolved tenant, which also stops the host-exemption assertion beside
 it from becoming vacuous.
 
+### Removing a role now takes its permission grants with it, atomically, and the folder family goes conditionally
+
+The terminal legacy `DeleteRole` sweeps three grant tables before it removes the role row.
+`03.00.10.SqlDataProvider` reads, in this order, `delete from FolderPermission where RoleId = @RoleId`,
+then the same over `ModulePermission`, then over `TabPermission`, and only then `delete from Roles`.
+That sweep is a **late** addition to the legacy source rather than a step it later abandoned: the three
+earlier definitions of the procedure — `01.00.00`, `01.00.08` and `02.00.00` — delete only the role row,
+and the first two additionally carry an `if @RoleID <> 0 /* Admins Role */` guard that `02.00.00` drops.
+`03.00.10` is the last word the legacy source has on the subject, so it is the definition reproduced.
+
+An earlier revision of this migration removed the role alone, on the stated grounds that neither grant
+table declares a cascading key to the role table and so there was no cascade to reproduce. The
+observation was right and the conclusion was backwards. The **absence** of that key is precisely why the
+rows survive their principal rather than being refused or carried away, and `dbo.Roles.RoleID` is
+`IDENTITY(0, 1)`, so the vacated identifier is reissued: the next role created in the installation
+silently inherits every module and page grant the removed role held. Nothing in the API can show an
+operator that this has happened, because the grant reads resolve a role name by joining through the role
+table and an orphaned row resolves to nothing.
+
+Three things about the repair are differences worth recording rather than restorations.
+
+- **The sweep and the role removal are one transaction, where the legacy statements were four
+  independently durable ones.** A stored procedure body without an explicit transaction commits each
+  statement on its own, so a legacy failure between the second and third delete left a role in place
+  with part of its authority destroyed. The migrated path opens one scope, sweeps, stages the role
+  removal, commits once, and rolls the whole batch back on any failure. This is the same divergence, for
+  the same reason, already recorded for the account cascade: the alternative is writing a known
+  half-failure into new code. It matters more here than a tidiness argument suggests, because the three
+  removals are **set-based statements that reach the store when they are issued** rather than at the
+  flush — without the scope a failing role removal would leave the role intact and its grants
+  irrecoverably gone, which is strictly worse than the fault being repaired.
+- **The folder family is swept only where the legacy table exists.** File management is outside this
+  migration's scope, so there is no folder-grant entity, no configuration and no `DbSet`, and the
+  greenfield schema this solution provisions does not create the table — while every upgraded
+  DotNetNuke database has it. Both facts have to hold at once, so that one removal is expressed as a
+  statement against the table, guarded by an existence test in the same round trip: where the table is
+  present the rows go, where it is absent nothing happens and the removal reports success. Nothing is
+  created, altered or dropped either way, so no schema this migration does not own is touched. The
+  guard is not defensive dressing — removing it turns **every** role deletion against a
+  greenfield-provisioned database into a server fault, which is measured rather than supposed.
+  Correspondingly, the member reports no count: a count of zero would mean both "the table is not
+  there" and "the role held no folder grant", and conflating those is the habit this migration removes.
+- **The post-commit eviction widened.** The removal previously evicted one tenant-keyed page-grant
+  entry directly. That was already only half an answer while the grants stayed behind and is decisively
+  half an answer now that they go, because the module-grant entry is keyed by **page**, so evicting it
+  portal-wide means naming each of the tenant's pages in turn. The removal therefore delegates the
+  whole eviction to the permission contract, which already holds the only definition of that set. The
+  member it calls is named for the account cleanup it was written for; the eviction set does not depend
+  on which kind of principal lost its grants, and a second eviction member would be a second definition
+  free to drift from the first.
+
+What the sweep does **not** touch is as deliberate as what it does. A grant addressed to an account
+belongs to the account and is removed when the account goes — the role column is nullable and is
+compared to a plain value, so those rows are not matched. Neither are grants addressed to the negative
+pseudo-principals the terminal schema persists in that column: `-1` (all users), `-2` and `-3` name no
+`dbo.Roles` row at all, which is why neither grant table declares a key on the column, so no role
+removal can be the reason to discard one. Discarding the all-users grant on a page would silently
+un-publish it.
+
+One in-scope test changed with the repair rather than around it. A permission-contract guard asserted
+that no member's name may contain the excluded storage subsystem's vocabulary at all, which is an
+over-statement of an exclusion that is genuinely about the **feature**: the plan lists the module, page
+and folder grant triad among the authorising reference sources of the in-scope security domain, and
+counts the folder controller's cache sites among in-scope call sites, so the rows are within this
+migration's knowledge even though no folder screen, entity or read is. The guard now pins that boundary
+instead of banning a token, and is stricter than the ban everywhere else: the one admitted member must
+be exactly one member, on the persistence surface, producing nothing, and addressable by role alone —
+conditions that together make it incapable of growing into the feature the exclusion forbids, since no
+caller can name a folder to it and no caller can read anything back from it.
+
+## QA remediation: the announcements the application composed but never showed anyone
+
+Three findings in this group share one cause. The workspace had a notification service, a severity
+classifier and a session store, and the root component consumed none of them — so the outcomes the
+application went to some trouble to word were queued into a signal that no template read, and the
+signed-in account had no way to see who it was or to leave.
+
+### Every announcement was silent, and the surface that shows them is net-new
+
+`core/services/notification.service.ts` is reached from the response interceptor, from both
+navigation gates and from a dozen administration screens. Nothing rendered its queue. A permission
+refusal, a rate-limit refusal, a transport failure, a confirmed save and an advisory that a requested
+notification could not be sent were all appended and all invisible, which made a screen that
+correctly refused to act and correctly said so indistinguishable from one that had silently done
+nothing.
+
+The queue is now rendered by `layout/notifications/notification-list.component.*`, mounted inside the
+shell's `main` region above the routed outlet so that it survives the navigation an announcement
+often accompanies. Four differences from the legacy band are deliberate:
+
+- **The announcement semantics are net-new.** The legacy renderer
+  `Library/Components/Skins/ModuleMessage.vb` painted one message per page load into the skin, and a
+  search of both legacy trees finds no `aria-live`, no `role` and no `aria-` attribute of any kind
+  anywhere. The region is `role="status"` with `aria-live="polite"` and `aria-atomic="false"`, and it
+  is PERSISTENT — always in the document, with only its contents changing — because a live region
+  inserted at the same moment as its first message is announced inconsistently across screen readers,
+  and the first message is the one that matters. It is deliberately quieter than the shared error
+  banner, which is assertive and atomic: a banner carries a validation failure the operator must act
+  on before proceeding, whereas this reports the outcome of something they have just done.
+- **The per-severity icons are not carried across.** The legacy band expressed severity with a raster
+  image — `ModuleMessage.vb:L134`, `L140`, `L146` — and the design system permits no CSS asset
+  reference. Severity is stated as a bold WORD instead, which cannot fail to load and is read out
+  with the message.
+- **A message is dismissible, where a legacy band persisted until the next postback replaced it.**
+  There is deliberately no auto-dismiss timer: a person reading slowly, or reading with a screen
+  reader, must not lose a message before finishing it.
+- **The success and warning bands share their accent colour.** Both compute to `#003366`. The legacy
+  success band held its colour entirely in `~/images/green-ok.gif` while its text used the ordinary
+  `.Normal` class, and measured against `Website/Portals/_default/default.css` there is no green
+  anywhere in the legacy palette — so no success token exists to resolve to, and inventing one would
+  be a design-system change with no measured source. The two are separated by their surface, the pale
+  hint yellow against the page background, and by the severity word. No severity in this surface is
+  distinguished by colour alone.
+
+Runtime measurement changed one value here. The dismissal control's hit area was roughly seven by
+twelve pixels — the multiplication sign is a narrow character and the base type scale is small — so
+it now carries a twenty-four-pixel floor on both axes, expressed as `--space-6`. The glyph is
+unchanged; only the box around it grew, which raised each row from 34.5 to 42 pixels. The row stays
+top-aligned, so the increase lands below the text: centring the row instead would place a
+multi-line message's severity word against the middle of the block when it belongs beside the first
+line.
+
+### One rate-limit refusal was being presented two ways on the same screen
+
+`problemSeverity` in `core/utils/form-errors.util.ts` classified HTTP 429 as a warning, while the
+shared error banner intercepted that status ahead of the function and painted it in its calmest band.
+The same refusal was therefore announced as a warning through the notification queue and shown as a
+calm notice in the banner, from two rules that had no way of knowing about each other.
+
+The banner's intent was right and its placement was wrong, so the intent moved into the classifier: a
+rate-limit refusal now resolves to the informational severity, and each surface maps that member onto
+its own quietest band. This makes `ProblemSeverity` total — the informational member was declared by
+the type and returned by nothing, which is precisely what invited the local override. `STATUS_MESSAGE`
+has always annotated that status's wording as calm on purpose, so the severity now agrees with wording
+that already said what it wanted. Two consequences:
+
+- **A refusal at 429 is announced more quietly than one at 403 or 404**, which remain warnings on the
+  measured legacy evidence recorded elsewhere in this document: `AccessDenied.ascx.vb` presents a
+  denial through `YellowWarning` in both branches of its load handler. Nothing was rejected on its
+  merits when the limiter refuses — the caller is early — and the only action is to wait.
+- **The profile screen's own announcement admits it.** That screen announced only warnings, on the
+  reasoning that a validation failure is already shown beside its field; the test is now for the error
+  severity instead, so a throttled save is still announced. Every validation failure is an error and
+  is still excluded, and the severity announced is the classifier's answer rather than a second choice
+  made locally.
+
+The refusal classification moved for the same reason. It was a private table inside the response
+interceptor, used to decide whether to quote the server's trace identifier, which made that
+interceptor look like a second authority on classifying a status. It is now `isRefusalStatus`,
+declared beside the severity rule and exported, so the next surface that needs it reaches for this one
+rather than writing a third. The two rules deliberately disagree — a validation refusal and a conflict
+are refusals while resolving to the error severity — which is why neither is derived from the other.
+
+### The root component now owns the session, and nothing else does
+
+`app.component.html` mounted a bare shell, so the banner's account caption, its in-flight flag and its
+sign-out output were never bound: the application could not show who was signed in and offered no way
+to leave. The root now reads the session store, which is the only element above both the shell and the
+banner and therefore the only place the reading can happen once.
+
+Two details are load-bearing. The caption substitutes the sign-in name when the display name is blank,
+because `Users.DisplayName` is `NOT NULL` and defaults to the empty string and the banner is given a
+caption rather than an account — a container that forwarded the blank value verbatim would render a
+signed-in session as though nobody were signed in. And signing out resets no feature state directly:
+the store's revocation ends, on success and on failure alike, by discarding the session through the
+session coordinator, which is the one authority that resets the portal, module, user and role stores.
+Repeating the reset in the root would double-advance that coordinator's generation, making a request
+cancelled by the first reset indistinguishable from one cancelled by the second. What the root owns is
+subscribing — the store's commands are deferred, so nothing is revoked and nothing is reset until
+someone does.
+
+## QA remediation: one identifier parser, and the policy vocabulary the client was missing three of
+
+Two findings in this group, and both were cases of the client and the API each holding their
+own copy of a rule that only one of them is entitled to define.
+
+### Six screens parsed a route identifier six different ways, none of them the server's way
+
+Every screen that reads a key from the address wrote its own conversion, and the six were
+not equivalent. Measured before the change:
+
+- the account form used `Number.parseInt` with no shape test, so `'12abc'` resolved to `12`
+  and dispatched a request against an account the operator never named;
+- the tenant form and the account profile used `Number`, which accepts far more than a
+  decimal integer — `'0x10'` became `16`, `'1e3'` became `1000`, `'1.0'` became `1`;
+- the credential screen and the role assignment screen tested the shape first, correctly,
+  but then accepted the result on `Number.isFinite` alone, so a fractional `1.5` passed
+  through the credential screen as a key;
+- the tenant alias list tested `/^-?\d+$/`, refusing a leading `+` that the server accepts;
+- **none of the six** tested `Number.isSafeInteger`, and none applied the API's 32-bit range,
+  so a twenty-digit segment produced a number that had already lost precision before it was
+  compared with anything.
+
+`core/utils/route-id.util.ts` is now the only place a route value becomes a key, and its rule
+is the server's rule rather than a new one. `PermissionAuthorizationHandler.ParseId` parses
+with `int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, …)`, which is
+`AllowLeadingWhite | AllowTrailingWhite | AllowLeadingSign`: surrounding whitespace, an
+optional sign and decimal digits, bounded to `Int32`. The client now accepts exactly that set
+and nothing else. Three consequences are deliberate:
+
+- **Each screen keeps its own absence representation.** `undefined` for the two forms whose
+  creation route supplies no segment, `null` for the profile and the role assignment screen,
+  `Number.NaN` for the credential screen and the alias list, whose inputs read as numbers.
+  The adapters coalesce on `null` alone, never with `||`, so identifier `0` and identifier
+  `-1` survive — both are real keys in this schema, and `-1` is simultaneously the legacy
+  integer null sentinel.
+- **No per-entity floor is applied**, and the temptation was real: the identities seed at
+  `-1` for portals, `0` for pages, roles and modules, and `1` for accounts. A floor would
+  make the client STRICTER than the server, and the risk runs one way only — a row the API
+  can serve becomes unreachable with no message an operator could act on, in exchange for
+  turning a server-side 404 into a client-side refusal. Range checking belongs to the party
+  holding the rows.
+- **Some previously accepted input is now refused.** A hexadecimal, exponent or
+  decimal-point segment, a partial parse such as `'12abc'`, a non-ASCII numeral and anything
+  beyond the 32-bit range all resolve to absence, where several of the six screens would
+  previously have resolved a key. In every one of those cases the key resolved was not the
+  one the operator wrote, so refusing is the correction rather than a regression.
+
+The alias list's `WHOLE_INTEGER` constant was removed with its last consumer rather than left
+behind unused.
+
+### The route gate knew five of the API's eight policies, and invented a scope key the API has never read
+
+`Api/Authorization/PolicyNames.cs` registers eight policies. `core/guards/permission.guard.ts`
+declared five, and because an unrecognised policy name is **refused** rather than admitted —
+correctly, since an unregistered name faults server-side while the request is being
+authorised rather than producing an orderly refusal — the three missing names were not spare
+capacity. `HostAdministrator` guards the host-only screens and `AccountOwner` and
+`AccountOwnerOrPortalAdministrator` guard the entire account family, which is to say the
+self-service credential change and the profile completion that a blocking remediation
+requirement exists to send an account to. Declaring any of the three on a route would have
+refused every navigation to it, silently, with nothing an operator could act on.
+
+Three further corrections came with it:
+
+- **The bare `id` scope fallback is withdrawn.** The guard resolved a module scope from
+  `['moduleId', 'id']` and a tab scope from `['tabId', 'id']`, with a comment claiming to
+  mirror the API's resolution "which tries the explicit name first and the bare one second".
+  The API does no such thing: `ResolveRouteKey` maps each scope to a single constant —
+  `"moduleId"`, `"tabId"` — and has no fallback of any kind. The invented fallback caused
+  precisely the failure the comment warned about in the abstract: a route carrying an
+  unrelated `:id` segment resolved a scope on the client that the server could not resolve at
+  all, so the gate admitted a navigation the endpoint then refused.
+- **A scope is now PARSED, not merely found.** Any non-empty string used to count, so
+  `modules/not-a-number/settings` resolved a scope client-side while the API read the same
+  segment as absent. Both sides now apply the same parse.
+- **Required and optional scopes are distinguished, and the distinction is the API's.**
+  `AccountOwner` cannot be granted without a route `userId`: `AccountOwnerAuthorizationHandler`
+  requires the subject claim and the route value to be present and to agree, and `OwnerOnly`
+  carries no administrator arm to fall through to. `AccountOwnerOrPortalAdministrator` reads
+  the same value but its administrator arm can grant without one, so demanding it would refuse
+  navigation the server admits. The guard now demands the first and merely reads the second.
+
+The coarse convenience check grew two arms, and neither crosses the line this file draws. It
+still evaluates no stored permission RECORD — the module and tab policies remain admitted for
+the server to decide, because answering them would mean interpreting the rows held against one
+module or one tab. What it adds is answerable from the caller's own identity: host
+administration requires the host-account flag, since the API resolves it through
+`IsHostAccountAsync` and admits nobody else, and the account policies compare the token's own
+subject with the account the route names, which is exactly what the server's handler does
+before it consults anything. Both arms stay gated on the identity having been resolved, so an
+operator whose identity is still in flight is admitted and the server decides.
+
+### One related issue observed and deliberately NOT changed
+
+`features/role/role-list/role-list.component.ts` parses its role-group filter from a
+`<select>` option value with `Number`, so it would accept a hexadecimal or exponent form. It
+is left alone: the finding names six route parsers and this is not one of them, the option
+values are rendered by the component from data it already holds rather than arriving from an
+address, and the two negative filter values it recognises are matched by name before any
+conversion happens. The same applies to the free-text numeric boxes in the tenant settings and
+module settings screens, whose blank-means-zero behaviour is measured legacy behaviour that
+the shared identifier parser must not be allowed to change.
+
+## QA remediation: the route table that was never declared, and the fourteen screens nobody could reach
+
+The review recorded that the application declared four feature routes and a catch-all, and that the
+build was green only BECAUSE of it: a component that no route mounts is not part of the Angular
+program, so fourteen missing templates and stylesheets could not fail a compilation that never saw
+them. Declaring the route set is therefore what proved the rest. The build now compiles every one of
+the nineteen feature screens, and it does so with zero errors and zero warnings.
+
+The addressing scheme itself is a migration decision worth stating once. The legacy application had
+no route table at all: every request arrived at `Website/Default.aspx`, which resolved what to render
+from a numeric `TabId` and a `PortalId` in the query string, after which `LoadSkin`
+(`Website/Default.aspx.vb` L217-L243) assembled the markup at run time. Which screens existed at all
+depended on which modules an administrator had placed on which pages. Addresses are now path-based,
+readable and fixed, and no configuration can move a screen.
+
+### The account listing has no screen, and the address says so rather than failing
+
+The plan enumerates an account listing and this workspace does not contain one - there is no
+`user-list` component to mount. The address is nevertheless reached by shipped code: the account form
+returns to it after a delete and after a cancel, and the membership settings screen returns to it
+after both of its buttons, each of those four navigations reproducing a legacy redirect back to the
+listing (`Website/admin/Users/UserSettings.ascx.vb` L140-L151 and L163-L192) and each correct to
+keep. `/users` therefore renders the shared empty-state with a sentence of its own rather than being
+left undeclared. Leaving it undeclared would have made four post-delete navigations depend on the
+router unwinding out of a lazy child to reach the catch-all, which is a framework detail no
+application should stake a post-delete navigation on.
+
+Two bare parent addresses are deliberately NOT declared. `/settings` and `/role-groups` name no
+screen, nothing links to either, and both are answered by the catch-all like any other unrecognised
+address. An index redirect would have invented a routing decision - a choice of which settings screen
+is "the" settings screen - that no requirement makes.
+
+### The portals listing is host-only, and a portal administrator is told so
+
+Route policies mirror the API exactly, which produces one outcome worth recording because it looks
+like a defect and is not. `GET /api/v1/portals`, `POST /api/v1/portals` and the delete verb are all
+`HostAdministrator`; only the per-tenant screens are `PortalAdministrator`. The legacy product placed
+`Website/admin/Portal/Portals.ascx` on the Host menu rather than the Admin menu, so this is the
+faithful arrangement rather than a tightening. The consequence is that a portal administrator who is
+not a host account signs in, is sent to the sign-in screen's default destination, and is refused it -
+the navigation is cancelled and the refusal is announced in the shell's live region. Measured in a
+browser against the seeded baseline: the `admin` account is refused the portals listing and admitted
+to the roles listing while holding one continuous session. The alternative - declaring a policy the
+API does not enforce so the screen appears to open - would have replaced an explained refusal with an
+empty screen and a 403.
+
+Module creation declares NO policy at all, and that asymmetry is the API's rather than this table's:
+`POST /api/v1/modules` carries no policy attribute, only the bare authenticated-user requirement its
+controller inherits. Declaring one to look consistent would have made the client stricter than the
+server and hidden a screen from a caller the API would have served. The tenant boundary is still
+enforced - the service checks that the target page belongs to the arriving portal and evaluates the
+caller's grants before it writes.
+
+Every scope parameter is spelled exactly as three separate consumers read it - the component input,
+the shared gate's scope resolution, and the API's own authorisation handlers - so `:portalId`,
+`:moduleId`, `:userId` and `:roleId` are the only names the table uses. `:id` is accepted by nothing
+on either side of the wire, and a route declaring it would now be refused by the gate rather than
+mounting a screen addressed to nothing.
+
+### The permission directive is applied as a COMPOSED gate, because the key alone would hide working controls
+
+The review recorded that the permission directive was correct and unused. Applying it as written -
+one persisted key, exact comparison, no special case for a host account - would have removed four
+working affordances from the operator the screen exists for, and the reason is a measured property of
+the API rather than a subtlety of the directive. The key list the client holds comes from grant rows
+ALONE, while every module policy on the server also admits a portal administrator. Measured against
+the seeded baseline through the real endpoint: the `host` account holds all four keys, and the `admin`
+account holds the `Administrators` role and ZERO keys. A bare key gate would therefore have hidden
+the module row commands from `admin`, whom the API admits to every one of those operations.
+
+The gate on those commands is consequently `administration OR key`, written as the two branches of
+one `@if` with the four controls declared ONCE in a separate template that both branches render
+through `ngTemplateOutlet`. Duplicating the markup per branch was the alternative and it is worse:
+four controls, their accessible names and their route builders would exist twice and would drift.
+
+The second arm is correct rather than approximate because of the union semantics the API documents
+for that answer - "the union of everything the caller holds anywhere in the portal ... the set an
+administration shell needs to decide which sections to offer" - so a caller granted `EDIT` on a
+single module holds `EDIT` here and keeps the commands. The gate decides whether to offer the column
+at all; the server decides each request.
+
+"Does this caller administer this tenant" now has ONE owner, a projection on the session store, read
+by both the route gate and the screen. Two answers to one question is how a route admits a caller to
+a screen with nothing on it, and the administrator role name - plural, exact, never case-folded,
+created as `CreateRole(PortalId, "Administrators", ...)` at
+`Library/Components/Portal/PortalController.vb:L1390` - is now spelled in exactly one place.
+
+### The profile-property catalogue gets a routed owner, and its reorder is honestly two writes
+
+The catalogue screen was mounted on a route as a purely presentational component: nothing supplied
+its list and nothing listened to its five outputs, so it rendered permanently empty and every control
+on it was a no-op that looked like a working control. A container now supplies the state from the
+account store and turns each intent into the command that carries it out. Three behaviours are
+deliberate and are recorded:
+
+  * A reorder is TWO writes with the two positions exchanged, and it is not atomic. The store
+    declines to own the arithmetic on the stated grounds that only the feature knows which row is the
+    neighbour; the legacy screen did exactly this at
+    `Website/admin/Users/ProfileDefinitions.ascx.vb` L182-L187, reading the neighbouring declaration
+    and swapping the two. A failure on the second write surfaces with the first already applied,
+    exactly as the legacy pair behaved, and it is not presented as though it were one operation.
+  * A caveat is INHERITED rather than introduced. When two declarations hold the same position - which
+    the legacy schema permits, the column carrying no uniqueness constraint - exchanging their
+    positions changes nothing and the row does not appear to move. Assigning a synthetic position
+    instead would renumber rows the operator did not touch, so the faithful behaviour is kept.
+  * A bulk flag is n writes, one per row, matching the legacy pass at L326, because the API exposes
+    one replace verb per declaration and no bulk endpoint. Rows that already hold the requested value
+    are SKIPPED: rewriting a row to the value it already holds would move its modification stamp, and
+    an operator who activates the control twice should issue nothing the second time.
+
+Every write carries the whole declaration, because the endpoint replaces rather than patches and a
+member omitted from a reorder or a bulk flag would be a member cleared in the database.
+
+### Two smaller corrections, both found by measurement rather than reading
+
+The support reference on a failed sign-in rendered TWICE - once in small grey text inside the warning
+banner and again below it in monospace - because the shared banner prints the reference out of the
+problem document itself while the sign-in screen printed its own copy unconditionally. The screen's
+copy is now rendered only when there is no document for the banner to have printed it from, which is
+the transport-failure case where the join key between what was seen in the browser and the request as
+the server recorded it matters most. Verified in a browser: one occurrence in the rendered page, and
+its value is an exact match for the `traceId` on the wire.
+
+Two feature stylesheets exceeded the 4 kB per-component style budget the production build enforces,
+by 439 and 21 bytes. The cause was duplication rather than volume: the same bordered box, and the same
+focus ring, declared once per affordance. Each file now declares the shared treatment once and
+specialises it, which renders identically and emits less. Two notes were added at the same time
+because they are the kind of thing a later edit undoes: the destructive row command in the membership
+table holds its ink on hover by SAYING NOTHING, since `--color-danger` measures 4.0:1 on the page
+background and brightening on hover would drop it below the 4.5:1 minimum for normal text on
+precisely the row a person is pointing at; and the shared underline is the whole hover cue for all
+three inline affordances because it is the one cue that works for the destructive one too.
+
+## QA remediation: one owner for every read and every write, and outcomes that wait for the server
+
+The role, account and module screens each held their own copy of state the shared stores already
+owned, and several of them announced an outcome the moment they dispatched a request rather than when
+the server answered. The corrections below are behavioural and are recorded here because each one
+changes what a person sees, not merely how the code is arranged.
+
+### The role screens stopped talking to the transport behind the store's back
+
+Three of the four role screens injected the shared role store AND the role service, and used the
+service for every read and every write. The store therefore held one copy of the role, the group
+listing and the membership listing while the screen held another, and the two were free to disagree:
+a membership removed on the membership screen left a sibling listing still showing the row, and a role
+renamed in the editor left the membership heading showing the old name. Every one of those calls now
+goes through the store, which is the single owner.
+
+The store's commands return nothing, so each screen observes its outcome through an effect that waits
+for the relevant flag to fall and then matches the recorded failure's OPERATION against the command it
+issued. The operation match is load-bearing rather than defensive: the store re-reads after every
+successful write, so without it that re-read's failure would be reported to the operator as a failed
+write. It was also the mechanism that surfaced a real defect during this work — see the last section
+below.
+
+Two screens keep a deliberate exception, and both are stated rather than assumed. The membership
+screen still calls the ACCOUNT transport directly for the lookup behind its search field: the matches
+are a transient candidate list owned by nothing else and discarded when the field is cleared, so there
+is no second copy to diverge, whereas routing it through the account store would make this screen
+mutate that store's shared search term and page coordinate and move a sibling listing under its own
+operator. And no screen re-reads after a write any more, because the store already does; a second read
+would not merely be wasteful, it would RACE the store's, and whichever answered last would decide what
+the operator saw.
+
+### The membership grid is read whole, and the store remembers that it was asked to
+
+The legacy membership grid was unpaged — `Website/admin/Security/securityroles.ascx:L56` declares no
+`AllowPaging`, no pager style and `enableviewstate="false"` — so a first page would put an eleventh
+member's Delete command out of reach on a grid with no way to reach it. The store therefore gained a
+COMPLETE read alongside its paged one: it requests the widest page the paging contract publishes,
+follows every further page the server's own metadata reports, and publishes the result as an unpaged
+envelope whose page count is one, because one set now holds everything.
+
+The scope is REMEMBERED rather than passed per call, and that is the point. Both membership writes
+re-read the listing themselves, so a caller that asked for the whole set and then wrote would
+otherwise have the whole set silently replaced by its first page. The follow-on page count is capped so
+that a mis-reported total cannot turn one screen into unbounded traffic; at the published maximum page
+size the cap covers a hundred thousand memberships of a single role.
+
+### The picker on the import screen no longer resizes a listing somebody else is reading
+
+The module import screen needs every module in the tenant as options, and it stated that need by
+moving the SHARED listing's page size to a hundred and re-reading the shared listing. The module store
+is provided at the root, so merely opening the import screen resized a listing a sibling screen was
+showing, discarded the page its operator was on and replaced its rows.
+
+The store now publishes a picker slice of its own, with its own query, its own rows and its own
+in-flight flag, and nothing the import screen does is observable on the browsable listing. The width is
+the store's single decision against the paging contract's published ceiling rather than a constant
+restated per screen. A tenant holding more module placements than one page remains a documented limit
+of a picker rather than a silent truncation.
+
+### Four membership actions and one deletion now wait for the server before they speak
+
+The four membership actions on the account editor — authorise, withdraw authorisation, release a locked
+account, oblige a password change — each announced success the moment they dispatched. The state-setting
+endpoint answers a CONFLICT when the account already holds the state being asked for, which is exactly
+what a second press produces, so the operator could be shown a green "user successfully Authorized"
+beside a yellow refusal describing the opposite outcome. All four now announce only once the write has
+settled, and only when the recorded failure does not name their operation.
+
+The wording travels with the outstanding-action marker rather than being re-derived when it settles,
+because the two authorisation actions issue ONE store operation and differ only in the state they sent,
+which the recorded outcome does not echo back. For the same reason the four now refuse to overlap: each
+was a postback that replaced the whole page, so a second could not be raised while the first was in
+flight, whereas here they are four live controls and an overlap would let the second action's marker
+replace the first's and announce one action's outcome in the other's words.
+
+The module settings screen's deletion did the same and also LEFT — it announced the removal, notified
+its host and navigated to the listing before the request had been answered, so a refused removal
+carried the operator away from the only screen holding the explanation. The legacy handler was a
+synchronous postback: `ModuleSettings.ascx.vb:L300-L312` removed the placement and only the statement
+after it returned redirected, so a throwing call left the operator exactly where they were. All three
+now happen on the settled write.
+
+### An unchanged settings bag is no longer re-sent, and that is a correction
+
+Saving an unrelated field on the module settings screen re-sent the whole settings bag exactly as it
+had been read. The screen renders no control over a property-bag entry, so the request could not change
+anything — but it was a whole-object replacement computed from a possibly stale read, so a key another
+operator, another screen or a background job had written between the read and the save was silently
+reverted. A lost update caused by a request that had nothing to say.
+
+The write is now issued only when the bag differs from the bag as read, compared structurally over both
+identifiers and both maps in both directions so that an added, removed or re-valued key is all
+reported. An absent key and a key holding an empty string are deliberately DIFFERENT, because the empty
+string is a legitimate stored setting value. The suppression is expressed as a comparison rather than as
+a deleted call for two reasons: it states the rule — send what changed — instead of encoding today's
+field set as an assumption, and it self-arms, so the day a settings editor is added to this screen the
+comparison starts reporting a difference and the write resumes with no further change. The bag is also
+refused outright when it belongs to a different module from the one addressed, which the root-provided
+store makes possible.
+
+### A refusal reported as a success, caused by a guard that read the state it guarded
+
+Worth recording in full, because the mechanism is easy to reintroduce and nothing about it is visible
+in a type. The role store's failure-clearing helper tested the slice before assigning it — `if
+(this._failure() !== null)` — which bought nothing, since a signal set to the value it already holds
+compares equal and notifies nobody, while the test itself was a READ. Every store command begins by
+calling that helper, so any caller reaching a command from inside a reactive computation silently took a
+dependency on the failure slice.
+
+The role editor's route observer did exactly that: it issued the role read from inside its tracked body.
+A refused update recorded a failure, the observer re-ran because of the dependency it never asked for,
+its role read cleared the failure it had just reacted to, and the write observer then found no failure
+and announced the refused write as a SUCCESS — plus a second role read nobody asked for. Both halves are
+fixed: the helper assigns unconditionally and reads nothing, and the route observer's imperative body is
+untracked so that the route parameter is genuinely its only dependency, as its own comment had always
+claimed.
+
+## QA remediation: the contract's own rules, stated beside the box that breaks them
+
+Seven screens carried a subset of the rules the API enforces, so a value the server was always going to
+refuse travelled to it, and the refusal came back as a document that each screen then had to translate
+into a sentence about a field. Every rule added below is the API's own rule, reproduced condition for
+condition, with the API's own sentence; nothing is tightened, because a client stricter than the server
+refuses input the system as a whole accepts, and during a migration that is a lockout invented by the
+migration.
+
+### The credential rules on the sign-in screen are counted the way the server counts them
+
+The account name gains the contract's hundred-character bound and a non-blank rule; the credential gains
+the contract's ceiling of 256 BYTES when encoded as UTF-8. The account name's bound is also declared as a
+native attribute, so the browser stops the overflow before a validator has to describe it.
+
+⚠ THE CREDENTIAL BOX DELIBERATELY CARRIES NO SUCH ATTRIBUTE, and the asymmetry is the correct
+implementation rather than an omission. The attribute counts UTF-16 code units and this bound is counted
+in UTF-8 bytes, so any number written there would be wrong for every credential that is not plain
+Latin — refusing characters the server accepts, or admitting a value it refuses. A specification case
+asserts the attribute's ABSENCE so the point survives a later tidying.
+
+Neither box is trimmed. The blank rule reads a trimmed copy and leaves the value alone, because trimming
+the control itself would change which credentials succeed for every account whose name legitimately
+carries a space, and the legacy screen normalised nothing.
+
+### The portal signup screen states the measured password policy and the API's address rule
+
+The credential minimum is seven, read from `Website/release.config:L241`, and it is applied to the
+confirmation box as well as to the credential — with the rule on one box only, a six-character value
+typed identically twice satisfied the comparison rule and reported a fault against one box while its twin
+looked correct. The policy's non-alphanumeric half is not expressed at all, because the measured value is
+zero and inventing a requirement would refuse administrators the server would have created.
+
+The address rule is the legacy `glbEmailRegEx` with two deliberate departures, both matching what the
+API's own address value object does: it is anchored rather than word-bounded, and its final label admits
+two to sixty-three letters rather than two to four. A literal copy of the legacy pattern would refuse an
+ordinary modern address that the server accepts.
+
+### Three column widths and one storable date range, none of which the legacy markup declared
+
+The account editor's five identity boxes gain their column widths as validators AND as native
+attributes; the legacy markup declared `maxlength` on four credential and question boxes and on none of
+the five identity boxes, so the column widths are the authority. The module editor's heading and icon
+boxes gain theirs on the same footing.
+
+The module editor's two date boxes gain a REPRESENTABILITY rule: the column is a SQL Server `datetime`,
+which begins on the first of January 1753, and a date before that was previously refused by the driver
+rather than by a validator — arriving as a fault instead of as a sentence about a box. The rule is
+reported separately from the readability rule, because a correctly-typed year 1066 is not a typing
+mistake and describing it as one sends the person looking for something that is not there. The comparison
+is TEXTUAL, over the leading ten characters, which is exact because a zero-padded `yyyy-mm-dd` sorts
+chronologically; constructing dates to compare them would reintroduce the zone shift the reader avoids.
+
+MIGRATION: the legacy `Invalid Start Date` and `Invalid End Date` sentences are retained but are
+unreachable from the keyboard, because these are native date pickers and a picker sanitises a value it
+cannot read to the empty string before any validator sees it. They still apply to a value arriving from
+the server, which nothing sanitises. A specification case records this so the sentences are not "fixed"
+by weakening the controls back to free text.
+
+### An empty document is refused before it is uploaded, and told apart from an unreadable one
+
+The import screen read the chosen file and transmitted whatever it held. The API refuses content that is
+empty or whitespace only, so an empty document spent a request — and an upload of the whole file — to
+learn what the read already knew. The refusal now happens after the read and before the request, carrying
+the API's own sentence.
+
+It is reported on its OWN state rather than on the existing unreadable-file state: a readable file that
+happens to be empty is not a fault the operator should go looking for, and reusing the read-failure flag
+described it as one. The document is still transmitted verbatim when it holds anything at all — the guard
+tests a trimmed copy and sends the original, because the surrounding whitespace of a document is the
+document's business.
+
+### The role editor mirrors the API's icon containment rule, including its bluntness
+
+A role icon was a picker in the legacy screen, and a picker could only produce a path inside the portal's
+own folder — so there was nothing to validate and no legacy rule to port. Replacing it with a text box is
+what made a rule necessary, so the rule mirrored is the API's: a parent-directory segment anywhere, a
+leading separator of either kind, or a colon anywhere.
+
+⚠ THE PARENT SEGMENT IS TESTED AS A SUBSTRING, NOT PER PATH SEGMENT, which means `logo..old.gif` is
+refused. That is what the server does, and it is reproduced deliberately: testing per segment here would
+accept a reference the server then refuses, which is the divergence the rule exists to close. The
+containment failure is reported ahead of the length failure, because shortening an absolute path does not
+make it relative.
+
+### An administrator changing their own credential is now asked for the credential in force
+
+The legacy screen gated the DISPLAY of the current-credential box on `IsAdmin And Not IsUser`
+(`Password.ascx.vb:L150`) but gated both ENFORCEMENT rules on `Not IsAdmin` alone (`:L284`, `:L290`), so
+an administrator changing their OWN credential saw the box and was excused from filling it in. That
+excusal is now UNREACHABLE rather than merely inadvisable. The legacy code called one routine for every
+caller; the API separates the two operations BY AUTHORISATION, and its change rule requires the credential
+in force from every caller with no exception for a role. Excusing the rule therefore does not let that
+caller through — it moves the refusal from beside the box to a round trip away, arriving as a server field
+message.
+
+The gate is therefore the OPERATION rather than the caller's role, which reproduces the outcome the
+system as a whole produces. It remains a subset of the display rule: a caller who is not the account
+holder performs a RESET, so the rule is off for exactly the caller whose control the template withholds,
+and the reset request carries an explicit null for the credential in force because the reset contract
+requires its absence.
+
+### Two construction defects the new specifications caught, both invisible to the compiler
+
+Recorded because each was introduced by the change above and neither produced a compile error, a lint
+finding or a failing build.
+
+Class fields initialise in declaration order, and this screen's form is constructed in a field
+initialiser. A `FormGroup` runs its validators inside its own constructor, and the group validator closes
+over the gate — so moving the gate onto the planned operation, which is declared further down the class,
+left the closure reading an undefined member at exactly the moment the form was built. The operation
+member is now declared above the form, with a comment saying that its position is load-bearing.
+
+The second is deeper and could not be fixed by reordering: the gate resolves through the addressed account
+key, which comes from a REQUIRED input, and a required input read before Angular has bound it throws
+rather than answering. The group validator now reads a plain private field that answers at construction
+and is written by the one effect that already owns keeping the gate in step, so there is exactly one
+writer and the signal remains the single source of truth for everything that runs after binding. Both
+defects would have broken the credential screen for every caller; the screen had no specification at all
+before this remediation.
+
+## QA remediation: workflows that could not complete, and options that promised what nothing could do
+
+Six findings in this group are about WORKFLOW rather than validation: a screen whose purpose was unreachable,
+two controls that offered an action the installation cannot perform, and three defects on the profile editor
+ranging from silent data loss to a way for a tenant to freeze an operator's browser.
+
+### Module creation was unreachable through the user interface
+
+A module is placed ON A PAGE and the page is required. The page options are portal-scoped, and the screen
+asked for them only after reading the module it was editing — which on the create route never happens. So
+the picker stayed empty for ever, the required page could never be chosen, and the screen's own guard
+refused every submission with "a page must be chosen". Nothing about it was visible in a type, a build, a
+lint or a test: the create route simply could not create.
+
+The portal now comes from the SIGNED-IN SESSION on that route, which is the correct source rather than a
+convenient one — the API resolves the tenant of a create request from the caller's own context, so the
+caller's portal IS the portal the new module will belong to, and the options offered are the options the
+server will accept. The edit route is unchanged and still takes the portal from the module it read.
+
+⚠ NO TRUTHINESS TEST APPEARS ANYWHERE ON THAT PATH. `Portals.PortalID` is `IDENTITY(-1, 1)`, so both -1 and
+0 are ordinary portal identifiers, and the measured baseline's own tenant is -1. `if (portalId)` would have
+discarded the only tenant the installation has. The same holds one level down: the baseline's only page is
+`TabID 0`, because `Tabs.TabID` is `IDENTITY(0, 1)`.
+
+Verified end to end in a browser against the running API, not merely in a specification: the screen issues
+`GET /api/v1/portals/-1/tabs` on arrival with no preceding module read, the picker offers that portal's page,
+and the placement returns `201 Created` and appears in the listing.
+
+### A generated password that nobody could ever see
+
+The legacy generated the credential on the server and e-mailed it (`User.ascx.vb:L164`). With no mail
+endpoint, this screen generated one in the browser, submitted it and DISCARDED it — creating an account with
+a credential no person had ever seen, which nobody could sign in to, and saying so only after the account
+existed.
+
+The value is now held for the duration of the request and, once the server has CONFIRMED the creation,
+disclosed once on this screen. A refused creation discloses nothing, because a credential shown for an
+account that does not exist is worse than none.
+
+⚠ THE REDIRECT IS DEFERRED RATHER THAN DROPPED. A confirmed creation redirects to the account listing;
+navigating on success would destroy the panel before it could be read, so the redirect waits until the
+operator says they have taken the value — the two steps together are exactly the one step the screen made
+before, with the disclosure in between.
+
+Bounded deliberately: shown only after confirmation, on this screen rather than through the announcement
+channel — which is a shared live region, read aloud, whose dismissal this screen does not control — and
+never written to storage, a URL, a log or a notification. Revealing it to the administrator who just created
+the account grants no authority they did not already hold, since that same administrator can reset the
+credential at will. A browser run confirmed the value shown is the account's real working credential and
+that it is absent from the document, from every field, from web storage, from cookies and from the URL the
+moment the panel is dismissed.
+
+### Two notification controls that could not notify
+
+The account editor's notify box arrived TICKED — the measured legacy state — and warned that no mail had
+been sent only after the account had been created. The role-assignment screen's box arrived ticked too, and
+its value was transmitted as `true` on a contract member the server ignores, so the operator asked for a
+notification, received a success, and had every reason to believe one had gone out.
+
+Both are now rendered DISABLED and UNTICKED with the reason in their help text, beside the control, while
+there is still a decision to make. Departing from the measured initial state is the deliberate part: a
+ticked box is a statement that something will happen, and stating something false is worse than departing
+from a measurement. Both controls are retained because both are part of an agreed member contract, and the
+role assignment still transmits its member — now carrying `false`, which is the truthful request.
+
+### A profile value that was present, replaced by a default, and then saved over
+
+The profile editor decided whether a property had ever been recorded from the audit timestamp alone, and
+seeded the declaration's default when there was none. Because this screen submits EVERY property it renders
+— the write replaces rather than merges — a property arriving with content but no timestamp was rendered as
+the default and the operator's next save wrote that default over the content. Silent loss, on a screen that
+looked as though it had loaded correctly.
+
+A supplied value now wins over the metadata about it. The current projection cannot actually produce that
+combination — the entity's column is `LastUpdatedDate datetime NOT NULL` and the projection emits
+`stored?.LastUpdatedDate`, so a null timestamp means precisely "no row" — so this is DEFENCE rather than a
+change of behaviour: every case the contract can produce today is decided identically. It is written this
+way because the cost is nothing and the failure it forecloses is unrecoverable, and because it survives the
+contract changing shape underneath it. The remaining ambiguity, no timestamp AND no value, still seeds the
+default: there is nothing to lose. The discriminator's meaning is now also stated where it is declared.
+
+### A profile that could never be saved, and no way to know why
+
+The endpoint refuses a profile write carrying more than sixty-four properties, because it does bounded
+per-property work — resolving each declaration, evaluating the tenant's own validation expression against a
+match timeout, reconciling two storage columns. This screen submits every declared property on every save,
+so for a tenant declaring more than that, NO save could ever succeed; the operator discovered it by filling
+the form in and being refused whole, with nothing to say which end was at fault.
+
+The form is now withheld above that bound, with a notice naming both numbers and the screen where the
+declarations are managed, and the write is refused at the component as well — a submission can be raised by
+the return key while the branch is not currently withholding the form, and a whole profile is at stake. The
+bound is inclusive, matching the endpoint exactly: a client stricter than the server would withhold a form
+that saves perfectly well.
+
+### A tenant could freeze an operator's browser, and the specification demanded it
+
+The profile editor compiled the tenant's stored validation expression and ran it through the form's pattern
+validator. That is administrator-authored data, so it is untrusted input to whatever engine runs it, and a
+catastrophically backtracking pattern — the classic nested-quantifier shape — takes exponential time on an
+ordinary input. It ran synchronously, on the UI thread, on every keystroke, on controls whose length is
+frequently unbounded, because a declared length of zero means no maximum. One such declaration froze the tab
+with no way out, and the tenant who authored it is not necessarily the operator who suffers it.
+
+⚠ THE SCREEN'S OWN SPECIFICATION ASSERTED THIS BEHAVIOUR, which is why it survived review: a case named
+"applies a pattern the browser can compile" demanded exactly the evaluation that was the vulnerability. That
+case has been replaced by cases pinning the ABSENCE of the rule.
+
+The expression is no longer evaluated in the browser at all. The server is not merely the fallback authority
+here, it is the only party that can run these safely: it compiles with a fifty-millisecond match timeout, a
+length ceiling and a bounded compiled-expression cache. The browser's engine exposes NO timeout of any kind
+— there is no API for one — so a client-side evaluation cannot be bounded, only avoided. The refusal now
+arrives from the server and is reported per field through the model-state message this screen already
+renders, which is the correct trade: the rule is still enforced, and a tenant can no longer author a
+declaration that hangs somebody's browser.
+
+### A radio group the browser did not know was a group
+
+A reactive radio directive groups its members in the MODEL, by the control they share, and writes no `name`
+attribute on to the element. Every one of the browser's own radio behaviours is keyed off that native
+attribute instead: arrow keys moving the selection within the group, and the group occupying ONE tab stop
+rather than one per option. Two screens declared their choices with `formControlName` alone, so for anyone
+navigating by keyboard the module's visibility choices and the portal's banner and registration choices had
+degraded into rows of independent controls — where the legacy `asp:RadioButtonList` had rendered a shared
+name and behaved correctly. This is a keyboard-operability regression against the legacy screen, not a
+cosmetic one.
+
+Each radio now carries a STATIC `name` equal to its own `formControlName`, so the two cannot drift apart.
+Two sibling screens already did this; the convention was simply not applied uniformly. Measured afterwards in
+a real browser: `form.elements['<name>']` resolves to a `RadioNodeList` of the correct length in all three
+groups — the browser itself reporting them as one control — arrow keys move both selection and focus
+together, and Tab from the FIRST member skips its siblings entirely.
+
+### A per-field message that announced itself once and then could not be found
+
+Each editable control on the module settings screen renders the messages the server returned for it, and
+those messages were anonymous `role="alert"` regions that no control's `aria-describedby` named. An earlier
+note in that template argued FOR the omission, on the grounds that a server message is transient and so
+should not describe the control. That reasoning was wrong on both halves, and is reversed here.
+
+A `role="alert"` region is announced ONCE, at the moment it appears, and never again. So a person who hears
+the refusal, moves to the control to correct the value and then returns is told nothing, and has no route
+from the control to the message at all — and that is the ORDINARY case, not an edge one, because the whole
+purpose of a per-field message is that the person goes to that field. Nor is the message transient: it stays
+until the next save answers, exactly as long as the hint does, so for the time it exists it IS part of the
+control's description.
+
+Every control now names its message region in addition to its hint, hint first so the announcement order
+does not change when a message appears, and the region is emitted only when there is something to report so
+no control ever names an element that does not exist.
+
+⚠ THE CLIENT-SIDE AND SERVER-SIDE MESSAGES NOW SHARE ONE REGION, and that consolidation is the substance of
+the fix rather than tidying after it. They were briefly two sibling elements that both bound the same
+identifier, which duplicates an id on the four controls carrying a client rule and leaves `aria-describedby`
+resolving to whichever element the browser happens to find first. Reporting both kinds through a single
+region removes the collision at its source instead of minting a second identifier, and it means one control
+names one region holding the complete set of reasons its value was refused, local reason first.
+
+### A destructive command that failed contrast exactly where it mattered most
+
+The delete affordance in the portal listing switched to the bright danger token on hover. That token measures
+4.00:1 on white, 3.45:1 on the alternating row surface and 2.61:1 on the selected-row tint, against the
+4.5:1 its ten-pixel text requires — failing on every row background this screen can draw, and failing worst
+on the row the operator had actually selected. The darker text token measures 7.20:1, 6.21:1 and 4.70:1
+against those same three.
+
+The hover therefore keeps the darker token and changes the UNDERLINE instead, which is the cue the
+non-destructive command beside it already uses, so the two read as one family and the cue is visible to
+somebody who cannot distinguish the two reds at all.
+
+⚠ THE HOVER COLOUR HAD TO BE RE-DECLARED, NOT MERELY LEFT ALONE. The three text affordances on that screen
+share a grouped rule that sets the ordinary action's hover colour, and that rule's selector has EXACTLY the
+same specificity as the destructive variant's. Omitting the colour from the variant's hover block therefore
+does not "keep" the danger colour — it hands the destructive command the ordinary action's blue. Confirmed in
+a real browser: with the hover media condition satisfied, the sibling command resolves to the action blue
+while the destructive one resolves to the danger text colour, which is only true because the variant names
+its colour and sits later in source order.
+
+That grouped rule exists for a second reason worth recording: the three affordances had each declared the
+focus ring and the hover cue verbatim, and emitting them once brought the stylesheet back inside the
+four-kilobyte component budget. The budget was not raised. Duplication is what gets consolidated when a
+component stylesheet grows, never the limit.
+
+### A host name that signed the operator out of the console
+
+Each portal's host names are links to the tenant's own site, and they navigated in the SAME tab. The session
+token is held in memory only and deliberately so, so following one discarded it: the operator left to look at
+a tenant's site and came back to a login screen. Measured on the seeded data, one tenant's alias list
+contains the very origin serving the administration console, which makes the loss trivially reachable.
+
+The link now opens in a new tab, with `rel="noopener noreferrer"` — both keywords stated rather than relying
+on a modern browser's implicit `noopener`, because `noreferrer` additionally withholds the console's own
+address from a site that is a tenant's public property and not necessarily trusted.
+
+This is a DEPARTURE from the legacy behaviour, where every link navigated in place, and it is the right
+direction of departure: the alternative reading, deleting the attribute to restore same-tab navigation, would
+restore a defect. A change of context has to be announced rather than discovered, so each link carries a
+visually-hidden phrase saying so, which joins the accessible name and contributes zero width to the drawing —
+measured: the anchor's rendered width equals the width of its visible text alone.
+
+### An endpoint template with nothing to exercise it
+
+The shared endpoint table declared a template for reading one account's roles that no screen called, and the
+account detail resource already carries its roles. A template with no consumer is a claim about the wire that
+nothing exercises, so it can drift away from its controller silently and be found only by whoever first
+trusts it. It has been removed, with a note recording that declaring it belongs with the screen that needs it.
+
+### An object URL held until the screen was abandoned
+
+The module export screen created a download URL and revoked it only on teardown, so the blob stayed resident
+for as long as the operator remained on the screen — and a repeated export accumulated one per attempt. The
+release is now scheduled for the next task turn, after the download has been handed to the browser, and the
+scheduled release compares the URL it was given against the one currently live so a release scheduled for one
+document can never revoke another's. Teardown still releases, and cancels any release already scheduled, so
+the two paths cannot double-revoke.
+
+### The browser's credential ceiling now matches the API's bound, where it used to be twenty characters
+
+**Legacy behaviour.** Every legacy credential field declared `maxlength="20"`:
+`Website/admin/Users/Password.ascx` at L35, L39 and L43 for the current, new and
+confirmation boxes, and `Website/admin/Users/User.ascx` at L39 for account
+creation. That figure was not a policy rule. It mirrored the legacy *storage*
+width `@Password nvarchar(20)`, and the measured legacy password policy in
+`Website/release.config:L236-L246` declares only a minimum of seven, no
+non-alphanumeric requirement and no unique-email requirement — **no maximum at
+all**.
+
+**Target behaviour.** The three screens that collect a credential — portal
+creation, account creation and the change-password screen — now carry the API's
+own ceiling, shared from one constant in
+`frontend/src/app/core/utils/credential-bounds.util.ts` and numerically equal to
+`CredentialBounds.MaximumByteLength`. The API remains the authority: it counts
+UTF-8 *bytes*, as the section above describes, while an HTML `maxlength` counts
+UTF-16 code units.
+
+**Why the difference is deliberate.** The storage column that produced the twenty
+no longer exists — the successor stores a one-way BCrypt hash — so reproducing it
+would preserve an artefact of a deleted constraint rather than a behaviour, while
+capping the entropy of every credential the product can create. On the
+change-password screen it did worse than that: applied to the *current* password
+field, a ceiling of twenty made an account whose password is longer than twenty
+characters — which the 256-byte API bound permits — unable to type its existing
+credential in full, and therefore unable to change its own password by any route
+the screen offers. That is a lockout, not a typing affordance.
+
+**Why a code-unit ceiling cannot narrow a byte bound.** The two measures differ,
+so the browser ceiling cannot be an exact restatement of the API's rule, but the
+inequality runs in the safe direction: UTF-8 byte length is greater than or equal
+to UTF-16 code-unit length for every string without exception. That was verified
+by measuring both lengths for all 64,561 sampled code points across the Basic
+Multilingual Plane and the astral planes, and no code point was found for which
+the byte count falls below the code-unit count. A limit of 256 code units can
+therefore never refuse a credential the 256-byte rule would have accepted. For a
+pure-ASCII credential the two coincide exactly; for a multi-byte one the browser
+is slightly the more permissive of the pair and the API refuses the value with its
+own measured wording. Re-implementing the byte count in the browser was
+deliberately rejected: it would place a second, independently maintained copy of a
+security rule in the less trustworthy of the two places.
+
+**One further difference on the two account screens.** The ceiling is emitted as
+an attribute *binding* rather than as a literal attribute. A literal `maxlength`
+matches the selector of the framework's own maximum-length validator,
+`[maxlength][formControlName]`, and silently attaches a length validator that
+those components declare nowhere; the account-creation screen's message resolver
+renders nothing for a `maxlength` error, so an over-long credential was refused
+with no explanation at all. The attribute binding sets the DOM attribute without
+matching that selector, which was confirmed by measurement rather than assumed.
+
+### Tenant-authored validation expressions are no longer executed in the browser
+
+**Legacy behaviour.** A profile property may declare a regular expression, stored
+in `ValidationExpression` and authored by an administrator. The legacy screens
+rendered an `asp:RegularExpressionValidator`, which evaluated the expression both
+in the browser and again on the server.
+
+**Target behaviour.** The expression is evaluated **only** by the API, in
+`UserService.ValidateProfileValue`. The profile screen no longer compiles it and
+no longer attaches it as a validator; the requiredness, non-blankness and
+maximum-length rules it does apply are all linear in the length of the value. A
+value that violates the declared format is accepted locally and refused by the
+API, whose per-property refusal the screen already renders beside the offending
+field.
+
+**Why the difference is deliberate.** The expression is untrusted,
+caller-supplied data, and the browser is the one place it cannot be evaluated
+safely. A syntactically valid expression can still take time exponential in the
+input to fail — the classic shape being a quantifier applied to an already
+quantified group, such as `^(a+)+$` — and a validator is re-run on every value
+change, so each keystroke pays that cost on the single thread that also draws the
+page. JavaScript offers neither a match timeout nor a non-backtracking mode, and
+there is no way to abandon an expression already running. Guarding compilation,
+which is all the previous implementation did, does not help: the dangerous
+expressions are precisely the ones that compile perfectly. Measured against this
+codebase, a thirty-character input defeating `^(a+)+$` spent **42.4 seconds**
+inside a single value change.
+
+The API can evaluate the same expression safely because .NET offers what the
+browser does not: it compiles with `RegexOptions.NonBacktracking`, which matches
+in time linear in the input, and falls back to a plain compile with a 50
+millisecond match timeout for the few constructs that mode does not support,
+catching `RegexMatchTimeoutException` at the match site. The rule is therefore
+not lost — it is enforced in the only place it can be enforced without exposing
+the operator's own browser to a denial of service. The visible difference is that
+a format failure is reported when the profile is submitted rather than on each
+keystroke.
+
+### Identity and verification material is removed from the sign-in address once read
+
+**Legacy behaviour.** `Login.ascx.vb:L106-L109` read `username` and
+`verificationcode` from the query string on first render and seeded the
+corresponding boxes. The address itself was never altered; there was no
+client-side history to alter, because every interaction was a full page render.
+
+**Target behaviour.** Both values are still honoured, so an existing verification
+link continues to work and the query keys keep their legacy spelling. Once read,
+they are removed from the address by a history *replacement* that preserves every
+other parameter, including the return address.
+
+**Why the difference is deliberate.** A query string is not a private channel. It
+is retained in the browser's own session history, is offered by address-bar
+autocomplete to whoever next uses the machine, is sent to third-party origins in
+the `Referer` header of subsequent requests, and is the single most commonly
+recorded part of a request in proxy and server access logs. A verification code is
+single-use authentication material and an account name identifies its holder, so
+neither belongs in any of those places longer than it takes to read it. The
+replacement is what makes this effective: pushing a new entry instead would leave
+the original address one press of Back away, and in session history for as long as
+the tab lives.
+
+### An import document larger than the API will accept is refused before it is read
+
+**Legacy behaviour.** `Import.ascx.vb` declared no size ceiling of any kind. The
+chosen document was read and parsed server-side within the postback.
+
+**Target behaviour.** The module import screen consults `File.size` before the
+document is read and refuses anything above one mebibyte, which is the API's own
+`MaximumRequestBodyBytes` — declared as a Kestrel limit and re-declared per action
+with `[RequestSizeLimit]` on the import endpoint. The size is consulted again
+immediately before the read, because a `File` carries the size recorded when it was
+chosen and the document underneath it can be appended to in between.
+
+**Why the difference is deliberate.** Reading is itself the expensive step:
+`file.text()` decodes the whole document into a single string in memory, and the
+picker will hand over a file of any size the operating system can offer. Reading
+first and judging afterwards can exhaust the tab before any judgement is reached,
+and the tab that fails is the operator's, not the server's. Refusing at exactly
+the API's ceiling withholds nothing an operator could otherwise have achieved,
+because a document above that size can never be accepted however it is sent. A
+document at or just below the ceiling may still be refused once JSON string
+escaping has inflated the request body, and that refusal is deliberately left to
+the API rather than guessing the overhead in the browser.
+
+### Session revocation draws on its own rate-limit budget, and an unconfirmed revocation is reported
+
+**Legacy behaviour.** `PortalSecurity.vb:L77` cleared five cookies and took effect
+at once. There was no rate limiter, and sign-out could not fail in a way the
+caller needed to know about.
+
+**Target behaviour, server.** `POST /auth/logout` no longer shares the
+IP-partitioned window that sign-in and renewal draw on. It has a policy and a
+partition-key prefix of its own, sized from the same configuration section, so the
+two budgets are independent. It remains bounded rather than exempt, and it keeps
+the concurrency bound and request-body limit that its credential-endpoint mark
+applies.
+
+**Target behaviour, client.** Local sign-out still happens unconditionally and the
+operation still completes successfully, so a person who asks to sign out always
+ends up signed out on this device. What changed is that a failed withdrawal is no
+longer discarded: it is recorded, and reported on the sign-in screen the operator
+is sent to.
+
+**Why the difference is deliberate.** Withdrawing a refresh token is the one
+operation whose purpose is to shut a session down, so refusing it is not a neutral
+outcome — it leaves a token its owner has asked to have revoked live until it
+expires. While it shared the sign-in window, a burst of failed sign-in attempts
+spent the very allowance revocation needed, and because that window partitions on
+the caller's address the burst did not have to come from the same person: any peer
+sharing an address, such as everyone behind one NAT or one corporate egress, could
+exhaust it. Credential *guessing* could therefore suppress credential
+*withdrawal*.
+
+A named policy alone was not sufficient, and this is worth recording because
+nothing fails to compile when it is missed: the framework applies the global
+limiter *in addition to* a named policy, and that limiter charged every
+credential-bearing request to the shared prefix. The partition is therefore
+derived from the endpoint's own rate-limit declaration, so the global limiter and
+the named policy agree by construction.
+
+**What the client deliberately does not do.** It offers no retry and caches no
+credential to make one possible. Both are ruled out by design rather than
+overlooked: a retry folded into the authentication client, or the renewal
+credential copied into a field of it so a later attempt could re-send it, are
+exactly the two forms of creep that client's specification exists to prevent, and
+custody of the credential belongs to one collaborator alone. The substance of the
+defect was never that sign-out absorbed the failure — it was that it reported
+success. It now reports what is true and names the action that genuinely exists.
+
+### Work begun under a superseded session no longer commits its result
+
+**Legacy behaviour.** Each request was a full page render with no client-held
+session state, so there was no in-flight client work that a sign-out or a second
+sign-in could outlive.
+
+**Target behaviour.** Session custody carries a monotonic generation that advances
+on every session transition. Sign-in, renewal, the 401 recovery path and every
+domain store capture that generation when their work begins and test it before
+writing anything to shared state. The result is still delivered to whoever is
+waiting, so no caller is left without an outcome; only the write is withheld.
+Signing out additionally purges the portal, user, role and module stores through a
+single coordinator, and cancels the reads and writes those stores have in flight.
+
+**Why the difference is deliberate.** Client-held state introduces races the
+legacy architecture could not have. Four were reachable and each is closed by the
+same test: a renewal begun before a sign-out arriving afterwards and storing its
+rotated pair, which resurrects a session the operator ended; an older sign-in
+landing after a newer one and silently returning the operator to the account they
+switched away from; an older attempt's rejection clearing the session a newer
+attempt had established; and a 401 recovery retrying the original request with a
+different session's credential. Records loaded for one account or tenant also
+outlived the sign-out that should have discarded them, which is a disclosure
+rather than a race.
+
+One deliberate asymmetry is worth recording: the renewal slot is released by
+object identity and *not* by generation. A generation test would be wrong in both
+directions — a renewal completing after a sign-out must still release its own slot,
+or no future renewal can ever start, while a renewal whose slot a successor has
+already claimed must not clear it even if the generation happens to match.
+
+### Ending a session now discards every tenant-scoped store, not only the credential
+
+Signing out used to discard credential custody and the identity projection and nothing else. Four
+root-provided stores outlive any one session and hold state that belongs to **one tenant** and,
+through the permissions that admitted the read, to **one operator**: the portal listing and one
+portal's settings and aliases; module placements, their settings and an exported document; accounts,
+their profiles and the tenant's account policy; roles, role groups and who holds which role. None of
+it was cleared, so the state survived into whatever screen the next operator landed on — and the
+module store holds module **content** rather than metadata, while the account store holds names,
+addresses, telephone numbers and free-text profile answers.
+
+A single coordinator now clears all of them, and the decisions inside it are deliberate:
+
+- **It reacts to an EVENT, not to a call site.** There are three session boundaries, not one: the
+  operator signs out; the authentication interceptor ends the session on a refusal the server would
+  not honour; and **a sign-in begins**. The third is the one a per-call-site reset reliably misses,
+  because it does not look like an ending — and signing in as a second operator while the first
+  operator's data is still held is precisely how one person is shown another's tenant. All three
+  route through the one method that discards credentials, so that method publishes the boundary and
+  the coordinator registers for it once.
+- **The notification is SYNCHRONOUS.** Publishing the generation as a signal and reacting in an
+  `effect` was rejected: an effect is *scheduled*, which leaves a window in which a response still in
+  flight could be adopted into a store belonging to the session that just ended.
+- **Each store registers ITSELF, and the coordinator holds no reference to any store.** The obvious
+  shape — a coordinator injecting the four stores — works and costs **sixty-two kilobytes** on the
+  initial bundle, because the coordinator must be reachable at bootstrap for its registration to
+  exist, so importing the stores makes all four eager along with every transport, decoder and
+  contract they reach. The dependency is inverted instead, which also means a store that was never
+  constructed holds nothing and correctly has nothing to reset.
+- **Every reset cancels before it clears.** Clearing slices without releasing the requests in flight
+  clears them and then lets the responses repopulate them moments later, leaving the previous
+  session's data in place with no command issued to explain it. Writes are released as well as reads,
+  because a write's callback re-reads a listing and rewrites a row.
+
+### A renewal that outlives the session it belonged to is refused rather than adopted
+
+A token renewal is a request in flight, and a session can end while it is outstanding. The renewal
+would then answer, store its freshly rotated credential, and reinstate a session the operator had
+just ended — or, worse, present that credential to the identity endpoint on behalf of a lifetime that
+was already over, repopulating the name, roles and permissions that the permission gate and the
+element-level permission directive consult.
+
+Every session boundary now advances a generation counter, each command captures the generation it
+began under, and the check is asserted **at the point of use rather than only at the point of
+adoption**: a superseded renewal fails before it describes its caller, not merely before it stores.
+Two consequences are deliberate:
+
+- **A supersession is not recorded as a failure.** It is the expected outcome of a deliberate
+  sign-out, so recording it would make an operator's own sign-out explain itself with a renewal error
+  message, and would advance the verification ladder in response to a code the server never demanded.
+- **The identity projection is written on every session change and gated by the same generation.**
+  It previously took precedence over the stored session when both were present, so an identity read
+  answering after a sign-out repopulated the projection for a dead session while the authentication
+  verdict said otherwise.
+
+### Every response is checked against its published contract at the transport boundary
+
+A type argument is not a check: `http.get<PortalDetail>(...)` compiles to `http.get(...)`, the
+interface is erased, and the value is trusted because a developer wrote a type where a value was
+expected. The consequences were silent by construction — a renamed member read as `undefined`, a
+string where a count was promised produced `NaN` in a total, and a missing envelope produced a screen
+of blank fields — each surfacing several layers away from its cause.
+
+All sixty-five transport calls across the seven resource services and the authentication transport now
+read their body as `unknown` and pass it through the decoder its contract publishes: forty-four typed
+`unknown`, one untyped text response, and twenty that carry no payload at all. A violation **fails
+the observable** at the boundary with the member path named, which the stores' existing failure
+handling and the problem-details path already present. Four properties of the refusal are deliberate:
+
+- **It names the member and its expected type, never the value.** Bodies on this boundary carry
+  access tokens, email addresses and display names, so a diagnostic that quoted the offending value
+  would put personal data and credentials into a log.
+- **Sentinels are admitted, not rejected.** `Portals.PortalID` is `IDENTITY(-1, 1)` and roles, pages
+  and modules seed at `IDENTITY(0, 1)`, so no decoder applies a truthiness, `> 0` or `!== -1` test to
+  an identifier; and because the legacy string absence marker **is** the empty string, no decoder
+  coalesces `""`.
+- **An absent envelope `meta` is admitted; a malformed one is refused.** A page's `meta` stays
+  required, because that is the one place the paging facts live.
+- **Validation happens inside the pipeline, never in a `subscribe` handler.** A throw from a `next`
+  handler is reported to the reactive library's unhandled-error channel and never reaches the `error`
+  handler beside it, so a malformed body would have bypassed the store's own failure reporting
+  entirely.
+
+### A malformed page fails instead of fabricating a successful empty one
+
+The paging adapter previously read `response?.items ?? []` and `response?.meta?.totalCount ?? 0`,
+which gave contract drift, a null body and a genuine empty page **the same answer**: a successful,
+empty, zero-total page. A grid then rendered "nothing found" for a response that had in fact
+arrived malformed, and the pager agreed with it.
+
+The adapter now requires an object body, an array `items` — where **empty passes**, because a real
+empty page must remain distinguishable from a body with no items at all — and an object `meta`
+carrying integer `totalCount`, `pageIndex` and `pageSize`. Only the page count is still derived. The
+earlier justification for fabricating ("throwing would become an unhandled exception in a component")
+had ownership backwards: a throw inside an observable pipeline fails the observable, which is exactly
+what the error paths above it exist to present.
+
+### One owner presents each failure, so a refused save no longer produces two messages
+
+Two mechanisms announced the same failure. The global error interceptor announced every failed
+request, while four screens and every store also presented the outcome locally — a store through a
+failure signal its screen renders as an in-page banner, and four components through their own
+transient messages. A failed role save therefore produced **two** notifications for one refusal.
+
+The arbitration is now a single decision made in a single place. Every request issued by the seven
+resource services and the authentication transport is marked as *presented in context*, and the
+interceptor announces only unmarked requests. Two details are deliberate:
+
+- **The re-throw stays unconditional.** The interceptor stops announcing; it never stops propagating,
+  so the store still receives the failure it must present.
+- **The default is the noisy one.** An unmarked request is announced, so a forgotten marker
+  duplicates a message rather than silencing one. The legacy precedent supports the local surface:
+  these outcomes were presented through `UI.Skins.Skin.AddModuleMessage`, an in-page block beside the
+  form rather than a transient global message.
+
+### A support reference can no longer be truncated away
+
+A diagnostic reference was appended to a message and the whole string was then bounded, so on a long
+message the truncation removed the one element that makes a report actionable. The reference is now
+**carried structurally** on the queued notification and bounded independently, and the base message is
+bounded *before* the label and reference are appended, so the suffix has reserved space and cannot be
+cut. A blank reference is treated as absent so no dangling label survives, and a blank message is
+still refused even when a reference accompanies it.
+
+### The client permission gate speaks the API's complete policy vocabulary, and its scope names are the API's
+
+The gate knew five of the API's eight registered policies and resolved a scoped policy from a list of
+two parameter names, documenting the second as mirroring the server. Both were wrong, in opposite
+directions:
+
+- **Three policies were missing** — host administration, account ownership, and account-ownership-or-
+  portal-administration. A route declaring a real policy the list omitted was refused for a reason no
+  operator could see, and the omission also hid the scope that policy needs, so nothing demanded the
+  identifier the server was about to require.
+- **The `id` fallback did not exist server-side.** The permission handler accepts exactly one name per
+  scope and its own commentary refuses a generic fallback, on the reasoning that it "would let a
+  nested route hand this handler some other entity's key". Accepting a bare `id` let the gate
+  authorise one record while the endpoint authorised another, which surfaced as an unexplainable
+  refusal on a screen the gate had just admitted.
+
+Each scope is now a single name — held as a string rather than a list, so the fallback cannot be
+reintroduced by appending to it — and every policy's scope requirement is stated in an exhaustive
+switch, so a ninth policy fails to compile until its requirement is declared. Two further points are
+deliberate:
+
+- **Host administration is answered from the host flag alone, with no tenant reasoning of any kind**,
+  because the policy exists precisely for operations that address no single portal; reading any portal
+  there would reintroduce the question the policy exists to avoid asking.
+- **Account ownership has no administrator arm.** It gates the credential change, which presents the
+  current credential, so admitting an administrator would collapse the change and the reset into one
+  operation whose effect depended on which fields were populated. The account-scoped policies demand
+  only the account identifier and **not** a portal identifier: the API's own prose says both are
+  required, but its handler resolves the portal from the route when present and from the arrival
+  tenant otherwise, and an earlier revision that demanded a route portal could never be satisfied,
+  because the account routes are mounted flat and name no portal segment.
+
+### A guarded address now reaches the sign-in screen instead of a not-found view
+
+The route table declared no sign-in route, while three modules navigated to `/login`: both navigation
+gates and the authentication interceptor's terminal path. All three therefore fell through to the
+catch-all, so an operator whose session had ended was shown "no administration screen is available at
+this address" — an unrecoverable dead end whose wording actively misdescribes what happened, because
+the address was never the problem. The table also attached no guard at all, so any address was
+reachable by anyone and the refusal came only from the API.
+
+Both are corrected together, and four choices are deliberate:
+
+- **The sign-in route is declared first and carries no guard of any kind.** A gate that redirected an
+  unauthenticated caller to the screen the gate protects is a navigation cycle.
+- **The attempted address survives.** Both gates attach it as a query parameter on the tree they
+  build, and a query string is not part of path matching, so it arrives intact for the sign-in screen
+  to honour. This is what makes memory-only credential custody acceptable: a reload genuinely requires
+  signing in again, and the operator resumes where they were aiming.
+- **Each screen declares the exact policy its primary resource is protected by**, read from the
+  controller rather than inferred from the screen's name, and asserted against the gate's own type so
+  that a mis-typed policy name is a compile error rather than a screen unreachable at run time for a
+  reason nothing reports.
+- **A refusal cancels the navigation and says so, rather than redirecting.** The legacy redirect had
+  an access-denied page to send the browser to; there is deliberately no not-authorised route here, so
+  the refusal is announced at warning severity — matching the legacy page, which presented every
+  refusal as a yellow warning — and the caller stays where they are. The cause is not disclosed, since
+  naming which of the three refusal branches applied would reveal whether the named record exists.
+### The alias a request arrived through can no longer be renamed or unbound, restoring a legacy affordance as an enforced rule
+
+**Legacy behaviour.** The alias listing hid the edit affordance for the alias the site was *being
+browsed through*. `Website/admin/Portal/PortalAlias.ascx.vb:L51-L60` declares
+`IsNotCurrent(ByVal Id As String)`, which parsed the grid row's key and compared it against
+`Me.PortalAlias.PortalAliasID()` — the current request's own alias row, resolved server-side by the
+page base class — and `Website/admin/Portal/portalalias.ascx:L8` bound the answer to the edit
+hyperlink's `Visible` property. An invisible server control renders nothing, so the command cell for
+that one row was simply empty.
+
+Removal was governed by a *different* rule. `SetDeleteVisibility` at
+`Website/admin/Portal/EditPortalAlias.ascx.vb:L107` hid the Delete button when the portal held one
+alias or fewer, and nothing else. An operator on a portal with several aliases could therefore unbind
+the very one they had arrived through.
+
+**What the migration does.** Three changes, and one of them goes beyond the legacy screen.
+
+- **The fact is published.** `PortalAliasDto` gains a computed `IsCurrent` member, set from the
+  resolved `IPortalContext` while the projection is built. `IPortalContext` gains `PortalAliasId` so
+  the resolved alias travels as its **surrogate key** rather than as a host name. This is a
+  per-request projection and **not** a stored column, so Rule T4 is untouched: no table, index or
+  constraint changes.
+- **Both writes are refused server-side.** `PortalService.UpdatePortalAliasAsync` and
+  `DeletePortalAliasAsync` refuse the row the current request resolved through, with the reason code
+  `portal.alias_in_use.conflict`, which the problem taxonomy maps to `409 Conflict` and the problem
+  type `urn:dnnmigration:error:portal.alias_in_use.conflict`. Enforcement is at the service, so a
+  crafted call cannot reach the write by bypassing the screen.
+- **The screen withholds both commands.** `rowEditable(row)` withholds the per-row edit button and
+  leaves the cell empty, exactly as the legacy grid did. `deleteAffordanceVisible` gains a third
+  condition. Pressing the row — an affordance the legacy grid did not have — is guarded too.
+
+**Why the comparison is by key, and why the server makes it.** Two independent reasons, both measured.
+The legacy write path folded case, `PortalAliasController.vb:L31` and `L97` both lower-casing the
+host name before the write, while its reader assigned the stored value unchanged at `L75`; so two
+spellings of one host name are both legitimate stored values and any string comparison would need a
+casing rule of its own. And the browser cannot obtain the answer at all: `window.location.host` is the
+address the single-page application was *served* at, which reaches the API through the nginx proxy
+declared in `docker/nginx.conf`, so it need not equal the host name the API matched. A client-side
+guess would hide the right row on one deployment and the wrong row on another.
+
+**Why the refusal covers removal, which legacy did not.** Losing the address you are standing on has
+no in-application recovery for the caller who made the request. A rename leaves the operator with a
+host name that no longer resolves; a removal leaves them with no row to correct it from, because the
+tenant-scoped routes they would use to repair it are reachable only through a resolved tenant. The
+divergence is therefore deliberate, and it is narrow: it withholds exactly one row.
+
+**What is deliberately NOT added.** No last-alias rule. Removing a portal's **only** remaining alias
+stays permitted, because `Library/Components/Portal/PortalAliasController.vb` removes an alias
+unconditionally and inventing a rule the legacy console did not have would refuse a save an operator
+could previously make. The two rules are orthogonal and only appear to collide on a single-alias
+portal addressed through its own alias, where both bite at once; the integration suite proves each
+separately, issuing the last-alias removal from a caller that arrived somewhere else.
+
+**One authored sentence.** The refusal needs wording and no legacy sentence exists to reproduce,
+because the legacy console could not reach the refusal at all — it hid the affordance instead. The
+authored text names the recovery, since the same change succeeds from a request that reached the
+portal through another of the portal's host names. It is held once, in the shared refusal vocabulary,
+and the portal-alias screen reuses it rather than spelling a second variant.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Abstractions/Services/IPortalContext.cs`,
+`backend/src/DnnMigration.Infrastructure/Services/PortalContextAccessor.cs`,
+`backend/src/DnnMigration.Infrastructure/Services/PortalContextHolder.cs`,
+`backend/src/DnnMigration.Application/Dtos/Portal/PortalAliasDto.cs`,
+`backend/src/DnnMigration.Application/Mapping/PortalMappings.cs`,
+`backend/src/DnnMigration.Application/Services/PortalService.cs`,
+`backend/src/DnnMigration.Api/Controllers/PortalAliasesController.cs`,
+`frontend/src/app/core/models/portal.model.ts`,
+`frontend/src/app/core/utils/form-errors.util.ts`,
+`frontend/src/app/core/state/portal.store.ts`,
+`frontend/src/app/features/portal/portal-alias-list/portal-alias-list.component.ts`,
+`frontend/src/app/features/portal/portal-alias-list/portal-alias-list.component.html`.
+
+
+## QA remediation: five behavioural differences introduced while closing fourteen performance findings
+
+A performance review found fourteen defects, four of them critical, and closing them was mostly
+invisible: paging that had been applied in memory now happens in SQL, a cache single-flight is fenced by
+identity rather than by key, a permission fallback runs its cheap arm first, and a row's route target is
+built once per page instead of once per row per change-detection pass. In each of those the OUTPUT is
+unchanged, and where an ordering or a verdict could have shifted the equivalence was established before
+the change rather than assumed after it — the role billing codes are the stored `char(1)` values so the
+enum order and the alphabetical order coincide; three account columns the in-memory sort compared are
+`builder.Ignore(...)` in `UserConfiguration`, so the tie-break alone decided the sequence and the SQL
+arms are output-identical; and the set-based page-permission query composes its verdict per page and then
+disjoins, never pooling grants, because pooling would let an allow on one page cancel a deny on another.
+
+Five differences are genuinely observable, and each is recorded here rather than absorbed.
+
+### The role membership grid is paged, and the legacy grid was not
+
+`securityroles.ascx:L56` declares `grdUserRoles` with no `AllowPaging`, no pager style and
+`enableviewstate="false"`, so the legacy grid rendered every membership. The first port reproduced that
+literally: it asked for the largest page the contract allows, then followed every further page the server
+reported — concurrently — and rendered the union, with a thousand-page ceiling as the only bound. That is
+not a faithful reproduction of an unpaged grid. The listing behind it counts and windows in SQL per
+request, so following N pages costs N windowed queries whose retained result grows without limit, and a
+mis-reported page count turned one screen into a fan-out.
+
+One active page is rendered instead, at the workspace's default page size, with the shared pager reaching
+the rest. Every membership is still addressable and no Delete command is out of reach; what changes is
+that reaching the eleventh member takes a pager click. A role small enough to have fitted the legacy grid
+renders with no pager at all, because the pager is drawn on the same predicate as every other listing
+here — more rows exist than fit on one page.
+
+Two consequences were handled rather than accepted. **The action's label and the date prefill no longer
+read the rendered rows.** Both used to scan the in-memory set, which was the whole set and is now one
+page, so an account whose membership sat on another page would have been labelled "Add User to Role" and
+prefilled with nothing. Both now come from one keyed read: the role's memberships filtered by the chosen
+account's login name — the listing matches it as a case-insensitive substring of either the login name or
+the display name — with the wanted row picked out by IDENTIFIER, because a name is not an identifier. A
+probe that cannot settle the question resolves to "no membership known", which is the state the legacy
+screen showed for an account it had no row for, and the write is an upsert either way. **A removal can
+leave the operator past the end of the listing**, which an unpaged grid could not do; the read that
+discovers it steps back to the last page that exists and asks once more, with clamping disabled on that
+second read so a listing shrinking underneath the screen can never loop.
+
+One thing deliberately did NOT change. A write still leaves the two date boxes exactly as the operator
+left them. `SecurityRoles.ascx.vb:L546` rebound the grid and touched no control, so an operator who left
+the expiry empty and let the server derive one saw an empty box afterwards; writing the stored bounds
+back would put a value they never typed into a box a second submit would then send explicitly, which is a
+change to what gets STORED and not merely to what is shown.
+
+### A stale answer can no longer overwrite a newer one, in six places that previously allowed it
+
+Six screens and slices cleaned up their requests only when the component or injector was destroyed, which
+covers the wrong case: a route key changes, a page moves, a filter is retyped and a term is superseded all
+happen WITHOUT anything being destroyed. The last response to arrive won rather than the last request to be
+made. Each now holds one cancellable handle per read concern and releases it before starting the
+replacement, and each additionally fences adoption — the two components on a route key by the KEY itself,
+the two stores and the assignment screen on a generation counter.
+
+The observable difference is that a superseded answer now reaches nothing at all. Previously it could
+hydrate a form with another role's values and then mark that form pristine, offer one portal's page
+selectors another tenant's pages — where saving afterwards would have written a page reference the
+addressed tenant cannot resolve — or repopulate a store that had just been cleared for a sign-out. A
+write is never cancelled this way: releasing one would stop the client listening without undoing what the
+server may already have committed, so writes are released only by a full reset or by teardown.
+
+The module store also gained the reset boundary it had no member for. Nothing calls it yet, and neither is
+anything calling the portal or account stores' equivalents; the boundary is published so that a sign-out
+has one, not because a caller was added here.
+
+### A renewal that answers after a sign-out no longer resurrects the session
+
+The token renewal was shared with `refCount: false` so that one cancelling caller could not abandon a
+renewal others were waiting on. Signing out cleared storage and dropped the slot but never cancelled the
+request, and the `tap` that stores the session sat UPSTREAM of the sharing operator — so a renewal in
+flight across a sign-out stored a fresh session afterwards, and the next reader was signed in again. A
+sign-in was worse: it did not touch the slot at all.
+
+A sign-in or a sign-out now cancels the outgoing renewal, installs a fresh cancellation signal and
+advances a session generation that every asynchronous write is fenced on. Two differences follow. A
+cancelled renewal now FAILS rather than completing silently, because a silent completion is worse than an
+error for this contract — the caller's retry never fires on a completion. And the request body is composed
+per subscription rather than once, so a re-subscription re-reads the current token; composing it once meant
+a second subscription re-sent an already-consumed refresh token, which a server reads as replay and
+answers by revoking the whole family.
+
+### The account listing withholds the columns the tenant hides
+
+The listing used to fetch every column and publish all of them, treating the tenant's `Column_*` settings
+as a hint about what to FETCH rather than about what to publish. The measured legacy defaults make that
+consequential: `UserModuleBase.vb:L94-L124` seeds `Column_FirstName`, `Column_LastName`, `Column_Email`
+and `Column_LastLogin` to `False`, so a tenant that has never touched its settings withholds four columns.
+Those fields are now omitted from the list projection, and their reads are skipped with them. Detail
+endpoints are unchanged, and a caller may still FILTER on a column it is not handed back — the filter is
+applied by the server, which sees the stored value either way.
+
+### The module import path has one coherent size contract, and the proxy was the real ceiling
+
+Four layers disagreed about how large an import may be. The service bounded the document at 1,048,576
+characters, the client read the file into memory with no size check at all, the API applied its global
+1 MiB body limit to the import action, and — the discovery that mattered — the reverse proxy never set
+`client_max_body_size`, so nginx's own 1 MiB default was the binding limit of the whole path and the
+service's contract was undeliverable regardless of what Kestrel allowed.
+
+Each layer is now derived from the one inside it. The service ceiling is unchanged at 1,048,576
+characters and is now PUBLISHED. The client refuses a file larger than 1,048,576 bytes before reading it,
+which is exact rather than approximate: a UTF-8 file of N bytes decodes to at most N UTF-16 code units.
+The API raises a dedicated limit on the import action alone, computed as the character ceiling times six
+plus a 64 KiB envelope, because the default JSON encoder escapes every non-ASCII character and five ASCII
+characters to a six-byte `\uXXXX` form; the global 1 MiB limit is untouched, which was verified at runtime
+— an oversized sign-in request is still refused at 413 while an import of the same size is read and bound.
+The proxy now carries the identical literal, so no layer refuses what the layer inside it accepts.

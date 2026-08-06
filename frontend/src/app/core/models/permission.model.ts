@@ -67,6 +67,8 @@
  * with the member names above.
  */
 
+import { decodeInteger, decodeString, objectOf, type Decoder } from '../utils/decode.util';
+
 // MIGRATION: the legacy catalogue class was named `PermissionInfo`
 //   (`Library/Components/Security/Permissions/Permission.vb:L28`). It is named
 //   `Permission` here, dropping the `Info` suffix that the legacy codebase
@@ -193,6 +195,96 @@
 export type PermissionKey = 'VIEW' | 'EDIT' | 'READ' | 'WRITE';
 
 /**
+ * The four permission keys as a runtime value, in the order the schema seeds them.
+ *
+ * {@link PermissionKey} is erased at compile time, so a union alone cannot answer a
+ * question about a value that arrived over the wire. This array is the runtime half of
+ * the same vocabulary and {@link isPermissionKey} is the only thing that reads it, which
+ * is what keeps the two halves from drifting: the type is DERIVED from this array
+ * through an indexed access, so adding an entry here widens the union and removing one
+ * narrows it, and no second list exists to forget to update.
+ *
+ * Frozen, because a permission vocabulary that a caller could push onto would be a
+ * vocabulary a caller could widen — and widening this list grants access.
+ */
+export const PERMISSION_KEYS = Object.freeze(['VIEW', 'EDIT', 'READ', 'WRITE'] as const);
+
+/**
+ * Whether a value is one of the four recognised permission keys.
+ *
+ * THE ONE SUPPORTED ROUTE FROM AN OPEN PRODUCER TO THE CLOSED VOCABULARY. Every
+ * server-supplied key — {@link Permission.permissionKey}, and each entry of the bare-key
+ * array the catalogue listing publishes — is typed `string` because the column stores
+ * whatever an installation seeded. A permission DECISION, by contrast, must be made over
+ * the closed set. This predicate is the boundary between the two, and it is a type guard
+ * rather than a boolean helper so the compiler carries the narrowing forward and a caller
+ * cannot forget to apply it.
+ *
+ * FAILS CLOSED, and that is the whole point. An unrecognised value — a key this codebase
+ * has never seen, a policy name passed where a key was expected, a permission CODE, a
+ * lower-case spelling, a padded string — answers false and is therefore discarded rather
+ * than admitted. The failure mode being prevented is specific: an unknown string present
+ * in the caller's granted list would otherwise satisfy a naive membership test and be
+ * treated as a render grant.
+ *
+ * Accepts `unknown` rather than `string`, so it is equally usable on a value parsed from
+ * a response, read from route data, or handed to a component input whose declared type
+ * the caller may have subverted. A non-string answers false without any coercion — no
+ * `String()` call, no trim, no case fold, because each of those would ADMIT a value the
+ * server would refuse.
+ *
+ * Comparison is ordinal and case-sensitive, matching the legacy semantics exactly:
+ * `Library/DotNetNuke.Library.vbproj:L22` declares `<OptionCompare>Binary</OptionCompare>`,
+ * under which VB string equality is ordinal, and every legacy comparison site depended on
+ * it. Case-folding here would widen access under the guise of convenience.
+ *
+ * @param value A candidate key from any source, trusted or not.
+ * @returns True only when the value is exactly one of the four keys.
+ */
+export function isPermissionKey(value: unknown): value is PermissionKey {
+  return typeof value === 'string' && (PERMISSION_KEYS as readonly string[]).includes(value);
+}
+
+/**
+ * Keeps only the recognised permission keys from a list of wire values.
+ *
+ * The list form of {@link isPermissionKey}, provided because the shape a caller's granted
+ * permissions actually arrive in is an array of open strings, and narrowing each element
+ * at every call site would put the fail-closed rule in several places instead of one.
+ *
+ * Discarding rather than rejecting is deliberate. A granted list carrying one unknown key
+ * alongside three recognised ones is not a malformed response — it is a response from an
+ * installation that seeded a key this codebase does not evaluate. Refusing the whole list
+ * would withdraw three valid grants over one irrelevant entry; discarding the unknown
+ * entry withdraws exactly the grant that cannot be reasoned about. Either way the unknown
+ * key never admits anything.
+ *
+ * A null or undefined list yields an empty result rather than throwing: absent grants and
+ * no grants are the same statement, and every consumer of this function treats an empty
+ * list as "nothing is admitted".
+ *
+ * @param values The granted keys exactly as the server published them.
+ * @returns The subset that is recognised, in the order given, with duplicates preserved.
+ */
+export function toPermissionKeys(
+  values: readonly string[] | null | undefined,
+): readonly PermissionKey[] {
+  if (values === null || values === undefined) {
+    return EMPTY_PERMISSION_KEYS;
+  }
+
+  return values.filter(isPermissionKey);
+}
+
+/**
+ * The result {@link toPermissionKeys} returns when there is nothing to keep.
+ *
+ * Shared and frozen rather than allocated per call, so a signal derived from it does not
+ * appear to change on every evaluation.
+ */
+const EMPTY_PERMISSION_KEYS: readonly PermissionKey[] = Object.freeze([]);
+
+/**
  * One entry in the permission catalogue: a definition of an access right,
  * scoped to a subsystem.
  *
@@ -276,12 +368,13 @@ export interface Permission {
    * failing at run time. That is strict typing producing exactly the unsafety it
    * exists to prevent.
    *
-   * NARROW IT WITH A GUARD, NEVER WITH A CAST. `normaliseRequiredKeys` in
-   * `shared/directives/has-permission.directive.ts` takes an unknown value and
-   * returns only recognised keys, discarding anything else — that is the supported
-   * route from this member to a {@link PermissionKey}. Comparing this member directly
-   * against a key literal remains correct and needs no guard, because both sides are
-   * strings; what needs the guard is treating the value AS the narrower type.
+   * NARROW IT WITH A GUARD, NEVER WITH A CAST. {@link isPermissionKey} takes an unknown
+   * value and narrows it to {@link PermissionKey} only when it is exactly one of the four,
+   * and {@link toPermissionKeys} does the same for a list — those two are the supported
+   * route from this member to the closed vocabulary, and both fail closed. Comparing this
+   * member directly against a key literal remains correct and needs no guard, because both
+   * sides are strings; what needs the guard is treating the value AS the narrower type,
+   * which is precisely what a permission DECISION does.
    *
    * Arrives as `""` rather than as `null` when the server has nothing to say, per the
    * sentinel note in this file's header.
@@ -297,3 +390,23 @@ export interface Permission {
    */
   readonly permissionName: string;
 }
+
+/**
+ * Decodes one permission catalogue entry.
+ *
+ * `permissionKey` is decoded as a plain string rather than against {@link PermissionKey}, and
+ * the choice is deliberate. The four keys that type names are the ones this application
+ * SWITCHES on, but the catalogue is extensible: a module package may register its own key, and
+ * closing the set here would refuse a whole catalogue because one third-party entry carried a
+ * key this client had never heard of. Consumers narrow the string where they need to.
+ *
+ * `moduleDefId` uses {@link decodeInteger} with no positivity test, because the identity seeds
+ * in this schema make zero an ordinary identifier.
+ */
+export const decodePermission: Decoder<Permission> = objectOf<Permission>({
+  permissionId: decodeInteger,
+  permissionCode: decodeString,
+  moduleDefId: decodeInteger,
+  permissionKey: decodeString,
+  permissionName: decodeString,
+});

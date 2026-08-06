@@ -1,0 +1,211 @@
+// Component stylesheet for the security-role listing and its role-group narrowing, served
+// by the route /roles.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .role-list__page-action
+//     .role-list__failure
+//     .role-list__failure-retry
+//     .role-list__filter
+//     .role-list__filter-controls
+//     .role-list__filter-select
+//     .role-list__filter-action
+//     .role-list__filter-action--danger
+//     .role-list__group-editor
+//     .role-list__group-editor-legend
+//     .role-list__group-editor-fields
+//     .role-list__group-editor-input
+//     .role-list__group-editor-textarea
+//     .role-list__group-editor-commands
+//     .role-list__command
+//     .role-list__row-action
+//     .role-list__action-label
+//     .role-list__icon
+//
+// THERE IS NO `.role-list` BLOCK CLASS, deliberately. The template's own header states that
+// the host is the layout container and that no wrapper element is emitted for its own sake,
+// so every region is a direct child of the host and the host owns the vertical rhythm.
+//
+// The surface is deliberately flat, and focus indication is deliberately absent: the global
+// reset applies the shared focus-ring mixin to every anchor, button, input, select and
+// textarea, so the design system owns focus and this file only places components.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT - THE HOST
+// -----------------------------------------------------------------------------
+// A custom element defaults to `display: inline` and would not contain its block-level
+// children correctly, so a box-generating display is required here regardless of layout.
+// Body type is declared here and inherited by every region below rather than restated per
+// rule: without it the browser falls back to its own serif default for every label, cell
+// and command on the screen.
+:host {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  PAGE-LEVEL ACTIONS
+// -----------------------------------------------------------------------------
+// These are projected into the page header's action slot. Projected content keeps the
+// encapsulation of the component that DECLARES it, so the header supplies the row and its
+// gap and cannot style what it hosts - which is exactly why their appearance is declared
+// here and their arrangement is not.
+.role-list__page-action {
+  color: var(--color-primary);
+}
+
+// -----------------------------------------------------------------------------
+//  INLINE FAILURE SURFACE
+// -----------------------------------------------------------------------------
+// The banner derives its own severity and owns its own appearance; this region only stacks
+// it above the retry command, and the command is left at its content width by the grid's
+// `start` justification rather than being stretched across the screen.
+.role-list__failure {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+// -----------------------------------------------------------------------------
+//  GROUP NARROWING
+// -----------------------------------------------------------------------------
+// The narrowing row wraps rather than scrolls, so the group selector and the two commands
+// that act on the selected group stay reachable at every width. `end` alignment keeps the
+// commands' baselines on the selector's own baseline when the labelled select is taller.
+.role-list__filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: end;
+}
+
+.role-list__filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: end;
+}
+
+// A select whose widest option is a long group name would otherwise size the whole row, so
+// it takes a fluid share from a zero basis with a floor of the small step.
+.role-list__filter-select {
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// -----------------------------------------------------------------------------
+//  COMMANDS
+// -----------------------------------------------------------------------------
+// One rule for every command on the screen: the two group commands beside the selector, the
+// group editor's own submit, the row-level commands inside the grid, and the retry beside a
+// failure. They read alike because they ARE alike - each is a button the reader presses in
+// place, and a difference in appearance would imply a difference in kind that does not exist.
+//
+// `inline-flex` keeps a command at its own content width inside a grid cell that may be
+// wider, and lines the icon up with the label beside it.
+.role-list__filter-action,
+.role-list__command,
+.role-list__row-action,
+.role-list__failure-retry {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+// A colour change only. A destructive command that also moved or resized would be a
+// different affordance in a different place, which is how a reader mis-clicks the one
+// command that cannot be undone.
+.role-list__filter-action--danger {
+  color: var(--color-danger-text);
+}
+
+// The icon is decorative - the template marks it `aria-hidden` and gives it no title - so it
+// carries no meaning a reader could lose. It is sized from the type scale rather than from a
+// bespoke value so it tracks the text it sits beside, it inherits its stroke from
+// `currentColor`, and it never shrinks.
+.role-list__icon {
+  flex: none;
+  inline-size: var(--font-size-md);
+  block-size: var(--font-size-md);
+}
+
+// The label beside that icon stays VISIBLE. The legacy affordances were raster icons WITH
+// text (`roles.ascx` L11, L13), no image asset exists anywhere in this workspace to stand in
+// for one, and the template's own header records that the accessible name comes from this
+// text - so clipping it would leave a glyph carrying the whole meaning of a command, one of
+// which destroys a record.
+.role-list__action-label {
+  white-space: nowrap;
+}
+
+// -----------------------------------------------------------------------------
+//  INLINE GROUP EDITOR
+// -----------------------------------------------------------------------------
+// A framed region, because it is a form that appears in the middle of a listing and needs a
+// boundary for a reader to see where it starts and stops. The `legend` is painted by the
+// browser as part of the fieldset's border, so its inline padding is what opens the gap in
+// that border.
+.role-list__group-editor {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+}
+
+.role-list__group-editor-fields {
+  display: grid;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.role-list__group-editor-legend {
+  padding-inline: var(--space-1);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// Both controls fill the measure their fieldset sets rather than sizing themselves: a text
+// box that is narrower than its neighbour for no reason reads as a different kind of field.
+.role-list__group-editor-input,
+.role-list__group-editor-textarea {
+  inline-size: var(--size-full);
+}
+
+.role-list__group-editor-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screen (`Website/admin/Security/roles.ascx` L4-L82) was one
+// full-width layout table whose first row held the group filter, whose second row was a
+// 20-unit spacer and whose third held the grid, with non-breaking spaces flanking the filter.
+// None of that is structure - it is spacing as markup - so the filter row is laid out with CSS
+// here, the spacer row has no representation at all, and only the roles grid survives as a
+// real table, delegated to the shared data table which owns its own rules.
+//
+// MIGRATION: the spacing and radius scales every value above resolves to are NET ADDITIONS -
+// the legacy design is square-cornered, flat and has no spacing system. The inline group
+// editor's frame is a net addition too: the legacy equivalent was a separate page reached by
+// a query-string URL, so there was no in-place region to frame. Neither alters any behaviour,
+// and both are recorded with the rest in MIGRATION_NOTES.md.
+// =============================================================================

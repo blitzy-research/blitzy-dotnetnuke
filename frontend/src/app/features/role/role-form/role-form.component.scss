@@ -1,0 +1,234 @@
+// Component stylesheet for the security-role create-and-edit form, served by the routes
+// /roles/new and /roles/:roleId.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .role-form
+//     .role-form__form
+//     .role-form__notice
+//     .role-form__intro
+//     .role-form__section
+//     .role-form__section--advanced
+//     .role-form__legend
+//     .role-form__summary
+//     .role-form__grid
+//     .role-form__control
+//     .role-form__control--narrow
+//     .role-form__control--choice
+//     .role-form__control--pair
+//     .role-form__period
+//     .role-form__frequency
+//     .role-form__readonly
+//     .role-form__warning
+//     .role-form__actions
+//     .role-form__command--danger
+//
+// The template ALSO places `form-field--inline`, `form-field--multiline` and
+// `form-field--disabled` on `app-form-field` elements. Those three are NOT declared here
+// and must never be: the shared form field owns them through its own `:host(...)` rules,
+// so a copy in this file would either be dead or would fight the component that owns them.
+//
+// The surface is deliberately flat, and focus indication is deliberately absent: the
+// global reset applies the shared focus-ring mixin to every anchor, button, input, select,
+// textarea and summary, so the design system owns focus and this file only places things.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared on the component root and inherited by every region below rather
+// than restated per rule: without it the browser falls back to its own serif default for
+// every legend, label, note and read-only value on the screen.
+.role-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.role-form__form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  PROSE
+// -----------------------------------------------------------------------------
+// Three kinds of standing text, distinguished by weight of meaning rather than by
+// position: an intro explains a section, a notice qualifies the screen, and a warning
+// reports a configuration the operator must attend to elsewhere. Each is capped at a
+// comfortable measure, because a paragraph run across a desktop viewport is measurably
+// harder to read than one that wraps.
+.role-form__intro,
+.role-form__notice,
+.role-form__summary {
+  max-inline-size: mx.breakpoint('md');
+}
+
+.role-form__intro,
+.role-form__notice {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// The refusal colour is the text variant, not the raw danger colour: the raw value is
+// tuned for a border or an icon and does not clear the contrast threshold as body text.
+.role-form__warning {
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-danger-text);
+}
+
+// -----------------------------------------------------------------------------
+//  SECTIONS
+// -----------------------------------------------------------------------------
+// Two shapes share one class. The basic section is a `fieldset` with a `legend`; the
+// advanced section is a `details` with a `summary`, so the fee and trial fields collapse
+// out of the way for the common case of an unpaid role. Both get the same frame, which is
+// the point of sharing the class: the disclosure must not read as a different KIND of
+// region, only as a closed one.
+.role-form__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+// The advanced disclosure sits on the shared surface tone rather than the page background,
+// so a reader can see at a glance that it is subordinate to the basic settings above it.
+// Deliberately NOT the hint surface: that token is the legacy help highlight and reads as
+// an annotation, not as a region.
+.role-form__section--advanced {
+  background-color: var(--color-surface);
+}
+
+// A `legend` is painted by the browser as part of its fieldset's border, so inline padding
+// is what opens the gap in that border. A `summary` is not - it is a flow child - but it
+// takes the same type so the two section headings read alike.
+.role-form__legend,
+.role-form__summary {
+  padding-inline: var(--space-1);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// The disclosure control needs to look operable. `list-item` is the browser default for a
+// summary and carries the marker; a pointer cursor is added because the element is
+// interactive but is neither a button nor a link, so nothing else signals that.
+.role-form__summary {
+  cursor: pointer;
+}
+
+// -----------------------------------------------------------------------------
+//  FIELD GRID
+// -----------------------------------------------------------------------------
+// One column until there is room for two. `minmax(0, 1fr)` rather than `1fr` because a
+// grid track's automatic minimum is its content, and one long unbroken value would
+// otherwise push the second column off the screen.
+.role-form__grid {
+  display: grid;
+  gap: var(--space-3);
+
+  @include mx.respond-above('md') {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  CONTROL SLOTS
+// -----------------------------------------------------------------------------
+// Each of these wraps the control INSIDE a shared form field, which owns the label, the
+// required marker and the error line. The wrapper exists so this screen can size and
+// arrange a control without reaching into the shared component, which encapsulation would
+// not permit in any case.
+.role-form__control {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+// A money amount and a period count are short values. A control sized for a sentence
+// invites one, so these are narrowed rather than stretched across the grid column.
+.role-form__control--narrow {
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// A lone check box has no text of its own inside the slot - the shared field supplies the
+// label - so the slot only has to stop the control stretching to the column width.
+.role-form__control--choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+// The period count and its frequency are ONE decision expressed as two controls, so they
+// share a row and wrap together rather than being separated into two fields. `end`
+// alignment keeps their baselines together when the select is taller than the input.
+.role-form__control--pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: end;
+}
+
+// Both members of the pair share the remaining space from a zero basis, so neither is
+// sized by its own content: a select whose widest option is long would otherwise crowd out
+// the numeric input beside it.
+.role-form__period,
+.role-form__frequency {
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+}
+
+// An `output` element holding a value the operator may not change. It is muted rather than
+// disabled-looking because it is not a control at all, and it wraps rather than truncates
+// because a clipped role name is worse than a tall row.
+.role-form__readonly {
+  color: var(--color-text-muted);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives
+// white-space collapsing, and wrapping is intrinsic so the last command stays reachable at
+// every width.
+.role-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// A colour change only. A destructive command that also moved or resized would be a
+// different affordance in a different place, which is how a reader mis-clicks the one
+// command that cannot be undone.
+.role-form__command--danger {
+  color: var(--color-danger-text);
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screen (`Website/admin/Security/EditRoles.ascx`) was a single
+// layout table whose fee, trial and billing fields sat in the same undifferentiated run of
+// rows as the role name and description. Grouping them behind a disclosure is a NET
+// ADDITION: every field remains present, reachable and bound exactly as before, and the
+// disclosure defaults to whatever the component decides from the record rather than hiding
+// a populated field.
+//
+// MIGRATION: the spacing, radius and surface scales every value above resolves to are all
+// net additions - the legacy design is square-cornered, flat and has no spacing system -
+// and the two-column collapse is a net addition too, because the legacy stylesheets declare
+// no media query anywhere. All of it is intentional visual refinement that alters no
+// behaviour, and it is recorded with the rest in MIGRATION_NOTES.md.
+// =============================================================================

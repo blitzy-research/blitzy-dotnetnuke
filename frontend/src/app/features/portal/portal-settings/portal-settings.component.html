@@ -254,8 +254,15 @@
                     -->
                     @for (choice of bannerChoices; track choice.value) {
                       <label>
+                        <!--
+                          ⚠ The static `name` is what makes these one NATIVE radio group. The reactive
+                          directive groups them in the model only and writes no `name` attribute, so
+                          without it arrow-key movement and the single tab stop are both lost. Its value
+                          is the control's own name, so the two cannot drift apart.
+                        -->
                         <input
                           type="radio"
+                          name="bannerAdvertising"
                           formControlName="bannerAdvertising"
                           [value]="choice.value"
                         />
@@ -314,8 +321,15 @@
                   <div class="portal-settings__control">
                     @for (choice of registrationChoices; track choice.value) {
                       <label>
+                        <!--
+                          ⚠ The static `name` is what makes these one NATIVE radio group. The reactive
+                          directive groups them in the model only and writes no `name` attribute, so
+                          without it arrow-key movement and the single tab stop are both lost. Its value
+                          is the control's own name, so the two cannot drift apart.
+                        -->
                         <input
                           type="radio"
+                          name="userRegistration"
                           formControlName="userRegistration"
                           [value]="choice.value"
                         />

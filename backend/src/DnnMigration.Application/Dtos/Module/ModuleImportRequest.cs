@@ -190,6 +190,67 @@ namespace DnnMigration.Application.Dtos.Module;
 public sealed class ModuleImportRequest
 {
     /// <summary>
+    /// The largest document, in characters, that an import may carry: 1 048 576.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE INNERMOST NUMBER OF THE TRANSFER CONTRACT, AND THE ONE EVERY OTHER LIMIT IS DERIVED FROM. It is
+    /// declared here, on the contract type both layers already see, rather than privately inside the
+    /// service, because a ceiling that only the enforcing layer knows cannot be published to the caller -
+    /// and a caller that cannot know the ceiling can only discover it by having a request refused.
+    /// </para>
+    /// <para>
+    /// The three derived limits, each one bounding the layer inside it:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>
+    /// <description>
+    /// <see cref="FileByteMaximum"/>, the client-visible file limit. A file of N bytes decoded as UTF-8
+    /// yields at most N UTF-16 code units - a one-byte sequence produces one, and every multi-byte
+    /// sequence produces fewer code units than bytes - so a file bounded by this value in BYTES cannot
+    /// exceed this ceiling in CHARACTERS. That is why the two numbers are equal rather than one being a
+    /// fraction of the other, and it is exact rather than approximate.
+    /// </description>
+    /// </item>
+    /// <item>
+    /// <description>
+    /// The API's per-action import body limit, <c>ServiceCollectionExtensions.MaximumImportRequestBodyBytes</c>,
+    /// which is computed from this value and the worst-case JSON expansion of a character. It is
+    /// deliberately much larger, because a document at this ceiling does not fit in a body of the same
+    /// size once it has been JSON-encoded.
+    /// </description>
+    /// </item>
+    /// <item>
+    /// <description>
+    /// The reverse proxy's <c>client_max_body_size</c> for the API location in <c>docker/nginx.conf</c>,
+    /// which must be at least the API's import body limit. nginx defaults to one mebibyte, so leaving it
+    /// unstated made the PROXY the binding limit of the whole path - and a body the proxy refuses never
+    /// reaches the API, so the caller receives a refusal the API's own contract does not describe.
+    /// </description>
+    /// </item>
+    /// </list>
+    /// <para>
+    /// NO VALIDATION RULE IS DECLARED AGAINST <see cref="Content"/> FOR THIS, and that is unchanged: see the
+    /// note on that member. This is the published NUMBER, not an enforcement point. Enforcement stays where
+    /// it belongs - the proxy and the host bound the body before anything is allocated, and the service
+    /// bounds the document's characters before it is parsed - which is also why the value is a
+    /// <see cref="long"/>: the host limits it feeds are expressed in that type.
+    /// </para>
+    /// </remarks>
+    public const long ContentCharacterMaximum = 1_048_576;
+
+    /// <summary>
+    /// The largest file, in bytes, a client may offer for import: 1 048 576.
+    /// </summary>
+    /// <remarks>
+    /// Derived from <see cref="ContentCharacterMaximum"/> by the UTF-8 bound set out there, and published so
+    /// that a client refuses an oversized document BEFORE reading it rather than decoding an arbitrary local
+    /// file into memory and discovering the ceiling from a refusal. A client that checks nothing is still
+    /// bounded by the proxy and the host; a client that checks this is bounded before it allocates.
+    /// </remarks>
+    public const long FileByteMaximum = ContentCharacterMaximum;
+
+    /// <summary>
     /// The module whose content is being replaced. Mandatory - the only member of this contract that is -
     /// and deliberately nullable so that its absence can be told apart from a legitimate value.
     /// </summary>
@@ -279,10 +340,15 @@ public sealed class ModuleImportRequest
     /// answering <c>module.content_invalid</c>.
     /// </para>
     /// <para>
-    /// NO SIZE BOUND IS ASSERTED HERE. The legacy contract took an unbounded string and the legacy screen
-    /// had no text input at all to bound - its document picker was a list, not a field - so there is no
-    /// parity limit to preserve. A payload ceiling is a concern of the API host and the reverse proxy in
-    /// front of it, not of a property on a boundary type.
+    /// NO SIZE BOUND IS ASSERTED ON THIS PROPERTY. The legacy contract took an unbounded string and the
+    /// legacy screen had no text input at all to bound - its document picker was a list, not a field - so
+    /// there is no parity limit to preserve, and a length rule here would refuse the document only after the
+    /// whole body had already been read and bound, which is after the allocation a bound exists to prevent.
+    /// Enforcement therefore stays with the API host and the reverse proxy in front of it, which bound the
+    /// BODY while it is still being read off the socket, and with the service, which bounds the document's
+    /// CHARACTERS before it parses. What this type does carry is the published number those layers are sized
+    /// from - <see cref="ContentCharacterMaximum"/> - so that a client can satisfy the contract instead of
+    /// discovering it from a refusal.
     /// </para>
     /// </remarks>
     // MIGRATION: THE ENVELOPE IS UNWRAPPED SERVER-SIDE, WHICH IS WHY NEITHER A VERSION NOR A CONTENT-TYPE

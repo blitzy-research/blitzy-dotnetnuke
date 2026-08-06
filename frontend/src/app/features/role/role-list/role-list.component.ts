@@ -8,6 +8,7 @@ import {
   inject,
   signal,
   untracked,
+  type Signal,
 } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -22,6 +23,7 @@ import {
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
+import { HasPermissionDirective } from '../../../shared/directives/has-permission.directive';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
@@ -260,23 +262,6 @@ const DELETE_CONFIRMATION_LABEL = 'Delete';
 const DELETE_CONFIRMATION_TITLE = 'Delete role group';
 
 /**
- * Wording for the removal refusal the server raises when a group still classifies roles.
- *
- * The API answers `DELETE /api/v1/role-groups/{roleGroupId}` with `409` and the failure
- * code `role_group.in_use` in that case. The shared conflict vocabulary in
- * `core/utils/form-errors.util.ts` does NOT list that code - it carries
- * `role_group.name_duplicate` but not this one - so `RoleStoreFailure.conflict` is null
- * for the refusal and no shared wording resolves. The refusal is therefore recognised by
- * its STATUS and worded here. The gap belongs to the shared utility and is reported
- * rather than patched from a feature folder.
- */
-const GROUP_IN_USE_MESSAGE =
-  'That role group still contains roles, so it was not removed. Move or delete its roles first.';
-
-/** HTTP status for a state refusal. */
-const HTTP_CONFLICT = 409;
-
-/**
  * The store operations whose failure belongs INLINE, on the error banner.
  *
  * A listing that could not be fetched is not transient: the screen has nothing to show
@@ -450,6 +435,9 @@ interface AwaitedGroupMutation {
     ReactiveFormsModule,
     // Typed route segments for the two row commands and the three header actions.
     RouterLink,
+    // Gates the two create affordances on the caller's edit grant. An affordance only:
+    // it fails closed on an absent key and never substitutes for server authorisation.
+    HasPermissionDirective,
     // Page heading plus the projected action bar.
     PageHeaderComponent,
     // The twelve-column grid. It renders its own spinner and empty state, so neither
@@ -544,8 +532,18 @@ export class RoleListComponent implements OnInit {
    * declares no paging control and no `AllowPaging`; its grid bound a plain untyped list
    * (`Roles.ascx.vb` L77) and the code-behind carries no page index, page size or record
    * total anywhere. The pager style declared at L32 never rendered. Accordingly NO pager
-   * is offered here and the shared pagination component is not consumed: the paging
-   * metadata the envelope carries is read by nobody on this screen.
+   * is offered here and the shared pagination component is not consumed.
+   *
+   * ⚠ AND "NO PAGER" IS NOT THE SAME STATEMENT AS "ONE PAGE", WHICH IS THE WHOLE POINT.
+   * Binding a single windowed response to a grid with no pager does not reproduce an
+   * unpaged screen; it produces a silently TRUNCATED one, in which a portal's later roles
+   * do not exist as far as an operator can tell and no affordance exists to reach them.
+   * The store therefore reads EVERY page and joins them before this signal ever sees
+   * them - see `core/state/role.store.ts`, `loadRoles` and its complete-listing walk - so
+   * what arrives here is the whole result set under the current narrowing. This screen
+   * consumes it exactly as the legacy grid consumed its untyped list, and the paging
+   * metadata on the envelope is read by nobody here because one envelope now carries
+   * everything.
    */
   protected readonly roles = this.store.roleItems;
 
@@ -915,36 +913,62 @@ export class RoleListComponent implements OnInit {
   // -------------------------------------------------------------------------
 
   /**
-   * Route to the role editor.
+   * The editor route of every role on the page, keyed by identifier.
+   *
+   * PRECOMPUTED ONCE PER PAGE rather than per row per change-detection pass, and bound as an
+   * index rather than called. Twelve columns are rendered per row and a router link is
+   * compared by IDENTITY, so an array built afresh on each pass is a new reference every
+   * time: the router re-parses a target that has not changed, for every row, on every pass.
+   * Deriving the lookup from the page means the references change only when the rows do,
+   * which is the whole point of rendering this screen with push change detection.
+   *
+   * A plain object rather than a map, because a template can index one and cannot call
+   * `Map.get`; the point is to remove the per-pass call, so an indexed read is what the
+   * binding needs. Bounded by construction: one entry per row of the CURRENT page, rebuilt
+   * rather than appended to whenever the page changes.
+   *
+   * The arrays are intentionally MUTABLE rather than `readonly`: the router's link input is
+   * declared as `any[] | string | UrlTree | null | undefined`, and a read-only array is not
+   * assignable to it, so a read-only element type would fail the strict template check at
+   * the binding site.
+   *
+   * The identifier is used as the key and interpolated exactly as received. `Roles.RoleID`
+   * is declared with an identity seed of ZERO, so the first role of every tenant is keyed
+   * `0` and a falsy-looking key is a legitimate one.
    *
    * Replaces `Roles.ascx.vb` L216-L218, which built `EditUrl("RoleID", "KEYFIELD", "Edit")`
    * with a dummy token and then substituted a format placeholder into the rendered URL.
-   *
-   * The array is intentionally MUTABLE rather than `readonly`: the router's link input is
-   * declared as `any[] | string | UrlTree | null | undefined`, and a read-only array is not
-   * assignable to it, so a read-only return type would fail the strict template check at
-   * the binding site.
-   *
-   * @param role The row being rendered.
-   * @returns Route segments addressing that role. Never empty.
    */
-  protected editRoleLink(role: RoleListItem): (string | number)[] {
-    return [ROLES_PATH, role.roleId];
-  }
+  protected readonly editRoleLinks: Signal<Readonly<Record<number, (string | number)[]>>> =
+    computed(() => {
+      const links: Record<number, (string | number)[]> = {};
+
+      for (const role of this.roles()) {
+        links[role.roleId] = [ROLES_PATH, role.roleId];
+      }
+
+      return links;
+    });
 
   /**
-   * Route to the role's membership list.
+   * The membership route of every role on the page, keyed by identifier.
+   *
+   * Precomputed on the same terms and for the same reason as {@link editRoleLinks}.
    *
    * Replaces `Roles.ascx.vb` L225-L227, which built
    * `NavigateURL(TabId, "User Roles", "RoleId=KEYFIELD")` - a tab key containing a space,
    * substituted into a query string.
-   *
-   * @param role The row being rendered.
-   * @returns Route segments addressing that role's members. Never empty.
    */
-  protected manageUsersLink(role: RoleListItem): (string | number)[] {
-    return [ROLES_PATH, role.roleId, ROLE_MEMBERS_SEGMENT];
-  }
+  protected readonly manageUsersLinks: Signal<Readonly<Record<number, (string | number)[]>>> =
+    computed(() => {
+      const links: Record<number, (string | number)[]> = {};
+
+      for (const role of this.roles()) {
+        links[role.roleId] = [ROLES_PATH, role.roleId, ROLE_MEMBERS_SEGMENT];
+      }
+
+      return links;
+    });
 
   // -------------------------------------------------------------------------
   // THE COLUMN SET
@@ -1531,7 +1555,7 @@ export class RoleListComponent implements OnInit {
       return;
     }
 
-    this.notifications.notify(failure.summary.severity, this.failureMessage(awaited, failure));
+    this.notifications.notify(failure.summary.severity, this.failureMessage(failure));
   }
 
   /**
@@ -1549,24 +1573,25 @@ export class RoleListComponent implements OnInit {
   /**
    * Wording for a refused group mutation.
    *
-   * Three sources, in order of specificity. A `409` on a removal is the in-use refusal,
-   * which carries a failure code the shared conflict vocabulary does not list, so it is
-   * recognised by status and worded locally. Any code the shared vocabulary DOES recognise -
-   * the duplicate-name collision among them - is worded from there, so the legacy sentence
-   * is reproduced rather than paraphrased. Otherwise the shared summary's own message
-   * stands. Every branch passes through the shared break-tag normaliser, because the
-   * conflict wording is lifted verbatim from resource values and at least one of those
-   * carries a leading layout break.
+   * Two sources, in order of specificity: the shared conflict vocabulary when the server
+   * published a code that vocabulary recognises, so the sentence is reproduced rather than
+   * paraphrased, and otherwise the shared summary's own message. Both branches pass through
+   * the shared break-tag normaliser, because the conflict wording is lifted verbatim from
+   * resource values and at least one of those carries a leading layout break.
    *
-   * @param awaited What was requested.
+   * MIGRATION: an earlier revision carried a THIRD branch and a private sentence for the
+   * in-use refusal on a removal, recognised by its bare `409` rather than by its code. That
+   * existed only because the shared vocabulary did not list `role_group.in_use`, and the
+   * comment on it said so and reported the gap. The gap is now closed in the shared utility,
+   * so the branch and the private sentence are gone: the refusal is recognised by its CODE
+   * like every other, and the wording lives in one place. Recognising a refusal by status
+   * alone was always the weaker test - the same status arrives for a duplicate name, and only
+   * the ordering of the branches kept the two apart.
+   *
    * @param failure The failure the store recorded.
    * @returns The message to announce. Never empty.
    */
-  private failureMessage(awaited: AwaitedGroupMutation, failure: RoleStoreFailure): string {
-    if (awaited.operation === 'deleteRoleGroup' && failure.summary.status === HTTP_CONFLICT) {
-      return GROUP_IN_USE_MESSAGE;
-    }
-
+  private failureMessage(failure: RoleStoreFailure): string {
     const shared: string | null = conflictMessage(failure.conflict);
 
     if (shared !== null) {

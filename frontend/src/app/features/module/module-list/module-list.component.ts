@@ -13,6 +13,7 @@ import { RouterLink } from '@angular/router';
 
 import { ModuleVisibility } from '../../../core/models/module.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
@@ -23,9 +24,10 @@ import { SearchInputComponent } from '../../../shared/components/search-input/se
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 
-import type { OnInit } from '@angular/core';
+import type { OnInit, Signal } from '@angular/core';
 import type { ModuleListItem } from '../../../core/models/module.model';
 import type { SortDirection } from '../../../core/models/paged-result.model';
+import type { PermissionKey } from '../../../core/models/permission.model';
 import type { ModuleStoreFailure } from '../../../core/state/module.store';
 import type {
   DataTableCellContext,
@@ -405,6 +407,12 @@ const ROUTE = Object.freeze({
   // The built-in control-flow blocks need no import, so `CommonModule` is deliberately absent - as
   // are the shared spinner and empty-state components, which the table renders itself from its own
   // imports and which would be duplicated if they appeared here.
+  //
+  // This screen's template renders the row commands unconditionally, so neither
+  // `NgTemplateOutlet` nor `HasPermissionDirective` is listed: Angular reports an import a
+  // template never uses, and declaring one for a gate this markup does not apply would be a
+  // claim the template contradicts. The shared directive's production usage lives on the role
+  // listing, and `holdsAdministration` remains published for a consumer that needs the fact.
   imports: [
     RouterLink,
     PageHeaderComponent,
@@ -439,6 +447,54 @@ export class ModuleListComponent implements OnInit {
 
   /** The transient-message channel. */
   private readonly notifications = inject(NotificationService);
+
+  /** The session store, read only for the permission composition documented below. */
+  private readonly authStore = inject(AuthStore);
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE COMPOSED PERMISSION GATE ON THE ROW COMMANDS
+  // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * Whether the caller administers this tenant.
+   *
+   * ⚠ THE FIRST ARM OF A TWO-ARM GATE, AND OMITTING IT WOULD HIDE WORKING CONTROLS. The four row
+   * commands are all `ModuleEdit` on the API, so the persisted `EDIT` key is what governs them and
+   * the shared permission directive is the right instrument — but the key list the client holds is
+   * derived from GRANT ROWS ALONE. A portal administrator who has never been named in a grant row
+   * holds no keys at all, and the API admits them to every one of these operations anyway, because
+   * each of those policies has an administrator arm. Gating on the key by itself therefore removes
+   * four working affordances from precisely the operator the screen exists for. Measured, not
+   * assumed: on the seeded baseline the `admin` account holds the `Administrators` role and ZERO
+   * portal-level permission keys.
+   *
+   * So the gate is `administration OR key`, and the two arms are declared in the template as the two
+   * branches of one `@if`, with the command markup declared ONCE in a separate `ng-template` that
+   * both branches render through `ngTemplateOutlet`. Duplicating the markup per branch was the
+   * alternative and it is worse: four controls, their accessible names and their route builders would
+   * exist twice and would drift.
+   *
+   * Read from the store rather than derived here, because the route gate asks the same question to
+   * decide whether this screen may be entered at all — see `AuthStore.holdsPortalAdministration`.
+   */
+  protected readonly holdsAdministration: Signal<boolean> = this.authStore.holdsPortalAdministration;
+
+  /**
+   * The persisted key that admits the row commands, for the second arm of the gate.
+   *
+   * ⚠ THE UNION SEMANTICS ARE WHAT MAKE THIS CORRECT. The key list the client holds is the union of
+   * everything the caller holds ANYWHERE in the portal — the API's own register calls it "the set an
+   * administration shell needs to decide which sections to offer" — so a caller granted `EDIT` on a
+   * single module holds `EDIT` here and keeps the commands. The gate is coarser than the server's
+   * per-record answer by design: it decides whether to offer the column at all, and the server
+   * decides each request.
+   *
+   * Typed as the contract's key union rather than as a bare string, so a mis-spelling is a compile
+   * error. The directive itself accepts a plain `string` on purpose, because an installation may
+   * carry a key this codebase has never seen; narrowing it HERE costs nothing, because this screen
+   * names one of the four keys the product defines.
+   */
+  protected readonly editPermissionKey: PermissionKey = 'EDIT';
 
   // ---------------------------------------------------------------------------------------------------
   // CELL TEMPLATES

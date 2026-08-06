@@ -82,25 +82,51 @@ import { AuthStore } from '../state/auth.store';
  * The authorisation policy names the API registers, and the complete set of values a
  * route may declare.
  *
- * ⚠ CLOSED AT FIVE. A name outside this list is not merely unrecognised — it is a
- * FAULT, and a louder one than it looks. The API registers no policy provider that
- * could invent a policy on demand, so an unregistered name does not produce a tidy
- * refusal at the endpoint; it throws while the request is being authorised. Refusing
- * such a route here, before anything is sent, is therefore strictly safer than
- * forwarding it, which is why {@link permissionGuard} fails closed rather than
- * shrugging and admitting.
+ * ⚠ CLOSED AT EIGHT, AND EIGHT IS THE WHOLE REGISTERED SET — not a convenient subset.
+ * `Api/Authorization/PolicyNames.cs` declares exactly these eight names (L54, L61, L73,
+ * L80, L115, L139, L153, L164) and `Api/Extensions/AuthenticationExtensions.cs:L300-L354`
+ * registers exactly these eight and no others. Listing fewer would be worse than it
+ * looks in BOTH directions: a route declaring a real policy this list omitted would be
+ * refused here for no reason a person could see, while the omission would also hide the
+ * scope that policy needs, so nothing would demand the identifier the server is about to
+ * require.
+ *
+ * A name OUTSIDE the registered set is a FAULT rather than a mere typo. The API
+ * registers no policy provider that could invent a policy on demand, so an unregistered
+ * name does not produce a tidy refusal at the endpoint; it throws while the request is
+ * being authorised. Refusing such a route here, before anything is sent, is therefore
+ * strictly safer than forwarding it, which is why {@link permissionGuard} fails closed
+ * rather than shrugging and admitting.
  *
  * Declared as a `const` tuple rather than an enumeration for two reasons. A tuple is
  * the single source of BOTH the runtime list membership is tested against and the
  * compile-time type derived from it, so the two can never drift; and `isolatedModules`
  * is enabled in `tsconfig.json`, which rules out a constant enumeration outright.
  *
- * Of the five, portal, account, role and role-group administration all resolve to
- * portal administration, and module administration resolves to module editing. The two
- * tab policies are legal and currently unreferenced: no tab route exists in
- * `app.routes.ts`, and `core/services/tab.service.ts` is a lookup for the module
- * screens rather than a feature of its own. They are retained because the API
- * registers them, so a tab route added later needs no change here.
+ * WHAT EACH ONE IS FOR, since the names alone do not distinguish the three
+ * administration policies and choosing wrongly between them is silent:
+ *
+ * - `ModuleView` / `ModuleEdit` — one specific module instance. The API answers these
+ *   from the permission records held against that module, which is why nothing here
+ *   attempts to answer them.
+ * - `TabView` / `TabEdit` — one specific page. Same arrangement, same reason.
+ * - `PortalAdministrator` — administration WITHIN a tenant. The API decides it against
+ *   the portal the ROUTE names, falling back to the tenant the caller arrived through
+ *   when the route names none (`PortalAdministrationEvaluator.cs:L193-L203`). A host
+ *   account satisfies it.
+ * - `HostAdministrator` — for operations that address NO SINGLE PORTAL: the portal
+ *   collection, portal creation, and aliases addressed by their own global identifier.
+ *   ⚠ Not interchangeable with the one above. `PolicyNames.cs:L120-L130` records why the
+ *   distinction exists: because portal administration falls back to the arrival tenant,
+ *   using it on a global operation asked a truthful but irrelevant question and let an
+ *   administrator of one tenant enumerate every tenant, create new ones, or reach
+ *   another tenant's alias by guessing its identifier.
+ * - `AccountOwner` — the account the route names AND NOBODY ELSE. For the credential
+ *   change alone: a change presents the current credential, so only its holder can
+ *   perform one. It has no administrator arm at all.
+ * - `AccountOwnerOrPortalAdministrator` — the account the route names, or an
+ *   administrator of that account's portal. For the account resources both legitimately
+ *   reach: the account's own representation and its profile.
  */
 const PERMISSION_POLICIES = [
   'ModuleView',
@@ -108,6 +134,9 @@ const PERMISSION_POLICIES = [
   'TabView',
   'TabEdit',
   'PortalAdministrator',
+  'HostAdministrator',
+  'AccountOwner',
+  'AccountOwnerOrPortalAdministrator',
 ] as const;
 
 /** The closed set of ASP.NET Core authorisation policy names registered by the API. */
@@ -153,22 +182,60 @@ const RETURN_URL_KEY = 'returnUrl';
 const PORTAL_ADMINISTRATOR_ROLE = 'Administrators';
 
 /**
- * The parameter names a module-scoped policy is resolved from, in precedence order.
+ * The route parameter a module-scoped policy is resolved from.
  *
- * Mirrors the API's own resolution, which tries the explicit name first and the bare
- * one second. Both are listed because the gate and the endpoint must agree on which
- * record is being authorised; a gate that resolved a different scope than the server
- * would admit navigation to a screen the server then refuses, for a reason no operator
- * could see.
+ * ⚠ EXACTLY ONE NAME, AND THERE IS NO FALLBACK — this is the API's contract read from
+ * the API, not an approximation of it. `PermissionAuthorizationHandler.cs:L122` declares
+ * `ModuleRouteKey = "moduleId"` and its own remark states in as many words that only
+ * this name is accepted and why a bare identifier segment is deliberately refused: it
+ * "would let a nested route hand this handler some other entity's key — deciding a module
+ * question from a page's or an account's identifier, which is worse than refusing".
+ * `ResolveRouteKey` at L367-L372 returns that single name and nothing else, and when the
+ * route carries no such value the handler logs a registration mistake and refuses
+ * (L275-L283).
+ *
+ * A previous revision of this file listed `['moduleId', 'id']` and described the second
+ * entry as mirroring the API. It did not: no such fallback exists server-side. Accepting
+ * a bare `id` here would have let the gate authorise one record while the endpoint
+ * authorised another — precisely the confusion the server's remark refuses — so the fact
+ * that the two sides then disagreed would have surfaced as an unexplainable 403 on a
+ * screen this gate had just admitted. Held as a single string rather than a list so the
+ * fallback cannot be reintroduced by appending to it.
  */
-const MODULE_SCOPE_PARAMS = ['moduleId', 'id'] as const;
+const MODULE_SCOPE_PARAM = 'moduleId';
 
 /**
- * The parameter names a tab-scoped policy is resolved from, in precedence order.
+ * The route parameter a tab-scoped policy is resolved from.
  *
- * The same arrangement as {@link MODULE_SCOPE_PARAMS}, and the same reason.
+ * The same arrangement as {@link MODULE_SCOPE_PARAM} and the same single-name contract:
+ * `PermissionAuthorizationHandler.cs:L128` declares `TabRouteKey = "tabId"`.
+ *
+ * ⚠ NOT `tabModuleId`. That name exists server-side (L134) but is read from the QUERY
+ * STRING rather than the route, and it names one particular PLACEMENT of a module on a
+ * page rather than the page itself. It is therefore not a scope this gate resolves.
  */
-const TAB_SCOPE_PARAMS = ['tabId', 'id'] as const;
+const TAB_SCOPE_PARAM = 'tabId';
+
+/**
+ * The route parameter an account-scoped policy is resolved from.
+ *
+ * `PortalAdministrationEvaluator.cs:L84` declares `UserRouteKey = "userId"`, and the
+ * account handler reads exactly that value (`PortalAdministratorAuthorizationHandler.cs:L247`).
+ *
+ * ⚠ THE COMPANION PORTAL IDENTIFIER IS DELIBERATELY NOT DEMANDED, and this is the one
+ * place where the API's prose and the API's behaviour differ, so it is recorded rather
+ * than guessed at. `PolicyNames.cs` describes the owner-or-administrator policy as
+ * requiring both identifiers, but the handler does not fail without a route `portalId`:
+ * `ResolveTargetPortalIdAsync` (`PortalAdministrationEvaluator.cs:L193-L203`) uses the
+ * route's portal WHEN THE ROUTE NAMES ONE and otherwise the tenant the caller arrived
+ * through. The handler's own comment records that an earlier revision did demand it and
+ * that the demand could never be satisfied, because the account routes are mounted flat
+ * as `api/v1/users/{userId}` and name no portal segment at all — which refused every
+ * account holder its own self-service routes, including the credential change a blocking
+ * remediation exists to send it to. Demanding it here would reintroduce exactly that
+ * defect on the client.
+ */
+const ACCOUNT_SCOPE_PARAM = 'userId';
 
 /**
  * The wording a refusal is presented with.
@@ -195,15 +262,21 @@ const TAB_SCOPE_PARAMS = ['tabId', 'id'] as const;
  * service this is handed to documents its parameter as already-composed plain text and
  * performs no interpretation of its own.
  *
- * One constant serves all three refusal branches. They differ in CAUSE — a
- * mis-declared policy, an unresolvable scope, and a caller who lacks portal
- * administration — but not in what the person reading the screen can do about it, and
- * the legacy presented every refusal with a single sentence too.
+ * One constant serves all three refusal branches. They differ in CAUSE — a mis-declared
+ * policy, an unresolvable scope, and a caller the client can already see lacks the
+ * administration or the ownership the policy requires — but not in what the person reading
+ * the screen can do about it, and the legacy presented every refusal with a single sentence
+ * too.
+ *
+ * ⚠ THE CAUSE IS DELIBERATELY NOT DISCLOSED. Telling a caller which of the three applies
+ * would tell them whether the account, module or page they named exists and whether they
+ * merely lack a role — a disclosure the API itself avoids, since every refusal it issues is
+ * a uniform 403.
  */
 const ACCESS_REFUSED_MESSAGE = 'You do not have access to this content.';
 
 /**
- * Whether a string is one of the five registered policy names.
+ * Whether a string is one of the eight registered policy names.
  *
  * A type predicate rather than a plain boolean test, so a successful check NARROWS the
  * value to {@link PermissionPolicy} for everything downstream and the policy can then
@@ -225,31 +298,40 @@ function isPermissionPolicy(value: string): value is PermissionPolicy {
 }
 
 /**
- * The parameter names a policy's scope is resolved from, or null when it needs none.
+ * The route parameter a policy's scope is resolved from, or null when it needs none.
  *
- * Portal administration is the one policy with no scope to resolve: it is a question
- * about the caller within the tenant the API resolves from the request itself, not a
- * question about one record. The two module policies and the two tab policies each
- * identify a specific record, so each carries its own name list.
+ * Two of the eight policies resolve no scope, and for two different reasons that are
+ * worth keeping distinct. Portal administration is a question about the caller WITHIN a
+ * tenant, and the API resolves that tenant from the route's portal when it names one and
+ * from the arrival tenant otherwise, so the route is free not to name it. Host
+ * administration has no portal binding of any kind by design — it exists precisely for
+ * the operations that address no single portal — so there is nothing for it to scope to.
  *
- * Written as an exhaustive switch over the narrowed union rather than a lookup object,
- * so adding a sixth policy to {@link PERMISSION_POLICIES} fails to compile here until
- * its scope requirement is stated. That is the intended behaviour: an unhandled policy
- * silently defaulting to "needs no scope" would quietly stop requiring the very scope
- * the API is about to demand.
+ * The remaining six each identify one specific record: a module, a page, or an account.
+ *
+ * Written as an exhaustive switch over the narrowed union rather than a lookup object, so
+ * adding a ninth policy to {@link PERMISSION_POLICIES} fails to compile here until its
+ * scope requirement is stated. That is the intended behaviour, and it is what the
+ * previous five-name revision of this file could not offer: an unhandled policy silently
+ * defaulting to "needs no scope" would quietly stop requiring the very identifier the API
+ * is about to demand, and nothing would report it.
  *
  * @param policy A registered policy name.
- * @returns The parameter names to try in order, or null when no scope is required.
+ * @returns The single parameter name to resolve, or null when no scope is required.
  */
-function scopeParamNames(policy: PermissionPolicy): readonly string[] | null {
+function scopeParamName(policy: PermissionPolicy): string | null {
   switch (policy) {
     case 'ModuleView':
     case 'ModuleEdit':
-      return MODULE_SCOPE_PARAMS;
+      return MODULE_SCOPE_PARAM;
     case 'TabView':
     case 'TabEdit':
-      return TAB_SCOPE_PARAMS;
+      return TAB_SCOPE_PARAM;
+    case 'AccountOwner':
+    case 'AccountOwnerOrPortalAdministrator':
+      return ACCOUNT_SCOPE_PARAM;
     case 'PortalAdministrator':
+    case 'HostAdministrator':
       return null;
   }
 }
@@ -265,12 +347,13 @@ function scopeParamNames(policy: PermissionPolicy): readonly string[] | null {
  * snapshot while the identifier the policy applies to sits on its parent. Reading only
  * the activated snapshot would find nothing and refuse a correctly configured route.
  *
- * PRECEDENCE IS BY NAME, NOT BY DEPTH. The outer loop is the name list and the inner
- * loop is the ancestry, so the explicit name is exhausted across every ancestor before
- * the bare name is tried anywhere. That is the order the API resolves in, and matching
- * it is the whole point: were depth to dominate, a route carrying an unrelated bare
- * identifier on a nearer ancestor would win over the explicit one further up and the two
- * sides would authorise different records.
+ * ⚠ ONE NAME, SEARCHED DEEPEST-FIRST. A previous revision searched a LIST of names and
+ * documented an elaborate precedence rule for exhausting the explicit name across every
+ * ancestor before trying a bare `id` anywhere. That rule solved a problem the API does
+ * not have: there is no bare-identifier fallback server-side, so there is no second name
+ * to give precedence to. What remains is the only ambiguity that can actually arise —
+ * the SAME name appearing at more than one depth, for which the nearest ancestor is the
+ * one the activated screen is about.
  *
  * ⚠ SENTINEL DISCIPLINE — ZERO IS A REAL IDENTIFIER. Module, tab and role keys are all
  * declared `IDENTITY(0, 1)` in the baseline schema and portal keys `IDENTITY(-1, 1)`, so
@@ -294,23 +377,198 @@ function scopeParamNames(policy: PermissionPolicy): readonly string[] | null {
  * job is to answer a question.
  *
  * @param route The activated route snapshot the router is deciding.
- * @param names The parameter names to try, in precedence order.
- * @returns The first identifier found, or null when the route supplies none.
+ * @param name The single parameter name the policy's scope is carried under.
+ * @returns The nearest identifier found, or null when the route supplies none.
  */
-function resolveScopeId(route: ActivatedRouteSnapshot, names: readonly string[]): string | null {
+function resolveScopeId(route: ActivatedRouteSnapshot, name: string): string | null {
   const deepestFirst = [...route.pathFromRoot].reverse();
 
-  for (const name of names) {
-    for (const snapshot of deepestFirst) {
-      const value = snapshot.paramMap.get(name);
+  for (const snapshot of deepestFirst) {
+    const value = snapshot.paramMap.get(name);
 
-      if (value !== null && value.length > 0) {
-        return value;
-      }
+    if (value !== null && value.length > 0) {
+      return value;
     }
   }
 
   return null;
+}
+
+/**
+ * A route identifier read as the integer it denotes, or null when it does not denote one.
+ *
+ * ⚠ DELIBERATELY NOT `Number(value)`, AND NOT `parseInt` ALONE. Both are too generous for
+ * a value that is about to be compared against an account key. `Number('0x10')` is 16,
+ * `Number('1e3')` is 1000, `Number(' 7 ')` is 7 and `Number('')` is 0 — so a route segment
+ * that is not an identifier at all could be coerced into one, and the coercion of the
+ * empty string into ZERO is the dangerous case, because zero is a legitimate key in this
+ * schema. `parseInt` is worse in the other direction: it reads `'7abc'` as 7. The pattern
+ * is therefore matched first and the conversion performed only on a value already known to
+ * be nothing but an optional sign and digits.
+ *
+ * ⚠ SENTINEL DISCIPLINE. `-1` and `0` are DATA, so the sign is accepted and no magnitude
+ * test is applied: portals seed at `IDENTITY(-1, 1)` and pages, roles and modules at
+ * `IDENTITY(0, 1)`. Nothing here rejects, defaults or coalesces either value.
+ *
+ * Values beyond the safe integer range are refused rather than silently rounded, because
+ * a rounded key compares equal to a key it is not.
+ *
+ * @param value A non-empty route parameter value.
+ * @returns The integer it denotes, or null when it denotes none.
+ */
+function parseIdentifier(value: string): number | null {
+  if (/^-?\d+$/.test(value) === false) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * Whether the caller holds administration of the tenant, as far as the client can tell.
+ *
+ * MIGRATION: this reproduces the INTERSECTION of the three legacy tests quoted at the top
+ * of this file, and none of their individual quirks. All three refuse a caller who is
+ * neither a host account nor a portal administrator, so that much is behaviour worth
+ * preserving; they then disagree about whether a host account is required, admitted or
+ * excluded, and that disagreement is deliberately not reproduced. The host arm is kept
+ * because the API keeps it: `PolicyNames.cs:L105-L113` records that a host account
+ * satisfies portal administration, and that the legacy condition joining the two tests
+ * with `OrElse` — which redirected a host account AWAY from the screen — was defective and
+ * is not carried across.
+ *
+ * The role list is matched with exact string equality and the host flag is read as the
+ * plain boolean it is; `false` is DATA here, not absence.
+ *
+ * @param authStore The identity projection.
+ * @returns True when the caller is a host account or holds the administrator role.
+ */
+function holdsPortalAdministration(authStore: AuthStore): boolean {
+  return authStore.isSuperUser() || authStore.roles().includes(PORTAL_ADMINISTRATOR_ROLE);
+}
+
+/**
+ * Whether the caller IS the account a route names.
+ *
+ * The client can answer this one exactly, because it is a comparison of two identifiers it
+ * already holds rather than a question about stored records. The API asks the same
+ * question of the same two values — the token's subject against the route's `userId`
+ * (`PortalAdministratorAuthorizationHandler.cs:L246-L270`) — and then additionally
+ * requires the account to be bound to the tenant, which the client cannot check and does
+ * not attempt to.
+ *
+ * ⚠ AN UNPARSEABLE OR ABSENT IDENTIFIER IS NOT OWNERSHIP. Both return false rather than
+ * throwing or defaulting, because a route segment that does not denote an account cannot
+ * denote THIS account. A null identity likewise: an unresolved identity owns nothing, and
+ * the caller of this function is responsible for not asking until the identity is known.
+ *
+ * @param authStore The identity projection.
+ * @param scopeId The route's account identifier, as received.
+ * @returns True only when both identifiers are present and denote the same account.
+ */
+function isTheNamedAccount(authStore: AuthStore, scopeId: string | null): boolean {
+  if (scopeId === null) {
+    return false;
+  }
+
+  const target = parseIdentifier(scopeId);
+  const caller = authStore.currentUser()?.userId;
+
+  return target !== null && caller !== undefined && caller === target;
+}
+
+/**
+ * Whether the client can already see that the caller cannot use the screen.
+ *
+ * ONE COARSE CONVENIENCE CHECK PER POLICY, AND EXPLICITLY NOT AN AUTHORISATION ENGINE.
+ * Each arm answers a question from the identity the client already holds, or declines to
+ * answer at all. Nothing here fetches, and nothing here interprets a stored permission
+ * record.
+ *
+ * ⚠ THE FOUR RECORD-SCOPED POLICIES ARE NOT EVALUATED, and that is the load-bearing
+ * omission. Answering a module or page policy would mean fetching and interpreting the
+ * permission records held against that one record, which is exactly the second
+ * authorisation engine this file must not become. They are admitted and left to the
+ * server, which is the only party holding the records.
+ *
+ * MIGRATION: the legacy access-record gate is not reproduced in EITHER of its two forms,
+ * because the two disagree with each other. The collection form of the module check at
+ * `Library/Components/Security/Permissions/ModulePermissionController.vb:L33-L50` compares
+ * the permission key WITHOUT consulting the record's allow flag, while the same file's
+ * L243 requires the flag as well, and the tab controller splits the same way at L41
+ * against L218 and L309. Reproducing one half would embed a defect and reproducing both is
+ * impossible, so the record-level question is left entirely to the API, which holds the
+ * records and resolves it once.
+ *
+ * MIGRATION: the delimited role string and the bracketed pseudo-role are not carried
+ * forward. The legacy evaluator flattened grants into a semicolon-delimited string and
+ * encoded a per-account grant as a bracketed identifier inside it, and that bracketed form
+ * was an evaluation INPUT rather than a display format — `ModulePermissionController.vb:L42`
+ * feeds it straight into `PortalSecurity.IsInRoles`, which splits on the delimiter at
+ * `PortalSecurity.vb:L124`. Nothing here parses, builds or reproduces either
+ * representation; a per-account grant is a first-class nullable identifier server-side.
+ *
+ * MIGRATION: no negation concept is modelled, because none exists to model. Measured
+ * across `Library/Components/Security/`, a leading-bang role prefix, a prefix test and a
+ * prefix strip all occur zero times, and so does any mention of denial. This generation of
+ * the product grants and never revokes, so a role either appears in a grant or does not.
+ *
+ * Written as an exhaustive switch for the same reason {@link scopeParamName} is: a ninth
+ * policy must not silently inherit "the client cannot tell", because that is indeed the
+ * safe default but it is also the answer that hides an omission.
+ *
+ * @param policy A registered policy name.
+ * @param scopeId The resolved scope identifier, or null when the policy needs none.
+ * @param authStore The identity projection, already known to be resolved.
+ * @returns True only when the client can see the caller plainly cannot use the screen.
+ */
+function isPlainlyRefused(
+  policy: PermissionPolicy,
+  scopeId: string | null,
+  authStore: AuthStore,
+): boolean {
+  switch (policy) {
+    case 'ModuleView':
+    case 'ModuleEdit':
+    case 'TabView':
+    case 'TabEdit':
+      return false;
+
+    case 'PortalAdministrator':
+      return holdsPortalAdministration(authStore) === false;
+
+    /*
+     * Answered from the host flag ALONE, with no tenant reasoning of any kind, because the
+     * policy has no portal binding by design. Reading a portal here — the browsed tenant,
+     * the token's tenant, anything — would reintroduce the very question
+     * `PolicyNames.cs:L120-L130` says this policy exists to avoid asking.
+     */
+    case 'HostAdministrator':
+      return authStore.isSuperUser() === false;
+
+    /*
+     * ⚠ NO ADMINISTRATOR ARM, DELIBERATELY. This is the credential change, and
+     * `PolicyNames.cs:L145-L152` records why admitting an administrator would be wrong: it
+     * would collapse the change and the reset into one operation whose effect depended on
+     * which fields were populated — the shape that previously allowed a credential to be
+     * overwritten with no proof of entitlement at all. An administrator who must intervene
+     * uses the reset, which carries portal administration and is recorded as its own act.
+     */
+    case 'AccountOwner':
+      return isTheNamedAccount(authStore, scopeId) === false;
+
+    /*
+     * Both arms, in the same order the server evaluates them: ownership first, then the
+     * administrator of the account's portal. Refused only when NEITHER holds.
+     */
+    case 'AccountOwnerOrPortalAdministrator':
+      return (
+        isTheNamedAccount(authStore, scopeId) === false &&
+        holdsPortalAdministration(authStore) === false
+      );
+  }
 }
 
 /**
@@ -404,100 +662,70 @@ export const permissionGuard: CanActivateFn = (route, state) => {
   }
 
   /*
-   * A scoped policy without a scope is refused for the same reason. The API authorises
-   * the module or tab policies against a specific record, so a route that names one of
-   * them without supplying an identifier does not describe an answerable question — the
-   * server would either resolve some unrelated record or fault outright.
+   * A scoped policy without a scope is refused for the same reason. The API authorises the
+   * module, page and account policies against a specific record, so a route that names one
+   * of them without supplying an identifier does not describe an answerable question. The
+   * server reaches the same conclusion from the other side and says so in a log line:
+   * `PermissionAuthorizationHandler.cs:L273-L283` refuses such a route as "a registration
+   * mistake, not a permission decision", on the reasoning that the alternative "would be to
+   * invent a key and grant against whatever it happened to match".
    *
-   * Portal administration takes this branch too and passes it, because
-   * {@link scopeParamNames} reports that it needs no scope. That is not a special case
-   * bolted on: it is the tenant-wide policy, and the tenant is resolved by the API from
-   * the request rather than named in the route.
+   * The two unscoped policies take this branch too and pass it, because
+   * {@link scopeParamName} reports that neither needs a scope — portal administration
+   * because the API resolves the tenant itself, host administration because it has no
+   * portal binding at all.
+   *
+   * The identifier is resolved ONCE and carried forward, rather than resolved here for the
+   * presence test and again below for the comparison. Two resolutions of the same value are
+   * two opportunities for them to differ.
    */
-  const scopeNames = scopeParamNames(declared);
+  const scopeName = scopeParamName(declared);
+  const scopeId = scopeName === null ? null : resolveScopeId(route, scopeName);
 
-  if (scopeNames !== null && resolveScopeId(route, scopeNames) === null) {
+  if (scopeName !== null && scopeId === null) {
     notification.notify('warning', ACCESS_REFUSED_MESSAGE);
 
     return false;
   }
 
   /*
-   * ONE COARSE CONVENIENCE CHECK, AND EXPLICITLY NOT AN AUTHORISATION ENGINE.
-   *
-   * It applies to portal administration ONLY. The module and tab policies are
-   * deliberately not evaluated here at all: answering them would mean fetching and
-   * interpreting the permission records held against a specific module or tab, which is
-   * exactly the second authorisation engine this file must not become. Those policies are
-   * admitted and left to the server, which is the only party holding the records.
-   *
-   * MIGRATION: this reproduces the INTERSECTION of the three legacy tests quoted at the
-   * top of this file, and none of their individual quirks. All three refuse a caller who
-   * is neither a host account nor a portal administrator, so that much is behaviour worth
-   * preserving; they then disagree about whether a host account is required, admitted or
-   * excluded, and that disagreement is deliberately not reproduced.
-   *
-   * MIGRATION: the legacy access-record gate is not reproduced either, in EITHER of its
-   * two forms, because the two disagree with each other. The collection form of the module
-   * check at `Library/Components/Security/Permissions/ModulePermissionController.vb:L33-L50`
-   * compares the permission key WITHOUT consulting the record's allow flag, while the same
-   * file's L243 requires the flag as well, and the tab controller splits the same way at
-   * L41 against L218 and L309. Reproducing one half would embed a defect and reproducing
-   * both is impossible, so the record-level question is left entirely to the API, which
-   * holds the records and resolves it once.
-   *
-   * MIGRATION: the delimited role string and the bracketed pseudo-role are not carried
-   * forward. The legacy evaluator flattened grants into a semicolon-delimited string and
-   * encoded a per-account grant as a bracketed identifier inside it, and that bracketed
-   * form was an evaluation INPUT rather than a display format — `ModulePermissionController.vb:L42`
-   * feeds it straight into `PortalSecurity.IsInRoles`, which splits on the delimiter at
-   * `PortalSecurity.vb:L124`. Nothing here parses, builds or reproduces either
-   * representation; a per-account grant is a first-class nullable identifier server-side.
-   *
-   * MIGRATION: no negation concept is modelled, because none exists to model. Measured
-   * across `Library/Components/Security/`, a leading-bang role prefix, a prefix test and
-   * a prefix strip all occur zero times, and so does any mention of denial. This
-   * generation of the product grants and never revokes, so a role either appears in a
-   * grant or does not.
+   * THE COARSE CONVENIENCE CHECK, whose entire reasoning — what each policy asks, what is
+   * deliberately not asked, and which legacy behaviours are and are not carried forward —
+   * lives on {@link isPlainlyRefused} rather than being restated here.
    *
    * ⚠ GATED ON THE IDENTITY ACTUALLY BEING RESOLVED, which prevents a real defect rather
    * than guarding against a hypothetical one. The store reports a held session from the
-   * token custodian, but derives the role list and the host-account flag from a fetched
-   * identity that is null until it arrives. Between those two moments a genuine portal
-   * administrator reports an empty role list and a false host-account flag, so refusing
-   * on that evidence would lock the very operators this screen exists for out of it.
-   * While the identity is unresolved the caller is admitted and the server decides, which
-   * is the same posture this file takes everywhere else it lacks information.
+   * token custodian, but derives the account key, the role list and the host-account flag
+   * from a fetched identity that is null until it arrives. Between those two moments a
+   * genuine portal administrator reports an empty role list and a false host-account flag,
+   * and a genuine account holder reports no key at all — so refusing on that evidence would
+   * lock the very operators these screens exist for out of them, and would refuse an account
+   * holder its own credential change. While the identity is unresolved the caller is
+   * admitted and the server decides, which is the same posture this file takes everywhere
+   * else it lacks information.
    *
-   * The role list is matched with exact string equality and the host-account flag is read
-   * as the plain boolean it is — `false` is DATA here, not absence. The store's own
-   * permission projection is deliberately NOT consulted: it documents itself as deciding
-   * nothing, and honouring that is what keeps the authoritative verdict in one place.
+   * The store's own permission projection is deliberately NOT consulted: it documents itself
+   * as deciding nothing, and honouring that is what keeps the authoritative verdict in one
+   * place.
    */
-  if (declared === 'PortalAdministrator' && authStore.currentUser() !== null) {
-    const holdsPortalAdministration =
-      authStore.isSuperUser() || authStore.roles().includes(PORTAL_ADMINISTRATOR_ROLE);
+  if (authStore.currentUser() !== null && isPlainlyRefused(declared, scopeId, authStore)) {
+    /*
+     * MIGRATION: a refusal cancels the navigation and says so, rather than redirecting. The
+     * legacy `Response.Redirect(NavigateURL("Access Denied"), True)` had a page to send the
+     * browser to; there is deliberately no not-authorised route in this application's route
+     * table, so there is nowhere equivalent to go. Announcing the refusal and leaving the
+     * caller where they are achieves the same outcome the legacy redirect did — the guarded
+     * screen does not render — without inventing a route or rewriting the address bar, which
+     * would make a refused navigation indistinguishable from a deliberate one.
+     *
+     * Raised at WARNING severity, matching `AccessDenied.ascx.vb`, which presented the
+     * refusal with a yellow warning on both of its branches. A refusal is an expected outcome
+     * of asking for something one cannot have, not a fault, and escalating it to error
+     * severity would misreport it.
+     */
+    notification.notify('warning', ACCESS_REFUSED_MESSAGE);
 
-    if (holdsPortalAdministration === false) {
-      /*
-       * MIGRATION: a refusal cancels the navigation and says so, rather than redirecting.
-       * The legacy `Response.Redirect(NavigateURL("Access Denied"), True)` had a page to
-       * send the browser to; there is deliberately no not-authorised route in this
-       * application's route table, so there is nowhere equivalent to go. Announcing the
-       * refusal and leaving the caller where they are achieves the same outcome the legacy
-       * redirect did — the guarded screen does not render — without inventing a route or
-       * rewriting the address bar, which would make a refused navigation
-       * indistinguishable from a deliberate one.
-       *
-       * Raised at WARNING severity, matching `AccessDenied.ascx.vb`, which presented the
-       * refusal with a yellow warning on both of its branches. A refusal is an expected
-       * outcome of asking for something one cannot have, not a fault, and escalating it to
-       * error severity would misreport it.
-       */
-      notification.notify('warning', ACCESS_REFUSED_MESSAGE);
-
-      return false;
-    }
+    return false;
   }
 
   /*
@@ -513,4 +741,3 @@ export const permissionGuard: CanActivateFn = (route, state) => {
    */
   return true;
 };
-

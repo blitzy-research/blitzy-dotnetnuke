@@ -1,12 +1,59 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
 import { AppComponent } from './app.component';
+import { AUTH_ENDPOINTS } from './core/config/api-endpoints';
+import { TokenStorageService } from './core/services/token-storage.service';
+import { AuthStore } from './core/state/auth.store';
+import { SessionLifecycleService } from './core/state/session-lifecycle.service';
 import { environment } from '../environments/environment';
+
+import type { AuthSession } from './core/models/auth.model';
+
+/**
+ * A held session, in the shape the token custodian stores.
+ *
+ * The token values are obvious placeholders rather than anything resembling a real
+ * credential: nothing here parses them, and a value that looked like a token would invite
+ * somebody to try it.
+ *
+ * `userId: 0` and `portalId: -1` are not arbitrary either. Both are the identity seeds the
+ * baseline schema declares — `Users` at `IDENTITY(0, 1)` and `Portals` at `IDENTITY(-1, 1)`
+ * — and both collide with the legacy absent-integer sentinel, so using them here keeps the
+ * fixture honest about the values this application actually has to carry.
+ */
+const SESSION_BODY: AuthSession = {
+  accessToken: 'operator-access-token',
+  refreshToken: 'operator-refresh-token',
+  expiresAtUtc: '2030-01-01T00:00:00Z',
+  mustChangePassword: false,
+  mustUpdateProfile: false,
+  passwordExpiring: false,
+  user: {
+    userId: 0,
+    portalId: -1,
+    portalName: 'Measured Portal',
+    username: 'operator.a',
+    displayName: 'Operator A',
+    email: 'operator.a@example.test',
+    isSuperUser: false,
+    isPortalAdministrator: false,
+    roles: ['Administrators'],
+    permissions: ['EDIT'],
+  },
+};
 
 describe('AppComponent', () => {
   let fixture: ComponentFixture<AppComponent>;
   let component: AppComponent;
+  let httpMock: HttpTestingController;
+  let tokens: TokenStorageService;
+  let authStore: AuthStore;
+  let session: SessionLifecycleService;
+  let router: Router;
+  let navigate: jasmine.Spy;
 
   /**
    * Returns the root component's host element.
@@ -18,16 +65,66 @@ describe('AppComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [AppComponent],
-      // The shell renders a router outlet and the banner inside it renders a router
-      // link, so a router must be present. An empty route table is sufficient: no
-      // assertion here concerns navigation.
-      providers: [provideRouter([])],
+      providers: [
+        // The shell renders a router outlet and the banner inside it renders a router
+        // link, so a router must be present. An empty route table is sufficient: the
+        // sign-out navigation is asserted through a spy on the router rather than by
+        // resolving a route, so that this specification asserts what this component asks
+        // for and the route table is asserted where it is declared.
+        provideRouter([]),
+        // The real client FIRST and the testing backend SECOND: `provideHttpClientTesting()`
+        // REPLACES the backend the real client installed, so reversing the two would leave
+        // the live backend in place and every expectation below would find nothing.
+        //
+        // Present because this component now injects the session store and the session
+        // coordinator, and the whole graph beneath them — the authentication service, the
+        // four domain stores — reaches the HTTP client. Nothing is stubbed: the real graph
+        // is what makes "asking to sign out actually ends the session" assertable.
+        provideHttpClient(),
+        provideHttpClientTesting(),
+      ],
     }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
+    tokens = TestBed.inject(TokenStorageService);
+    authStore = TestBed.inject(AuthStore);
+    session = TestBed.inject(SessionLifecycleService);
+    router = TestBed.inject(Router);
+
+    // Spied before the component is created so that no navigation can escape into the
+    // empty route table. `resolveTo` rather than `stub`, because the component chains a
+    // `catch` onto the returned promise and an undefined return would throw there.
+    navigate = spyOn(router, 'navigate').and.resolveTo(true);
 
     fixture = TestBed.createComponent(AppComponent);
     component = fixture.componentInstance;
     fixture.detectChanges();
   });
+
+  afterEach(() => {
+    // Proves no request was left outstanding by any case, which is the assertion that
+    // catches a revocation issued twice as reliably as a count does.
+    httpMock.verify();
+  });
+
+  /**
+   * Establishes a held session, exactly as the sign-in flow would, and renders it.
+   *
+   * Written through the token custodian rather than by posting credentials, because every
+   * assertion here is about the CHROME reading a session rather than about acquiring one,
+   * and staging one through the sign-in endpoint would add a request each case would then
+   * have to account for.
+   */
+  function holdSession(overrides: Partial<AuthSession['user']> = {}): void {
+    tokens.store({ ...SESSION_BODY, user: { ...SESSION_BODY.user, ...overrides } });
+    fixture.detectChanges();
+  }
+
+  /** Activates the banner's sign-out control the way an operator does. */
+  function clickSignOut(): void {
+    host().querySelector<HTMLButtonElement>('button.app-header__logout')?.click();
+    fixture.detectChanges();
+  }
 
   describe('construction', () => {
     it('creates', () => {
@@ -148,16 +245,48 @@ describe('AppComponent', () => {
     });
   });
 
-  describe('session', () => {
-    it('binds no session, so the banner renders no session cluster', () => {
-      // This is an assertion about a deliberate scope decision, not about an
-      // unfinished one: no authentication service exists in this workspace, the
-      // shell forwards an absent display name unchanged, and the banner treats an
-      // absent name as no account signed in. Should a session ever be bound in the
-      // root template without the banner being updated, this expectation fails and
-      // says why.
+  describe('session — reading it', () => {
+    it('renders no session cluster while no account is signed in', () => {
+      // Not an assertion about unfinished work: the component supplies `undefined`, the
+      // shell forwards it unchanged, and the banner treats an absent name as no account
+      // signed in. This is the state a first-time visitor is in.
       expect(host().querySelector('span.app-header__user')).toBeNull();
       expect(host().querySelector('button.app-header__logout')).toBeNull();
+    });
+
+    it('renders the signed-in display name and a sign-out control once a session is held', () => {
+      holdSession();
+
+      expect(host().querySelector('span.app-header__user')?.textContent?.trim()).toBe('Operator A');
+      expect(host().querySelector('button.app-header__logout')).not.toBeNull();
+    });
+
+    it('falls back to the account key when the display name is blank', () => {
+      // The published contract rather than a nicety: `auth.model.ts` documents
+      // `displayName` as `NOT NULL` defaulting to the empty string and states that the
+      // shell renders `username` in its place. It also prevents a real defect — the
+      // sign-out control lives INSIDE the cluster the banner suppresses for a blank name,
+      // so passing `''` through would leave this operator unable to sign out.
+      holdSession({ displayName: '' });
+
+      expect(host().querySelector('span.app-header__user')?.textContent?.trim()).toBe('operator.a');
+      expect(host().querySelector('button.app-header__logout')).not.toBeNull();
+    });
+
+    it('treats a whitespace-only display name as absent, not as a name', () => {
+      // The legacy absent-string sentinel is the empty string, and a value that trims to
+      // nothing is the same condition wearing a disguise. Deciding this by trimming rather
+      // than by truthiness is what makes the two cases behave alike.
+      holdSession({ displayName: '   ' });
+
+      expect(host().querySelector('span.app-header__user')?.textContent?.trim()).toBe('operator.a');
+    });
+
+    it('reports no name at all when neither the display name nor the account key is usable', () => {
+      holdSession({ displayName: '', username: '' });
+
+      expect(component['userName']()).toBeUndefined();
+      expect(host().querySelector('span.app-header__user')).toBeNull();
     });
 
     it('leaves the secondary navigation region empty, so the stylesheet collapses it', () => {
@@ -165,6 +294,129 @@ describe('AppComponent', () => {
 
       expect(region).not.toBeNull();
       expect(region?.children.length).toBe(0);
+    });
+  });
+
+  describe('session — ending it', () => {
+    it('revokes the session server-side when the operator asks to sign out', () => {
+      holdSession();
+
+      clickSignOut();
+
+      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout);
+
+      expect(revocation.request.method).toBe('POST');
+      expect(revocation.request.body).toEqual({ refreshToken: 'operator-refresh-token' });
+
+      revocation.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('ends the session through the coordinator rather than through the session store', () => {
+      // The distinction is the whole reason the coordinator exists. The store's own
+      // sign-out discards the credentials and the identity and knows nothing about the
+      // portals, accounts, roles or exported module documents the domain stores hold, so a
+      // root that called the store directly would leave every one of those slices legible
+      // to whoever signs in next.
+      const coordinated = spyOn(session, 'signOut').and.callThrough();
+      const storeDirect = spyOn(authStore, 'logout').and.callThrough();
+
+      holdSession();
+      clickSignOut();
+
+      expect(coordinated).toHaveBeenCalledTimes(1);
+
+      // Reached only THROUGH the coordinator: one call, made by it rather than by this
+      // component. Asserting the count alone would pass either way, so the caller matters.
+      expect(storeDirect).toHaveBeenCalledTimes(1);
+      expect(coordinated).toHaveBeenCalledBefore(storeDirect);
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('leaves the application unauthenticated once the revocation settles', () => {
+      holdSession();
+      expect(authStore.isAuthenticated()).toBeTrue();
+
+      clickSignOut();
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(authStore.isAuthenticated()).toBeFalse();
+      expect(host().querySelector('span.app-header__user')).toBeNull();
+      expect(host().querySelector('button.app-header__logout')).toBeNull();
+    });
+
+    it('sends the operator to the sign-in screen, carrying no return address', () => {
+      holdSession();
+      clickSignOut();
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(navigate).toHaveBeenCalledTimes(1);
+
+      // The route gates attach a return address when they INTERRUPT a navigation. Signing
+      // out is not an interruption — the operator chose to leave — and restoring an address
+      // that named a record the next operator has no right to know exists would defeat the
+      // discard that just happened.
+      expect(navigate).toHaveBeenCalledWith(['/login']);
+    });
+
+    it('still reaches the sign-in screen when the revocation request fails', () => {
+      // A refused or unreachable endpoint arrives as a COMPLETION rather than as an error,
+      // because `auth.service.ts` absorbs it with `catchError(() => of(undefined))` — the
+      // server answers 204 whatever it finds. Either way the session is already gone, and
+      // leaving the operator on an administration screen with no credentials would strand
+      // them on a view whose every request is about to be refused.
+      holdSession();
+      clickSignOut();
+
+      httpMock
+        .expectOne(AUTH_ENDPOINTS.logout)
+        .flush({ detail: 'unreachable' }, { status: 503, statusText: 'Service Unavailable' });
+      fixture.detectChanges();
+
+      expect(navigate).toHaveBeenCalledWith(['/login']);
+      expect(authStore.isAuthenticated()).toBeFalse();
+    });
+
+    it('marks the sign-out in flight while the revocation is outstanding', () => {
+      holdSession();
+      clickSignOut();
+
+      expect(component['signingOut']()).toBeTrue();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(component['signingOut']()).toBeFalse();
+    });
+
+    it('issues one revocation only, however many times the gesture arrives in a single tick', () => {
+      // The banner guards the gesture twice already, but both of its guards read the flag
+      // as it stood at the last change detection. The store sets the phase SYNCHRONOUSLY
+      // at subscribe time, so the guard on this component is the one that closes the
+      // same-tick window — which is exactly what calling the output handler directly,
+      // without an intervening render, reproduces.
+      holdSession();
+
+      component['onSignOut']();
+      component['onSignOut']();
+      component['onSignOut']();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(navigate).toHaveBeenCalledTimes(1);
+    });
+
+    it('issues nothing at all when no session is held', () => {
+      // No cluster is rendered, so there is no control to activate — but the handler is
+      // reachable programmatically, and a revocation for a session that does not exist
+      // would be a request with no credential to revoke.
+      component['onSignOut']();
+
+      // The custodian holds no refresh token, so the authentication service short-circuits
+      // to a synchronous completion without issuing anything. `httpMock.verify()` in the
+      // teardown is what proves the absence.
+      expect(navigate).toHaveBeenCalledWith(['/login']);
     });
   });
 });

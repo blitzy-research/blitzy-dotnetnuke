@@ -176,7 +176,7 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// The service refuses construction without any one of its eight collaborators, so a registration
+    /// The service refuses construction without any one of its nine collaborators, so a registration
     /// mistake surfaces at composition rather than as a null dereference inside a derivation.
     /// </summary>
     [Fact]
@@ -185,6 +185,7 @@ public class RoleServiceApplicationTests
         var roles = new Mock<IRoleRepository>().Object;
         var portals = new Mock<IPortalRepository>().Object;
         var users = new Mock<IUserRepository>().Object;
+        var permissions = new Mock<IPermissionService>().Object;
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var clock = new Mock<IClock>().Object;
         var cache = new Mock<ICacheService>().Object;
@@ -193,28 +194,31 @@ public class RoleServiceApplicationTests
 
         Assert.Throws<ArgumentNullException>(
             "roles",
-            () => _ = new RoleService(null!, portals, users, unitOfWork, clock, cache, currentUser, audit));
+            () => _ = new RoleService(null!, portals, users, permissions, unitOfWork, clock, cache, currentUser, audit));
         Assert.Throws<ArgumentNullException>(
             "portals",
-            () => _ = new RoleService(roles, null!, users, unitOfWork, clock, cache, currentUser, audit));
+            () => _ = new RoleService(roles, null!, users, permissions, unitOfWork, clock, cache, currentUser, audit));
         Assert.Throws<ArgumentNullException>(
             "users",
-            () => _ = new RoleService(roles, portals, null!, unitOfWork, clock, cache, currentUser, audit));
+            () => _ = new RoleService(roles, portals, null!, permissions, unitOfWork, clock, cache, currentUser, audit));
+        Assert.Throws<ArgumentNullException>(
+            "permissions",
+            () => _ = new RoleService(roles, portals, users, null!, unitOfWork, clock, cache, currentUser, audit));
         Assert.Throws<ArgumentNullException>(
             "unitOfWork",
-            () => _ = new RoleService(roles, portals, users, null!, clock, cache, currentUser, audit));
+            () => _ = new RoleService(roles, portals, users, permissions, null!, clock, cache, currentUser, audit));
         Assert.Throws<ArgumentNullException>(
             "clock",
-            () => _ = new RoleService(roles, portals, users, unitOfWork, null!, cache, currentUser, audit));
+            () => _ = new RoleService(roles, portals, users, permissions, unitOfWork, null!, cache, currentUser, audit));
         Assert.Throws<ArgumentNullException>(
             "cache",
-            () => _ = new RoleService(roles, portals, users, unitOfWork, clock, null!, currentUser, audit));
+            () => _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, null!, currentUser, audit));
         Assert.Throws<ArgumentNullException>(
             "currentUser",
-            () => _ = new RoleService(roles, portals, users, unitOfWork, clock, cache, null!, audit));
+            () => _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, cache, null!, audit));
         Assert.Throws<ArgumentNullException>(
             "audit",
-            () => _ = new RoleService(roles, portals, users, unitOfWork, clock, cache, currentUser, null!));
+            () => _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, cache, currentUser, null!));
     }
 
     /// <summary>
@@ -2097,6 +2101,7 @@ public class RoleServiceApplicationTests
             Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
@@ -2112,6 +2117,7 @@ public class RoleServiceApplicationTests
                 Roles.Object,
                 Portals.Object,
                 Users.Object,
+                Permissions.Object,
                 UnitOfWork.Object,
                 Clock.Object,
                 Cache.Object,
@@ -2130,6 +2136,9 @@ public class RoleServiceApplicationTests
 
         /// <summary>Gets the account repository double.</summary>
         public Mock<IUserRepository> Users { get; }
+
+        /// <summary>Gets the permission contract double, which owns the removal of a role's grants.</summary>
+        public Mock<IPermissionService> Permissions { get; }
 
         /// <summary>Gets the unit-of-work double, so commits can be counted.</summary>
         public Mock<IUnitOfWork> UnitOfWork { get; }
@@ -2228,6 +2237,68 @@ public class RoleServiceApplicationTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalRoles);
+
+            // The role listing's page, served by the store. Faked over the same role world the unpaged stub
+            // above serves, including the STRICT tenant predicate that is the difference between the two
+            // reads, so the listing facts still describe the listing rather than a canned answer.
+            harness.Roles
+                .Setup(repository => repository.ListAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int portalId,
+                    int? roleGroupId,
+                    bool ungroupedOnly,
+                    string? nameQuery,
+                    string? sortBy,
+                    bool descending,
+                    int pageIndex,
+                    int pageSize,
+                    CancellationToken _) =>
+                {
+                    IEnumerable<Role> matching = harness.PortalRoles.Where(role => role.PortalId == portalId);
+
+                    if (roleGroupId is int wantedGroup)
+                    {
+                        matching = matching.Where(role => role.RoleGroupId == wantedGroup);
+                    }
+                    else if (ungroupedOnly)
+                    {
+                        matching = matching.Where(role => role.RoleGroupId is null);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(nameQuery))
+                    {
+                        string wanted = nameQuery.Trim();
+                        matching = matching.Where(role =>
+                            role.RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    List<Role> rows = (descending
+                            ? matching.OrderByDescending(role => role.RoleName, StringComparer.OrdinalIgnoreCase)
+                                .ThenByDescending(role => role.RoleId)
+                            : matching.OrderBy(role => role.RoleName, StringComparer.OrdinalIgnoreCase)
+                                .ThenBy(role => role.RoleId))
+                        .ToList();
+
+                    if (pageSize == 0)
+                    {
+                        return PagedResult<Role>.Unpaged(rows);
+                    }
+
+                    return PagedResult<Role>.Create(
+                        rows.Skip(Paging.SkipCount(pageIndex, pageSize)).Take(pageSize).ToList(),
+                        rows.Count,
+                        pageIndex,
+                        pageSize);
+                });
 
             harness.Roles
                 .Setup(repository => repository.GetUserRolesAsync(

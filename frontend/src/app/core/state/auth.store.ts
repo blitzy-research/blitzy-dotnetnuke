@@ -83,7 +83,9 @@ import type { AuthSession, CurrentUser, LoginRequest } from '../models/auth.mode
 import { isProblemDetails } from '../models/problem-details.model';
 import type { ProblemDetails, ProblemDetailsErrors } from '../models/problem-details.model';
 import { AuthService } from '../services/auth.service';
+import type { LoginPortalSelector } from '../utils/http-params.util';
 import { TokenStorageService } from '../services/token-storage.service';
+import { SessionTeardownService } from './session-teardown.service';
 import {
   failureCode,
   isAuthFailureCode,
@@ -167,12 +169,53 @@ export class AuthStore {
   private readonly auth = inject(AuthService);
   private readonly tokenStorage = inject(TokenStorageService);
 
+  /**
+   * The fan-out that purges the domain stores when a session ends.
+   *
+   * Injected rather than reached for at the call site so that a test can substitute it, and
+   * held here rather than having each domain store injected directly so that this file keeps
+   * its one-way relationship with them — see {@link AuthStore.discardSession}.
+   */
+  private readonly sessionTeardown = inject(SessionTeardownService);
+
   // -------------------------------------------------------------------------
   // WRITABLE SLICES — private, without exception
   // -------------------------------------------------------------------------
 
   /** Which command, if any, is in flight. */
   private readonly _phase = signal<AuthStorePhase>('idle');
+
+  /**
+   * A ticket identifying the command that currently owns {@link _phase}.
+   *
+   * ## What this exists to prevent
+   *
+   * Every command below is a cold observable the CALLER subscribes to, and a caller is
+   * usually a component. When that component is destroyed mid-flight — a navigation away
+   * from the sign-in screen, a route change during an identity read — the subscription is
+   * torn down and the observable is unsubscribed. Neither `tap` nor `catchError` runs on
+   * unsubscription, so a phase set on subscribe was never returned to idle: the store stayed
+   * `authenticating` or `loadingIdentity` FOREVER, and every consumer of the derived busy
+   * projections stayed busy with it. A disabled submit button that never re-enables and a
+   * progress indicator that never stops are the visible symptoms; the underlying fact is
+   * that the store was reporting a command in flight that had ceased to exist.
+   *
+   * `finalize` fixes the "runs on cancellation" half, because it runs on completion, error
+   * AND unsubscription alike. But `finalize` alone would introduce the mirror defect: a
+   * cancelled command finalising LATE would reset a phase belonging to a command started
+   * since, so an operator who abandoned a sign-in and immediately started another would see
+   * the second one report idle while it was still running.
+   *
+   * This ticket is what separates the two. A command claims the phase by taking a fresh
+   * ticket, and its `finalize` returns the store to idle ONLY if it still holds that ticket.
+   * A superseded command's cleanup is therefore inert, which is exactly right — the command
+   * that displaced it owns the phase and will return it to idle in its own time.
+   *
+   * Private with no projection: this is bookkeeping about the store's own concurrency and
+   * nothing outside needs to observe it. A plain mutable counter rather than a signal,
+   * because no derived state reads it and making it reactive would invite exactly that.
+   */
+  private phaseTicket = 0;
 
   /**
    * The problem document from the last failed command, or null.
@@ -236,8 +279,28 @@ export class AuthStore {
    *
    * Not a second copy of the session and not token custody: an identity projection
    * carries no credential of any kind.
+   *
+   * ⚠ STAMPED WITH THE AUTH EPOCH IT WAS PUBLISHED UNDER, AND HONOURED ONLY WHILE THAT
+   * EPOCH IS CURRENT. An identity is a description of ONE session and has no meaning apart
+   * from it, but this slice used to be an independent signal that could outlive or disagree
+   * with the session the custodian held. Three concrete defects followed, all of them
+   * visible:
+   *
+   * - after a SIGN-OUT the previous account's display name, roles and e-mail address stayed
+   *   published, because clearing the custodian did not clear this;
+   * - after an ACCOUNT SWITCH this slice could still hold the previous account while the new
+   *   account's credentials were the ones being sent — and because
+   *   {@link AuthStore.currentUser} PREFERS this slice, the wrong one won;
+   * - after a RENEWAL this slice was left untouched, so a stale snapshot outranked the
+   *   fresher copy the rotated session carried.
+   *
+   * The stamp closes all three at once, with no special case per path. The epoch advances on
+   * every session transition, so any transition after publication invalidates the stamp, and
+   * {@link AuthStore.currentUser} falls back to the copy inside the session actually held —
+   * which is by construction the right one. Clearing the slice on sign-out is still done
+   * explicitly as well, so the value is not merely ignored but gone.
    */
-  private readonly _identity = signal<CurrentUser | null>(null);
+  private readonly _identity = signal<StampedIdentity | null>(null);
 
   // -------------------------------------------------------------------------
   // LIFECYCLE PROJECTIONS
@@ -276,13 +339,31 @@ export class AuthStore {
    * comparison rather than a coalescing operator, because every guard in this file
    * tests presence explicitly.
    *
+   * ⚠ THE PREFERENCE IS CONDITIONAL ON THE FETCHED IDENTITY BELONGING TO THE SESSION
+   * CURRENTLY HELD, and that condition is what makes the preference safe. A fetched
+   * identity outranks the session's own copy only while its stamp matches the live auth
+   * epoch; the moment any session transition occurs the stamp is stale and the session's
+   * copy takes over. The fallback is therefore not merely a default for the
+   * never-fetched case — it is the correct answer whenever the fetched value describes a
+   * session that is over or has been replaced, which is exactly when a stale identity
+   * would otherwise have won.
+   *
+   * Reading the epoch here makes this projection recompute on every session transition,
+   * which is intended: withdrawing a stale identity must be immediate rather than waiting
+   * for something else to change.
+   *
    * Null means NOT SIGNED IN. It never means "signed in with an empty identity",
    * which is the distinction {@link AuthStore.portalId} depends on.
    */
   readonly currentUser: Signal<CurrentUser | null> = computed(() => {
     const fetched = this._identity();
+    const stored = this.tokenStorage.currentUser();
 
-    return fetched !== null ? fetched : this.tokenStorage.currentUser();
+    if (fetched !== null && fetched.generation === this.tokenStorage.generation()) {
+      return fetched.user;
+    }
+
+    return stored;
   });
 
   /**
@@ -385,6 +466,27 @@ export class AuthStore {
    * A host account widens the set of tenants reachable, not the set of operations
    * permitted within one, so this is not a substitute for a permission key.
    */
+  /**
+   * Whether the account administers the tenant it is signed in to.
+   *
+   * Read from the snapshot the server derived, never recomputed from {@link roles}. The server
+   * resolves it from the tenant's own administrator-role designation and the caller's live role
+   * assignments, so matching a role NAME here would be a second, weaker copy of that rule that
+   * drifts the moment a tenant designates a differently named role.
+   *
+   * ⚠ FALSE ON THE SIGN-IN AND RENEWAL RESPONSES BY DESIGN, exactly as the role and permission
+   * lists are empty there: those carry an authority-minimised snapshot. A screen or gate that
+   * needs the fact reads it after the current account has been loaded.
+   *
+   * This is an affordance gate only. The server re-decides on every request, so withholding a
+   * control here never stands in for the policy the API enforces.
+   */
+  readonly holdsPortalAdministration: Signal<boolean> = computed(() => {
+    const user: CurrentUser | null = this.currentUser();
+
+    return user === null ? false : user.isPortalAdministrator;
+  });
+
   readonly isSuperUser: Signal<boolean> = computed(() => {
     const user = this.currentUser();
 
@@ -443,6 +545,19 @@ export class AuthStore {
    * value.
    */
   readonly mustUpdateProfile: Signal<boolean> = this.tokenStorage.mustUpdateProfile;
+
+  /**
+   * Whether the last sign-out failed to confirm that the session was ended on the server.
+   *
+   * Re-published from the authentication client, exactly as the two signals above are
+   * re-published from the custody collaborator, so a screen needs one injection rather than
+   * two. It is a BOOLEAN and carries no credential and no failure detail.
+   *
+   * It exists so the sign-in screen can say so. Sign-out sends the operator there, which makes
+   * it the one place the report is certain to be seen, and a warning nothing renders is the
+   * same silence it was meant to replace.
+   */
+  readonly revocationOutstanding: Signal<boolean> = this.auth.revocationOutstanding;
 
   /** Whether any of the three advisories applies. */
   readonly hasAdvisory: Signal<boolean> = computed(
@@ -707,7 +822,10 @@ export class AuthStore {
    * @param request The credentials, and the verification code when one was supplied.
    * @returns The signed-in identity. Must be subscribed for the request to be issued.
    */
-  login(request: LoginRequest): Observable<CurrentUser> {
+  login(
+    request: LoginRequest,
+    selector?: LoginPortalSelector | null,
+  ): Observable<CurrentUser> {
     return defer(() => {
       // Captured here rather than stored in a slice. The ladder needs to know what was
       // submitted on THIS attempt in order to tell a wrong code from a missing one, and
@@ -722,17 +840,66 @@ export class AuthStore {
       const submittedCode: string | null =
         request.verificationCode === undefined ? null : request.verificationCode;
 
-      this._phase.set('authenticating');
+      const ticket = this.claimPhase('authenticating');
+
       this.clearFailure();
 
-      return this.auth.login(request).pipe(
+      /*
+       * ⚠ THE DOMAIN STORES ARE EMPTIED BEFORE THE ATTEMPT, NOT AFTER IT SUCCEEDS.
+       *
+       * This is the ACCOUNT-REPLACEMENT path, and it does not pass through
+       * {@link AuthStore.logout}. `AuthService.login()` clears the held session eagerly the
+       * moment it is called, so from here on nothing is signed in — but the portal, user, role
+       * and module stores are root-provided and would still be holding whatever the previous
+       * account had loaded. A sign-in from a screen that already had a session, or one arrived
+       * at with a session still held, would therefore leave the previous operator's tenant
+       * listings, open account record and module export visible to the new one.
+       *
+       * Before rather than after, for two reasons. Purging only on SUCCESS would leave the
+       * previous account's data in memory for the whole duration of a failed attempt, which is
+       * the case where the person at the keyboard is least likely to be the previous operator.
+       * And purging after would race the new session's own first reads: a screen that loads on
+       * sign-in could have its fresh data wiped by a purge that arrived a moment later.
+       *
+       * Every `reset()` this calls also cancels that store's in-flight requests, so a read
+       * belonging to the previous session cannot land afterwards and repopulate it.
+       */
+      this.sessionTeardown.purge();
+
+      return this.auth.login(request, selector).pipe(
         tap((user) => {
-          this._identity.set(user);
+          /*
+           * ⚠ CONDITIONAL, AND THE CONDITION IS IDENTITY RATHER THAN AN EPOCH COMPARISON.
+           *
+           * An unconditional write here was the mechanism by which a superseded account switch
+           * left the previous account's roles and personal details on screen: attempt A's
+           * identity landing after attempt B had established its session published A's
+           * identity while B's credentials were the ones held — and `currentUser` PREFERS
+           * `_identity` over the session's own copy, so A won the disagreement.
+           *
+           * An epoch comparison would be awkward here and needlessly coupled. Sign-in advances
+           * the epoch TWICE on the way through — the service clears before its request and
+           * stores after it — so a captured value would have to be compared against a
+           * predicted offset that encodes the service's internals. Object identity answers the
+           * question directly instead: the service builds the session with this very identity
+           * as its `user` member and returns that member, so if the held identity IS this
+           * object then this attempt is the one that established the current session. If the
+           * store was suppressed, or a further sign-in replaced it, the held identity is a
+           * different object and this result is stale.
+           *
+           * The rest of the success bookkeeping is suppressed with the write, because clearing
+           * a failure or resetting the verification ladder on behalf of a session this attempt
+           * no longer describes would be equally wrong.
+           */
+          if (this.tokenStorage.currentUser() !== user) {
+            return;
+          }
+
+          this.stampIdentity(user);
           this.clearFailure();
           // Reset on success, and only on success. The ladder's revealed state is
           // deliberately NOT reset by a failed attempt.
           this.resetVerificationLadder();
-          this._phase.set('idle');
         }),
         catchError((error: unknown) => {
           this.recordFailure(error);
@@ -740,6 +907,14 @@ export class AuthStore {
 
           return throwError(() => error);
         }),
+        // Returns the store to idle on success, on failure AND on cancellation, but only
+        // while this attempt still owns the phase. The `_phase.set('idle')` that used to sit
+        // inside the `tap` above is subsumed by this and was strictly weaker: it covered the
+        // success path alone, so a component destroyed mid-sign-in — a navigation away from
+        // the sign-in screen, most obviously — left the store reporting `authenticating` for
+        // the remainder of the application's life, with every derived busy projection stuck
+        // with it.
+        finalize(() => this.releasePhase(ticket)),
       );
     });
   }
@@ -763,24 +938,28 @@ export class AuthStore {
    */
   refreshSession(): Observable<AuthSession> {
     return defer(() => {
-      this._phase.set('refreshing');
+      const ticket = this.claimPhase('refreshing');
+
       this.clearFailure();
 
       return this.auth.refresh().pipe(
         tap(() => {
           this.clearFailure();
-          this._phase.set('idle');
         }),
         catchError((error: unknown) => {
           // Ordered deliberately: the session is discarded FIRST and the failure
-          // recorded second, because discarding resets the phase and the ladder while
-          // recording sets the problem. Reversing the two would clear the very problem
-          // a sign-in screen needs in order to explain why the caller is back at it.
+          // recorded second, because discarding resets the ladder while recording sets
+          // the problem. Reversing the two would clear the very problem a sign-in screen
+          // needs in order to explain why the caller is back at it.
           this.discardSession();
           this.recordFailure(error);
 
           return throwError(() => error);
         }),
+        // Covers success, failure and cancellation alike, and only while this renewal still
+        // owns the phase. `discardSession` no longer sets the phase itself, so this is the
+        // single place a renewal returns the store to idle.
+        finalize(() => this.releasePhase(ticket)),
       );
     });
   }
@@ -796,25 +975,61 @@ export class AuthStore {
    * lapses, which is why that lifetime is short and why the expiry instant is
    * published rather than left implicit.
    *
-   * The local discard is performed in a `finalize`, which is stronger than doing it on
-   * the success and failure paths separately: it also covers a caller unsubscribing
-   * early. All three exits therefore end with the session gone. A person who asks to
-   * sign out must end up signed out on this device; leaving the session in place
-   * because a revocation request failed would be the opposite of what they asked for,
-   * and they could not act on the error in any case.
+   * ⚠ THE LOCAL DISCARD IS SYNCHRONOUS AND HAPPENS BEFORE THE REQUEST IS ISSUED, not in a
+   * `finalize` afterwards. A `finalize` covers success, failure and early unsubscription, so
+   * it looked sufficient — but every one of those exits is on the FAR side of a network round
+   * trip, and until one of them ran the session was still held and the account's details were
+   * still on screen. See the note in the body for what was observable in that window. A person
+   * who asks to sign out is signed out at the moment they ask, and the revocation request is a
+   * separate concern that proceeds afterwards.
+   *
+   * Local sign-out is unconditional either way. Leaving the session in place because a
+   * revocation request failed would be the opposite of what was asked for, and the caller
+   * could not act on the error in any case.
    *
    * @returns Completion of the revocation attempt. Must be subscribed for the request
    * to be issued.
    */
   logout(): Observable<void> {
     return defer(() => {
-      this._phase.set('signingOut');
+      const ticket = this.claimPhase('signingOut');
 
-      return this.auth.logout().pipe(
-        finalize(() => {
-          this.discardSession();
-          this.clearFailure();
-        }),
+      /*
+       * ⚠ LOCAL STATE IS DISCARDED SYNCHRONOUSLY, HERE, BEFORE THE REQUEST IS ANSWERED — NOT
+       * IN A `finalize` AFTERWARDS.
+       *
+       * The `finalize` placement this replaces was too late, and the gap was observable. Sign-out
+       * is a network round trip, so between the operator asking to sign out and the server
+       * answering, the previous arrangement left the session held and the identity published.
+       * During that window the shell still rendered the account's display name, the screens still
+       * showed its records, and a request issued from any of them still carried its bearer token.
+       * On a slow or failing network that window is unbounded.
+       *
+       * ⚠ THE TWO STATEMENTS BELOW ARE IN THIS ORDER FOR A REASON, AND SWAPPING THEM SILENTLY
+       * BREAKS REVOCATION.
+       *
+       * `AuthService.logout()` does its work EAGERLY when called, not when subscribed: it reads
+       * the held renewal credential, clears the stored session, and returns a cold observable
+       * that already carries that credential in its request body. Calling it first is therefore
+       * what lets it capture the credential while one is still there to capture.
+       *
+       * Discarding this store's own state first would clear the session before the service could
+       * read it. The service would then find no credential, take its no-op branch, and issue NO
+       * REVOCATION REQUEST AT ALL — leaving the refresh token live on the server for its full
+       * seven days, which is the exact outcome signing out exists to prevent. That failure is
+       * silent: locally everything looks correctly signed out.
+       */
+      const revocation = this.auth.logout();
+
+      this.discardSession();
+      this.clearFailure();
+
+      return revocation.pipe(
+        // The discard above already ran, so this exists solely to return the phase to idle —
+        // on success, on a revocation failure and on an early unsubscription alike. Ticketed
+        // like every other command so a sign-out that is abandoned mid-flight cannot reset a
+        // phase belonging to a command started after it.
+        finalize(() => this.releasePhase(ticket)),
       );
     });
   }
@@ -835,20 +1050,44 @@ export class AuthStore {
    */
   loadCurrentUser(): Observable<CurrentUser> {
     return defer(() => {
-      this._phase.set('loadingIdentity');
+      const ticket = this.claimPhase('loadingIdentity');
+
+      /*
+       * The auth epoch this read belongs to, captured before the request goes out.
+       *
+       * An identity read is the LAST thing that can republish a signed-out account, and it is
+       * the easiest to overlook because it looks harmless — it only reads. But its result is
+       * written to `_identity`, which `currentUser` PREFERS over the stored session's copy, so
+       * a read that lands after a sign-out repopulated the display name, the roles and the
+       * permission list of an account that was no longer signed in. Worse, after an account
+       * SWITCH it published the previous account's roles and personal details while the new
+       * account's session was the one held — two identities disagreeing, with the wrong one
+       * winning.
+       *
+       * Testing the captured epoch before the write closes both. See {@link publishIdentity}.
+       */
+      const startedAt = this.tokenStorage.generation();
+
       this.clearFailure();
 
       return this.auth.me().pipe(
         tap((user) => {
-          this._identity.set(user);
-          this.clearFailure();
-          this._phase.set('idle');
+          if (this.publishIdentity(user, startedAt)) {
+            this.clearFailure();
+          }
         }),
         catchError((error: unknown) => {
-          this.recordFailure(error);
+          // Recorded only while this read's own session is still current. A refusal of a read
+          // issued under a session that has since ended is not a failure of the session now
+          // held, and surfacing it would put a stale error in front of an operator who had
+          // just signed in successfully.
+          if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+            this.recordFailure(error);
+          }
 
           return throwError(() => error);
         }),
+        finalize(() => this.releasePhase(ticket)),
       );
     });
   }
@@ -877,6 +1116,32 @@ export class AuthStore {
     this.discardSession();
     this.clearFailure();
   }
+
+  /**
+   * Discards the session locally, KEEPING the recorded failure.
+   *
+   * What the authentication interceptor calls when a renewal is refused terminally, and the
+   * one difference from {@link AuthStore.reset} is the whole point of it existing: the
+   * operator is about to be sent to the sign-in screen, and that screen reads the recorded
+   * problem in order to explain why they are back at it. Clearing the explanation along with
+   * the session would return them to a blank form with no reason given.
+   *
+   * No revocation call is made. A terminal refusal means the refresh token is already
+   * unusable, so there is nothing left to revoke; use {@link AuthStore.logout} when the
+   * server should be told.
+   *
+   * Supersession is inherited rather than re-implemented: the discard clears the token store,
+   * which ADVANCES the session generation every late callback tests itself against, so a
+   * renewal already in flight cannot store its rotated pair afterwards.
+   *
+   * The phase is deliberately left alone. Returning it to idle here would stomp the phase
+   * belonging to whichever command is still settling, which is precisely what the phase
+   * ticket exists to prevent; that command's own `finalize` releases it.
+   */
+  endSession(): void {
+    this.discardSession();
+  }
+
 
   // -------------------------------------------------------------------------
   // PRIVATE STATE TRANSITIONS
@@ -983,13 +1248,146 @@ export class AuthStore {
    * holds no token to clear — it is the discard INVARIANT being enforced at the point
    * that publishes the session, so the projections above cannot outlive the session
    * they describe whichever path reached this method.
+   *
+   * ⚠ THE PURGE REACHES BEYOND THIS STORE, and it has to. Discarding the token and the
+   * identity projection ends the session's AUTHORITY but not its FOOTPRINT: the portal,
+   * user, role and module stores are root-provided too, so each holds one instance that
+   * outlives the session, and clearing only what is held here left the previous account's
+   * tenant listings, the account record they had open, that account's profile values, the
+   * role assignments naming other accounts, and a serialised export of a module's data
+   * legible to whoever signed in next on the same page load. The fan-out lives in
+   * `core/state/session-teardown.service.ts` rather than here so that this store keeps its
+   * one-way relationship with the domain stores — none of them imports this file, and none
+   * of them should be able to.
+   *
+   * ORDER MATTERS in one direction only: the custodian is cleared FIRST, because clearing it
+   * advances the session generation that every late callback tests itself against. A purge
+   * that ran before the generation moved would leave a read in flight still believing its
+   * session was current.
+   *
+   * Idempotent throughout, which is what lets the overlapping paths that reach it — an
+   * explicit sign-out, a refresh that could not be completed, and a `401` the interceptor
+   * could not recover — each call it without checking whether another already had.
    */
   private discardSession(): void {
     this.tokenStorage.clear();
     this._identity.set(null);
     this.resetVerificationLadder();
-    this._phase.set('idle');
+    this.sessionTeardown.purge();
   }
+
+  /**
+   * Takes ownership of {@link AuthStore.phase} for a command that is starting.
+   *
+   * Sets the phase and returns the ticket the command must present to
+   * {@link releasePhase}. The pairing is the whole mechanism: a command may only return the
+   * store to idle if nothing has claimed the phase since, so a late or cancelled command's
+   * cleanup cannot reset a phase belonging to its successor.
+   *
+   * A pre-increment, so the first ticket ever issued is 1 and never 0. That leaves 0 as a
+   * value no command holds, which makes an accidental zero-initialised ticket fail to match
+   * rather than matching the first command by coincidence.
+   *
+   * @param phase The phase the starting command occupies.
+   * @returns The ticket identifying this command's ownership.
+   */
+  private claimPhase(phase: AuthStorePhase): number {
+    this.phaseTicket += 1;
+    this._phase.set(phase);
+
+    return this.phaseTicket;
+  }
+
+  /**
+   * Returns the store to idle, if and only if the presenting command still owns the phase.
+   *
+   * Called from `finalize`, so it runs on completion, on error and on UNSUBSCRIPTION — which
+   * is the case the previous arrangement missed entirely and the reason this method exists.
+   *
+   * The ownership test is what keeps that broad coverage from causing a new problem. A
+   * command whose ticket has been superseded does nothing at all here: the command that
+   * displaced it set the phase deliberately and will release it in its own time, so resetting
+   * on the loser's behalf would report idle while work was genuinely in flight.
+   *
+   * @param ticket The ticket returned by the matching {@link claimPhase} call.
+   */
+  private releasePhase(ticket: number): void {
+    if (this.phaseTicket === ticket) {
+      this._phase.set('idle');
+    }
+  }
+
+  /**
+   * Publishes a freshly read identity, if it still belongs to the session being held.
+   *
+   * ⚠ THE ONE PLACE `_identity` IS WRITTEN FROM AN ASYNCHRONOUS RESULT, and therefore the one
+   * place the check can be enforced. An identity is a description of a particular session; it
+   * has no meaning apart from one, and publishing it against a different session — or against
+   * none — states something false about who is signed in. The consequence is not cosmetic:
+   * `currentUser` prefers `_identity` over the stored session's copy, so a stale write wins,
+   * and the roles and personal details of one account are then displayed and reasoned about
+   * while another account's credentials are the ones being sent.
+   *
+   * Returns whether the write happened, so the caller can suppress the rest of its
+   * success-path bookkeeping too rather than clearing a failure that belongs to a session it
+   * no longer describes.
+   *
+   * @param user The identity the server returned.
+   * @param startedAt The auth epoch captured when the read was issued.
+   * @returns True when the identity was published, false when it was discarded as stale.
+   */
+  private publishIdentity(user: CurrentUser, startedAt: number): boolean {
+    if (this.tokenStorage.isCurrentGeneration(startedAt) === false) {
+      return false;
+    }
+
+    this.stampIdentity(user);
+
+    return true;
+  }
+
+  /**
+   * Records an identity together with the auth epoch it describes.
+   *
+   * ⚠ THE ONLY WRITER OF `_identity` THAT SETS A VALUE, so the stamp cannot be omitted at a
+   * call site. Reading the epoch here rather than accepting it as an argument is deliberate:
+   * the stamp must be the epoch AT THE MOMENT OF PUBLICATION, not the one captured when the
+   * work started. Those differ precisely on the sign-in path, where the session store that
+   * makes the identity valid has already advanced the epoch past the value the caller
+   * captured — so stamping the captured value would mark every freshly signed-in identity
+   * stale on arrival.
+   *
+   * The two callers each apply their own, differently-shaped staleness test BEFORE reaching
+   * here, and those tests are what decide whether publication is warranted. This method
+   * decides only how long the published value remains authoritative.
+   *
+   * @param user The identity to publish.
+   */
+  private stampIdentity(user: CurrentUser): void {
+    this._identity.set({ user, generation: this.tokenStorage.generation() });
+  }
+}
+
+/**
+ * A fetched identity together with the auth epoch it was published under.
+ *
+ * Internal to this module and deliberately not exported: the stamp is bookkeeping that keeps
+ * {@link AuthStore.currentUser} honest, and no consumer outside this file has any business
+ * reading or reasoning about it. Consumers read the projection, which yields a plain identity
+ * or null and never exposes the pairing.
+ */
+interface StampedIdentity {
+  /** The identity the server described. */
+  readonly user: CurrentUser;
+
+  /**
+   * The value of the auth epoch when {@link user} was published.
+   *
+   * Compared for exact equality against the live epoch. Any difference at all means a session
+   * transition has occurred since, so the identity describes a session that is no longer the
+   * one being held and must stop being honoured.
+   */
+  readonly generation: number;
 }
 
 /**

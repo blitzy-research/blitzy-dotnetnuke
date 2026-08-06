@@ -831,6 +831,87 @@ public class UserServiceTests
         harness.Profiles.Verify(
             p => p.GetProfileValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
+
+        // Neither read is issued - not the per-account one this listing no longer uses, and not the batched
+        // one it does. A tenant declaring none of these properties has nothing to fetch.
+        harness.Profiles.Verify(
+            p => p.GetProfileValuesAsync(
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A page of accounts costs exactly ONE profile read, issued for the page's own accounts, however many
+    /// rows the page holds.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the per-row read this replaces ran AFTER the database had already windowed the page, so the
+    /// very windowing that made the listing bounded was followed by a sequence of reads bounded only by the
+    /// requested page size. The address and telephone columns are enabled by default, so the DEFAULT
+    /// configuration was the expensive one; nothing had to be misconfigured for a page of a hundred accounts
+    /// to cost a hundred round trips.
+    /// </para>
+    /// <para>
+    /// The fact measures the count AND the argument: one call, carrying the tenant scope and precisely the
+    /// accounts the page returned. A batched read that fetched more accounts than the page holds would pass a
+    /// count assertion while re-introducing the over-fetch in a different shape.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_ReadsTheWholePageProfileValuesInOneCallKeyedOnThePagesOwnAccounts()
+    {
+        Harness harness = Harness.Ready();
+        harness.UserPage = PagedResult<User>.Unpaged([StoredUser(), StoredUser(OtherUserId, "ada")]);
+        harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, "Fleet Street")];
+        harness.ValuesByUserId[OtherUserId] =
+        [
+            Value(2, OtherUserId, CityPropertyId, "Cambridge"),
+            Value(3, OtherUserId, TelephonePropertyId, "555-0199"),
+        ];
+
+        Result<PagedResult<UserListItemDto>> outcome = await harness.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        // Each row still resolves its OWN values: batching must not smear one account's answers across the
+        // page.
+        UserListItemDto first = outcome.Value.Items.Single(row => row.UserId == UserId);
+        UserListItemDto second = outcome.Value.Items.Single(row => row.UserId == OtherUserId);
+        first.Address.Should().Be("Fleet Street");
+        first.Telephone.Should().BeNull();
+        second.Address.Should().Be("Cambridge");
+        second.Telephone.Should().Be("555-0199");
+
+        harness.Profiles.Verify(
+            p => p.GetProfileValuesAsync(
+                PortalId,
+                It.Is<IReadOnlyCollection<int>>(ids =>
+                    ids.Count == 2 && ids.Contains(UserId) && ids.Contains(OtherUserId)),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        harness.Profiles.Verify(
+            p => p.GetProfileValuesAsync(
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        harness.Profiles.Verify(
+            p => p.GetProfileValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        harness.Profiles.Verify(
+            p => p.GetProfileValuesAsync(
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -864,29 +945,37 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Hidden tenant columns suppress the profile READS a user-list row would otherwise cost, and leave the
-    /// account columns the row already carries exactly as stored.
+    /// A column the tenant hides is WITHHELD from every list row, and the profile reads behind the two
+    /// profile-backed columns are not issued at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: this asserts the OPPOSITE of an earlier reading of the legacy grid, deliberately. The
-    /// legacy settings decided whether a column was RENDERED (<c>UserModuleBase.vb</c>:L98-L115 reads them
-    /// and the grid omits the column); they never rewrote the value behind it. Overwriting the value is a
-    /// different behaviour and a lossy one - an empty name is indistinguishable from an account that holds
-    /// no name, so a caller cannot tell a minimised row from an incomplete one - and it concealed nothing,
-    /// because the same settings are published verbatim by the membership-settings read. Deciding whether
-    /// to render a column belongs to the client.
+    /// MIGRATION: this asserts server-side data MINIMISATION, and it deliberately reverses an intermediate
+    /// revision that projected every column as stored and left the hiding to the client. Two things settle
+    /// it against that revision. Withholding is what the tenant's own configuration asks for, so a row that
+    /// carries a column the tenant has switched off has been over-fetched whatever the client then does with
+    /// it; and client-side hiding is not minimisation at all, because the payload still crossed the API
+    /// boundary and anything that reads the response - a log, a proxy cache, a browser extension, the next
+    /// developer - reads the PII with it.
     /// </para>
     /// <para>
-    /// What the settings still govern is the WORK: address and telephone are profile values costing one
-    /// read per row, and that read is skipped entirely when the tenant hides them, which is what the
-    /// <c>Times.Never()</c> verification at the end measures. Their absence therefore reports "not
-    /// requested" rather than "overwritten", and that distinction is the point of the split.
+    /// The objection the earlier revision raised - that a withheld value is indistinguishable from an absent
+    /// one - is real but answered, and answered without keeping the value: the flags governing this are
+    /// published verbatim by the membership-settings read, which a client must already have performed in
+    /// order to know which columns to render, so "blank because withheld" and "blank because unrecorded" are
+    /// always separable by the caller. The privileged single-account reads are unaffected and remain the way
+    /// to obtain a withheld value deliberately.
+    /// </para>
+    /// <para>
+    /// The two profile-backed columns are withheld one step earlier, by not being FETCHED - which is what the
+    /// <c>Times.Never()</c> verifications at the end measure, on both the batched listing read and the
+    /// single-account read. The row-level withholding still covers them, so a later change to the fetch gate
+    /// cannot leak them.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListUsers_SuppressesTheProfileReadsAndKeepsTheAccountColumnsAsStored()
+    public async Task ListUsers_WithholdsEveryColumnTheTenantHidesAndSkipsTheirReads()
     {
         User stored = StoredUser();
         stored.CreatedDate = new DateTime(2019, 4, 7, 9, 30, 0, DateTimeKind.Utc);
@@ -915,18 +1004,25 @@ public class UserServiceTests
             cancellationToken: CancellationToken.None);
 
         UserListItemDto row = outcome.Value.Items.Should().ContainSingle().Subject;
+
+        // Username carries no visibility flag at all - the legacy grid made it unconditionally visible - and
+        // the identifiers a client needs to reach the privileged reads are likewise never withheld.
         row.Username.Should().Be(Username);
+        row.UserId.Should().Be(UserId);
 
-        // Account columns: projected as stored, whatever the tenant's presentation settings say.
-        row.FirstName.Should().Be("Grace", "a hidden column is not rendered, not emptied");
-        row.LastName.Should().Be("Hopper", "a hidden column is not rendered, not emptied");
-        row.DisplayName.Should().Be("Grace B Hopper", "a hidden column is not rendered, not emptied");
-        row.Email.Should().Be(Email, "a hidden column is not rendered, not emptied");
-        row.CreatedDate.Should().Be(stored.CreatedDate, "a hidden instant is not rendered, not erased");
-        row.LastLoginDate.Should().Be(stored.LastLoginDate, "a hidden instant is not rendered, not erased");
-        row.IsApproved.Should().BeTrue("a hidden flag is not rendered, and must never be reported as false");
+        // Every configurable account column is withheld, each one reduced to its contract's absent value.
+        row.FirstName.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
+        row.LastName.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
+        row.DisplayName.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
+        row.Email.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
+        row.CreatedDate.Should().BeNull("a nullable instant expresses withholding without inventing a value");
+        row.LastLoginDate.Should().BeNull("a nullable instant expresses withholding without inventing a value");
+        row.IsApproved.Should().BeFalse(
+            "the flag is not nullable on the contract, so withholding it is expressed as its default; the "
+            + "tenant published the setting that says the column is hidden, and the privileged detail read "
+            + "remains the way to obtain the true value");
 
-        // Profile values: the per-row read is skipped, so absence here means "not requested".
+        // Profile values: withheld a step earlier, by not being fetched at all.
         row.Address.Should().BeNull("the address read is skipped when the tenant hides the column");
         row.Telephone.Should().BeNull("the telephone read is skipped when the tenant hides the column");
 
@@ -934,6 +1030,13 @@ public class UserServiceTests
             profiles => profiles.GetProfileValuesAsync(
                 It.IsAny<int?>(),
                 It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+
+        harness.Profiles.Verify(
+            profiles => profiles.GetProfileValuesAsync(
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
     }
@@ -5839,6 +5942,24 @@ public class UserServiceTests
                     harness.ValuesByUserId.TryGetValue(userId, out List<UserProfileValue>? values)
                         ? values.ToList()
                         : []);
+
+            // The batched read serves the SAME stored world as the single-account read above, so a listing
+            // and a detail read of the same account cannot disagree about what it holds. Requested
+            // identifiers are de-duplicated and an account holding nothing contributes no row, which is how
+            // the repository answers: absence is an empty contribution rather than a placeholder row.
+            harness.Profiles
+                .Setup(p => p.GetProfileValuesAsync(
+                    It.IsAny<int?>(),
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int? _, IReadOnlyCollection<int> userIds, CancellationToken _) =>
+                    userIds
+                        .Distinct()
+                        .SelectMany(userId =>
+                            harness.ValuesByUserId.TryGetValue(userId, out List<UserProfileValue>? values)
+                                ? values
+                                : Enumerable.Empty<UserProfileValue>())
+                        .ToList());
             harness.Profiles
                 .Setup(p => p.DeleteProfileValuesAsync(
                     It.IsAny<int?>(),

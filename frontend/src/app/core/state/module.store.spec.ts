@@ -2569,5 +2569,205 @@ describe('ModuleStore', () => {
       expect(store.selectedTabModuleId()).toBeUndefined();
     });
   });
-});
+  // ---------------------------------------------------------------------------------------------------
+  // SESSION ISOLATION AND READ CONCURRENCY
+  //
+  // Two properties, both of which were absent before: this store had NO whole-store reset and NO
+  // request handles at all. What that meant in practice is worth stating, because neither symptom
+  // looks like a defect from inside a single screen.
+  //
+  // Without a reset, every slice below survived a sign-out — a listing of module titles, a page
+  // hierarchy naming a tenant's pages, and `exportedContent`, which is module CONTENT rather than
+  // metadata. The next operator to sign in was shown all of it.
+  //
+  // Without handles, two reads of the same thing raced, and the winner was whichever response arrived
+  // LAST rather than whichever request was issued last. Responses are not ordered by request order, so
+  // a first request delayed behind a slow query lands after a second and overwrites the newer answer
+  // with the older one — leaving a grid showing a page the pager says it is not on, with nothing in the
+  // application to explain it and nothing reproducible about it.
+  // ---------------------------------------------------------------------------------------------------
+  describe('session isolation and read concurrency', () => {
+    it('discards every tenant-scoped slice on reset, exported content included', () => {
+      loadListWith([listRow({ moduleId: 4, moduleTitle: 'Announcements' })]);
+      loadTabsWith(0, [tabRow({ tabId: 7, tabName: 'Home' })]);
 
+      store.loadDefinitions();
+      expectRequest('GET', '/api/v1/module-definitions').flush(envelope([definition()]));
+
+      store.exportModule(4, exportRequest());
+      expectRequest('POST', '/api/v1/modules/4/export').flush('<content>exported</content>', {
+        status: 200,
+        statusText: 'OK',
+      });
+
+      expect(store.modules().length).toBe(1);
+      expect(store.tabs().length).toBe(1);
+      expect(store.definitions().length).toBe(1);
+      expect(store.exportedContent()).toBe('<content>exported</content>');
+
+      store.reset();
+
+      expect(store.modules().length).toBe(0);
+      expect(store.tabs().length).toBe(0);
+      expect(store.definitions().length).toBe(0);
+      expect(store.exportedContent())
+        .withContext('module content must not outlive the session that read it')
+        .toBeNull();
+      expect(store.selectedModuleId()).toBeUndefined();
+      expect(store.tabPortalId()).toBeUndefined();
+      expect(store.failure()).toBeNull();
+      expect(store.busy()).toBeFalse();
+    });
+
+    it('cancels a read in flight on reset, so its answer cannot repopulate the store', () => {
+      // ⚠ THE HALF THAT CANNOT BE OMITTED. Clearing the slices without releasing the requests would
+      // clear them and then let the response already in flight repopulate them moments later — so the
+      // store would hold the previous session's modules with no command issued to explain where they
+      // came from.
+      store.loadModules();
+
+      const pending = expectRequest('GET', '/api/v1/modules');
+
+      store.reset();
+
+      expect(pending.cancelled)
+        .withContext('the request is abandoned, not merely ignored')
+        .toBeTrue();
+      expect(store.listLoading())
+        .withContext('and the store is no longer reporting a read in flight')
+        .toBeFalse();
+      expect(store.modules().length).toBe(0);
+    });
+
+    it('cancels a write in flight on reset, so its callback cannot act for the ended session', () => {
+      // A write's callback re-reads the listing and replaces a row. Left listening across a boundary it
+      // would do both on behalf of the session that ended.
+      store.createModule(createRequest());
+
+      const pending = expectRequest('POST', '/api/v1/modules');
+
+      store.reset();
+
+      expect(pending.cancelled).toBeTrue();
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('keeps accepting writes after a reset, which a Subscription container would have broken', () => {
+      // ⚠ A REGRESSION GUARD FOR A REAL TRAP. An RxJS `Subscription` used as a container is CLOSED once
+      // unsubscribed, and anything added afterwards is unsubscribed the instant it is added. Holding the
+      // write handles that way would mean the FIRST session boundary released them correctly and then
+      // silently cancelled every subsequent write for the rest of the application's life — every save
+      // after one sign-out dispatched and never reporting an outcome.
+      store.reset();
+
+      store.createModule(createRequest());
+
+      const pending = expectRequest('POST', '/api/v1/modules');
+
+      expect(pending.cancelled)
+        .withContext('a write issued after a reset must not be cancelled on arrival')
+        .toBeFalse();
+
+      pending.flush(envelope(detail({ moduleId: 9 })), { status: 201, statusText: 'Created' });
+
+      // The create re-reads the listing, which proves the callback ran rather than being discarded.
+      expectRequest('GET', '/api/v1/modules').flush(pagedBody([listRow({ moduleId: 9 })], 0, 10));
+
+      expect(store.selectedModuleId()).toBe(9);
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('abandons the earlier listing read when a second is issued', () => {
+      // ⚠ THE STALE-ANSWER RACE. Both requests answer the same question, so the LAST response to arrive
+      // wins — which is not necessarily the one asked for last. Releasing the first handle removes it
+      // from the race rather than leaving the outcome to timing.
+      store.loadModules();
+
+      const first = expectRequest('GET', '/api/v1/modules');
+
+      store.loadModules();
+
+      const second = expectRequest('GET', '/api/v1/modules');
+
+      expect(first.cancelled).toBeTrue();
+      expect(second.cancelled).toBeFalse();
+
+      second.flush(pagedBody([listRow({ moduleId: 2, moduleTitle: 'Second' })], 0, 10));
+
+      expect(store.modules().length).toBe(1);
+      expect(store.modules()[0].moduleTitle).toBe('Second');
+    });
+
+    it('abandons the earlier hierarchy read when a second is issued for another portal', () => {
+      // The page tree is the read most likely to be issued twice in quick succession, because changing
+      // the portal selector re-issues it — and the two answers describe DIFFERENT portals, so a stale
+      // winner shows one tenant's pages under another tenant's name.
+      store.loadTabs(0);
+
+      const first = expectRequest('GET', '/api/v1/portals/0/tabs');
+
+      store.loadTabs(4);
+
+      const second = expectRequest('GET', '/api/v1/portals/4/tabs');
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(envelope([tabRow({ tabId: 11, tabName: 'Second portal page' })]));
+
+      expect(store.tabPortalId()).toBe(4);
+      expect(store.tabs().length).toBe(1);
+    });
+
+    it('abandons the earlier single-module read when a second is issued', () => {
+      store.loadModule(1);
+
+      const first = expectRequest('GET', '/api/v1/modules/1');
+
+      store.loadModule(2);
+
+      const second = expectRequest('GET', '/api/v1/modules/2');
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(envelope(detail({ moduleId: 2 })));
+
+      expect(store.module()?.moduleId).toBe(2);
+      expect(store.moduleLoading()).toBeFalse();
+    });
+
+    it('does NOT abandon a write when a second write is issued', () => {
+      // The asymmetry with reads, asserted rather than assumed. Two writes are two distinct
+      // instructions, so abandoning the first because a second was issued would drop an outcome the
+      // server may already have committed — leaving the operator with no report of a change that
+      // happened.
+      store.createModule(createRequest());
+
+      const first = expectRequest('POST', '/api/v1/modules');
+
+      store.createModule(createRequest({ moduleTitle: 'Another' }));
+
+      const both = httpMock.match(
+        (candidate) => candidate.method === 'POST' && candidate.url === '/api/v1/modules',
+      );
+
+      expect(first.cancelled)
+        .withContext('a write is never superseded')
+        .toBeFalse();
+      expect(both.length).toBe(1);
+
+      for (const request of [first, ...both]) {
+        request.flush(envelope(detail()), { status: 201, statusText: 'Created' });
+      }
+
+      // Each create re-reads the listing, and both re-reads are answered so the backend verification
+      // at teardown is satisfied. The second read supersedes the first, so one is cancelled.
+      for (const request of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      )) {
+        if (!request.cancelled) {
+          request.flush(pagedBody([], 0, 10));
+        }
+      }
+    });
+  });
+});

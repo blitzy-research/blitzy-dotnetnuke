@@ -76,6 +76,9 @@ describe('TokenStorageService', () => {
     displayName: 'Administrator',
     email: 'admin@example.test',
     isSuperUser: false,
+    // FALSE even though the held role is named for administration, which is the whole point of the
+    // member existing: the name confers nothing, and only the tenant's own designation does.
+    isPortalAdministrator: false,
     roles: ['Administrators'],
     permissions: ['VIEW', 'EDIT'],
   };
@@ -250,6 +253,8 @@ describe('TokenStorageService', () => {
         displayName: 'Host Account',
         email: 'host@example.test',
         isSuperUser: true,
+        // A host account administers every tenant, which is what the server reports for one.
+        isPortalAdministrator: true,
         roles: ['Administrators', 'Hosts'],
         permissions: ['VIEW'],
       };
@@ -483,6 +488,130 @@ describe('TokenStorageService', () => {
       service.clear();
 
       expect(service.isAccessTokenExpired()).toBeTrue();
+    });
+  });
+
+  /**
+   * The auth epoch.
+   *
+   * ⚠ THIS COUNTER IS THE FOUNDATION EVERY ASYNCHRONOUS AUTHENTICATION PATH RESTS ON. The
+   * authentication service, the bearer interceptor and the session store each capture it before
+   * starting work and compare it before committing anything, so a defect here is a defect in
+   * all three at once. That is why its contract is specified at the owner rather than only
+   * through its consumers.
+   *
+   * Two properties matter and both are non-obvious:
+   *
+   * - EVERY transition advances it, including a session REPLACING another and including a clear
+   *   with nothing to clear. Skipping either would leave a window in which stale asynchronous
+   *   work observes a matching epoch and commits.
+   * - The comparison is exact equality, never an ordering test. "The session changed" is the
+   *   only fact being established; how much it changed by is not a question worth answering.
+   */
+  describe('the auth epoch', () => {
+    it('starts at zero, so no work can have been captured under an earlier value', () => {
+      expect(service.generation()).toBe(0);
+    });
+
+    it('advances when a session is stored', () => {
+      service.store(aSession());
+
+      expect(service.generation()).toBe(1);
+    });
+
+    // A replacement IS an identity change from the point of view of anything holding a request
+    // already in flight, so it must advance like any other transition.
+    it('advances when one session replaces another', () => {
+      service.store(aSession());
+      service.store(aSession({ accessToken: 'fake-access-token-second' }));
+
+      expect(service.generation()).toBe(2);
+    });
+
+    it('advances when a session is discarded', () => {
+      service.store(aSession());
+      service.clear();
+
+      expect(service.generation()).toBe(2);
+    });
+
+    // ⚠ THE LOAD-BEARING CASE. Advancing only when a session was present would leave the second
+    // of two successive clears silent, so a renewal that began between them would still see a
+    // matching epoch and would resurrect a session that had been ended twice over.
+    it('advances on a clear even when no session was held', () => {
+      service.clear();
+
+      expect(service.generation()).toBe(1);
+
+      service.clear();
+
+      expect(service.generation()).toBe(2);
+    });
+
+    it('never decreases across a mixed sequence of transitions', () => {
+      const observed: number[] = [service.generation()];
+
+      service.store(aSession());
+      observed.push(service.generation());
+      service.clear();
+      observed.push(service.generation());
+      service.store(aSession());
+      observed.push(service.generation());
+      service.clear();
+      observed.push(service.generation());
+
+      expect(observed).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    describe('isCurrentGeneration', () => {
+      it('accepts a value captured with no transition since', () => {
+        const captured = service.generation();
+
+        expect(service.isCurrentGeneration(captured)).toBeTrue();
+      });
+
+      it('refuses a value captured before a store', () => {
+        const captured = service.generation();
+
+        service.store(aSession());
+
+        expect(service.isCurrentGeneration(captured)).toBeFalse();
+      });
+
+      it('refuses a value captured before a clear', () => {
+        service.store(aSession());
+
+        const captured = service.generation();
+
+        service.clear();
+
+        expect(service.isCurrentGeneration(captured)).toBeFalse();
+      });
+
+      // An ordering test would accept this, and accepting it is the defect: the captured epoch
+      // is from the future only if a caller invented it, and inventing one must not pass.
+      it('refuses a value that is ahead of the current one', () => {
+        expect(service.isCurrentGeneration(service.generation() + 1)).toBeFalse();
+      });
+
+      it('refuses a stale value however many transitions have occurred since', () => {
+        const captured = service.generation();
+
+        service.store(aSession());
+        service.clear();
+        service.store(aSession());
+
+        expect(service.isCurrentGeneration(captured)).toBeFalse();
+      });
+    });
+
+    it('exposes the counter read-only, so nothing outside can invalidate work at will', () => {
+      const projection: unknown = service.generation;
+
+      // A writable signal carries both members; a read-only projection carries neither.
+      // Presence is exact and needs no cast that would only prove itself.
+      expect((projection as { set?: unknown }).set).toBeUndefined();
+      expect((projection as { update?: unknown }).update).toBeUndefined();
     });
   });
 });

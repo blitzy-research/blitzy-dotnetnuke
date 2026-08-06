@@ -110,6 +110,8 @@ import type {
   UserListQuery,
 } from '../models/user.model';
 import { UserService } from './user.service';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
+import { isContractViolation } from '../utils/decode.util';
 
 // ---------------------------------------------------------------------------
 // Shapes derived from the subject's own signature
@@ -487,22 +489,78 @@ const UPDATE_DEFINITION_REQUEST: UpdateDefinitionRequest = {
 };
 
 /**
- * A refusal body, in the shape the API answers a rule breach with.
+ * The two extension members this API attaches to every problem document.
  *
- * Used only to prove that a failure reaches the caller with its status and body intact.
- * Its members are not inspected: turning a refusal into field-level messages is another
- * unit's job, and under this workspace's index-signature setting a member of the
- * per-field map would in any case have to be read with bracket notation rather than dot
- * notation. The document type is the specification's own default rather than a
- * dereferenceable address, so nothing here points at a network location.
+ * `ValidationProblemDetailsFactory` writes both on every refusal, so a fixture omitting them
+ * describes a response the server does not send.
  */
-const REFUSAL = {
-  type: 'about:blank',
-  title: 'Forbidden',
-  status: 403,
-  detail: 'The request was refused by a rule the server enforces.',
-  errors: {},
-};
+const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+
+/**
+ * Builds a complete, server-emittable refusal body for one failure code.
+ *
+ * ⚠️ THE FAILURE CODE TRAVELS IN `type`, RENDERED AS `urn:dnnmigration:error:<code>` by the
+ * single server method `ApiResults.BuildProblemType`. ⚠️ AND THE STATUS IS DERIVED FROM THE
+ * CODE by `ApiResults.MapStatusCode`, so the body's `status` and the transport's status can
+ * never disagree in a real response — which means a fixture in which they DO disagree
+ * specifies a contradiction, and a consumer that read the body's member rather than the
+ * transport's would pass here and misclassify in production. An earlier revision of this file
+ * held ONE `about:blank` fixture whose body said `403` and then flushed it at `403`, at `409`
+ * and behind three different endpoints, so two of those three cases asserted exactly that
+ * contradiction.
+ *
+ * @param code The failure code, spelled exactly as the server publishes it.
+ * @param status The status the server's mapping yields for that code.
+ * @param title The per-status title from the server's own vocabulary.
+ * @param detail The authored sentence the producing service placed on the outcome.
+ * @returns The complete document, ready to flush.
+ */
+function refusal(
+  code: string,
+  status: number,
+  title: string,
+  detail: string,
+): Readonly<Record<string, unknown>> {
+  return {
+    type: `urn:dnnmigration:error:${code}`,
+    title,
+    status,
+    detail,
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
+  };
+}
+
+/**
+ * The refusal an unpermitted account write earns.
+ *
+ * `auth.not_permitted` is the status vocabulary's own default type for `403`, and it is what a
+ * refusal decided by the authorisation layer — before the controller body runs — carries.
+ */
+const NOT_PERMITTED = refusal(
+  'auth.not_permitted',
+  403,
+  'Forbidden',
+  'The authenticated caller is not permitted to perform this operation.',
+);
+
+/**
+ * The `404` a single-resource read answers with when the thing addressed does not exist.
+ *
+ * ⚠️ THIS, AND NOT A `200` CARRYING A NULL PAYLOAD, IS HOW ABSENCE ARRIVES.
+ * `ApiResults.Complete<T>` converts a successful outcome carrying no value into this exact
+ * document, whose code, title and detail are fixed constants so that a client branches on one
+ * type whichever endpoint produced it. The detail deliberately names neither the identifier
+ * nor the resource kind, so an unauthorised caller cannot distinguish "this exists but is not
+ * yours" from "this does not exist".
+ */
+const RESOURCE_NOT_FOUND = refusal(
+  'resource.not_found',
+  404,
+  'Not Found',
+  'The requested resource does not exist.',
+);
 
 // ---------------------------------------------------------------------------
 // Observation
@@ -766,15 +824,37 @@ describe('UserService', () => {
       expect(observed.completions.length).toBe(1);
     });
 
-    it('carries through the null the server answers with for an unknown account', () => {
+    it('reports an unknown account as a 404 rather than as a payload-free success', () => {
+      // ⚠️ THIS ENDPOINT CANNOT ANSWER `200` WITH A NULL PAYLOAD. It reports through
+      // `ApiResults.Complete<T>`, which converts a successful outcome carrying no value into
+      // the `404` below — so absence arrives as a STATUS. An earlier revision of this spec
+      // asserted the 200/null shape as the contract, which meant the whole chain above it was
+      // specified against a response the server never sends while the one response it DOES
+      // send for a missing account went untested.
+      const observed = observe(service.getById(4242));
+
+      const request = expectRequest('GET', `${USERS}/4242`);
+      request.flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expect(observed.values).withContext('absence is not an emitted value').toEqual([]);
+      expect(observed.completions.length).toBe(0);
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(404);
+      expect(observed.failures[0].error).toEqual(RESOURCE_NOT_FOUND);
+    });
+
+    it('still tolerates a null payload from a non-conforming intermediary', () => {
+      // DEFENCE IN DEPTH, AND LABELLED AS SUCH. The method's own return type admits null
+      // because a proxy or gateway between the browser and the API can return a document this
+      // application never produced, and coercing it into an empty object here would push a
+      // run-time surprise into whatever read a member off it. This is NOT the endpoint's
+      // contract — the case above is — and no store or screen specification may treat it as
+      // the normal path.
       const observed = observe(service.getById(4242));
 
       const request = expectRequest('GET', `${USERS}/4242`);
       request.flush({ data: null, meta: null } satisfies ApiResponse<UserDetail | null>);
 
-      // The nullable answer is the contract rather than defensiveness: a caller must
-      // handle it, and coercing it into an empty object here would push a run-time
-      // surprise into whatever read a member off it.
       expect(observed.values).toEqual([null]);
       expect(observed.completions.length).toBe(1);
     });
@@ -807,14 +887,17 @@ describe('UserService', () => {
       const observed = observe(service.create(CREATE_USER_REQUEST));
 
       const request = expectRequest('POST', USERS);
-      request.flush(REFUSAL, { status: 403, statusText: 'Forbidden' });
+      request.flush(NOT_PERMITTED, { status: 403, statusText: 'Forbidden' });
 
       expect(observed.values).toEqual([]);
       expect(observed.failures.length).toBe(1);
       expect(observed.failures[0].status).toBe(403);
       expect(observed.failures[0].error)
         .withContext('the refusal body reaches the caller as the server wrote it')
-        .toEqual(REFUSAL);
+        .toEqual(NOT_PERMITTED);
+      expect((observed.failures[0].error as { readonly status: number }).status)
+        .withContext('the body agrees with the transport, as a real response does')
+        .toBe(403);
       expect(observed.completions.length)
         .withContext('a failed request completes through the error channel only')
         .toBe(0);
@@ -841,12 +924,12 @@ describe('UserService', () => {
       const observed = observe(service.update(1, UPDATE_USER_REQUEST));
 
       const request = expectRequest('PUT', `${USERS}/1`);
-      request.flush(REFUSAL, { status: 403, statusText: 'Forbidden' });
+      request.flush(NOT_PERMITTED, { status: 403, statusText: 'Forbidden' });
 
       expect(observed.values).toEqual([]);
       expect(observed.failures.length).toBe(1);
       expect(observed.failures[0].status).toBe(403);
-      expect(observed.failures[0].error).toEqual(REFUSAL);
+      expect(observed.failures[0].error).toEqual(NOT_PERMITTED);
     });
   });
 
@@ -1092,7 +1175,23 @@ describe('UserService', () => {
       expect(observed.completions.length).toBe(1);
     });
 
-    it('carries through the null the server answers with when no policy is recorded', () => {
+    it('reports an unresolvable tenant policy as a 404, not as a null payload', () => {
+      // The policy read is a single-resource read like any other, so `ApiResults.Complete<T>`
+      // turns a value-free success into a `404`. The distinction matters to the screen: a
+      // policy whose members are all at their defaults is a legitimate `200`, and a `404` means
+      // there is no tenant to read a policy for at all.
+      const observed = observe(service.getMembershipSettings());
+
+      const request = expectRequest('GET', ACCOUNT_POLICY);
+      request.flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expect(observed.values).toEqual([]);
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(404);
+    });
+
+    it('still tolerates a null payload from a non-conforming intermediary', () => {
+      // Defence in depth, exactly as on the account read and for the same reason.
       const observed = observe(service.getMembershipSettings());
 
       const request = expectRequest('GET', ACCOUNT_POLICY);
@@ -1295,7 +1394,20 @@ describe('UserService', () => {
       expect(observed.completions.length).toBe(1);
     });
 
-    it('carries through the null the server answers with for an unknown definition', () => {
+    it('reports an unknown definition as a 404, not as a null payload', () => {
+      // Same envelope helper server-side, same consequence: absence is a status.
+      const observed = observe(service.getProfileDefinition(9999));
+
+      const request = expectRequest('GET', `${PROFILE_DEFINITIONS}/9999`);
+      request.flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expect(observed.values).toEqual([]);
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(404);
+    });
+
+    it('still tolerates a null payload from a non-conforming intermediary', () => {
+      // Defence in depth, labelled so it is not mistaken for the endpoint's contract.
       const observed = observe(service.getProfileDefinition(9999));
 
       const request = expectRequest('GET', `${PROFILE_DEFINITIONS}/9999`);
@@ -1379,13 +1491,23 @@ describe('UserService', () => {
     });
 
     it('propagates a refusal to remove a definition that is still in use', () => {
+      // A CONFLICT, and its own document rather than the `403` one. The reason token decides
+      // the status server-side, so a fixture whose body claimed `403` while the transport said
+      // `409` would be a response the server cannot produce.
+      const inUse = refusal(
+        'profile_definition.in_use',
+        409,
+        'Conflict',
+        'The property definition still holds values and was not removed.',
+      );
       const observed = observe(service.deleteProfileDefinition(0));
 
       const request = expectRequest('DELETE', `${PROFILE_DEFINITIONS}/0`);
-      request.flush(REFUSAL, { status: 409, statusText: 'Conflict' });
+      request.flush(inUse, { status: 409, statusText: 'Conflict' });
 
       expect(observed.failures.length).toBe(1);
       expect(observed.failures[0].status).toBe(409);
+      expect(observed.failures[0].error).toEqual(inUse);
       expect(observed.completions.length)
         .withContext('a refusal must not look like a silently unchanged list')
         .toBe(0);
@@ -1612,53 +1734,186 @@ describe('UserService', () => {
       request.flush(USER_PAGE);
     });
 
+    /**
+     * Every method on the service, each paired with the exact success the SERVER declares.
+     *
+     * ⚠️ THE SUCCESS STATUS AND BODY ARE PART OF EACH CASE, and they are not
+     * interchangeable. An earlier revision of this file drove all nineteen methods with one
+     * shared `{ data: null, meta: null }` body flushed at the transport's default `200`,
+     * which asserted a response shape NO endpoint here produces: the nine payload-free
+     * commands answer `204` and HTTP forbids a `204` from carrying a body at all, the two
+     * creations answer `201`, and the single-resource reads turn a value-free success into a
+     * `404` rather than into a null payload. So the loop simultaneously mis-stated fourteen
+     * of the nineteen contracts and, because a `void`-typed observable ignores whatever body
+     * arrives, could not have failed no matter how wrong the fixture was.
+     *
+     * The statuses below are read from the controllers' own `ProducesResponseType`
+     * declarations — `UsersController` and `ProfileDefinitionsController` — rather than
+     * inferred from the verb.
+     */
+    const SURFACE: readonly {
+      readonly method: string;
+      readonly path: string;
+      readonly status: number;
+      /**
+       * The response body, typed as the testing backend accepts it.
+       *
+       * `Object | null` rather than `unknown`, because every success body here is either a
+       * JSON object or the absent body a `204` carries, and the flush primitive is typed for
+       * exactly that. Widening to `unknown` would need a cast at the flush site, which would
+       * be a claim about a value this file already knows the shape of.
+       */
+      readonly body: Object | null;
+      readonly invoke: () => Observable<unknown>;
+    }[] = [
+      // Reads that answer 200 with a payload.
+      {
+        method: 'GET',
+        path: USERS,
+        status: 200,
+        body: USER_PAGE,
+        invoke: () => service.list({ pageIndex: 0, pageSize: 25 }),
+      },
+      {
+        method: 'GET',
+        path: `${USERS}/1`,
+        status: 200,
+        body: { data: USER_DETAIL, meta: null },
+        invoke: () => service.getById(1),
+      },
+      {
+        method: 'GET',
+        path: `${USERS}/1/profile`,
+        status: 200,
+        body: { data: PROFILE_READ, meta: null },
+        invoke: () => service.getProfile(1),
+      },
+      {
+        method: 'GET',
+        path: ACCOUNT_POLICY,
+        status: 200,
+        body: { data: ACCOUNT_POLICY_BODY, meta: null },
+        invoke: () => service.getMembershipSettings(),
+      },
+      {
+        method: 'GET',
+        path: PROFILE_DEFINITIONS,
+        status: 200,
+        body: { data: [PROFILE_DEFINITION], meta: null },
+        invoke: () => service.listProfileDefinitions(),
+      },
+      {
+        method: 'GET',
+        path: `${PROFILE_DEFINITIONS}/0`,
+        status: 200,
+        body: { data: PROFILE_DEFINITION, meta: null },
+        invoke: () => service.getProfileDefinition(0),
+      },
+      // Creations that answer 201 with the created representation.
+      {
+        method: 'POST',
+        path: USERS,
+        status: 201,
+        body: { data: USER_DETAIL, meta: null },
+        invoke: () => service.create(CREATE_USER_REQUEST),
+      },
+      {
+        method: 'POST',
+        path: PROFILE_DEFINITIONS,
+        status: 201,
+        body: { data: PROFILE_DEFINITION, meta: null },
+        invoke: () => service.createProfileDefinition(CREATE_DEFINITION_REQUEST),
+      },
+      // Replacements that answer 200 with the replaced representation.
+      {
+        method: 'PUT',
+        path: `${USERS}/1`,
+        status: 200,
+        body: { data: USER_DETAIL, meta: null },
+        invoke: () => service.update(1, UPDATE_USER_REQUEST),
+      },
+      {
+        method: 'PUT',
+        path: `${PROFILE_DEFINITIONS}/0`,
+        status: 200,
+        body: { data: PROFILE_DEFINITION, meta: null },
+        invoke: () => service.updateProfileDefinition(0, UPDATE_DEFINITION_REQUEST),
+      },
+      // Commands that answer 204 with NO body whatsoever.
+      {
+        method: 'DELETE',
+        path: `${USERS}/1`,
+        status: 204,
+        body: null,
+        invoke: () => service.delete(1),
+      },
+      {
+        method: 'PUT',
+        path: `${USERS}/1/profile`,
+        status: 204,
+        body: null,
+        invoke: () => service.updateProfile(1, PROFILE_SUBMISSION),
+      },
+      {
+        method: 'POST',
+        path: `${USERS}/1/password`,
+        status: 204,
+        body: null,
+        invoke: () => service.changePassword(1, CHANGE_PASSWORD_REQUEST),
+      },
+      {
+        method: 'POST',
+        path: `${USERS}/1/password-reset`,
+        status: 204,
+        body: null,
+        invoke: () => service.passwordReset(1, RESET_PASSWORD_REQUEST),
+      },
+      {
+        method: 'PUT',
+        path: `${USERS}/1/approval`,
+        status: 204,
+        body: null,
+        invoke: () => service.setApproval(1, true),
+      },
+      {
+        method: 'POST',
+        path: `${USERS}/1/unlock`,
+        status: 204,
+        body: null,
+        invoke: () => service.unlock(1),
+      },
+      {
+        method: 'POST',
+        path: `${USERS}/1/require-password-change`,
+        status: 204,
+        body: null,
+        invoke: () => service.requirePasswordChange(1),
+      },
+      {
+        method: 'PUT',
+        path: ACCOUNT_POLICY,
+        status: 204,
+        body: null,
+        invoke: () => service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
+      },
+      {
+        method: 'DELETE',
+        path: `${PROFILE_DEFINITIONS}/0`,
+        status: 204,
+        body: null,
+        invoke: () => service.deleteProfileDefinition(0),
+      },
+    ];
+
     it('sets no header of its own on any request across the whole surface', () => {
       // One pass over every method, asserting the two interceptor headers are unset. The
       // reason to do it once for all of them rather than trusting the per-method checks is
       // that a header added to a shared options object would appear everywhere at once.
-      const cases: readonly (readonly [string, string, () => Observable<unknown>])[] = [
-        ['GET', USERS, () => service.list({ pageIndex: 0, pageSize: 25 })],
-        ['GET', `${USERS}/1`, () => service.getById(1)],
-        ['POST', USERS, () => service.create(CREATE_USER_REQUEST)],
-        ['PUT', `${USERS}/1`, () => service.update(1, UPDATE_USER_REQUEST)],
-        ['DELETE', `${USERS}/1`, () => service.delete(1)],
-        ['GET', `${USERS}/1/profile`, () => service.getProfile(1)],
-        ['PUT', `${USERS}/1/profile`, () => service.updateProfile(1, PROFILE_SUBMISSION)],
-        ['POST', `${USERS}/1/password`, () => service.changePassword(1, CHANGE_PASSWORD_REQUEST)],
-        [
-          'POST',
-          `${USERS}/1/password-reset`,
-          () => service.passwordReset(1, RESET_PASSWORD_REQUEST),
-        ],
-        ['PUT', `${USERS}/1/approval`, () => service.setApproval(1, true)],
-        ['POST', `${USERS}/1/unlock`, () => service.unlock(1)],
-        [
-          'POST',
-          `${USERS}/1/require-password-change`,
-          () => service.requirePasswordChange(1),
-        ],
-        ['GET', ACCOUNT_POLICY, () => service.getMembershipSettings()],
-        ['PUT', ACCOUNT_POLICY, () => service.updateMembershipSettings(ACCOUNT_POLICY_BODY)],
-        ['GET', PROFILE_DEFINITIONS, () => service.listProfileDefinitions()],
-        [
-          'POST',
-          PROFILE_DEFINITIONS,
-          () => service.createProfileDefinition(CREATE_DEFINITION_REQUEST),
-        ],
-        ['GET', `${PROFILE_DEFINITIONS}/0`, () => service.getProfileDefinition(0)],
-        [
-          'PUT',
-          `${PROFILE_DEFINITIONS}/0`,
-          () => service.updateProfileDefinition(0, UPDATE_DEFINITION_REQUEST),
-        ],
-        ['DELETE', `${PROFILE_DEFINITIONS}/0`, () => service.deleteProfileDefinition(0)],
-      ];
-
-      expect(cases.length)
+      expect(SURFACE.length)
         .withContext('every method on the service is exercised by this pass')
         .toBe(19);
 
-      for (const [method, path, invoke] of cases) {
+      for (const { method, path, status, body, invoke } of SURFACE) {
         observe(invoke());
 
         const request = expectRequest(method, path);
@@ -1667,11 +1922,70 @@ describe('UserService', () => {
           .withContext(`${method} ${path} must address the relative API base`)
           .toMatch(/^\/api\/v1\//);
 
-        // One envelope-shaped body serves every case: the methods that unwrap a payload
-        // read a null out of it, and the ones that answer with no content ignore it. No
-        // value is asserted here - this pass is about the request, not the response.
-        request.flush({ data: null, meta: null });
+        // Answered with THIS endpoint's own success, so the request-side claim is made
+        // against a response the server can actually send.
+        request.flush(body, { status, statusText: status === 204 ? 'No Content' : 'OK' });
       }
+    });
+
+    it('completes every method on the success status its endpoint declares', () => {
+      // THE COMPANION CLAIM, AND THE ONE THE SHARED-BODY LOOP COULD NOT MAKE. Each method is
+      // driven to its declared success and the OUTCOME is asserted: a payload-bearing read or
+      // write emits exactly one value and completes, and a payload-free command completes
+      // without emitting anything of substance. A method that silently swallowed its response,
+      // emitted twice, or failed on its own endpoint's success status is caught here.
+      for (const { method, path, status, body, invoke } of SURFACE) {
+        const observed = observe(invoke());
+
+        const request = expectRequest(method, path);
+        request.flush(body, { status, statusText: status === 204 ? 'No Content' : 'OK' });
+
+        expect(observed.failures)
+          .withContext(`${method} ${path} must not fail on its own declared success`)
+          .toEqual([]);
+        expect(observed.completions.length)
+          .withContext(`${method} ${path} completes exactly once`)
+          .toBe(1);
+        expect(observed.values.length)
+          .withContext(`${method} ${path} emits exactly one notification`)
+          .toBe(1);
+
+        if (status === 204) {
+          // A 204 carries no body, so there is nothing to unwrap and the value is the empty
+          // body itself. Anything else here would mean the client had manufactured a payload.
+          expect(observed.values[0])
+            .withContext(`${method} ${path} answers 204, so no payload can be emitted`)
+            .toBeNull();
+        } else {
+          expect(observed.values[0])
+            .withContext(`${method} ${path} answers ${status} with a payload`)
+            .not.toBeNull();
+        }
+      }
+    });
+
+    it('declares 204 for every payload-free command and 201 for every creation', () => {
+      // The mapping itself, pinned as data so a drift is visible in one place rather than
+      // having to be inferred from nineteen flushes. `ApiResults.Complete(Result)` answers 204
+      // and `Created(...)` answers 201; both are read off the controllers' own declarations.
+      const byStatus = (status: number): readonly string[] =>
+        SURFACE.filter((entry) => entry.status === status)
+          .map((entry) => `${entry.method} ${entry.path}`)
+          .sort();
+
+      expect(byStatus(204)).toEqual([
+        'DELETE /api/v1/profile-definitions/0',
+        'DELETE /api/v1/users/1',
+        'POST /api/v1/users/1/password',
+        'POST /api/v1/users/1/password-reset',
+        'POST /api/v1/users/1/require-password-change',
+        'POST /api/v1/users/1/unlock',
+        'PUT /api/v1/users/1/approval',
+        'PUT /api/v1/users/1/profile',
+        'PUT /api/v1/users/settings',
+      ]);
+      expect(byStatus(201)).toEqual(['POST /api/v1/profile-definitions', 'POST /api/v1/users']);
+      expect(byStatus(200).length).toBe(8);
     });
   });
 
@@ -1831,6 +2145,262 @@ describe('UserService', () => {
       ).sort();
 
       expect([...PROTOTYPE_MEMBERS]).toEqual([...fromPrototype]);
+    });
+  });
+  // =========================================================================
+  // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
+  //
+  // `http.get<UserDetail>(...)` compiles to `http.get(...)`: the interface is erased and
+  // nothing inspects the body. Each case answers with a body the server would never send
+  // and requires the OBSERVABLE TO FAIL here, naming the member — rather than letting a
+  // blank field, a missing role list or a silently empty grid surface layers away.
+  //
+  // ⚠ THE REFUSAL NAMES THE MEMBER PATH AND THE EXPECTED TYPE, NEVER THE VALUE, and that
+  // is a privacy boundary in this file specifically: an account's address, telephone and
+  // profile values are personal data, and a violation report must not copy them anywhere.
+  // =========================================================================
+  describe('refuses a response that does not match its contract', () => {
+    // The listing always serialises its two paging parameters, so the url the backend
+    // actually receives carries them. Matching on the bare path would find nothing.
+    const LISTING_WITH_PAGING = `${USERS}?pageIndex=0&pageSize=25`;
+
+    /**
+     * Asserts that answering the one pending request with `body` fails at `path`, and that
+     * the report carries no personal data.
+     *
+     * @param source The call under test.
+     * @param url The url the call addresses.
+     * @param body The malformed body to answer with.
+     * @param path The member path the violation must name.
+     */
+    function expectViolationAt(
+      source: Observable<unknown>,
+      url: string,
+      body: object,
+      path: string,
+    ): void {
+      const values: unknown[] = [];
+      const failures: unknown[] = [];
+
+      source.subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      httpMock.expectOne(url).flush(body);
+
+      expect(values).toEqual([]);
+      expect(failures.length).toBe(1);
+
+      const failure: unknown = failures[0];
+
+      expect(isContractViolation(failure)).toBeTrue();
+
+      if (isContractViolation(failure)) {
+        expect(failure.path).toBe(path);
+
+        for (const personal of ['jsmith', 'Smith', '555', 'example.com']) {
+          expect(failure.message)
+            .withContext(`the report discloses ${personal}`)
+            .not.toContain(personal);
+        }
+      }
+    }
+
+    it('refuses a page with no metadata rather than reporting the tenant has no accounts', () => {
+      expectViolationAt(
+        service.list({ pageIndex: 0, pageSize: 25 }),
+        LISTING_WITH_PAGING,
+        { items: [USER_LIST_ITEM] },
+        'response.meta',
+      );
+    });
+
+    it('refuses a listed row whose login name is absent', () => {
+      const malformed: Record<string, unknown> = { ...USER_LIST_ITEM };
+
+      delete malformed['username'];
+
+      expectViolationAt(
+        service.list({ pageIndex: 0, pageSize: 25 }),
+        LISTING_WITH_PAGING,
+        { ...USER_PAGE, items: [malformed] },
+        'response.items[0].username',
+      );
+    });
+
+    it('keeps a listed row whose first name is the empty string', () => {
+      // An operator who never supplied a first name has one that is EMPTY, not missing —
+      // `Null.vb:L71-L75` returns `""` literally — so this must pass rather than be refused
+      // or coalesced to null.
+      const values: unknown[] = [];
+
+      service.list({ pageIndex: 0, pageSize: 25 }).subscribe({ next: (page: unknown) => values.push(page) });
+
+      httpMock.expectOne(LISTING_WITH_PAGING).flush({
+        ...USER_PAGE,
+        items: [{ ...USER_LIST_ITEM, firstName: '', address: null }],
+      });
+
+      expect(values.length).toBe(1);
+    });
+
+    it('refuses an account whose role list is absent', () => {
+      // An account with no roles has an EMPTY array. An absent member is contract drift, and
+      // admitting it would let a permission-derived affordance read `undefined` and render
+      // as though the account held nothing — which looks exactly like a correct answer.
+      const malformed: Record<string, unknown> = { ...USER_DETAIL };
+
+      delete malformed['roles'];
+
+      expectViolationAt(
+        service.getById(1),
+        `${USERS}/1`,
+        { data: malformed, meta: null },
+        'response.data.roles',
+      );
+    });
+
+    it('refuses an account whose sign-in instant is not a date', () => {
+      expectViolationAt(
+        service.getById(1),
+        `${USERS}/1`,
+        { data: { ...USER_DETAIL, lastLoginDate: 'not a date' }, meta: null },
+        'response.data.lastLoginDate',
+      );
+    });
+
+    it('admits a null audit instant, because an account may never have signed in', () => {
+      const values: unknown[] = [];
+
+      service.getById(1).subscribe({ next: (account: unknown) => values.push(account) });
+
+      httpMock
+        .expectOne(`${USERS}/1`)
+        .flush({ data: { ...USER_DETAIL, lastLoginDate: null }, meta: null });
+
+      expect(values.length).toBe(1);
+    });
+
+    it('refuses a redirect page identifier that arrived as text', () => {
+      expectViolationAt(
+        service.getMembershipSettings(),
+        ACCOUNT_POLICY,
+        { data: { ...ACCOUNT_POLICY_BODY, redirectAfterLogin: '5' }, meta: null },
+        'response.data.redirectAfterLogin',
+      );
+    });
+
+    it('admits a redirect to page zero, which is a real page', () => {
+      // ⚠ THE SENTINEL COLLISION. `Tabs.TabID` seeds at zero, so zero is an ordinary page
+      // and `null` is the only expression of "no redirect". A guard on the value being
+      // positive would silently discard a redirect to the first page ever created.
+      const values: (unknown | null)[] = [];
+
+      service.getMembershipSettings().subscribe({
+        next: (settings: unknown) => values.push(settings),
+      });
+
+      httpMock
+        .expectOne(ACCOUNT_POLICY)
+        .flush({ data: { ...ACCOUNT_POLICY_BODY, redirectAfterLogin: 0 }, meta: null });
+
+      expect(values.length).toBe(1);
+    });
+
+    it('refuses a profile whose nested declaration is malformed', () => {
+      // The profile screen renders each field FROM the nested declaration — its label, its
+      // required flag and its validation expression all come from there — so a malformed one
+      // produces a field that looks legitimate and validates against nothing.
+      const entry = {
+        ...PROFILE_READ.properties[0],
+        definition: { ...PROFILE_DEFINITION, propertyName: 42 },
+      };
+
+      expectViolationAt(
+        service.getProfile(1),
+        `${USERS}/1/profile`,
+        { data: { userId: 1, properties: [entry] }, meta: null },
+        'response.data.properties[0].definition.propertyName',
+      );
+    });
+
+    it('keeps a profile value that is the empty string', () => {
+      // A value the person CLEARED is empty rather than absent, and coalescing it to null
+      // would make a cleared field indistinguishable from one never filled in.
+      const values: unknown[] = [];
+
+      service.getProfile(1).subscribe({ next: (profile: unknown) => values.push(profile) });
+
+      httpMock.expectOne(`${USERS}/1/profile`).flush({ data: PROFILE_READ, meta: null });
+
+      expect(values).toEqual([PROFILE_READ]);
+    });
+
+    it('admits a null profile payload, because the contract publishes it as nullable', () => {
+      const values: unknown[] = [];
+
+      service.getProfile(1).subscribe({ next: (profile: unknown) => values.push(profile) });
+
+      httpMock.expectOne(`${USERS}/1/profile`).flush({ data: null, meta: null });
+
+      expect(values).toEqual([null]);
+    });
+
+    it('refuses a declaration catalogue that is not an array', () => {
+      expectViolationAt(
+        service.listProfileDefinitions(),
+        PROFILE_DEFINITIONS,
+        { data: PROFILE_DEFINITION, meta: null },
+        'response.data',
+      );
+    });
+  });
+
+  // =========================================================================
+  // WHO ANNOUNCES A FAILURE
+  //
+  // Every request is marked as presented by its caller, which is what stops one failure
+  // being shown twice — once as the interceptor's transient notification and once as the
+  // in-page banner `user.store` records it for. The interceptor still re-throws.
+  // =========================================================================
+  describe('marks every request as presented by its caller', () => {
+    it('marks every operation the service exposes', () => {
+      const swallow = { error: () => undefined };
+
+      service.list({ pageIndex: 0, pageSize: 25 }).subscribe(swallow);
+      service.getById(1).subscribe(swallow);
+      service.create(CREATE_USER_REQUEST).subscribe(swallow);
+      service.update(1, UPDATE_USER_REQUEST).subscribe(swallow);
+      service.delete(1).subscribe(swallow);
+      service.getProfile(1).subscribe(swallow);
+      service.updateProfile(1, { userId: 1, properties: [] }).subscribe(swallow);
+      service.changePassword(1, CHANGE_PASSWORD_REQUEST).subscribe(swallow);
+      service.passwordReset(1, RESET_PASSWORD_REQUEST).subscribe(swallow);
+      service.setApproval(1, true).subscribe(swallow);
+      service.unlock(1).subscribe(swallow);
+      service.requirePasswordChange(1).subscribe(swallow);
+      service.getMembershipSettings().subscribe(swallow);
+      service.updateMembershipSettings(ACCOUNT_POLICY_BODY).subscribe(swallow);
+      service.listProfileDefinitions().subscribe(swallow);
+      service.getProfileDefinition(0).subscribe(swallow);
+      service.deleteProfileDefinition(0).subscribe(swallow);
+
+      const issued = httpMock.match(() => true);
+
+      expect(issued.length)
+        .withContext('every operation dispatched exactly one request')
+        .toBe(17);
+
+      for (const pending of issued) {
+        expect(pending.request.context.get(PRESENTED_IN_CONTEXT))
+          .withContext(`${pending.request.method} ${pending.request.urlWithParams} is unmarked`)
+          .toBeTrue();
+      }
+
+      for (const pending of issued) {
+        pending.flush(null, { status: 500, statusText: 'Server Error' });
+      }
     });
   });
 });

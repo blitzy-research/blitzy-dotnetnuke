@@ -117,6 +117,10 @@ import { firstValueFrom } from 'rxjs';
 
 import { Permission } from '../models/permission.model';
 import { PermissionService } from './permission.service';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
+import { isContractViolation } from '../utils/decode.util';
+
+import type { Observable } from 'rxjs';
 
 /**
  * The catalogue listing URL, written out in full rather than derived.
@@ -185,6 +189,35 @@ const SENTINEL_DEFINITION: Permission = {
   permissionKey: 'VIEW',
   permissionName: '',
 };
+
+/**
+ * The `404` this endpoint answers with when no definition bears the identifier, COMPLETE.
+ *
+ * ⚠️ EVERY MEMBER IS PRESENT ON THE REAL RESPONSE, and the shape was read off the server
+ * rather than abbreviated for convenience. `ApiResults.Complete<T>` turns a value-free success
+ * into this exact document — its code, title and detail are fixed constants there
+ * (`ResourceNotFoundCode`, `ResourceNotFoundDetail`) — and
+ * `ValidationProblemDetailsFactory` then attaches the trace and correlation identifiers.
+ *
+ * An earlier revision of this file flushed `{ title: 'Not Found', status: 404 }`. Nothing
+ * asserted against it was WRONG, because these cases only claim that a failure reaches the
+ * caller untranslated — but a partial document is a poor oracle for the layers above: the
+ * error interceptor branches on `type`, and the support reference a person is asked to quote
+ * is read from `correlationId` first and `traceId` second. A fixture missing all three lets a
+ * consumer that depends on them pass here and fail against the real server.
+ *
+ * The detail deliberately names neither the identifier asked for nor the resource kind, so an
+ * unauthorised caller cannot distinguish "this exists but is not yours" from "this does not
+ * exist" — the enumeration oracle every refusal in this API is written to avoid.
+ */
+const RESOURCE_NOT_FOUND = Object.freeze({
+  type: 'urn:dnnmigration:error:resource.not_found',
+  title: 'Not Found',
+  status: 404,
+  detail: 'The requested resource does not exist.',
+  traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+  correlationId: '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+});
 
 describe('PermissionService', () => {
   let service: PermissionService;
@@ -567,10 +600,7 @@ describe('PermissionService', () => {
 
       expect(request.request.method).toBe('GET');
 
-      request.flush(
-        { title: 'Not Found', status: 404 },
-        { status: 404, statusText: 'Not Found' },
-      );
+      request.flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
 
       await expectAsync(pending).toBeRejected();
     });
@@ -581,10 +611,9 @@ describe('PermissionService', () => {
       // Absence is reported by status rather than by a null payload, so a successful response
       // from this endpoint always carries a definition. The legacy accessor returned a null
       // object for an unknown identifier, which every caller then had to test for.
-      httpMock.expectOne('/api/v1/permissions/5').flush(
-        { title: 'Not Found', status: 404, detail: 'No permission bears that identifier.' },
-        { status: 404, statusText: 'Not Found' },
-      );
+      httpMock
+        .expectOne('/api/v1/permissions/5')
+        .flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
 
       const failure: unknown = await pending.then(
         () => null,
@@ -604,6 +633,12 @@ describe('PermissionService', () => {
       // sound instead of being told to trust it.
       if (failure instanceof HttpErrorResponse) {
         expect(failure.status).toBe(404);
+        // The document arrives WHOLE, extensions included. Asserting the identity of the
+        // fixture is deliberately as far as this goes: what each member MEANS to a person is
+        // the error interceptor's concern, but that the members are all still there when the
+        // interceptor gets them is this transport's concern, and it is the property a partial
+        // fixture could not have stated.
+        expect(failure.error).toEqual(RESOURCE_NOT_FOUND);
       }
     });
   });
@@ -671,6 +706,125 @@ describe('PermissionService', () => {
       expect(httpMock.match(() => true).length)
         .withContext('no subscription, so nothing was ever sent')
         .toBe(0);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
+  // -------------------------------------------------------------------------
+  describe('refuses a response that does not match its contract', () => {
+    /**
+     * Asserts that answering the one pending request with `body` fails at `path`.
+     *
+     * @param source The call under test.
+     * @param url The url the call addresses.
+     * @param body The malformed body to answer with.
+     * @param path The member path the violation must name.
+     */
+    function expectViolationAt(
+      source: Observable<unknown>,
+      url: string,
+      body: object,
+      path: string,
+    ): void {
+      const values: unknown[] = [];
+      const failures: unknown[] = [];
+
+      source.subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      httpMock.expectOne(url).flush(body);
+
+      expect(values).toEqual([]);
+      expect(failures.length).toBe(1);
+      expect(isContractViolation(failures[0])).toBeTrue();
+
+      if (isContractViolation(failures[0])) {
+        expect(failures[0].path).toBe(path);
+      }
+    }
+
+    it('refuses a key list carrying a non-string element', () => {
+      expectViolationAt(
+        service.list(),
+        LIST_URL,
+        { data: ['VIEW', 7], meta: null },
+        'response.data[1]',
+      );
+    });
+
+    it('refuses a key list that is not an array', () => {
+      expectViolationAt(service.list(), LIST_URL, { data: 'VIEW', meta: null }, 'response.data');
+    });
+
+    it('refuses a definition whose scope code is absent', () => {
+      const malformed: Record<string, unknown> = { ...PERMISSION_DEFINITION };
+
+      delete malformed['permissionCode'];
+
+      expectViolationAt(
+        service.getById(5),
+        '/api/v1/permissions/5',
+        { data: malformed, meta: null },
+        'response.data.permissionCode',
+      );
+    });
+
+    it('admits a definition carrying both legacy in-band markers', () => {
+      // ⚠ `-1` AND `""` ARE VALUES HERE, NOT ABSENCES. They are what `Null.vb` returns for a
+      // missing integer and a missing string, they arrive PRESENT because the API never elides
+      // a written member, and no decoder may coalesce either one.
+      const values: unknown[] = [];
+
+      service.getById(0).subscribe({ next: (value: unknown) => values.push(value) });
+
+      httpMock
+        .expectOne('/api/v1/permissions/0')
+        .flush({ data: SENTINEL_DEFINITION, meta: null });
+
+      expect(values).toEqual([{ data: SENTINEL_DEFINITION, meta: null }]);
+    });
+
+    it('admits a permission key the catalogue extends with', () => {
+      // The four keys the model's union names are the ones this application SWITCHES on, but
+      // the catalogue is extensible: a module package may register its own. Closing the set
+      // would refuse a whole catalogue because one third-party entry was unfamiliar.
+      const values: unknown[] = [];
+
+      service.getById(5).subscribe({ next: (value: unknown) => values.push(value) });
+
+      httpMock
+        .expectOne('/api/v1/permissions/5')
+        .flush({ data: { ...PERMISSION_DEFINITION, permissionKey: 'DEPLOY' }, meta: null });
+
+      expect(values.length).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHO ANNOUNCES A FAILURE
+  // -------------------------------------------------------------------------
+  describe('marks every request as presented by its caller', () => {
+    it('marks both operations', () => {
+      const swallow = { error: () => undefined };
+
+      service.list().subscribe(swallow);
+      service.getById(5).subscribe(swallow);
+
+      const issued = httpMock.match(() => true);
+
+      expect(issued.length).toBe(2);
+
+      for (const pending of issued) {
+        expect(pending.request.context.get(PRESENTED_IN_CONTEXT))
+          .withContext(`${pending.request.method} ${pending.request.url} is unmarked`)
+          .toBeTrue();
+      }
+
+      for (const pending of issued) {
+        pending.flush(null, { status: 500, statusText: 'Server Error' });
+      }
     });
   });
 });

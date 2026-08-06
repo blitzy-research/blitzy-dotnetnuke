@@ -301,6 +301,18 @@ const STANDARD_MEMBERS: readonly (readonly [string, (value: unknown) => boolean]
     ['detail', isString],
     ['instance', isString],
     ['traceId', isString],
+    // MIGRATION: `correlationId` is checked here for the same reason `detail` is,
+    // and its omission was a real defect rather than an oversight of no
+    // consequence. The member is DECLARED on {@link ProblemDetails}, so once this
+    // predicate narrows, every consumer reads it as a string — and the support
+    // reference is read with `.trim()` and with string methods that resolve legacy
+    // break markup. A document carrying `correlationId: 42`, or an object, or
+    // `null`, therefore used to narrow on the strength of some other well-typed
+    // member and then fault inside the diagnostic path: the one path whose whole
+    // purpose is to survive a malformed response and still tell an operator what
+    // happened. Absence remains legal, exactly as for every other member; only a
+    // present member of the wrong type is now refused.
+    ['correlationId', isString],
     ['errors', isErrorMap],
   ]);
 

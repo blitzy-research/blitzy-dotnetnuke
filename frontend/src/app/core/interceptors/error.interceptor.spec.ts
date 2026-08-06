@@ -114,7 +114,7 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
-import { NotificationService } from '../services/notification.service';
+import { NotificationService, presentedInContext } from '../services/notification.service';
 import type { AppNotification, NotificationSeverity } from '../services/notification.service';
 import { errorInterceptor } from './error.interceptor';
 
@@ -574,15 +574,24 @@ describe('errorInterceptor', () => {
       expect(severities()).toEqual(['warning']);
     });
 
-    it('presents a rate-limit refusal as a WARNING, because nothing failed', async () => {
+    it('presents a rate-limit refusal as INFORMATIONAL, quieter than a refusal', async () => {
+      // ⚠ THE QUIETEST OF THE THREE, AND QUIETER THAN THE OTHER REFUSALS ON PURPOSE. A 429
+      // rejects nothing on its merits and reports nothing misconfigured: the caller is simply
+      // early, and the only action is to wait. The classification lives in the shared
+      // `problemSeverity` and nowhere else - it used to be overridden inside the error banner,
+      // so the SAME status reached an operator as a warning through this queue and as a calm
+      // notice through the banner, on one screen, from two rules with no way of knowing about
+      // each other. Asserting the informational severity here is what keeps the two surfaces
+      // agreeing.
       const body: ProblemDetails = { title: 'Too Many Requests', status: 429 };
 
       await expectRejection(body, 429, 'Too Many Requests', LOGIN_URL);
 
       const chosen = severities();
 
-      expect(chosen).withContext('the caller is early, not broken').toEqual(['warning']);
+      expect(chosen).withContext('the caller is early, not broken').toEqual(['info']);
       expect(chosen).not.toContain('error');
+      expect(chosen).withContext('and quieter than an ordinary refusal').not.toContain('warning');
     });
 
     it('presents a fault as an ERROR', async () => {
@@ -871,9 +880,17 @@ describe('errorInterceptor', () => {
   // metadata type deliberately declares no correlation, trace or request member at
   // all. A problem document is therefore the only body that ever carries one.
   //
-  // It is carried INSIDE the message string because the notification queue holds a
-  // severity and a message and nothing else, by design: an identifier belongs to a
-  // problem document, which that service never sees.
+  // It is carried BOTH inside the message string and as its own member on the queued
+  // entry, and the duplication is deliberate. The appended copy is what keeps the
+  // single-string display contract intact for a consumer that renders only the message;
+  // the member is what makes the reference survive the queue's length bound. The
+  // reference used to be concatenated HERE, by this interceptor, and the queue then
+  // bounded the already-composed string - so on a long server `detail`, which is exactly
+  // the unexpected failure worth reporting, truncation removed the identifier and left an
+  // operator nothing to quote. Composition now belongs to the queue, which is the party
+  // that applies the bound and therefore the only one that can guarantee the suffix
+  // outlives it. This interceptor still decides WHETHER a reference is quoted, because
+  // that is a transport-status question.
 
   describe('the support reference', () => {
     it('is quoted for a fault, so an operator has something to report', async () => {
@@ -1053,7 +1070,9 @@ describe('errorInterceptor', () => {
       // where there is none.
       expect(message.toLowerCase()).not.toContain('error');
       expect(message.toLowerCase()).not.toContain('fail');
-      expect(severities()).toEqual(['warning']);
+      // The informational severity, which is the shared rule's answer for this status and the
+      // one the banner's calm band is driven from.
+      expect(severities()).toEqual(['info']);
     });
 
     it('is NEVER re-attempted, not even once', async () => {
@@ -1419,6 +1438,120 @@ describe('errorInterceptor', () => {
       await expectRejection(unrelated, 500, 'Internal Server Error');
 
       expect(onlyMessage()).toBe(SERVER_ERROR_TEXT);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHO PRESENTS A FAILURE
+  // -------------------------------------------------------------------------
+  //
+  // A failed request has exactly ONE publisher. This interceptor used to announce every
+  // failed response while the root signal stores simultaneously retained the same failure
+  // for their screens to bind to the shared error banner, so a single refusal produced two
+  // independently-worded, independently-dismissible reports of one incident. The request
+  // CONTEXT is how the two sides now agree: a caller that presents its own failures marks
+  // its request, and this interceptor stays silent for it.
+  //
+  // The default is the noisy one - unmarked means announced - so a caller that forgets the
+  // marker is reported twice rather than not at all.
+
+  describe('presentation ownership', () => {
+    it('announces a failure on a request that carries no presentation marker', async () => {
+      const body: ProblemDetails = {
+        title: 'Internal Server Error',
+        status: 500,
+        detail: 'An unexpected error occurred.',
+      };
+
+      await expectRejection(body, 500, 'Internal Server Error');
+
+      expect(queued().length)
+        .withContext('an unpresented failure has no other publisher, so this one reports it')
+        .toBe(1);
+    });
+
+    it('announces nothing when the caller presents the failure itself', async () => {
+      const body: ProblemDetails = {
+        title: 'Internal Server Error',
+        status: 500,
+        detail: 'An unexpected error occurred.',
+        traceId: TRACE_ID,
+      };
+
+      const pending = firstValueFrom(
+        http.get(PORTALS_URL, { context: presentedInContext() }),
+      );
+
+      httpMock.expectOne(PORTALS_URL).flush(body, {
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: { 'Content-Type': 'application/problem+json' },
+      });
+
+      await expectAsync(pending)
+        .withContext('suppressing the announcement must not suppress the failure')
+        .toBeRejected();
+
+      expect(queued())
+        .withContext('the caller presents this failure, so a second report would duplicate it')
+        .toEqual([]);
+    });
+
+    it('still rejects a marked request with the original failure, unchanged', async () => {
+      const pending = firstValueFrom(
+        http.get(PORTALS_URL, { context: presentedInContext() }),
+      );
+
+      httpMock.expectOne(PORTALS_URL).flush(
+        { title: 'Conflict', status: 409, detail: 'That name is already in use.' },
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      const reason: unknown = await pending.then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      // The store that marked the request is the party that will present this, so it has
+      // to receive the whole response rather than a substitute.
+      expect(reason instanceof HttpErrorResponse).toBeTrue();
+      expect((reason as HttpErrorResponse).status).toBe(409);
+    });
+
+    it('retains the support reference as a member of the queued entry', async () => {
+      const body: ProblemDetails = {
+        title: 'Internal Server Error',
+        status: 500,
+        detail: 'An unexpected error occurred.',
+        correlationId: CORRELATION_ID,
+      };
+
+      await expectRejection(body, 500, 'Internal Server Error');
+
+      const entry: AppNotification = queued()[0];
+
+      // Structural as well as appended: the member is what survives the queue's length
+      // bound, which is the property the previous concatenation could not offer.
+      expect(entry.reference).toBe(CORRELATION_ID);
+      expect(entry.message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${CORRELATION_ID}`);
+    });
+
+    it('quotes no reference on a refusal, and leaves the member null', async () => {
+      const body: ProblemDetails = {
+        title: 'Conflict',
+        status: 409,
+        detail: 'That name is already in use.',
+        correlationId: CORRELATION_ID,
+      };
+
+      await expectRejection(body, 409, 'Conflict');
+
+      const entry: AppNotification = queued()[0];
+
+      // A refusal is self-explanatory to the operator who provoked it, so an identifier
+      // would add noise and invite them to report a working system as broken.
+      expect(entry.reference).toBeNull();
+      expect(entry.message).not.toContain(REFERENCE_LABEL);
     });
   });
 });

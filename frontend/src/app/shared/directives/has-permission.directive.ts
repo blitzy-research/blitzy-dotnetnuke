@@ -1,5 +1,10 @@
 import { Directive, TemplateRef, ViewContainerRef, effect, inject, input } from '@angular/core';
 
+import {
+  isPermissionKey,
+  toPermissionKeys,
+  type PermissionKey,
+} from '../../core/models/permission.model';
 import { AuthStore } from '../../core/state/auth.store';
 
 /**
@@ -109,14 +114,23 @@ export class HasPermissionDirective {
   /**
    * The permission key that admits the content.
    *
-   * A single required key, deliberately: a plain `string`, not a union, not an
-   * enumeration, and not a list.
+   * A single required key, deliberately: one member of the closed vocabulary, not a list.
    *
-   * A `string` because the server publishes the caller's keys as plain strings and the
-   * column stores whatever key an installation seeded. Narrowing this to the four keys
-   * this codebase knows would statically promise something the wire cannot guarantee,
-   * and would make a check look exhaustive to both a reader and the compiler while
-   * failing at run time.
+   * ⚠ TYPED AS {@link PermissionKey}, NOT AS `string`, AND THE DISTINCTION IS THE WHOLE
+   * SAFETY PROPERTY. The value on this input is something the APPLICATION decides — the
+   * key a screen requires — so it belongs to the closed set of keys this codebase
+   * evaluates. It is NOT a value the server supplies. Typing it as a bare `string` made a
+   * whole class of confusion expressible: an authorisation POLICY name, a permission
+   * CODE, a role name or an installation-specific key could all be written here, and each
+   * would have been treated as a render grant the moment a matching string appeared in the
+   * caller's granted list. Three different vocabularies exist in this system and only one
+   * of them belongs here; the compiler now says so.
+   *
+   * The static type is not the only defence, because a template expression can produce a
+   * widened value and route data is `unknown` at the edges. The verdict below therefore
+   * re-tests the received value at RUN TIME through {@link isPermissionKey} and refuses
+   * anything unrecognised — so an unknown key fails CLOSED whether it slipped past the
+   * compiler or not.
    *
    * A single key because no call site needs more. Two keys on one element is expressible
    * by nesting, whereas an "any of" input would have to define — and then defend —
@@ -125,7 +139,7 @@ export class HasPermissionDirective {
    * A signal input, so the one effect below re-evaluates both when the session changes
    * and when a screen swaps the required key on the same element.
    */
-  readonly hasPermission = input.required<string>();
+  readonly hasPermission = input.required<PermissionKey>();
 
   /**
    * Whether the content is currently in the document.
@@ -146,8 +160,13 @@ export class HasPermissionDirective {
     // read of each below: signing out withdraws the affordance immediately instead of
     // leaving it on screen until the next navigation.
     effect(() => {
+      // Both sources are narrowed to the closed vocabulary BEFORE they meet. The required
+      // key is re-tested at run time even though it is statically typed, because a
+      // template expression can widen and route data arrives untyped; the held list is
+      // narrowed because its producer is genuinely open. Whichever side carries an
+      // unrecognised value, the verdict is a refusal rather than a coincidental match.
       const required = this.hasPermission();
-      const held = this.authStore.permissions();
+      const held = toPermissionKeys(this.authStore.permissions());
 
       this.render(isGranted(required, held));
     });
@@ -208,12 +227,20 @@ export class HasPermissionDirective {
  * arguments with no access to the injector, the DOM or the store — which is what makes it
  * trivially reviewable, the property that matters most in a permission check.
  *
- * @param required The key the call site asks for.
- * @param held The keys the caller holds, exactly as the server resolved them.
- * @returns True only when `held` contains `required` spelled identically.
+ * @param required The key the call site asks for, re-tested against the closed vocabulary.
+ * @param held The recognised subset of the keys the caller holds, already narrowed.
+ * @returns True only when `required` is a recognised key and `held` contains it identically.
  */
-function isGranted(required: string, held: readonly string[]): boolean {
-  if (required === '') {
+function isGranted(required: PermissionKey, held: readonly PermissionKey[]): boolean {
+  // FAIL CLOSED ON AN UNRECOGNISED REQUIREMENT. `required` is statically a
+  // `PermissionKey`, but a static type is a claim about the source and not a fact about
+  // the value: a template expression can widen, and a key threaded through route data or
+  // a loosely typed view model arrives as whatever it arrives as. Re-testing it here means
+  // an unknown value — a policy name, a permission code, a lower-case spelling, a padded
+  // string, the empty string — refuses instead of being carried into the membership test
+  // where a matching entry in the granted list would admit it. The empty-string case that
+  // used to be spelled out separately is subsumed: it is not a recognised key.
+  if (isPermissionKey(required) === false) {
     return false;
   }
 
@@ -265,14 +292,17 @@ function isGranted(required: string, held: readonly string[]): boolean {
  * while the projection functions did — which is a further reason the client must not
  * attempt to re-derive any of it.
  *
- * MIGRATION: the authorisation POLICY vocabulary is a separate, closed set of five names
- * and is NOT what this directive takes. Policy names are the server's route-level
- * contract; the permission keys above are the persisted data. A third axis exists as
- * well, the permission CODE that scopes a key to folders, module definitions or pages —
- * `READ` and `WRITE` are folder-scoped keys, which is why they never reach a policy and
- * why file management is outside this migration. Passing a value from one of those
- * vocabularies where another is expected is exactly the confusion this input's plain
- * `string` type refuses to legitimise, so nothing here restates a policy name or a code.
+ * MIGRATION: the authorisation POLICY vocabulary is a separate, closed set of EIGHT names
+ * registered by the API and is NOT what this directive takes. Policy names are the
+ * server's route-level contract, enumerated once in `core/guards/permission.guard.ts`; the
+ * permission keys above are the persisted data. A third axis exists as well, the
+ * permission CODE that scopes a key to folders, module definitions or pages — `READ` and
+ * `WRITE` are folder-scoped keys, which is why they never reach a policy and why file
+ * management is outside this migration. Passing a value from one of those vocabularies
+ * where another is expected is exactly the confusion this input's {@link PermissionKey}
+ * type now refuses to legitimise — the compiler rejects it, and
+ * {@link isPermissionKey} refuses it again at run time for the cases a static type cannot
+ * reach. Nothing here restates a policy name or a code.
  *
  * MIGRATION: the legacy role encodings are deliberately not carried forward — not because
  * they never existed, but because the server flattens them before anything reaches the

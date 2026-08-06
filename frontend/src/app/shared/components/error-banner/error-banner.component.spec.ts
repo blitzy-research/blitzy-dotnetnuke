@@ -1587,4 +1587,3 @@ describe('ErrorBannerComponent', () => {
     });
   });
 });
-

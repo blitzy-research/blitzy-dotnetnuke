@@ -223,6 +223,45 @@ public interface IUserProfileRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the scoped profile values of MANY accounts in one read.
+    /// </summary>
+    /// <param name="portalId">
+    /// The tenant that must own each returned definition, matched EXACTLY - including the real keys -1 and
+    /// 0 - or <see langword="null"/> for the host scope, meaning the definitions whose <c>PortalID</c>
+    /// column is SQL <c>NULL</c>. Identical in meaning to the single-account overload's scope, and resolved
+    /// by the same one definition of it.
+    /// </param>
+    /// <param name="userIds">
+    /// The accounts whose values are wanted. Every value is a real account key, and an empty request asks
+    /// for nothing rather than for everything - it is answered without a round trip.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the read.</param>
+    /// <returns>
+    /// The scoped values of every named account, FLAT rather than grouped, so a caller groups by
+    /// <see cref="UserProfileValue.UserId"/> itself. Ordered by account, then definition, then row identity,
+    /// so each account's slice appears in the same sequence the single-account overload would produce. An
+    /// account that has recorded nothing, and one that does not exist, both contribute no row.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The set-based form of the scoped single-account overload, and it exists for one reason: an account
+    /// LISTING that projects a profile value needs the values of the accounts on its page, and asking for
+    /// them one account at a time makes the read cost proportional to the page size - which is a
+    /// per-row round trip in everything but name. This member answers the same question for a whole page in
+    /// a single statement.
+    /// </para>
+    /// <para>
+    /// It does not replace the single-account overloads, which remain the right shape for the profile screen
+    /// and the profile write path; and it is not a wildcard - there is no set, and no member of a set, that
+    /// this read interprets as "every account".
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<UserProfileValue>> GetProfileValuesAsync(
+        int? portalId,
+        IReadOnlyCollection<int> userIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Stages a new profile answer for insertion.
     /// </summary>
     /// <param name="profileValue">

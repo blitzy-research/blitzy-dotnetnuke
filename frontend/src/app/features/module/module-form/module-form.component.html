@@ -345,7 +345,16 @@
             [error]="errorsFor('moduleTitle')"
             for="module-form-title"
           >
-            <input id="module-form-title" type="text" formControlName="moduleTitle" />
+            <!--
+              `maxlength` mirrors the column the heading lands in. An assist rather than the rule: a
+              pasted overflow is still refused by the validator and again by the server.
+            -->
+            <input
+              id="module-form-title"
+              type="text"
+              [attr.maxlength]="titleMaxLength"
+              formControlName="moduleTitle"
+            />
           </app-form-field>
 
           <!--
@@ -466,7 +475,19 @@
             [error]="errorsFor('startDate')"
             for="module-form-start-date"
           >
-            <input id="module-form-start-date" type="date" formControlName="startDate" />
+            <!--
+              `min` and `max` are the storable range of the column behind the field, so a date picker
+              offers only dates the server can keep. They ASSIST and do not replace the validator: a
+              typed or pasted value outside the range still reaches it, and the picker's own refusal
+              says nothing a person can read.
+            -->
+            <input
+              id="module-form-start-date"
+              type="date"
+              [attr.min]="dateMinimum"
+              [attr.max]="dateMaximum"
+              formControlName="startDate"
+            />
           </app-form-field>
 
           <app-form-field
@@ -475,7 +496,13 @@
             [error]="errorsFor('endDate')"
             for="module-form-end-date"
           >
-            <input id="module-form-end-date" type="date" formControlName="endDate" />
+            <input
+              id="module-form-end-date"
+              type="date"
+              [attr.min]="dateMinimum"
+              [attr.max]="dateMaximum"
+              formControlName="endDate"
+            />
           </app-form-field>
         </fieldset>
       </fieldset>
@@ -517,7 +544,12 @@
             [error]="errorsFor('iconFile')"
             for="module-form-icon-file"
           >
-            <input id="module-form-icon-file" type="text" formControlName="iconFile" />
+            <input
+              id="module-form-icon-file"
+              type="text"
+              [attr.maxlength]="iconMaxLength"
+              formControlName="iconFile"
+            />
           </app-form-field>
 
           <!--
@@ -732,8 +764,10 @@
             a copy and a bulk removal directly after saving (`:L403-L418`); none of those is exposed by
             the module API. Re-parenting still happens, as an ordinary member of the replacement body.
 
-            The list is portal-scoped and the portal is known only from the module that was read, so on
-            the create route it is legitimately empty until then. Administrator-gated on the server.
+            The list is portal-scoped, and which portal is answered by the module that was read on the
+            edit route and by the signed-in session on the create route — the same portal the API resolves
+            a create request into. It is therefore populated on both routes; an empty list means no portal
+            has been resolved yet, not that this route has none. Administrator-gated on the server.
           -->
           <app-form-field
             [label]="labels.tabId"

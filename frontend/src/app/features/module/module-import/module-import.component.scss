@@ -1,0 +1,67 @@
+// Component stylesheet for the module content-import screen, served by the route
+// /modules/import.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .module-import
+//     .module-import__form
+//     .module-import__actions
+//
+// The surface is deliberately flat, and focus indication is deliberately absent: the
+// global reset applies the shared focus-ring mixin to a superset of the controls this
+// screen renders, so the design system owns focus and this file only places components.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared on the component root and inherited by every region below,
+// rather than left to a global base rule: without it the browser falls back to its own
+// serif default for the label, the help string and the spinner's text.
+.module-import {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE FORM
+// -----------------------------------------------------------------------------
+// A maximum rather than a fixed measure, so the form stays fluid below the step and
+// capped above it - which is why this screen needs no breakpoint mixin at all. Reading
+// `breakpoint()` for a raw width is the sanctioned use of that function; what is barred
+// is writing a media query by hand in a component.
+.module-import__form {
+  display: grid;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives
+// white-space collapsing, and wrapping is intrinsic so the second command drops to its
+// own line on a narrow viewport instead of overflowing.
+.module-import__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the spacing scale every value above resolves to is a NET ADDITION - the
+// legacy stylesheets have no spacing system. No radius and no elevation is introduced:
+// the legacy design is square-cornered and flat, and this screen has nothing that needs
+// to read as raised.
+// =============================================================================

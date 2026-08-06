@@ -84,16 +84,47 @@
  *
  * ## What this file is not
  *
- * It declares types and two integer code tables. There is no class, no
- * constructor, no decorator, no injectable, no helper that resolves a quota and
- * no arithmetic of any kind: a fee is clamped by the server
- * (`Library/Components/Portal/PortalController.vb:L395` and `L398` become a
- * server-side maximum-of-two), never by a client. The only JavaScript this module
- * emits at runtime is the two enumerations below; everything else erases
- * completely, and both imports are type-only for that reason. Because it holds no
- * behaviour, it has no paired spec — the compiler is the whole of its
- * verification.
+ * It declares types, two integer code tables and one runtime decoder per contract
+ * that is READ from the wire. There is no class, no constructor, no decorator, no
+ * injectable, no helper that resolves a quota and no arithmetic of any kind: a fee
+ * is clamped by the server (`Library/Components/Portal/PortalController.vb:L395`
+ * and `L398` become a server-side maximum-of-two), never by a client.
+ *
+ * ## Why the decoders are here rather than in the transport
+ *
+ * A TypeScript interface is erased at compile time, so `http.get<PortalDetail>(…)`
+ * is an ASSERTION about a value nobody checked, not a guarantee: a renamed member
+ * arrives as `undefined`, a `null` where a number was promised propagates into
+ * arithmetic, and the first symptom is a blank field or `NaN` on a screen several
+ * layers away from the response that caused it. Each contract therefore carries a
+ * decoder declared FROM the interface — {@link DecoderShape} strips optionality, so
+ * forgetting a member is a compile error rather than a silent hole — and the
+ * transport refuses a response that does not match. The refusal names the member
+ * and its expected type, never the value, so a violation report cannot disclose
+ * portal data.
+ *
+ * Request contracts carry no decoder: they are composed by this client and travel
+ * outward, so there is nothing untrusted to check.
+ *
+ * Only the two enumerations and the decoders are emitted at runtime; every type
+ * erases completely, which is why the `PagedResult` and `SelectOption` imports stay
+ * type-only. The decoders are verified through the transport's own spec —
+ * `core/services/portal.service.spec.ts` exercises each of them against a malformed
+ * payload — rather than through a spec paired with this module.
  */
+
+import {
+  arrayOf,
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeNumber,
+  decodeString,
+  nullable,
+  objectOf,
+  oneOfNumber,
+  type Decoder,
+} from '../utils/decode.util';
 
 import type { PagedResult } from './paged-result.model';
 import type { SelectOption } from './select-option.model';
@@ -184,9 +215,9 @@ export enum BannerAdvertisingMode {
 /**
  * One host name through which a portal is reached.
  *
- * Mirrors `Dtos/Portal/PortalAliasDto.cs`, which carries exactly three members —
- * the same three the legacy `PortalAliasInfo.vb` declared at `L37`, `L45` and
- * `L53`.
+ * Mirrors `Dtos/Portal/PortalAliasDto.cs`, which carries the three members the
+ * legacy `PortalAliasInfo.vb` declared at `L37`, `L45` and `L53`, plus the
+ * per-request {@link PortalAlias.isCurrent} projection described on that member.
  *
  * Returned by `GET /api/v1/portals/{portalId}/aliases`, which is the authoritative
  * place to list, add and remove aliases.
@@ -241,6 +272,30 @@ export interface PortalAlias {
    * and a `null` are distinct states here and neither is rewritten into the other.
    */
   readonly httpAlias: string | null;
+
+  /**
+   * Whether this is the alias the request that fetched the row resolved the tenant
+   * through — the row the caller is, at this moment, standing on.
+   *
+   * A screen must withhold BOTH the rename and the unbind affordance for the row
+   * this reports `true` for. The server refuses both regardless, with the problem
+   * type `urn:dnnmigration:error:portal.alias_in_use.conflict`, so the flag is an
+   * affordance and never the enforcement point.
+   */
+  // MIGRATION: restores the legacy affordance at Website/admin/Portal/PortalAlias.ascx.vb L51-L60,
+  //   where IsNotCurrent(Id) compared each grid row's key against the ambient
+  //   Me.PortalAlias.PortalAliasID() and portalalias.ascx:L8 bound the answer to the edit
+  //   hyperlink's Visible property. It is computed per request from the resolved IPortalContext and
+  //   is NOT a stored column, so no schema change accompanies it (AAP Rule T4).
+  //
+  // MIGRATION: the SERVER decides this, not the browser. The alias a request resolved through is a
+  //   fact about the connection - the Host header matched against dbo.PortalAlias - and the browser
+  //   cannot reconstruct it: window.location.host is the address the SPA was served at, which
+  //   travels through an nginx proxy and need not equal the alias the API matched, and the legacy
+  //   write path lower-cased on insert and update while its reader did not, so two spellings of one
+  //   host name are both legitimate stored values. Comparing strings client-side would need a
+  //   casing rule of its own and would disagree with the server the day either side changed.
+  readonly isCurrent: boolean;
 }
 
 /**
@@ -1120,3 +1175,150 @@ export interface PortalSettingsLookups {
   /** Time zones, valued in minutes from co-ordinated universal time. */
   readonly timeZones: readonly SelectOption<number>[];
 }
+
+/**
+ * Decodes one host-name alias as the API publishes it for reading.
+ *
+ * `httpAlias` is nullable on the read projection and non-nullable on both request
+ * contracts, which is exactly why the three alias types are declared separately and
+ * why this decoder is not reused for a write.
+ */
+export const decodePortalAlias: Decoder<PortalAlias> = objectOf<PortalAlias>({
+  portalAliasId: decodeInteger,
+  portalId: decodeInteger,
+  httpAlias: nullable(decodeString),
+  // A COMPUTED projection, not a stored column: the server compares each alias against the
+  // one the request arrived on. It is what withholds the rename and delete affordances for
+  // the alias currently serving the console, so it is decoded strictly - a missing or
+  // non-boolean value must fail the read rather than default to `false`, which would offer
+  // an operator the means to delete the address they are working through.
+  isCurrent: decodeBoolean,
+});
+
+/**
+ * Decodes one listed portal row.
+ *
+ * `users`, `pages`, `hostSpace` and `hostFee` are counts and quotas the server computes
+ * and always sends, so they are required here; a missing one would previously have
+ * reached the grid as `undefined` and rendered as an empty cell indistinguishable from a
+ * genuine zero.
+ */
+export const decodePortalListItem: Decoder<PortalListItem> = objectOf<PortalListItem>({
+  portalId: decodeInteger,
+  portalName: decodeString,
+  aliases: arrayOf(decodeString),
+  users: decodeInteger,
+  pages: decodeInteger,
+  hostSpace: decodeInteger,
+  hostFee: decodeNumber,
+  expiryDate: nullable(decodeDateString),
+});
+
+/**
+ * Decodes one portal in full.
+ *
+ * Three details are deliberate. The identifier uses {@link decodeInteger} rather than any
+ * positivity check, because `-1` and `0` are both real portal identifiers here — the
+ * baseline schema declares `[PortalID] [int] IDENTITY (-1, 1)`. The two mode members are
+ * closed integer code tables and are refused when the code is unrecognised, because zero
+ * is the permissive member of both and coercing to it would present a portal as accepting
+ * no registrations, or as carrying no banner advertising, on the strength of a code this
+ * client simply did not know. `guid` is required and non-nullable: the server generates it
+ * at creation and every portal has one.
+ */
+export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>({
+  portalId: decodeInteger,
+  portalName: nullable(decodeString),
+  description: nullable(decodeString),
+  keyWords: nullable(decodeString),
+  footerText: nullable(decodeString),
+  logoFile: nullable(decodeString),
+  backgroundFile: nullable(decodeString),
+  expiryDate: nullable(decodeDateString),
+  userRegistration: oneOfNumber([
+    UserRegistrationMode.NoRegistration,
+    UserRegistrationMode.PrivateRegistration,
+    UserRegistrationMode.PublicRegistration,
+    UserRegistrationMode.VerifiedRegistration,
+  ]),
+  bannerAdvertising: oneOfNumber([
+    BannerAdvertisingMode.None,
+    BannerAdvertisingMode.Site,
+    BannerAdvertisingMode.Host,
+  ]),
+  currency: nullable(decodeString),
+  administratorId: nullable(decodeInteger),
+  email: nullable(decodeString),
+  hostFee: nullable(decodeNumber),
+  hostSpace: nullable(decodeInteger),
+  pageQuota: nullable(decodeInteger),
+  userQuota: nullable(decodeInteger),
+  users: decodeInteger,
+  pages: decodeInteger,
+  administratorRoleId: nullable(decodeInteger),
+  administratorRoleName: nullable(decodeString),
+  registeredRoleId: nullable(decodeInteger),
+  registeredRoleName: nullable(decodeString),
+  guid: decodeString,
+  paymentProcessor: nullable(decodeString),
+  processorUserId: nullable(decodeString),
+  siteLogHistory: nullable(decodeInteger),
+  adminTabId: nullable(decodeInteger),
+  superTabId: nullable(decodeInteger),
+  splashTabId: nullable(decodeInteger),
+  homeTabId: nullable(decodeInteger),
+  loginTabId: nullable(decodeInteger),
+  userTabId: nullable(decodeInteger),
+  defaultLanguage: nullable(decodeString),
+  timeZoneOffset: nullable(decodeInteger),
+  homeDirectory: nullable(decodeString),
+  aliases: nullable(arrayOf(decodePortalAlias)),
+});
+
+/**
+ * Decodes the settings projection.
+ *
+ * A projection over columns of the same row rather than a separate aggregate, so its
+ * members are decoded exactly as their {@link PortalDetail} counterparts are. The two
+ * contracts overlap heavily and deliberately are not derived from one another: the
+ * settings screen edits a strict subset, and deriving would tie the read shape of one to
+ * the other's future.
+ */
+export const decodePortalSettings: Decoder<PortalSettings> = objectOf<PortalSettings>({
+  portalId: decodeInteger,
+  portalName: nullable(decodeString),
+  description: nullable(decodeString),
+  keyWords: nullable(decodeString),
+  footerText: nullable(decodeString),
+  logoFile: nullable(decodeString),
+  backgroundFile: nullable(decodeString),
+  expiryDate: nullable(decodeDateString),
+  userRegistration: oneOfNumber([
+    UserRegistrationMode.NoRegistration,
+    UserRegistrationMode.PrivateRegistration,
+    UserRegistrationMode.PublicRegistration,
+    UserRegistrationMode.VerifiedRegistration,
+  ]),
+  bannerAdvertising: oneOfNumber([
+    BannerAdvertisingMode.None,
+    BannerAdvertisingMode.Site,
+    BannerAdvertisingMode.Host,
+  ]),
+  currency: nullable(decodeString),
+  administratorId: nullable(decodeInteger),
+  hostFee: nullable(decodeNumber),
+  hostSpace: nullable(decodeInteger),
+  pageQuota: nullable(decodeInteger),
+  userQuota: nullable(decodeInteger),
+  paymentProcessor: nullable(decodeString),
+  processorUserId: nullable(decodeString),
+  siteLogHistory: nullable(decodeInteger),
+  splashTabId: nullable(decodeInteger),
+  homeTabId: nullable(decodeInteger),
+  loginTabId: nullable(decodeInteger),
+  userTabId: nullable(decodeInteger),
+  defaultLanguage: nullable(decodeString),
+  timeZoneOffset: nullable(decodeInteger),
+  homeDirectory: nullable(decodeString),
+  guid: decodeString,
+});

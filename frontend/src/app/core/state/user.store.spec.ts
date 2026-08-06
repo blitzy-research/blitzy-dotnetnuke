@@ -2925,5 +2925,135 @@ describe('UserStore', () => {
       expect(store.busy()).toBeFalse();
     });
   });
-});
+  // -------------------------------------------------------------------------
+  // SESSION ISOLATION
+  //
+  // `reset` released the READS and left the WRITES listening, and the two halves of that gap were
+  // separately serious.
+  //
+  // A write's callback selects an account, re-reads the listing and records an outcome. Left
+  // listening across a session boundary it performed all three on behalf of the session that
+  // ended — repopulating the very slices the reset had just cleared with the PREVIOUS OPERATOR'S
+  // accounts. That is personal data: names, addresses, telephone numbers and profile answers,
+  // shown to whoever signed in next, with no command issued to explain where it came from.
+  //
+  // And the handles were held in an RxJS `Subscription` used as a container, which is CLOSED once
+  // unsubscribed: anything added afterwards is unsubscribed the instant it is added. So releasing
+  // them at a boundary would have released them correctly ONCE and then silently cancelled every
+  // subsequent write for the remaining life of the application — every save after one sign-out
+  // dispatched and never reporting an outcome. The handles are now a set, which is emptied and
+  // reused.
+  // -------------------------------------------------------------------------
+  describe('session isolation', () => {
+    it('cancels a read in flight on reset, so its answer cannot repopulate the store', () => {
+      store.loadMembershipSettings();
 
+      const pending = expectRequest('GET', SETTINGS_URL);
+
+      store.reset();
+
+      expect(pending.cancelled)
+        .withContext('the request is abandoned, not merely ignored')
+        .toBeTrue();
+      expect(store.membershipSettings()).toBeNull();
+      expect(store.membershipSettingsLoading()).toBeFalse();
+    });
+
+    it('cancels a WRITE in flight on reset, which reads-only cancellation did not', () => {
+      // ⚠ THE GAP THIS CLOSES. The callback of this write selects the account it wrote and re-reads
+      // the listing. Left listening it would put one operator's account into a store that a second
+      // operator's screen is about to render.
+      store.createUser(createRequestFixture());
+
+      const pending = expectRequest('POST', USERS_URL);
+
+      store.reset();
+
+      expect(pending.cancelled)
+        .withContext('a write must not outlive the session that issued it')
+        .toBeTrue();
+      expect(store.selectedUser()).toBeNull();
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('discards every account-scoped slice on reset', () => {
+      store.loadMembershipSettings();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 25 })));
+
+      store.loadProfileDefinitions();
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([definitionFixture()]));
+
+      // Selecting reads the account; the profile is a separate command, because a listing screen
+      // needs the account without paying for its profile.
+      store.selectUser(7);
+      expectRequest('GET', `${USERS_URL}/7`).flush(envelope(detailFixture({ userId: 7 })));
+
+      store.loadProfile(7);
+      expectRequest('GET', `${USERS_URL}/7/profile`).flush(envelope(profileFixture(7)));
+
+      expect(store.membershipSettings()).not.toBeNull();
+      expect(store.profileDefinitions().length).toBe(1);
+      expect(store.selectedUser()).not.toBeNull();
+      expect(store.profile()).not.toBeNull();
+
+      store.reset();
+
+      expect(store.membershipSettings()).toBeNull();
+      expect(store.profileDefinitions().length).toBe(0);
+      expect(store.selectedUser())
+        .withContext('an account is personal data and must not outlive its session')
+        .toBeNull();
+      expect(store.profile()).toBeNull();
+      expect(store.users().items.length).toBe(0);
+      expect(store.failure()).toBeNull();
+      expect(store.busy()).toBeFalse();
+    });
+
+    it('keeps accepting writes after a reset, which a Subscription container would have broken', () => {
+      // ⚠ THE REGRESSION GUARD FOR THE CLOSED-CONTAINER TRAP. With a container, this write would be
+      // cancelled the instant it was registered — dispatched, and then silently abandoned — and the
+      // operator would watch a save that never reports anything, for the rest of the application's
+      // life.
+      store.reset();
+
+      store.createUser(createRequestFixture());
+
+      const pending = expectRequest('POST', USERS_URL);
+
+      expect(pending.cancelled)
+        .withContext('a write issued after a reset must not be cancelled on arrival')
+        .toBeFalse();
+
+      pending.flush(envelope(detailFixture({ userId: 11 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+
+      expect(store.selectedUser()?.userId)
+        .withContext('the callback ran, so the handle was live')
+        .toBe(11);
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('releases a write handle when the write settles, so the set cannot grow without bound', () => {
+      // A set does not detach a finished child by itself, which an RxJS container did — so the
+      // teardown is registered explicitly. Without it the set would gain one entry per write ever
+      // issued and never lose one.
+      store.createUser(createRequestFixture());
+      expectRequest('POST', USERS_URL).flush(envelope(detailFixture({ userId: 12 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+
+      store.updateUser(12, updateRequestFixture());
+
+      const second = expectRequest('PUT', `${USERS_URL}/12`);
+
+      store.reset();
+
+      expect(second.cancelled)
+        .withContext('the outstanding write is released')
+        .toBeTrue();
+    });
+  });
+});

@@ -29,10 +29,22 @@
       core/utils/form-errors.util.ts through the component's serverMessages(). That utility owns the removal
       of the leading break tag the legacy resources carry, so nothing is stripped here. This is parity, not
       an addition: the legacy screen reported each failure next to the field that caused it and summarised
-      nothing, which is why the banner above carries the document-level title and detail only. The messages
-      are announced through role="alert" and are deliberately NOT added to any control's aria-describedby -
-      that attribute names each control's own hint, and a server message is transient rather than a
-      permanent description of the control.
+      nothing, which is why the banner above carries the document-level title and detail only.
+    - MIGRATION - ⚠ EACH FIELD'S MESSAGES LIVE IN ONE IDENTIFIED REGION THAT THE CONTROL'S
+      aria-describedby NAMES. An earlier note here argued the opposite - that a server message is transient
+      and so should not describe the control - and that reasoning was wrong on both halves. A role="alert"
+      region is announced once, when it appears, and never again: a person who hears it, moves to the
+      control to correct the value and then returns is told nothing, and cannot reach the message from the
+      control at all. That is the ordinary case rather than an edge one, since the whole purpose of a
+      per-field message is that the person goes to that field. And the message is not transient - it stays
+      until the next save answers, exactly as long as the hint does. The region is emitted only when there
+      IS a message, so no control ever names an element that does not exist.
+      The client-side message shares that ONE region rather than sitting beside it as a second element: the
+      two were briefly separate siblings that both bound messageId(field), which duplicated an identifier on
+      the four controls carrying a client rule and left aria-describedby resolving to whichever the browser
+      found first. Both kinds are now emitted through hasMessages()/clientMessage()/serverMessages(), local
+      reason first, so one control names one region holding the complete set of reasons its value was
+      refused.
     - Every migrated string is INTERPOLATED from a component constant, never written as template text.
       Angular compiles templates with preserveWhitespaces disabled, which collapses whitespace runs inside a
       text node and would silently rewrite the four legacy help strings that carry two spaces after a
@@ -117,18 +129,20 @@
                         formControlName="moduleTitle"
                         [id]="controlId('moduleTitle')"
                         [maxlength]="limits.moduleTitle"
-                        [attr.aria-describedby]="hintId('moduleTitle')"
+                        [attr.aria-describedby]="describedBy('moduleTitle')"
                         [attr.aria-invalid]="form.controls.moduleTitle.touched && form.controls.moduleTitle.invalid"
                       />
-                      @if (form.controls.moduleTitle.touched && form.controls.moduleTitle.hasError('maxlength')) {
-                        <small class="form-error" role="alert" [id]="messageId('moduleTitle')">
-                          {{ moduleTitleTooLongMessage }}
-                        </small>
-                      }
                       <!-- track $index, not the message: two model-state entries for one key can carry
                            identical text, and a repeated track expression is a runtime error. -->
-                      @for (message of serverMessages('moduleTitle'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('moduleTitle')) {
+                        <div class="module-settings__messages" [id]="messageId('moduleTitle')" role="alert">
+                          @if (clientMessage('moduleTitle') !== null) {
+                            <small class="form-error">{{ clientMessage('moduleTitle') }}</small>
+                          }
+                          @for (message of serverMessages('moduleTitle'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -146,13 +160,17 @@
                           type="checkbox"
                           formControlName="inheritViewPermissions"
                           [id]="controlId('inheritViewPermissions')"
-                          [attr.aria-describedby]="hintId('permissions')"
+                          [attr.aria-describedby]="describedBy('permissions', 'inheritViewPermissions')"
                         />
                         {{ labels['inheritViewPermissions'] }}
                       </label>
                       <small class="form-help" [id]="hintId('permissions')">{{ hints['permissions'] }}</small>
-                      @for (message of serverMessages('inheritViewPermissions'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('inheritViewPermissions')) {
+                        <div class="module-settings__messages" [id]="messageId('inheritViewPermissions')" role="alert">
+                          @for (message of serverMessages('inheritViewPermissions'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -186,14 +204,18 @@
                       <select
                         formControlName="tabId"
                         [id]="controlId('tabId')"
-                        [attr.aria-describedby]="hintId('tabId')"
+                        [attr.aria-describedby]="describedBy('tabId')"
                       >
                         @for (page of pages; track page.value) {
                           <option [ngValue]="page.value">{{ page.label }}</option>
                         }
                       </select>
-                      @for (message of serverMessages('tabId'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('tabId')) {
+                        <div class="module-settings__messages" [id]="messageId('tabId')" role="alert">
+                          @for (message of serverMessages('tabId'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -208,10 +230,14 @@
                         type="checkbox"
                         formControlName="allTabs"
                         [id]="controlId('allTabs')"
-                        [attr.aria-describedby]="hintId('allTabs')"
+                        [attr.aria-describedby]="describedBy('allTabs')"
                       />
-                      @for (message of serverMessages('allTabs'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('allTabs')) {
+                        <div class="module-settings__messages" [id]="messageId('allTabs')" role="alert">
+                          @for (message of serverMessages('allTabs'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -228,10 +254,14 @@
                         rows="6"
                         formControlName="header"
                         [id]="controlId('header')"
-                        [attr.aria-describedby]="hintId('header')"
+                        [attr.aria-describedby]="describedBy('header')"
                       ></textarea>
-                      @for (message of serverMessages('header'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('header')) {
+                        <div class="module-settings__messages" [id]="messageId('header')" role="alert">
+                          @for (message of serverMessages('header'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -246,10 +276,14 @@
                         rows="6"
                         formControlName="footer"
                         [id]="controlId('footer')"
-                        [attr.aria-describedby]="hintId('footer')"
+                        [attr.aria-describedby]="describedBy('footer')"
                       ></textarea>
-                      @for (message of serverMessages('footer'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('footer')) {
+                        <div class="module-settings__messages" [id]="messageId('footer')" role="alert">
+                          @for (message of serverMessages('footer'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -267,18 +301,20 @@
                         formControlName="startDate"
                         [id]="controlId('startDate')"
                         [maxlength]="limits.startDate"
-                        [attr.aria-describedby]="hintId('startDate')"
+                        [attr.aria-describedby]="describedBy('startDate')"
                         [attr.aria-invalid]="form.controls.startDate.touched && form.controls.startDate.invalid"
                       />
                       <!-- valtxtStartDate (modulesettings.ascx L78), Operator="DataTypeCheck" Type="Date",
                            Display="Dynamic" - so the message occupies no space until it is triggered. -->
-                      @if (form.controls.startDate.touched && form.controls.startDate.hasError('dateDataType')) {
-                        <small class="form-error" role="alert" [id]="messageId('startDate')">
-                          {{ startDateInvalidMessage }}
-                        </small>
-                      }
-                      @for (message of serverMessages('startDate'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('startDate')) {
+                        <div class="module-settings__messages" [id]="messageId('startDate')" role="alert">
+                          @if (clientMessage('startDate') !== null) {
+                            <small class="form-error">{{ clientMessage('startDate') }}</small>
+                          }
+                          @for (message of serverMessages('startDate'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -294,17 +330,19 @@
                         formControlName="endDate"
                         [id]="controlId('endDate')"
                         [maxlength]="limits.endDate"
-                        [attr.aria-describedby]="hintId('endDate')"
+                        [attr.aria-describedby]="describedBy('endDate')"
                         [attr.aria-invalid]="form.controls.endDate.touched && form.controls.endDate.invalid"
                       />
                       <!-- valtxtEndDate (modulesettings.ascx L88), Operator="DataTypeCheck" Type="Date". -->
-                      @if (form.controls.endDate.touched && form.controls.endDate.hasError('dateDataType')) {
-                        <small class="form-error" role="alert" [id]="messageId('endDate')">
-                          {{ endDateInvalidMessage }}
-                        </small>
-                      }
-                      @for (message of serverMessages('endDate'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('endDate')) {
+                        <div class="module-settings__messages" [id]="messageId('endDate')" role="alert">
+                          @if (clientMessage('endDate') !== null) {
+                            <small class="form-error">{{ clientMessage('endDate') }}</small>
+                          }
+                          @for (message of serverMessages('endDate'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -359,10 +397,14 @@
                         formControlName="iconFile"
                         [id]="controlId('iconFile')"
                         [maxlength]="limits.iconFile"
-                        [attr.aria-describedby]="hintId('iconFile')"
+                        [attr.aria-describedby]="describedBy('iconFile')"
                       />
-                      @for (message of serverMessages('iconFile'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('iconFile')) {
+                        <div class="module-settings__messages" [id]="messageId('iconFile')" role="alert">
+                          @for (message of serverMessages('iconFile'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -385,12 +427,22 @@
                       class="module-settings__choices"
                       role="radiogroup"
                       [attr.aria-labelledby]="labelId('visibility')"
-                      [attr.aria-describedby]="hintId('visibility')"
+                      [attr.aria-describedby]="describedBy('visibility')"
                     >
                       @for (choice of visibilityChoices; track choice.value) {
                         <label [for]="choiceId('visibility', $index)">
+                            <!--
+                              ⚠ THE STATIC `name` IS NOT REDUNDANT BESIDE `formControlName`. The reactive
+                              directive groups these inputs in the MODEL, and it deliberately does not write
+                              a `name` attribute into the document — so without one the browser sees three
+                              unrelated radios rather than one group, and the native behaviour every keyboard
+                              and screen-reader user expects is lost: arrow keys stop moving between the
+                              choices and each input takes its own tab stop instead of the group taking one.
+                              The value is the control's own name, so the two cannot drift apart.
+                            -->
                           <input
                             type="radio"
+                            name="visibility"
                             formControlName="visibility"
                             [id]="choiceId('visibility', $index)"
                             [value]="choice.value"
@@ -398,8 +450,12 @@
                           {{ choice.label }}
                         </label>
                       }
-                      @for (message of serverMessages('visibility'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('visibility')) {
+                        <div class="module-settings__messages" [id]="messageId('visibility')" role="alert">
+                          @for (message of serverMessages('visibility'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -414,10 +470,14 @@
                         type="checkbox"
                         formControlName="displayTitle"
                         [id]="controlId('displayTitle')"
-                        [attr.aria-describedby]="hintId('displayTitle')"
+                        [attr.aria-describedby]="describedBy('displayTitle')"
                       />
-                      @for (message of serverMessages('displayTitle'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('displayTitle')) {
+                        <div class="module-settings__messages" [id]="messageId('displayTitle')" role="alert">
+                          @for (message of serverMessages('displayTitle'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -451,17 +511,19 @@
                           formControlName="cacheTime"
                           [id]="controlId('cacheTime')"
                           [maxlength]="limits.cacheTime"
-                          [attr.aria-describedby]="hintId('cacheTime')"
+                          [attr.aria-describedby]="describedBy('cacheTime')"
                           [attr.aria-invalid]="form.controls.cacheTime.touched && form.controls.cacheTime.invalid"
                         />
                         <!-- valCacheTime (modulesettings.ascx L172), Operator="DataTypeCheck" Type="Integer". -->
-                        @if (form.controls.cacheTime.touched && form.controls.cacheTime.hasError('integerDataType')) {
-                          <small class="form-error" role="alert" [id]="messageId('cacheTime')">
-                            {{ cacheTimeInvalidMessage }}
-                          </small>
-                        }
-                        @for (message of serverMessages('cacheTime'); track $index) {
-                          <small class="form-error" role="alert">{{ message }}</small>
+                        @if (hasMessages('cacheTime')) {
+                          <div class="module-settings__messages" [id]="messageId('cacheTime')" role="alert">
+                            @if (clientMessage('cacheTime') !== null) {
+                              <small class="form-error">{{ clientMessage('cacheTime') }}</small>
+                            }
+                            @for (message of serverMessages('cacheTime'); track $index) {
+                              <small class="form-error">{{ message }}</small>
+                            }
+                          </div>
                         }
                       </div>
                     </div>
@@ -499,10 +561,14 @@
                         type="checkbox"
                         formControlName="setAsDefaultSettings"
                         [id]="controlId('setAsDefaultSettings')"
-                        [attr.aria-describedby]="hintId('setAsDefaultSettings')"
+                        [attr.aria-describedby]="describedBy('setAsDefaultSettings')"
                       />
-                      @for (message of serverMessages('setAsDefaultSettings'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('setAsDefaultSettings')) {
+                        <div class="module-settings__messages" [id]="messageId('setAsDefaultSettings')" role="alert">
+                          @for (message of serverMessages('setAsDefaultSettings'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>
@@ -519,10 +585,14 @@
                         type="checkbox"
                         formControlName="applyToAllModules"
                         [id]="controlId('applyToAllModules')"
-                        [attr.aria-describedby]="hintId('applyToAllModules')"
+                        [attr.aria-describedby]="describedBy('applyToAllModules')"
                       />
-                      @for (message of serverMessages('applyToAllModules'); track $index) {
-                        <small class="form-error" role="alert">{{ message }}</small>
+                      @if (hasMessages('applyToAllModules')) {
+                        <div class="module-settings__messages" [id]="messageId('applyToAllModules')" role="alert">
+                          @for (message of serverMessages('applyToAllModules'); track $index) {
+                            <small class="form-error">{{ message }}</small>
+                          }
+                        </div>
                       }
                     </div>
                   </div>

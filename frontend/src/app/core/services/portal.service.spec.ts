@@ -73,6 +73,8 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 
 import { BannerAdvertisingMode, UserRegistrationMode } from '../models/portal.model';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
+import { isContractViolation } from '../utils/decode.util';
 import { DEFAULT_PAGE_SIZE } from '../models/paged-result.model';
 import { PortalService } from './portal.service';
 
@@ -189,7 +191,20 @@ interface FailureDocument {
   readonly title: string;
   readonly status: number;
   readonly detail: string;
+  readonly traceId: string;
+  readonly correlationId: string;
 }
+
+/**
+ * The W3C trace identifier and the pipeline-validated correlation identifier.
+ *
+ * The API attaches BOTH to every problem document, so a fixture omitting them describes a
+ * response it does not send. They are not interchangeable: the correlation identifier is the
+ * value the pipeline validated for this request and the one that appears in the server's log
+ * and on the audit trail, so it is the one a caller should quote.
+ */
+const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
 
 /**
  * Builds a failure document carrying a code, exactly as the API renders one.
@@ -211,6 +226,8 @@ function failureDocument(
     title,
     status,
     detail,
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
   };
 }
 
@@ -409,10 +426,19 @@ function portalSettings(portalId: number): PortalSettings {
  * @param portalId The portal the alias resolves to.
  * @param portalAliasId The alias identifier.
  * @param httpAlias The host name, optionally with a port.
+ * @param isCurrent Whether the request that read the row resolved the tenant through it.
  * @returns The alias.
  */
-function portalAlias(portalId: number, portalAliasId: number, httpAlias: string): PortalAlias {
-  return { portalAliasId, portalId, httpAlias };
+// The current-alias flag defaults to FALSE, which is the answer for every row a fixture
+// builds unless it says otherwise: it is the server's per-request projection, and a
+// helper that defaulted it to true would arrange the withheld case by accident.
+function portalAlias(
+  portalId: number,
+  portalAliasId: number,
+  httpAlias: string,
+  isCurrent = false,
+): PortalAlias {
+  return { portalAliasId, portalId, httpAlias, isCurrent };
 }
 
 /**
@@ -1182,18 +1208,27 @@ describe('PortalService', () => {
       // one thing a caller is supposed to branch on. So the value is written on one
       // side of the wire, recovered on the other, and compared WHOLE.
       //
+      // ⚠️ THE CODE IS `portal.last_remaining`. An earlier revision of this spec asserted
+      // the LEGACY RESOURCE KEY `Portal.LastPortal` as though it were an emittable failure
+      // code. It is not: it is the key of a localised string held in
+      // `Website/App_GlobalResources/SharedResources.resx` and read at
+      // `Library/Components/Portal/PortalController.vb:L200` through
+      // `Localization.GetString("LastPortal")`. Nothing in the API publishes it, so the
+      // whole case was internally consistent and externally false — a client written against
+      // it would branch on a code it could never receive, and the refusal it was supposed to
+      // recognise would fall through to generic handling.
+      //
       // The refusal itself is the migration of a legacy behaviour rather than a new
-      // rule: the legacy member reported it by RETURNING the localised message keyed
-      // `LastPortal` from the shared resources, with an empty string meaning success,
-      // so a caller had to compare display text to learn whether the delete had
-      // happened. Here the outcome is a failure whose stable code is what a caller
-      // branches on and whose message is what a human reads.
-      const legacyResourceKey = 'Portal.LastPortal';
+      // rule: the legacy member reported it by RETURNING that localised message, with an
+      // empty string meaning success, so a caller had to compare display text to learn
+      // whether the delete had happened. Here the outcome is a failure whose stable code is
+      // what a caller branches on and whose message is what a human reads.
+      const emittedCode = 'portal.last_remaining';
       const document = failureDocument(
-        legacyResourceKey,
+        emittedCode,
         409,
         'Conflict',
-        'You Can Not Delete The Last Portal In Your Database.',
+        'You Can Not Delete The Last Portal In Your Database',
       );
 
       const observed = observe(service.delete(PORTAL_ID));
@@ -1202,7 +1237,12 @@ describe('PortalService', () => {
       pending.flush(document, { status: 409, statusText: 'Conflict' });
 
       const failure = soleFailure(observed);
-      expect(failure.status).toBe(409);
+      expect(failure.status)
+        .withContext(
+          'the reason token is `last_remaining`, which the server maps to 409 — the removal ' +
+            'is refused by the STATE of the installation, not by anything wrong with the request',
+        )
+        .toBe(409);
       expect(failure.error as unknown)
         .withContext('the document arrives exactly as written')
         .toEqual(document);
@@ -1210,37 +1250,47 @@ describe('PortalService', () => {
       const recovered = failureCodeOf(failure.error);
       expect(recovered)
         .withContext('the whole dotted identifier survives as one string')
-        .toBe('Portal.LastPortal');
+        .toBe(emittedCode);
       expect(recovered)
         .withContext('and is not reduced to the part after the dot')
-        .not.toBe('LastPortal');
+        .not.toBe('last_remaining');
       expect(recovered?.includes('.'))
         .withContext('the dot is part of the identifier, not a separator that was consumed')
         .toBeTrue();
-      expect(recovered?.length).toBe(legacyResourceKey.length);
+      expect(recovered?.length).toBe(emittedCode.length);
     });
 
-    it('lets the refusal reach the caller under the code the server actually emits', () => {
-      // The live server spells its failure codes in lower case with underscores, and
-      // renders them into the problem type as `urn:dnnmigration:error:<code>`. The
-      // dotted form asserted above is the legacy resource key the refusal descends
-      // from; this case covers the spelling in use, so the dot-integrity guarantee is
-      // not accidentally tied to one taxonomy. Both are single opaque identifiers, and
-      // both must cross unchanged.
+    it('carries the refusal as a COMPLETE document, extensions included', () => {
+      // Every member below is present on every refusal this API emits: `ApiResults.Problem`
+      // supplies the type, status and detail, and `ValidationProblemDetailsFactory` then
+      // fills the title from its per-status vocabulary and attaches the trace and
+      // correlation identifiers. A fixture missing any of them would let a consumer that
+      // depended on a missing member pass here and fail against the real server — most
+      // consequentially the support reference, which is read from `correlationId` first and
+      // falls back to `traceId`.
       const document = failureDocument(
         'portal.last_remaining',
         409,
         'Conflict',
-        'You Can Not Delete The Last Portal In Your Database. The installation must retain at least one portal.',
+        'You Can Not Delete The Last Portal In Your Database',
       );
 
       const observed = observe(service.delete(PORTAL_ID));
 
       httpMock.expectOne(PORTAL_URL).flush(document, { status: 409, statusText: 'Conflict' });
 
-      const failure = soleFailure(observed);
-      expect(failure.status).toBe(409);
-      expect(failureCodeOf(failure.error)).toBe('portal.last_remaining');
+      const body = soleFailure(observed).error as FailureDocument;
+
+      expect(body.type).toBe('urn:dnnmigration:error:portal.last_remaining');
+      expect(body.title)
+        .withContext('the title names the class of failure and is derived from the status alone')
+        .toBe('Conflict');
+      expect(body.status)
+        .withContext('the body agrees with the transport, as a real response does')
+        .toBe(409);
+      expect(body.detail.length).toBeGreaterThan(0);
+      expect(body.traceId).toBe(TRACE_ID);
+      expect(body.correlationId).toBe(CORRELATION_ID);
     });
   });
 
@@ -1451,7 +1501,14 @@ describe('PortalService', () => {
   });
 
   describe('updateAlias', () => {
-    it('puts the alias to its own address and completes on 200', () => {
+    it('puts the alias to its own address and completes on a 204 with no body', () => {
+      // ⚠️ THE ENDPOINT ANSWERS 204, NOT 200. The action reports its outcome through
+      // `ApiResults.Complete(Result)`, whose success arm is `NoContent()` — and HTTP forbids
+      // a 204 from carrying a body at all, so there is no envelope to unwrap and none is
+      // looked for. An earlier revision of this spec flushed a 200, which is a status this
+      // action cannot produce; the two happen to behave alike through a `void`-typed
+      // observable, which is exactly what makes the wrong fixture invisible until a consumer
+      // starts distinguishing them.
       const request = updatePortalAliasRequest();
 
       const observed = observe(service.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, request));
@@ -1462,13 +1519,43 @@ describe('PortalService', () => {
       expect(pending.request.body)
         .withContext('the body is the request the caller composed')
         .toEqual(request);
+      expect(pending.request.responseType)
+        .withContext('a JSON response type is declared even though nothing comes back')
+        .toBe('json');
 
-      pending.flush(null, { status: 200, statusText: 'OK' });
+      pending.flush(null, { status: 204, statusText: 'No Content' });
 
       // The member returns no payload, so there is nothing to unwrap and nothing to
       // assert beyond the request and the completion.
       expect(observed.isComplete()).toBeTrue();
       expect(observed.failures).toEqual([]);
+      expect(observed.values)
+        .withContext('a payload-free success emits the null body and nothing else')
+        .toEqual([null as never]);
+    });
+
+    it('lets a duplicate-alias refusal reach the caller as the 409 it is', () => {
+      // `portal.alias_duplicate` carries the `duplicate` token, which the server's mapping
+      // classifies as a conflict: the request is well formed and the STATE of the tenant
+      // declines it, so renaming the alias makes the identical request succeed.
+      const document = failureDocument(
+        'portal.alias_duplicate',
+        409,
+        'Conflict',
+        'The Portal Alias Name You Specified Already Exists. Please Choose A Different Portal Alias.',
+      );
+
+      const observed = observe(
+        service.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, updatePortalAliasRequest()),
+      );
+
+      httpMock
+        .expectOne(PORTAL_ALIAS_URL)
+        .flush(document, { status: 409, statusText: 'Conflict' });
+
+      const failure = soleFailure(observed);
+      expect(failure.status).toBe(409);
+      expect(failureCodeOf(failure.error)).toBe('portal.alias_duplicate');
     });
   });
 
@@ -1574,6 +1661,240 @@ describe('PortalService', () => {
           .withContext('every member completes on its success response')
           .toBeTrue();
         expect(observed.failures).toEqual([]);
+      }
+    });
+  });
+  // -------------------------------------------------------------------------
+  // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
+  //
+  // `http.get<PortalDetail>(…)` compiles to `http.get(…)`: the interface is erased and
+  // nothing inspects the body. Every case below flushes a body the server would never
+  // send and requires the OBSERVABLE TO FAIL at the transport boundary, naming the member
+  // — because the alternative is a blank field, a `NaN` or a silently empty grid surfacing
+  // several layers away from the response that caused it, with no way back to this seam.
+  //
+  // The violation names the member path and the expected type and NEVER the offending
+  // value, so a report cannot carry portal data into a log.
+  // -------------------------------------------------------------------------
+  describe('refuses a response that does not match its contract', () => {
+    /**
+     * Asserts that a pending request answered with `body` fails with a contract violation
+     * naming `path`.
+     *
+     * @param observed The observation of the call under test.
+     * @param pending The request the call issued.
+     * @param body The malformed body to answer with.
+     * @param path The member path the violation must name.
+     */
+    function expectViolationAt(
+      observed: Observed<unknown>,
+      pending: TestRequest,
+      body: object,
+      path: string,
+    ): void {
+      pending.flush(body);
+
+      expect(observed.values).toEqual([]);
+      expect(observed.failures.length).toBe(1);
+
+      const failure: unknown = observed.failures[0];
+
+      expect(isContractViolation(failure))
+        .withContext('a contract violation, not an HTTP error and not a raw TypeError')
+        .toBeTrue();
+
+      if (isContractViolation(failure)) {
+        expect(failure.path).toBe(path);
+        expect(failure.received)
+          .withContext('a type name, never the value')
+          .not.toContain('Contoso');
+      }
+    }
+
+    it('refuses a page with no metadata rather than reporting an empty first page', () => {
+      // ⚠ THE WORST AVAILABLE FAILURE MODE, WHICH THIS PREVENTS. A page whose metadata is
+      // absent used to normalise to a total of zero and no rows: a SUCCESSFUL response
+      // stating that the installation has no portals. An operator would conclude the
+      // records were gone.
+      const observed = observe<unknown>(service.list({}));
+
+      expectViolationAt(observed, httpMock.expectOne(PORTALS_URL), { items: [] }, 'response.meta');
+    });
+
+    it('refuses a page whose items member is absent', () => {
+      const observed = observe<unknown>(service.list({}));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTALS_URL),
+        { meta: { totalCount: 0, pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE, totalPages: 0 } },
+        'response.items',
+      );
+    });
+
+    it('refuses a listed row whose count arrived as text', () => {
+      const observed = observe<unknown>(service.list({}));
+      const malformed = { ...portalListItem(PORTAL_ID, 'Contoso'), users: '12' };
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTALS_URL),
+        { ...portalListBody([], 0, DEFAULT_PAGE_SIZE, 1), items: [malformed] },
+        'response.items[0].users',
+      );
+    });
+
+    it('refuses a detail whose identifier is absent', () => {
+      // Absence is refused rather than defaulted. `0` and `-1` are both real portal
+      // identifiers here, so there is no value a missing identifier could safely become.
+      const observed = observe<unknown>(service.getById(PORTAL_ID));
+      const malformed: Record<string, unknown> = { ...portalDetail(PORTAL_ID) };
+
+      delete malformed['portalId'];
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_URL),
+        envelope(malformed),
+        'response.data.portalId',
+      );
+    });
+
+    it('refuses a registration mode outside the published code table', () => {
+      // ⚠ ZERO IS THE PERMISSIVE MEMBER, WHICH IS WHY THIS IS REFUSED RATHER THAN COERCED.
+      // Coercing an unknown code to `NoRegistration` would present a portal as accepting
+      // no registrations on the strength of a code this client simply did not recognise.
+      const observed = observe<unknown>(service.getById(PORTAL_ID));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_URL),
+        envelope({ ...portalDetail(PORTAL_ID), userRegistration: 99 }),
+        'response.data.userRegistration',
+      );
+    });
+
+    it('refuses a detail whose envelope carries the payload at the top level', () => {
+      // The quietest defect this decoding exists to catch: a body that is a valid portal
+      // but is NOT wrapped. Every member would have read as `undefined` behind a 200.
+      //
+      // The `data` member is what catches it, and it is the precise diagnosis: the payload
+      // is missing from where the envelope declares it. The envelope's `meta` is NOT what
+      // refuses this — an absent `meta` is tolerated, because it is framing the caller never
+      // sees and refusing an otherwise perfect payload over a discarded member would make
+      // this client a blocker on a legitimate serialiser change. A PAGE's metadata is
+      // required, because there the total and the coordinates are the page itself.
+      const observed = observe<unknown>(service.getById(PORTAL_ID));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_URL),
+        portalDetail(PORTAL_ID),
+        'response.data',
+      );
+    });
+
+    it('refuses an alias list that is not an array', () => {
+      const observed = observe<unknown>(service.listAliases(PORTAL_ID));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_ALIASES_URL),
+        envelope({ portalAliasId: PORTAL_ALIAS_ID }),
+        'response.data',
+      );
+    });
+
+    it('refuses an alias whose host name arrived as a number', () => {
+      const observed = observe<unknown>(service.getAlias(PORTAL_ID, PORTAL_ALIAS_ID));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_ALIAS_URL),
+        envelope({ ...portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost'), httpAlias: 8080 }),
+        'response.data.httpAlias',
+      );
+    });
+
+    it('accepts a null host name, because the read projection publishes it as nullable', () => {
+      // The counterpart case, so that the decoders are shown to admit what the contract
+      // actually declares rather than merely to reject. `httpAlias` is nullable on the read
+      // projection and non-nullable on both request contracts, which is exactly why the
+      // three alias types are declared separately.
+      const observed = observe(service.getAlias(PORTAL_ID, PORTAL_ALIAS_ID));
+
+      httpMock
+        .expectOne(PORTAL_ALIAS_URL)
+        .flush(
+          envelope({
+            portalAliasId: PORTAL_ALIAS_ID,
+            portalId: PORTAL_ID,
+            httpAlias: null,
+            isCurrent: false,
+          }),
+        );
+
+      expect(observed.failures).toEqual([]);
+      expect(observed.values).toEqual([
+        { portalAliasId: PORTAL_ALIAS_ID, portalId: PORTAL_ID, httpAlias: null, isCurrent: false },
+      ]);
+    });
+
+    it('ignores a member the server added that this client does not declare', () => {
+      // Additive server changes must not turn every client into a blocker. What matters is
+      // that everything this client READS is what this client declared.
+      const observed = observe(service.getById(PORTAL_ID));
+
+      httpMock
+        .expectOne(PORTAL_URL)
+        .flush(envelope({ ...portalDetail(PORTAL_ID), someMemberAddedLater: 'ignored' }));
+
+      expect(observed.failures).toEqual([]);
+      expect(observed.values).toEqual([portalDetail(PORTAL_ID)]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHO ANNOUNCES A FAILURE
+  //
+  // Every request is marked as presented by its caller, which is what stops one failure
+  // being shown twice — once as the interceptor's transient notification and once as the
+  // caller's own in-page banner or legacy-worded message. The interceptor still re-throws;
+  // it only stays silent.
+  // -------------------------------------------------------------------------
+  describe('marks every request as presented by its caller', () => {
+    it('marks every one of the twelve operations', () => {
+      service.list({}).subscribe({ error: () => undefined });
+      service.getById(PORTAL_ID).subscribe({ error: () => undefined });
+      service.create(createPortalRequest()).subscribe({ error: () => undefined });
+      service.update(PORTAL_ID, updatePortalRequest()).subscribe({ error: () => undefined });
+      service.delete(PORTAL_ID).subscribe({ error: () => undefined });
+      service.getSettings(PORTAL_ID).subscribe({ error: () => undefined });
+      service
+        .updateSettings(PORTAL_ID, updatePortalSettingsRequest())
+        .subscribe({ error: () => undefined });
+      service.listAliases(PORTAL_ID).subscribe({ error: () => undefined });
+      service
+        .createAlias(PORTAL_ID, createPortalAliasRequest())
+        .subscribe({ error: () => undefined });
+      service.getAlias(PORTAL_ID, PORTAL_ALIAS_ID).subscribe({ error: () => undefined });
+      service
+        .updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, updatePortalAliasRequest())
+        .subscribe({ error: () => undefined });
+      service.deleteAlias(PORTAL_ID, PORTAL_ALIAS_ID).subscribe({ error: () => undefined });
+
+      const issued: readonly TestRequest[] = httpMock.match(() => true);
+
+      expect(issued.length).toBe(12);
+
+      for (const pending of issued) {
+        expect(pending.request.context.get(PRESENTED_IN_CONTEXT))
+          .withContext(`${pending.request.method} ${pending.request.urlWithParams} is unmarked`)
+          .toBeTrue();
+      }
+
+      for (const pending of issued) {
+        pending.flush(null, { status: 500, statusText: 'Server Error' });
       }
     });
   });

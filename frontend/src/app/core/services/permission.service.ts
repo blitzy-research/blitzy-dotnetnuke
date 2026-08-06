@@ -86,9 +86,26 @@ import { Injectable, inject } from '@angular/core';
 import type { Observable } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
+import { decodePermission } from '../models/permission.model';
+import { arrayOf, decodeResponse, decodeString, responseOf } from '../utils/decode.util';
+import { presentedInContext } from './notification.service';
+import { map } from 'rxjs';
+
+import type { Decoder } from '../utils/decode.util';
 import type { Permission } from '../models/permission.model';
 import type { ApiResponse } from '../models/paged-result.model';
 import { permissionListParams, type PermissionListFilter } from '../utils/http-params.util';
+
+/**
+ * One decoder per response shape this transport reads, composed once at module scope.
+ *
+ * Both are built with `responseOf` rather than `envelopeOf` because the published signatures of
+ * the methods below RETURN THE ENVELOPE, and validating must not change the shape they return.
+ */
+const PERMISSION_KEY_LIST_RESPONSE: Decoder<ApiResponse<readonly string[]>> = responseOf(
+  arrayOf(decodeString),
+);
+const PERMISSION_RESPONSE: Decoder<ApiResponse<Permission>> = responseOf(decodePermission);
 
 /**
  * Reads the permission catalogue: which permission keys this installation defines.
@@ -203,10 +220,12 @@ export class PermissionService {
     // concatenation, by hand-written separators or by a URL-search-parameter object — would
     // be a second implementation of a rule that has already been measured against the
     // server's binder.
-    return this.http.get<ApiResponse<readonly string[]>>(
-      API_ENDPOINTS.permissions.collection(),
-      { params: permissionListParams(filter) },
-    );
+    return this.http
+      .get<unknown>(API_ENDPOINTS.permissions.collection(), {
+        params: permissionListParams(filter),
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PERMISSION_KEY_LIST_RESPONSE, body)));
   }
 
   /**
@@ -239,8 +258,10 @@ export class PermissionService {
    * standing, and 404 when no definition bears that identifier.
    */
   getById(permissionId: number): Observable<ApiResponse<Permission>> {
-    return this.http.get<ApiResponse<Permission>>(
-      API_ENDPOINTS.permissions.byId(permissionId),
-    );
+    return this.http
+      .get<unknown>(API_ENDPOINTS.permissions.byId(permissionId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PERMISSION_RESPONSE, body)));
   }
 }

@@ -58,6 +58,7 @@ import {
 } from '@angular/core';
 import type { Signal, WritableSignal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import type { Subscription } from 'rxjs';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -905,6 +906,23 @@ export class RoleFormComponent {
   // LOCAL STATE
   // -------------------------------------------------------------------------
 
+  /**
+   * The role read in flight, held so that a NEW read can cancel the one it replaces.
+   *
+   * Destruction-time cleanup alone was not enough. Both edit visits resolve to the SAME route
+   * configuration, so moving from one role to another re-runs the effect below WITHOUT the component
+   * being recreated - which is precisely the case `takeUntilDestroyed` cannot cover. A slow answer for
+   * the role just left would then hydrate the form over the role now addressed, and because hydration
+   * marks the form pristine the user would have no indication that the values on screen belong to
+   * something else. Cancelling the previous read first makes that impossible: unsubscribing abandons the
+   * exchange and detaches this observer, so a late answer reaches nothing.
+   *
+   * Only the READ is replaced this way. The three writes are never cancelled by a later request, because
+   * cancelling one would only stop this client listening while leaving whatever the server committed
+   * unreported - see the note on {@link RoleFormComponent.destroyRef}.
+   */
+  private roleRequest: Subscription | null = null;
+
   /** The role currently loaded, or `null` in creation mode and before the first response. */
   private readonly loadedRole: WritableSignal<Role | null> = signal<Role | null>(null);
 
@@ -1465,18 +1483,27 @@ export class RoleFormComponent {
    * @param key The role id, which may legitimately be `0`.
    */
   private loadRole(key: number): void {
+    this.roleRequest?.unsubscribe();
     this.loadingRole.set(true);
     this.failure.set(null);
 
-    this.roleService
+    this.roleRequest = this.roleService
       .getRole(key)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (response) => {
+          if (this.addressChanged(key)) {
+            return;
+          }
+          this.roleRequest = null;
           this.loadingRole.set(false);
           this.applyRole(response.data);
         },
         error: (error: unknown) => {
+          if (this.addressChanged(key)) {
+            return;
+          }
+          this.roleRequest = null;
           this.loadingRole.set(false);
           // `:L170-L172` treated an unreadable role as an attempt to reach an item outside the
           // module and bounced to the Security Roles page. A missing role does the same here.
@@ -1488,6 +1515,25 @@ export class RoleFormComponent {
           this.reportFailure(error, LOAD_FAILED_MESSAGE);
         },
       });
+  }
+
+  /**
+   * Whether the route has moved to a different role since a read was started.
+   *
+   * The fence is KEYED on the role rather than counted, because the key is the identity: an answer is
+   * adopted when it describes the role now addressed and dropped when it does not, which is the same
+   * test whether the route moved once or several times while the answer was in flight. Cancelling the
+   * superseded read already stops it arriving; this is the second fence, and it is the one that holds
+   * for anything that arrives regardless - a redirect the reporting path performs, or a retry.
+   *
+   * Compared with an exact `!==` on a value that may legitimately be ZERO, since the role table's
+   * identity seeds at zero and a truthiness test would read the first role of every tenant as absent.
+   *
+   * @param key The role the read was issued for.
+   * @returns `true` when the answer must be ignored.
+   */
+  private addressChanged(key: number): boolean {
+    return this.roleKey() !== key;
   }
 
   /**

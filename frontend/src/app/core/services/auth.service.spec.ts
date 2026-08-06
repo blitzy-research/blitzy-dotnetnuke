@@ -98,6 +98,10 @@ import { firstValueFrom } from 'rxjs';
 
 import type { AuthSession, CurrentUser, LoginRequest, LoginResponse } from '../models/auth.model';
 import { AuthService } from './auth.service';
+// A value import, unlike the type-only import above: the session-lifecycle specifications
+// resolve the real custodian from the injector in order to read the auth epoch and to drive
+// session transitions directly, which is what puts a late result on the wrong side of one.
+import { TokenStorageService } from './token-storage.service';
 
 // ---------------------------------------------------------------------------
 // THE FOUR ADDRESSES — the entire authentication surface, as literals
@@ -188,6 +192,7 @@ function currentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
     displayName: 'Administrator',
     email: 'admin@example.test',
     isSuperUser: false,
+    isPortalAdministrator: false,
     roles: ['Administrators'],
     permissions: ['VIEW'],
     ...overrides,
@@ -441,23 +446,58 @@ describe('AuthService', () => {
   });
 
   describe('holds no credential store of its own', () => {
-    it('publishes exactly three derived session values and keeps no fourth field', () => {
+    it('publishes exactly three derived session values and caches no credential', () => {
       // Custody belongs to the dedicated collaborator, which holds the session in memory
-      // only. The three values below are projections of it, re-published so a consumer
+      // only. Three of the values below are projections of it, re-published so a consumer
       // needs one injection rather than two — sign-in returns the identity rather than the
       // session, so without them the server's advisory flags would have no reader at all.
       //
       // Pinning the instance field surface is what makes "no credential store of its own"
       // checkable: a cached identity, a duplicated credential or a bespoke session flag
       // added later would appear here and fail.
+      //
+      // `revocationOutstanding` and its backing signal report whether the LAST sign-out
+      // managed to withdraw its renewal credential on the server. They are admitted here
+      // deliberately, and they are a BOOLEAN rather than a credential: reporting that a
+      // withdrawal is unconfirmed is the whole point — the previous behaviour reported a
+      // clean sign-out while the credential was still live — and a boolean cannot be
+      // replayed against the server by anything that reads it.
       expect(Object.keys(service).sort()).toEqual([
+        '_revocationOutstanding',
         'currentUser',
         'http',
         'isAuthenticated',
         'mustUpdateProfile',
+        'notifications',
         'refreshInFlight',
+        'revocationOutstanding',
         'tokenStorage',
       ]);
+    });
+
+    it('holds no field whose value is a credential', async () => {
+      // ⚠ THE INVARIANT ITSELF, ASSERTED ON VALUES RATHER THAN ON NAMES. The list above pins
+      // the surface, but it cannot say what the surface HOLDS — a field admitted for one
+      // reason could later be assigned a credential without the list changing at all. This
+      // reads every own value after a real sign-in and a failed sign-out, the two moments a
+      // credential is in play, and requires that none of them is either token.
+      await completeSignIn();
+
+      const credentials = [FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN];
+
+      const pending = firstValueFrom(service.logout());
+
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush({ title: 'Server Error', status: 500 }, { status: 500, statusText: 'Server Error' });
+
+      await pending;
+
+      for (const [name, held] of Object.entries(service)) {
+        if (typeof held === 'string') {
+          expect(credentials).withContext(name).not.toContain(held);
+        }
+      }
     });
 
     it('reports no session before a sign-in', () => {
@@ -712,6 +752,221 @@ describe('AuthService', () => {
     });
   });
 
+  /**
+   * The session-lifecycle races.
+   *
+   * Every specification here describes a sequence that a real operator can produce with two
+   * clicks, and every one of them corrupted shared session state before the auth epoch
+   * existed. They are grouped together because they share one mechanism: a captured epoch
+   * compared before any write to the token custodian.
+   *
+   * The shape is always the same — start asynchronous work, perform a session transition
+   * while it is in the air, THEN answer the pending request — because that ordering is what
+   * puts the late result on the wrong side of the transition. `httpMock` makes the ordering
+   * exact rather than probabilistic, which is what makes these tests deterministic where a
+   * timing-based reproduction would be flaky.
+   */
+  describe('session-lifecycle races', () => {
+    /** The epoch counter, read through the same custodian the service writes to. */
+    function generation(): number {
+      return TestBed.inject(TokenStorageService).generation();
+    }
+
+    // ⚠ THE RESURRECTION RACE. A renewal in flight when a sign-out lands used to store its
+    // rotated pair on arrival, handing the operator back a live session - with a fresh
+    // seven-day renewal credential - immediately after they had ended it.
+    it('does not resurrect a signed-out session when a renewal lands afterwards', async () => {
+      await completeSignIn();
+
+      const tokenStorage = TestBed.inject(TokenStorageService);
+      const renewal = rejectionOf(firstValueFrom(service.refresh()));
+      const sent = httpMock.expectOne(REFRESH_URL);
+
+      // The sign-out lands while the renewal is in the air.
+      const signOut = firstValueFrom(service.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
+      await signOut;
+
+      expect(tokenStorage.session())
+        .withContext('sign-out discarded the session')
+        .toBeNull();
+
+      // Only now does the renewal succeed.
+      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
+      await renewal;
+
+      expect(tokenStorage.session())
+        .withContext('the late renewal must NOT reinstate the session')
+        .toBeNull();
+      expect(tokenStorage.refreshToken())
+        .withContext('and must not leave a live renewal credential behind')
+        .toBeNull();
+    });
+
+    // ⚠ THE MIRROR RACE. A renewal REFUSED after a new sign-in used to clear the new
+    // session - signing an operator out because a credential they no longer held was
+    // rejected.
+    it('does not clear a newer session when an older renewal is refused', async () => {
+      await completeSignIn();
+
+      const tokenStorage = TestBed.inject(TokenStorageService);
+      const renewal = rejectionOf(firstValueFrom(service.refresh()));
+      const sent = httpMock.expectOne(REFRESH_URL);
+
+      // A fresh sign-in establishes a different session while the renewal is in the air.
+      await completeSignIn('fake-access-token-second-session', 'fake-renewal-token-second');
+
+      expect(tokenStorage.accessToken()).toBe('fake-access-token-second-session');
+
+      sent.flush({ title: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
+      await renewal;
+
+      expect(tokenStorage.accessToken())
+        .withContext('the newer session survives the older renewal being refused')
+        .toBe('fake-access-token-second-session');
+      expect(tokenStorage.refreshToken()).toBe('fake-renewal-token-second');
+    });
+
+    // The same mirror race, but where the transition is a sign-out rather than a sign-in.
+    // Here clearing is harmless because nothing is held - what matters is that the outcome
+    // is still "signed out" and the caller still learns the renewal failed.
+    it('reports the renewal failure to its caller even when the session already ended', async () => {
+      await completeSignIn();
+
+      const renewal = rejectionOf(firstValueFrom(service.refresh()));
+      const sent = httpMock.expectOne(REFRESH_URL);
+
+      TestBed.inject(TokenStorageService).clear();
+
+      sent.flush({ title: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
+
+      expect(await renewal)
+        .withContext('suppressing the WRITE must not suppress the ANSWER')
+        .not.toBeNull();
+    });
+
+    // ⚠ THE LATE ACCOUNT SWITCH. Sign-in A landing after sign-in B established its session
+    // used to overwrite B - silently returning the operator to the account they had just
+    // switched away from.
+    it('does not overwrite a newer sign-in with an older one that lands late', async () => {
+      const tokenStorage = TestBed.inject(TokenStorageService);
+
+      // Attempt A is started and its credential exchange answered, but its identity read is
+      // deliberately left pending so the attempt cannot complete yet.
+      const first = rejectionOf(
+        firstValueFrom(service.login({ username: 'first', password: FAKE_PASSWORD })),
+      );
+
+      httpMock
+        .expectOne(LOGIN_URL)
+        .flush(credentialResponse('fake-access-token-a', 'fake-renewal-token-a'));
+
+      const pendingIdentityA = httpMock.expectOne(ME_URL);
+
+      // Attempt B runs to completion in the meantime.
+      await completeSignIn('fake-access-token-b', 'fake-renewal-token-b');
+      expect(tokenStorage.accessToken()).toBe('fake-access-token-b');
+
+      // Only now does A's identity read answer, completing A.
+      pendingIdentityA.flush(identityResponse(currentUser()));
+      await first;
+
+      expect(tokenStorage.accessToken())
+        .withContext("attempt A must not displace attempt B's session")
+        .toBe('fake-access-token-b');
+      expect(tokenStorage.refreshToken()).toBe('fake-renewal-token-b');
+    });
+
+    // ⚠ THE LATE FAILED SWITCH. Sign-in A being REFUSED after sign-in B succeeded used to
+    // clear B - so an operator whose own sign-in worked was signed out by somebody else's
+    // failure, or by their own abandoned first attempt.
+    it('does not clear a newer session when an older sign-in is refused', async () => {
+      const tokenStorage = TestBed.inject(TokenStorageService);
+
+      const first = rejectionOf(
+        firstValueFrom(service.login({ username: 'first', password: FAKE_PASSWORD })),
+      );
+      const pendingLoginA = httpMock.expectOne(LOGIN_URL);
+
+      await completeSignIn('fake-access-token-b', 'fake-renewal-token-b');
+
+      pendingLoginA.flush({ title: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
+      await first;
+
+      expect(tokenStorage.accessToken())
+        .withContext("the refused attempt must not clear the successful attempt's session")
+        .toBe('fake-access-token-b');
+    });
+
+    // The slot-release rule is identity-based rather than epoch-based, and this is why: a
+    // renewal that settles after a sign-out must still release the shared slot, or the slot
+    // stays occupied by a settled observable and no future renewal can ever start.
+    it('frees the shared renewal slot even when the renewal was obsoleted', async () => {
+      await completeSignIn();
+
+      const obsoleted = rejectionOf(firstValueFrom(service.refresh()));
+      const sent = httpMock.expectOne(REFRESH_URL);
+
+      TestBed.inject(TokenStorageService).clear();
+
+      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
+      await obsoleted;
+
+      // A brand-new session, then a renewal: it must issue a REAL request rather than being
+      // handed the settled outcome of the obsolete one.
+      await completeSignIn('fake-access-token-c', 'fake-renewal-token-c');
+
+      const fresh = firstValueFrom(service.refresh());
+      const second = httpMock.expectOne(REFRESH_URL);
+
+      expect(second.request.body)
+        .withContext('a genuinely new renewal, presenting the current credential')
+        .toEqual({ refreshToken: 'fake-renewal-token-c' });
+
+      second.flush(credentialResponse('fake-access-token-d', 'fake-renewal-token-d'));
+      answerIdentityBootstrap('fake-access-token-d');
+      await fresh;
+    });
+
+    describe('the auth epoch itself', () => {
+      it('advances when a session is stored', async () => {
+        const before = generation();
+
+        await completeSignIn();
+
+        expect(generation()).toBeGreaterThan(before);
+      });
+
+      it('advances on a clear even when no session was held', () => {
+        const tokenStorage = TestBed.inject(TokenStorageService);
+        const before = generation();
+
+        tokenStorage.clear();
+
+        // Load-bearing: two clears in succession must both advance, or work started between
+        // them would observe a matching epoch and commit against an ended session.
+        expect(generation()).toBe(before + 1);
+
+        tokenStorage.clear();
+
+        expect(generation()).toBe(before + 2);
+      });
+
+      it('reports a captured value as current until a transition occurs', () => {
+        const tokenStorage = TestBed.inject(TokenStorageService);
+        const captured = generation();
+
+        expect(tokenStorage.isCurrentGeneration(captured)).toBeTrue();
+
+        tokenStorage.clear();
+
+        expect(tokenStorage.isCurrentGeneration(captured)).toBeFalse();
+      });
+    });
+  });
+
   describe('logout', () => {
     it('answers 204 with an empty body and still completes', async () => {
       await completeSignIn();
@@ -735,10 +990,15 @@ describe('AuthService', () => {
       await pending;
     });
 
-    it('completes successfully even when revocation fails', async () => {
-      // A person who asks to sign out must end up signed out on this device. Surfacing the
-      // failure would be the opposite of what they asked for, and they could not act on it.
+    it('completes successfully even when revocation fails, and says so', async () => {
+      // A person who asks to sign out must end up signed out ON THIS DEVICE whatever the
+      // server answers, so the stream still resolves and the session is still gone. What
+      // changed is that the failure is no longer DISCARDED as well as absorbed: a 500, a 503
+      // or a dropped connection means the renewal credential is still live on the server for
+      // its full lifetime, and reporting a clean sign-out in that case was a false claim.
       await completeSignIn();
+
+      expect(service.revocationOutstanding()).toBeFalse();
 
       const pending = firstValueFrom(service.logout());
 
@@ -748,6 +1008,42 @@ describe('AuthService', () => {
 
       await expectAsync(pending).toBeResolved();
       expect(service.isAuthenticated()).toBeFalse();
+      expect(service.revocationOutstanding())
+        .withContext('an unconfirmed withdrawal must be reported, not hidden')
+        .toBeTrue();
+    });
+
+    it('retries nothing when revocation fails', async () => {
+      // ⚠ RE-ASSERTS A PINNED INVARIANT AGAINST THE OBVIOUS FIX. Reporting a failed
+      // withdrawal invites folding a retry in beside it, and a retry in THIS service is
+      // exactly the orchestration creep this specification exists to catch — it would also
+      // require caching the renewal credential in a field so a later attempt could re-send
+      // it. One refused request must therefore produce one request and not one more.
+      await completeSignIn();
+
+      const pending = firstValueFrom(service.logout());
+
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush({ title: 'Too Many Requests', status: 429 }, { status: 429, statusText: 'Too Many Requests' });
+
+      await expectAsync(pending).toBeResolved();
+
+      httpMock.expectNone(LOGOUT_URL);
+      expect(service.revocationOutstanding()).toBeTrue();
+    });
+
+    it('reports a confirmed withdrawal as confirmed', async () => {
+      // The positive control for the flag: it must not latch true for every sign-out.
+      await completeSignIn();
+
+      const pending = firstValueFrom(service.logout());
+
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
+
+      await pending;
+
+      expect(service.revocationOutstanding()).toBeFalse();
     });
 
     it('issues no request when there is no session to end', async () => {

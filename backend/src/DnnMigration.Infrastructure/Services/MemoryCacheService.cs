@@ -365,13 +365,25 @@ internal sealed class MemoryCacheService : ICacheService
     /// callers requesting one key as two different shapes are kept apart.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The shape forms part of the identity because coalescing is only ever correct for callers
     /// that are genuinely asking for the same thing. Two callers wanting the same key as two
     /// different shapes are not, and joining them would deliver one of them a value it cannot
     /// hold - intermittently, decided purely by arrival order. The default comparer for this
     /// composite compares the key ordinally, matching the tracked-key registry.
+    /// </para>
+    /// <para>
+    /// The VALUE is a <see cref="SharedCreation"/> rather than the shared task itself, and that
+    /// indirection is what makes every removal from this dictionary identity-fenced. A key and a
+    /// shape identify a SLOT; they do not identify the particular creation occupying it, because a
+    /// retired creation is replaced by a later one under exactly the same pair. Removing by the pair
+    /// alone therefore lets a finishing creation delete its own SUCCESSOR'S registration, which
+    /// re-opens the door to duplicate loads the coalescing exists to close. Holding the creation
+    /// gives every removal below a value to compare against, and gives the retirement path something
+    /// to mark and cancel.
+    /// </para>
     /// </remarks>
-    private readonly ConcurrentDictionary<(string Key, Type ValueType), Lazy<Task<object?>>> _inFlightLoads = new();
+    private readonly ConcurrentDictionary<(string Key, Type ValueType), SharedCreation> _inFlightLoads = new();
 
     /// <summary>
     /// Every key this service has written and not yet evicted. The value is unused - this is a
@@ -769,11 +781,26 @@ internal sealed class MemoryCacheService : ICacheService
         // creation bound to one caller's lifetime lets that caller's withdrawal cancel work other
         // callers are waiting on, so a healthy caller would surface a cancellation it never asked
         // for. Isolation is enforced here, at the single point where the shared work is started.
-        Lazy<Task<object?>> load = _inFlightLoads.GetOrAdd(
+        //
+        // The creation is handed ITSELF so that the work it performs can identify the registration it
+        // owns. Both removals - the retirement below and the release in the creation's own finally -
+        // then compare that identity, so neither can delete a registration it does not own.
+        SharedCreation creation = _inFlightLoads.GetOrAdd(
             registration,
-            _ => new Lazy<Task<object?>>(
-                () => LoadAndCacheAsync(key, factory, expiration),
-                LazyThreadSafetyMode.ExecutionAndPublication));
+            _ =>
+            {
+                SharedCreation created = new();
+
+                // Assigned immediately, and before the value is published to the dictionary, so no
+                // caller can observe a creation whose work is not yet reachable. A losing thread's
+                // allocation is discarded by GetOrAdd with its work never started, because the work
+                // is lazy.
+                created.Work = new Lazy<Task<object?>>(
+                    () => LoadAndCacheAsync(key, factory, expiration, registration, created),
+                    LazyThreadSafetyMode.ExecutionAndPublication);
+
+                return created;
+            });
 
         object? produced;
 
@@ -783,7 +810,7 @@ internal sealed class MemoryCacheService : ICacheService
             // WaitAsync gives this caller its own cancellation without disturbing the shared work,
             // and a budget besides: the creation is bound to no caller's lifetime, so without one
             // a caller could wait on it indefinitely.
-            produced = await load.Value
+            produced = await creation.Work.Value
                 .WaitAsync(SharedCreationBudget, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -792,17 +819,31 @@ internal sealed class MemoryCacheService : ICacheService
             // The creation has outrun its budget, which means a factory that is not observing the
             // token it was handed. Retiring the registration is the part that matters: left in
             // place it would be joined by every later caller for this key, so one stalled load
-            // would become a permanent refusal to serve that key at all. The comparing overload is
-            // used so that a REPLACEMENT registration - one a later caller may already have
-            // started - is never mistaken for this one and removed.
+            // would become a permanent refusal to serve that key at all.
+            //
+            // MIGRATION: net-new, and the three parts of this retirement are separable defects if any
+            // one of them is dropped. RETIREMENT IS ANNOUNCED TO THE CREATION FIRST, which does two
+            // things a bare removal did not. It CANCELS the creation's own budget, so a factory that
+            // observes the token it was handed stops now instead of continuing to run unobserved -
+            // without that, every subsequent caller that timed out would leave another live factory
+            // behind it and the count of concurrent factories for one key would be bounded by
+            // nothing. And it MARKS the creation abandoned, so if the factory ignores its token and
+            // finishes later it delivers its value to nobody's cache: a replacement creation may
+            // already have published a newer one, and an invalidation generation that never moved
+            // cannot detect that on its own. Only then is the registration removed, and the comparing
+            // overload is used so that a REPLACEMENT - one a later caller may already have started -
+            // is never mistaken for this one and removed.
+            creation.Abandon();
+
             _inFlightLoads.TryRemove(
-                new KeyValuePair<(string Key, Type ValueType), Lazy<Task<object?>>>(registration, load));
+                new KeyValuePair<(string Key, Type ValueType), SharedCreation>(registration, creation));
 
             throw new TimeoutException(
                 $"Producing a cache entry for the requested key ({DescribeKey(key)}) did not "
                 + $"complete within "
-                + $"{SharedCreationBudget}. The registration has been retired, so a subsequent "
-                + "call will start a fresh attempt rather than joining this one.");
+                + $"{SharedCreationBudget}. The registration has been retired and the creation "
+                + "cancelled, so a subsequent call will start a fresh attempt rather than joining "
+                + "this one.");
         }
 
         return FromCacheEntry<T>(key, produced);
@@ -1370,6 +1411,12 @@ internal sealed class MemoryCacheService : ICacheService
     /// <param name="key">The cache entry key.</param>
     /// <param name="factory">The caller's cancellation-aware producer.</param>
     /// <param name="expiration">How long a newly produced entry stays live.</param>
+    /// <param name="registration">The key-and-shape slot this creation occupies.</param>
+    /// <param name="creation">
+    /// The creation itself, which owns the budget the factory observes and the abandonment flag the
+    /// publication below consults. Passing it in is what lets both the publication and the release be
+    /// fenced on this creation's own identity rather than on the slot it happens to occupy.
+    /// </param>
     /// <returns>The produced or concurrently published value, boxed for the shared task.</returns>
     /// <remarks>
     /// Accepts no caller token by design, so that no caller's lifetime can be attached to work
@@ -1380,7 +1427,9 @@ internal sealed class MemoryCacheService : ICacheService
     private async Task<object?> LoadAndCacheAsync<T>(
         string key,
         Func<CancellationToken, Task<T>> factory,
-        TimeSpan expiration)
+        TimeSpan expiration,
+        (string Key, Type ValueType) registration,
+        SharedCreation creation)
     {
         try
         {
@@ -1406,9 +1455,13 @@ internal sealed class MemoryCacheService : ICacheService
             // creation bound to nothing at all is what let a single stalled factory hold a key
             // permanently. A factory that observes the token it is handed is cancelled here; one
             // that ignores it is abandoned by the awaiting member instead.
-            using CancellationTokenSource creationBudget = new(SharedCreationBudget);
-
-            T produced = await factory(creationBudget.Token).ConfigureAwait(false);
+            //
+            // The budget is owned by the creation rather than by this scope, which is what lets the
+            // retirement path cancel it. A source declared here with `using` could only be cancelled
+            // by the timer inside it, so a waiter that gave up had no way to stop the work it had
+            // given up on. Disposal moves with ownership: Complete in the finally below releases it,
+            // under the same monitor the cancellation takes, so a cancel can never race a dispose.
+            T produced = await factory(creation.BeginWork(SharedCreationBudget)).ConfigureAwait(false);
 
             // MIGRATION: net-new, and the reason this publication is conditional. The legacy idiom
             // read, loaded and inserted as three separate statements at each of the measured call
@@ -1418,9 +1471,20 @@ internal sealed class MemoryCacheService : ICacheService
             // since occurred, so publishing it would reinstate exactly the state the invalidation
             // was issued to remove. The comparison and the write share one critical section, which
             // is what makes the pair atomic with respect to eviction.
+            //
+            // TWO fences guard this write, and neither subsumes the other. The generation catches an
+            // INVALIDATION that intervened, because every eviction moves it. Abandonment catches a
+            // RETIREMENT that intervened, which no eviction accompanies and which therefore leaves the
+            // generation exactly where it was: once this creation has been retired, a replacement may
+            // already have produced and published a newer value under the same key, and writing over
+            // it here would make the cache report an answer older than one it had already served. Both
+            // are read inside the same critical section as the write so that neither can change between
+            // the test and the store. Reading the abandonment flag takes the creation's own monitor
+            // while this one is held; nothing anywhere takes them in the opposite order, so the nesting
+            // cannot deadlock.
             lock (_registryGate)
             {
-                if (_invalidationGeneration == observedGeneration)
+                if (_invalidationGeneration == observedGeneration && !creation.IsAbandoned)
                 {
                     Publish(key, produced, expiration);
                 }
@@ -1439,11 +1503,137 @@ internal sealed class MemoryCacheService : ICacheService
             // releases the key too, and the next caller simply retries. Release happens here,
             // in the creation that owns the registration, rather than in each awaiter: an
             // awaiter that released by key could remove a newer registration and provoke a
-            // duplicate load. The identity released is the same key-and-shape pair the awaiting
-            // member registered, so a concurrent creation for the same key under a different shape
-            // keeps its own registration.
-            _inFlightLoads.TryRemove((key, typeof(T)), out _);
+            // duplicate load.
+            //
+            // The budget is released first, so the source this creation owns does not outlive the work
+            // it bounded. Then the registration is withdrawn by COMPARING IDENTITY, not by the slot
+            // alone. The slot - the key and the requested shape - names a position that is reused: a
+            // creation this one has already been retired in favour of occupies exactly the same pair,
+            // so removing by the pair would delete a SUCCESSOR that is still running and hand the next
+            // arriving caller a second concurrent factory for the same key. Comparing means a retired
+            // creation withdraws nothing, because the slot no longer holds it.
+            creation.Complete();
+
+            _inFlightLoads.TryRemove(
+                new KeyValuePair<(string Key, Type ValueType), SharedCreation>(registration, creation));
         }
     }
 
+    /// <summary>
+    /// One coalesced creation of one cache entry: the shared work, the budget that bounds it, and
+    /// whether it has been retired in favour of a later attempt.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: net-new. It exists because a key and a requested shape name a SLOT rather than an
+    /// attempt, and three of this service's guarantees need to distinguish the two. Only an identity
+    /// can tell a finishing creation from the successor that replaced it, so only an identity can make
+    /// a removal safe; only a per-attempt flag can tell a retired creation that its result is no
+    /// longer wanted, because a retirement moves no invalidation generation; and only a per-attempt
+    /// cancellation source lets a waiter that has given up stop the work it gave up on, instead of
+    /// leaving it running and unobserved.
+    /// </para>
+    /// <para>
+    /// Every member is safe to call from several threads at once. The monitor is private to the
+    /// instance and is never held across an <see langword="await"/>, and nothing that holds it reaches
+    /// back into the owning service, so it can be taken while the service's own registry monitor is
+    /// held without introducing a cycle.
+    /// </para>
+    /// </remarks>
+    private sealed class SharedCreation
+    {
+        /// <summary>Serialises the budget's creation, cancellation and release against each other.</summary>
+        private readonly object _gate = new();
+
+        /// <summary>
+        /// The budget bounding the work, or <see langword="null"/> before it starts and after it ends.
+        /// </summary>
+        private CancellationTokenSource? _budget;
+
+        /// <summary>Whether this attempt has been retired in favour of a later one.</summary>
+        private bool _abandoned;
+
+        /// <summary>
+        /// The shared work, assigned once immediately after construction and before this instance is
+        /// published to the registry, so no other thread can observe it unset.
+        /// </summary>
+        /// <remarks>
+        /// Lazy rather than a started task, so that an instance a concurrent registration discards
+        /// never performs any work at all. Accessing the value is what elects the single creation,
+        /// however many callers arrive at once.
+        /// </remarks>
+        internal Lazy<Task<object?>> Work { get; set; } = null!;
+
+        /// <summary>
+        /// Whether this attempt has been retired, in which case its result must not be published.
+        /// </summary>
+        internal bool IsAbandoned
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _abandoned;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Opens the budget bounding this attempt and returns the token the factory must observe.
+        /// </summary>
+        /// <param name="budget">How long the work may run before its token is cancelled.</param>
+        /// <returns>
+        /// The token bounding the work. Already cancelled when the attempt was retired before it
+        /// started, so a factory that observes its token declines to do work nobody is waiting for.
+        /// </returns>
+        internal CancellationToken BeginWork(TimeSpan budget)
+        {
+            lock (_gate)
+            {
+                if (_abandoned)
+                {
+                    return new CancellationToken(canceled: true);
+                }
+
+                _budget = new CancellationTokenSource(budget);
+
+                return _budget.Token;
+            }
+        }
+
+        /// <summary>
+        /// Retires this attempt: its result will not be published, and its work is asked to stop.
+        /// </summary>
+        /// <remarks>
+        /// Idempotent, and safe to call before the work starts - the flag is set either way, and
+        /// <see cref="BeginWork"/> then hands the factory an already-cancelled token.
+        /// </remarks>
+        internal void Abandon()
+        {
+            lock (_gate)
+            {
+                _abandoned = true;
+
+                // Cancelling under the monitor that also owns the release is what makes this safe: the
+                // reference is cleared before it is disposed, so this can never reach a disposed source.
+                _budget?.Cancel();
+            }
+        }
+
+        /// <summary>Releases the budget once the work has finished, however it finished.</summary>
+        internal void Complete()
+        {
+            CancellationTokenSource? finished;
+
+            lock (_gate)
+            {
+                finished = _budget;
+                _budget = null;
+            }
+
+            // Disposed outside the monitor because disposal waits for any callback already running,
+            // and a canceller holding the monitor would then be waiting on the disposer that holds it.
+            finished?.Dispose();
+        }
+    }
 }

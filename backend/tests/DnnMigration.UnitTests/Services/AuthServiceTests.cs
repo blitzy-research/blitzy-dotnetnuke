@@ -1996,6 +1996,7 @@ public class AuthServiceTests
         [
             new Mock<IUserRepository>().Object,
             new Mock<IPortalRepository>().Object,
+            new Mock<IRoleRepository>().Object,
             new Mock<IPermissionService>().Object,
             new Mock<IUserService>().Object,
             new Mock<ITokenService>().Object,
@@ -2740,6 +2741,7 @@ public class AuthServiceTests
             Policy = new PasswordPolicyOptions();
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
+            Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Accounts = new Mock<IUserService>(MockBehavior.Loose);
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
@@ -2777,6 +2779,7 @@ public class AuthServiceTests
             Service = new AuthService(
                 Users.Object,
                 Portals.Object,
+                Roles.Object,
                 Permissions.Object,
                 Accounts.Object,
                 Tokens.Object,
@@ -2904,6 +2907,13 @@ public class AuthServiceTests
         public Mock<IUserRepository> Users { get; }
 
         public Mock<IPortalRepository> Portals { get; }
+
+        /// <summary>
+        /// The role store, asked only whether the caller holds the role the tenant designates as its
+        /// administrator. Loose by default, so it answers with an empty assignment list and the advisory
+        /// administration fact is reported false unless a test arranges otherwise.
+        /// </summary>
+        public Mock<IRoleRepository> Roles { get; }
 
         public Mock<IPermissionService> Permissions { get; }
 

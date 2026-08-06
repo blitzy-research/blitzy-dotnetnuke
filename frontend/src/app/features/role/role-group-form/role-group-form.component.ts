@@ -88,35 +88,32 @@
 // phrasing so the surface stays recognisable to an existing operator, and nothing more.
 //
 
-import { HttpErrorResponse } from '@angular/common/http';
 import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
-import { finalize } from 'rxjs';
 
 import type { Signal } from '@angular/core';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 
-import {
-  isProblemDetails,
-  problemDetailsFieldErrors,
-} from '../../../core/models/problem-details.model';
+import { problemDetailsFieldErrors } from '../../../core/models/problem-details.model';
 import type {
   ProblemDetails,
   ProblemDetailsErrors,
 } from '../../../core/models/problem-details.model';
 import type { CreateRoleGroupRequest } from '../../../core/models/role.model';
 import { NotificationService } from '../../../core/services/notification.service';
-import { RoleService } from '../../../core/services/role.service';
 import { RoleStore } from '../../../core/state/role.store';
+import type { RoleStoreFailure } from '../../../core/state/role.store';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -670,26 +667,25 @@ export class RoleGroupFormComponent {
   // -------------------------------------------------------------------------
 
   /**
-   * The only route to the API from this screen.
+   * The shared role state, and THE ONLY ROUTE TO THE API FROM THIS SCREEN.
    *
-   * Injected rather than reached through the store, because the store's own creation
-   * action returns nothing: it holds the outcome in its own state and gives a caller no
-   * point at which to navigate. This screen has to navigate on success, so it subscribes
-   * to the call itself.
+   * ⚠ THE TRANSPORT IS DELIBERATELY NOT INJECTED HERE ANY MORE. This screen used to call
+   * `RoleService.createRoleGroup` itself, because the store's creation action returns
+   * nothing and so appeared to give a caller no point at which to navigate. That reasoning
+   * was wrong in a way worth recording: a store whose write is driven from a component
+   * subscription holds one copy of the outcome while the component holds another, and the
+   * two are free to disagree - the group list could be refreshed by one path and the
+   * navigation decided by the other. The outcome bridge in the constructor supplies the
+   * missing completion point without a second copy of anything.
+   *
+   * The refresh remains the store's. `EditGroups.ascx.vb:L120` returns the operator to the
+   * roles list, where the group they just created must be immediately selectable in the
+   * group filter, and the store's own creation action re-reads the group listing on success
+   * - so nothing here asks for that read a second time.
    *
    * No URL is composed here and the HTTP client is not injected: the service owns every
    * endpoint template, and a path assembled in a component would be a second, divergent
    * statement of the same address.
-   */
-  private readonly roles = inject(RoleService);
-
-  /**
-   * The shared role state, refreshed after a successful creation.
-   *
-   * The refresh is the reason this is injected. `EditGroups.ascx.vb:L120` returns the
-   * operator to the roles list, where the group they just created is immediately
-   * selectable in the group filter; re-reading the listing here is what makes that true
-   * of the destination screen, whatever it happens to hold already.
    */
   private readonly store = inject(RoleStore);
 
@@ -700,10 +696,11 @@ export class RoleGroupFormComponent {
   private readonly notifications = inject(NotificationService);
 
   /**
-   * Ties the in-flight request to this component's lifetime.
+   * Ties the per-control event subscriptions in the constructor to this component's lifetime.
    *
-   * Captured as a field because `inject` requires an injection context, which a method
-   * called from the template does not have.
+   * Captured as a field because `inject` requires an injection context. It no longer ties any
+   * REQUEST to the lifetime - the store owns every request this screen issues and cancels them
+   * itself - so the only thing it retires is the form-revision bridge below.
    */
   private readonly destroyRef = inject(DestroyRef);
 
@@ -724,8 +721,17 @@ export class RoleGroupFormComponent {
   // VIEW STATE
   // -------------------------------------------------------------------------
 
-  /** Whether a creation is in flight. Written only by {@link submit}. */
-  private readonly _submitting = signal(false);
+  /**
+   * Whether a creation issued by THIS screen is still outstanding.
+   *
+   * ⚠ A MARKER OF OUR OWN, RATHER THAN THE STORE'S SHARED `saving` FLAG, and the distinction
+   * is what keeps the outcome bridge honest. The store raises `saving` for every role write
+   * in the application, so reading it alone would let a write started elsewhere settle this
+   * screen's form, announce a creation nobody performed and navigate away from a form the
+   * operator was still filling in. Set immediately before the command is issued and cleared
+   * by the bridge when it settles.
+   */
+  private readonly creationOutstanding = signal(false);
 
   /** The failure to present, or null when there is none. */
   private readonly _problem = signal<ProblemDetails | null>(null);
@@ -745,7 +751,7 @@ export class RoleGroupFormComponent {
   private readonly controlRevision = signal(0);
 
   /** Whether a creation is in flight. */
-  readonly submitting: Signal<boolean> = this._submitting.asReadonly();
+  readonly submitting: Signal<boolean> = this.creationOutstanding.asReadonly();
 
   /**
    * The failure to present, or null when there is none.
@@ -836,6 +842,47 @@ export class RoleGroupFormComponent {
         this.controlRevision.update((revision) => revision + 1);
       });
     }
+
+    /*
+     * THE OUTCOME BRIDGE.
+     *
+     * The completion point the store's `void`-returning command does not provide. An effect
+     * rather than a subscription, because announcing an outcome and navigating away are both
+     * genuine side effects, and this is the only kind of work an effect is for. It loads
+     * nothing - using an effect as a loader is the anti-pattern this deliberately is not.
+     *
+     * ⚠ THREE CONDITIONS DECIDE, AND ALL THREE ARE NECESSARY. The marker proves the creation
+     * was OURS; the flag falling proves it has SETTLED; and the recorded failure - matched on
+     * the operation, because the store clears any earlier failure before each write - proves
+     * which way it settled. Dropping the operation match would let the group re-read that
+     * follows a successful creation report its own failure as a failed creation, which is a
+     * real defect and not a hypothetical one: the store performs exactly that re-read.
+     *
+     * The marker is cleared inside `untracked` so the write stays out of this effect's own
+     * dependency set, and it is cleared BEFORE the outcome is acted on so a navigation cannot
+     * re-enter this effect with the marker still set.
+     */
+    effect(() => {
+      const outstanding: boolean = this.creationOutstanding();
+      const inFlight: boolean = this.store.saving();
+      const failure: RoleStoreFailure | null = this.store.failure();
+
+      if (!outstanding || inFlight) {
+        return;
+      }
+
+      untracked(() => {
+        this.creationOutstanding.set(false);
+
+        if (failure !== null && failure.operation === 'createRoleGroup') {
+          this.present(failure);
+
+          return;
+        }
+
+        this.onCreated();
+      });
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -860,7 +907,7 @@ export class RoleGroupFormComponent {
     // duplicated request would attempt a duplicated row. The template also disables the
     // action while a request is in flight; this guard is what makes the invariant hold
     // regardless of what the template does.
-    if (this._submitting()) {
+    if (this.creationOutstanding()) {
       return;
     }
 
@@ -870,7 +917,7 @@ export class RoleGroupFormComponent {
       return;
     }
 
-    this._submitting.set(true);
+    this.creationOutstanding.set(true);
     this._problem.set(null);
 
     // Exactly the two members the API's creation contract declares. The tenant is NOT
@@ -889,29 +936,11 @@ export class RoleGroupFormComponent {
       description: this.form.controls.description.value,
     };
 
-    this.roles
-      .createRoleGroup(request)
-      .pipe(
-        // Clears the in-flight state on every outcome, including an unsubscribe, so the
-        // action cannot be left permanently disabled by a path nobody anticipated.
-        finalize(() => {
-          this._submitting.set(false);
-        }),
-        takeUntilDestroyed(this.destroyRef),
-      )
-      .subscribe({
-        // The created group is deliberately not read. This screen navigates away, so it has
-        // nothing to display it in, and the destination re-reads the listing below.
-        next: () => {
-          this.onCreated();
-        },
-        // Widened rather than typed as a response. A failure reaching a subscriber is not
-        // necessarily one: an interceptor or an operator can throw any value at all, and
-        // reading a status off such a value would yield `undefined` and match no branch.
-        error: (error: unknown) => {
-          this.present(error);
-        },
-      });
+    // The created group is deliberately not read back. This screen navigates away, so it has
+    // nothing to display it in, and the store's own creation action re-reads the group listing
+    // the destination needs. The outcome reaches this screen through the bridge in the
+    // constructor rather than through a subscription here.
+    this.store.createRoleGroup(request);
   }
 
   /**
@@ -945,7 +974,11 @@ export class RoleGroupFormComponent {
    * so the group they had just created was available to select.
    */
   private onCreated(): void {
-    this.store.loadRoleGroups();
+    // ⚠ NO RE-READ IS ASKED FOR HERE. The store's own creation action re-reads the group
+    // listing when the write succeeds, so asking again would issue a second identical request
+    // and, worse, would race the first: whichever answered last would decide what the roles
+    // list showed. Reached only from the outcome bridge, so it cannot run before the creation
+    // has actually succeeded - which is what the review recorded as premature announcement.
     this.notifications.notify('success', ROLE_GROUP_CREATED_MESSAGE);
     this.goToRoles();
   }
@@ -962,34 +995,30 @@ export class RoleGroupFormComponent {
    * twice - see the note at the head of this file, which also explains why an in-page
    * block is the faithful reproduction of `AddModuleMessage` in the first place.
    *
-   * @param error Whatever the subscriber was handed.
+   * @param failure The failure the store recorded for this screen's own creation.
    */
-  private present(error: unknown): void {
-    if (!(error instanceof HttpErrorResponse)) {
-      // No status and no document to work with. Presented rather than swallowed, because
-      // the legacy's outermost handler made every failure visible.
+  private present(failure: RoleStoreFailure): void {
+    // ⚠ READ FROM THE STORE'S RECORD, NOT FROM AN `HttpErrorResponse`. The two facts this
+    // method branches on go missing INDEPENDENTLY, which is why the store carries them
+    // separately: a transport failure has a status and no document, and a document may omit
+    // its own status member. Reading the status off the document would collapse the very
+    // distinction the legacy screen made.
+    const status: number | null = failure.status;
+    const document: ProblemDetails | null = failure.problem;
+
+    if (status === null) {
+      // Nothing to work with at all. Presented rather than swallowed, because the legacy's
+      // outermost handler made every failure visible.
       this._problem.set({ detail: UNEXPECTED_FAILURE_MESSAGE });
 
       return;
     }
 
-    const status: number = error.status;
-
-    // Resolved BEFORE the body is read, and the ordering is load-bearing rather than tidy.
-    // The framework puts a DOM progress event in the body slot for this condition, and
-    // that value satisfies the deliberately permissive problem-document predicate, so
-    // reading the body first would mistake a transport failure for a document that says
-    // nothing.
     if (status === TRANSPORT_FAILURE_STATUS) {
       this._problem.set({ status, detail: NETWORK_UNAVAILABLE_MESSAGE });
 
       return;
     }
-
-    // Widened at the boundary. The framework types this member loosely, so every read of
-    // it has to be guarded, and the predicate is the guard.
-    const body: unknown = error.error;
-    const document: ProblemDetails | null = isProblemDetails(body) ? body : null;
 
     if (status === CONFLICT_STATUS) {
       // The one conflict this endpoint can report: the portal already holds a group of

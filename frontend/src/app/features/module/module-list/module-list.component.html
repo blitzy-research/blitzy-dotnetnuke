@@ -1,0 +1,303 @@
+<!--
+  THE MODULE LISTING SCREEN, mounted at /modules.
+
+  ⚠ A ROW IS A PLACEMENT, NOT A MODULE. This is the listing contract's own statement rather
+  than an interpretation, and every decision below follows from it: one module whose all-pages
+  flag is set appears on every page of the site and therefore contributes ONE ROW PER PAGE,
+  each with its own `tabModuleId` and its own `moduleOrder`, while `moduleId` repeats across
+  them. That is why the removal command passes BOTH identities, why the confirmation speaks of
+  a placement, and why half the projection is deliberately not sortable.
+
+  MIGRATION: THIS SCREEN HAS NO LEGACY ANCESTOR AND NONE IS MANUFACTURED FOR IT.
+  `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO - that directory holds
+  `export.ascx`, `import.ascx`, `modulesettings.ascx`, their three code-behinds, one icon and
+  `App_LocalResources`, and nothing that lists modules. The nine `<table>` elements in
+  `modulesettings.ascx` are all `summary="… Design Table"` layout tables. What IS measured and
+  honoured exactly is the grid CONVENTION of `Website/admin/Portal/portals.ascx` - commands
+  first, identity next, dates last, headings centred - and the column WORDING of
+  `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx`. The sibling component
+  holds both, with the citation for every string.
+
+  THE HOST WRAPS ITS SCREEN IN ONE BLOCK ELEMENT, and the confirmation dialogue and the four
+  cell templates sit OUTSIDE it - the dialogue because it is promoted out of the layout flow
+  when it opens, and the templates because they render into the shared table's own cells and
+  must not inherit this screen's grid.
+
+  ⚠ THE FOUR `ng-template` DECLARATIONS MUST STAY AT THE TOP LEVEL, outside every
+  control-flow block. The sibling component captures them with STATIC view queries so the
+  column set can be assembled in `ngOnInit` with real template references; a declaration
+  moved inside an `@if` would be unresolved at that moment and the component throws by name
+  rather than painting blank cells.
+
+  NO SEMANTIC LANDMARK AND NO HEADING IS EMITTED HERE. `header`, `main`, `nav` and `footer`
+  belong to `app/layout/**`, which emits each exactly once, and `app-page-header` renders the
+  screen's single `h1`. This template renders inside the shell's `main`.
+
+  EVERY STRING IS INTERPOLATED PLAIN TEXT OR A BOUND CONSTANT. Legacy resource values are
+  untrusted markup - a substantial minority carry HTML, stored escaped so a naive search
+  clears them wrongly, and one holds a live third-party script - so nothing here uses a
+  raw-markup binding, a sanitiser bypass or a trusted-markup wrapper. The wording constants
+  live on the sibling component so a specification can assert against the same value the
+  screen renders, and so that the one value carrying significant spacing survives the
+  template compiler's whitespace collapsing.
+
+  NEITHER THE SPINNER NOR THE EMPTY STATE IS RENDERED HERE, deliberately: the shared table
+  renders both itself, in one spanning row, and lets loading win over empty. Emitting either
+  here would duplicate them - which is why the sibling component's `imports` list contains
+  neither component.
+-->
+
+<div class="module-list">
+  <!--
+    THE PAGE TITLE AND THE TWO PAGE-LEVEL ACTIONS.
+
+    The subtitle states what a row IS, because that is the single most misread fact about this
+    listing.
+
+    Both actions are real links carrying a typed route, so they can be middle-clicked, copied
+    and bookmarked - which an imperative navigation cannot be. No router is injected by the
+    sibling component for exactly that reason.
+
+    MIGRATION: the legacy screen offered neither action, having no listing to offer them from,
+    so both labels are authored. They are deliberately NOT promoted to filled buttons: a
+    filled-button class existed separately in the legacy stylesheet and the admin action bars
+    did not use it, so promoting them would be an unrequested visual change.
+
+    Projected content keeps the style scoping of the component that DECLARES it, so the page
+    header supplies only the row and its gap and cannot style what it hosts - which is why
+    these carry this screen's own class.
+  -->
+  <app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
+    <a class="module-list__action" [routerLink]="createLink">{{ pageActionLabel.create }}</a>
+    <a class="module-list__action" [routerLink]="importLink">{{ pageActionLabel.import }}</a>
+  </app-page-header>
+
+  <!--
+    THE FREE-TEXT FILTER.
+
+    MIGRATION: NET-NEW. The legacy had no module search of any kind - `GetSearchModules` in
+    `Library/Components/Modules/ModuleController.vb:L1032` is the search-INDEXING surface, not
+    a user-facing query - and there was no module list to filter in any case.
+
+    The shared control debounces and trims the text itself and emits it as a plain string. The
+    sibling component records it EXACTLY AS EMITTED: no wildcard is appended, no pattern syntax
+    is introduced and no escaping is applied, because match semantics belong to the server
+    alone.
+  -->
+  <app-search-input
+    class="module-list__search"
+    [placeholder]="searchPlaceholder"
+    (search)="onSearch($event)"
+  />
+
+  <!--
+    THE FAILURE SURFACE.
+
+    The banner takes the whole problem document and does the rest itself - it derives its own
+    severity, renders the per-field map as a summary, shows the support reference and carries
+    the live region - so nothing here iterates that map, reduces the document to a string or
+    renders the trace identifier. Null is its documented empty state, which is why it is bound
+    unconditionally rather than gated.
+
+    The dismiss affordance is offered because a banner a person cannot dismiss is a banner that
+    outlives its cause. Dismissing also clears the awaited removal on the sibling component, so
+    it cannot leave the outcome bridge waiting on a result that will never arrive.
+
+    A REMOVAL's refusal is additionally announced as a transient message by that same bridge,
+    at the severity the shared resolution utility already resolved. A LISTING failure is not,
+    precisely so one event is not reported twice - the banner here already shows it in full.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  @if (problem() !== null) {
+    <div class="module-list__status">
+      <button class="module-list__action" type="button" (click)="onDismissFailure()">
+        Dismiss
+      </button>
+    </div>
+  }
+
+  <!--
+    THE GRID.
+
+    The column descriptors are assembled in TypeScript, where a column set's invariants can be
+    expressed - unique keys, both alignments stated, and a sortable key the endpoint actually
+    accepts. Nothing about the columns is decided in this template.
+
+    ⚠ SORTING PASSES THROUGH UNTRANSLATED. A column's key IS the sort name the endpoint
+    accepts, and only the four columns keyed by a permitted name declare themselves sortable,
+    so no control here can produce a rejected request. The direction arrives in the server's
+    own spelling.
+
+    The loading flag is the LISTING flag specifically, not the store's aggregate: a settings
+    save or a definition read running elsewhere must not put this grid into its loading state.
+
+    The caption is a CONSUMER obligation: the shared grid projects it into a real caption
+    element which it carries out of the painted output while keeping it in the accessibility
+    tree, so the grid is named for a screen reader without a visible heading competing with the
+    page title.
+
+    Row selection is deliberately NOT bound. There is no per-row detail pane on this screen and
+    the row commands are links; a row-level activation as well would give one row two
+    destinations.
+  -->
+  <app-data-table
+    [columns]="columns()"
+    [rows]="modules()"
+    [sortBy]="sortBy()"
+    [sortDir]="sortDir()"
+    [loading]="listLoading()"
+    (sortChange)="onSortChange($event)"
+  >
+    <span dataTableCaption>{{ tableCaption }}</span>
+  </app-data-table>
+
+  <!--
+    THE PAGER.
+
+    ⚠ NO ARITHMETIC, IN EITHER DIRECTION. The wire's page coordinate is zero-based, the pager's
+    `page` input IS that zero-based index, and its change event emits a zero-based index back.
+    The one-based counter a person reads is rendered inside the pager and never leaves it. A
+    `+ 1` or `- 1` anywhere here would serve the neighbouring page behind a successful response,
+    which no status code would reveal.
+
+    Every coordinate is read from the RESPONSE envelope rather than from the request, so the
+    pager describes the page actually on screen instead of one that may still be in flight, and
+    the applied page size is the server's own - which can legitimately differ from the size that
+    was asked for.
+
+    Rendered unconditionally. The pager decides for itself whether it has anything to offer, and
+    a wrapper condition here would be a second opinion about that.
+  -->
+  <app-pagination
+    [page]="meta().pageIndex"
+    [pageSize]="meta().pageSize"
+    [totalCount]="meta().totalCount"
+    (pageChange)="onPageChange($event)"
+  />
+</div>
+
+<!--
+  THE REMOVAL CONFIRMATION.
+
+  PRESENCE IN THE DOCUMENT IS WHAT OPENS IT, so it is mounted only while a placement is
+  awaiting confirmation and unmounted by either outcome. The shared dialogue supplies the modal
+  promotion, the focus trap, Escape handling and focus restoration, and it focuses the
+  cancelling affordance rather than the destructive one.
+
+  MIGRATION: the legacy confirmation was a scripted browser prompt. Its wording is preserved
+  exactly - `SharedResources.resx` declares `DeleteModule.Confirm` with a SPACE BEFORE ITS
+  QUESTION MARK, which is why the sentence is bound from a constant rather than written here:
+  the template compiler collapses runs of whitespace in a text node but never inside an
+  interpolated value. Correcting that spacing would be precisely the opportunistic edit the
+  Minimal Change Clause forbids.
+
+  `danger` marks the confirming affordance as destructive. It is a valueless attribute, coerced
+  by the shared component, and is the only signal this screen gives it - the dialogue owns
+  everything else about its own appearance.
+-->
+@if (removalTarget() !== null) {
+  <app-confirm-dialog
+    [title]="removeConfirmTitle"
+    [message]="removeConfirmMessage"
+    danger
+    (confirm)="onConfirmDelete()"
+    (cancel)="onCancelDelete()"
+  />
+}
+
+<!--
+  THE ROW COMMANDS: three links and a removal.
+
+  Declared as an `ng-template` and projected into the grid's commands column. Such a template
+  is compiled in the CALLER's template context rather than the table's, which is why the
+  sibling component imports the router link directive and both pipes even though no element
+  outside these templates uses them.
+
+  The row arrives as the context's implicit value, so `let-row` needs no member name.
+
+  ⚠ NO IDENTIFIER IS TESTED ANYWHERE BELOW. `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so
+  module ZERO is the first module of an installation and a truthiness test would silently give
+  it no links at all. Each address is built by the sibling component and interpolated exactly
+  as the server sent it.
+
+  MIGRATION: the legacy admin grids drew their commands as raster icons - and neither carried
+  alternative text, so both reached assistive technology as unnamed graphics. These are text
+  commands: no image asset is referenced, because the only static asset this workspace ships is
+  a favicon. Each command additionally names the placement it acts on through an accessible
+  name, because the commands repeat down the column and "Edit" alone tells a screen-reader user
+  nothing about which row they are on.
+
+  MIGRATION: THE EXPORT COMMAND IS NEVER GATED CLIENT-SIDE. The listing contract carries no
+  portability signal - the legacy flag was derived from a supported-features bitmask that the
+  contract does not expose - so the command is always offered and the server answers
+  authoritatively when a module cannot be exported. No bitwise expression exists anywhere in
+  this feature.
+-->
+<ng-template #rowCommands let-row>
+  <a
+    class="module-list__row-command"
+    [routerLink]="editLink(row)"
+    [attr.aria-label]="commandLabel.edit + ' ' + (row.moduleTitle ?? '')"
+  >
+    {{ commandLabel.edit }}
+  </a>
+
+  <a
+    class="module-list__row-command"
+    [routerLink]="settingsLink(row)"
+    [attr.aria-label]="commandLabel.settings + ' ' + (row.moduleTitle ?? '')"
+  >
+    {{ commandLabel.settings }}
+  </a>
+
+  <a
+    class="module-list__row-command"
+    [routerLink]="exportLink(row)"
+    [attr.aria-label]="commandLabel.export + ' ' + (row.moduleTitle ?? '')"
+  >
+    {{ commandLabel.export }}
+  </a>
+
+  <!--
+    ⚠ THE REMOVAL ADDRESSES THE PLACEMENT, NOT THE MODULE, and the sibling component passes both
+    identities for that reason. It mirrors the legacy `DeleteTabModule(TabId, ModuleId)` and
+    emphatically NOT `DeleteModule`, which is the hard delete.
+
+    An explicit `type` so it can never submit an ancestor form, and no `disabled` binding: the
+    dialogue that follows is the guard, and the store refuses a second command while one is in
+    flight.
+  -->
+  <button
+    class="module-list__row-command module-list__row-command--danger"
+    type="button"
+    [attr.aria-label]="commandLabel.remove + ' ' + (row.moduleTitle ?? '')"
+    (click)="onRequestDelete(row)"
+  >
+    {{ commandLabel.remove }}
+  </button>
+</ng-template>
+
+<!--
+  THE ALL-PAGES FLAG.
+
+  A template column, necessarily: a boolean is not a text-shaped value and the shared yes/no
+  pipe is a template construct with no expression in a formatter function. `false` is DATA here
+  and renders as the negative word rather than as empty output, which is exactly what the pipe
+  guarantees.
+
+  MIGRATION: the legacy grids drew such a flag as a PAIR of mutually exclusive images with no
+  alternative text, so the state was drawn but never announced. It is words now.
+-->
+<ng-template #allTabsCell let-row>{{ row.allTabs | yesNo }}</ng-template>
+
+<!--
+  THE SCHEDULE.
+
+  Both dates go through the shared display pipe in its default short-date mode, which already
+  renders the legacy minimum-date sentinel as BLANK - reproducing the `Null.IsNull` guard at
+  `Website/admin/Modules/ModuleSettings.ascx.vb:L152-L156` without a guard of this screen's own,
+  and without erasing a far-future date such as 9999-12-31, which is a REAL value.
+-->
+<ng-template #startDateCell let-row>{{ row.startDate | dateDisplay }}</ng-template>
+<ng-template #endDateCell let-row>{{ row.endDate | dateDisplay }}</ng-template>

@@ -19,13 +19,22 @@
  * backend property `PropertyDefinitionId` therefore arrives as `propertyDefinitionId`
  * and is spelled that way here.
  *
- * TYPES ONLY, DELIBERATELY
- * ------------------------
- * This file declares no class, no constant and no function — nothing that executes.
- * That is why it has no paired specification: there is no behaviour to assert, and a
- * specification that constructed an object literal and read its members back would
- * be testing the TypeScript compiler rather than this application. The type checks
- * that matter are performed by `tsc` over every consumer.
+ * TYPES, ONE CODE TABLE, AND ONE DECODER PER CONTRACT THAT IS READ
+ * ---------------------------------------------------------------
+ * A TypeScript interface is erased at compile time, so `http.get<UserProfile>(…)` compiles
+ * to `http.get(…)`: nothing inspects the body, and a renamed member arrives as `undefined`
+ * behind a 200 to surface as a blank field on a profile screen, far from the response that
+ * caused it. Each contract that is READ therefore carries a runtime decoder declared FROM
+ * its interface, so that forgetting a member is a compile error rather than a silent hole,
+ * and the transport refuses a response that does not match. Violations name the member path
+ * and the expected type and NEVER the value — which matters more here than anywhere else in
+ * the workspace, because a profile value is personal data and a violation must not copy it
+ * into a log.
+ *
+ * The write contracts carry no decoder: this client composes them, so there is nothing
+ * untrusted to check. The decoders are verified through `core/services/user.service.spec.ts`,
+ * which exercises each against a malformed payload, rather than through a spec paired with
+ * this module.
  *
  * MIGRATION: the legacy profile surface was split across two namespaces —
  * `DotNetNuke.Entities.Users` owned `UserProfile.vb` while
@@ -33,6 +42,17 @@
  * are consolidated here, matching the consolidation already performed on the
  * backend.
  */
+
+import {
+  arrayOf,
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeString,
+  nullable,
+  objectOf,
+  type Decoder,
+} from '../utils/decode.util';
 
 /**
  * How widely a profile value may be seen.
@@ -139,7 +159,20 @@ export interface UserProfileValue {
   /** How widely this particular value may be seen. */
   readonly visibility: ProfileVisibilityCode;
 
-  /** When the value was last written, or `null` when it never has been. */
+  /**
+   * When the value was last written, or `null` when it never has been.
+   *
+   * ⚠ THE NULL IS THE PRESENCE DISCRIMINATOR, AND IT IS THE ONLY ONE ON THIS CONTRACT. The stored column
+   * is `LastUpdatedDate datetime NOT NULL`, so a row that exists always carries a date; the API emits null
+   * exactly when it synthesised this entry for a declared property the account has no row for. That is
+   * what lets a consumer tell "never recorded" from "recorded as empty", which the legacy code could not
+   * do — `UserProfile.vb` L507-L517 returned the empty string for both.
+   *
+   * A consumer must NOT treat it as the only evidence of presence, though. A value that arrives with
+   * content is present whatever the metadata beside it says, and deciding on the timestamp alone means
+   * replacing that content with a declaration default — which a screen that submits every property then
+   * persists.
+   */
   readonly lastUpdatedDate: string | null;
 
   /** The declaration describing this value. */
@@ -297,3 +330,67 @@ export interface CreateProfilePropertyDefinitionRequest
  * from the shared set for no reason the server could honour.
  */
 export type UpdateProfilePropertyDefinitionRequest = ProfilePropertyDefinitionWriteMembers;
+
+/**
+ * Decodes one profile property declaration.
+ *
+ * `visibility` and `dataType` are decoded as plain integers rather than closed code tables.
+ * The three visibility codes the legacy screens offered are published as named constants
+ * above for templates to use, but they are NOT the closed set: the column is an ordinary
+ * integer, `dataType` refers to a list row the server owns, and closing either set here
+ * would refuse a declaration a later release adds.
+ *
+ * `length`, `viewOrder` and `propertyCategory` are required. A declaration always carries
+ * all three, and a `viewOrder` reaching a sorted render as `undefined` would silently move
+ * the field to one end of the form.
+ */
+export const decodeProfilePropertyDefinition: Decoder<ProfilePropertyDefinition> =
+  objectOf<ProfilePropertyDefinition>({
+    propertyDefinitionId: decodeInteger,
+    portalId: decodeInteger,
+    moduleDefId: nullable(decodeInteger),
+    dataType: decodeInteger,
+    defaultValue: nullable(decodeString),
+    propertyCategory: decodeString,
+    propertyName: decodeString,
+    length: decodeInteger,
+    required: decodeBoolean,
+    validationExpression: nullable(decodeString),
+    viewOrder: decodeInteger,
+    visible: decodeBoolean,
+    visibility: decodeInteger,
+  });
+
+/**
+ * Decodes one stored profile value together with the declaration that describes it.
+ *
+ * ⚠ `propertyValue` IS A PLAIN STRING AND THE EMPTY STRING PASSES. A value the person
+ * cleared is empty rather than absent — `Library/Components/Shared/Null.vb:L71-L75` returns
+ * `""` literally — so refusing it would refuse a conforming profile, and coalescing it to
+ * null would make a cleared field indistinguishable from one never filled in.
+ *
+ * The nested declaration is decoded in full rather than trusted, because the profile screen
+ * renders each field FROM it: the label, the required flag and the validation expression all
+ * come from the nested object, so a malformed one produces a field that looks legitimate and
+ * validates against nothing.
+ */
+export const decodeUserProfileValue: Decoder<UserProfileValue> = objectOf<UserProfileValue>({
+  propertyDefinitionId: decodeInteger,
+  propertyValue: decodeString,
+  visibility: decodeInteger,
+  lastUpdatedDate: nullable(decodeDateString),
+  definition: decodeProfilePropertyDefinition,
+});
+
+/**
+ * Decodes one account's whole profile.
+ *
+ * `properties` is required. A person who has filled in nothing has an EMPTY array, so an
+ * absent member is contract drift rather than an empty profile and is refused as such —
+ * which is the distinction that stops a drifted response from rendering as a profile the
+ * operator believes they have already cleared.
+ */
+export const decodeUserProfile: Decoder<UserProfile> = objectOf<UserProfile>({
+  userId: decodeInteger,
+  properties: arrayOf(decodeUserProfileValue),
+});

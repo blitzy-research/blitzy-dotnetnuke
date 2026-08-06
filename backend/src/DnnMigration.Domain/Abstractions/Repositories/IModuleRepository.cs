@@ -1,3 +1,4 @@
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 
 namespace DnnMigration.Domain.Abstractions.Repositories;
@@ -275,6 +276,35 @@ public interface IModuleRepository
     Task DeleteAsync(int moduleId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Stages the permanent removal of every module in a set the caller already holds.
+    /// </summary>
+    /// <param name="modules">
+    /// The modules to remove, as they were read. An empty set stages nothing and is not an error.
+    /// </param>
+    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <returns>A task that completes once every removal is staged.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: net-new, and it exists to remove a round trip per row rather than to add a capability.
+    /// Tenant deletion has to remove the tenant's modules explicitly, because <c>FK_Modules_Portals</c> is
+    /// the one foreign key into <c>dbo.Portals</c> that the 03.00.09 upgrade script re-adds WITHOUT a
+    /// cascade clause. It already holds every module entity, having just read them; calling
+    /// <see cref="DeleteAsync"/> once per row then asked the store to find each of those rows AGAIN, by
+    /// identifier, inside the serialisable transaction that the tenant removal holds open - so the lock
+    /// duration grew with the tenant's size for no information the caller did not already have. This
+    /// member stages the same removals from the entities in hand and issues no read at all.
+    /// </para>
+    /// <para>
+    /// Staging only, like every other write on this contract: nothing is executed until the unit of work
+    /// commits, so a later refusal rolls these removals back with everything else. That is why this is an
+    /// entity-based range removal rather than a set-based delete statement - a statement would execute
+    /// immediately and outside the change tracker, which is a different transactional shape from the one
+    /// every other write here has.
+    /// </para>
+    /// </remarks>
+    Task DeleteRangeAsync(IReadOnlyCollection<Module> modules, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns the placements within one pane of one page, in the order they are rendered.
     /// </summary>
     /// <param name="tabId">The page's identifier.</param>
@@ -394,6 +424,84 @@ public interface IModuleRepository
     /// </remarks>
     Task<IReadOnlyList<TabModule>> GetTabModulesByModuleIdsAsync(
         IReadOnlyCollection<int> moduleIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns one page of a tenant's module PLACEMENTS, filtered, ordered, counted and windowed by the
+    /// store.
+    /// </summary>
+    /// <param name="portalId">
+    /// The owning tenant, matched exactly. Minus one and zero are both real tenants here, so no value is
+    /// read as "unspecified".
+    /// </param>
+    /// <param name="tabId">
+    /// Restrict to the placements on one page, or <see langword="null"/> for every page of the tenant.
+    /// <c>Tabs.TabID</c> is <c>IDENTITY(0, 1)</c>, so the PRESENCE of a value selects the filter and its
+    /// magnitude never does.
+    /// </param>
+    /// <param name="includeDeleted">
+    /// Whether placements of modules already flagged deleted - the recycle bin - are included.
+    /// </param>
+    /// <param name="titleQuery">
+    /// A fragment the module title must contain, case-insensitively, or <see langword="null"/> for no
+    /// title restriction. The value is data and never a pattern: an implementation must not let a
+    /// wildcard character in it widen the search.
+    /// </param>
+    /// <param name="sortBy">
+    /// The MODULE property the rows are ordered by, or <see langword="null"/> for the default. Only the
+    /// module ordering is selectable; the placement tie-break is fixed, because a placement's position
+    /// belongs to one pane of one page and ordering a cross-page listing by it would sort unrelated
+    /// positions against each other.
+    /// </param>
+    /// <param name="descending">Whether the module ordering runs downwards.</param>
+    /// <param name="pageIndex">The page to return, counted from zero.</param>
+    /// <param name="pageSize">
+    /// The page width, or zero for every matching row. Zero is the same "everything" convention the other
+    /// paged reads on these contracts use, and it yields an unpaged result rather than an empty one.
+    /// </param>
+    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <returns>
+    /// The requested window of placements together with the total number of placements the whole filtered
+    /// collection holds. Each returned placement carries its module, that module's definition and the
+    /// package behind it, because the listing projection reports all three and a navigation nobody
+    /// populated would report a null it caused itself.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// THE UNIT OF THIS READ IS THE PLACEMENT, NOT THE MODULE, and that is the whole reason it exists on
+    /// this contract rather than being composed above it. A module placed on four pages contributes four
+    /// rows, so a window cut over MODULES is a window in the wrong unit: a caller asking for one row
+    /// could receive four, and the published total and page size would then have to be widened to
+    /// accommodate a projection they did not describe. Counting and windowing the placements themselves
+    /// keeps <c>totalCount</c> an exact count and <c>pageSize</c> exactly what the caller asked for.
+    /// </para>
+    /// <para>
+    /// MIGRATION: net-new, and it replaces an Application-layer composition rather than a legacy
+    /// procedure - the legacy module block of the data provider carries no paging member of any kind. The
+    /// composition it replaces read EVERY module of the tenant, expanded every one of their placements,
+    /// ordered the complete row set and only then cut the window, so a page of ten rows did the work of
+    /// the whole tenant. The filters, the ordering, the count and the window are all expressible
+    /// relationally, so they belong in the statement; what is NOT expressible - the caller's choice of
+    /// which module property to order by - is passed in as data. The reads are therefore bounded by the
+    /// page rather than by the tenant, and the number of round trips is fixed at two: one count and one
+    /// window, or one window alone when every row was asked for.
+    /// </para>
+    /// <para>
+    /// Row order is total and deterministic: the chosen module ordering first, always terminating on the
+    /// module's own key, and within each module its placements by page, then position, then placement
+    /// key. The placement tie-break runs upwards whichever direction the module ordering runs, because
+    /// it orders the placements OF a module rather than the modules themselves.
+    /// </para>
+    /// </remarks>
+    Task<PagedResult<TabModule>> ListPlacementsAsync(
+        int portalId,
+        int? tabId,
+        bool includeDeleted,
+        string? titleQuery,
+        string? sortBy,
+        bool descending,
+        int pageIndex,
+        int pageSize,
         CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -140,6 +140,16 @@
  * should follow the screens rather than the schema.
  */
 
+import {
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeString,
+  nullable,
+  objectOf,
+  type Decoder,
+} from '../utils/decode.util';
+
 /**
  * One row of the page list returned by `GET /api/v1/portals/{portalId}/tabs`.
  *
@@ -683,3 +693,68 @@ export interface UpdateTabRequest {
    */
   readonly isDeleted: boolean;
 }
+
+/**
+ * Decodes one listed page.
+ *
+ * `tabId` uses {@link decodeInteger} with no positivity test: `dbo.Tabs` is declared
+ * `[TabID] [int] IDENTITY (0, 1)`, so ZERO is the first page an installation ever creates.
+ * `parentId` is nullable because a root page has no parent, and that null is the only
+ * expression of "root" — coalescing it to zero would reparent every root page under the first
+ * page ever created.
+ *
+ * `level` and `tabOrder` are required, because both drive the render: a `level` reaching an
+ * indentation calculation as `undefined` produces `NaN` padding, and a missing `tabOrder`
+ * silently moves the page to one end of its sibling set.
+ */
+export const decodeTabListItem: Decoder<TabListItem> = objectOf<TabListItem>({
+  tabId: decodeInteger,
+  tabName: decodeString,
+  title: nullable(decodeString),
+  tabOrder: decodeInteger,
+  parentId: nullable(decodeInteger),
+  level: decodeInteger,
+  tabPath: nullable(decodeString),
+  isVisible: decodeBoolean,
+  disableLink: decodeBoolean,
+  isDeleted: decodeBoolean,
+  hasChildren: decodeBoolean,
+  isSecure: decodeBoolean,
+  url: nullable(decodeString),
+  iconFile: nullable(decodeString),
+});
+
+/**
+ * Decodes one page in full.
+ *
+ * `portalId` is nullable AND admits minus one, which is not a contradiction: `dbo.Portals` is
+ * declared `[PortalID] [int] IDENTITY (-1, 1)`, so minus one is the FIRST portal and a real
+ * owner, while null means the page names no portal. The legacy absent-integer marker is also
+ * minus one, which is exactly why the two must be distinguished by nullability rather than by
+ * the value.
+ */
+export const decodeTabDetail: Decoder<TabDetail> = objectOf<TabDetail>({
+  tabId: decodeInteger,
+  tabOrder: decodeInteger,
+  portalId: nullable(decodeInteger),
+  tabName: decodeString,
+  isVisible: decodeBoolean,
+  parentId: nullable(decodeInteger),
+  level: decodeInteger,
+  iconFile: nullable(decodeString),
+  disableLink: decodeBoolean,
+  title: nullable(decodeString),
+  description: nullable(decodeString),
+  keywords: nullable(decodeString),
+  isDeleted: decodeBoolean,
+  url: nullable(decodeString),
+  skinSrc: nullable(decodeString),
+  containerSrc: nullable(decodeString),
+  tabPath: nullable(decodeString),
+  startDate: nullable(decodeDateString),
+  endDate: nullable(decodeDateString),
+  refreshInterval: nullable(decodeInteger),
+  pageHeadText: nullable(decodeString),
+  isSecure: decodeBoolean,
+  hasChildren: decodeBoolean,
+});

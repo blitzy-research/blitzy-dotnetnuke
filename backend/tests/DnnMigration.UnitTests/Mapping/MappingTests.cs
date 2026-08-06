@@ -90,7 +90,8 @@ public class MappingTests
             administratorRoleName: "Administrators",
             registeredRoleName: "Registered Users",
             administratorEmail: "curator@example.com",
-            superTabId: 99);
+            superTabId: 99,
+            currentPortalAliasId: null);
 
         dto.Users.Should().Be(41);
         dto.Pages.Should().Be(7);
@@ -136,7 +137,7 @@ public class MappingTests
         portal.PortalAliases.Add(new PortalAlias { PortalAliasId = 1, PortalId = -1, HttpAlias = "Alpha.example.com" });
         portal.PortalAliases.Add(new PortalAlias { PortalAliasId = 2, PortalId = -1, HttpAlias = "mike.example.com" });
 
-        PortalDetailDto dto = PortalMappings.ToDetail(portal, 0, 0, null, null, null, null);
+        PortalDetailDto dto = PortalMappings.ToDetail(portal, 0, 0, null, null, null, null, null);
 
         dto.Aliases.Should().NotBeNull();
         IReadOnlyList<PortalAliasDto> ordered = dto.Aliases!;
@@ -190,7 +191,7 @@ public class MappingTests
     {
         PortalAlias alias = new() { PortalAliasId = 17, PortalId = -1, HttpAlias = "alpha.example.com" };
 
-        PortalAliasDto dto = PortalMappings.ToDto(alias);
+        PortalAliasDto dto = PortalMappings.ToDto(alias, currentPortalAliasId: null);
 
         dto.PortalAliasId.Should().Be(17);
         dto.PortalId.Should().Be(-1);
@@ -499,9 +500,9 @@ public class MappingTests
         Assert.Throws<ArgumentNullException>(() => { _ = PortalMappings.ToListItem(null!, [], 0, 0); });
         Assert.Throws<ArgumentNullException>(() => { _ = PortalMappings.ToListItem(portal, null!, 0, 0); });
         Assert.Throws<ArgumentNullException>(
-            () => { _ = PortalMappings.ToDetail(null!, 0, 0, null, null, null, null); });
+            () => { _ = PortalMappings.ToDetail(null!, 0, 0, null, null, null, null, null); });
         Assert.Throws<ArgumentNullException>(() => { _ = PortalMappings.ToSettings(null!); });
-        Assert.Throws<ArgumentNullException>(() => { _ = PortalMappings.ToDto(null!); });
+        Assert.Throws<ArgumentNullException>(() => { _ = PortalMappings.ToDto(null!, null); });
         Assert.Throws<ArgumentNullException>(
             () => { _ = PortalMappings.ToNewPortal(null!, "USD", null, 0m, 0, 0, 0, null, "Portals/1"); });
         Assert.Throws<ArgumentNullException>(() => PortalMappings.ApplyUpdate(null!, updateRequest));
@@ -2557,7 +2558,7 @@ public class MappingTests
         Portal portal = FullPortal();
         portal.PortalGuid = Guid.Empty;
 
-        PortalDetailDto detail = PortalMappings.ToDetail(portal, 0, 0, null, null, null, null);
+        PortalDetailDto detail = PortalMappings.ToDetail(portal, 0, 0, null, null, null, null, null);
         PortalSettingsDto settings = PortalMappings.ToSettings(portal);
 
         detail.Guid.Should().Be(Guid.Empty, "the legacy stand-in for an absent handle is a real value here");
@@ -2567,7 +2568,7 @@ public class MappingTests
         Guid issued = new("57ad7180-c5e7-49f5-b282-c6475cdb7ee7");
         portal.PortalGuid = issued;
 
-        PortalMappings.ToDetail(portal, 0, 0, null, null, null, null).Guid.Should().Be(issued);
+        PortalMappings.ToDetail(portal, 0, 0, null, null, null, null, null).Guid.Should().Be(issued);
         PortalMappings.ToSettings(portal).Guid.Should().Be(issued);
     }
 
@@ -2705,7 +2706,7 @@ public class MappingTests
         blank.PaymentProcessor = string.Empty;
         blank.ProcessorUserId = string.Empty;
 
-        PortalDetailDto emptied = PortalMappings.ToDetail(blank, 0, 0, null, null, null, null);
+        PortalDetailDto emptied = PortalMappings.ToDetail(blank, 0, 0, null, null, null, null, null);
 
         emptied.Description.Should().Be(string.Empty).And.NotBeNull();
         emptied.KeyWords.Should().Be(string.Empty);
@@ -2722,7 +2723,7 @@ public class MappingTests
         absent.PaymentProcessor = null;
         absent.ProcessorUserId = null;
 
-        PortalDetailDto nulled = PortalMappings.ToDetail(absent, 0, 0, null, null, null, null);
+        PortalDetailDto nulled = PortalMappings.ToDetail(absent, 0, 0, null, null, null, null, null);
 
         nulled.Description.Should().BeNull("an unpopulated column is not an empty one");
         nulled.KeyWords.Should().BeNull();
@@ -2758,7 +2759,7 @@ public class MappingTests
         Portal atStandIn = FullPortal();
         atStandIn.ExpiryDate = DateTime.MinValue;
 
-        PortalMappings.ToDetail(atStandIn, 0, 0, null, null, null, null)
+        PortalMappings.ToDetail(atStandIn, 0, 0, null, null, null, null, null)
             .ExpiryDate.Should().Be(DateTime.MinValue);
         PortalMappings.ToSettings(atStandIn).ExpiryDate.Should().Be(DateTime.MinValue);
         PortalMappings.ToListItem(atStandIn, [], 0, 0).ExpiryDate.Should().Be(DateTime.MinValue);
@@ -2766,7 +2767,7 @@ public class MappingTests
         Portal neverExpires = FullPortal();
         neverExpires.ExpiryDate = null;
 
-        PortalMappings.ToDetail(neverExpires, 0, 0, null, null, null, null).ExpiryDate.Should().BeNull();
+        PortalMappings.ToDetail(neverExpires, 0, 0, null, null, null, null, null).ExpiryDate.Should().BeNull();
         PortalMappings.ToSettings(neverExpires).ExpiryDate.Should().BeNull();
         PortalMappings.ToListItem(neverExpires, [], 0, 0).ExpiryDate.Should().BeNull();
 
@@ -2774,7 +2775,7 @@ public class MappingTests
         Portal withTime = FullPortal();
         withTime.ExpiryDate = DateTime.MinValue.AddHours(9).AddMinutes(30);
 
-        PortalMappings.ToDetail(withTime, 0, 0, null, null, null, null)
+        PortalMappings.ToDetail(withTime, 0, 0, null, null, null, null, null)
             .ExpiryDate.Should().Be(
                 DateTime.MinValue.AddHours(9).AddMinutes(30),
                 "the legacy write path compared only the date part and discarded the time");
@@ -2802,7 +2803,7 @@ public class MappingTests
         Portal portal = FullPortal();
         portal.SiteLogHistory = 255;
 
-        PortalMappings.ToDetail(portal, 0, 0, null, null, null, null).SiteLogHistory.Should().Be(255);
+        PortalMappings.ToDetail(portal, 0, 0, null, null, null, null, null).SiteLogHistory.Should().Be(255);
         PortalMappings.ToSettings(portal).SiteLogHistory.Should().Be(255);
 
         UpdatePortalRequest request = new() { SiteLogHistory = 255 };
@@ -4136,13 +4137,13 @@ public class MappingTests
 
         PortalMappings.ToListItem(portal, ["alpha.example.com"], 3, 4).Should().BeEquivalentTo(
             PortalMappings.ToListItem(portal, ["alpha.example.com"], 3, 4));
-        PortalMappings.ToDetail(portal, 3, 4, "Administrators", "Registered Users", "admin@example.com", 5)
+        PortalMappings.ToDetail(portal, 3, 4, "Administrators", "Registered Users", "admin@example.com", 5, null)
             .Should().BeEquivalentTo(
                 PortalMappings.ToDetail(
-                    portal, 3, 4, "Administrators", "Registered Users", "admin@example.com", 5));
+                    portal, 3, 4, "Administrators", "Registered Users", "admin@example.com", 5, null));
         PortalMappings.ToSettings(portal).Should().BeEquivalentTo(PortalMappings.ToSettings(portal));
-        PortalMappings.ToDto(portal.PortalAliases.First()).Should()
-            .BeEquivalentTo(PortalMappings.ToDto(portal.PortalAliases.First()));
+        PortalMappings.ToDto(portal.PortalAliases.First(), null).Should()
+            .BeEquivalentTo(PortalMappings.ToDto(portal.PortalAliases.First(), null));
 
         TabMappings.ToListItem(tab, true).Should().BeEquivalentTo(TabMappings.ToListItem(tab, true));
         TabMappings.ToDetail(tab, true).Should().BeEquivalentTo(TabMappings.ToDetail(tab, true));

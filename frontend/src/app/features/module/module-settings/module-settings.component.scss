@@ -421,6 +421,18 @@
   min-inline-size: 0;
 }
 
+// One identified region per field, holding whatever the server said about that field. It exists as a
+// container rather than as loose siblings so the messages have ONE stable identifier for the control's
+// aria-describedby to name - see the template's note. It takes a line of its own, which is where a wrapped
+// message ended up before and is where an error is easiest to read.
+.module-settings__messages {
+  display: flex;
+  flex-direction: column;
+  flex-basis: var(--size-full);
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
 // -----------------------------------------------------------------------------
 //  FIELD NAME CARRIED BY A NON-LABEL ELEMENT
 // -----------------------------------------------------------------------------

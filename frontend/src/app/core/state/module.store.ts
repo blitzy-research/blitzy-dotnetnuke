@@ -199,13 +199,15 @@
  * here; these inline notes are this file's mechanism for recording its own divergences.
  */
 
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { Injectable, computed, inject, signal, type OnDestroy } from '@angular/core';
+import { Subscription } from 'rxjs';
 
 import { isProblemDetails } from '../models/problem-details.model';
 import { DEFAULT_PAGE_SIZE, emptyPagedResult } from '../models/paged-result.model';
 import { ModuleService } from '../services/module.service';
 import { TabService } from '../services/tab.service';
 import { failureCode, summarizeProblem } from '../utils/form-errors.util';
+import { OperationGeneration } from '../utils/operation-generation.util';
 
 import type {
   CreateModuleRequest,
@@ -222,6 +224,18 @@ import type { ApiMeta, SortDirection } from '../models/paged-result.model';
 import type { ProblemDetails } from '../models/problem-details.model';
 import type { TabListItem } from '../models/tab.model';
 import type { ProblemSummary } from '../utils/form-errors.util';
+
+/**
+ * Reported when a module read answers with a record other than the one that was asked for.
+ *
+ * A refusal rather than a silent discard, because this outcome means the transport, a proxy or the
+ * server disagreed with this store about which record was requested, and an operator who sees nothing at
+ * all would simply try again. It carries no identifier: the mismatch is a fault in the exchange rather
+ * than something the person at the keyboard did, and naming records here would put one tenant's key in
+ * front of whoever triggered the read.
+ */
+const MISMATCHED_MODULE_MESSAGE =
+  'The server answered with a different module from the one requested. Nothing was loaded.';
 
 // =====================================================================================================
 // SERVICE ARGUMENT TYPES, DERIVED RATHER THAN IMPORTED OR RESTATED
@@ -718,9 +732,101 @@ function buildTabHierarchy(tabs: readonly TabListItem[]): TabHierarchy {
  *   keying by module would collapse those rows onto one another.
  */
 @Injectable({ providedIn: 'root' })
-export class ModuleStore {
+export class ModuleStore implements OnDestroy {
   private readonly moduleService = inject(ModuleService);
   private readonly tabService = inject(TabService);
+
+  // ---------------------------------------------------------------------------------------------------
+  // IN-FLIGHT REQUEST HANDLES
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // ⚠ ONE HANDLE PER READ SLICE, AND STARTING A READ CANCELS THE PREVIOUS ONE FOR THAT SLICE.
+  //
+  // Before these existed every request in this store was fire-and-forget, and two consequences
+  // followed. The first is a stale-response hazard: a screen reached for module A, navigated to module
+  // B on the same route, and whichever response returned LAST won — so B's screen could be showing A's
+  // record while the route said B, and a save from that screen would then combine B's route key with
+  // A's form data. The second is that a session teardown could not actually take effect, because a read
+  // still in the air would repopulate the slices immediately after they were cleared.
+  //
+  // The pattern is the one `core/state/portal.store.ts` and `core/state/user.store.ts` already
+  // establish, adopted rather than reinvented: unsubscribe before restarting, so the superseded
+  // response is never delivered at all. Cancellation is the strongest available fix for a read because
+  // it removes the possibility of a late commit rather than testing for one — a read has no server-side
+  // consequence, which is what makes abandoning it safe.
+  //
+  // EVERY read slice carries a handle, including the three that address no record parameter - the
+  // definition catalogue's two lists and the single definition. Those three cannot suffer the
+  // wrong-record hazard above, so a handle earns its place there for the second reason alone: "this read
+  // names no record" does not mean "this read is safe to let land after sign-out", and without a handle
+  // teardown would have no way to stop it.
+
+  private listRequest: Subscription | null = null;
+  private moduleRequest: Subscription | null = null;
+  private settingsRequest: Subscription | null = null;
+  private definitionsRequest: Subscription | null = null;
+  private definitionRequest: Subscription | null = null;
+  private desktopDefinitionsRequest: Subscription | null = null;
+  private tabsRequest: Subscription | null = null;
+
+  /**
+   * The export in flight, held so that closing the transfer panel can release it.
+   *
+   * An export is a POST and is therefore also tracked as a write, which is what keeps teardown able to
+   * reach it. This second handle exists because closing the panel abandons THIS operation specifically,
+   * and releasing every write to do it would be far too broad.
+   */
+  private exportRequest: Subscription | null = null;
+
+  /*
+   * A container for WRITES, which are deliberately never cancelled to supersede one another.
+   * Abandoning a write client-side does not undo it server-side, so cancelling one would leave this
+   * store confident about a change it can no longer observe. Concurrency is instead surfaced through
+   * the saving flags, which a form binds to disable its own submit. The container exists only so that
+   * teardown can release anything still outstanding; a settled write detaches itself from it.
+   *
+   * A SET, NOT AN RXJS `Subscription` CONTAINER, and the distinction is load-bearing rather than
+   * stylistic. An rxjs container is single-use: once `unsubscribe` has been called on it, it is closed
+   * for good, and every handle added afterwards is unsubscribed the instant it arrives. This store is
+   * root-provided and therefore OUTLIVES the session it was serving, so `reset` runs on sign-out and
+   * the SAME instance then serves the next account. With an rxjs container, the first sign-out would
+   * silently break every subsequent write - each one cancelled at birth, the server never called, the
+   * saving flag never cleared - and nothing would report it. A set is cleared and reused instead, which
+   * is the pattern `core/state/portal.store.ts:L473` already establishes.
+   */
+  private readonly writeRequests = new Set<Subscription>();
+
+  // ---------------------------------------------------------------------------------------------------
+  // OPERATION GENERATIONS
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // ⚠ THE SECOND LAYER, AND IT GUARDS THE COMMIT RATHER THAN THE TRANSPORT.
+  //
+  // The handles above cancel a superseded request so its answer is never delivered. That is the stronger
+  // fix and it closes the common case, but it does not cover every way a delivered answer can stop being
+  // the one that is wanted:
+  //
+  // - Clearing a slice, or purging this store when a session ends, changes what a pending response MEANS
+  //   without there being a newer request whose dispatch would have cancelled it.
+  // - A screen holds several of these slices at once, started by different commands. Cancelling the
+  //   module read does not invalidate a settings read that is already scheduled to commit.
+  //
+  // So each of the three record-addressed slices carries a ticket taken at dispatch and re-checked at
+  // the commit. One per slice rather than one for the store, so that reading the settings cannot
+  // invalidate a module read that is still legitimately wanted.
+  //
+  // The mechanism is `core/utils/operation-generation.util.ts`, which is the same shape as the session
+  // generation in `core/services/token-storage.service.ts` and the phase ticket in
+  // `core/state/auth.store.ts` - adopted rather than reinvented.
+
+  /** Guards the loaded module against a superseded or abandoned read. */
+  private readonly moduleReads = new OperationGeneration();
+
+  /** Guards the settings bag. */
+  private readonly settingsReads = new OperationGeneration();
+
+  /** Guards the exported document, whose delivery is the most consequential commit in this store. */
+  private readonly exportOperations = new OperationGeneration();
 
   // ---------------------------------------------------------------------------------------------------
   // WRITABLE SLICES
@@ -1183,7 +1289,8 @@ export class ModuleStore {
     this._listLoading.set(true);
     this.clearFailure();
 
-    this.moduleService.listModules(this._query(), this._filter()).subscribe({
+    this.listRequest?.unsubscribe();
+    this.listRequest = this.moduleService.listModules(this._query(), this._filter()).subscribe({
       next: (page: ModuleListPage) => {
         this._page.set(page);
         this._listLoading.set(false);
@@ -1213,7 +1320,8 @@ export class ModuleStore {
     this._tabsLoading.set(true);
     this.clearFailure();
 
-    this.tabService.getByPortal(portalId).subscribe({
+    this.tabsRequest?.unsubscribe();
+    this.tabsRequest = this.tabService.getByPortal(portalId).subscribe({
       next: (tabs: readonly TabListItem[]) => {
         this._tabPortalId.set(portalId);
         // Copied rather than stored by reference, so that the slice cannot be mutated through the array
@@ -1253,7 +1361,8 @@ export class ModuleStore {
     this._tabsLoading.set(true);
     this.clearFailure();
 
-    this.tabService.getByPortal(portalId).subscribe({
+    this.tabsRequest?.unsubscribe();
+    this.tabsRequest = this.tabService.getByPortal(portalId).subscribe({
       next: (tabs: readonly TabListItem[]) => {
         this._tabPortalId.set(portalId);
         this._tabs.set([...tabs]);
@@ -1278,12 +1387,39 @@ export class ModuleStore {
     this.clearFailure();
     this._selectedModuleId.set(moduleId);
 
-    this.moduleService.getModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
+    const ticket = this.moduleReads.begin();
+
+    this.moduleRequest?.unsubscribe();
+    this.moduleRequest = this.moduleService.getModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
       next: (detail: ModuleDetail | null) => {
+        // ⚠ TWO INDEPENDENT CHECKS, AND NEITHER IS REDUNDANT.
+        //
+        // The ticket refuses an answer that is no longer wanted: a newer read started, the slice was
+        // cleared, or the session was purged. It is the only one of the two that can tell a re-read of
+        // the SAME module from the read it replaced, because both carry the same identifier.
+        //
+        // The identifier comparison refuses an answer that describes the wrong record - a mismatch that
+        // would otherwise be committed silently and then be submitted back under the route's key,
+        // overwriting a module the operator never opened.
+        if (!this.moduleReads.isCurrent(ticket)) {
+          return;
+        }
+
+        if (detail !== null && detail.moduleId !== moduleId) {
+          this._moduleLoading.set(false);
+          this.recordFailure('loadModule', new Error(MISMATCHED_MODULE_MESSAGE));
+
+          return;
+        }
+
         this._module.set(detail);
         this._moduleLoading.set(false);
       },
       error: (cause: unknown) => {
+        if (!this.moduleReads.isCurrent(ticket)) {
+          return;
+        }
+
         this._moduleLoading.set(false);
         this.recordFailure('loadModule', cause);
       },
@@ -1303,7 +1439,8 @@ export class ModuleStore {
     this._definitionsLoading.set(true);
     this.clearFailure();
 
-    this.moduleService.listModuleDefinitions().subscribe({
+    this.definitionsRequest?.unsubscribe();
+    this.definitionsRequest = this.moduleService.listModuleDefinitions().subscribe({
       next: (definitions: readonly ModuleDefinition[]) => {
         this._definitions.set([...definitions]);
         this._definitionsLoading.set(false);
@@ -1344,7 +1481,8 @@ export class ModuleStore {
     this._definitionsLoading.set(true);
     this.clearFailure();
 
-    this.moduleService.getModuleDefinition(moduleDefinitionId).subscribe({
+    this.definitionRequest?.unsubscribe();
+    this.definitionRequest = this.moduleService.getModuleDefinition(moduleDefinitionId).subscribe({
       next: (definition: ModuleDefinition | null) => {
         this._definition.set(definition);
         this._definitionsLoading.set(false);
@@ -1366,7 +1504,8 @@ export class ModuleStore {
     this._definitionsLoading.set(true);
     this.clearFailure();
 
-    this.moduleService.listDesktopModuleDefinitions(desktopModuleId).subscribe({
+    this.desktopDefinitionsRequest?.unsubscribe();
+    this.desktopDefinitionsRequest = this.moduleService.listDesktopModuleDefinitions(desktopModuleId).subscribe({
       next: (definitions: readonly ModuleDefinition[]) => {
         this._desktopDefinitions.set([...definitions]);
         this._definitionsLoading.set(false);
@@ -1401,18 +1540,20 @@ export class ModuleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.moduleService.createModule(request).subscribe({
-      next: (detail: ModuleDetail) => {
-        this._module.set(detail);
-        this._selectedModuleId.set(detail.moduleId);
-        this._saving.set(false);
-        this.loadModules();
-      },
-      error: (cause: unknown) => {
-        this._saving.set(false);
-        this.recordFailure('createModule', cause);
-      },
-    });
+    this.track(
+      this.moduleService.createModule(request).subscribe({
+        next: (detail: ModuleDetail) => {
+          this._module.set(detail);
+          this._selectedModuleId.set(detail.moduleId);
+          this._saving.set(false);
+          this.loadModules();
+        },
+        error: (cause: unknown) => {
+          this._saving.set(false);
+          this.recordFailure('createModule', cause);
+        },
+      }),
+    );
   }
 
   /**
@@ -1446,26 +1587,28 @@ export class ModuleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.moduleService.updateModule(moduleId, request).subscribe({
-      next: (detail: ModuleDetail | null) => {
-        this._module.set(detail);
-        this._saving.set(false);
+    this.track(
+      this.moduleService.updateModule(moduleId, request).subscribe({
+        next: (detail: ModuleDetail | null) => {
+          this._module.set(detail);
+          this._saving.set(false);
 
-        if (detail === null) {
-          // No echo to merge, so the listing is the only source of truth for the row. Re-read rather
-          // than leave a stale row on screen.
-          this.loadModules();
+          if (detail === null) {
+            // No echo to merge, so the listing is the only source of truth for the row. Re-read rather
+            // than leave a stale row on screen.
+            this.loadModules();
 
-          return;
-        }
+            return;
+          }
 
-        this.replaceListedPlacement(detail, tabModuleId);
-      },
-      error: (cause: unknown) => {
-        this._saving.set(false);
-        this.recordFailure('updateModule', cause);
-      },
-    });
+          this.replaceListedPlacement(detail, tabModuleId);
+        },
+        error: (cause: unknown) => {
+          this._saving.set(false);
+          this.recordFailure('updateModule', cause);
+        },
+      }),
+    );
   }
 
   /**
@@ -1493,18 +1636,20 @@ export class ModuleStore {
     this._saving.set(true);
     this.clearFailure();
 
-    this.moduleService.deleteModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
-      next: () => {
-        this._saving.set(false);
-        // The mandatory re-read. See the note above: the row is not gone, and only the listing knows
-        // whether it should still be shown.
-        this.loadModules();
-      },
-      error: (cause: unknown) => {
-        this._saving.set(false);
-        this.recordFailure('deleteModule', cause);
-      },
-    });
+    this.track(
+      this.moduleService.deleteModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
+        next: () => {
+          this._saving.set(false);
+          // The mandatory re-read. See the note above: the row is not gone, and only the listing knows
+          // whether it should still be shown.
+          this.loadModules();
+        },
+        error: (cause: unknown) => {
+          this._saving.set(false);
+          this.recordFailure('deleteModule', cause);
+        },
+      }),
+    );
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -1530,12 +1675,29 @@ export class ModuleStore {
     this._settingsLoading.set(true);
     this.clearFailure();
 
-    this.moduleService.getModuleSettings(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
+    const ticket = this.settingsReads.begin();
+
+    this.settingsRequest?.unsubscribe();
+    this.settingsRequest = this.moduleService.getModuleSettings(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
       next: (bag: ModuleSettingsBag | null) => {
+        // ⚠ THE TICKET IS THE ONLY AVAILABLE CHECK HERE, which is precisely why the mechanism cannot be
+        // an identifier comparison. A settings bag is operator-authored key-and-value data and carries
+        // NO module key of its own, so there is nothing in the response to compare against the module
+        // that was asked for. Without this, module A's settings would be committed under module B's
+        // route and then saved back to B, replacing B's configuration wholesale - the update endpoint
+        // writes the bag as a whole rather than merging it.
+        if (!this.settingsReads.isCurrent(ticket)) {
+          return;
+        }
+
         this._settings.set(bag);
         this._settingsLoading.set(false);
       },
       error: (cause: unknown) => {
+        if (!this.settingsReads.isCurrent(ticket)) {
+          return;
+        }
+
         this._settingsLoading.set(false);
         this.recordFailure('loadSettings', cause);
       },
@@ -1567,18 +1729,20 @@ export class ModuleStore {
     const moduleId: number = settings.moduleId;
     const placement: ModulePlacement | undefined = this.resolvePlacement(tabModuleId);
 
-    this.moduleService.updateModuleSettings(moduleId, settings, placement).subscribe({
-      next: () => {
-        this._settingsSaving.set(false);
-        // The write returned nothing, so the stored state is read back rather than assumed to equal what
-        // was sent: the server may normalise a value on the way in.
-        this.loadSettings(moduleId, tabModuleId);
-      },
-      error: (cause: unknown) => {
-        this._settingsSaving.set(false);
-        this.recordFailure('saveSettings', cause);
-      },
-    });
+    this.track(
+      this.moduleService.updateModuleSettings(moduleId, settings, placement).subscribe({
+        next: () => {
+          this._settingsSaving.set(false);
+          // The write returned nothing, so the stored state is read back rather than assumed to equal what
+          // was sent: the server may normalise a value on the way in.
+          this.loadSettings(moduleId, tabModuleId);
+        },
+        error: (cause: unknown) => {
+          this._settingsSaving.set(false);
+          this.recordFailure('saveSettings', cause);
+        },
+      }),
+    );
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -1619,16 +1783,38 @@ export class ModuleStore {
     this._exportedContent.set(null);
     this.clearFailure();
 
-    this.moduleService.exportModule(moduleId, request).subscribe({
+    const ticket = this.exportOperations.begin();
+
+    this.exportRequest = this.moduleService.exportModule(moduleId, request).subscribe({
       next: (content: string) => {
+        // ⚠ THE MOST CONSEQUENTIAL GUARD IN THIS FILE, because the commit it protects is an
+        // EXFILTRATION sink rather than a display slice. The document carries no module key - it is
+        // the module's serialised data as a bare string - so the ticket is again the only check
+        // available. Publishing module A's export while the screen has moved to module B hands the
+        // operator A's data under B's composed filename, and nothing downstream can detect the
+        // substitution. An export is also deliberately NOT cancelled by a later one, so this ticket
+        // is the only thing standing between two overlapping exports and the wrong one winning.
+        if (!this.exportOperations.isCurrent(ticket)) {
+          return;
+        }
+
         this._exportedContent.set(content);
         this._exporting.set(false);
       },
       error: (cause: unknown) => {
+        if (!this.exportOperations.isCurrent(ticket)) {
+          return;
+        }
+
         this._exporting.set(false);
         this.recordFailure('exportModule', cause);
       },
     });
+
+    // ⚠ TRACKED AS A WRITE AS WELL AS HELD ABOVE, and both are needed. The dedicated handle lets the
+    // transfer panel abandon THIS operation when it closes; the write container is what lets a session
+    // teardown reach it, since releasing every write to close one panel would be far too broad.
+    this.track(this.exportRequest);
   }
 
   /**
@@ -1667,16 +1853,18 @@ export class ModuleStore {
     this._importCompleted.set(false);
     this.clearFailure();
 
-    this.moduleService.importModule(request).subscribe({
-      next: () => {
-        this._importing.set(false);
-        this._importCompleted.set(true);
-      },
-      error: (cause: unknown) => {
-        this._importing.set(false);
-        this.recordFailure('importModule', cause);
-      },
-    });
+    this.track(
+      this.moduleService.importModule(request).subscribe({
+        next: () => {
+          this._importing.set(false);
+          this._importCompleted.set(true);
+        },
+        error: (cause: unknown) => {
+          this._importing.set(false);
+          this.recordFailure('importModule', cause);
+        },
+      }),
+    );
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -1695,20 +1883,46 @@ export class ModuleStore {
    * a different module or report a success that has already been acknowledged.
    */
   clearTransferOutcome(): void {
+    // Abandons any export still in the air. Without this, closing the panel and reopening it could be
+    // met by the earlier export's document arriving and presenting itself as the new one's result.
+    //
+    // ⚠ THE HANDLE IS RELEASED AND THE FLAG IS LOWERED, not just the ticket invalidated. An abandoned
+    // operation has to return its slice to REST, because nothing else will: the refused commit returns
+    // early by design, so if the flag were left raised the screen would report a transfer in progress
+    // for the remainder of the page's life, with no request behind it and no way to clear it.
+    this.exportOperations.invalidate();
+    this.cancelExport();
+
     this._exportedContent.set(null);
+    this._exporting.set(false);
     this._importCompleted.set(false);
   }
 
   /** Discards the loaded module and the selection that addressed it. */
   clearModule(): void {
+    // Abandons any module read in the air, so a response cannot repopulate the very slice this just
+    // discarded. There is no newer request here whose dispatch would have superseded it.
+    //
+    // The handle is released and the loading flag lowered for the reason given on
+    // {@link ModuleStore.clearTransferOutcome}: an abandoned read must leave its slice at rest.
+    this.moduleReads.invalidate();
+    this.moduleRequest?.unsubscribe();
+    this.moduleRequest = null;
+
     this._module.set(null);
     this._selectedModuleId.set(undefined);
     this._selectedTabModuleId.set(undefined);
+    this._moduleLoading.set(false);
   }
 
   /** Discards the loaded settings. */
   clearSettings(): void {
+    this.settingsReads.invalidate();
+    this.settingsRequest?.unsubscribe();
+    this.settingsRequest = null;
+
     this._settings.set(null);
+    this._settingsLoading.set(false);
   }
 
   /** Discards the single definition read by {@link ModuleStore.loadDefinition}, leaving the catalogue. */
@@ -1716,9 +1930,210 @@ export class ModuleStore {
     this._definition.set(null);
   }
 
+  /**
+   * Returns every slice to the state it held before anything was read.
+   *
+   * ⚠ THIS IS A SESSION-TEARDOWN OPERATION, NOT A SCREEN-LEVEL CLEAR. The five `clear*` members above
+   * are for a screen tidying up after itself — closing a transfer panel, dismissing a banner, leaving a
+   * detail view. This one exists for the moment the SESSION ends, and the distinction matters because
+   * this store is root-provided: one instance is shared by every module screen and it outlives all of
+   * them. Without this member, signing out left the entire contents of that instance in memory, and the
+   * next person to sign in on the same page load inherited it.
+   *
+   * WHAT WAS ACTUALLY RETAINED, and why it is not a cosmetic concern. The five `clear*` members between
+   * them touch six of the twenty-five slices below. Everything else survived a sign-out, including:
+   *
+   * - the module LISTING — every row of one tenant's module placements, with titles and definition names;
+   * - the loaded module's SETTINGS bag, which is arbitrary operator-authored configuration;
+   * - the page hierarchy read for a tenant, and the tenant identifier it was read for;
+   * - the EXPORTED MODULE CONTENT, which is the most consequential of the lot: a serialised copy of a
+   *   module's data, held as a plain string, produced under one account's authority. Leaving it in a
+   *   root-scoped store after that account signed out means the next account on the same page load could
+   *   be handed it by a download affordance.
+   *
+   * Every one of those is data belonging to a tenant and an account that are no longer signed in, so it
+   * is cleared rather than merely hidden.
+   *
+   * ⚠ IN-FLIGHT WORK IS CANCELLED FIRST, before any slice is written. Resetting the slices while a read
+   * was still outstanding would accomplish nothing: the response would arrive afterwards and repopulate
+   * exactly what had just been discarded, which is worse than not resetting at all because it looks
+   * correct. Cancellation therefore precedes the writes and is not optional.
+   *
+   * Called from `core/state/session-teardown.service.ts` and deliberately from nowhere else. A screen
+   * must not reach for this — it would silently discard state its siblings are reading.
+   *
+   * The values written below are the SAME initialisers the fields declare, restated rather than derived,
+   * because a reset that quietly diverged from the initial state would leave the store in a condition it
+   * can never otherwise be in.
+   */
+  reset(): void {
+    this.cancelInFlight();
+    this.abandonOperations();
+
+    // The listing, its query coordinate and its filters.
+    this._page.set(emptyPagedResult<ModuleListItem>());
+    this._query.set({ pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE });
+    this._filter.set({});
+    this._listLoading.set(false);
+
+    // The selected module and its placement.
+    this._module.set(null);
+    this._selectedModuleId.set(undefined);
+    this._selectedTabModuleId.set(undefined);
+    this._moduleLoading.set(false);
+    this._saving.set(false);
+
+    // The settings bag: operator-authored configuration, tenant-scoped.
+    this._settings.set(null);
+    this._settingsLoading.set(false);
+    this._settingsSaving.set(false);
+
+    // The definition catalogue and the single definition read from it.
+    this._definitions.set([]);
+    this._desktopDefinitions.set([]);
+    this._definition.set(null);
+    this._definitionsLoading.set(false);
+
+    // The page hierarchy, and the tenant it was read for.
+    this._tabs.set([]);
+    this._tabPortalId.set(undefined);
+    this._selectedTabId.set(undefined);
+    this._tabsLoading.set(false);
+
+    // ⚠ The exported document. A serialised copy of a module's data, produced under the authority of the
+    // account that is signing out. Nothing here may survive them.
+    this._exportedContent.set(null);
+    this._exporting.set(false);
+    this._importing.set(false);
+    this._importCompleted.set(false);
+
+    this._failure.set(null);
+  }
+
+  /**
+   * Releases every request handle when the injector holding this store is destroyed.
+   *
+   * A root-provided store lives as long as the application, so in production this runs at teardown. It
+   * matters most in a specification, where each one builds its own injector: a request left listening
+   * across that boundary would report into a store the next specification has already replaced, and the
+   * failure would surface as an unrelated test failing intermittently.
+   *
+   * Deliberately NOT a call to {@link ModuleStore.reset}. Destruction has no session semantics — writing
+   * every slice back to its initial value on the way out accomplishes nothing, because the instance is
+   * being discarded, and it would make the two concerns impossible to tell apart at a call site.
+   */
+  ngOnDestroy(): void {
+    this.cancelInFlight();
+  }
+
   // ---------------------------------------------------------------------------------------------------
   // INTERNALS
   // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * Holds a write's handle until it settles, so that teardown can release it.
+   *
+   * A write is never cancelled to make way for a later one — see the note on the handles at the head of
+   * this class — so the handle is discarded when the write FINISHES rather than when the next one starts,
+   * and the set cannot therefore grow without bound.
+   *
+   * A handle that is already closed is not retained at all: a synchronous observable settles before
+   * `subscribe` returns, and holding a closed handle would leak it until teardown for no benefit.
+   *
+   * @param request The handle to hold.
+   */
+  private track(request: Subscription): void {
+    if (request.closed) {
+      return;
+    }
+
+    this.writeRequests.add(request);
+    request.add(() => {
+      this.writeRequests.delete(request);
+    });
+  }
+
+  /**
+   * Releases the export in flight, if any, and forgets its handle.
+   *
+   * Narrower than {@link ModuleStore.cancelWrites} on purpose: closing the transfer panel abandons the
+   * export the panel started and must not disturb an unrelated save.
+   */
+  private cancelExport(): void {
+    this.exportRequest?.unsubscribe();
+    this.exportRequest = null;
+  }
+
+  /**
+   * Cancels every read in flight and forgets its handle.
+   *
+   * Abandoning a read is safe in a way abandoning a write is not: a read has no server-side consequence,
+   * so nothing is left half-done by refusing to listen to its answer.
+   */
+  private cancelReads(): void {
+    this.listRequest?.unsubscribe();
+    this.listRequest = null;
+    this.moduleRequest?.unsubscribe();
+    this.moduleRequest = null;
+    this.settingsRequest?.unsubscribe();
+    this.settingsRequest = null;
+    this.definitionsRequest?.unsubscribe();
+    this.definitionsRequest = null;
+    this.definitionRequest?.unsubscribe();
+    this.definitionRequest = null;
+    this.desktopDefinitionsRequest?.unsubscribe();
+    this.desktopDefinitionsRequest = null;
+    this.tabsRequest?.unsubscribe();
+    this.tabsRequest = null;
+  }
+
+  /**
+   * Releases every write handle.
+   *
+   * Only for teardown and for a reset that is discarding the whole store. A write in flight is not
+   * otherwise abandoned, because releasing the handle stops the client listening without undoing
+   * anything the server may already have committed.
+   *
+   * Iterates a COPY of the set, because unsubscribing runs the teardown registered by
+   * {@link ModuleStore.track}, which deletes from the set being iterated.
+   */
+  private cancelWrites(): void {
+    for (const request of [...this.writeRequests]) {
+      request.unsubscribe();
+    }
+
+    this.writeRequests.clear();
+
+    // The export is tracked as a write, so it has just been released; its dedicated handle is forgotten
+    // here so the two cannot disagree about whether one is outstanding.
+    this.exportRequest = null;
+  }
+
+  /**
+   * Cancels everything this store has outstanding, reads and writes alike.
+   *
+   * The single entry point used by {@link ModuleStore.reset} and {@link ModuleStore.ngOnDestroy}, so that
+   * neither can gain a handle the other forgets to release.
+   */
+  private cancelInFlight(): void {
+    this.cancelReads();
+    this.cancelWrites();
+  }
+
+  /**
+   * Abandons every operation ticket, so nothing already issued can still be current.
+   *
+   * Paired with {@link ModuleStore.cancelInFlight} rather than folded into it, because the two answer
+   * different questions and one is not a substitute for the other. Cancelling releases a handle so the
+   * response is never delivered; abandoning refuses the COMMIT of any response that is delivered anyway.
+   * A write is the case that makes the distinction concrete: it is deliberately not abandoned mid-flight
+   * server-side, and its handle may already have been released by the time its answer arrives.
+   */
+  private abandonOperations(): void {
+    this.moduleReads.invalidate();
+    this.settingsReads.invalidate();
+    this.exportOperations.invalidate();
+  }
 
   /**
    * Resolves which placement an operation addresses.

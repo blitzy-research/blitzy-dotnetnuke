@@ -252,6 +252,60 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// <inheritdoc />
     /// <remarks>
     /// <para>
+    /// The scope is resolved through the SAME <see cref="DefinitionsInPortalScope(int?)"/> subquery the
+    /// single-account overload uses, so the two reads cannot drift apart about what a scope's declarations
+    /// are - which is the property that keeps a batched read and a per-account read answering identically.
+    /// </para>
+    /// <para>
+    /// The account key leads the ordering, so a caller grouping these rows sees each account's slice in the
+    /// same definition-then-row-identity sequence the single-account overload produces. Loading each row's
+    /// declaration matches that overload too, because an answer is only interpretable beside the declaration
+    /// it answers.
+    /// </para>
+    /// <para>
+    /// MIGRATION: net-new, and it replaces a per-row round trip rather than a legacy procedure - the legacy
+    /// membership provider's profile read took one account (<c>DataProvider.vb:L118</c>). The account listing
+    /// projects a composed address and a telephone number when the tenant's column settings ask for them,
+    /// which is the shipped default, and it used to obtain them by issuing this read once per row of the page
+    /// AFTER the database had already windowed the accounts. One statement for the page replaces that; the
+    /// grouping the caller then performs is in memory and costs nothing per row.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<UserProfileValue>> GetProfileValuesAsync(
+        int? portalId,
+        IReadOnlyCollection<int> userIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(userIds);
+
+        if (userIds.Count == 0)
+        {
+            // Asking for no accounts is answered without a statement. It is a legitimate request: a listing
+            // whose window landed past the end of the collection has no account to name.
+            return Array.Empty<UserProfileValue>();
+        }
+
+        int[] wanted = userIds.Distinct().ToArray();
+
+        IQueryable<int> scopedDefinitions = DefinitionsInPortalScope(portalId)
+            .Select(definition => definition.PropertyDefinitionId);
+
+        return await _dbContext.UserProfileValues
+            .AsNoTracking()
+            .Include(value => value.PropertyDefinition)
+            .Where(value =>
+                wanted.Contains(value.UserId)
+                && scopedDefinitions.Contains(value.PropertyDefinitionId))
+            .OrderBy(value => value.UserId)
+            .ThenBy(value => value.PropertyDefinitionId)
+            .ThenBy(value => value.ProfileId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
     /// MIGRATION: the INSERT arm of the single membership upsert
     /// (<c>DataProvider.vb:L119</c>, procedure branch <c>04.00.04.SqlDataProvider:L1633</c>). Six
     /// positional arguments become one entity, and the arm is chosen by the caller calling this member

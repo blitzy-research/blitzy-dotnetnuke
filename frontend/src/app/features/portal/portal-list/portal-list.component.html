@@ -228,7 +228,7 @@
 <ng-template #editCommand let-portal>
   <a
     class="portal-list__row-command"
-    [routerLink]="editSettingsLink(portal)"
+    [routerLink]="editSettingsLinks()[portal.portalId]"
     [attr.aria-label]="editCommandName(portal)"
   >
     Settings
@@ -279,9 +279,41 @@
 -->
 <ng-template #aliasesCell let-portal>
   <ul class="portal-list__aliases">
-    @for (alias of aliasLinks(portal); track alias.href) {
+    <!--
+      ⚠ TRACKED BY THE LABEL, NOT THE ADDRESS. Every value that fails the address allowlist projects a
+      null href, so tracking by href would give every refused alias the same key and the block would
+      refuse to render more than one of them. The label is the stored host name and is what distinguishes
+      the rows to a reader in any case.
+    -->
+    @for (alias of aliasLinks(portal); track alias.label) {
       <li class="portal-list__alias">
-        <a [href]="alias.href" rel="noopener">{{ alias.label }}</a>
+        <!--
+          A host name that is not an address is rendered as TEXT rather than as a link. The stored value
+          is operator-supplied and only `http` and `https` addresses naming a host are admitted, so a mail
+          address, an application-relative path, a network share or a scheme-bearing value that is not one
+          of the two appears exactly as stored with nothing to follow. The label is identical on both
+          arms: only the address is withheld, because rewriting what an operator stored would make this
+          row disagree with the edit screen.
+
+          An ADMITTED address opens in a NEW BROWSING CONTEXT, which is what makes the `rel` mean
+          anything: without a target the attribute is inert, because it protects the opener from a
+          document opened into a new context and there was no new context to protect against. The target
+          is the half to add rather than the attribute the half to delete, for a concrete reason: this
+          address leaves the application entirely, and the session's token is held in memory only, so
+          navigating away in the same tab signs the operator out. `noreferrer` joins `noopener` because
+          the destination is another origin and the administration address is not its business.
+
+          The hidden suffix announces the new context to a screen reader without changing what is drawn.
+          It is INSIDE the anchor, so the accessible name still begins with the visible host name — which
+          is what keeps the label and the name consistent for anyone driving this by voice.
+        -->
+        @if (alias.href === null) {
+          {{ alias.label }}
+        } @else {
+          <a [href]="alias.href" target="_blank" rel="noopener noreferrer">
+            {{ alias.label }}<span class="portal-list__new-context"> (opens in a new tab)</span>
+          </a>
+        }
       </li>
     }
   </ul>

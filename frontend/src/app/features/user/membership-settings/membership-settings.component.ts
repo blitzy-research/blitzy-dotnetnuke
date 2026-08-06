@@ -987,17 +987,36 @@ export class MembershipSettingsComponent implements OnInit {
   /**
    * Whether the form may be submitted.
    *
-   * Refused while the policy is being read, and the refusal is a correctness measure
-   * rather than a courtesy: until the server's policy has been applied, the form
-   * still holds the seated defaults, and submitting those would overwrite a live
-   * policy with values nobody chose. That matters most for the electronic-mail
-   * expression, whose real default comes from the server and is seated empty here.
-   * A tenant whose policy could not be read therefore cannot overwrite it, which is
-   * the right answer, and the banner says why.
+   * Refused while the policy is being read or written, and the refusal is a
+   * correctness measure rather than a courtesy: until the server's policy has been
+   * applied, the form still holds the seated defaults, and submitting those would
+   * overwrite a live policy with values nobody chose. That matters most for the
+   * electronic-mail expression, whose real default comes from the server and is
+   * seated empty here.
+   *
+   * Refused AS WELL once a read has failed, which is the other half of the same rule.
+   * Testing only the in-flight flag would satisfy the sentence above for exactly as
+   * long as the request lasted and then stop: a refused read clears the flag without
+   * ever applying a policy, leaving the seated defaults on screen and submittable. A
+   * tenant whose policy could not be read therefore cannot overwrite it, and the
+   * banner says why - the very failure that closes the command is the one it is
+   * showing.
+   *
+   * A refused SAVE deliberately does not close the command. That failure leaves a
+   * policy that was read successfully and an entry the operator can correct, so the
+   * form must stay submittable; only a failure of the read itself withholds it. The
+   * store clears the slot at the start of every read, so a retry reopens the command
+   * without anything here resetting it.
    */
-  protected readonly canSubmit: Signal<boolean> = computed(
-    () => this.loading() === false && this.saving() === false,
-  );
+  protected readonly canSubmit: Signal<boolean> = computed(() => {
+    if (this.loading() || this.saving()) {
+      return false;
+    }
+
+    const failure = this.store.failure();
+
+    return failure === null || failure.operation !== 'loadMembershipSettings';
+  });
 
   /**
    * The submission awaiting an outcome.

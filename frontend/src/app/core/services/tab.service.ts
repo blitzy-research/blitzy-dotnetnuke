@@ -3,8 +3,16 @@ import { Injectable, inject } from '@angular/core';
 import { map, type Observable } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
-import type { ApiResponse } from '../models/paged-result.model';
+import { decodeTabDetail, decodeTabListItem } from '../models/tab.model';
+import { arrayOf, decodeResponse, envelopeOf } from '../utils/decode.util';
+import { presentedInContext } from './notification.service';
+
+import type { Decoder } from '../utils/decode.util';
 import type { TabDetail, TabListItem, UpdateTabRequest } from '../models/tab.model';
+
+/** One decoder per response shape this transport reads, composed once at module scope. */
+const TAB_LIST_RESPONSE: Decoder<readonly TabListItem[]> = envelopeOf(arrayOf(decodeTabListItem));
+const TAB_DETAIL_RESPONSE: Decoder<TabDetail> = envelopeOf(decodeTabDetail);
 
 /**
  * Transport for the page resource - the abstraction the database, the legacy source and the
@@ -154,8 +162,8 @@ export class TabService {
    */
   getByPortal(portalId: number): Observable<readonly TabListItem[]> {
     return this.http
-      .get<ApiResponse<readonly TabListItem[]>>(API_ENDPOINTS.tabs.forPortal(portalId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.tabs.forPortal(portalId), { context: presentedInContext() })
+      .pipe(map((body) => decodeResponse(TAB_LIST_RESPONSE, body)));
   }
 
   /**
@@ -187,9 +195,12 @@ export class TabService {
    *
    * @param tabId The page wanted. Interpolated exactly as supplied. The parameter name is
    * load-bearing on the server side as well: the route is declared `tabs/{tabId:int}` and the
-   * authorisation handler that protects it resolves the page it is checking by looking for a
-   * route value named `tabId` before falling back to `id`, so a differently named parameter
-   * loses the authorisation scope silently instead of failing outright.
+   * authorisation handler that protects it resolves the page it is checking from a route value
+   * named `tabId` — and from THAT NAME ALONE. There is no fallback to a bare `id`, and the
+   * handler documents why it admits none: a generic fallback would let a nested route hand it
+   * some other entity's key, deciding a page question from an account's identifier, which is
+   * worse than refusing (`Api/Authorization/PermissionAuthorizationHandler.cs:L112-L128`). A
+   * differently named parameter therefore loses the authorisation scope outright.
    * @returns The page. Failures propagate as the server's own problem document:
    * `tab.not_found` when no page bears the identifier, mapped to `404`; `401` when no valid
    * credential was presented; `403` when the caller holds no view grant - which the server also
@@ -198,8 +209,8 @@ export class TabService {
    */
   getById(tabId: number): Observable<TabDetail> {
     return this.http
-      .get<ApiResponse<TabDetail>>(API_ENDPOINTS.tabs.byId(tabId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.tabs.byId(tabId), { context: presentedInContext() })
+      .pipe(map((body) => decodeResponse(TAB_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -263,7 +274,7 @@ export class TabService {
    */
   update(tabId: number, request: UpdateTabRequest): Observable<TabDetail> {
     return this.http
-      .put<ApiResponse<TabDetail>>(API_ENDPOINTS.tabs.byId(tabId), request)
-      .pipe(map((envelope) => envelope.data));
+      .put<unknown>(API_ENDPOINTS.tabs.byId(tabId), request, { context: presentedInContext() })
+      .pipe(map((body) => decodeResponse(TAB_DETAIL_RESPONSE, body)));
   }
 }

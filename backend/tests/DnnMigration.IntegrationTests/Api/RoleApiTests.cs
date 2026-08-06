@@ -40,6 +40,13 @@ namespace DnnMigration.IntegrationTests.Api;
 public sealed class RoleApiTests
 {
     /// <summary>An identifier no seeded or created role can hold.</summary>
+    /// <summary>The media type every refusal on these resources is served as.</summary>
+    /// <remarks>
+    /// The controllers declare that they produce JSON, but <c>ProblemDetailsContentTypeFilter</c> re-stamps a
+    /// refusal as a problem document, so the media type is the authority a client can identify one by.
+    /// </remarks>
+    private const string ProblemMediaType = "application/problem+json";
+
     private const int UnknownRoleId = 987654;
 
     /// <summary>An identifier no seeded or created account can hold.</summary>
@@ -47,6 +54,17 @@ public sealed class RoleApiTests
 
     /// <summary>A tenant identifier no seeded or created portal can hold.</summary>
     private const int UnknownPortalId = 987654;
+
+    /// <summary>
+    /// The all-users pseudo-principal, which the legacy source defines as <c>glbRoleAllUsers = "-1"</c> at
+    /// <c>Library/Components/Common/Globals.vb</c>:L95 and stores in the grant tables' role column.
+    /// </summary>
+    /// <remarks>
+    /// It names NO <c>dbo.Roles</c> row - the column is <c>IDENTITY(0, 1)</c> - which is why neither grant
+    /// table declares a foreign key on it and why the legacy read joins the role table with a left outer
+    /// join. A role removal must therefore leave it alone.
+    /// </remarks>
+    private const int AllUsersPseudoRoleId = -1;
 
     // MIGRATION - WHY NO MEDIA TYPE IS ASSERTED ANYWHERE IN THIS SUITE, stated from a measurement rather
     // than assumed. RFC 7807 nominates application/problem+json, and it would be natural to pin it here.
@@ -1400,6 +1418,227 @@ public sealed class RoleApiTests
             new Dictionary<string, object?> { ["roleId"] = created.RoleId });
 
         rows.Should().Be(0);
+    }
+
+    /// <summary>
+    /// SEC-F8: removing a role removes every module and page grant addressed to it, and leaves every grant
+    /// addressed to any other principal exactly where it was.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The terminal legacy procedure swept all three grant families before deleting the role row -
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/03.00.10.SqlDataProvider</c> deletes from
+    /// <c>FolderPermission</c>, <c>ModulePermission</c> and <c>TabPermission</c> by <c>RoleId</c> and only
+    /// then from <c>Roles</c> - and an earlier revision of this contract removed the role alone. The rows
+    /// left behind were not merely untidy. Neither grant table declares a foreign key on <c>RoleID</c> in
+    /// the terminal schema, which is exactly WHY the rows survive their principal instead of being refused
+    /// or carried away, and <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so the vacated identifier is
+    /// reissued to the next role created in the installation - which then holds every grant the removed
+    /// role held, without anyone granting it.
+    /// </para>
+    /// <para>
+    /// THE CONTROL PRINCIPALS ARE THE OTHER HALF OF THE ASSERTION, and each is a different way the sweep
+    /// could be written too widely. A second role proves the predicate names one role rather than clearing
+    /// the table. An account-addressed grant proves the sweep does not confuse the two principal columns -
+    /// that grant belongs to the account and is removed when the ACCOUNT goes. A grant addressed to the
+    /// all-users pseudo-principal proves the negative identifiers survive: they name no <c>dbo.Roles</c> row
+    /// at all, so no role removal can be the reason to discard one, and discarding one would silently
+    /// un-publish a public page.
+    /// </para>
+    /// <para>
+    /// Exercised through HTTP rather than against the service, because the finding is that the deployed
+    /// endpoint leaves the rows behind. The grants are seeded and read directly against the store, so no
+    /// part of the assertion depends on the same mapping the removal uses.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeleteRole_SweepsTheGrantsAddressedToItAndSparesEveryOtherPrincipal()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        RoleDetailDto doomed = await CreateRoleAsync(client);
+        RoleDetailDto retained = await CreateRoleAsync(client);
+
+        int tabId = _fixture.Seed.RootTabId;
+        int modulePermissionId = _fixture.Seed.ModuleViewPermissionId;
+        int tabPermissionId = _fixture.Seed.TabViewPermissionId;
+        int accountId = _fixture.Seed.MemberUserId;
+
+        int moduleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted], [InheritViewPermissions])
+            VALUES (@moduleDefinitionId, @portalId, N'Role sweep module', 0, 0, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleDefinitionId"] = _fixture.Seed.ModuleDefinitionId,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+
+        List<int> seededTabGrants = [];
+
+        try
+        {
+            // The third grant family has no table in the schema this suite provisions, because file
+            // management is outside the migration's scope - so it is created here for the duration of this
+            // one test, in the shape the legacy chain arrives at (02.02.00.SqlDataProvider:L659 creates it,
+            // 04.05.00.SqlDataProvider:L750-L790 makes the role column nullable and adds the account
+            // column). Without it this test could assert two of the three families the legacy procedure
+            // swept, and the third would be exercised only where the table happens to exist. The whole
+            // integration suite shares one collection and therefore runs serially, so no concurrent test can
+            // observe the table, and it is dropped again whatever happens below.
+            _ = await _fixture.Database.ExecuteAsync(
+                """
+                IF OBJECT_ID(N'[dbo].[FolderPermission]', N'U') IS NULL
+                    CREATE TABLE [dbo].[FolderPermission] (
+                        [FolderPermissionID] int NOT NULL IDENTITY,
+                        [FolderID] int NOT NULL,
+                        [PermissionID] int NOT NULL,
+                        [RoleID] int NULL,
+                        [UserID] int NULL,
+                        [AllowAccess] bit NOT NULL,
+                        CONSTRAINT [PK_FolderPermission] PRIMARY KEY ([FolderPermissionID])
+                    );
+                """);
+
+            _ = await _fixture.Database.ExecuteAsync(
+                """
+                INSERT INTO [dbo].[FolderPermission]
+                    ([FolderID], [PermissionID], [RoleID], [UserID], [AllowAccess])
+                VALUES (1, @permissionId, @doomedRoleId, NULL, 1),
+                       (1, @permissionId, @retainedRoleId, NULL, 1),
+                       (1, @permissionId, @allUsersRoleId, NULL, 1);
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["permissionId"] = tabPermissionId,
+                    ["doomedRoleId"] = doomed.RoleId,
+                    ["retainedRoleId"] = retained.RoleId,
+                    ["allUsersRoleId"] = AllUsersPseudoRoleId,
+                });
+
+            await _fixture.Database.ExecuteAsync(
+                """
+                INSERT INTO [dbo].[ModulePermission]
+                    ([ModuleID], [PermissionID], [RoleID], [UserID], [AllowAccess])
+                VALUES (@moduleId, @permissionId, @doomedRoleId, NULL, 1),
+                       (@moduleId, @permissionId, @retainedRoleId, NULL, 1),
+                       (@moduleId, @permissionId, NULL, @accountId, 1),
+                       (@moduleId, @permissionId, @allUsersRoleId, NULL, 1);
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["moduleId"] = moduleId,
+                    ["permissionId"] = modulePermissionId,
+                    ["doomedRoleId"] = doomed.RoleId,
+                    ["retainedRoleId"] = retained.RoleId,
+                    ["accountId"] = accountId,
+                    ["allUsersRoleId"] = AllUsersPseudoRoleId,
+                });
+
+            // Each page grant is inserted on its own so its key can be captured, which is what lets the
+            // survivors be asserted and cleaned up by identity rather than by a predicate that could match a
+            // row this test did not create.
+            foreach ((int? roleId, int? userId) in new (int?, int?)[]
+            {
+                (doomed.RoleId, null),
+                (retained.RoleId, null),
+                (null, accountId),
+                (AllUsersPseudoRoleId, null),
+            })
+            {
+                seededTabGrants.Add(await _fixture.Database.ScalarAsync<int>(
+                    """
+                    INSERT INTO [dbo].[TabPermission]
+                        ([TabID], [PermissionID], [RoleID], [UserID], [AllowAccess])
+                    VALUES (@tabId, @permissionId, @roleId, @userId, 1);
+                    SELECT CAST(SCOPE_IDENTITY() AS int);
+                    """,
+                    new Dictionary<string, object?>
+                    {
+                        ["tabId"] = tabId,
+                        ["permissionId"] = tabPermissionId,
+                        ["roleId"] = roleId,
+                        ["userId"] = userId,
+                    }));
+            }
+
+            using HttpResponseMessage response = await client.DeleteAsync(
+                RoleRoute(_fixture.Seed.PortalId, doomed.RoleId));
+
+            response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+            (await CountModuleGrantsForRoleAsync(moduleId, doomed.RoleId)).Should().Be(
+                0,
+                "the module grants addressed to the removed role go with it");
+            (await CountTabGrantsForRoleAsync(tabId, doomed.RoleId)).Should().Be(
+                0,
+                "the page grants addressed to the removed role go with it");
+
+            (await CountModuleGrantsForRoleAsync(moduleId, retained.RoleId)).Should().Be(
+                1,
+                "a second role's grant proves the sweep names one role rather than clearing the table");
+            (await CountTabGrantsForRoleAsync(tabId, retained.RoleId)).Should().Be(1);
+
+            (await CountModuleGrantsForAccountAsync(moduleId, accountId)).Should().Be(
+                1,
+                "a grant addressed to an account belongs to the account, not to any role");
+
+            (await CountModuleGrantsForRoleAsync(moduleId, AllUsersPseudoRoleId)).Should().Be(
+                1,
+                "the all-users pseudo-principal names no Roles row, so no role removal may discard it");
+            (await CountTabGrantsForRoleAsync(tabId, AllUsersPseudoRoleId)).Should().Be(
+                1,
+                "discarding it would silently un-publish a public page");
+
+            (await CountTabGrantsByKeyAsync(seededTabGrants)).Should().Be(
+                3,
+                "exactly one of the four page grants this test seeded was addressed to the removed role");
+
+            (await CountFolderGrantsForRoleAsync(doomed.RoleId)).Should().Be(
+                0,
+                "the storage grants go too - they are the first statement of the legacy procedure, not an "
+                + "optional third");
+            (await CountFolderGrantsForRoleAsync(retained.RoleId)).Should().Be(1);
+            (await CountFolderGrantsForRoleAsync(AllUsersPseudoRoleId)).Should().Be(1);
+
+            (await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+                new Dictionary<string, object?> { ["roleId"] = doomed.RoleId }))
+                .Should().Be(0);
+        }
+        finally
+        {
+            _ = await _fixture.Database.ExecuteAsync("DROP TABLE IF EXISTS [dbo].[FolderPermission];");
+
+            // The module goes first: FK_ModulePermission_Modules cascades, so removing it takes every module
+            // grant this test seeded, including the ones deliberately left behind.
+            _ = await _fixture.Database.ExecuteAsync(
+                "DELETE FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;",
+                new Dictionary<string, object?> { ["moduleId"] = moduleId });
+
+            if (seededTabGrants.Count == 4)
+            {
+                _ = await _fixture.Database.ExecuteAsync(
+                    """
+                    DELETE FROM [dbo].[TabPermission]
+                    WHERE [TabPermissionID] IN (@first, @second, @third, @fourth);
+                    """,
+                    new Dictionary<string, object?>
+                    {
+                        ["first"] = seededTabGrants[0],
+                        ["second"] = seededTabGrants[1],
+                        ["third"] = seededTabGrants[2],
+                        ["fourth"] = seededTabGrants[3],
+                    });
+            }
+
+            using HttpResponseMessage discarded = await client.DeleteAsync(
+                RoleRoute(_fixture.Seed.PortalId, retained.RoleId));
+            _ = discarded.StatusCode;
+        }
     }
 
     /// <summary>
@@ -3764,6 +4003,71 @@ public sealed class RoleApiTests
         "SELECT COUNT(*) FROM [dbo].[UserRoles] WHERE [RoleID] = @roleId;",
         new Dictionary<string, object?> { ["roleId"] = roleId });
 
+    /// <summary>Counts the module grants addressed to one role on one module.</summary>
+    /// <param name="moduleId">The module whose grants are counted.</param>
+    /// <param name="roleId">The role the grants are addressed to.</param>
+    /// <returns>The number of matching grant rows.</returns>
+    /// <remarks>
+    /// Read straight from the store rather than through the API, so the assertion does not depend on the
+    /// same mapping the removal under test uses.
+    /// </remarks>
+    private Task<int> CountModuleGrantsForRoleAsync(int moduleId, int roleId) =>
+        _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ModulePermission] "
+            + "WHERE [ModuleID] = @moduleId AND [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["moduleId"] = moduleId, ["roleId"] = roleId });
+
+    /// <summary>Counts the module grants addressed to one account on one module.</summary>
+    /// <param name="moduleId">The module whose grants are counted.</param>
+    /// <param name="userId">The account the grants are addressed to.</param>
+    /// <returns>The number of matching grant rows.</returns>
+    private Task<int> CountModuleGrantsForAccountAsync(int moduleId, int userId) =>
+        _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ModulePermission] "
+            + "WHERE [ModuleID] = @moduleId AND [UserID] = @userId;",
+            new Dictionary<string, object?> { ["moduleId"] = moduleId, ["userId"] = userId });
+
+    /// <summary>Counts the page grants addressed to one role on one page.</summary>
+    /// <param name="tabId">The page whose grants are counted.</param>
+    /// <param name="roleId">The role the grants are addressed to.</param>
+    /// <returns>The number of matching grant rows.</returns>
+    private Task<int> CountTabGrantsForRoleAsync(int tabId, int roleId) =>
+        _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabPermission] "
+            + "WHERE [TabID] = @tabId AND [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["tabId"] = tabId, ["roleId"] = roleId });
+
+    /// <summary>Counts the folder grants addressed to one role.</summary>
+    /// <param name="roleId">The role the grants address.</param>
+    /// <returns>The number of matching grant rows.</returns>
+    /// <remarks>
+    /// Only meaningful while the calling test has the legacy folder grant table in place; the schema this
+    /// suite provisions declares none, because file management is outside the migration's scope.
+    /// </remarks>
+    private Task<int> CountFolderGrantsForRoleAsync(int roleId) =>
+        _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[FolderPermission] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+
+    /// <summary>Counts how many of exactly four page grants still exist, named by key.</summary>
+    /// <param name="tabPermissionIds">The four keys, in insertion order.</param>
+    /// <returns>The number of those rows that survive.</returns>
+    /// <remarks>
+    /// Fixed at four so the keys travel as bound parameters. Composing an identifier list into the statement
+    /// text would be the one place in this suite where a value reached the store as text.
+    /// </remarks>
+    private Task<int> CountTabGrantsByKeyAsync(IReadOnlyList<int> tabPermissionIds) =>
+        _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabPermission] "
+            + "WHERE [TabPermissionID] IN (@first, @second, @third, @fourth);",
+            new Dictionary<string, object?>
+            {
+                ["first"] = tabPermissionIds[0],
+                ["second"] = tabPermissionIds[1],
+                ["third"] = tabPermissionIds[2],
+                ["fourth"] = tabPermissionIds[3],
+            });
+
     /// <summary>Signs in as the seeded account that holds no administrative role.</summary>
     /// <returns>An authenticated client without the administrators role.</returns>
     private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
@@ -3886,6 +4190,10 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(
             HttpStatusCode.BadRequest,
             "a value that breaks a declared rule is refused at the boundary, not further in");
+        response.Content.Headers.ContentType?.MediaType.Should().Be(
+            ProblemMediaType,
+            "a field-error document is served as a problem document even though the controller declares "
+            + "that it produces JSON, so a client can identify one by its content type alone");
 
         ValidationProblemDetails? problem = await response.Content
             .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
@@ -3927,6 +4235,10 @@ public sealed class RoleApiTests
         string code)
     {
         response.StatusCode.Should().Be(status);
+        response.Content.Headers.ContentType?.MediaType.Should().Be(
+            ProblemMediaType,
+            "every refusal on these resources is served as a problem document, whether the controller "
+            + "produced it or the request never reached one");
 
         ProblemDetails? problem = await response.Content
             .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);

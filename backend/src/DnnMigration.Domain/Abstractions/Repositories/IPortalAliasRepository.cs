@@ -238,6 +238,39 @@ public interface IPortalAliasRepository
     Task<IReadOnlyList<PortalAlias>> GetByPortalIdAsync(int portalId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the aliases of MANY portals in one read.
+    /// </summary>
+    /// <param name="portalIds">
+    /// The portals whose aliases are wanted. Every value denotes exactly the portal bearing it - -1 and 0
+    /// included - and none is interpreted as a request for every portal. An empty request asks for nothing
+    /// rather than for everything, and is answered without a round trip.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
+    /// <returns>
+    /// The aliases of every named portal in a stable order, FLAT rather than grouped, so a caller groups by
+    /// <see cref="PortalAlias.PortalId"/> itself. A named portal with no aliases contributes no row, as does
+    /// one that does not exist.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The set-based form of <see cref="GetByPortalIdAsync"/>, and the third distinct question this contract
+    /// answers about alias scope - alongside "one portal's" and "the whole installation's". It exists because
+    /// a paged tenant listing needs the aliases of THE TENANTS ON ITS PAGE: asking per row makes the read
+    /// cost proportional to the page size, while asking <see cref="GetAllAsync"/> and grouping in memory
+    /// makes it proportional to the whole installation - so neither existing member answers a page's question
+    /// at a page's cost.
+    /// </para>
+    /// <para>
+    /// It is emphatically NOT a wildcard in disguise. There is no value, and no set, that this member reads
+    /// as "every portal"; the installation-wide question remains <see cref="GetAllAsync"/>, which is the
+    /// whole point of the split this contract already makes.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<PortalAlias>> GetByPortalIdsAsync(
+        IReadOnlyCollection<int> portalIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns every alias in the installation, across all portals.
     /// </summary>
     /// <remarks>

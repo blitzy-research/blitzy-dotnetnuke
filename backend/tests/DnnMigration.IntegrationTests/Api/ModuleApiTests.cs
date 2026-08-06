@@ -3220,17 +3220,31 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// Both content-transfer actions declare the same one-mebibyte request ceiling as the server default.
+    /// Both content-transfer actions declare a request ceiling, and the two ceilings are the ones each action
+    /// actually needs rather than one number applied to both.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The explicit metadata is the contract under test. Without it, a future global-limit change could
     /// silently make module import/export unbounded or unexpectedly narrower while their public surface still
     /// appeared unchanged.
+    /// </para>
+    /// <para>
+    /// THE TWO ACTIONS ARE NOT INTERCHANGEABLE, AND ASSERTING ONE NUMBER FOR BOTH WAS THE DEFECT. An export
+    /// request carries a file name and nothing else, so the global mebibyte is three orders of magnitude more
+    /// than it needs. An import request carries a whole document, and the service accepts one of
+    /// <see cref="ModuleImportRequest.ContentCharacterMaximum"/> characters - which cannot fit in a mebibyte
+    /// of BODY once the member names, the quotes and the JSON escaping are counted. Pinning both to the
+    /// global limit therefore described a contract that could not be satisfied: the accepted document was
+    /// undeliverable. The import limit is now derived from that character ceiling, and the relationship is
+    /// asserted below rather than the literal, so the arithmetic cannot drift out of step with the ceiling it
+    /// is computed from.
+    /// </para>
     /// </remarks>
     [Fact]
     public void ModuleContentTransfer_DeclaresItsRequestBodyCeiling()
     {
-        foreach (string actionName in new[] { "ExportAsync", "ImportAsync" })
+        static long DeclaredLimitOf(string actionName)
         {
             MethodInfo action = typeof(ModulesController)
                 .GetMethods(BindingFlags.Public | BindingFlags.Instance)
@@ -3239,10 +3253,42 @@ public sealed class ModuleApiTests
             RequestSizeLimitAttribute limit = action.GetCustomAttribute<RequestSizeLimitAttribute>()
                 ?? throw new InvalidOperationException($"{actionName} declares no request-size limit.");
 
-            ((Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata)limit).MaxRequestBodySize.Should().Be(
-                ServiceCollectionExtensions.MaximumRequestBodyBytes,
-                "module content transfer is explicitly bounded at the same one-mebibyte ceiling as Kestrel");
+            return ((Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata)limit).MaxRequestBodySize
+                ?? throw new InvalidOperationException($"{actionName} declares an unbounded request size.");
         }
+
+        DeclaredLimitOf("ExportAsync").Should().Be(
+            ServiceCollectionExtensions.MaximumRequestBodyBytes,
+            "an export request carries a file name, so the global ceiling is already generous for it");
+
+        DeclaredLimitOf("ImportAsync").Should().Be(
+            ServiceCollectionExtensions.MaximumImportRequestBodyBytes,
+            "an import request carries a document, and its ceiling is the one computed from the document "
+            + "ceiling the contract publishes");
+
+        // The coherence itself, asserted as a relationship. A body limit smaller than the encoded form of the
+        // largest accepted document makes that document undeliverable, which is exactly the state this fact
+        // exists to prevent recurring.
+        const long worstCaseJsonBytesPerCharacter = 6L;
+
+        ServiceCollectionExtensions.MaximumImportRequestBodyBytes.Should().BeGreaterThan(
+            ModuleImportRequest.ContentCharacterMaximum * worstCaseJsonBytesPerCharacter,
+            "the default JSON encoder escapes every character an XML document is largely made of - the "
+            + "angle brackets, the ampersand, the quote and everything non-ASCII - to a six-byte form, so a "
+            + "document at the accepted ceiling must still fit inside the body limit");
+
+        ServiceCollectionExtensions.MaximumImportRequestBodyBytes.Should().BeGreaterThan(
+            ServiceCollectionExtensions.MaximumRequestBodyBytes,
+            "the import action raises the limit for itself precisely because the global one is too small "
+            + "for it, and the global one stays small for everything else");
+
+        // The client-visible file limit is the innermost derivation and must be satisfiable: a file of this
+        // many bytes decoded as UTF-8 cannot exceed the character ceiling, so the two are equal by
+        // construction and neither may be raised without the other.
+        ModuleImportRequest.FileByteMaximum.Should().Be(
+            ModuleImportRequest.ContentCharacterMaximum,
+            "a UTF-8 sequence of N bytes yields at most N UTF-16 code units, which is what makes a byte "
+            + "limit a sound proxy for the character ceiling");
     }
 
     /// <summary>

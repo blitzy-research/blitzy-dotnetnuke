@@ -1,0 +1,180 @@
+// Component stylesheet for the tenant membership-policy screen, served by the route
+// /settings/membership.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .membership-settings
+//     .membership-settings__header-action
+//     .membership-settings__section
+//     .membership-settings__section-heading
+//     .membership-settings__section-summary
+//     .membership-settings__section-body
+//     .membership-settings__columns
+//     .membership-settings__columns-legend
+//     .membership-settings__expression
+//     .membership-settings__transport-failure
+//     .membership-settings__actions
+//     .membership-settings__action
+//     .membership-settings__action--primary
+//
+// The template ALSO places `form-field--inline` and `form-field--multiline` on
+// `app-form-field` elements. Neither is declared here and neither may be: the shared form
+// field owns both through its own `:host(...)` rules, so a copy in this file would either be
+// dead or would fight the component that owns them.
+//
+// The block class sits on the `form`, which is NOT the root of the template - the page header
+// precedes it - so the host is styled as well: the host owns the rhythm between the header and
+// the form, the block owns the rhythm inside the form.
+//
+// Focus indication is deliberately absent and must stay absent: the global reset applies the
+// shared focus-ring mixin to every anchor, button, input, select and textarea, so the design
+// system owns focus and this file only places components.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT - THE HOST AND THE FORM
+// -----------------------------------------------------------------------------
+// A custom element defaults to `display: inline` and would not contain its block-level
+// children correctly, so a box-generating display is required on the host regardless of
+// layout. Body type is declared here and inherited by every region below rather than restated
+// per rule: without it the browser falls back to its own serif default for every heading,
+// label and summary on the screen.
+:host {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.membership-settings {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  POLICY SECTIONS
+// -----------------------------------------------------------------------------
+// A bordered region per policy area, which is what carries the grouping the legacy screen
+// expressed with a nested layout table. Each region is a `section` with a real heading rather
+// than a fieldset with a legend, because the template groups by SUBJECT and not by control
+// set - several sections hold no control at all, only reported policy the provider owns.
+.membership-settings__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+.membership-settings__section-heading {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// A capped measure, because an explanatory sentence run across a desktop viewport is
+// measurably harder to read than one that wraps at a comfortable line length.
+.membership-settings__section-summary {
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.membership-settings__section-body {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  LISTING-COLUMN CHOICES
+// -----------------------------------------------------------------------------
+// A wrapping run of check boxes rather than a fixed grid: the number of columns an operator
+// may show is DATA, so a layout that assumed a count would break the moment the set changed.
+// The `fieldset` is stripped of its own border and padding because the group it fences already
+// sits inside a bordered section, and a second frame would read as a nesting level that does
+// not exist. The `legend` is not painted into a border here, so it needs no inline padding.
+.membership-settings__columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.membership-settings__columns-legend {
+  padding-inline: 0;
+  font-weight: var(--font-weight-bold);
+}
+
+// A stored validation expression is code, so it is shown in the monospaced family - the one
+// place on this screen where the body family is deliberately overridden - and it wraps on any
+// character, because an expression has no spaces to break at and must not be allowed to
+// scroll the page sideways.
+.membership-settings__expression {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+// A read failure reported in place, in the text variant of the danger colour: the raw danger
+// value is tuned for a border or an icon and does not clear the contrast threshold as body
+// text.
+.membership-settings__transport-failure {
+  color: var(--color-danger-text);
+}
+
+// -----------------------------------------------------------------------------
+//  COMMANDS
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives white-space
+// collapsing, and wrapping is intrinsic so the last command stays reachable at every width.
+.membership-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// `inline-flex` keeps a command at its own content width whatever the row does around it.
+.membership-settings__action {
+  display: inline-flex;
+  align-items: center;
+}
+
+// A type change only, so the submit is identifiable without occupying a different place or a
+// different size from the cancel beside it.
+.membership-settings__action--primary {
+  font-weight: var(--font-weight-bold);
+}
+
+// The link out to the profile-property screen is projected into the page header's action slot.
+// Projected content keeps the encapsulation of the component that DECLARES it, so the header
+// supplies the row and its gap and cannot style what it hosts - which is why its appearance is
+// declared here and its arrangement is not.
+.membership-settings__header-action {
+  color: var(--color-primary);
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screens this consolidates (`Website/admin/Users/UserSettings.ascx`,
+// `Membership.ascx` and `MemberServices.ascx`) were layout tables of label-and-control rows with
+// non-breaking spaces for separation. None of that is structure, so the separation becomes CSS
+// gap and the grouping becomes real sections with real headings - a SEMANTIC improvement, since
+// the legacy markup asserted a tabular relationship the settings never had.
+//
+// MIGRATION: the spacing and radius scales every value above resolves to are net additions - the
+// legacy design is square-cornered, flat and has no spacing system. The monospaced treatment of a
+// stored expression is a net addition too: the legacy screen rendered it in the body face, where a
+// space and a non-breaking space were indistinguishable in a value where the difference matters.
+// Neither alters any behaviour, and both are recorded with the rest in MIGRATION_NOTES.md.
+// =============================================================================

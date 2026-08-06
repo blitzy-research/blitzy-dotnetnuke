@@ -47,6 +47,8 @@ import { FormFieldComponent } from '../../../shared/components/form-field/form-f
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 
+import { MODULE_IMPORT_MAX_FILE_BYTES } from '../../../core/models/module.model';
+
 import type { ModuleImportRequest, ModuleListItem } from '../../../core/models/module.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { ModuleStoreOperation } from '../../../core/state/module.store';
@@ -147,8 +149,43 @@ const MODULE_FIELD_HELP = 'Select the module to import content into';
 /** The document field's label. Taken from `plFile.Text`. */
 const FILE_FIELD_LABEL = 'File';
 
-/** Guidance for the document field. Taken from `plFile.Help`. */
-const FILE_FIELD_HELP = 'Select the import file';
+/**
+ * Renders a byte count the way an operator reads one.
+ *
+ * Declared here, immediately above its only two call sites, rather than among the helpers at the foot of
+ * this file: both of those call sites are module-level message constants, so a reader meets the formatter
+ * at the point it matters. Whole mebibytes are rendered as such and anything else as kibibytes, which
+ * covers every value the published limit can take without introducing a general-purpose formatter that
+ * would then need a general-purpose set of cases.
+ *
+ * @param bytes The count to render.
+ * @returns The count in the largest binary unit that divides it exactly.
+ */
+function formatBytes(bytes: number): string {
+  const mebibyte = 1024 * 1024;
+
+  return bytes % mebibyte === 0 ? `${bytes / mebibyte} MB` : `${Math.floor(bytes / 1024)} KB`;
+}
+
+/**
+ * Guidance for the document field. The first clause is `plFile.Help` verbatim; the second states the
+ * published byte limit, because a limit an operator cannot see is one they can only meet by accident.
+ */
+const FILE_FIELD_HELP = `Select the import file (maximum ${formatBytes(MODULE_IMPORT_MAX_FILE_BYTES)})`;
+
+/**
+ * The message shown when the chosen document is larger than the transfer contract accepts.
+ *
+ * MIGRATION: NET-NEW, AND IT EXISTS BECAUSE THE READ MOVED SIDES. `Import.ascx.vb` L184 read the document
+ *   on the SERVER from a folder the screen had listed, so the operator never chose a file the browser had
+ *   to hold and no client-side size question arose. Reading now happens in the browser, where an
+ *   arbitrary local file can be chosen, so the size is decided from `File.size` - metadata the browser
+ *   already has - BEFORE any decoding. The sentence names the limit for the same reason the field's help
+ *   text does.
+ */
+const FILE_TOO_LARGE_MESSAGE =
+  `The selected file is larger than ${formatBytes(MODULE_IMPORT_MAX_FILE_BYTES)} and was not read. `
+  + 'Choose a smaller file.';
 
 /** The submit action's label. Taken from `cmdImport.Text`. */
 const IMPORT_ACTION_LABEL = 'Import';
@@ -558,6 +595,15 @@ export class ModuleImportComponent {
   private readonly _fileReadFailed = signal(false);
 
   /**
+   * Whether the document the operator last chose exceeded the published byte limit.
+   *
+   * Held separately from {@link _fileReadFailed} because the two are different events with different
+   * remedies: an unreadable document can be chosen again, while an oversized one has to be replaced by a
+   * smaller one. Cleared by choosing again, like every other per-attempt state on this screen.
+   */
+  private readonly _fileTooLarge = signal(false);
+
+  /**
    * Whether submit has been attempted.
    *
    * Field-level messages stay hidden until either the field has been touched or submit has been
@@ -802,6 +848,13 @@ export class ModuleImportComponent {
    * describes a request that has since been superseded.
    */
   protected fileError(): string | null {
+    // Ranked above the unreadable case for the same reason that one is ranked above the server's
+    // messages: it is the more recent event, and it is the only one of the two that describes a document
+    // this screen refused on its own terms without sending anything.
+    if (this._fileTooLarge()) {
+      return FILE_TOO_LARGE_MESSAGE;
+    }
+
     if (this._fileReadFailed()) {
       return FILE_UNREADABLE_MESSAGE;
     }
@@ -858,15 +911,28 @@ export class ModuleImportComponent {
     const target = event.target;
     const chosen = target instanceof HTMLInputElement ? (target.files?.item(0) ?? null) : null;
 
-    this._selectedFile.set(chosen);
+    // THE SIZE IS DECIDED HERE, FROM METADATA, AND NOTHING IS READ. `File.size` is a byte count the
+    // browser already holds; deciding from it costs nothing and happens before a single byte is decoded.
+    // An oversized choice is DISCARDED rather than held, so the component never retains a reference to a
+    // file it has already refused and a later submit has nothing oversized to find.
+    const tooLarge = chosen !== null && chosen.size > MODULE_IMPORT_MAX_FILE_BYTES;
+
+    this._selectedFile.set(tooLarge ? null : chosen);
+    this._fileTooLarge.set(tooLarge);
     this._fileReadFailed.set(false);
     this.supersedeFailure();
 
     const control = this.form.controls.file;
 
-    control.setValue(chosen);
+    // The control follows the same discard, so the form is invalid for a refused document rather than
+    // valid-with-something-that-cannot-be-sent, and the required-field rule is what reports it.
+    control.setValue(tooLarge ? null : chosen);
     control.markAsDirty();
     control.markAsTouched();
+
+    if (tooLarge) {
+      this.notifications.error(FILE_TOO_LARGE_MESSAGE);
+    }
   }
 
   /**
@@ -910,6 +976,7 @@ export class ModuleImportComponent {
   protected async submit(): Promise<void> {
     this._submitAttempted.set(true);
     this._fileReadFailed.set(false);
+    this._fileTooLarge.set(false);
 
     // The supersede latch is deliberately NOT cleared here. Clearing it up front would re-expose the
     // previous attempt's refusal on every submit that never reaches the transport - an invalid form, or
@@ -935,6 +1002,19 @@ export class ModuleImportComponent {
     // validators above have already made this branch unreachable; it stands because the compiler cannot
     // know that, and narrowing it here is what keeps the request members honestly typed.
     if (file === null || moduleId === null) {
+      return;
+    }
+
+    // RE-TESTED IMMEDIATELY BEFORE THE READ, and not because the check above is unreliable. A file
+    // reference is a live handle: the document on disk can be replaced between being chosen and being
+    // submitted, and the replacement's size is whatever it is. This is the last instant at which the
+    // question can be asked without having already decoded the answer, so it is asked here too.
+    if (file.size > MODULE_IMPORT_MAX_FILE_BYTES) {
+      this._fileTooLarge.set(true);
+      this._selectedFile.set(null);
+      this.form.controls.file.setValue(null);
+      this.notifications.error(FILE_TOO_LARGE_MESSAGE);
+
       return;
     }
 

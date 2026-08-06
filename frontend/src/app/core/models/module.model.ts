@@ -80,7 +80,29 @@
  *   0, "" or false. Response members are therefore declared REQUIRED and nullable - `string | null`, not
  *   `string?` - because `undefined` would mean the contract itself changed rather than that the value was
  *   empty. The one narrowly scoped exception is documented on `UpdateModuleRequest`.
+ *
+ * MIGRATION: EVERY CONTRACT THAT IS READ CARRIES A RUNTIME DECODER, because a TypeScript
+ *   interface is erased at compile time. `http.get<ModuleDetail>(...)` compiles to `http.get(...)`:
+ *   nothing inspects the body, and a renamed member arrives as `undefined` behind a 200 to surface
+ *   as a blank field or a `NaN` several layers away from the response that caused it. Each decoder
+ *   is declared FROM its interface through `DecoderShape`, which strips optionality, so forgetting
+ *   a member is a compile error rather than a silent hole. Violations name the member path and the
+ *   expected type and NEVER the value, so a report cannot disclose module content - which matters
+ *   most for the settings maps and the exported document. Request contracts carry no decoder:
+ *   this client composes them, so there is nothing untrusted to check.
  */
+
+import {
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeString,
+  nullable,
+  objectOf,
+  oneOfNumber,
+  recordOf,
+  type Decoder,
+} from '../utils/decode.util';
 
 import type { PagedResult } from './paged-result.model';
 
@@ -1037,6 +1059,31 @@ export interface ModuleExportRequest {
  * MIGRATION: as with the export contract, no file, stream or multipart type is declared. The document
  *   travels as text in {@link ModuleImportRequest.content}.
  */
+/**
+ * The largest document, in characters, that an import may carry.
+ *
+ * Mirrors `ModuleImportRequest.ContentCharacterMaximum`, which is the innermost number of the import
+ * transfer contract and the one every other limit in it is derived from: the API's per-action body limit
+ * is computed from it and the reverse proxy's body limit is set to match that. It is published here for
+ * the same reason it is published there - a client that cannot know the ceiling can only discover it by
+ * having a request refused.
+ */
+export const MODULE_IMPORT_MAX_CONTENT_CHARACTERS = 1_048_576;
+
+/**
+ * The largest file, in bytes, this client may offer for import.
+ *
+ * Mirrors `ModuleImportRequest.FileByteMaximum`, and equals
+ * {@link MODULE_IMPORT_MAX_CONTENT_CHARACTERS} rather than a fraction of it because the equality is
+ * exact: `Blob.text()` decodes as UTF-8, and a UTF-8 sequence of N bytes yields at most N UTF-16 code
+ * units - one byte produces one code unit and every multi-byte sequence produces fewer code units than
+ * bytes - so a file bounded by this many BYTES cannot exceed the ceiling in CHARACTERS.
+ *
+ * Checked against `File.size` BEFORE the file is read. Reading first and measuring afterwards decodes an
+ * arbitrary local file into memory to learn something the file's own metadata already stated.
+ */
+export const MODULE_IMPORT_MAX_FILE_BYTES = MODULE_IMPORT_MAX_CONTENT_CHARACTERS;
+
 export interface ModuleImportRequest {
   /**
    * The module whose content is being replaced. Mandatory - the only member of this contract that is.
@@ -1074,3 +1121,115 @@ export interface ModuleImportRequest {
    */
   readonly fileName: string | null;
 }
+
+/**
+ * The three published visibility codes, as an array the decoder can close over.
+ *
+ * Declared explicitly rather than derived from the enumeration, because a TypeScript numeric
+ * enum is not safely enumerable at runtime: reverse mapping puts its member NAMES in the same
+ * object as its values, so `Object.values` on one yields both.
+ */
+const VISIBILITY_CODES: readonly ModuleVisibility[] = [
+  ModuleVisibility.Maximized,
+  ModuleVisibility.Minimized,
+  ModuleVisibility.None,
+];
+
+/**
+ * Decodes one listed module row.
+ *
+ * ⚠ `visibility` IS REFUSED WHEN THE CODE IS UNRECOGNISED RATHER THAN COERCED. Zero is
+ * `Maximized`, so coercing an unknown code would silently present a module as fully expanded
+ * — the most visible of the three states — on the strength of a code this client did not know.
+ */
+export const decodeModuleListItem: Decoder<ModuleListItem> = objectOf<ModuleListItem>({
+  moduleId: decodeInteger,
+  tabModuleId: decodeInteger,
+  tabId: decodeInteger,
+  moduleDefId: decodeInteger,
+  moduleTitle: nullable(decodeString),
+  friendlyName: nullable(decodeString),
+  desktopModuleId: nullable(decodeInteger),
+  moduleName: nullable(decodeString),
+  description: nullable(decodeString),
+  version: nullable(decodeString),
+  moduleOrder: decodeInteger,
+  allTabs: decodeBoolean,
+  visibility: oneOfNumber(VISIBILITY_CODES),
+  isDeleted: decodeBoolean,
+  displayTitle: decodeBoolean,
+  startDate: nullable(decodeDateString),
+  endDate: nullable(decodeDateString),
+});
+
+/**
+ * Decodes one module in full.
+ *
+ * `cacheTime` is required and non-nullable: the server always publishes it, defaulting from the
+ * definition, and a caller renders it into a number field where `undefined` would have shown
+ * blank and then written zero back — turning caching off for a module nobody asked to change.
+ */
+export const decodeModuleDetail: Decoder<ModuleDetail> = objectOf<ModuleDetail>({
+  moduleId: decodeInteger,
+  tabModuleId: decodeInteger,
+  tabId: decodeInteger,
+  portalId: nullable(decodeInteger),
+  moduleDefId: decodeInteger,
+  desktopModuleId: nullable(decodeInteger),
+  moduleTitle: nullable(decodeString),
+  allTabs: decodeBoolean,
+  header: nullable(decodeString),
+  footer: nullable(decodeString),
+  startDate: nullable(decodeDateString),
+  endDate: nullable(decodeDateString),
+  inheritViewPermissions: decodeBoolean,
+  isDeleted: decodeBoolean,
+  moduleOrder: decodeInteger,
+  cacheTime: decodeInteger,
+  iconFile: nullable(decodeString),
+  visibility: oneOfNumber(VISIBILITY_CODES),
+  displayTitle: decodeBoolean,
+  friendlyName: nullable(decodeString),
+  moduleName: nullable(decodeString),
+  description: nullable(decodeString),
+  version: nullable(decodeString),
+});
+
+/**
+ * Decodes both settings maps for one module.
+ *
+ * ⚠ THE MAP VALUES ARE DECODED AS PLAIN STRINGS AND NOTHING IS FILTERED, COALESCED OR
+ * DROPPED. A settings value is legitimately the empty string — that IS the legacy spelling of
+ * an absent string, `Library/Components/Shared/Null.vb:L71-L75` returning `""` literally — so
+ * an entry whose value is empty is a SETTING THE OPERATOR CLEARED and must survive the
+ * boundary intact. A value that arrives as a number or a boolean is refused rather than
+ * stringified, because the server publishes this map as `string` to `string` and a coercion
+ * here would write back a value the operator never typed.
+ */
+export const decodeModuleSettingsBag: Decoder<ModuleSettingsBag> = objectOf<ModuleSettingsBag>({
+  moduleId: decodeInteger,
+  tabModuleId: nullable(decodeInteger),
+  moduleSettings: recordOf(decodeString),
+  tabModuleSettings: recordOf(decodeString),
+});
+
+/**
+ * Decodes one module definition from the catalogue.
+ *
+ * `friendlyName`, `moduleName` and the three capability flags are non-nullable here where the
+ * listing publishes the first two as nullable, and the difference is the contract's rather
+ * than an oversight: a definition in the catalogue always has both names, whereas a listed
+ * placement may join to a definition that no longer resolves.
+ */
+export const decodeModuleDefinition: Decoder<ModuleDefinition> = objectOf<ModuleDefinition>({
+  moduleDefId: decodeInteger,
+  friendlyName: decodeString,
+  desktopModuleId: decodeInteger,
+  defaultCacheTime: decodeInteger,
+  moduleName: decodeString,
+  description: nullable(decodeString),
+  version: nullable(decodeString),
+  isPremium: decodeBoolean,
+  isAdmin: decodeBoolean,
+  isPortable: decodeBoolean,
+});

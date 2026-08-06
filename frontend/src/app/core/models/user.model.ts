@@ -239,6 +239,17 @@
  * than forcing a second request to render a column.
  */
 
+import {
+  arrayOf,
+  decodeBoolean,
+  decodeDateString,
+  decodeInteger,
+  decodeString,
+  nullable,
+  objectOf,
+  type Decoder,
+} from '../utils/decode.util';
+
 import type { PagedRequest, PagedResult } from './paged-result.model';
 
 /**
@@ -849,3 +860,109 @@ export enum PasswordFormat {
   /** Stored reversibly under a symmetric key. Never to be used for a new credential. */
   Encrypted = 2,
 }
+
+/**
+ * Decodes one listed account row.
+ *
+ * `username`, `email` and the three name members are non-nullable, and the distinction from
+ * the two nullable ones matters. An account always has a login name and an address; its
+ * postal address and telephone are profile values projected onto the listing because the
+ * legacy grid offered them as optional columns, and either may genuinely be absent.
+ *
+ * ⚠ THE NAME MEMBERS ARE DECODED AS PLAIN STRINGS, SO THE EMPTY STRING PASSES. That is the
+ * legacy spelling of an absent string — `Library/Components/Shared/Null.vb:L71-L75` returns
+ * `""` literally — so an operator who never supplied a first name has one that is empty, not
+ * missing, and refusing it here would refuse a conforming account.
+ */
+export const decodeUserListItem: Decoder<UserListItem> = objectOf<UserListItem>({
+  userId: decodeInteger,
+  portalId: decodeInteger,
+  username: decodeString,
+  firstName: decodeString,
+  lastName: decodeString,
+  displayName: decodeString,
+  address: nullable(decodeString),
+  telephone: nullable(decodeString),
+  email: decodeString,
+  createdDate: nullable(decodeDateString),
+  lastLoginDate: nullable(decodeDateString),
+  isApproved: decodeBoolean,
+  isOnline: decodeBoolean,
+  isSuperUser: decodeBoolean,
+  isLockedOut: decodeBoolean,
+});
+
+/**
+ * Decodes one account in full.
+ *
+ * Every one of the five audit instants is nullable, and each is nullable for its own real
+ * reason: an account that has never signed in has no last-login instant, one that has never
+ * been locked out has no lockout instant, and one whose password predates the migration has
+ * no recorded change. None is coerced to an epoch — a date this client invented would be
+ * rendered as fact.
+ *
+ * `roles` is required and is decoded as an array of plain strings. An account with no roles
+ * has an EMPTY array, not an absent member, so an absence is contract drift rather than an
+ * unroled account and is refused as such.
+ */
+export const decodeUserDetail: Decoder<UserDetail> = objectOf<UserDetail>({
+  userId: decodeInteger,
+  portalId: decodeInteger,
+  username: decodeString,
+  firstName: decodeString,
+  lastName: decodeString,
+  displayName: decodeString,
+  email: decodeString,
+  isSuperUser: decodeBoolean,
+  affiliateId: nullable(decodeInteger),
+  isApproved: decodeBoolean,
+  isLockedOut: decodeBoolean,
+  isOnline: decodeBoolean,
+  mustChangePassword: decodeBoolean,
+  createdDate: nullable(decodeDateString),
+  lastLoginDate: nullable(decodeDateString),
+  lastActivityDate: nullable(decodeDateString),
+  lastLockoutDate: nullable(decodeDateString),
+  lastPasswordChangeDate: nullable(decodeDateString),
+  roles: arrayOf(decodeString),
+});
+
+/**
+ * Decodes the portal-wide membership settings.
+ *
+ * ⚠ THE THREE REDIRECT MEMBERS ARE NULLABLE PAGE IDENTIFIERS AND ARE DECODED AS INTEGERS
+ * WITH NO POSITIVITY TEST. Zero is an ordinary page here — the schema seeds `Tabs.TabID` at
+ * zero — so `null` is the only expression of "no redirect", and a guard on the value being
+ * positive would silently discard a redirect to the first page ever created.
+ *
+ * `displayMode`, `securityUsersControl` and `profileDefaultVisibility` are integer
+ * discriminators that the legacy screens offered as fixed choices, but they are decoded as
+ * plain integers rather than closed code tables: the server publishes no closed set for
+ * them, and inventing one here would refuse a value a later server release adds.
+ */
+export const decodeMembershipSettings: Decoder<MembershipSettings> =
+  objectOf<MembershipSettings>({
+    columnFirstName: decodeBoolean,
+    columnLastName: decodeBoolean,
+    columnDisplayName: decodeBoolean,
+    columnAddress: decodeBoolean,
+    columnTelephone: decodeBoolean,
+    columnEmail: decodeBoolean,
+    columnCreatedDate: decodeBoolean,
+    columnLastLogin: decodeBoolean,
+    columnAuthorized: decodeBoolean,
+    displayMode: decodeInteger,
+    displaySuppressPager: decodeBoolean,
+    recordsPerPage: decodeInteger,
+    profileDefaultVisibility: decodeInteger,
+    profileDisplayVisibility: decodeBoolean,
+    profileManageServices: decodeBoolean,
+    redirectAfterLogin: nullable(decodeInteger),
+    redirectAfterRegistration: nullable(decodeInteger),
+    redirectAfterLogout: nullable(decodeInteger),
+    securityEmailValidation: decodeString,
+    securityRequireValidProfile: decodeBoolean,
+    securityRequireValidProfileAtLogin: decodeBoolean,
+    securityUsersControl: decodeInteger,
+    securityDisplayNameFormat: decodeString,
+  });

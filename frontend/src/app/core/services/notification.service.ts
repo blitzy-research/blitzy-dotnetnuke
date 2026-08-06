@@ -1,3 +1,4 @@
+import { HttpContext, HttpContextToken } from '@angular/common/http';
 import { Injectable, signal, type Signal } from '@angular/core';
 
 /**
@@ -8,6 +9,56 @@ import { Injectable, signal, type Signal } from '@angular/core';
  * failure. Callers choose the severity; nothing here derives one.
  */
 export type NotificationSeverity = 'success' | 'info' | 'warning' | 'error';
+
+/**
+ * Marks a request whose failure is ALREADY presented by whoever issued it.
+ *
+ * ## The single arbitration rule for failure presentation
+ *
+ * A failed request has exactly ONE publisher, and this token is how the two candidate
+ * publishers agree which of them it is:
+ *
+ * - a request carrying this marker is presented BY ITS CALLER. Every read and write
+ *   issued through the services in `core/services/` is marked, because each one is
+ *   dispatched either by a root signal store — which publishes the failure structurally
+ *   on its own `failure`/`problem` slice, which a screen binds to the shared
+ *   `error-banner` — or by a screen that binds `error-banner` itself. The global
+ *   announcer must stay silent for these;
+ * - a request carrying no marker has no local surface, so `error.interceptor.ts`
+ *   announces it. That is the safety net, and it is what keeps a failure from going
+ *   unreported when a future caller forgets to present one.
+ *
+ * MIGRATION: BOTH publishers used to fire for the same request. The interceptor
+ *   announced every `HttpErrorResponse` while the store simultaneously retained the same
+ *   failure for its screen, so one refusal produced one banner and one queued
+ *   notification, worded differently, dismissible independently, and with no way for an
+ *   operator to tell whether they were looking at one incident or two. The legacy page
+ *   had exactly one message surface — `AddModuleMessage` rendered a single module message
+ *   per page render — so two publishers is not a behaviour being preserved. The token
+ *   restores single ownership without either side having to know the other exists.
+ *
+ * Declared here, in the presentation surface, rather than in the interceptor: the rule is
+ * about who presents a failure, both parties need to name it, and a service importing it
+ * from an interceptor module would read as though transport depended on interception.
+ *
+ * The default is `false` — unmarked means announced — so forgetting the marker produces a
+ * duplicate notification rather than a silent failure. That asymmetry is deliberate: the
+ * failure mode of the default must be noisy, not invisible.
+ */
+export const PRESENTED_IN_CONTEXT = new HttpContextToken<boolean>(() => false);
+
+/**
+ * Builds, or extends, an {@link HttpContext} marked as presented by its caller.
+ *
+ * Takes an optional existing context so that a call site already carrying one — for a
+ * future token — sets this marker on it rather than replacing it.
+ *
+ * @param context An existing context to extend, or none to start a fresh one.
+ * @returns The context, carrying {@link PRESENTED_IN_CONTEXT}.
+ */
+export function presentedInContext(context: HttpContext = new HttpContext()): HttpContext {
+  return context.set(PRESENTED_IN_CONTEXT, true);
+}
 
 /**
  * One queued notification.
@@ -24,12 +75,12 @@ export interface AppNotification {
   /**
    * The already-composed, display-ready message, treated strictly as plain text.
    *
-   * Passed through verbatim - no trimming, no case change, no substitution and
-   * nothing appended. The single exception is length: a message longer than
-   * {@link MAX_MESSAGE_LENGTH} is retained only up to that bound, for the reason
-   * documented on the constant. No marker is added to signal the cut, because
-   * adding one would be the substitution this contract forbids and would also be
-   * a display decision.
+   * Passed through verbatim - no trimming, no case change and no substitution. Two
+   * exceptions, both bounded and both documented: a message longer than
+   * {@link MAX_MESSAGE_LENGTH} is retained only up to that bound, and a
+   * {@link AppNotification.reference} supplied with it is appended AFTER that bound is
+   * applied. No marker is added to signal a cut, because adding one would be the
+   * substitution this contract forbids and would also be a display decision.
    *
    * Guaranteed to carry visible text: {@link NotificationService.notify} refuses a
    * blank or whitespace-only message outright, so no entry with an unreadable
@@ -39,6 +90,31 @@ export interface AppNotification {
    * Consumers must bind it as text content.
    */
   readonly message: string;
+
+  /**
+   * The support reference an operator quotes when reporting the incident, or `null`
+   * when the outcome has none to quote.
+   *
+   * Carried as its own member as well as being appended to {@link message}, and the
+   * duplication is the point rather than an oversight: the member is what makes the
+   * reference SURVIVE, and the appended copy is what keeps the existing single-string
+   * display contract intact for consumers that render only the message.
+   *
+   * MIGRATION: THE REFERENCE USED TO BE APPENDED BY THE CALLER AND COULD THEN BE
+   *   TRUNCATED AWAY. `error.interceptor.ts` concatenated `'Reference: <id>'` onto the
+   *   end of a message composed from a remote `ProblemDetails`, and this service then
+   *   bounded the ALREADY-CONCATENATED string at {@link MAX_MESSAGE_LENGTH}. Truncation
+   *   removes a suffix, so on exactly the failures whose `detail` is long — the
+   *   unexpected ones, which are the failures worth reporting — the correlation
+   *   reference was the first thing discarded, leaving an operator with an unbounded
+   *   server sentence and no identifier to look it up by. Bounding now applies to the
+   *   caller's message only, and the reference is appended afterwards, so it cannot be
+   *   reached by the cut.
+   *
+   * Bounded independently at {@link MAX_REFERENCE_LENGTH}: it is remote input like the
+   * message, so it may not be retained at whatever length it arrives.
+   */
+  readonly reference: string | null;
 }
 
 /**
@@ -99,8 +175,49 @@ const MAX_QUEUED_NOTIFICATIONS = 25;
  *          units when it is longer.
  */
 function boundMessage(message: string): string {
-  if (message.length <= MAX_MESSAGE_LENGTH) {
-    return message;
+  return boundText(message, MAX_MESSAGE_LENGTH);
+}
+
+/**
+ * The greatest number of UTF-16 code units of a support reference this service will
+ * retain.
+ *
+ * The reference is remote input on the same footing as the message: it is read from a
+ * response body's `correlationId`, falling back to `traceId`, and a proxy or a
+ * misconfigured gateway can put anything there. The value this application's own server
+ * writes is a 32-character identifier, and the longest legitimate alternative — an
+ * activity trace parent — is 55 characters, so this bound clears every real value by
+ * more than a factor of two while keeping the retained text finite.
+ *
+ * Bounding it separately from {@link MAX_MESSAGE_LENGTH} is what makes the reference
+ * immune to the message's truncation: the two are applied to two different strings and
+ * concatenated afterwards.
+ */
+const MAX_REFERENCE_LENGTH = 128;
+
+/**
+ * Introduces the support reference within a composed message.
+ *
+ * The wording matches the label `error.interceptor.ts` used when it composed the suffix
+ * itself, so no rendered message changes as a result of moving the composition here.
+ */
+const REFERENCE_LABEL = 'Reference:';
+
+/**
+ * Retains at most `limit` UTF-16 code units of `text`, without splitting a surrogate
+ * pair.
+ *
+ * Text at or below the bound is returned as the very same string, so the overwhelmingly
+ * common case allocates nothing and the verbatim contract on
+ * {@link AppNotification.message} holds exactly.
+ *
+ * @param text The text to bound.
+ * @param limit The greatest number of code units to retain.
+ * @returns The text unchanged, or its leading `limit` code units when it is longer.
+ */
+function boundText(text: string, limit: number): string {
+  if (text.length <= limit) {
+    return text;
   }
 
   // `String.prototype.length` counts UTF-16 code units rather than characters, so
@@ -110,13 +227,33 @@ function boundMessage(message: string): string {
   // consumer renders the message as text content, where a lone surrogate is not
   // representable and shows as U+FFFD - a visible mangling of the last character.
   //
-  // The message is known to be longer than the bound here, so when the unit at
-  // `MAX_MESSAGE_LENGTH - 1` is a high surrogate its partner really is being
-  // dropped; this is not a speculative guard.
-  const lastRetainedUnit = message.charCodeAt(MAX_MESSAGE_LENGTH - 1);
+  // The text is known to be longer than the bound here, so when the unit at
+  // `limit - 1` is a high surrogate its partner really is being dropped; this is not a
+  // speculative guard.
+  const lastRetainedUnit = text.charCodeAt(limit - 1);
   const cutSplitsSurrogatePair = lastRetainedUnit >= 0xd800 && lastRetainedUnit <= 0xdbff;
 
-  return message.slice(0, cutSplitsSurrogatePair ? MAX_MESSAGE_LENGTH - 1 : MAX_MESSAGE_LENGTH);
+  return text.slice(0, cutSplitsSurrogatePair ? limit - 1 : limit);
+}
+
+/**
+ * Bounds a support reference and refuses a blank one.
+ *
+ * A reference that carries no visible text is treated as absent rather than quoted,
+ * because quoting it would leave a dangling `Reference:` label with nothing after it —
+ * an instruction to report an identifier that was never issued.
+ *
+ * @param reference The reference as supplied, or `null` when none applies.
+ * @returns The bounded reference, or `null` when there is nothing to quote.
+ */
+function boundReference(reference: string | null): string | null {
+  if (reference === null) {
+    return null;
+  }
+
+  const bounded = boundText(reference, MAX_REFERENCE_LENGTH);
+
+  return bounded.trim().length === 0 ? null : bounded;
 }
 
 // MIGRATION: the legacy `DataCache` call sites are deliberately NOT reproduced on the
@@ -218,11 +355,28 @@ export class NotificationService {
    * leading or trailing padding, because reformatting a message that does have content
    * would be a display decision.
    *
+   * ## The support reference is appended AFTER the message is bounded
+   *
+   * A caller that has a support reference passes it as the third argument rather than
+   * concatenating it into the message, and the ordering inside this method is the whole
+   * reason the argument exists: the caller's message is bounded first, the reference is
+   * bounded separately, and only then are the two joined. Truncation can therefore never
+   * reach the reference, which is exactly what it used to do — see the note on
+   * {@link AppNotification.reference}. A blank reference is treated as absent, so no
+   * dangling label is ever left behind.
+   *
    * @param severity The already-decided severity to render at.
    * @param message The already-composed, display-ready plain-text message. A blank
-   *   or whitespace-only value is refused and the call becomes a no-op.
+   *   or whitespace-only value is refused and the call becomes a no-op, whether or not a
+   *   reference accompanies it: a notification reading only `Reference: …` tells a person
+   *   nothing about what happened.
+   * @param reference The support reference to quote, or `null` when the outcome has none.
    */
-  notify(severity: NotificationSeverity, message: string): void {
+  notify(
+    severity: NotificationSeverity,
+    message: string,
+    reference: string | null = null,
+  ): void {
     // The bound is applied BEFORE the emptiness test, so a message that is only
     // whitespace is still recognised as blank after truncation.
     const bounded = boundMessage(message);
@@ -234,7 +388,15 @@ export class NotificationService {
       return;
     }
 
-    const entry: AppNotification = { id: this.nextId++, severity, message: bounded };
+    const quoted = boundReference(reference);
+    const composed = quoted === null ? bounded : `${bounded} ${REFERENCE_LABEL} ${quoted}`;
+
+    const entry: AppNotification = {
+      id: this.nextId++,
+      severity,
+      message: composed,
+      reference: quoted,
+    };
 
     this._notifications.update((queue) => {
       // Written as a surplus count rather than a `length === cap` test so that it
@@ -258,8 +420,17 @@ export class NotificationService {
     this.notify('warning', message);
   }
 
-  error(message: string): void {
-    this.notify('error', message);
+  /**
+   * Queues a failure.
+   *
+   * The one convenience method that forwards a support reference, because a failure is
+   * the only outcome that has one to quote.
+   *
+   * @param message The already-composed, display-ready plain-text message.
+   * @param reference The support reference to quote, or `null` when there is none.
+   */
+  error(message: string, reference: string | null = null): void {
+    this.notify('error', message, reference);
   }
 
   /**

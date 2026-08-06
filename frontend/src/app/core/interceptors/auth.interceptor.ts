@@ -11,6 +11,7 @@ import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { isAnonymousAuthEndpoint, isApiRequest } from '../config/api-endpoints';
 import { AuthService } from '../services/auth.service';
 import { TokenStorageService } from '../services/token-storage.service';
+import { SessionTeardownService } from '../state/session-teardown.service';
 
 /**
  * The request header the API reads a bearer token from.
@@ -29,12 +30,11 @@ const AUTHORIZATION_HEADER = 'Authorization';
  * A route rather than a full reload, so the single-page application is not started
  * again from scratch for what is an ordinary end of session.
  *
- * The screen this addresses is not authored yet, so today the path is matched by the
- * catch-all route and the not-found screen is rendered. That is recorded rather than
- * worked around: suppressing the navigation until the screen exists would leave a
- * dead session in place with nothing telling the operator to sign in again, and
- * inventing a different destination would have to be undone once the sign-in screen
- * lands. Nothing else in this file depends on the destination resolving.
+ * `APP_ROUTES` declares this path and mounts the sign-in feature behind it UNGATED, so the
+ * navigation resolves to the sign-in screen rather than to the catch-all. It must stay
+ * unguarded: guarding the one destination an expired session is sent to would bounce that
+ * session between the guard and this interceptor. Nothing else in this file depends on the
+ * destination beyond its resolving.
  */
 const LOGIN_PATH = '/login';
 
@@ -185,6 +185,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const tokenStorage = inject(TokenStorageService);
   const auth = inject(AuthService);
   const router = inject(Router);
+  const sessionTeardown = inject(SessionTeardownService);
 
   if (isHealthProbe(req.url) || !isApiRequest(req.url) || isAnonymousAuthEndpoint(req.url)) {
     return next(req);
@@ -200,6 +201,40 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
     return next(req);
   }
 
+  /*
+   * ⚠ THE SESSION THIS REQUEST BELONGS TO IS CAPTURED HERE, ALONGSIDE ITS TOKEN, AND EVERY
+   * RECOVERY DECISION BELOW IS CONDITIONED ON IT.
+   *
+   * This is the fix for a cross-session replay that the previous structure allowed. The old
+   * recovery path asked only "is SOME renewal credential held?" and then retried the original
+   * request with whatever token storage held by then. Consider an operator who signs out and
+   * signs back in as somebody else while a request is in the air:
+   *
+   *   1. account A's request goes out carrying A's access token;
+   *   2. the operator signs out, then signs in as account B;
+   *   3. A's request comes back 401, because A's token was expired or A's session was ended;
+   *   4. the presence test passes — B holds a refresh token — so the renewal proceeds and
+   *      succeeds, renewing B's perfectly healthy session;
+   *   5. the original request, composed under A's authority, is retried carrying B's bearer
+   *      token, and the server executes it AS B.
+   *
+   * Step 5 is the defect: an operation one account initiated is performed under another's
+   * identity. On a mutating request against a record A could reach and B could not, or the
+   * reverse, it is a genuine authorisation crossing rather than a cosmetic confusion.
+   *
+   * Recovery is now gated at BOTH points where the old code trusted ambient state, and the two
+   * gates ask the question in the two different forms it needs to be asked in:
+   *
+   *   - BEFORE renewing, against this captured epoch — "has the session changed at all since
+   *     this request was composed?" Nothing in this path has run yet, so a plain equality
+   *     test is exact.
+   *   - BEFORE retrying, against TOKEN IDENTITY — "is the session the renewal produced
+   *     actually the one being held?" An epoch comparison would have to predict how many
+   *     transitions the renewal itself caused, which hard-codes another file's internals;
+   *     identity answers it directly. See the note at that gate.
+   */
+  const requestGeneration = tokenStorage.generation();
+
   // `catchError` is attached to the FIRST attempt only. The retry below is returned
   // directly, with no handler of its own, so a 401 on the retry propagates untouched
   // and cannot re-enter this recovery path. That structure — not a counter and not a
@@ -213,12 +248,37 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
         return throwError(() => error);
       }
 
+      /*
+       * ⚠ CHECK ONE: HAS THE SESSION CHANGED SINCE THIS REQUEST WAS COMPOSED?
+       *
+       * If it has, this 401 belongs to a session that is already over and there is nothing
+       * here to recover. Crucially, the response is to do NOTHING to the current session —
+       * not renew it, not clear it, not navigate away from it. Some other party made that
+       * transition deliberately: a sign-out the operator asked for, or a sign-in that
+       * succeeded. Acting on this stale refusal would undo their action.
+       *
+       * The original 401 is propagated so the caller still learns its request failed, which
+       * is true and is what the error surface should report.
+       *
+       * This test comes BEFORE the renewable-session test, and the order matters. The old
+       * code's first question was "is a refresh token held?", which a NEW session answers
+       * yes to — so it would proceed to renew a session that had no problem, on the strength
+       * of an old session's failure.
+       */
+      if (!tokenStorage.isCurrentGeneration(requestGeneration)) {
+        return throwError(() => error);
+      }
+
       // A session discarded while this request was in flight — by a concurrent
       // renewal failure, or by a sign-out that raced it — cannot be renewed. The
       // session is ended explicitly so the operator is asked to sign in rather than
       // left looking at a screen that will refuse every subsequent action.
+      //
+      // Reached only when the generation still matches, so "discarded" here means
+      // discarded WITHOUT a session replacing it. That is why ending the session and
+      // navigating is the right response at this point and would have been wrong above.
       if (!hasRenewableSession(tokenStorage)) {
-        endSession(tokenStorage, router);
+        endSession(tokenStorage, router, sessionTeardown);
 
         return throwError(() => error);
       }
@@ -230,27 +290,82 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
       // the service's slot but could not clear a private one, so a 401 racing a
       // sign-out would replay a cached renewal and resurrect the session the operator
       // had just ended. One owner, deliberately.
+      // ⚠ THE ORDER OF THESE TWO OPERATORS IS THE WHOLE POINT, AND REVERSING IT IS A DEFECT.
+      // `catchError` is attached to the RENEWAL, BEFORE the `switchMap` that retries - so it
+      // sees a renewal failure and nothing else.
+      //
+      // MIGRATION: it used to sit AFTER the `switchMap`, where it caught the RETRY's failure as
+      //   though the renewal had failed. Two consequences, both serious. First, a renewal that
+      //   SUCCEEDED followed by a retry the server answered 403, 404, 409, 429, 500 or a network
+      //   failure ended the session and sent the operator to sign in again - destroying a session
+      //   that had just been renewed and was perfectly valid, for a request that had nothing to do
+      //   with authentication. Second, every one of those statuses was replaced by the original 401
+      //   on the way out, so the caller was told "not authorised" about a conflict, a missing record
+      //   or a server fault, and the real status never reached the error interceptor that words it.
+      //   Catching before the retry restores both: only a genuine renewal failure is terminal, and a
+      //   retry failure propagates exactly as the server sent it.
       return auth.refresh().pipe(
-        // Exactly one retry, and only after a renewal that actually succeeded. The
-        // token is re-read from the refreshed session rather than reusing the value
-        // captured above, and the request is re-cloned from the ORIGINAL so the
-        // correlation identifier stamped by the outer interceptor is carried onto the
-        // second attempt.
-        switchMap((session) => next(withBearerToken(req, session.accessToken))),
-        catchError((refreshError: unknown) => {
-          // Terminal. The renewal credential the server refused cannot be retried, so
-          // the session is over and the operator is routed to sign in again.
+        catchError((renewalError: unknown) => {
+          // Terminal. The renewal credential the server refused cannot be retried, so the
+          // session is over and the operator is routed to sign in again.
           //
-          // The ORIGINAL 401 is re-thrown rather than the renewal failure, because
-          // that is the failure the caller asked about; reporting the renewal error
-          // would replace "your request was not authorised" with an unrelated message
-          // about a token the caller never sent. The renewal error is deliberately not
-          // logged either — it can carry the credential that was refused.
-          void refreshError;
+          // The ORIGINAL 401 is re-thrown rather than the renewal failure, because that is the
+          // failure the caller asked about; reporting the renewal error would replace "your
+          // request was not authorised" with an unrelated message about a token the caller never
+          // sent. The renewal error is deliberately not logged either - it can carry the
+          // credential that was refused.
+          void renewalError;
 
-          endSession(tokenStorage, router);
+          /*
+           * ⚠ TEARDOWN IS CONDITIONED ON NO SESSION BEING HELD, which is the one predicate that
+           * reads correctly for every way this branch is reachable:
+           *
+           *   - THE RENEWAL WAS REFUSED for this session. The authentication service has already
+           *     discarded it, so nothing is held and the operator is asked to sign in.
+           *   - THE LINEAGE MOVED ON BECAUSE OF A SIGN-OUT. Nothing is held, and navigating to
+           *     sign-in is what the operator asked for anyway.
+           *   - THE LINEAGE MOVED ON BECAUSE OF A NEWER SIGN-IN. A healthy session IS held, and it
+           *     is left completely alone. Tearing it down here would sign out an operator whose own
+           *     sign-in had just succeeded.
+           */
+          if (tokenStorage.isAuthenticated()) {
+            return throwError(() => error);
+          }
+
+          endSession(tokenStorage, router, sessionTeardown);
 
           return throwError(() => error);
+        }),
+        // Exactly one retry, and only after a renewal that actually succeeded. The request is
+        // re-cloned from the ORIGINAL so the correlation identifier stamped by the outer
+        // interceptor is carried onto the second attempt. The retry is returned BARE: it carries
+        // no handler of its own, so a second refusal propagates untouched with the status the
+        // server actually sent, and cannot re-enter this recovery path. That structure - not a
+        // counter and not a marker header - is what bounds recovery to exactly one retry.
+        switchMap((session) => {
+          /*
+           * ⚠ CHECK TWO: IS THE RENEWED SESSION *ACTUALLY THE ONE BEING HELD*?
+           *
+           * A renewal is two round trips, so the window between CHECK ONE and this point is the
+           * widest in the whole path - and a sign-out or an account switch landing inside it is
+           * precisely the race being closed.
+           *
+           * The test is TOKEN IDENTITY rather than epoch arithmetic, deliberately. Counting
+           * transitions here would mean predicting how many the renewal itself caused, which
+           * hard-codes an internal detail of the authentication service into this file. Comparing
+           * the held token against the token this renewal produced needs no prediction and is
+           * exhaustive over the ways the lineage can move on: the renewal's store was SUPPRESSED
+           * because a newer transition had advanced the epoch past the one it captured, or the
+           * store succeeded and a FURTHER transition replaced it immediately after. Either way, do
+           * not retry, do not touch the session that is now current, and propagate the ORIGINAL
+           * 401 - retrying here is what would execute one account's request under another's
+           * identity.
+           */
+          if (tokenStorage.accessToken() !== session.accessToken) {
+            return throwError(() => error);
+          }
+
+          return next(withBearerToken(req, session.accessToken));
         }),
       );
     }),
@@ -315,6 +430,18 @@ function hasRenewableSession(tokenStorage: TokenStorageService): boolean {
  * Safe to reach from several concurrent failures at once: discarding is idempotent,
  * and the router ignores a repeat navigation to the URL it is already on.
  *
+ * ⚠ THE PURGE IS NOT OPTIONAL HERE, and this is the likeliest place a session actually
+ * ends. A deliberate sign-out goes through `core/state/auth.store.ts`, but an expired
+ * token whose renewal cannot be completed ends the session from THIS function instead,
+ * with no screen involved. Clearing the custodian revokes the session's authority and,
+ * because the identity projection is stamped with the session generation the custodian
+ * advances, it also retracts the published account. It does NOT empty the domain stores:
+ * the portal, user, role and module stores are each root-provided, so each holds one
+ * instance that survives the session, and without this call the previous operator's tenant
+ * listings, the account record they had open, the role assignments naming other accounts
+ * and a serialised export of a module's data would all still be in memory behind the
+ * sign-in screen — and legible to whoever signed in next on the same page load.
+ *
  * A failed navigation is swallowed and reported as "did not navigate". The caller is
  * mid-way through re-throwing the response the server actually sent, and a routing
  * problem must not displace it — nor become an unhandled rejection that surfaces
@@ -323,9 +450,19 @@ function hasRenewableSession(tokenStorage: TokenStorageService): boolean {
  *
  * @param tokenStorage The session store to clear.
  * @param router The router to leave through.
+ * @param sessionTeardown The fan-out that empties the domain stores.
  */
-function endSession(tokenStorage: TokenStorageService, router: Router): void {
+function endSession(
+  tokenStorage: TokenStorageService,
+  router: Router,
+  sessionTeardown: SessionTeardownService,
+): void {
+  // Cleared FIRST, because clearing advances the session generation that every late
+  // callback tests itself against. Purging before the generation moved would leave a read
+  // already in flight still believing its session was current, free to repopulate the very
+  // slices the purge had just emptied.
   tokenStorage.clear();
+  sessionTeardown.purge();
 
   void router.navigate([LOGIN_PATH]).catch(() => false);
 }

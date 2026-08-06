@@ -518,6 +518,56 @@ public interface IPermissionService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Removes every grant addressed to one role, across all three grant families, leaving the commit to
+    /// the operation that called it.
+    /// </summary>
+    /// <param name="portalId">The portal that owns the role. The role must belong to it.</param>
+    /// <param name="roleId">The role whose grants are removed. Grants addressed to an account are unaffected, because they belong to the account rather than to the role.</param>
+    /// <param name="cancellationToken">Token that cancels the reads and the removals.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result"/>, including when the role held no grant at all -
+    /// removing nothing is a legitimate outcome. Fails with <c>permission.portal_not_found</c> or
+    /// <c>permission.role_not_found</c> when either identifier names nothing, or when the role belongs to
+    /// another tenant, in which case nothing has been removed.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS MEMBER EXISTS. Removing a role and leaving its grants behind is a data-integrity fault
+    /// rather than an untidiness: the grant tables carry no cascading foreign key to the role table in the
+    /// schema this migration binds to, so the rows simply survive their principal, and role identifiers are
+    /// reissued - <c>Roles.RoleID</c> is an identity column - so a later role can take a vacated identifier
+    /// and inherit authority nobody granted it. The terminal legacy procedure removed all three families
+    /// first for exactly this reason: <c>03.00.10.SqlDataProvider</c> deletes from the folder, module and
+    /// page grant tables by role identifier before deleting the role row.
+    /// </para>
+    /// <para>
+    /// THREE FAMILIES, NOT TWO. The folder family has no entity in this migration because file management
+    /// is out of scope, but the table exists in every upgraded DotNetNuke database, so its rows are removed
+    /// where it is present and the removal is a no-op where it is not. An implementer must not create,
+    /// alter or drop anything to achieve that.
+    /// </para>
+    /// <para>
+    /// AN IMPLEMENTER MUST NOT COMMIT, FLUSH OR OPEN A TRANSACTION HERE, and must not evict a cache entry
+    /// either - the same division of responsibility that
+    /// <see cref="StageUserPermissionRemovalAsync"/> observes, and for the same reasons. The removals reach
+    /// the store as set-based statements the moment they are issued, so the CALLER MUST ALREADY HAVE A
+    /// TRANSACTION OPEN: without one the grants become durable on their own, and a role removal that then
+    /// failed would leave the role intact but stripped of every grant, while reporting that it had left the
+    /// role alone. Eviction belongs after the caller's commit, through
+    /// <see cref="InvalidateUserPermissionCachesAsync"/>.
+    /// </para>
+    /// <para>
+    /// The tenant is taken as an argument so that a role identifier belonging to another portal is refused
+    /// rather than acted on, which keeps a caller acting for one tenant from removing another tenant's
+    /// grants through a mistyped identifier.
+    /// </para>
+    /// </remarks>
+    Task<Result> StageRolePermissionRemovalAsync(
+        int portalId,
+        int roleId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Evicts the cache entries invalidated by removing a user's direct grants, once the removal has been
     /// committed.
     /// </summary>
@@ -542,6 +592,14 @@ public interface IPermissionService
     /// <para>
     /// Calling it when nothing was staged is harmless: eviction is idempotent and costs at most a read of
     /// the portal's pages.
+    /// </para>
+    /// <para>
+    /// THE EVICTION SET DOES NOT DEPEND ON WHICH KIND OF PRINCIPAL LOST ITS GRANTS, which is why
+    /// <see cref="StageRolePermissionRemovalAsync"/> shares this member rather than acquiring one of its
+    /// own. Both cached entries are keyed by tenant and page and hold the grants of every principal at
+    /// once, so removing a role's grants staled precisely the same entries as removing an account's. The
+    /// member is named for the caller it was written for, not for a restriction on who may call it; a
+    /// second eviction member would be a second definition of the same set, free to drift from this one.
     /// </para>
     /// </remarks>
     Task InvalidateUserPermissionCachesAsync(

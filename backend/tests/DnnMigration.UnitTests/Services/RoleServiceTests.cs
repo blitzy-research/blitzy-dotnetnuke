@@ -124,6 +124,7 @@ public class RoleServiceTests
         var roles = new Mock<IRoleRepository>().Object;
         var portals = new Mock<IPortalRepository>().Object;
         var users = new Mock<IUserRepository>().Object;
+        var permissions = new Mock<IPermissionService>().Object;
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var clock = new Mock<IClock>().Object;
         var cache = new Mock<ICacheService>().Object;
@@ -132,36 +133,74 @@ public class RoleServiceTests
 
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
-            _ = new RoleService(null!, portals, users, unitOfWork, clock, cache, currentUser, audit);
+            _ = new RoleService(null!, portals, users, permissions, unitOfWork, clock, cache, currentUser, audit);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new RoleService(roles, null!, users, unitOfWork, clock, cache, currentUser, audit);
+            _ = new RoleService(roles, null!, users, permissions, unitOfWork, clock, cache, currentUser, audit);
         });
         Assert.Throws<ArgumentNullException>("users", () =>
         {
-            _ = new RoleService(roles, portals, null!, unitOfWork, clock, cache, currentUser, audit);
+            _ = new RoleService(roles, portals, null!, permissions, unitOfWork, clock, cache, currentUser, audit);
+        });
+        Assert.Throws<ArgumentNullException>("permissions", () =>
+        {
+            _ = new RoleService(roles, portals, users, null!, unitOfWork, clock, cache, currentUser, audit);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new RoleService(roles, portals, users, null!, clock, cache, currentUser, audit);
+            _ = new RoleService(roles, portals, users, permissions, null!, clock, cache, currentUser, audit);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
-            _ = new RoleService(roles, portals, users, unitOfWork, null!, cache, currentUser, audit);
+            _ = new RoleService(roles, portals, users, permissions, unitOfWork, null!, cache, currentUser, audit);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new RoleService(roles, portals, users, unitOfWork, clock, null!, currentUser, audit);
+            _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, null!, currentUser, audit);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new RoleService(roles, portals, users, unitOfWork, clock, cache, null!, audit);
+            _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, cache, null!, audit);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
-            _ = new RoleService(roles, portals, users, unitOfWork, clock, cache, currentUser, null!);
+            _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, cache, currentUser, null!);
         });
+    }
+
+    /// <summary>
+    /// Every collaborator the constructor accepts is guarded, so the guard list cannot fall behind the
+    /// parameter list.
+    /// </summary>
+    /// <remarks>
+    /// The sibling above names each parameter individually, which proves the guards throw for the right
+    /// argument but cannot notice a NINTH parameter arriving without a guard - it would simply be passed a
+    /// live double in every case. This test closes that gap by counting: the constructor and the list above
+    /// must agree on how many collaborators exist. It failed when the permission contract was added, which
+    /// is why it is here rather than in a later revision.
+    /// </remarks>
+    [Fact]
+    public void Service_GuardsAsManyCollaboratorsAsItAccepts()
+    {
+        ConstructorInfo constructor = typeof(RoleService).GetConstructors().Should().ContainSingle().Subject;
+
+        string[] guarded =
+        [
+            "roles",
+            "portals",
+            "users",
+            "permissions",
+            "unitOfWork",
+            "clock",
+            "cache",
+            "currentUser",
+            "audit",
+        ];
+
+        constructor.GetParameters().Select(parameter => parameter.Name).Should().Equal(
+            guarded,
+            "the null-argument cases above are written out one per collaborator, in this order");
     }
 
     /// <summary>
@@ -519,21 +558,47 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The tenant's roles are read once and the request's paging and free-text term are applied to that
-    /// result, because the legacy membership provider exposed no paged or filtered role read.
+    /// Every narrowing the request carried travels to the store in one read, and nothing tenant-wide is read
+    /// at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the fact that pins the fix for the role listing's cost. Each argument is checked because one
+    /// that failed to travel would be applied by nobody: reading the tenant's whole role set and narrowing
+    /// it here produced the same rows for a small tenant, which is exactly why the old shape survived
+    /// unnoticed. The negative assertion is the substance - the unpaged tenant read is not issued.
+    /// </remarks>
     [Fact]
-    public async Task ListRoles_PassesTheRequestThroughUnchanged()
+    public async Task ListRoles_PassesEveryNarrowingToTheStoreAndReadsNothingTenantWide()
     {
         Harness harness = Harness.Ready();
-        var request = new PagedRequest { PageIndex = 3, PageSize = 25, Query = "sub" };
+        var request = new PagedRequest
+        {
+            PageIndex = 3,
+            PageSize = 25,
+            Query = "sub",
+            SortBy = "RoleId",
+            SortDir = SortDirection.Descending,
+        };
 
         await harness.Service.ListRolesAsync(PortalId, request, RoleGroupId, cancellationToken: CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.GetByPortalIdAsync(PortalId, It.IsAny<CancellationToken>()),
+            r => r.ListAsync(
+                PortalId,
+                RoleGroupId,
+                false,
+                "sub",
+                "RoleId",
+                true,
+                3,
+                25,
+                It.IsAny<CancellationToken>()),
             Times.Once);
+
+        harness.Roles.Verify(
+            r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -1860,12 +1925,22 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The removal commits once and discards both the tenant's cached state and its cached page grants,
-    /// because a page permission may have named the role that has gone.
+    /// The removal commits once, discards the tenant's cached state, and hands the grant-cache eviction to
+    /// the contract that owns it rather than evicting one of the two affected entries itself.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F8. This test previously asserted a direct
+    /// <c>ICacheService.InvalidateTabPermissions</c> call, and that assertion is now wrong rather than
+    /// merely narrower. Removing a role stales TWO cached entries - the tenant-keyed page-grant entry and
+    /// the PAGE-keyed module-grant entry - so evicting the first directly leaves the second answering with
+    /// module grants that no longer exist. The portal-wide module eviction requires the tenant's page list,
+    /// which the permission contract already reads, so the eviction is delegated whole. Asserting the
+    /// delegation rather than the two evictions is deliberate: duplicating the eviction set here would
+    /// create a second definition of it, which is exactly what the delegation exists to avoid.
+    /// </remarks>
     [Fact]
-    public async Task DeleteRole_CommitsOnceAndInvalidatesBothTheTenantAndItsPageGrants()
+    public async Task DeleteRole_CommitsOnceAndDelegatesTheGrantCacheEviction()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
@@ -1874,7 +1949,170 @@ public class RoleServiceTests
 
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
         harness.Cache.Verify(c => c.InvalidatePortal(PortalId), Times.Once);
-        harness.Cache.Verify(c => c.InvalidateTabPermissions(PortalId), Times.Once);
+        harness.Permissions.Verify(
+            permissions => permissions.InvalidateUserPermissionCachesAsync(
+                PortalId,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Not evicted directly, because the delegated member evicts it - a direct call as well would be a
+        // second definition of the same set.
+        harness.Cache.Verify(c => c.InvalidateTabPermissions(It.IsAny<int>()), Times.Never);
+    }
+
+    /// <summary>
+    /// SEC-F8: every grant the role held is swept, and the sweep happens before the role row goes, inside
+    /// the same committed transaction.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The whole of the finding is here. The grant tables carry no cascading foreign key to the role table,
+    /// so the rows survive their principal; <c>Roles.RoleID</c> is an identity column, so the vacated
+    /// identifier is reissued; and the next role to take it inherits authority nobody granted it. The
+    /// terminal legacy procedure swept all three families first - <c>03.00.10.SqlDataProvider</c> deletes
+    /// from the folder, module and page grant tables by role identifier before deleting the role - and this
+    /// asserts the target does the same.
+    /// </para>
+    /// <para>
+    /// The ORDER is asserted, not merely the membership of the call set. Verifying each call separately
+    /// would pass for a sweep issued after the role delete, or after the commit, either of which would
+    /// reintroduce the window the transaction exists to close.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeleteRole_SweepsTheRolesGrantsBeforeItsRowInsideOneCommittedTransaction()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+
+        Result outcome = await harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.Permissions.Verify(
+            permissions => permissions.StageRolePermissionRemovalAsync(
+                PortalId,
+                RoleId,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        harness.Steps.Should().Equal(
+            [
+                "transaction.begin",
+                "permissions.sweep",
+                "roles.delete",
+                "unitOfWork.save",
+                "transaction.commit",
+                "permissions.evict",
+            ],
+            "the grants go before the role, both inside one scope, and the eviction follows the commit");
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Committed.Should().BeTrue();
+        scope.Isolation.Should().Be(
+            TransactionIsolation.Default,
+            "nothing this removal read has to stay unchanged - the designation it checks is written only "
+            + "during portal provisioning - so the stronger isolation the tenant removal needs is not "
+            + "needed here");
+    }
+
+    /// <summary>
+    /// SEC-F8: the sweep is the stage-only member, so a role removal that cannot be committed leaves the
+    /// grants in place.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the reason the removal opens a transaction at all. The sweep reaches the store as set-based
+    /// statements the moment it is issued, so without one it would be durable on its own, and a failing
+    /// commit would leave the role present with every grant gone - strictly worse than the fault being
+    /// repaired, because grants cannot be reconstructed. The scope is asserted to have rolled back rather
+    /// than merely to have been disposed.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteRole_WhenTheCommitFails_AbandonsTheSweepWithTheRemoval()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("the store refused the batch"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None));
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.RolledBack.Should().BeTrue("the grants and the role stand or fall together");
+
+        harness.Permissions.Verify(
+            permissions => permissions.InvalidateUserPermissionCachesAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        harness.AuditRecords.Should().BeEmpty(
+            "no record may describe a removal that was rolled back");
+    }
+
+    /// <summary>
+    /// SEC-F8: a sweep that refuses is reported and the role survives.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Propagating rather than discarding is what keeps the two halves honest. Swallowing the refusal would
+    /// commit a role removal whose grants were still recorded against the vacated identifier, and would
+    /// report success while doing it.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteRole_WhenTheSweepRefuses_ReportsItAndRemovesNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+        harness.GrantSweep = Result.Failure("permission.role_not_found", "the sweep declined");
+
+        Result outcome = await harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("permission.role_not_found");
+
+        harness.RemovedRoleIds.Should().BeEmpty();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// SEC-F8: a refusal that precedes the sweep neither opens a transaction nor touches a grant.
+    /// </summary>
+    /// <param name="designatedRoleId">The identifier the tenant designates.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Both guards - the unknown role and the protected designation - are stated ahead of the sweep, so
+    /// asking about a role that must not be removed costs no scope and leaves the store untouched. The
+    /// registered-role identifier is deliberately included: it is <c>OtherRoleId + 1</c> in this harness,
+    /// and both designations are protected.
+    /// </remarks>
+    [Theory]
+    [InlineData(OtherRoleId)]
+    [InlineData(OtherRoleId + 1)]
+    public async Task DeleteRole_WhenRefusedBeforeTheSweep_OpensNoTransactionAndSweepsNothing(int designatedRoleId)
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+
+        Result outcome = await harness.Service.DeleteRoleAsync(
+            PortalId,
+            designatedRoleId,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        harness.OpenedTransactions.Should().BeEmpty();
+        harness.Permissions.Verify(
+            permissions => permissions.StageRolePermissionRemovalAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -2097,14 +2335,29 @@ public class RoleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
 
-        // The tenant and the role name are both passed, because a role name is unique only within a
-        // portal, and the login name is passed as null - which is how the legacy code reached the
-        // role-keyed direction of this same relation (DNNRoleProvider.vb:L520-L522 calls
-        // GetUserRoles(portalId, Nothing, roleName)) and what the terminal statement's
-        // IF @UserName Is Null branch answers.
+        // The tenant and the role's own NAME are both passed, because a role name is unique only within a
+        // portal - which is the direction the legacy code reached this same relation from
+        // (DNNRoleProvider.vb:L520-L522 calls GetUserRoles(portalId, Nothing, roleName), and the terminal
+        // statement's IF @UserName Is Null branch answers it). The paged member is asked, and the unpaged
+        // one is not asked at all, so the read is bounded by the page rather than by the role's membership.
         harness.Roles.Verify(
-            r => r.GetUserRolesByUsernameAsync(PortalId, null, RoleName, It.IsAny<CancellationToken>()),
+            r => r.ListRoleMembershipsAsync(
+                PortalId,
+                RoleName,
+                null,
+                null,
+                false,
+                0,
+                0,
+                It.IsAny<CancellationToken>()),
             Times.Once);
+        harness.Roles.Verify(
+            r => r.GetUserRolesByUsernameAsync(
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
 
         // No read-per-row remains: the account and the role arrive composed with the assignment.
         harness.Users.Verify(
@@ -2248,10 +2501,19 @@ public class RoleServiceTests
 
         outcome.Value.IsUnpaged.Should().BeTrue();
 
-        // A role's memberships are read as assignment rows, keyed by the role's name with a null login
-        // name - the direction the legacy GetUserRolesByRoleName took through the very same procedure.
+        // A role's memberships are read as assignment rows, keyed by the role's name - the direction the
+        // legacy GetUserRolesByRoleName took through the very same procedure - and an unpaged request is
+        // passed through as a page size of zero rather than as a large page.
         harness.Roles.Verify(
-            r => r.GetUserRolesByUsernameAsync(PortalId, null, RoleName, It.IsAny<CancellationToken>()),
+            r => r.ListRoleMembershipsAsync(
+                PortalId,
+                RoleName,
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool>(),
+                It.IsAny<int>(),
+                0,
+                It.IsAny<CancellationToken>()),
             Times.Once);
 
         // The account-shaped read this listing used to perform is gone, because an account carries neither
@@ -4112,11 +4374,57 @@ public class RoleServiceTests
             Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
             Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+
+            OpenedTransactions = [];
+            Steps = [];
+            GrantSweep = Result.Success();
+
+            // The removal now spans a set-based grant sweep and a staged role delete, so it opens a
+            // transaction. A loose mock would hand back a null task, so the scope is supplied - and it is
+            // supplied as a RECORDING scope, because "committed" and "finished" are different outcomes: the
+            // production scope rolls back on disposal without a commit, so a test asserting only that the
+            // method returned would pass for a removal that was abandoned.
+            UnitOfWork
+                .Setup(unit => unit.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns<TransactionIsolation, CancellationToken>((isolation, _) =>
+                {
+                    var scope = new RecordingTransactionScope(isolation, Steps);
+                    OpenedTransactions.Add(scope);
+                    Steps.Add("transaction.begin");
+                    return Task.FromResult<ITransactionScope>(scope);
+                });
+
+            // Ordering is recorded rather than inferred. The sweep must precede the role delete, both must
+            // precede the commit, and the eviction must follow it; verifying each call in isolation would
+            // pass for any permutation of the four.
+            Permissions
+                .Setup(permissions => permissions.StageRolePermissionRemovalAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(() =>
+                {
+                    Steps.Add("permissions.sweep");
+                    return Task.FromResult(GrantSweep);
+                });
+
+            Permissions
+                .Setup(permissions => permissions.InvalidateUserPermissionCachesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(() =>
+                {
+                    Steps.Add("permissions.evict");
+                    return Task.CompletedTask;
+                });
 
             // The acting operator is fixed so that every audit assertion below can name the actor it
             // expects rather than accepting whatever a loose mock returns.
@@ -4132,6 +4440,7 @@ public class RoleServiceTests
                 Roles.Object,
                 Portals.Object,
                 Users.Object,
+                Permissions.Object,
                 UnitOfWork.Object,
                 Clock.Object,
                 Cache.Object,
@@ -4146,6 +4455,19 @@ public class RoleServiceTests
         public Mock<IPortalRepository> Portals { get; }
 
         public Mock<IUserRepository> Users { get; }
+
+        public Mock<IPermissionService> Permissions { get; }
+
+        /// <summary>Every transaction the service opened, in the order it opened them.</summary>
+        public List<RecordingTransactionScope> OpenedTransactions { get; }
+
+        /// <summary>
+        /// The ordered sequence of transaction, sweep, delete, commit and eviction steps the service took.
+        /// </summary>
+        public List<string> Steps { get; }
+
+        /// <summary>The answer the permission contract gives when asked to sweep a role's grants.</summary>
+        public Result GrantSweep { get; set; }
 
         public Mock<IUnitOfWork> UnitOfWork { get; }
 
@@ -4227,6 +4549,169 @@ public class RoleServiceTests
         public IReadOnlyList<UserRole> RoleMembers { get; set; } = [];
 
         /// <summary>
+        /// Composes one page of roles from the harness's role world, reproducing the semantics
+        /// <see cref="IRoleRepository.ListAsync"/> documents.
+        /// </summary>
+        /// <param name="portalId">The owning tenant, matched strictly.</param>
+        /// <param name="roleGroupId">Restrict to one group, or <see langword="null"/> for none.</param>
+        /// <param name="ungroupedOnly">Restrict to the roles belonging to no group.</param>
+        /// <param name="nameQuery">A name fragment, or <see langword="null"/> for no name restriction.</param>
+        /// <param name="sortBy">The role property to order by, or <see langword="null"/> for the default.</param>
+        /// <param name="descending">Whether the ordering runs downwards.</param>
+        /// <param name="pageIndex">The page to return, counted from zero.</param>
+        /// <param name="pageSize">The page width, or zero for every matching row.</param>
+        /// <returns>The window and the total, exactly as the store would report them.</returns>
+        /// <remarks>
+        /// The STRICT tenant predicate is reproduced deliberately: it is the substantive difference between
+        /// this member and the unpaged read the harness also serves, and a fake that ignored it would let a
+        /// listing that had lost the narrowing still pass.
+        /// </remarks>
+        public PagedResult<Role> ComposeRolePage(
+            int portalId,
+            int? roleGroupId,
+            bool ungroupedOnly,
+            string? nameQuery,
+            string? sortBy,
+            bool descending,
+            int pageIndex,
+            int pageSize)
+        {
+            IEnumerable<Role> matching = RolePage.Items.Where(role => role.PortalId == portalId);
+
+            if (roleGroupId is int wantedGroup)
+            {
+                matching = matching.Where(role => role.RoleGroupId == wantedGroup);
+            }
+            else if (ungroupedOnly)
+            {
+                matching = matching.Where(role => role.RoleGroupId is null);
+            }
+
+            if (!string.IsNullOrWhiteSpace(nameQuery))
+            {
+                string wanted = nameQuery.Trim();
+                matching = matching.Where(role =>
+                    role.RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+            }
+
+            string field = string.IsNullOrWhiteSpace(sortBy) ? "ROLENAME" : sortBy.Trim().ToUpperInvariant();
+
+            IOrderedEnumerable<Role> ordered = field switch
+            {
+                "ROLEID" => OrderedBy(matching, role => role.RoleId, descending),
+                "DESCRIPTION" => OrderedBy(matching, role => role.Description ?? string.Empty, descending, StringComparer.OrdinalIgnoreCase),
+                "SERVICEFEE" => OrderedBy(matching, role => role.ServiceFee, descending),
+                "BILLINGFREQUENCY" => OrderedBy(matching, role => role.BillingFrequency, descending),
+                "BILLINGPERIOD" => OrderedBy(matching, role => role.BillingPeriod, descending),
+                "TRIALFEE" => OrderedBy(matching, role => role.TrialFee, descending),
+                "TRIALFREQUENCY" => OrderedBy(matching, role => role.TrialFrequency, descending),
+                "TRIALPERIOD" => OrderedBy(matching, role => role.TrialPeriod, descending),
+                "ISPUBLIC" => OrderedBy(matching, role => role.IsPublic, descending),
+                "AUTOASSIGNMENT" => OrderedBy(matching, role => role.AutoAssignment, descending),
+                _ => OrderedBy(matching, role => role.RoleName, descending, StringComparer.OrdinalIgnoreCase),
+            };
+
+            List<Role> rows = (descending
+                    ? ordered.ThenByDescending(role => role.RoleId)
+                    : ordered.ThenBy(role => role.RoleId))
+                .ToList();
+
+            return Window(rows, pageIndex, pageSize);
+        }
+
+        /// <summary>
+        /// Composes one page of role memberships from the harness's assignment world, reproducing the
+        /// semantics <see cref="IRoleRepository.ListRoleMembershipsAsync"/> documents.
+        /// </summary>
+        /// <param name="accountQuery">An account fragment, or <see langword="null"/> for no restriction.</param>
+        /// <param name="sortBy">The account property to order by, or <see langword="null"/> for the default.</param>
+        /// <param name="descending">Whether the ordering runs downwards.</param>
+        /// <param name="pageIndex">The page to return, counted from zero.</param>
+        /// <param name="pageSize">The page width, or zero for every matching row.</param>
+        /// <returns>The window and the total, exactly as the store would report them.</returns>
+        /// <remarks>
+        /// The three arms that name a value of the external membership store order by the tie-break alone,
+        /// which is what the store does and what the in-memory ordering they replace already produced, since
+        /// this read populates none of those three values.
+        /// </remarks>
+        public PagedResult<UserRole> ComposeMembershipPage(
+            string? accountQuery,
+            string? sortBy,
+            bool descending,
+            int pageIndex,
+            int pageSize)
+        {
+            IEnumerable<UserRole> matching = RoleMembers;
+
+            if (!string.IsNullOrWhiteSpace(accountQuery))
+            {
+                string wanted = accountQuery.Trim();
+                matching = matching.Where(assignment =>
+                    assignment.User is not null
+                    && (assignment.User.DisplayName.Contains(wanted, StringComparison.OrdinalIgnoreCase)
+                        || assignment.User.Username.Contains(wanted, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            string field = string.IsNullOrWhiteSpace(sortBy) ? "DISPLAYNAME" : sortBy.Trim().ToUpperInvariant();
+
+            IOrderedEnumerable<UserRole> ordered = field switch
+            {
+                "USERID" => OrderedBy(matching, assignment => assignment.UserId, descending),
+                "USERNAME" => OrderedBy(matching, assignment => AccountOf(assignment).Username, descending, StringComparer.OrdinalIgnoreCase),
+                "FIRSTNAME" => OrderedBy(matching, assignment => AccountOf(assignment).FirstName, descending, StringComparer.OrdinalIgnoreCase),
+                "LASTNAME" => OrderedBy(matching, assignment => AccountOf(assignment).LastName, descending, StringComparer.OrdinalIgnoreCase),
+                "EMAIL" => OrderedBy(matching, assignment => AccountOf(assignment).Email ?? string.Empty, descending, StringComparer.OrdinalIgnoreCase),
+                "ISSUPERUSER" => OrderedBy(matching, assignment => AccountOf(assignment).IsSuperUser, descending),
+                "CREATEDDATE" or "LASTLOGINDATE" or "ISAPPROVED" => OrderedBy(matching, assignment => assignment.UserRoleId, descending),
+                _ => OrderedBy(matching, assignment => AccountOf(assignment).DisplayName, descending, StringComparer.OrdinalIgnoreCase),
+            };
+
+            List<UserRole> rows = (descending
+                    ? ordered.ThenByDescending(assignment => assignment.UserRoleId)
+                    : ordered.ThenBy(assignment => assignment.UserRoleId))
+                .ToList();
+
+            return Window(rows, pageIndex, pageSize);
+        }
+
+        /// <summary>The account an assignment composes, or an empty account when it composed none.</summary>
+        /// <param name="assignment">The assignment row.</param>
+        /// <returns>The composed account, never null.</returns>
+        private static User AccountOf(UserRole assignment) => assignment.User ?? new User();
+
+        /// <summary>Applies one ordering in the requested direction.</summary>
+        /// <typeparam name="TItem">The item type being ordered.</typeparam>
+        /// <typeparam name="TKey">The sort key type.</typeparam>
+        /// <param name="items">The items to order.</param>
+        /// <param name="key">Selects the sort key.</param>
+        /// <param name="descending">Whether the ordering is descending.</param>
+        /// <param name="comparer">An optional comparer for the key.</param>
+        /// <returns>The ordered sequence, still open for a tie-breaking key.</returns>
+        private static IOrderedEnumerable<TItem> OrderedBy<TItem, TKey>(
+            IEnumerable<TItem> items,
+            Func<TItem, TKey> key,
+            bool descending,
+            IComparer<TKey>? comparer = null)
+            => descending
+                ? items.OrderByDescending(key, comparer)
+                : items.OrderBy(key, comparer);
+
+        /// <summary>Cuts the store's window over an ordered row set.</summary>
+        /// <typeparam name="TRow">The row type.</typeparam>
+        /// <param name="rows">The whole ordered set.</param>
+        /// <param name="pageIndex">The page to return, counted from zero.</param>
+        /// <param name="pageSize">The page width, or zero for every row.</param>
+        /// <returns>The window and the total.</returns>
+        private static PagedResult<TRow> Window<TRow>(List<TRow> rows, int pageIndex, int pageSize)
+            => pageSize == 0
+                ? PagedResult<TRow>.Unpaged(rows)
+                : PagedResult<TRow>.Create(
+                    rows.Skip(Paging.SkipCount(pageIndex, pageSize)).Take(pageSize).ToList(),
+                    rows.Count,
+                    pageIndex,
+                    pageSize);
+
+        /// <summary>
         /// Builds a harness whose world is consistent: the tenant exists, the role exists and belongs to
         /// it, the member exists, and no name is taken.
         /// </summary>
@@ -4287,6 +4772,41 @@ public class RoleServiceTests
             harness.Roles
                 .Setup(r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RolePage.Items);
+
+            // THE ROLE LISTING'S PAGE NOW COMES FROM THE STORE, filtered, ordered, counted and windowed
+            // there, so this is the seam the listing facts exercise. The fake reproduces the contract's
+            // documented semantics over the SAME role world the unpaged stub above serves, which is what
+            // keeps those facts describing the listing's observable behaviour rather than a canned answer:
+            // seed roles and the rows, the order, the total and the window all follow from them.
+            harness.Roles
+                .Setup(r => r.ListAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int portalId,
+                    int? roleGroupId,
+                    bool ungroupedOnly,
+                    string? nameQuery,
+                    string? sortBy,
+                    bool descending,
+                    int pageIndex,
+                    int pageSize,
+                    CancellationToken _) => harness.ComposeRolePage(
+                        portalId,
+                        roleGroupId,
+                        ungroupedOnly,
+                        nameQuery,
+                        sortBy,
+                        descending,
+                        pageIndex,
+                        pageSize));
             harness.Roles
                 .Setup(r => r.GetUserRolesAsync(
                     It.IsAny<int>(),
@@ -4333,6 +4853,7 @@ public class RoleServiceTests
                 .Setup(r => r.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Callback<int, CancellationToken>((roleId, _) =>
                 {
+                    harness.Steps.Add("roles.delete");
                     harness.RemovedRoleIds.Add(roleId);
                     if (harness.LookupRole is { } candidate && candidate.RoleId == roleId)
                     {
@@ -4399,6 +4920,33 @@ public class RoleServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RoleMembers);
 
+            // The membership listing's page, likewise served by the store and likewise faked over the same
+            // assignment world the unpaged stub above serves.
+            harness.Roles
+                .Setup(r => r.ListRoleMembershipsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int _,
+                    string _,
+                    string? accountQuery,
+                    string? sortBy,
+                    bool descending,
+                    int pageIndex,
+                    int pageSize,
+                    CancellationToken _) => harness.ComposeMembershipPage(
+                        accountQuery,
+                        sortBy,
+                        descending,
+                        pageIndex,
+                        pageSize));
+
             harness.Users
                 .Setup(u => u.ListByRoleNameAsync(
                     It.IsAny<int>(),
@@ -4431,11 +4979,64 @@ public class RoleServiceTests
 
             harness.UnitOfWork
                 .Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+                .Callback(() => harness.Steps.Add("unitOfWork.save"))
                 .ReturnsAsync(1);
 
             harness.Clock.SetupGet(c => c.UtcNow).Returns(() => Now);
 
             return harness;
+        }
+    }
+
+    /// <summary>
+    /// A transaction scope that records whether it was committed and whether it was disposed, and appends
+    /// its commit to the harness's ordered step list.
+    /// </summary>
+    /// <remarks>
+    /// Recording BOTH facts is what makes an abandoned removal distinguishable from a committed one: the
+    /// production scope rolls back when it is disposed without a commit, so a test asserting only that the
+    /// scope was disposed would pass for a removal that was rolled back.
+    /// </remarks>
+    private sealed class RecordingTransactionScope : ITransactionScope
+    {
+        private readonly List<string> _steps;
+
+        /// <summary>Initialises a new instance of the <see cref="RecordingTransactionScope"/> class.</summary>
+        /// <param name="isolation">The isolation the service asked for.</param>
+        /// <param name="steps">The harness's ordered step list, which the commit is appended to.</param>
+        public RecordingTransactionScope(TransactionIsolation isolation, List<string> steps)
+        {
+            Isolation = isolation;
+            _steps = steps;
+        }
+
+        /// <summary>The isolation the service asked for.</summary>
+        public TransactionIsolation Isolation { get; }
+
+        /// <summary>Whether the scope was committed.</summary>
+        public bool Committed { get; private set; }
+
+        /// <summary>Whether the scope was disposed.</summary>
+        public bool Disposed { get; private set; }
+
+        /// <summary>Whether the scope was abandoned - disposed without ever being committed.</summary>
+        public bool RolledBack => Disposed && !Committed;
+
+        /// <inheritdoc />
+        public Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            Committed = true;
+            _steps.Add("transaction.commit");
+
+            return Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+
+            return ValueTask.CompletedTask;
         }
     }
 }

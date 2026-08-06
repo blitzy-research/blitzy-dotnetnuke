@@ -13,6 +13,7 @@ import { RouterOutlet } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import { FooterComponent } from '../footer/footer.component';
 import { HeaderComponent } from '../header/header.component';
+import { NotificationListComponent } from '../notifications/notification-list.component';
 
 /**
  * The fragment identifier the skip link targets, and therefore the identifier the
@@ -100,7 +101,7 @@ const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
 @Component({
   selector: 'app-shell',
   standalone: true,
-  imports: [RouterOutlet, HeaderComponent, FooterComponent],
+  imports: [RouterOutlet, HeaderComponent, FooterComponent, NotificationListComponent],
   templateUrl: './shell.component.html',
   styleUrl: './shell.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

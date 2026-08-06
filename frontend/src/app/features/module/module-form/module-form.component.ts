@@ -163,6 +163,7 @@ import {
   FormControl,
   FormGroup,
   ReactiveFormsModule,
+  Validators,
   type AbstractControl,
   type ValidationErrors,
 } from '@angular/forms';
@@ -170,6 +171,7 @@ import { Router } from '@angular/router';
 
 import { ModuleVisibility } from '../../../core/models/module.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
 import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
@@ -402,6 +404,57 @@ const END_DATE_INVALID_MESSAGE = 'Invalid End Date';
 
 /** The validation message for a non-integral cache period, from `valCacheTime.ErrorMessage`. */
 const CACHE_TIME_INVALID_MESSAGE = 'Invalid Cache Time';
+
+/**
+ * The longest module heading the contract accepts, in characters.
+ *
+ * MIGRATION: THE AUTHORITY IS THE COLUMN AND THE API RULE, BECAUSE THE MARKUP HAS NONE.
+ * `modulesettings.ascx` declares `maxlength` on the cache-period box and on the two date boxes and
+ * NOTHING on the heading, so the legacy screen accepted text of any length and let the write refuse
+ * it — and the terminal column is `ModuleTitle nvarchar(256)`, which the create and update rules cap
+ * at the same figure. Refusing the overflow beside the box changes the mechanism, not the outcome.
+ */
+const MODULE_TITLE_MAX_LENGTH = 256;
+
+/**
+ * The longest icon path the contract accepts, in characters.
+ *
+ * `IconFile nvarchar(100)`, again capped identically by the create and update rules, and again
+ * unconstrained by the legacy markup: the legacy affordance was a file-and-folder picker rather than a
+ * text box, so it had no length attribute to reproduce.
+ */
+const MODULE_ICON_MAX_LENGTH = 100;
+
+/**
+ * The earliest instant SQL Server's `datetime` can store, as a calendar date.
+ *
+ * The two schedule bounds land in `datetime` columns, whose domain begins on the first of January 1753
+ * — a date that is not a limitation of this application but of the type, and the API refuses anything
+ * outside it. Stating it here refuses an unstorable date beside the box rather than after a round trip,
+ * which matters because a date control makes the mistake easy: a mistyped year is one keystroke.
+ */
+const SQL_DATETIME_MINIMUM_DATE = '1753-01-01';
+
+/**
+ * The last instant SQL Server's `datetime` can store, as a calendar date.
+ *
+ * The type's domain ends at 9999-12-31 23:59:59.997. Only the DATE is compared here, because these two
+ * controls produce a bare calendar date and the final day is representable in full.
+ */
+const SQL_DATETIME_MAXIMUM_DATE = '9999-12-31';
+
+/** The error key the schedule-bound representability rule reports. */
+const UNSTORABLE_DATE_ERROR = 'unstorableDate';
+
+/**
+ * The wording for a date outside the storable range.
+ *
+ * AUTHORED rather than measured, because the legacy screen had no such rule and therefore no such
+ * message: its comparison validator declared a type check alone, so an unstorable year passed the
+ * screen and failed inside the write. The sentence names the boundary rather than the type, since the
+ * type is not something an operator can be expected to know.
+ */
+const DATE_OUT_OF_RANGE_MESSAGE = `Enter a date between ${SQL_DATETIME_MINIMUM_DATE} and ${SQL_DATETIME_MAXIMUM_DATE}.`;
 
 /** The label on the save affordance, from `cmdUpdate.Text` in the shared resource file. */
 const SAVE_LABEL = 'Update';
@@ -669,6 +722,9 @@ const INTEGER_PATTERN = /^[+-]?\d+$/;
 /** A four-digit year, a two-digit month and a two-digit day, at the start of the value. */
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})/;
 
+/** How many characters the leading `yyyy-mm-dd` of an ISO 8601 value occupies. */
+const CALENDAR_DATE_LENGTH = 10;
+
 /**
  * Reads the module identifier the router supplied.
  *
@@ -846,7 +902,25 @@ function calendarDateValidator(control: AbstractControl<string>): ValidationErro
     return null;
   }
 
-  return startsWithCalendarDate(value) ? null : { invalidDate: true };
+  if (!startsWithCalendarDate(value)) {
+    return { invalidDate: true };
+  }
+
+  // Representability, reported separately from readability so that each condition gets its own
+  // sentence: "invalid" and "outside the storable range" are different mistakes and a person who typed
+  // the year 1066 correctly has not typed something unreadable.
+  //
+  // Compared as TEXT rather than as instants, which is exact here and avoids a conversion: the leading
+  // ten characters are a zero-padded `yyyy-mm-dd`, and that form sorts lexicographically in
+  // chronological order. Constructing dates to compare them would reintroduce the zone shift the
+  // reader above exists to avoid.
+  const date = value.slice(0, CALENDAR_DATE_LENGTH);
+
+  if (date < SQL_DATETIME_MINIMUM_DATE || date > SQL_DATETIME_MAXIMUM_DATE) {
+    return { [UNSTORABLE_DATE_ERROR]: true };
+  }
+
+  return null;
 }
 
 /**
@@ -935,6 +1009,22 @@ export class ModuleFormComponent {
   /** The module feature's signal store: the single source of every value this screen renders. */
   private readonly store = inject(ModuleStore);
 
+  /**
+   * The signed-in session, read for ONE thing: which tenant a newly placed module belongs to.
+   *
+   * ⚠ THE CREATE ROUTE HAS NO OTHER SOURCE FOR IT, and that is why this dependency exists. The page
+   * picker's options are portal-scoped, and on the edit route the portal is named by the module that was
+   * read. On the create route there is no module to read, so before this was injected the picker stayed
+   * empty for ever, the required page could never be chosen, and every attempt to place a module was
+   * refused by this screen's own guard — creation was unreachable through the user interface.
+   *
+   * The session is the correct source rather than a convenience: the API resolves the tenant of a
+   * request from the caller's own context, so the portal the caller is signed in to IS the portal a
+   * created module will belong to. Reading it here makes the picker agree with the server instead of
+   * guessing.
+   */
+  private readonly session = inject(AuthStore);
+
   /** The transient message queue, used for command outcomes. */
   private readonly notifications = inject(NotificationService);
 
@@ -989,7 +1079,10 @@ export class ModuleFormComponent {
     // value could have carried this meaning.
     moduleDefId: new FormControl<number | null>(null, { nonNullable: true }),
     tabId: new FormControl<number | null>(null, { nonNullable: true }),
-    moduleTitle: new FormControl('', { nonNullable: true }),
+    moduleTitle: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(MODULE_TITLE_MAX_LENGTH)],
+    }),
     allTabs: new FormControl(false, { nonNullable: true }),
     header: new FormControl('', { nonNullable: true }),
     footer: new FormControl('', { nonNullable: true }),
@@ -998,7 +1091,10 @@ export class ModuleFormComponent {
     inheritViewPermissions: new FormControl(false, { nonNullable: true }),
     moduleOrder: new FormControl(MODULE_ORDER_APPEND, { nonNullable: true }),
     cacheTime: new FormControl('', { nonNullable: true, validators: [integerValidator] }),
-    iconFile: new FormControl('', { nonNullable: true }),
+    iconFile: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(MODULE_ICON_MAX_LENGTH)],
+    }),
     visibility: new FormControl<ModuleVisibility>(ModuleVisibility.Maximized, {
       nonNullable: true,
     }),
@@ -1103,6 +1199,31 @@ export class ModuleFormComponent {
 
   /** Whether the page list is being read. */
   protected readonly tabsLoading: Signal<boolean> = this.store.tabsLoading;
+
+  /**
+   * The portal whose pages the picker should offer, or null when no portal is known yet.
+   *
+   * ONE MEMBER, TWO ANSWERS, AND THE ROUTE DECIDES WHICH. On the edit route the answer is the portal the
+   * addressed module belongs to, because re-parenting must offer that portal's pages and no other. On the
+   * create route there is no module to ask, so the answer is the portal the CALLER is signed in to —
+   * which is the same portal the API will resolve the create request into, so the options the operator
+   * chooses from are the options the server will accept.
+   *
+   * Null is returned rather than a fallback in three cases, each deliberate: an edit route whose module
+   * has not been read yet, a host-owned module that belongs to no portal, and a session whose identity is
+   * unresolved. A fallback would request the pages of a portal nobody named.
+   *
+   * ⚠ NO TRUTHINESS TEST APPEARS HERE OR IN THE EFFECT THAT READS IT. `dbo.Portals.PortalID` is
+   * `IDENTITY(-1, 1)`, so both -1 and 0 are ordinary portal identifiers, and `if (portalId)` would
+   * discard the tenant the measured baseline actually uses.
+   */
+  private readonly tabSourcePortalId: Signal<number | null> = computed(() => {
+    if (this.isEditMode()) {
+      return this.loadedModule()?.portalId ?? null;
+    }
+
+    return this.session.portalId();
+  });
 
   /**
    * The problem document behind the current failure, or `null` when there is none.
@@ -1294,6 +1415,18 @@ export class ModuleFormComponent {
   /** The supporting text for each field. */
   protected readonly hints = FIELD_HINTS;
 
+  /** @see MODULE_TITLE_MAX_LENGTH — bound to the heading box's native attribute. */
+  protected readonly titleMaxLength = MODULE_TITLE_MAX_LENGTH;
+
+  /** @see MODULE_ICON_MAX_LENGTH — bound to the icon box's native attribute. */
+  protected readonly iconMaxLength = MODULE_ICON_MAX_LENGTH;
+
+  /** @see SQL_DATETIME_MINIMUM_DATE — bound to both date pickers' native lower bound. */
+  protected readonly dateMinimum = SQL_DATETIME_MINIMUM_DATE;
+
+  /** @see SQL_DATETIME_MAXIMUM_DATE — bound to both date pickers' native upper bound. */
+  protected readonly dateMaximum = SQL_DATETIME_MAXIMUM_DATE;
+
   /** The three visibility choices. */
   protected readonly visibilityChoices = VISIBILITY_CHOICES;
 
@@ -1389,20 +1522,26 @@ export class ModuleFormComponent {
     });
 
     // ---------------------------------------------------------------------------------------------
-    // Reading the portal's pages once the module names its portal.
+    // Reading the portal's pages, from whichever source names the portal.
     // ---------------------------------------------------------------------------------------------
-    // The page picker's options are a portal-scoped list, and the portal is only known from the module
-    // that was read: the tenant is otherwise resolved by the server from the request rather than named
-    // by the client, and nothing in this screen's declared dependencies can answer which portal the
-    // caller is in. A host-owned module reports no portal, and then no list is requested.
+    // The page picker's options are a portal-scoped list, and WHICH portal is answered differently by
+    // the two routes:
+    //
+    //   - on the edit route, by the module that was read, because a module names the portal it belongs
+    //     to and re-parenting must offer that portal's pages;
+    //   - on the create route, by the SIGNED-IN SESSION, because there is no module yet and the API
+    //     resolves the tenant of a create request from the caller's own context — so the caller's
+    //     portal is the portal the new module will belong to.
+    //
+    // ⚠ THE CREATE ARM IS THE FIX FOR A SCREEN THAT COULD NOT COMPLETE ITS OWN PURPOSE. This effect
+    // previously returned as soon as the module read was empty, which on the create route is always, so
+    // the picker had no options, the required page could never be chosen and this screen's own guard
+    // refused every submission. Nothing about that was visible in a type or in a build.
+    //
+    // A host-owned module reports no portal and an unresolved session answers null; in both cases no
+    // list is requested, rather than one being requested for a guessed tenant.
     effect(() => {
-      const detail = this.loadedModule();
-
-      if (detail === null) {
-        return;
-      }
-
-      const portalId = detail.portalId;
+      const portalId = this.tabSourcePortalId();
 
       if (portalId === null) {
         return;
@@ -1478,7 +1617,11 @@ export class ModuleFormComponent {
   protected errorsFor(controlName: keyof ModuleFormModel): readonly string[] {
     const control: AbstractControl = this.form.controls[controlName];
     const messages: string[] = [];
-    const localMessage = LOCAL_VALIDATION_MESSAGES[controlName];
+    // ⚠ CHOSEN BY WHICH RULE FAILED, not by the control being invalid. Three controls now carry more
+    // than one rule apiece - each date box is both readable and storable, and two text boxes have a
+    // column bound - so a single sentence per control would describe an unstorable year as unreadable
+    // and an over-long heading as nothing at all.
+    const localMessage = this.localMessageFor(controlName, control);
 
     if (
       localMessage !== undefined
@@ -1495,6 +1638,40 @@ export class ModuleFormComponent {
     }
 
     return messages;
+  }
+
+  /**
+   * The wording for whichever local rule the control has broken.
+   *
+   * Ordered so that the more specific rule wins: an unreadable value is described as unreadable even
+   * though it is also unstorable, because that is the mistake the person actually made.
+   *
+   * The length sentence is composed from the bound the framework REPORTS rather than from a table keyed
+   * by control, so the sentence and the rule cannot name different numbers.
+   *
+   * @param controlName The control being reported for.
+   * @param control That control, already resolved.
+   * @returns The message, or `undefined` when the control has no local rule broken.
+   */
+  private localMessageFor(
+    controlName: keyof ModuleFormModel,
+    control: AbstractControl,
+  ): string | undefined {
+    if (control.hasError(UNSTORABLE_DATE_ERROR)) {
+      return DATE_OUT_OF_RANGE_MESSAGE;
+    }
+
+    const overlong: unknown = control.errors?.['maxlength'];
+
+    if (typeof overlong === 'object' && overlong !== null) {
+      const bound: unknown = (overlong as { requiredLength?: number }).requiredLength;
+
+      if (typeof bound === 'number') {
+        return `Enter at most ${String(bound)} characters.`;
+      }
+    }
+
+    return LOCAL_VALIDATION_MESSAGES[controlName];
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -1841,7 +2018,3 @@ export class ModuleFormComponent {
     });
   }
 }
-
-
-
-

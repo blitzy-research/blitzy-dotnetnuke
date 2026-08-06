@@ -1,0 +1,203 @@
+// Component stylesheet for the role-membership screen, served by the route
+// /roles/:roleId/users.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .role-assignment__module-action
+//     .role-assignment__unresolved
+//     .role-assignment__form
+//     .role-assignment__fields
+//     .role-assignment__lookup
+//     .role-assignment__matches
+//     .role-assignment__match
+//     .role-assignment__match-action
+//     .role-assignment__no-matches
+//     .role-assignment__date
+//     .role-assignment__notify
+//     .role-assignment__notify-control
+//     .role-assignment__commands
+//     .role-assignment__submit
+//     .role-assignment__memberships
+//     .role-assignment__row-command
+//     .role-assignment__user-link
+//
+// THERE IS NO `.role-assignment` BLOCK CLASS, deliberately. The template emits no wrapper
+// element of its own - the page header, the error banner, the form and the memberships
+// table are all direct children of the component host - so the host IS the layout
+// container and owns the vertical rhythm. A block class here would either be dead or would
+// require inventing an element for it to sit on.
+//
+// The surface is deliberately flat, and focus indication is deliberately absent: the
+// global reset applies the shared focus-ring mixin to every anchor, button, input, select
+// and textarea, so the design system owns focus and this file only places components.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT - THE HOST
+// -----------------------------------------------------------------------------
+// A custom element defaults to `display: inline` and would not contain its block-level
+// children correctly, so a box-generating display is required here regardless of layout.
+// Body type is declared here and inherited by every region below rather than restated per
+// rule: without it the browser falls back to its own serif default for every label, match
+// row and help string on the screen.
+:host {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE ASSIGNMENT FORM
+// -----------------------------------------------------------------------------
+.role-assignment__form,
+.role-assignment__fields {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  ACCOUNT LOOKUP AND ITS MATCHES
+// -----------------------------------------------------------------------------
+// The match list is rendered IN PLACE rather than as a floating layer. A layer would need
+// a stacking context, a dismissal rule, a scroll trap and a focus contract of its own,
+// none of which the closed shared-component set provides, and the screen has room to show
+// the matches inline.
+.role-assignment__lookup {
+  display: block;
+  max-inline-size: mx.breakpoint('sm');
+}
+
+.role-assignment__matches {
+  display: grid;
+  gap: var(--space-1);
+  max-inline-size: mx.breakpoint('sm');
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+// Each match is a name and the command that selects or clears it. `space-between` puts the
+// command at the far edge so the commands form a column the eye can follow, and baseline
+// alignment keeps the command on the first line of a name that has wrapped.
+.role-assignment__match {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+// The selected match is the one whose command reports `aria-pressed="true"`, so the visual
+// state is taken from that attribute rather than from a class the template would have to
+// keep in step with it. Selection is therefore impossible to render inconsistently with
+// what a screen reader announces.
+.role-assignment__match-action[aria-pressed='true'] {
+  font-weight: var(--font-weight-bold);
+}
+
+// Two standing messages, both muted: one reports that a search found nobody, the other
+// that the role in the address could not be resolved.
+.role-assignment__no-matches,
+.role-assignment__unresolved {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// -----------------------------------------------------------------------------
+//  MEMBERSHIP BOUNDS AND THE NOTIFY CHOICE
+// -----------------------------------------------------------------------------
+// A date control is a short value, so it is narrowed rather than stretched: a box sized
+// for a sentence invites one.
+.role-assignment__date {
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// A lone check box: the shared form field supplies its label, so the slot only has to stop
+// the control stretching to the full column width.
+.role-assignment__notify {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.role-assignment__notify-control {
+  flex: none;
+}
+
+// -----------------------------------------------------------------------------
+//  COMMANDS
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives
+// white-space collapsing, and wrapping is intrinsic so the last command stays reachable at
+// every width.
+.role-assignment__commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.role-assignment__submit {
+  font-weight: var(--font-weight-bold);
+}
+
+// The removal command sits in a grid cell, so it must not stretch that cell: `inline-flex`
+// keeps it to its own content width whatever the column does.
+.role-assignment__row-command {
+  display: inline-flex;
+  align-items: center;
+}
+
+.role-assignment__user-link {
+  color: var(--color-primary);
+}
+
+// The cancel link sits in the page header's action slot, so its ARRANGEMENT belongs to that
+// shared component. What is declared here is only the one thing the shared component cannot
+// know: that this particular action is a link back out of the screen rather than a command
+// within it.
+.role-assignment__module-action {
+  color: var(--color-primary);
+}
+
+// -----------------------------------------------------------------------------
+//  MEMBERSHIPS REGION
+// -----------------------------------------------------------------------------
+// The region wraps the shared data table, which owns every row, cell, caption and pager rule
+// of its own, so this block declares PLACEMENT ONLY.
+//
+// Nothing is declared for the region's `aria-busy` state, deliberately. The sighted
+// equivalent of that announcement is the shared table's own loading affordance, which the
+// template drives from the same signal through `[loading]`, so a rule here would be a second
+// treatment for one state - and the token vocabulary declares no opacity or busy-surface
+// value a rule could resolve to without hardcoding one. Recorded as a design-system gap
+// rather than closed with a literal.
+.role-assignment__memberships {
+  display: grid;
+  gap: var(--space-2);
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screen (`Website/admin/Security/SecurityRoles.ascx`) was one layout
+// table holding the two selectors, the two date boxes and the grid in an undifferentiated
+// run of rows, with non-breaking spaces for separation. None of that is structure, so the
+// separation becomes CSS gap and only the memberships grid survives as a real table,
+// delegated to the shared data table.
+//
+// MIGRATION: the spacing and radius scales every value above resolves to are NET ADDITIONS -
+// the legacy design is square-cornered and has no spacing system. The in-place match list is a
+// net addition too: the legacy screen resolved a lookup with a full postback and had no
+// incremental match affordance at all. Neither alters any behaviour of the assignment itself,
+// and both are recorded with the rest in MIGRATION_NOTES.md.
+// =============================================================================

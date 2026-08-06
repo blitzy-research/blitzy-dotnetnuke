@@ -5,6 +5,10 @@ import { firstValueFrom } from 'rxjs';
 
 import type { TabDetail, TabListItem, UpdateTabRequest } from '../models/tab.model';
 import { TabService } from './tab.service';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
+import { isContractViolation } from '../utils/decode.util';
+
+import type { Observable } from 'rxjs';
 
 /**
  * Specification for {@link TabService} - the lookup-only transport for the page resource,
@@ -291,20 +295,64 @@ const UPDATE_BODY_MEMBERS: readonly string[] = [
 ];
 
 /**
+ * The two extension members the API attaches to every problem document.
+ *
+ * `ValidationProblemDetailsFactory` writes both on every refusal, so a fixture without them
+ * describes a response this API does not send. They are not interchangeable: the correlation
+ * identifier is the value the pipeline validated for this request and the one that appears in
+ * the server's log and on the audit trail.
+ */
+const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+
+/**
  * A problem document as the API writes one, following RFC 7807.
  *
- * The reason code travels in an extension member beside the standard four, which is how the
- * API distinguishes machine-readable causes that share one status - three distinct causes map
- * to `400` on the update alone.
+ * ⚠️ THE FAILURE CODE TRAVELS IN `type`, NOT IN A `code` EXTENSION. There is no `code` member
+ * anywhere in this API's problem output — `ApiResults.Problem` supplies `type`, `status` and
+ * `detail`, and `ValidationProblemDetailsFactory` adds `title`, `traceId` and `correlationId`
+ * and nothing else. An earlier revision of this file invented a `code` extension and read the
+ * refusal out of it, so every refusal assertion here was reading a member the server never
+ * writes; against the real API the read would yield `undefined` and every one of those
+ * assertions would fail — or, worse, a client shaped by them would silently stop recognising
+ * refusals it was written to handle.
+ *
+ * ⚠️ AND THE TYPE IS `urn:dnnmigration:error:<code>`, NOT AN EXTERNAL HTTP-STATUS PAGE. The
+ * relative, non-dereferenceable URN is deliberate: RFC 7807 permits one, and pointing at a
+ * third-party documentation host would hand a caller a link that documents nothing about this
+ * API. Two DIFFERENT causes sharing one status therefore remain distinguishable, because the
+ * type varies while the status and title do not.
+ *
+ * @param status The status the server's mapping yields for the code.
+ * @param title The per-status title from the server's own vocabulary.
+ * @param code The failure code, spelled exactly as the server publishes it.
+ * @returns The complete document, ready to flush.
  */
 function problemDocument(status: number, title: string, code: string): Readonly<Record<string, unknown>> {
   return {
-    type: `https://httpstatuses.io/${status}`,
+    type: `urn:dnnmigration:error:${code}`,
     title,
     status,
     detail: 'The request could not be completed.',
-    code,
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
   };
+}
+
+/**
+ * Recovers the failure code from a refusal that reached the caller.
+ *
+ * Reads it back out of the TRANSPORT rather than out of the fixture, and out of the member the
+ * server actually writes, so the assertions below are real rather than tautological.
+ *
+ * @param body The body carried by the failure.
+ * @returns The code, or null when the body carries no recognisable problem type.
+ */
+function failureCodeOf(body: unknown): string | null {
+  const type: unknown = bodyMembers(body)['type'];
+  const prefix = 'urn:dnnmigration:error:';
+
+  return typeof type === 'string' && type.startsWith(prefix) ? type.slice(prefix.length) : null;
 }
 
 /**
@@ -766,8 +814,8 @@ describe('TabService', () => {
       // message: turning a problem document into something a person reads belongs to the error
       // interceptor and the shared form-error helper, and a second implementation of that
       // translation in a transport specification would be free to disagree with the first.
-      expect(bodyMembers(failure.error)['code'])
-        .withContext('the server reason code arrives untranslated')
+      expect(failureCodeOf(failure.error))
+        .withContext('the server reason code arrives untranslated, carried by the problem type')
         .toBe('tab.portal_not_found');
     });
 
@@ -782,7 +830,7 @@ describe('TabService', () => {
       const failure = await captureFailure(pending);
 
       expect(failure.status).toBe(404);
-      expect(bodyMembers(failure.error)['code']).toBe('tab.not_found');
+      expect(failureCodeOf(failure.error)).toBe('tab.not_found');
     });
 
     it('errors when the update is refused with 400, forwarding the reason code untouched', async () => {
@@ -803,37 +851,50 @@ describe('TabService', () => {
       const failure = await captureFailure(pending);
 
       expect(failure.status).toBe(400);
-      expect(bodyMembers(failure.error)['code'])
+      expect(failureCodeOf(failure.error))
         .withContext('the reserved-name refusal arrives as the server wrote it')
         .toBe('tab.name_reserved');
     });
 
-    it('errors when the update is refused with 409, proving the transport is status-agnostic', async () => {
-      // THIS ENDPOINT DOES NOT CURRENTLY EMIT 409, and that is a measured finding rather than
-      // an omission: the legacy duplicate-name refusal sat behind a guard only the CREATE path
-      // entered, and this API deliberately publishes no create path, so no request can elicit
-      // the status today. The code this file's brief named for it - `TabExists` - likewise
-      // exists nowhere in the server tree.
+    it('errors on each of the three parentage refusals the update actually emits', async () => {
+      // THE THREE CAUSES THAT SHARE 400 ON THIS ACTION, and the reason the failure code has to
+      // travel in `type` rather than being inferred from the status. `TabsController.UpdateAsync`
+      // declares 200/400/401/403/404 and NOTHING ELSE — no 409, no 422 — so a caller cannot tell
+      // these apart by status and must read the type.
       //
-      // The case is kept because the property it establishes does not depend on which statuses
-      // the server happens to use: this transport neither enumerates statuses nor interprets
-      // bodies, so a refusal it has never seen must still reach the caller unaltered. That is
-      // what keeps the service correct if the conflict contract is ever introduced, and it is
-      // asserted with a code the server's own conflict vocabulary would plausibly use rather
-      // than with an invented one.
-      const pending = firstValueFrom(service.update(7, updateRequest({ tabName: 'Home' })));
+      // ⚠️ NO `409` CASE EXISTS HERE, and its absence is a measured finding rather than an
+      // omission. The legacy duplicate-name refusal sat behind a guard only the CREATE path
+      // entered — `If String.IsNullOrEmpty(strAction)` at `ManageTabs.ascx.vb:L279`, while the
+      // edit branch was entered at `:L304` under `If strAction = "edit"` — and this API
+      // deliberately publishes no page create. The code an earlier revision invented for it,
+      // `tab.name_conflict`, exists nowhere in the server tree, so a client written against it
+      // would have carried a branch that could never be taken while the refusals the server DOES
+      // emit went unhandled.
+      const causes: readonly string[] = [
+        'tab.parent_not_found',
+        'tab.parent_cycle',
+        'tab.parent_cross_portal',
+      ];
 
-      httpMock.expectOne('/api/v1/tabs/7').flush(problemDocument(409, 'Conflict', 'tab.name_conflict'), {
-        status: 409,
-        statusText: 'Conflict',
-      });
+      for (const code of causes) {
+        const pending = firstValueFrom(service.update(7, updateRequest({ parentId: 3 })));
 
-      const failure = await captureFailure(pending);
+        httpMock
+          .expectOne('/api/v1/tabs/7')
+          .flush(problemDocument(400, 'Bad Request', code), {
+            status: 400,
+            statusText: 'Bad Request',
+          });
 
-      expect(failure.status).toBe(409);
-      expect(bodyMembers(failure.error)['code'])
-        .withContext('an unenumerated refusal still reaches the caller unaltered')
-        .toBe('tab.name_conflict');
+        const failure = await captureFailure(pending);
+
+        expect(failure.status)
+          .withContext(`${code} carries no conflict, not-found or forbidden token, so it is 400`)
+          .toBe(400);
+        expect(failureCodeOf(failure.error))
+          .withContext('the cause is distinguishable from its siblings by type alone')
+          .toBe(code);
+      }
     });
 
     it('errors when a call is rejected with 403, and does not retry it', async () => {
@@ -843,14 +904,24 @@ describe('TabService', () => {
       // outstanding-request check is what proves none did.
       const pending = firstValueFrom(service.update(7, updateRequest()));
 
-      httpMock.expectOne('/api/v1/tabs/7').flush(problemDocument(403, 'Forbidden', 'tab.forbidden'), {
-        status: 403,
-        statusText: 'Forbidden',
-      });
+      // ⚠️ THE CODE IS `auth.not_permitted`, WHICH IS THE STATUS VOCABULARY'S OWN DEFAULT FOR
+      // 403. There is no `tab.forbidden` anywhere in the server tree: this action is refused by
+      // the `TabEdit` authorisation policy BEFORE the controller body runs, so the refusal is
+      // produced by the authorisation result handler rather than by a page service, and it
+      // carries the default type for the status. An earlier revision asserted an invented
+      // `tab.forbidden`, which is precisely the shape of mistake that makes a spec agree with
+      // itself and disagree with the server.
+      httpMock
+        .expectOne('/api/v1/tabs/7')
+        .flush(problemDocument(403, 'Forbidden', 'auth.not_permitted'), {
+          status: 403,
+          statusText: 'Forbidden',
+        });
 
       const failure = await captureFailure(pending);
 
       expect(failure.status).toBe(403);
+      expect(failureCodeOf(failure.error)).toBe('auth.not_permitted');
     });
   });
 
@@ -917,6 +988,141 @@ describe('TabService', () => {
         .toBe(0);
 
       await pending;
+    });
+  });
+  // -------------------------------------------------------------------------
+  // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
+  //
+  // `http.get<TabDetail>(...)` compiles to `http.get(...)`: the interface is erased and
+  // nothing inspects the body. The page hierarchy is where that bites hardest, because two of
+  // its members drive the render arithmetic: `level` becomes indentation and `tabOrder`
+  // becomes position among siblings, so either one arriving as `undefined` yields `NaN`
+  // padding or a page silently moved to one end of its set.
+  // -------------------------------------------------------------------------
+  describe('refuses a response that does not match its contract', () => {
+    /**
+     * Asserts that answering the one pending request with `body` fails at `path`.
+     *
+     * @param source The call under test.
+     * @param url The url the call addresses.
+     * @param body The malformed body to answer with.
+     * @param path The member path the violation must name.
+     */
+    function expectViolationAt(
+      source: Observable<unknown>,
+      url: string,
+      body: object,
+      path: string,
+    ): void {
+      const values: unknown[] = [];
+      const failures: unknown[] = [];
+
+      source.subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      httpMock.expectOne(url).flush(body);
+
+      expect(values).toEqual([]);
+      expect(failures.length).toBe(1);
+      expect(isContractViolation(failures[0])).toBeTrue();
+
+      if (isContractViolation(failures[0])) {
+        expect(failures[0].path).toBe(path);
+      }
+    }
+
+    it('refuses a listed page whose level is absent', () => {
+      const malformed: Record<string, unknown> = { ...listRow() };
+
+      delete malformed['level'];
+
+      expectViolationAt(
+        service.getByPortal(4),
+        '/api/v1/portals/4/tabs',
+        envelope([malformed]),
+        'response.data[0].level',
+      );
+    });
+
+    it('refuses a listed page whose order arrived as text', () => {
+      expectViolationAt(
+        service.getByPortal(4),
+        '/api/v1/portals/4/tabs',
+        envelope([{ ...listRow(), tabOrder: '1' }]),
+        'response.data[0].tabOrder',
+      );
+    });
+
+    it('refuses a hierarchy that is not an array', () => {
+      expectViolationAt(
+        service.getByPortal(4),
+        '/api/v1/portals/4/tabs',
+        envelope(listRow()),
+        'response.data',
+      );
+    });
+
+    it('admits an empty hierarchy, which is a portal with no pages', () => {
+      const values: unknown[] = [];
+
+      service.getByPortal(4).subscribe({ next: (rows: unknown) => values.push(rows) });
+
+      httpMock.expectOne('/api/v1/portals/4/tabs').flush(envelope([]));
+
+      expect(values).toEqual([[]]);
+    });
+
+    it('admits page zero and portal minus one, which are both real identifiers', () => {
+      // ⚠ THE DOUBLE SENTINEL COLLISION. `dbo.Tabs` is `IDENTITY (0, 1)` so zero is the first
+      // page; `dbo.Portals` is `IDENTITY (-1, 1)` so minus one is the first portal — and minus
+      // one is simultaneously the legacy absent-integer marker. Neither may be read as absent.
+      const values: unknown[] = [];
+
+      service.getById(0).subscribe({ next: (page: unknown) => values.push(page) });
+
+      httpMock
+        .expectOne('/api/v1/tabs/0')
+        .flush(envelope(detail({ tabId: 0, portalId: -1, parentId: null })));
+
+      expect(values.length).toBe(1);
+    });
+
+    it('refuses a root page whose parent arrived as text rather than null', () => {
+      expectViolationAt(
+        service.getById(7),
+        '/api/v1/tabs/7',
+        envelope({ ...detail(), parentId: '' }),
+        'response.data.parentId',
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHO ANNOUNCES A FAILURE
+  // -------------------------------------------------------------------------
+  describe('marks every request as presented by its caller', () => {
+    it('marks all three operations', () => {
+      const swallow = { error: () => undefined };
+
+      service.getByPortal(4).subscribe(swallow);
+      service.getById(7).subscribe(swallow);
+      service.update(7, updateRequest()).subscribe(swallow);
+
+      const issued = httpMock.match(() => true);
+
+      expect(issued.length).toBe(3);
+
+      for (const pending of issued) {
+        expect(pending.request.context.get(PRESENTED_IN_CONTEXT))
+          .withContext(`${pending.request.method} ${pending.request.url} is unmarked`)
+          .toBeTrue();
+      }
+
+      for (const pending of issued) {
+        pending.flush(null, { status: 500, statusText: 'Server Error' });
+      }
     });
   });
 });

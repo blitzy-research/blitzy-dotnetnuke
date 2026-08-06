@@ -1,0 +1,194 @@
+// Component stylesheet for the module listing screen, served by the route /modules.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it silently
+// matches nothing and the screen renders unstyled. The template must therefore emit exactly
+// this vocabulary:
+//
+//     .module-list
+//     .module-list__action
+//     .module-list__search
+//     .module-list__status
+//     .module-list__row-command
+//     .module-list__row-command--danger
+//
+// The surface is deliberately flat - one block class plus element and modifier classes, no
+// deep descendant chains and no piercing selector. The shared page header, search control,
+// grid, pager, banner and dialogue each own their own appearance; this file places them and
+// styles only the affordances THIS screen declares.
+//
+// ⚠ PROJECTED CONTENT KEEPS THE SCOPING OF THE COMPONENT THAT DECLARES IT, which is why the
+// page-level actions and the four row commands are styled HERE and not in the page header's or
+// the grid's stylesheet. Those components cannot reach what they host, and this one cannot
+// reach into them.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// The block class is on a wrapper rather than the host because the confirmation dialogue and
+// the four cell templates are siblings of it: the dialogue is promoted out of the layout flow
+// when it opens and the cell templates render into the grid's own cells, so neither may inherit
+// this screen's vertical rhythm.
+//
+// Body type is declared here and inherited by every region below rather than restated per rule,
+// and it is declared on the component rather than left to a global base rule: without it the
+// browser falls back to its own serif default for every heading, cell and command.
+.module-list {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE FILTER
+// -----------------------------------------------------------------------------
+// A maximum rather than a fixed measure, so the control stays fluid on a handset and stops
+// short of a full desktop width - a single-line filter stretched across a wide viewport reads
+// as a form field for something much longer than a search term. Reading `breakpoint()` for a
+// raw width is the sanctioned use of that function; writing a media query by hand is what is
+// barred.
+.module-list__search {
+  display: block;
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// -----------------------------------------------------------------------------
+//  THE FAILURE AFFORDANCE ROW
+// -----------------------------------------------------------------------------
+// The banner above it is already a framed surface, so this region carries no frame of its own -
+// a second frame around a single command would read as a nesting level that does not exist. Its
+// child is left at its own content width rather than stretched.
+.module-list__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// -----------------------------------------------------------------------------
+//  ACTIONS
+// -----------------------------------------------------------------------------
+// One rule for the two page-level links and the failure dismissal, because all three are the
+// same kind of thing: a compact text command. A link and a button are given the same box, the
+// same type and the same reset so that they cannot be told apart by appearance - the difference
+// between them is semantic, not visual.
+//
+// MIGRATION: the legacy admin action affordance is retained AS TEXT and is deliberately not
+// promoted to a filled button. A filled-button class existed separately in the legacy
+// stylesheet and the admin action bars did not use it, so promoting these would be an
+// unrequested visual change.
+//
+// The focus ring is re-included even though the global reset already applies it to every anchor
+// and button. The mixin is documented as idempotent for exactly this reason, and stating it on
+// the affordance keeps the ring correct if the element ever becomes something the reset does not
+// cover - which is what the sibling portal listing does too, so the two screens indicate focus
+// identically.
+.module-list__action {
+  display: inline-block;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    // The primary-hover token rather than the legacy hover colour for this affordance: that
+    // legacy value is the very colour the token vocabulary assigns to the danger role and uses
+    // for error text, so reusing it would paint an ordinary action in the colour that means
+    // something went wrong.
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  ROW COMMANDS
+// -----------------------------------------------------------------------------
+// Four commands share one cell, so they are kept on one line each and allowed to WRAP rather
+// than overflow when the column track is tight - which is the shared table's documented
+// expectation of a content-sized commands column, and why the column is given an intrinsic
+// width rather than a fixed one. A table cell does not clip, so a cramped command would
+// otherwise paint over the value beside it.
+//
+// A step smaller than the body type, because four commands at full size would out-weigh the
+// data they act on.
+//
+// MIGRATION: the legacy raster command icons have no target equivalent - the only static asset
+// this workspace ships is a favicon - and neither legacy icon carried alternative text, so both
+// reached assistive technology as unnamed graphics. Text closes that gap outright, and the
+// template additionally qualifies each accessible name with the placement's own title because
+// the commands repeat down the column.
+.module-list__row-command {
+  display: inline-block;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// The destructive command. ⚠ COLOUR IS A REINFORCEMENT AND NEVER THE ONLY SIGNAL: the command
+// reads "Delete", its accessible name names the placement, and it opens a confirmation before
+// anything is removed. The text variant of the danger colour is used at rest because the raw
+// value is tuned for a border or an icon and does not clear the contrast threshold as small
+// text; the raw value is reserved for the hover state, where the contrast requirement is met by
+// the resting colour it replaces.
+//
+// A colour change only. A destructive command that also moved or resized would be a different
+// affordance in a different place, which is how a reader mis-clicks the one command that cannot
+// be undone.
+.module-list__row-command--danger {
+  color: var(--color-danger-text);
+
+  @include mx.hover {
+    color: var(--color-danger);
+  }
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: THIS SCREEN HAS NO LEGACY ANCESTOR, so there is no legacy appearance to preserve
+// and every value here is a design-system value rather than a measured one. What IS carried
+// across is the CONVENTION of the legacy admin grids - a text command bar above a bordered
+// grid, commands as text rather than as filled buttons, and centred headings - taken from
+// `Website/admin/Portal/portals.ascx`, which is also the source of this screen's column order.
+// The rules above are deliberately the same shape as the sibling portal listing's for that
+// reason: two listings that behave differently under hover or focus would read as two
+// different applications.
+//
+// MIGRATION: every spacing value resolves to the shared spacing scale and every rounded corner
+// to the shared radius scale, both of which are NET ADDITIONS - the legacy stylesheets declare
+// no spacing system and the legacy design is square-cornered. The hover treatment is a net
+// addition too, and it is applied through the shared mixin rather than as a bare `:hover` rule:
+// a bare rule stays applied on a touch device until something else is tapped, which on a grid
+// whose selected row is also distinguished by colour is indistinguishable from a state the
+// reader did not choose.
+//
+// No elevation is introduced: the legacy design is flat, and nothing on this screen needs to
+// read as raised.
+// =============================================================================

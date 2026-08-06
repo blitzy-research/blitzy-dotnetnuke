@@ -63,7 +63,9 @@
 
 import { inject } from '@angular/core';
 import { Router } from '@angular/router';
-import type { CanActivateFn } from '@angular/router';
+import type { CanActivateFn, UrlTree } from '@angular/router';
+import { catchError, map, of } from 'rxjs';
+import type { Observable } from 'rxjs';
 
 import { TokenStorageService } from '../services/token-storage.service';
 import { AuthStore } from '../state/auth.store';
@@ -145,11 +147,15 @@ function isSignInRoute(url: string): boolean {
  * point the router calls it. That call happens inside an injection context, which is
  * what makes {@link inject} legal here.
  *
- * FULLY SYNCHRONOUS, BY DESIGN. It returns `true` or a redirect, never an observable
- * and never a promise, because it performs no work that could be asynchronous: no
- * request is issued, no token is renewed and no clock is read. Every navigation
- * therefore resolves immediately, and there is no window in which a half-decided
- * gate could be observed.
+ * SYNCHRONOUS ON EVERY PATH BUT ONE, AND THE EXCEPTION IS DELIBERATE. A decision that
+ * needs no renewal is returned immediately as `true` or as a redirect, so the ordinary
+ * navigation resolves without a microtask and there is no window in which a half-decided
+ * gate could be observed. The single asynchronous path is the one where the held access
+ * token has DEMONSTRABLY LAPSED: that navigation waits on one bounded renewal, because
+ * the alternative — admitting first and renewing behind the screen — is exactly the
+ * defect this gate was corrected for, a component mounting against a session that had
+ * already ended and discovering it one refused request later. No path issues an ordinary
+ * API request, and none retries.
  *
  * THE TWO CONDITIONS, AND WHY BOTH ARE NECESSARY:
  *
@@ -178,18 +184,31 @@ export const authGuard: CanActivateFn = (_route, state) => {
   const tokenStorage = inject(TokenStorageService);
 
   /*
-   * MIGRATION: "valid" means A SESSION IS HELD, not "the access token has not yet
-   * lapsed". No clock is read anywhere in this file and no expiry is compared,
-   * because renewal is REACTIVE rather than anticipatory: a lapsed token is
-   * discovered when the API refuses a request, and
-   * `core/interceptors/auth.interceptor.ts` renews it and replays that request. The
-   * custodian does publish a lapsed-or-not verdict, and this gate deliberately does
-   * not ask for it — doing so would redirect a caller whose access token has lapsed
-   * but whose renewal credential is still good, discarding a recoverable session and
-   * collapsing the effective session length to the access token's own lifetime. It
-   * would also make the outcome depend on the wall clock, which a specification
-   * cannot pin down. The interceptor is named here by path and never imported: a
-   * navigation gate must not depend on a transport concern.
+   * "Valid" means A SESSION IS HELD **AND ITS ACCESS TOKEN HAS NOT LAPSED**, and the
+   * second half is what this gate previously omitted.
+   *
+   * ⚠ WHY PRESENCE ALONE WAS NOT ENOUGH. The custodian reports the PRESENCE of a session
+   * and says so explicitly: an expired access token still yields `true`, because the
+   * correct response to expiry is to renew rather than to behave as though nobody is
+   * signed in. Admitting on presence alone therefore let a KNOWN-EXPIRED session enter a
+   * screen: the component mounted, rendered whatever state was still held, and only then
+   * discovered — one refused request later — that the session was over. Every screen
+   * beneath this gate consequently had to be correct in a state the gate should never
+   * have produced.
+   *
+   * ⚠ AND WHY THE ANSWER IS NOT SIMPLY TO REDIRECT ON EXPIRY. A lapsed access token with
+   * a good renewal credential is a RECOVERABLE session; refusing it would collapse the
+   * effective session length to the access token's own lifetime, which is precisely the
+   * outcome the short access token plus long renewal window exists to avoid. So expiry
+   * is resolved rather than punished: one renewal is attempted, and the navigation is
+   * admitted if and only if it succeeds.
+   *
+   * The renewal is BOUNDED AND SINGLE-FLIGHT because the authentication service owns
+   * both properties — it coalesces concurrent callers onto one request, stores the
+   * rotated pair exactly once, and discards the session when the server refuses. This
+   * gate therefore issues at most one renewal per navigation and never retries: a
+   * refusal is terminal here, exactly as it is in the transport layer. Nothing about
+   * renewal is re-implemented in this file.
    */
   const hasSession = authStore.isAuthenticated();
 
@@ -227,12 +246,51 @@ export const authGuard: CanActivateFn = (_route, state) => {
      * control providing it lives in a tree this migration excludes wholesale, so its
      * removal is a deliberate functional reduction rather than an oversight, and the
      * named compensating control is a rate limiter on the credential endpoints
-     * partitioned by calling address. That control is the reason this gate issues NO
-     * request of any kind: re-validating against the server on every navigation would
-     * consume an operator's own rate-limit budget and lock them out of the
-     * application by navigating around it.
+     * partitioned by calling address. That control is why this gate never RE-VALIDATES a
+     * live session against the server: doing so on every navigation would consume an
+     * operator's own rate-limit budget and lock them out of the application by
+     * navigating around it. The one request it can cause is a renewal, and only when the
+     * held token has demonstrably lapsed — which is a request the transport layer would
+     * otherwise make a moment later anyway.
      */
-    return true;
+    if (!tokenStorage.isAccessTokenExpired()) {
+      return true;
+    }
+
+    /*
+     * The sign-in route itself is admitted without renewing, and the ordering is deliberate:
+     * this test sits BEFORE the renewal rather than after it. A caller heading to the sign-in
+     * screen has no need of a live session — that is what they are there to establish — so
+     * renewing on their behalf would spend the renewal credential, and the operator's
+     * rate-limit budget, on a navigation whose whole purpose is to replace the session. The
+     * loop-prevention branch below makes the same admission for an unauthenticated caller and
+     * for the same reason; see its note for the cycle it exists to break.
+     */
+    if (isSignInRoute(state.url)) {
+      return true;
+    }
+
+    /*
+     * The token has lapsed. Renewal is attempted exactly once, and the navigation waits
+     * for the answer rather than proceeding hopefully: admitting first and renewing in the
+     * background is what produced the state this branch exists to prevent — a screen
+     * mounted against a session that has already ended.
+     *
+     * ⚠ FAILS CLOSED. The store discards the session as its own first act when a renewal
+     * is refused, so by the time the redirect below is built there is nothing left to
+     * admit; the caller lands on the sign-in screen with the address they wanted
+     * preserved. The refusal itself is deliberately not re-thrown: a gate returns a
+     * destination, and an error escaping here would surface as a failed navigation with no
+     * screen at all.
+     *
+     * A renewal with no renewal credential fails immediately inside the service rather
+     * than posting an empty one, so no presence test is written here — adding one would
+     * be a second opinion about a fact the service already owns.
+     */
+    return authStore.refreshSession().pipe(
+      map((): boolean | UrlTree => true),
+      catchError((): Observable<boolean | UrlTree> => of(signInRedirect(router, state.url))),
+    );
   }
 
   /*
@@ -276,7 +334,29 @@ export const authGuard: CanActivateFn = (_route, state) => {
    * it serialises this tree, and doing it here as well would double-encode it and
    * hand the sign-in screen an address it could not navigate back to.
    */
-  return router.createUrlTree([SIGN_IN_ROUTE], {
-    queryParams: { [RETURN_URL_KEY]: state.url },
-  });
+  return signInRedirect(router, state.url);
 };
+
+/**
+ * Builds the redirect to the sign-in screen, carrying the address the caller was trying to
+ * reach.
+ *
+ * Declared once and used by both refusal paths — the unauthenticated one and the
+ * unrecoverable-expiry one — so the two cannot drift apart in either the route they name or
+ * the parameter they carry it under.
+ *
+ * The address is forwarded exactly as the router serialised it, query string included and
+ * otherwise untouched: not trimmed, not lower-cased and not re-encoded. Percent-encoding the
+ * value for transport is the router's own job when it serialises this tree, and doing it
+ * here as well would double-encode it and hand the sign-in screen an address it could not
+ * navigate back to.
+ *
+ * @param router The router to build the destination with.
+ * @param attemptedUrl The full address the caller was refused.
+ * @returns The destination to return from the gate.
+ */
+function signInRedirect(router: Router, attemptedUrl: string): UrlTree {
+  return router.createUrlTree([SIGN_IN_ROUTE], {
+    queryParams: { [RETURN_URL_KEY]: attemptedUrl },
+  });
+}

@@ -239,6 +239,7 @@ public sealed class RoleService : IRoleService
     private readonly IRoleRepository _roles;
     private readonly IPortalRepository _portals;
     private readonly IUserRepository _users;
+    private readonly IPermissionService _permissions;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IClock _clock;
     private readonly ICacheService _cache;
@@ -251,6 +252,10 @@ public sealed class RoleService : IRoleService
     /// <param name="roles">Role, role group and assignment repository.</param>
     /// <param name="portals">Portal repository, consulted for tenancy and for the two protected identifiers.</param>
     /// <param name="users">Account repository, consulted to prove membership before an assignment.</param>
+    /// <param name="permissions">
+    /// Permission contract, which owns the removal of a role's grants and the eviction of the cached grant
+    /// entries that removal stales.
+    /// </param>
     /// <param name="unitOfWork">Commits each write exactly once.</param>
     /// <param name="clock">Supplies the current instant, so the expiry arithmetic is testable.</param>
     /// <param name="cache">Invalidates the portal and member entries a role change affects.</param>
@@ -266,11 +271,19 @@ public sealed class RoleService : IRoleService
     /// acting account's identifier and name. The store behind it is out of scope, so the record is
     /// emitted through <see cref="IAuditSink"/> instead; the acting account still has to come from the
     /// credential rather than from a request body, which is what <see cref="ICurrentUser"/> supplies.
+    /// <para>
+    /// MIGRATION: SEC-F8. The permission contract is a collaborator because a role's grants have to go with
+    /// the role, and the rule bounding that removal is permission knowledge rather than role knowledge.
+    /// Issuing the grant-table deletes from here would put a second copy of that rule in a service whose
+    /// subject is roles, free to drift from the one the permission contract already holds - which is the
+    /// same reasoning the account cascade in <c>UserService</c> records for itself.
+    /// </para>
     /// </remarks>
     public RoleService(
         IRoleRepository roles,
         IPortalRepository portals,
         IUserRepository users,
+        IPermissionService permissions,
         IUnitOfWork unitOfWork,
         IClock clock,
         ICacheService cache,
@@ -280,6 +293,7 @@ public sealed class RoleService : IRoleService
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
         _portals = portals ?? throw new ArgumentNullException(nameof(portals));
         _users = users ?? throw new ArgumentNullException(nameof(users));
+        _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
@@ -414,60 +428,49 @@ public sealed class RoleService : IRoleService
             }
         }
 
-        // MIGRATION: the narrowing below is applied here rather than in the repository because the
-        // legacy membership provider exposed no paged, filtered or group-scoped role read. Its whole
-        // role-listing surface was GetPortalRoles(PortalId) (DataProvider.vb:L91), which returned every
-        // row; the group restriction and the name search were the admin screen's own work. A portal
-        // holds tens of roles, so materialising its set and narrowing it in memory is faithful to the
-        // legacy shape and costs nothing measurable.
-        IReadOnlyList<Role> visible = await _roles
-            .GetByPortalIdAsync(portalId, cancellationToken)
-            .ConfigureAwait(false);
+        // MIGRATION: EVERY NARROWING NOW TRAVELS TO THE STORE, and the reason it did not before is worth
+        // recording because the reasoning was plausible. The legacy membership provider exposed no paged,
+        // filtered or group-scoped role read - its whole role-listing surface was GetPortalRoles(PortalId)
+        // (DataProvider.vb:L91), which returned every row, and the group restriction and the name search
+        // were the admin screen's own work - so reproducing that shape meant materialising the tenant's
+        // whole role set and narrowing it here. "A portal holds tens of roles" made that look free, but it
+        // bounds the RESPONSE by the page while leaving the read, the sort and the allocation bounded only
+        // by the tenant, and nothing in the response reveals the difference. Ownership, group scope, the
+        // name search, the ordering, the count and the window are all expressible relationally, so all six
+        // are now the store's; the choice of ordering travels as data. The reads are two, fixed.
+        //
+        // The strict ownership test travels with them. The unpaged GetPortalRoles read admits the
+        // installation-wide roles that carry no owning portal, because the terminal procedure did
+        // (04.08.00.SqlDataProvider:L40), and this screen lists only the roles the portal itself owns -
+        // which is why ListAsync applies strict equality rather than that broader predicate. The narrowing
+        // is unchanged; only the side of the boundary it happens on is.
+        //
+        // The two group arms keep their exact legacy meanings. A named group is compared by value, because
+        // RoleGroupID is IDENTITY(0, 1) and zero is a legitimate group key - presence selects the filter,
+        // magnitude never does. The ungrouped arm is the legacy "< Global Roles >" selection and tests for
+        // the ABSENCE of a group, because Roles.RoleGroupID is nullable (03.02.03.SqlDataProvider:L34) and
+        // an ungrouped role stores SQL null there. The legacy screen sent -1 for that, which
+        // MembershipProviders/DataProvider/SqlDataProvider.vb:L231 converted to DBNull through Null.GetNull
+        // before the terminal statement's "RoleGroupId IS NULL AND @RoleGroupId IS NULL" arm matched; that
+        // sentinel round trip is gone and the intent it encoded is stated directly.
+        PagedResult<Role> window = await _roles.ListAsync(
+            portalId,
+            roleGroupId,
+            scope == RoleGroupScope.Ungrouped,
+            request.HasQuery ? request.Query : null,
+            request.HasSort ? request.SortBy : null,
+            request.SortDir == SortDirection.Descending,
+            request.PageIndex,
+            request.PageSize,
+            cancellationToken).ConfigureAwait(false);
 
-        // The repository read admits the installation-wide roles that carry no owning portal, because
-        // the terminal GetPortalRoles did (04.08.00.SqlDataProvider:L40). This screen lists only the
-        // roles the portal itself owns, which is the behaviour this endpoint has always had, so the
-        // strict ownership test is reapplied here rather than weakened in the repository.
-        IEnumerable<Role> matching = visible.Where(candidate => candidate.PortalId == portalId);
-
-        if (roleGroupId is int filteredGroupId)
-        {
-            // RoleGroupID is IDENTITY(0, 1), so zero is a legitimate group key; the presence of a
-            // value selects the filter, never its magnitude.
-            matching = matching.Where(candidate => candidate.RoleGroupId == filteredGroupId);
-        }
-        else if (scope == RoleGroupScope.Ungrouped)
-        {
-            // MIGRATION: the legacy "< Global Roles >" selection, restored. Roles.RoleGroupID is a
-            // NULLABLE column (03.02.03.SqlDataProvider:L34) and an ungrouped role stores SQL null there,
-            // so the test is for ABSENCE of a group and not for any particular number. The legacy screen
-            // sent -1 for this, which MembershipProviders/DataProvider/SqlDataProvider.vb:L231 converted
-            // to DBNull through Null.GetNull before the terminal statement's
-            // "RoleGroupId IS NULL AND @RoleGroupId IS NULL" arm matched; that sentinel round trip is
-            // gone, and the intent it encoded is now stated directly.
-            matching = matching.Where(candidate => candidate.RoleGroupId is null);
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Query))
-        {
-            string wanted = request.Query.Trim();
-            matching = matching.Where(candidate =>
-                candidate.RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase));
-        }
-
-        List<Role> ordered = OrderRoles(matching, request).ToList();
-
-        int totalCount = ordered.Count;
-
-        IReadOnlyList<RoleListItemDto> rows = (request.PageSize == 0
-                ? ordered
-                : ordered.Skip(Paging.SkipCount(request.PageIndex, request.PageSize)).Take(request.PageSize).ToList())
+        IReadOnlyList<RoleListItemDto> rows = window.Items
             .Select(RoleMappings.ToListItem)
             .ToList();
 
         PagedResult<RoleListItemDto> projected = request.PageSize == 0
             ? PagedResult<RoleListItemDto>.Unpaged(rows)
-            : PagedResult<RoleListItemDto>.Create(rows, totalCount, request.PageIndex, request.PageSize);
+            : PagedResult<RoleListItemDto>.Create(rows, window.TotalCount, request.PageIndex, request.PageSize);
 
         return Result<PagedResult<RoleListItemDto>>.Success(projected);
     }
@@ -788,18 +791,82 @@ public sealed class RoleService : IRoleService
             return Result.Failure(RoleProtectedCode, DescribeProtectedRole(portal, roleId, "removed"));
         }
 
-        // MIGRATION: a role's assignments go with it. FK_UserRoles_Roles is declared ON DELETE CASCADE
-        // in the schema this migration binds to, and UserRoleConfiguration declares the same behaviour,
-        // so DeleteAsync loads the assignments and stages their removal with the role - one traversal
-        // rather than a role-scoped assignment read this contract deliberately does not expose. The
-        // permission rows are NOT swept: FK_ModulePermission_Roles_RoleID and
-        // FK_TabPermission_Roles_RoleID carry no cascade and are configured NoAction, exactly as before.
-        await _roles.DeleteAsync(roleId, cancellationToken).ConfigureAwait(false);
+        // ONE SCOPE AROUND THE WHOLE REMOVAL. Two writes follow that cannot be expressed as a single
+        // flush: the grant sweep reaches the store as set-based statements the moment it is issued, while
+        // the role removal is staged and becomes durable at the commit. Enclosing both is what makes them
+        // one outcome, and disposal without a commit is what rolls the pair back - so a store rejection, a
+        // concurrency conflict raised by the commit, or a cancellation observed between the two steps all
+        // leave the role and its grants exactly as they were, with no compensation routine.
+        //
+        // The default isolation is correct, and this was measured rather than assumed. The refusal above is
+        // a check-then-write only if the designation can move underneath it, and it cannot: within the
+        // whole Application layer, Portals.AdministratorRoleId is assigned in exactly one place - portal
+        // provisioning, inside its own transaction - and no update path writes it. Nothing else this
+        // operation read has to stay unchanged for the removal to be correct.
+        await using (ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            // MIGRATION: SEC-F8. THE ROLE'S GRANTS GO WITH THE ROLE, in all three families, and this is a
+            // repair of a real hole rather than a hardening. The terminal legacy procedure swept them -
+            // 03.00.10.SqlDataProvider deletes from FolderPermission, ModulePermission and TabPermission by
+            // RoleId before deleting the role row - and an earlier revision of this method deliberately did
+            // not, on the grounds that no cascade existed to reproduce. That was the wrong conclusion from a
+            // correct observation: the ABSENCE of a cascading foreign key from either grant table to the
+            // role table is precisely why the rows survive their principal instead of being refused or
+            // carried away. They then become authority with no holder, and because Roles.RoleID is an
+            // identity column the vacated identifier is reissued, so the next role created in the
+            // installation silently inherits every grant the removed one held.
+            //
+            // THE SWEEP GOES THROUGH THE PERMISSION CONTRACT, NOT THE GRANT REPOSITORY. The three tables are
+            // one concern, and the rule bounding the removal to grants ADDRESSED TO THE ROLE - a grant made
+            // to an account is the account's own, and a grant addressed to a negative pseudo-principal names
+            // no role at all - is permission knowledge. Keeping one definition of it is the point.
+            //
+            // THE STAGE-ONLY MEMBER IS THE ONE CALLED. It neither commits nor evicts, so the sweep joins the
+            // commit below rather than becoming durable ahead of it. Committing inside would be strictly
+            // worse than the fault being repaired: a role left in place with every grant gone cannot be
+            // reconstructed, whereas an abandoned removal keeps its grants.
+            Result swept = await _permissions
+                .StageRolePermissionRemovalAsync(portalId, roleId, cancellationToken)
+                .ConfigureAwait(false);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // A refusal is propagated rather than discarded. Nothing is durable at this point, so reporting
+            // the reason leaves the role whole; swallowing it would commit a role removal whose grants were
+            // still in place, which is the one outcome the sweep exists to prevent. Returning here disposes
+            // the scope without committing, which rolls the batch back.
+            if (swept.IsFailure)
+            {
+                return swept;
+            }
 
+            // MIGRATION: a role's assignments go with it. FK_UserRoles_Roles is declared ON DELETE CASCADE
+            // in the schema this migration binds to, and UserRoleConfiguration declares the same behaviour,
+            // so DeleteAsync loads the assignments and stages their removal with the role - one traversal
+            // rather than a role-scoped assignment read this contract deliberately does not expose.
+            await _roles.DeleteAsync(roleId, cancellationToken).ConfigureAwait(false);
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Everything below runs only once the batch is durable, so no eviction and no audit record can
+        // describe a removal that did not happen.
         _cache.InvalidatePortal(portalId);
-        _cache.InvalidateTabPermissions(portalId);
+
+        // MIGRATION: SEC-F8. The grant-cache eviction is DELEGATED to the contract that owns it, in place of
+        // the single page-grant eviction this method used to perform directly. That direct call was already
+        // only half the answer while the grants stayed behind, and it is decisively half the answer now that
+        // they go: the page-grant entry is tenant-keyed, but the module-grant entry is PAGE-keyed, so
+        // evicting it portal-wide means naming each of the tenant's pages in turn. The permission contract
+        // does exactly that and holds the only definition of the set, so calling it here keeps one
+        // definition rather than opening a second that can drift. It is reached after the commit for the
+        // reason its own contract states: evicting earlier would discard warm entries for a batch that might
+        // still roll back, and would let a concurrent reader repopulate them from rows about to disappear.
+        await _permissions
+            .InvalidateUserPermissionCachesAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
 
         // MIGRATION: reproduces the legacy ROLE_DELETED audit entry (EventLogController.vb:L61). The name is
         // captured BEFORE the removal, because after the commit the row it came from no longer exists and
@@ -857,38 +924,32 @@ public sealed class RoleService : IRoleService
         // An earlier revision read accounts through IUserRepository.ListByRoleNameAsync instead. That
         // read cannot carry the dates - an account has no effective or expiry date, the membership does -
         // which is why the projection it fed had to declare them absent.
-        IReadOnlyList<UserRole> assignments = await _roles
-            .GetUserRolesByUsernameAsync(portalId, username: null, roleName: role.RoleName, cancellationToken)
-            .ConfigureAwait(false);
+        //
+        // MIGRATION: THE ACCOUNT FILTER, THE ORDERING, THE COUNT AND THE WINDOW ALL TRAVEL TO THE STORE, for
+        // the same reason the role listing's do. Reading every assignment of the role - each with its role
+        // and account graph - and then narrowing, sorting and cutting a window here made the cost of one
+        // page a function of the role's whole membership, which for a stock "Registered Users" role is the
+        // whole tenant. The join is the same join; only the side of the boundary that narrows it has moved.
+        // The account fragment still matches BOTH the display name and the login name, because the grid
+        // shows the former while a caller who knows the account knows the latter, and honouring only one of
+        // the two would make the same account findable only by luck.
+        PagedResult<UserRole> window = await _roles.ListRoleMembershipsAsync(
+            portalId,
+            role.RoleName,
+            request.HasQuery ? request.Query : null,
+            request.HasSort ? request.SortBy : null,
+            request.SortDir == SortDirection.Descending,
+            request.PageIndex,
+            request.PageSize,
+            cancellationToken).ConfigureAwait(false);
 
-        IEnumerable<UserRole> matching = assignments;
-
-        if (!string.IsNullOrWhiteSpace(request.Query))
-        {
-            // The filter matches the account, because that is the column the legacy screen searched and
-            // the role is already fixed by the route. Both the display name and the login name are
-            // considered: the grid shows the former, while a caller who knows the account knows the
-            // latter, and refusing one of the two would make the same account findable only by luck.
-            string wanted = request.Query.Trim();
-            matching = matching.Where(assignment =>
-                assignment.User is not null
-                    && (assignment.User.DisplayName.Contains(wanted, StringComparison.OrdinalIgnoreCase)
-                        || assignment.User.Username.Contains(wanted, StringComparison.OrdinalIgnoreCase)));
-        }
-
-        List<UserRole> ordered = OrderRoleMemberships(matching, request).ToList();
-
-        int totalCount = ordered.Count;
-
-        IReadOnlyList<RoleMembershipDto> rows = (request.PageSize == 0
-                ? ordered
-                : ordered.Skip(Paging.SkipCount(request.PageIndex, request.PageSize)).Take(request.PageSize).ToList())
+        IReadOnlyList<RoleMembershipDto> rows = window.Items
             .Select(RoleMappings.ToMembership)
             .ToList();
 
         PagedResult<RoleMembershipDto> projected = request.PageSize == 0
             ? PagedResult<RoleMembershipDto>.Unpaged(rows)
-            : PagedResult<RoleMembershipDto>.Create(rows, totalCount, request.PageIndex, request.PageSize);
+            : PagedResult<RoleMembershipDto>.Create(rows, window.TotalCount, request.PageIndex, request.PageSize);
 
         return Result<PagedResult<RoleMembershipDto>>.Success(projected);
     }
@@ -1814,123 +1875,4 @@ public sealed class RoleService : IRoleService
             throw new DomainException($"A role group name may not exceed {RoleGroupNameMaximumLength} characters.");
         }
     }
-
-    /// <summary>Orders a portal's roles by the field the caller named.</summary>
-    /// <param name="roles">The narrowed roles, before paging.</param>
-    /// <param name="request">The paging request carrying the ordering preference.</param>
-    /// <returns>The ordered sequence.</returns>
-    /// <remarks>
-    /// <para>
-    /// An ordering is applied unconditionally, and every arm ends on the key, so paging a set that shares
-    /// a sort value still assigns each row to exactly one page. The default arm preserves the order this
-    /// listing has always had - role name, then key - which is also the order the terminal
-    /// <c>GetPortalRoles</c> procedure produced, so a caller who names nothing sees no change.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE ARMS BELOW ARE EXACTLY <c>SortableFields.Roles</c>, and keeping the two identical is
-    /// the point rather than a nicety - an allowlist entry with no arm accepts a name and then silently
-    /// orders by something else. Ordering happens in memory because this listing already materialises the
-    /// portal's whole role set to narrow it: the legacy membership provider exposed no paged, filtered or
-    /// group-scoped role read, so the narrowing is this layer's work and the ordering belongs with it. A
-    /// portal holds tens of roles, so the cost is not measurable.
-    /// </para>
-    /// <para>
-    /// Names are compared case-insensitively and ordinally, matching the allowlist's own comparer, and the
-    /// text arms sort case-insensitively for the same reason the legacy grid did: an operator reading a
-    /// list of names does not expect capitalisation to decide position.
-    /// </para>
-    /// </remarks>
-    private static IEnumerable<Role> OrderRoles(IEnumerable<Role> roles, PagedRequest request)
-    {
-        bool descending = request.SortDir == SortDirection.Descending;
-        string field = request.HasSort ? request.SortBy!.Trim().ToUpperInvariant() : string.Empty;
-
-        IOrderedEnumerable<Role> ordered = field switch
-        {
-            "ROLEID" => Order(roles, candidate => candidate.RoleId, descending),
-            "DESCRIPTION" => Order(roles, candidate => candidate.Description ?? string.Empty, descending, StringComparer.OrdinalIgnoreCase),
-            "SERVICEFEE" => Order(roles, candidate => candidate.ServiceFee, descending),
-            "BILLINGFREQUENCY" => Order(roles, candidate => candidate.BillingFrequency, descending),
-            "BILLINGPERIOD" => Order(roles, candidate => candidate.BillingPeriod, descending),
-            "TRIALFEE" => Order(roles, candidate => candidate.TrialFee, descending),
-            "TRIALFREQUENCY" => Order(roles, candidate => candidate.TrialFrequency, descending),
-            "TRIALPERIOD" => Order(roles, candidate => candidate.TrialPeriod, descending),
-            "ISPUBLIC" => Order(roles, candidate => candidate.IsPublic, descending),
-            "AUTOASSIGNMENT" => Order(roles, candidate => candidate.AutoAssignment, descending),
-            _ => Order(roles, candidate => candidate.RoleName, descending, StringComparer.OrdinalIgnoreCase),
-        };
-
-        return descending
-            ? ordered.ThenByDescending(candidate => candidate.RoleId)
-            : ordered.ThenBy(candidate => candidate.RoleId);
-    }
-
-    /// <summary>Orders a role's memberships by the field the caller named.</summary>
-    /// <param name="memberships">The role's assignment rows, before paging.</param>
-    /// <param name="request">The paging request carrying the ordering preference.</param>
-    /// <returns>The ordered sequence.</returns>
-    /// <remarks>
-    /// The membership counterpart of <see cref="OrderRoles"/>, and the arms are exactly
-    /// <c>SortableFields.RoleUsers</c>. Ordering in memory is what makes the ordering possible at all: the
-    /// rows are assignments composed with their accounts by one repository read, so the account columns the
-    /// vocabulary names are reachable here in a way no ordering clause over <c>dbo.UserRoles</c> alone
-    /// could reach. The default arm preserves this listing's established order - display name, then the
-    /// assignment key, which is what the legacy grid rendered in.
-    /// </remarks>
-    private static IEnumerable<UserRole> OrderRoleMemberships(
-        IEnumerable<UserRole> memberships,
-        PagedRequest request)
-    {
-        bool descending = request.SortDir == SortDirection.Descending;
-        string field = request.HasSort ? request.SortBy!.Trim().ToUpperInvariant() : string.Empty;
-
-        // The sort keys read the composed ACCOUNT, because the vocabulary the allowlist publishes for this
-        // collection names account columns - the legacy grid rendered the account and sorted on what it
-        // rendered. An assignment whose account failed to compose sorts as the empty value rather than
-        // faulting the read, which is the same defensive stance the projection takes.
-        IOrderedEnumerable<UserRole> ordered = field switch
-        {
-            "USERID" => Order(memberships, membership => membership.UserId, descending),
-            "USERNAME" => Order(memberships, membership => Account(membership).Username, descending, StringComparer.OrdinalIgnoreCase),
-            "FIRSTNAME" => Order(memberships, membership => Account(membership).FirstName, descending, StringComparer.OrdinalIgnoreCase),
-            "LASTNAME" => Order(memberships, membership => Account(membership).LastName, descending, StringComparer.OrdinalIgnoreCase),
-            "EMAIL" => Order(memberships, membership => Account(membership).Email ?? string.Empty, descending, StringComparer.OrdinalIgnoreCase),
-            "CREATEDDATE" => Order(memberships, membership => Account(membership).CreatedDate, descending),
-            "LASTLOGINDATE" => Order(memberships, membership => Account(membership).LastLoginDate, descending),
-            "ISAPPROVED" => Order(memberships, membership => Account(membership).IsApproved, descending),
-            "ISSUPERUSER" => Order(memberships, membership => Account(membership).IsSuperUser, descending),
-            _ => Order(memberships, membership => Account(membership).DisplayName, descending, StringComparer.OrdinalIgnoreCase),
-        };
-
-        return descending
-            ? ordered.ThenByDescending(membership => membership.UserRoleId)
-            : ordered.ThenBy(membership => membership.UserRoleId);
-    }
-
-    /// <summary>The account an assignment composes, or an empty account when it composed none.</summary>
-    /// <param name="membership">The assignment row.</param>
-    /// <returns>The composed account, never null.</returns>
-    private static User Account(UserRole membership) => membership.User ?? new User();
-
-    /// <summary>Applies one ordering in the requested direction.</summary>
-    /// <typeparam name="TItem">The item type being ordered.</typeparam>
-    /// <typeparam name="TKey">The sort key type.</typeparam>
-    /// <param name="items">The items to order.</param>
-    /// <param name="key">Selects the sort key.</param>
-    /// <param name="descending">Whether the ordering is descending.</param>
-    /// <param name="comparer">An optional comparer for the key.</param>
-    /// <returns>The ordered sequence, still open for a tie-breaking key.</returns>
-    /// <remarks>
-    /// Exists so that each arm above states its key once instead of stating it twice under a conditional,
-    /// which is where an ascending and a descending arm drift apart. The return type stays
-    /// <see cref="IOrderedEnumerable{TElement}"/> so the caller can append the key that breaks ties.
-    /// </remarks>
-    private static IOrderedEnumerable<TItem> Order<TItem, TKey>(
-        IEnumerable<TItem> items,
-        Func<TItem, TKey> key,
-        bool descending,
-        IComparer<TKey>? comparer = null)
-        => descending
-            ? items.OrderByDescending(key, comparer)
-            : items.OrderBy(key, comparer);
 }

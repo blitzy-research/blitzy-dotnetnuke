@@ -573,9 +573,12 @@
 
           <!--
             The password pair. `signup.ascx:L94` and `L100` declare `textmode="password"`
-            and `maxlength="20"`, the latter mirroring the legacy `Users.Password
-            nvarchar(20)` column; the limit is bound from the component's published
-            source and is deliberately not widened.
+            and `maxlength="20"`. The `textmode` is reproduced; the `maxlength` is NOT,
+            because it mirrored the legacy `Users.Password nvarchar(20)` storage width
+            rather than a credential rule, and that column is gone. The limit is bound
+            from the component's published source, which now carries the API's own
+            ceiling — see `core/utils/credential-bounds.util.ts` for why a limit counted
+            in UTF-16 code units never narrows the API's 256-byte bound.
 
             `autocomplete="new-password"` on both: this is a credential being created for
             somebody else, so a browser must not fill the operator's own. Zero visual

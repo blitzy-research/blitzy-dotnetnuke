@@ -34,6 +34,7 @@ import {
 import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore, type UserFailure } from '../../../core/state/user.store';
+import { parseRouteId } from '../../../core/utils/route-id.util';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -97,6 +98,45 @@ const MULTILINE_ROWS = 4;
 const NO_PROPERTIES_MESSAGE =
   'This site declares no profile properties, so there is nothing to show. ' +
   'Define one under Profile Properties to begin.';
+
+/**
+ * The greatest number of properties one profile write may carry.
+ *
+ * THE API'S OWN BOUND, reproduced from `UserService.ProfilePropertySubmissionMaximum`, where a
+ * submission carrying more is refused whole with `user.profile.too-many-properties`. The limit exists
+ * because the server does per-property work — it resolves each declaration, evaluates the tenant's own
+ * validation expression against a match timeout and reconciles two storage columns — so the amount of
+ * that work per request is deliberately bounded.
+ *
+ * ⚠ IT IS A LIMIT ON THE WRITE, WHICH MAKES IT A LIMIT ON THIS SCREEN. This screen submits EVERY
+ * declared property on every save, because the write replaces rather than merges — a property omitted
+ * from the payload is a property cleared. So a tenant declaring more than this many properties could not
+ * save a profile at all, and before this bound was stated here the operator discovered that by filling
+ * the form in and being refused, with no indication of which of the two ends was at fault.
+ */
+const MAXIMUM_SUBMITTED_PROPERTIES = 64;
+
+/**
+ * What is shown when the tenant declares more properties than one write may carry.
+ *
+ * States the measured numbers on both sides, because "too many" without them tells the operator nothing
+ * they can act on, and names the screen where the declarations are managed — in prose, so that this
+ * file imports no route from a sibling feature folder.
+ *
+ * ⚠ THE FORM IS WITHHELD RATHER THAN OFFERED-AND-REFUSED. Offering it would invite an operator to type
+ * into something that cannot be saved, which is the same reasoning the account editor applies to an
+ * account that does not exist.
+ *
+ * @param declared How many properties the tenant declares.
+ * @returns The sentence to show in place of the form.
+ */
+function tooManyPropertiesMessage(declared: number): string {
+  return (
+    `This site declares ${String(declared)} profile properties, and a profile can be saved with at ` +
+    `most ${String(MAXIMUM_SUBMITTED_PROPERTIES)}. Reduce the number of declared properties under ` +
+    'Profile Properties before editing this profile.'
+  );
+}
 
 /**
  * The wording a single legacy-seeded property carried.
@@ -353,33 +393,6 @@ const nonBlank: ValidatorFn = (control) => {
 };
 
 /**
- * Reports whether a stored validation expression can be compiled by this engine.
- *
- * TREATED AS UNTRUSTED, CALLER-SUPPLIED DATA. The expression is authored by an
- * administrator and stored in `ValidationExpression nvarchar(100) NULL`, and the legacy
- * application evaluated it with the .NET regular-expression engine. Several .NET
- * constructs are rejected outright by the browser's engine, and an uncompilable
- * expression thrown from a validator factory would take the entire screen down rather
- * than degrade one field. It is skipped instead, leaving the server — which is the
- * authority in every case anyway — to enforce the rule.
- *
- * @param expression The stored expression.
- * @returns `true` when this engine accepts it.
- */
-function isCompilablePattern(expression: string): boolean {
-  try {
-    // Constructing it is the only way to discover whether this engine accepts it. The
-    // result is discarded deliberately: `Validators.pattern` compiles its own, and
-    // caching one here would tie the validator to this call site.
-    new RegExp(expression);
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Builds the validators one declared property demands.
  *
  * The three rules are the three the declaration carries, and they are applied in the
@@ -408,12 +421,22 @@ function validatorsFor(definition: ProfilePropertyDefinition): ValidatorFn[] {
     validators.push(Validators.maxLength(definition.length));
   }
 
-  const expression = definition.validationExpression;
-
-  if (expression !== null && expression.trim().length > 0 && isCompilablePattern(expression)) {
-    validators.push(Validators.pattern(expression));
-  }
-
+  // ⚠ THE TENANT'S VALIDATION EXPRESSION IS DELIBERATELY NOT EVALUATED HERE, AND THIS IS A SECURITY
+  // DECISION RATHER THAN A SIMPLIFICATION. The expression is administrator-authored data stored in
+  // `ValidationExpression`, so it is untrusted input to whatever engine runs it, and a catastrophically
+  // backtracking pattern — the classic nested-quantifier shape — takes exponential time on an ordinary
+  // input. Running it here meant running it on the UI thread, synchronously, on EVERY keystroke of a
+  // control whose length is frequently unbounded (a declared length of zero means no maximum), so one
+  // such declaration froze the browser tab with no way out.
+  //
+  // The server is not merely the fallback authority, it is the only party that can run this safely: it
+  // compiles the expression with a fifty-millisecond match timeout, a length ceiling and a bounded
+  // compiled-expression cache. The browser's engine offers no timeout of any kind — there is no API for
+  // one — so a client-side evaluation cannot be bounded at all, only avoided.
+  //
+  // The consequence is a refusal that arrives from the server rather than beside the box as it is typed.
+  // That is the correct trade: the rule is still enforced, still reported per field through the server's
+  // model-state message, and a tenant can no longer author a declaration that hangs an operator's browser.
   return validators;
 }
 
@@ -424,14 +447,33 @@ function validatorsFor(definition: ProfilePropertyDefinition): ValidatorFn[] {
  * legacy code could not do. `UserProfile.vb` L507-L517 returns `Null.NullString` — the
  * empty string — both when a property is missing and when its value is empty, so the two
  * were indistinguishable. The API preserves the distinction through
- * `lastUpdatedDate`, which is `null` for a value that has never been written, and that
- * is the discriminator used here rather than the emptiness of the value:
+ * `lastUpdatedDate`, which is `null` for a value that has never been written:
  *   - never written  -> seed from the declaration's default, reproducing
  *     `InitialiseProfile(portalId, useDefaults := True)` (L545-L554), which copied
  *     `DefaultValue` into every property.
  *   - written        -> use the recorded value verbatim, INCLUDING the empty string, so
  *     a value an operator deliberately cleared is not silently repopulated with the
  *     default the next time the screen opens.
+ *
+ * ⚠ A SUPPLIED VALUE WINS OVER THE AUDIT METADATA, AND THAT ORDER IS THE POINT. The
+ * timestamp is metadata ABOUT a value; the value itself is the stronger evidence that
+ * something is stored. Deciding on the timestamp alone means that a property arriving
+ * with content and no timestamp is rendered as the declaration's DEFAULT — and because
+ * this screen submits every property it renders, the operator's next save writes that
+ * default straight over the content. Silent data loss, on a screen that looked like it
+ * had loaded correctly.
+ *
+ * That combination cannot arise from the current contract: the entity's own column is
+ * `LastUpdatedDate datetime NOT NULL` and the projection emits `stored?.LastUpdatedDate`,
+ * so a null timestamp means precisely "no row exists" and a row with no row has no value
+ * either. This ordering is therefore DEFENCE rather than a change of behaviour — every
+ * case the contract can produce today is decided identically — and it is written this way
+ * because the cost is nothing and the failure it forecloses is unrecoverable. It also
+ * survives the contract changing shape underneath it, which a check on metadata alone
+ * would not.
+ *
+ * The remaining ambiguity — no timestamp AND no value — is seeded from the default, which
+ * is both the legacy behaviour and the only sensible reading: there is nothing to lose.
  *
  * MIGRATION: the null-date sentinel is blanked here rather than rendered. See
  * {@link isNullDateSentinel}.
@@ -440,9 +482,21 @@ function validatorsFor(definition: ProfilePropertyDefinition): ValidatorFn[] {
  * @returns The starting value, always a string.
  */
 function initialValueFor(value: UserProfileValue): string {
-  const recorded = value.lastUpdatedDate === null ? (value.definition.defaultValue ?? '') : value.propertyValue;
+  const supplied = value.propertyValue;
 
-  return isNullDateSentinel(recorded) ? '' : recorded;
+  // Anything actually carried is used verbatim, whatever the metadata beside it says.
+  if (supplied.length > 0) {
+    return isNullDateSentinel(supplied) ? '' : supplied;
+  }
+
+  // Nothing carried: the timestamp decides between a row that holds the empty string and no row at all.
+  if (value.lastUpdatedDate !== null) {
+    return '';
+  }
+
+  const seeded = value.definition.defaultValue ?? '';
+
+  return isNullDateSentinel(seeded) ? '' : seeded;
 }
 
 
@@ -552,23 +606,13 @@ function toSections(profile: UserProfile | null): readonly ProfileSection[] {
  * @returns The identifier, or `null` when none was supplied or it was not a whole number.
  */
 function resolveUserId(raw: string | number | undefined): number | null {
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-
-  if (typeof raw === 'number') {
-    return Number.isInteger(raw) ? raw : null;
-  }
-
-  const trimmed = raw.trim();
-
-  if (trimmed.length === 0) {
-    return null;
-  }
-
-  const parsed = Number(trimmed);
-
-  return Number.isInteger(parsed) ? parsed : null;
+  // Delegated to the one parser in the workspace that performs this conversion. This
+  // function used to use `Number`, which accepts a hexadecimal literal, an exponent and a
+  // decimal point — `'0x10'` resolved to 16 — and checked neither the safe-integer ceiling
+  // nor the API's 32-bit range. The shared parser reproduces exactly what `int.TryParse`
+  // under `NumberStyles.Integer` accepts server-side, and it already answers `null` for
+  // absence, which is this screen's own representation, so nothing is adapted.
+  return parseRouteId(raw);
 }
 
 
@@ -774,6 +818,25 @@ export class UserProfileComponent {
 
   /** Whether there is anything at all to render. */
   protected readonly hasProperties: Signal<boolean> = computed(() => this.sections().length > 0);
+
+  /** How many properties this profile carries, which is how many a save would submit. */
+  private readonly declaredPropertyCount: Signal<number> = computed(() =>
+    this.sections().reduce((total, section) => total + section.values.length, 0),
+  );
+
+  /**
+   * Whether the tenant declares more properties than one write may carry.
+   *
+   * @see MAXIMUM_SUBMITTED_PROPERTIES
+   */
+  protected readonly exceedsSubmissionLimit: Signal<boolean> = computed(
+    () => this.declaredPropertyCount() > MAXIMUM_SUBMITTED_PROPERTIES,
+  );
+
+  /** The sentence shown in place of the form when the declaration count cannot be saved. */
+  protected readonly tooManyPropertiesNotice: Signal<string> = computed(() =>
+    tooManyPropertiesMessage(this.declaredPropertyCount()),
+  );
 
   /**
    * The screen's heading.
@@ -1101,6 +1164,17 @@ export class UserProfileComponent {
       return;
     }
 
+    // ⚠ CHECKED HERE AS WELL AS IN THE TEMPLATE, and not because the template's branch is untrusted: a
+    // submission can be raised by the return key on a form the branch is not currently withholding —
+    // during a re-read, for instance — and the write replaces the whole profile, so a refusal is the only
+    // safe answer. Stated at both ends because the cost is one comparison and the failure is a whole
+    // profile the operator believes they saved.
+    if (this.exceedsSubmissionLimit()) {
+      this.notifications.warning(this.tooManyPropertiesNotice());
+
+      return;
+    }
+
     const form = this.form();
 
     if (form.invalid) {
@@ -1181,10 +1255,6 @@ export class UserProfileComponent {
       return `${name} must be ${value.definition.length} characters or fewer`;
     }
 
-    if (control.hasError('pattern')) {
-      return `${name} is not in the expected format`;
-    }
-
     return `${name} is not valid`;
   }
 
@@ -1252,7 +1322,14 @@ export class UserProfileComponent {
 
     // Only a refusal is announced. A validation failure is already shown beside the field
     // it belongs to, and announcing it again would say the same thing twice.
-    if (failure.summary.severity !== 'warning') {
+    //
+    // The test is for the ERROR severity rather than for the warning one, and the
+    // difference is not cosmetic. The shared classifier resolves a rate-limit refusal to
+    // the informational severity — quieter than the other refusals, because the caller is
+    // early rather than wrong — so a test that admitted only warnings would say nothing at
+    // all when a save was throttled, which is the one case where the operator most needs
+    // to be told to wait. Every validation failure is an error and is still excluded.
+    if (failure.summary.severity === 'error') {
       this.lastAnnouncedFailure = failure.problem;
 
       return;
@@ -1263,7 +1340,10 @@ export class UserProfileComponent {
     }
 
     this.lastAnnouncedFailure = failure.problem;
-    this.notifications.warning(failure.summary.message);
+
+    // Announced at the severity the shared classifier decided, never at a severity chosen
+    // here: a second choice is a second authority, and the two would drift.
+    this.notifications.notify(failure.summary.severity, failure.summary.message);
   }
 }
 
@@ -1296,4 +1376,3 @@ function formatProfileTitle(user: UserDetail | null, userId: number | null): str
 
   return `Edit Profile - ${user.username} (Id: ${String(user.userId)})`;
 }
-

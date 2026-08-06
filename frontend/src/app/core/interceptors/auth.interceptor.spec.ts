@@ -18,7 +18,10 @@ import type { HttpInterceptorFn } from '@angular/common/http';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { AuthSession, CurrentUser, LoginResponse } from '../models/auth.model';
 
+import { ModuleStore } from '../state/module.store';
+import { RoleStore } from '../state/role.store';
 import { TokenStorageService } from '../services/token-storage.service';
+import { SessionTeardownService } from '../state/session-teardown.service';
 import { authInterceptor } from './auth.interceptor';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 
@@ -104,20 +107,39 @@ import { correlationIdInterceptor } from './correlation-id.interceptor';
  * this interceptor passes that request through untouched, so a refused identity read
  * cannot itself trigger another renewal. That is asserted, not assumed.
  *
- * ## SINGLE-FLIGHT LIVES IN THE SERVICE, NOT IN THIS INTERCEPTOR
+ * ## SINGLE-FLIGHT LIVES IN THE SESSION'S OWNER, NOT IN THIS INTERCEPTOR
  *
  * The interceptor holds no state of any kind — no in-flight slot, no attempt counter, no
- * marker header. Coalescing concurrent renewals is the authentication service's
- * responsibility, and there is exactly one owner of that fact deliberately: signing out
- * clears the service's slot, and a private second slot here could not be cleared, so a
- * 401 racing a sign-out would replay a cached renewal and resurrect the session the
- * operator had just ended. Nothing in this file reaches for, resets or names an internal
- * coordinator; the guarantee is asserted through observable behaviour — one renewal
- * request for two simultaneous refusals — which is the only form in which it matters.
+ * marker header. Coalescing concurrent renewals belongs to `core/state/auth.store.ts`,
+ * which is the single owner of the session lifecycle, and there is exactly one owner of
+ * that fact deliberately: signing out abandons that owner's slot AND advances its session
+ * generation, so a renewal already in flight fails instead of storing. A private second
+ * slot here could not be advanced or cleared, so a 401 racing a sign-out would replay a
+ * cached renewal and resurrect the session the operator had just ended. Nothing in this
+ * file reaches for, resets or names an internal coordinator; the guarantee is asserted
+ * through observable behaviour — one renewal request for two simultaneous refusals — which
+ * is the only form in which it matters.
  *
- * The one-retry bound is likewise structural rather than counted: the subject attaches
- * its handler to the FIRST attempt only and returns the retry bare, so a second refusal
- * has no handler to re-enter. The cases below assert the consequence.
+ * MIGRATION: the coordinator used to live on `core/services/auth.service.ts`, which also
+ *   owned custody of the stored session, the two-request flows and three re-exposed
+ *   signals. That service is now a typed transport closed at four operations and holds
+ *   nothing, so the renewal this interceptor triggers goes through the store.
+ *
+ * The one-retry bound is likewise structural rather than counted: the subject attaches its
+ * renewal handler BEFORE the retry and returns the retry bare, so a second refusal has no
+ * handler to re-enter. The cases below assert the consequence.
+ *
+ * ## ⚠ THE RENEWAL HANDLER IS ATTACHED BEFORE THE RETRY, AND THAT IS LOAD-BEARING
+ *
+ * MIGRATION: it used to sit AFTER the retry, where it caught the RETRY's failure as though
+ *   the renewal had failed. Two consequences, both serious, and both are now pinned by
+ *   cases in this file. A renewal that SUCCEEDED followed by a retry the server answered
+ *   403, 404, 409, 429, 500 or a network failure ended the session and sent the operator to
+ *   sign in again — destroying a session that had just been renewed and was perfectly
+ *   valid, for a request that had nothing to do with authentication. And every one of those
+ *   statuses was replaced by the original 401 on the way out, so the caller was told "not
+ *   authorised" about a conflict, a missing record or a server fault, and the real status
+ *   never reached the error interceptor that words it.
  *
  * ## URLS ARE ROOT-RELATIVE, AND SPELLED OUT
  *
@@ -316,6 +338,7 @@ const FAKE_USER: CurrentUser = Object.freeze({
   displayName: 'Operator',
   email: 'operator@example.test',
   isSuperUser: false,
+  isPortalAdministrator: false,
   roles: Object.freeze([]),
   permissions: Object.freeze([]),
 });
@@ -885,6 +908,67 @@ describe('authInterceptor', () => {
       // case a regression would break first.
       httpMock.expectNone(PROTECTED_URL);
       httpMock.expectNone(REFRESH_URL);
+
+      // ⚠ THE RENEWED SESSION SURVIVES. The renewal succeeded, so the session it
+      // established is valid however the retried request was answered. Ending it here would
+      // sign the operator out because ONE request failed after their credentials had just
+      // been renewed — which is exactly what the handler did while it sat after the retry.
+      expect(tokens.session())
+        .withContext('a successful renewal is not undone by the retry being refused')
+        .not.toBeNull();
+      expect(tokens.accessToken()).toBe(FAKE_ROTATED_ACCESS_TOKEN);
+      expect(navigate)
+        .withContext('a refused retry is not a terminal authentication condition')
+        .not.toHaveBeenCalled();
+    });
+
+    it('propagates a NON-401 retry failure exactly as the server sent it', async () => {
+      // The discriminating case for the operator ordering. With the renewal handler after
+      // the retry, this 409 was caught as a renewal failure: the session was discarded, the
+      // operator was navigated away, and the caller was told 401 — so a duplicate-name
+      // conflict was reported as an expired session and the error interceptor never saw the
+      // status it needed in order to word it.
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+      completeRenewal();
+
+      httpMock
+        .expectOne(PROTECTED_URL)
+        .flush(problemDocument(409, 'Conflict'), { status: 409, statusText: 'Conflict' });
+
+      expect(httpStatusOf(await reasonFor(pending)))
+        .withContext('the caller hears the status the server actually sent')
+        .toBe(409);
+
+      expect(tokens.session())
+        .withContext('a conflict on the retried request is not an authentication failure')
+        .not.toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
+      httpMock.expectNone(REFRESH_URL);
+    });
+
+    it('propagates a retry that fails with no response at all', async () => {
+      // A transport failure carries status zero and no body. Reported as itself rather than
+      // as a 401, so the error interceptor can say the server could not be reached instead
+      // of claiming the session expired.
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+      completeRenewal();
+
+      httpMock.expectOne(PROTECTED_URL).error(new ProgressEvent('error'));
+
+      expect(httpStatusOf(await reasonFor(pending)))
+        .withContext('a network failure is not an authentication failure')
+        .toBe(0);
+
+      expect(tokens.session()).not.toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
     });
 
     it('does not answer a refused RENEWAL with another renewal', async () => {
@@ -1068,6 +1152,95 @@ describe('authInterceptor', () => {
         .not.toHaveBeenCalled();
     });
 
+    it('discards EVERY domain slice, not merely the credential, when the session ends', async () => {
+      // ⚠ THE REGRESSION THIS PINS DOWN. Every domain store is root-provided, so each one
+      // outlives the session and keeps whatever it last read. Clearing the credential alone
+      // would leave one operator's portals, accounts, roles and module content resident and
+      // legible to whoever signs in next on this browser - a disclosure, not untidiness. The
+      // complete discard lives in `core/state/session-lifecycle.service.ts`; what is asserted
+      // here is that a TERMINAL refusal reaches it, which is the half only this file can prove.
+      //
+      // The two stores exercised are the ROLE and MODULE stores, deliberately: the portal
+      // listing is addressed by the very URL this file uses as its protected request, so
+      // loading it here would make one expectation ambiguous against another.
+      const roles = TestBed.inject(RoleStore);
+      const modules = TestBed.inject(ModuleStore);
+
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      roles.loadRoles();
+      const roleRead = httpMock.expectOne((candidate) => candidate.url === '/api/v1/roles');
+      roleRead.flush({
+        items: [
+          {
+            roleId: 0,
+            portalId: -1,
+            roleGroupId: null,
+            roleName: 'Held Role',
+            description: null,
+            isPublic: false,
+            autoAssignment: false,
+            serviceFee: 0,
+            billingFrequency: 'N',
+            billingPeriod: null,
+            trialFee: null,
+            trialPeriod: null,
+            trialFrequency: null,
+          },
+        ],
+        meta: { totalCount: 1, pageIndex: 0, pageSize: 100, totalPages: 1 },
+      });
+
+      modules.loadModules();
+      const moduleRead = httpMock.expectOne((candidate) => candidate.url === '/api/v1/modules');
+      moduleRead.flush({
+        items: [
+          {
+            moduleId: 0,
+            tabModuleId: 0,
+            tabId: 0,
+            portalId: -1,
+            moduleDefId: 1,
+            moduleTitle: 'Held Announcements',
+            moduleOrder: 1,
+            paneName: 'ContentPane',
+            allTabs: false,
+            visibility: 0,
+            isDeleted: false,
+            displayTitle: true,
+            startDate: null,
+            endDate: null,
+            friendlyName: 'Announcements',
+            desktopModuleId: 2,
+            moduleName: 'Announcements',
+            description: null,
+            version: '01.00.00',
+          },
+        ],
+        meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
+      });
+
+      expect(roles.roleItems().length).toBe(1);
+      expect(modules.modules().length).toBe(1);
+
+      const pending = firstValueFrom(http.get(OTHER_PROTECTED_URL));
+
+      refuse(httpMock.expectOne(OTHER_PROTECTED_URL));
+      // The renewal is refused too, which is what makes the outcome TERMINAL.
+      refuse(httpMock.expectOne(REFRESH_URL));
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      expect(tokens.session()).toBeNull();
+      expect(roles.roleItems())
+        .withContext('the previous operator roles must not survive a terminal refusal')
+        .toEqual([]);
+      expect(modules.modules())
+        .withContext('module content is session content and goes with the credential')
+        .toEqual([]);
+      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+    });
+
     it('still reports the original refusal when routing to sign-in itself fails', async () => {
       // The subject is mid-way through re-throwing the response the server actually sent,
       // and a routing problem must not displace it — nor become an unhandled rejection
@@ -1087,6 +1260,312 @@ describe('authInterceptor', () => {
         .toBe(401);
       expect(tokens.session()).toBeNull();
       expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+    });
+  });
+
+  /**
+   * Cross-session recovery.
+   *
+   * ⚠ THE DEFECT THESE CASES PIN IS AN AUTHORISATION CROSSING, NOT A COSMETIC ONE. Recovery
+   * used to ask only "is SOME renewal credential held?" before renewing and retrying, and it
+   * re-read the token to retry with from storage. So an operator who signed out and back in as
+   * somebody else while a request was in the air could have that request — composed under
+   * account A's authority — executed by the server AS ACCOUNT B.
+   *
+   * Every case below drives the session transition WHILE the original request or its renewal
+   * is in the air, which is what puts the recovery decision on the wrong side of it. The
+   * testing backend makes that ordering exact, so these are deterministic rather than
+   * timing-dependent.
+   *
+   * Two properties are asserted throughout and both matter. The original request must not be
+   * retried under the new authority; and the NEW session must be left completely alone — not
+   * cleared, not navigated away from — because whoever performed the transition did so
+   * deliberately.
+   */
+  describe('recovery across a session change', () => {
+    beforeEach(() => {
+      configureWith([authInterceptor]);
+    });
+
+    it('does not retry under a different session established while the request was in flight', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      const first = httpMock.expectOne(PROTECTED_URL);
+      expect(first.request.headers.get(AUTHORIZATION_HEADER)).toBe(`Bearer ${FAKE_ACCESS_TOKEN}`);
+
+      // The operator signs out and back in as somebody else. Both transitions advance the
+      // auth epoch, so the request in flight no longer belongs to the session being held.
+      tokens.clear();
+      tokens.store(sessionFor('fake-access-token-other', 'fake-refresh-token-other'));
+
+      refuse(first);
+
+      expect(httpStatusOf(await reasonFor(pending)))
+        .withContext("the caller learns its own request failed")
+        .toBe(401);
+
+      // The three things that must NOT have happened.
+      httpMock.expectNone(REFRESH_URL);
+      httpMock.expectNone(PROTECTED_URL);
+      expect(tokens.accessToken())
+        .withContext('the newer session is untouched')
+        .toBe('fake-access-token-other');
+      expect(navigate)
+        .withContext('and the operator is not moved off the screen they just reached')
+        .not.toHaveBeenCalled();
+    });
+
+    it('does not renew a healthy session on the strength of an ended one being refused', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+      const first = httpMock.expectOne(PROTECTED_URL);
+
+      tokens.store(sessionFor('fake-access-token-other', 'fake-refresh-token-other'));
+
+      refuse(first);
+      await reasonFor(pending);
+
+      // The old presence test would have passed here - a refresh token IS held - and renewed
+      // a session that had nothing wrong with it, consuming its rotation for no reason.
+      httpMock.expectNone(REFRESH_URL);
+      expect(tokens.refreshToken()).toBe('fake-refresh-token-other');
+    });
+
+    // The widest window in the whole path: a renewal is two round trips, and a transition
+    // landing inside it is the race the second guard exists for.
+    it('does not retry when the session changes while the renewal is in flight', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+
+      const renewal = httpMock.expectOne(REFRESH_URL);
+
+      // The transition lands after the renewal was requested but before it is answered.
+      tokens.clear();
+      tokens.store(sessionFor('fake-access-token-other', 'fake-refresh-token-other'));
+
+      renewal.flush(renewalBody(FAKE_ROTATED_ACCESS_TOKEN, FAKE_ROTATED_REFRESH_TOKEN));
+
+      const identity = httpMock.expectOne(IDENTITY_URL);
+      identity.flush({ data: FAKE_USER, meta: null } satisfies SuccessEnvelope<CurrentUser>);
+
+      expect(httpStatusOf(await reasonFor(pending)))
+        .withContext('the original refusal reaches the caller unchanged')
+        .toBe(401);
+
+      httpMock.expectNone(PROTECTED_URL);
+      expect(tokens.accessToken())
+        .withContext('the renewal was obsoleted, so its rotated pair was never stored')
+        .toBe('fake-access-token-other');
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('leaves a newer session intact when the older renewal is refused', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+
+      const renewal = httpMock.expectOne(REFRESH_URL);
+
+      tokens.store(sessionFor('fake-access-token-other', 'fake-refresh-token-other'));
+
+      refuse(renewal);
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      // ⚠ The sharpest assertion in this block. Tearing down here would sign out an operator
+      // whose own sign-in had just succeeded - the same defect one operator further along.
+      expect(tokens.accessToken())
+        .withContext('the newer session survives an older renewal being refused')
+        .toBe('fake-access-token-other');
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    // The complement: when the transition was a SIGN-OUT rather than a sign-in, nothing is
+    // held, and asking the operator to sign in is both correct and what they asked for.
+    it('still ends the session when the change was a sign-out', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+
+      const renewal = httpMock.expectOne(REFRESH_URL);
+
+      tokens.clear();
+
+      refuse(renewal);
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+      expect(tokens.session()).toBeNull();
+      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // THE SESSION'S FOOTPRINT BEYOND THE CUSTODIAN
+  // ---------------------------------------------------------------------------------------------
+  /**
+   * ⚠ THIS IS THE LIKELIEST PLACE A SESSION ACTUALLY ENDS.
+   *
+   * A deliberate sign-out goes through `core/state/auth.store.ts`, but a token whose renewal
+   * cannot be completed ends the session from inside this interceptor, with no screen involved
+   * and nobody having asked. Clearing the custodian ends the session's AUTHORITY and — because
+   * the identity projection is stamped with the generation the custodian advances — also
+   * retracts the published account.
+   *
+   * It does NOT empty the domain stores. Those are each `providedIn: 'root'`, so each holds one
+   * instance that survives the session, and without an explicit purge the previous operator's
+   * tenant listings, the account record they had open, the role assignments naming other
+   * accounts and a serialised export of a module's data would all still be in memory behind the
+   * sign-in screen — legible to whoever signed in next on the same page load.
+   *
+   * The delegation is asserted through a spy rather than by populating four stores, because what
+   * belongs to this file is WHETHER IT DELEGATES; what the delegate then does is proven in
+   * `core/state/session-teardown.service.spec.ts`.
+   */
+  describe('the session footprint on an unrecoverable refusal', () => {
+    let purge: jasmine.Spy<() => void>;
+
+    beforeEach(() => {
+      configureWith([authInterceptor]);
+      purge = spyOn(TestBed.inject(SessionTeardownService), 'purge').and.callThrough();
+    });
+
+    it('purges the domain stores when there is no renewal credential to try', async () => {
+      // An access token with no renewal credential beside it: the refusal is terminal on the
+      // first response, with no second request to wait for.
+      // ⚠ THE EMPTY STRING IS THIS CONTRACT'S "NONE HELD", not null - see `sessionFor`.
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, ''));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      expect(purge)
+        .withContext('a session that cannot be renewed takes its footprint with it')
+        .toHaveBeenCalledTimes(1);
+      expect(tokens.session()).toBeNull();
+    });
+
+    it('purges the domain stores when the renewal is itself refused', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+      refuse(httpMock.expectOne(REFRESH_URL));
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      expect(purge)
+        .withContext('a refused renewal ends the session, footprint included')
+        .toHaveBeenCalledTimes(1);
+    });
+
+    it('purges after clearing the custodian, so no read still believes its session is current', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, ''));
+
+      // ⚠ ORDER, NOT MERELY OCCURRENCE. Clearing advances the session generation that every
+      // late callback tests itself against. Purging FIRST would leave a read already in flight
+      // still believing its session was current, free to land afterwards and repopulate the
+      // very slices the purge had just emptied — which is worse than not purging, because the
+      // stores look correctly emptied and refill a moment later with nobody watching.
+      let generationWhenPurged: number | null = null;
+
+      purge.and.callFake(() => {
+        generationWhenPurged = tokens.generation();
+      });
+
+      const generationBefore = tokens.generation();
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      expect(purge).toHaveBeenCalledTimes(1);
+      expect(generationWhenPurged)
+        .withContext('the custodian was already cleared when the purge ran')
+        .toBeGreaterThan(generationBefore);
+    });
+
+    it('does not purge when a refusal is recovered, because the session continues', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+
+      // A renewal is TWO requests - the rotation and then an identity read presenting the
+      // fresh token - and both must be answered, which is what this shared helper does.
+      completeRenewal();
+
+      const retry = httpMock.expectOne(PROTECTED_URL);
+
+      expect(retry.request.headers.get(AUTHORIZATION_HEADER)).toBe(
+        `Bearer ${FAKE_ROTATED_ACCESS_TOKEN}`,
+      );
+      retry.flush({ ok: true });
+
+      await expectAsync(pending).toBeResolved();
+
+      // A recovered request is the SAME session continuing. Purging here would discard the
+      // listings the operator is looking at every time their token rotated — a functional
+      // regression dressed up as hardening.
+      expect(purge)
+        .withContext('a successful recovery leaves the work in progress alone')
+        .not.toHaveBeenCalled();
+    });
+
+    it('does not purge when the session changed underneath the request', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+      const first = httpMock.expectOne(PROTECTED_URL);
+
+      // Somebody else's session is now the current one. Whoever established it did so
+      // deliberately, and an unrelated stale 401 must not empty THEIR stores.
+      tokens.clear();
+      purge.calls.reset();
+      tokens.store(sessionFor('fake-access-token-other', 'fake-refresh-token-other'));
+
+      refuse(first);
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      expect(purge)
+        .withContext("a stale refusal must not discard the newer session's data")
+        .not.toHaveBeenCalled();
+      expect(tokens.accessToken()).toBe('fake-access-token-other');
+    });
+
+    it('does not purge for a status that is not an authentication failure', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      httpMock
+        .expectOne(PROTECTED_URL)
+        .flush(problemDocument(403, 'Forbidden'), { status: 403, statusText: 'Forbidden' });
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(403);
+
+      // A refusal to AUTHORISE is not a refusal to AUTHENTICATE. The session is valid and the
+      // operator is still signed in; they simply may not do that one thing.
+      expect(purge)
+        .withContext('being told "no" is not being signed out')
+        .not.toHaveBeenCalled();
+      expect(tokens.session()).not.toBeNull();
     });
   });
 

@@ -110,7 +110,17 @@
 // rather than assuming it.
 //
 
-import { HttpClient, HttpContext, HttpContextToken, HttpHeaders, HttpParams, HttpRequest, HttpResponse, provideHttpClient, withInterceptors } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpContext,
+  HttpContextToken,
+  HttpHeaders,
+  HttpParams,
+  HttpRequest,
+  HttpResponse,
+  provideHttpClient,
+  withInterceptors,
+} from '@angular/common/http';
 import type { HttpEvent, HttpHandlerFn, HttpInterceptorFn } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
@@ -162,6 +172,37 @@ const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9
 
 /** A collection endpoint, matching the `/api/v1` prefix the API exposes. */
 const PORTAL_LIST_URL = '/api/v1/portals';
+
+/**
+ * A page of portals, as `GET /api/v1/portals` really answers.
+ *
+ * ⚠ THE RESPONSE SHAPE MATTERS EVEN WHERE THE ASSERTION IS ABOUT A REQUEST HEADER. The five
+ * ordering probes below flushed a bare `null` for this endpoint, and the listing cannot answer
+ * that: it is the one endpoint whose body IS the page envelope, so it always answers
+ * `{ items, meta }`. A `null` is what a `204` carries, and this action declares 200 only.
+ *
+ * The correction is not cosmetic even though the probes read only headers. These cases are the
+ * ones that establish how this interceptor COMPOSES with the credential interceptor, and the
+ * credential interceptor's own recovery path turns on the response it observes; specifying the
+ * composition against a body neither endpoint can produce leaves the arrangement unproven in
+ * exactly the situation it exists for.
+ *
+ * The tenant is `-1`, which is the first portal an installation has rather than a marker for
+ * "no portal": `01.00.00.SqlDataProvider:L77` declares `[PortalID] [int] IDENTITY (-1, 1)`.
+ */
+const PORTAL_PAGE_BODY = Object.freeze({
+  items: [
+    {
+      portalId: -1,
+      portalName: 'Baseline Portal',
+      aliases: ['localhost'],
+      users: 3,
+      pages: 7,
+      hostSpace: 0,
+    },
+  ],
+  meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
+});
 
 /**
  * A second endpoint, used where two distinct requests must be told apart.
@@ -830,14 +871,14 @@ describe('correlationIdInterceptor', () => {
 
     it('has already stamped the header by the time the next interceptor runs', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
-      httpMock.expectOne(PORTAL_LIST_URL).flush(null);
+      httpMock.expectOne(PORTAL_LIST_URL).flush(PORTAL_PAGE_BODY);
 
       expect(identifierSeenByProbe).toEqual([jasmine.stringMatching(CANONICAL_UUID_PATTERN)]);
     });
 
     it('runs before the credential header is attached', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
-      httpMock.expectOne(PORTAL_LIST_URL).flush(null);
+      httpMock.expectOne(PORTAL_LIST_URL).flush(PORTAL_PAGE_BODY);
 
       // The other half of the same ordering claim. Asserting only that the probe saw
       // the identifier would be satisfied by either order if some later change also
@@ -849,7 +890,7 @@ describe('correlationIdInterceptor', () => {
     it('hands the later interceptor the identifier that reaches the backend', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
       const pending = httpMock.expectOne(PORTAL_LIST_URL);
-      pending.flush(null);
+      pending.flush(PORTAL_PAGE_BODY);
 
       expect(identifierSeenByProbe).toEqual([identifierOn(pending.request)]);
     });
@@ -857,7 +898,7 @@ describe('correlationIdInterceptor', () => {
     it('lets the later interceptor add its header without disturbing the identifier', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
       const pending = httpMock.expectOne(PORTAL_LIST_URL);
-      pending.flush(null);
+      pending.flush(PORTAL_PAGE_BODY);
 
       // Both headers arrive together. This is the shape a real authenticated call
       // has on the wire, and it proves the two interceptors compose rather than
@@ -871,7 +912,7 @@ describe('correlationIdInterceptor', () => {
     it('gives the first attempt and a downstream re-send the same identifier', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
       const pending = httpMock.expectOne(PORTAL_LIST_URL);
-      pending.flush(null);
+      pending.flush(PORTAL_PAGE_BODY);
 
       // The mechanism the preservation contract exists to serve, observed end to
       // end. `auth.interceptor.ts` recovers a 401 by re-sending the request object

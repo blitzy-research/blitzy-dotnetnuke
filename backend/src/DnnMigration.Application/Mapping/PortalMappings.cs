@@ -131,6 +131,11 @@ public static class PortalMappings
     /// <param name="registeredRoleName">Name of the role named by the registered-members role identifier, or <see langword="null"/> when it names none.</param>
     /// <param name="administratorEmail">The designated administrator's electronic-mail address, or <see langword="null"/> when no administrator is designated.</param>
     /// <param name="superTabId">Identifier of the host-level root page, or <see langword="null"/> when the installation has none.</param>
+    /// <param name="currentPortalAliasId">
+    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when
+    /// the request resolved no tenant. Forwarded to each projected alias; see
+    /// <see cref="ToDto(PortalAlias, int?)"/> for what it decides and why it has no default.
+    /// </param>
     /// <returns>The detail contract.</returns>
     /// <remarks>
     /// <para>
@@ -156,7 +161,8 @@ public static class PortalMappings
         string? administratorRoleName,
         string? registeredRoleName,
         string? administratorEmail,
-        int? superTabId)
+        int? superTabId,
+        int? currentPortalAliasId)
     {
         ArgumentNullException.ThrowIfNull(portal);
 
@@ -229,7 +235,7 @@ public static class PortalMappings
             // applied so the sequence is stable across calls; it is case-insensitive because a host
             // name is.
             Aliases = portal.PortalAliases.OrderBy(alias => alias.HttpAlias, StringComparer.OrdinalIgnoreCase)
-                                          .Select(ToDto)
+                                          .Select(alias => ToDto(alias, currentPortalAliasId))
                                           .ToList(),
         };
     }
@@ -298,18 +304,42 @@ public static class PortalMappings
     /// Projects one bound host name onto its transfer contract.
     /// </summary>
     /// <param name="alias">The alias to project.</param>
+    /// <param name="currentPortalAliasId">
+    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when
+    /// the request resolved no tenant. Supplied by the caller because a mapper has no request to read:
+    /// see the migration note below for why the parameter is required rather than defaulted.
+    /// </param>
     /// <returns>The alias contract.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the legacy alias entity declared three properties and no serialisation decoration of
-    /// any kind, so this is a three-for-three copy with a single spelling change: the legacy property
-    /// spelled its protocol prefix in full upper case, and both the entity and the contract spell it in
-    /// title case. The host name is carried verbatim - neither trimmed, lower-cased nor otherwise
-    /// normalised - because normalising a stored value on the way to a reader would report something
-    /// the row does not contain, and tenant resolution matches on the stored form. Normalisation on the
-    /// way in belongs to the write path, which owns it. The owning portal key is likewise copied as it
-    /// stands, including the minus one that names the host-level portal.
+    /// any kind, so the stored half of this projection is a three-for-three copy with a single spelling
+    /// change: the legacy property spelled its protocol prefix in full upper case, and both the entity
+    /// and the contract spell it in title case. The host name is carried verbatim - neither trimmed,
+    /// lower-cased nor otherwise normalised - because normalising a stored value on the way to a reader
+    /// would report something the row does not contain, and tenant resolution matches on the stored
+    /// form. Normalisation on the way in belongs to the write path, which owns it. The owning portal key
+    /// is likewise copied as it stands, including the minus one that names the host-level portal.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the FOURTH member is computed, and it restores a legacy affordance rather than adding
+    /// one. <c>IsNotCurrent</c> at <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60 compared
+    /// each grid row's key against the alias the request itself arrived through and hid the edit
+    /// affordance on a match; <c>portalalias.ascx</c> L8 bound that answer to the hyperlink's
+    /// <c>Visible</c> property. The comparison is by KEY and not by host name because stored casing need
+    /// not match what a caller submitted - the legacy write path lower-cased on insert and update
+    /// (<c>PortalAliasController.vb</c> L31 and L97) while its reader assigned the property unchanged
+    /// (L75) - so a string comparison would need a casing rule of its own and become a second answer to
+    /// a question the resolver has already settled exactly.
+    /// </para>
+    /// <para>
+    /// The parameter has no default. A default of <see langword="null"/> would make "no tenant resolved"
+    /// the value a caller gets by FORGETTING to supply the fact, which is the one mistake that must not
+    /// be silent: it reports every row as safe to edit, including the row that is not. Requiring it
+    /// makes every call site state which request it is projecting for.
+    /// </para>
     /// </remarks>
-    public static PortalAliasDto ToDto(PortalAlias alias)
+    public static PortalAliasDto ToDto(PortalAlias alias, int? currentPortalAliasId)
     {
         ArgumentNullException.ThrowIfNull(alias);
 
@@ -318,6 +348,14 @@ public static class PortalMappings
             PortalAliasId = alias.PortalAliasId,
             PortalId = alias.PortalId,
             HttpAlias = alias.HttpAlias,
+
+            // Equality against the resolved key, never a magnitude test and never a truthiness test.
+            // PortalAlias.PortalAliasID is IDENTITY (1, 1) so no legal key collides with the legacy
+            // absent-integer sentinel, but the discipline is applied anyway because the sibling keys on
+            // this contract - portal, role, page and module - are seeded at zero or minus one and are
+            // read by the same consumers. An unresolved request yields false on every row, which is the
+            // decided answer rather than a fallback: with no resolved alias, no row is the current one.
+            IsCurrent = currentPortalAliasId is int resolved && resolved == alias.PortalAliasId,
         };
     }
 

@@ -167,19 +167,22 @@
     </app-empty-state>
   } @else {
     <!--
-      MIGRATION: THE LEGACY VISIBILITY RULE ON THE EDIT AFFORDANCE IS REPORTED AS A GAP,
-      AND NOTHING IS HIDDEN. `Website/admin/Portal/PortalAlias.ascx.vb:L51-L60` hid the edit
-      link for the alias the site was BEING BROWSED THROUGH, comparing each row against the
-      current request's own alias as the page base class had resolved it server-side. That
-      fact is not published by any contract this screen can reach - the current-user document
-      names the account, the portal, its roles and its permissions and no alias; the alias
-      document carries three members and none of them says "in use"; the portal detail
-      document carries the collection but no in-use identifier; and no endpoint offers one.
-      It is deliberately NOT inferred from the browser's own address either: resolution is
-      the server's, performed as an exact match by the alias-resolution middleware, and a
-      client-side guess would hide the wrong row on one deployment and the right row on
-      another. Every row therefore keeps its edit affordance, and an operator who edits the
-      alias they arrived through is answered by the server, which is where the authority is.
+      MIGRATION 17: THE LEGACY VISIBILITY RULE ON THE EDIT AFFORDANCE IS REPRODUCED.
+      `Website/admin/Portal/PortalAlias.ascx.vb:L51-L60` hid the edit link for the alias the
+      site was BEING BROWSED THROUGH, comparing each row against the current request's own
+      alias as the page base class had resolved it server-side, and
+      `Website/admin/Portal/portalalias.ascx:L8` bound that answer to the hyperlink's
+      visibility. The alias document now carries the outcome per row, computed for each
+      request from the resolved portal context, so the comparison stays the SERVER'S and this
+      template reads a published fact. It is deliberately NOT inferred from the browser's own
+      address: the application is served through a proxy, so the address in the location bar
+      need not be the host name the API matched, and a client-side guess would hide the right
+      row on one deployment and the wrong one on another.
+
+      PRESSING THE ROW IS GUARDED TOO, and that is why hiding the button is not the whole of
+      the rule. The row press below is a net addition of this screen - the legacy grid had
+      none - and it reaches every row, so the component refuses the withheld row there as
+      well and says why. The server refuses both writes regardless.
     -->
     <app-data-table
       [columns]="columns()"
@@ -300,17 +303,24 @@
         <button type="button" (click)="cancelEdit()">{{ cancelLabel }}</button>
 
         <!--
-          MIGRATION: DELETE IS WITHHELD UNDER TWO CONDITIONS, one measured and one a
-          deliberate divergence. The measured rule is the count: `SetDeleteVisibility` hid
-          the command when the portal had no more than one host name -
-          `Website/admin/Portal/EditPortalAlias.ascx.vb:L107` reads a not-greater-than-one
-          test, so nought and one both hid it - and it is the only thing standing between an
-          operator and a portal with no way to reach it, because the delete endpoint
-          declares no conflicting response and answers such a request normally. The
-          divergence is that the command is offered only for a row that EXISTS: legacy
-          called the same helper on its add branches too, at L81 and L86, and so showed a
-          delete button on an unsaved alias whenever the portal already had two or more - a
-          button whose target was a page-state entry that branch had never set.
+          MIGRATION: DELETE IS WITHHELD UNDER THREE CONDITIONS - one measured, one a
+          deliberate divergence and one the server enforces. The measured rule is the count:
+          `SetDeleteVisibility` hid the command when the portal had no more than one host
+          name - `Website/admin/Portal/EditPortalAlias.ascx.vb:L107` reads a
+          not-greater-than-one test, so nought and one both hid it - and it remains the only
+          thing standing between an operator and a portal with no way to reach it, because
+          removing a portal's LAST address is permitted deliberately and the endpoint answers
+          such a request normally. The divergence is that the command is offered only for a
+          row that EXISTS: legacy called the same helper on its add branches too, at L81 and
+          L86, and so showed a delete button on an unsaved alias whenever the portal already
+          had two or more - a button whose target was a page-state entry that branch had
+          never set.
+
+          MIGRATION 17: the third condition is the row THIS REQUEST ARRIVED THROUGH, which
+          offers no delete command and is refused by the server with a `409` if the call is
+          made anyway. Legacy left removal to the count rule alone, so an operator on a
+          portal with several addresses could unbind the very one they were standing on -
+          strictly worse than a rename, because no address is left to correct it from.
         -->
         @if (deleteAffordanceVisible()) {
           <button type="button" (click)="requestDelete()">{{ deleteLabel }}</button>
@@ -359,6 +369,15 @@
     its row, so the two paths cannot both fire from one press.
   -->
   <ng-template #aliasCommands let-row="row">
-    <button type="button" (click)="editAlias(row)">{{ editLabel }}</button>
+    <!--
+      MIGRATION 17: an EMPTY CELL for the row this request arrived through, which is exactly
+      what the legacy grid rendered - `portalalias.ascx:L8` bound the hyperlink's `Visible`
+      property, and an invisible server control emits nothing at all. No substitute text is
+      invented in its place; the explanation reaches the operator only if they attempt the
+      command, through the row press the component answers.
+    -->
+    @if (rowEditable(row)) {
+      <button type="button" (click)="editAlias(row)">{{ editLabel }}</button>
+    }
   </ng-template>
 </div>

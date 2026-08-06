@@ -4,6 +4,8 @@ import { TestBed } from '@angular/core/testing';
 
 import { ModuleVisibility } from '../models/module.model';
 import { ModuleService } from './module.service';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
+import { isContractViolation } from '../utils/decode.util';
 
 import type { HttpHeaders } from '@angular/common/http';
 import type { Observable } from 'rxjs';
@@ -318,19 +320,127 @@ interface WireProblem {
   readonly title: string;
   readonly status: number;
   readonly detail: string;
-  readonly errors: Readonly<Record<string, readonly string[]>>;
+  readonly traceId: string;
+  readonly correlationId: string;
+  readonly errors?: Readonly<Record<string, readonly string[]>>;
 }
 
-/** Builds a refusal body carrying the server's own code, for propagation assertions. */
+/**
+ * The W3C trace identifier and the pipeline-validated correlation identifier.
+ *
+ * Both are attached to EVERY problem document by
+ * `backend/src/DnnMigration.Api/Filters/ValidationProblemDetailsFactory.cs`, so a fixture
+ * without them describes a response this API does not send. They are distinct on purpose:
+ * the correlation identifier is the one an operator can find in the server's log and on the
+ * audit trail, and it is the one a client should quote.
+ */
+const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+
+/**
+ * The response title for each status code, exactly as the server's vocabulary spells it.
+ *
+ * Read from the `StatusVocabulary` table in
+ * `backend/src/DnnMigration.Api/Filters/ValidationProblemDetailsFactory.cs`. The title
+ * describes the CLASS of failure and is derived purely from the status code, which is why a
+ * fixture that put the failure CODE in the title described a body no endpoint produces.
+ */
+const PROBLEM_TITLE: Readonly<Record<number, string>> = {
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  500: 'Internal Server Error',
+};
+
+/**
+ * Builds a complete, server-emittable refusal body for one failure code.
+ *
+ * ⚠ THE PROBLEM TYPE IS `urn:dnnmigration:error:<code>` AND NOTHING ELSE, produced by the
+ * single method `ApiResults.BuildProblemType`. ⚠ AND THE STATUS IS NOT A FREE PARAMETER:
+ * `ApiResults.MapStatusCode` derives it from the code's final dotted segment, so the caller
+ * must pass the status that mapping actually yields. The mapping relevant to this file:
+ *
+ *   * `not_found` ⇒ 404 — `module.not_found`, `module.definition_not_found`,
+ *     `module.tab_not_found`, `module.placement_not_found`, `module.portal_not_found`
+ *   * `forbidden` / `protected` ⇒ 403 — `module.edit_forbidden`,
+ *     `module.administrator_forbidden`, `module.settings_protected`
+ *   * `export_failed` / `upgrade_failed` ⇒ 500
+ *   * everything else ⇒ 400 — `module.content_invalid`, `module.content_type_mismatch`,
+ *     `module.not_portable`, `module.setting_invalid`, `module.request_invalid`
+ *
+ * ⚠ NO MODULE ENDPOINT DECLARES `409` OR `422`. `ModulesController` declares exactly
+ * 200/201/204, 400, 401, 403, 404 and — on the two content-transfer actions — 500. An
+ * earlier revision of this spec asserted the content refusals at `422`, which is a status
+ * this controller cannot reach: the codes carry no conflict, not-found, forbidden or
+ * internal-failure token, so they classify to `400` by the mapping's default arm.
+ *
+ * `errors` is deliberately absent rather than an empty object. Only the model binder
+ * attaches a per-field map, and it never attaches an empty one; a fixture carrying `{}`
+ * invites a consumer to treat "no field errors" and "field errors present but empty" as the
+ * same thing.
+ *
+ * @param code The failure code, spelled exactly as the server publishes it.
+ * @param status The status the server's mapping yields for that code.
+ * @param detail The authored sentence the producing service placed on the outcome.
+ * @returns The complete document, ready to flush.
+ */
 function problem(code: string, status: number, detail: string): WireProblem {
   return {
-    type: `urn:dnn:problem:${code}`,
-    title: code,
+    type: `urn:dnnmigration:error:${code}`,
+    // Non-null asserted on a lookup whose key set covers every status this file uses; an
+    // unmapped status is a fixture defect and surfaces immediately.
+    title: PROBLEM_TITLE[status]!,
     status,
     detail,
-    errors: {},
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
   };
 }
+
+/**
+ * Asserts that a single-resource read answered `404` rather than a payload-free success.
+ *
+ * ⚠ THE ONE SHAPE A SINGLE-RESOURCE READ CANNOT PRODUCE IS `200` WITH A NULL PAYLOAD.
+ * `ApiResults.Complete<T>` converts a successful outcome carrying no value into `404` with
+ * the code `resource.not_found`, so absence is reported by STATUS and never by a null inside
+ * a success envelope. This helper is what the affected cases assert instead.
+ *
+ * @param recorded Everything the call produced.
+ */
+function expectResourceNotFound<T>(recorded: Recorded<T>): void {
+  expect(recorded.values.length).withContext('absence is not an emitted value').toBe(0);
+  expect(recorded.completions.length).toBe(0);
+  expect(recorded.failures.length).toBe(1);
+
+  const failure = recorded.failures[0];
+  expect(failure).toBeInstanceOf(HttpErrorResponse);
+  expect(failure.status).toBe(404);
+
+  const body = failure.error as WireProblem;
+  expect(body.type).toBe('urn:dnnmigration:error:resource.not_found');
+  expect(body.title).toBe('Not Found');
+  expect(body.detail)
+    .withContext(
+      'the detail names neither the identifier nor the resource kind, so an unauthorised ' +
+        'caller cannot tell "not yours" from "does not exist"',
+    )
+    .toBe('The requested resource does not exist.');
+}
+
+/**
+ * The `404` a single-resource read answers with when the thing addressed does not exist.
+ *
+ * Its code, title and detail are all fixed constants in `ApiResults`
+ * (`ResourceNotFoundCode`, and `ResourceNotFoundDetail`), deliberately identical whichever
+ * endpoint produced it so a client branches on one type.
+ */
+const RESOURCE_NOT_FOUND = problem(
+  'resource.not_found',
+  404,
+  'The requested resource does not exist.',
+);
 
 /**
  * Everything one call produced: its values, its refusal and whether it completed.
@@ -388,9 +498,19 @@ function expectRefusal<T>(recorded: Recorded<T>, status: number, code: string): 
 
   // The body is compared, not read for meaning: proving it arrived WHOLE is the whole
   // claim. Shaping it into something a user reads belongs to the shared error handler.
+  //
+  // The CODE is asserted through the problem TYPE, which is where the server publishes it —
+  // `urn:dnnmigration:error:<code>`. An earlier revision asserted it through `title`, which
+  // is derived from the status code alone and is therefore identical across every refusal
+  // that shares a status; such an assertion could not tell one code from another.
   const body: WireProblem = failure.error as WireProblem;
-  expect(body.title).toBe(code);
-  expect(body.status).toBe(status);
+  expect(body.type).toBe(`urn:dnnmigration:error:${code}`);
+  expect(body.title)
+    .withContext('the title names the class of failure, which the status alone decides')
+    .toBe(PROBLEM_TITLE[status]!);
+  expect(body.status)
+    .withContext('the body agrees with the transport, as a real response does')
+    .toBe(status);
 }
 
 /**
@@ -613,11 +733,18 @@ describe('ModuleService', () => {
       const recorded = record(service.importModule(importRequest(12)));
 
       httpMock.expectOne('/api/v1/modules/import').flush(
-        problem('NotValidXml', 422, 'The supplied document could not be read.'),
-        { status: 422, statusText: 'Unprocessable Content' },
+        problem(
+          'module.content_invalid',
+          400,
+          'The submitted content is not a well-formed XML document.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
       );
 
-      expectRefusal(recorded, 422, 'NotValidXml');
+      // 400, because the code carries no conflict, not-found, forbidden or
+      // internal-failure token and therefore classifies by the mapping's default arm. The
+      // import action declares 204/400/401/403/404/500 and no 422 at all.
+      expectRefusal(recorded, 400, 'module.content_invalid');
     });
 
     it('propagates a wrong-type refusal untranslated', () => {
@@ -627,11 +754,15 @@ describe('ModuleService', () => {
       const recorded = record(service.importModule(importRequest(12)));
 
       httpMock.expectOne('/api/v1/modules/import').flush(
-        problem('NotCorrectType', 422, 'The document does not belong to this module.'),
-        { status: 422, statusText: 'Unprocessable Content' },
+        problem(
+          'module.content_type_mismatch',
+          400,
+          'The submitted content does not belong to this module definition.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
       );
 
-      expectRefusal(recorded, 422, 'NotCorrectType');
+      expectRefusal(recorded, 400, 'module.content_type_mismatch');
     });
 
     it('propagates an unsupported-module refusal untranslated', () => {
@@ -640,11 +771,19 @@ describe('ModuleService', () => {
       const recorded = record(service.importModule(importRequest(12)));
 
       httpMock.expectOne('/api/v1/modules/import').flush(
-        problem('ImportNotSupported', 400, 'This module does not support import.'),
+        problem(
+          'module.not_portable',
+          400,
+          'This module does not support the transfer of content.',
+        ),
         { status: 400, statusText: 'Bad Request' },
       );
 
-      expectRefusal(recorded, 400, 'ImportNotSupported');
+      // ONE code covers both halves of the legacy gate. `Export.ascx.vb:L150` and
+      // `Import.ascx.vb:L208`/`:L214` each tested `BusinessControllerClass <> "" And
+      // IsPortable`, and the server reports the single conclusion rather than which half
+      // failed - a distinction the caller could do nothing with.
+      expectRefusal(recorded, 400, 'module.not_portable');
     });
   });
 
@@ -821,31 +960,69 @@ describe('ModuleService', () => {
       // gate is the origin of this refusal, and it is a SERVER decision: nothing here
       // knows whether a module is portable.
       const rawBody = JSON.stringify(
-        problem('ExportNotSupported', 422, 'This module does not support export.'),
+        problem(
+          'module.not_portable',
+          400,
+          'This module does not support the transfer of content.',
+        ),
       );
       const recorded = record(service.exportModule(12, EXPORT_REQUEST));
 
       httpMock
         .expectOne('/api/v1/modules/12/export')
-        .flush(rawBody, { status: 422, statusText: 'Unprocessable Content' });
+        .flush(rawBody, { status: 400, statusText: 'Bad Request' });
 
-      expectTextRefusal(recorded, 422, rawBody);
+      expectTextRefusal(recorded, 400, rawBody);
     });
 
-    it('propagates an empty-document refusal untranslated', () => {
-      // The other side of the `Export.ascx.vb` line 159 distinction: where the server
-      // chooses to refuse rather than to answer with an empty payload, the refusal is
-      // carried out as it arrived and is NOT converted into an empty success.
+    it('treats an EMPTY document as a success rather than as a refusal', () => {
+      // ⚠ AN EXPORT THAT PRODUCES NOTHING IS A 200 WITH AN EMPTY BODY, NOT AN ERROR. The
+      // export action declares exactly 200/400/401/403/404/500, and a module whose content
+      // is legitimately empty has nothing to refuse: the operation completed and the answer
+      // is an empty document. An earlier revision of this spec asserted a 422
+      // "empty-document refusal", inventing both a status this controller cannot emit and a
+      // failure the server does not raise — a client written against it would have shown an
+      // error for a perfectly successful export of an empty module.
+      //
+      // The empty string must therefore reach the caller AS A VALUE. This is the case a
+      // truthiness test silently breaks: `''` is falsy, so any code that treated the body as
+      // "missing when empty" would convert a success into a failure. The legacy page drew the
+      // same distinction at `Export.ascx.vb:L159`.
+      const recorded = record(service.exportModule(12, EXPORT_REQUEST));
+
+      httpMock.expectOne('/api/v1/modules/12/export').flush('', { status: 200, statusText: 'OK' });
+
+      expect(recorded.failures.length).withContext('an empty export is not a failure').toBe(0);
+      expect(recorded.values.length).toBe(1);
+      expect(recorded.values[0])
+        .withContext('the empty document arrives as the empty string, not as null')
+        .toBe('');
+      expect(recorded.completions.length).toBe(1);
+    });
+
+    it('propagates an export-failed refusal untranslated, as the 500 it is', () => {
+      // `module.export_failed` carries the `export_failed` token, which the server's mapping
+      // classifies as an INTERNAL failure: the operation had already passed validation and
+      // authorisation when it failed, so nothing the caller could change would make the
+      // identical request succeed. The export action declares 500 for exactly this reason.
+      // The client's whole responsibility is to let it through unaltered — no retry, no
+      // substitution of an empty document.
       const rawBody = JSON.stringify(
-        problem('NoContent', 422, 'The module produced no exportable payload.'),
+        problem(
+          'module.export_failed',
+          500,
+          'The module could not produce its content. Quote the X-Correlation-Id response ' +
+            'header when reporting this problem.',
+        ),
       );
       const recorded = record(service.exportModule(12, EXPORT_REQUEST));
 
       httpMock
         .expectOne('/api/v1/modules/12/export')
-        .flush(rawBody, { status: 422, statusText: 'Unprocessable Content' });
+        .flush(rawBody, { status: 500, statusText: 'Internal Server Error' });
 
-      expectTextRefusal(recorded, 422, rawBody);
+      expectTextRefusal(recorded, 500, rawBody);
+      httpMock.expectNone('/api/v1/modules/12/export');
     });
   });
 
@@ -1134,7 +1311,29 @@ describe('ModuleService', () => {
       expect(recorded.values[0]).toEqual(DETAIL);
     });
 
-    it('emits null when the envelope carried no payload', () => {
+    it('reports absence as a 404 rather than as a payload-free success', () => {
+      // ⚠ THE ENDPOINT CANNOT ANSWER 200 WITH A NULL PAYLOAD. `ApiResults.Complete<T>`
+      // converts a successful outcome carrying no value into a 404 whose code is
+      // `resource.not_found`, so absence arrives as a STATUS. An earlier revision of this
+      // spec asserted the 200/null shape as this endpoint's contract, which meant the whole
+      // chain above it - store, then screen - was specified against a response the server
+      // never sends, while the one response it DOES send for a missing module went untested.
+      const recorded = record(service.getModule(0));
+
+      httpMock
+        .expectOne('/api/v1/modules/0')
+        .flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expectResourceNotFound(recorded);
+    });
+
+    it('still tolerates a null payload from a non-conforming intermediary', () => {
+      // DEFENCE IN DEPTH, AND LABELLED AS SUCH. The method's own return type admits null
+      // because a proxy or gateway between the browser and the API can return a document
+      // this application never produced, and a client that dereferenced it blindly would
+      // fail with a type error rather than a diagnosable one. This is NOT the endpoint's
+      // contract - the case above is - and no store or screen specification may treat it as
+      // the normal path.
       const recorded = record(service.getModule(0));
 
       httpMock.expectOne('/api/v1/modules/0').flush(envelope(null));
@@ -1204,12 +1403,12 @@ describe('ModuleService', () => {
 
       httpMock
         .expectOne('/api/v1/modules/0')
-        .flush(problem('ModuleNotFound', 404, 'No such module is visible to the caller.'), {
+        .flush(problem('module.not_found', 404, 'No such module is visible to the caller.'), {
           status: 404,
           statusText: 'Not Found',
         });
 
-      expectRefusal(recorded, 404, 'ModuleNotFound');
+      expectRefusal(recorded, 404, 'module.not_found');
     });
   });
 
@@ -1285,11 +1484,17 @@ describe('ModuleService', () => {
     it('propagates a validation refusal untranslated, field map included', () => {
       const recorded = record(service.createModule(CREATE_REQUEST));
 
+      // A VALIDATION refusal, which is the ONE shape that carries a per-field map. Its
+      // title and type are the framework's own defaults for a model-binding failure and are
+      // deliberately different from the coded refusals above: the binder rejected named
+      // members, so the client can attach each message to its control.
       const body: WireProblem = {
-        type: 'urn:dnn:problem:validation',
+        type: 'urn:dnnmigration:error:request.invalid',
         title: 'One or more validation errors occurred.',
         status: 400,
-        detail: 'The request was not accepted.',
+        detail: 'The request could not be processed as submitted.',
+        traceId: TRACE_ID,
+        correlationId: CORRELATION_ID,
         errors: { moduleTitle: ['The module title is required.'] },
       };
 
@@ -1306,7 +1511,7 @@ describe('ModuleService', () => {
       // of an index signature does not compile in this workspace.
       const received = recorded.failures[0].error as WireProblem;
       expect(received).toEqual(body);
-      const fieldMessages: readonly string[] | undefined = received.errors['moduleTitle'];
+      const fieldMessages: readonly string[] | undefined = received.errors?.['moduleTitle'];
       expect(fieldMessages).toEqual(['The module title is required.']);
     });
   });
@@ -1390,7 +1595,22 @@ describe('ModuleService', () => {
       expect(recorded.values.length).toBe(1);
     });
 
-    it('emits null when the response envelope carried no payload', () => {
+    it('reports a vanished module as a 404 rather than as a payload-free success', () => {
+      // The update action answers through `ApiResults.Complete<T>` exactly as the read does,
+      // so a successful outcome with no representation becomes a 404 here too. A 200 with a
+      // null payload is not a response this action can produce.
+      const recorded = record(service.updateModule(12, UPDATE_REQUEST));
+
+      httpMock
+        .expectOne('/api/v1/modules/12')
+        .flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expectResourceNotFound(recorded);
+    });
+
+    it('still tolerates a null payload from a non-conforming intermediary', () => {
+      // Defence in depth, exactly as on the read path and for the same reason. Labelled so
+      // it is not mistaken for the endpoint's contract.
       const recorded = record(service.updateModule(12, UPDATE_REQUEST));
 
       httpMock
@@ -1415,10 +1635,10 @@ describe('ModuleService', () => {
       expect(call.request.body).toEqual(UPDATE_REQUEST);
       expect((call.request.body as UpdateModuleRequest).allTabs).toBeTrue();
 
-      const body = problem('AllTabsNotPermitted', 403, 'Policy denies this change.');
+      const body = problem('module.edit_forbidden', 403, 'Policy denies this change.');
       call.flush(body, { status: 403, statusText: 'Forbidden' });
 
-      expectRefusal(recorded, 403, 'AllTabsNotPermitted');
+      expectRefusal(recorded, 403, 'module.edit_forbidden');
       expect(recorded.failures[0].error).toEqual(body);
     });
   });
@@ -1502,12 +1722,12 @@ describe('ModuleService', () => {
 
       httpMock
         .expectOne('/api/v1/modules/12')
-        .flush(problem('DeleteForbidden', 403, 'Policy denies this removal.'), {
+        .flush(problem('module.edit_forbidden', 403, 'Policy denies this removal.'), {
           status: 403,
           statusText: 'Forbidden',
         });
 
-      expectRefusal(recorded, 403, 'DeleteForbidden');
+      expectRefusal(recorded, 403, 'module.edit_forbidden');
     });
   });
 
@@ -1567,7 +1787,23 @@ describe('ModuleService', () => {
       expect(recorded.values[0]?.tabModuleSettings).toEqual({});
     });
 
-    it('emits null when the envelope carried no payload', () => {
+    it('reports absence as a 404 rather than as a payload-free success', () => {
+      // The settings read is a single-resource read like any other, so a module the caller
+      // cannot see produces a 404 rather than an empty settings bag. The distinction matters
+      // to the screen: an empty bag is a module with no settings, and a 404 is no module.
+      const recorded = record(service.getModuleSettings(0));
+
+      httpMock
+        .expectOne('/api/v1/modules/0/settings')
+        .flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expectResourceNotFound(recorded);
+    });
+
+    it('still tolerates a null payload from a non-conforming intermediary', () => {
+      // Defence in depth. Note the contrast with the case above it: an EMPTY settings bag is
+      // a legitimate 200 and is asserted separately, whereas a null payload is not something
+      // this API emits at all.
       const recorded = record(service.getModuleSettings(0));
 
       httpMock.expectOne('/api/v1/modules/0/settings').flush(envelope(null));
@@ -1776,7 +2012,20 @@ describe('ModuleService', () => {
       expect(recorded.values.length).toBe(1);
     });
 
-    it('emits null when the envelope carried no definition', () => {
+    it('reports absence as a 404 rather than as a payload-free success', () => {
+      // The definition catalogue answers through the same envelope helper, so an unknown
+      // definition is a 404. The 200/null shape asserted by an earlier revision cannot occur.
+      const recorded = record(service.getModuleDefinition(4));
+
+      httpMock
+        .expectOne('/api/v1/module-definitions/4')
+        .flush(RESOURCE_NOT_FOUND, { status: 404, statusText: 'Not Found' });
+
+      expectResourceNotFound(recorded);
+    });
+
+    it('still tolerates a null definition from a non-conforming intermediary', () => {
+      // Defence in depth, labelled so it is not mistaken for the endpoint's contract.
       const recorded = record(service.getModuleDefinition(4));
 
       httpMock
@@ -1792,12 +2041,12 @@ describe('ModuleService', () => {
 
       httpMock
         .expectOne('/api/v1/module-definitions/4')
-        .flush(problem('DefinitionNotFound', 404, 'No such definition is visible.'), {
+        .flush(problem('module.definition_not_found', 404, 'No such definition is visible.'), {
           status: 404,
           statusText: 'Not Found',
         });
 
-      expectRefusal(recorded, 404, 'DefinitionNotFound');
+      expectRefusal(recorded, 404, 'module.definition_not_found');
     });
   });
 
@@ -2072,6 +2321,267 @@ describe('ModuleService', () => {
         statusText: 'Created',
       });
       expect(recorded.values.length).toBe(1);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
+  //
+  // `http.get<ModuleDetail>(...)` compiles to `http.get(...)`: the interface is erased and
+  // nothing inspects the body. Each case below answers with a body the server would never
+  // send and requires the OBSERVABLE TO FAIL at the boundary, naming the member — rather
+  // than letting a blank field, a `NaN`, a wrongly expanded module or a silently empty
+  // grid surface layers away from the response that caused it.
+  //
+  // The refusal names the member path and the expected TYPE, never the value. That matters
+  // most here: the settings maps and the exported document are module CONTENT.
+  // -------------------------------------------------------------------------
+  describe('refuses a response that does not match its contract', () => {
+    /**
+     * Asserts that answering the one pending request with `body` fails at `path`.
+     *
+     * @param source The call under test.
+     * @param url The url the call addresses.
+     * @param body The malformed body to answer with.
+     * @param path The member path the violation must name.
+     */
+    function expectViolationAt(
+      source: Observable<unknown>,
+      url: string,
+      body: object,
+      path: string,
+    ): void {
+      const failures: unknown[] = [];
+      const values: unknown[] = [];
+
+      source.subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      httpMock.expectOne(url).flush(body);
+
+      expect(values).toEqual([]);
+      expect(failures.length).toBe(1);
+
+      const failure: unknown = failures[0];
+
+      expect(isContractViolation(failure)).toBeTrue();
+
+      if (isContractViolation(failure)) {
+        expect(failure.path).toBe(path);
+        expect(failure.received)
+          .withContext('a type name, never the value')
+          .not.toContain('Announcements');
+      }
+    }
+
+    it('refuses a page with no metadata rather than reporting the tenant has no modules', () => {
+      expectViolationAt(
+        service.listModules({}),
+        '/api/v1/modules',
+        { items: [LIST_ROW] },
+        'response.meta',
+      );
+    });
+
+    it('refuses a listed row whose order arrived as text', () => {
+      expectViolationAt(
+        service.listModules({}),
+        '/api/v1/modules',
+        {
+          items: [{ ...LIST_ROW, moduleOrder: '1' }],
+          meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
+        },
+        'response.items[0].moduleOrder',
+      );
+    });
+
+    it('refuses a visibility code outside the published table', () => {
+      // ⚠ ZERO IS `Maximized`, WHICH IS WHY THIS IS REFUSED RATHER THAN COERCED. Coercing an
+      // unrecognised code would silently present a module as fully expanded — the most
+      // visible of the three states — on the strength of a code this client did not know.
+      expectViolationAt(
+        service.getModule(0),
+        '/api/v1/modules/0',
+        { data: { ...DETAIL, visibility: 7 }, meta: null },
+        'response.data.visibility',
+      );
+    });
+
+    it('refuses a cache lifetime that arrived as null', () => {
+      // `cacheTime` is required and non-nullable. A null reaching the settings form would
+      // render blank and then be written back as zero — turning caching off for a module
+      // nobody asked to change.
+      expectViolationAt(
+        service.getModule(0),
+        '/api/v1/modules/0',
+        { data: { ...DETAIL, cacheTime: null }, meta: null },
+        'response.data.cacheTime',
+      );
+    });
+
+    it('refuses a settings map whose value arrived as a number', () => {
+      // The server publishes both maps as string-to-string. Stringifying a number here
+      // would write back a value the operator never typed, and the write answers 204 either
+      // way, so nothing downstream would ever reveal it.
+      expectViolationAt(
+        service.getModuleSettings(0),
+        '/api/v1/modules/0/settings',
+        {
+          data: { ...SETTINGS_BAG, moduleSettings: { cacheTime: 3600 } },
+          meta: null,
+        },
+        'response.data.moduleSettings.cacheTime',
+      );
+    });
+
+    it('keeps a settings entry whose value is the empty string', () => {
+      // ⚠ THE CLEARED-SETTING CASE. An empty value IS the legacy spelling of an absent
+      // string — `Null.vb:L71-L75` returns `""` literally — so an entry the operator
+      // cleared must survive the boundary intact rather than being filtered out as falsy.
+      const values: (ModuleSettingsBag | null)[] = [];
+
+      service.getModuleSettings(0).subscribe({
+        next: (bag: ModuleSettingsBag | null) => values.push(bag),
+      });
+
+      httpMock.expectOne('/api/v1/modules/0/settings').flush({
+        data: {
+          moduleId: 0,
+          tabModuleId: 1,
+          moduleSettings: { announcementLength: '', cacheTime: '0' },
+          tabModuleSettings: {},
+        },
+        meta: null,
+      });
+
+      expect(values.length).toBe(1);
+      expect(values[0]?.moduleSettings).toEqual({ announcementLength: '', cacheTime: '0' });
+    });
+
+    it('admits a null settings payload, because the contract publishes it as nullable', () => {
+      const values: (ModuleSettingsBag | null)[] = [];
+
+      service.getModuleSettings(0).subscribe({
+        next: (bag: ModuleSettingsBag | null) => values.push(bag),
+      });
+
+      httpMock.expectOne('/api/v1/modules/0/settings').flush({ data: null, meta: null });
+
+      expect(values).toEqual([null]);
+    });
+
+    it('refuses a definition whose friendly name is absent', () => {
+      // Non-nullable on the catalogue contract, where the listing publishes it as nullable:
+      // a definition in the catalogue always has both names, whereas a listed placement may
+      // join to a definition that no longer resolves.
+      const malformed: Record<string, unknown> = { ...DEFINITION };
+
+      delete malformed['friendlyName'];
+
+      expectViolationAt(
+        service.getModuleDefinition(14),
+        '/api/v1/module-definitions/14',
+        { data: malformed, meta: null },
+        'response.data.friendlyName',
+      );
+    });
+
+    it('refuses a definition catalogue that is not an array', () => {
+      expectViolationAt(
+        service.listModuleDefinitions(),
+        '/api/v1/module-definitions',
+        { data: DEFINITION, meta: null },
+        'response.data',
+      );
+    });
+
+    it('accepts an empty exported document, and refuses one that is not text', () => {
+      // An empty export is legitimate — a module with no content exports nothing — so the
+      // decoder asserts the type and imposes no minimum length.
+      const documents: string[] = [];
+
+      service
+        .exportModule(0, { fileName: 'Announcements.xml', folder: null })
+        .subscribe({ next: (text: string) => documents.push(text) });
+
+      httpMock.expectOne('/api/v1/modules/0/export').flush('', {
+        status: 200,
+        statusText: 'OK',
+      });
+
+      expect(documents).toEqual(['']);
+
+      const failures: unknown[] = [];
+
+      service
+        .exportModule(0, { fileName: 'Announcements.xml', folder: null })
+        .subscribe({ error: (failure: unknown) => failures.push(failure) });
+
+      // A 204 answers with no body at all, which the client surfaces as null. Left
+      // unchecked it would flow on as the document an export screen writes to a file.
+      httpMock
+        .expectOne('/api/v1/modules/0/export')
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(failures.length).toBe(1);
+      expect(isContractViolation(failures[0])).toBeTrue();
+    });
+
+    it('ignores a member the server added that this client does not declare', () => {
+      const values: (ModuleDetail | null)[] = [];
+
+      service.getModule(0).subscribe({
+        next: (module: ModuleDetail | null) => values.push(module),
+      });
+
+      httpMock
+        .expectOne('/api/v1/modules/0')
+        .flush({ data: { ...DETAIL, someMemberAddedLater: 'ignored' }, meta: null });
+
+      expect(values).toEqual([DETAIL]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHO ANNOUNCES A FAILURE
+  //
+  // Every request is marked as presented by its caller, which is what stops one failure
+  // being shown twice — once as the interceptor's transient notification and once as the
+  // in-page banner `module.store` records it for. The interceptor still re-throws.
+  // -------------------------------------------------------------------------
+  describe('marks every request as presented by its caller', () => {
+    it('marks every one of the twelve operations', () => {
+      const swallow = { error: () => undefined };
+
+      service.listModules({}).subscribe(swallow);
+      service.getModule(0).subscribe(swallow);
+      service.createModule(CREATE_REQUEST).subscribe(swallow);
+      service.updateModule(0, UPDATE_REQUEST).subscribe(swallow);
+      service.deleteModule(0).subscribe(swallow);
+      service.getModuleSettings(0).subscribe(swallow);
+      service.updateModuleSettings(0, SETTINGS_BAG).subscribe(swallow);
+      service.exportModule(0, { fileName: 'a.xml', folder: null }).subscribe(swallow);
+      service
+        .importModule({ moduleId: 0, content: '<a />', folder: null, fileName: 'a.xml' })
+        .subscribe(swallow);
+      service.listModuleDefinitions().subscribe(swallow);
+      service.getModuleDefinition(14).subscribe(swallow);
+      service.listDesktopModuleDefinitions(2).subscribe(swallow);
+
+      const issued = httpMock.match(() => true);
+
+      expect(issued.length).toBe(12);
+
+      for (const pending of issued) {
+        expect(pending.request.context.get(PRESENTED_IN_CONTEXT))
+          .withContext(`${pending.request.method} ${pending.request.urlWithParams} is unmarked`)
+          .toBeTrue();
+      }
+
+      for (const pending of issued) {
+        pending.flush(null, { status: 500, statusText: 'Server Error' });
+      }
     });
   });
 });

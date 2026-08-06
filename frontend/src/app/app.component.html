@@ -2,10 +2,22 @@
   One element, deliberately.
 
   The shell owns every fixed region and the router owns everything inside its
-  outlet, so there is nothing for the root template to add. The three session
-  bindings the shell accepts — `userName`, `signingOut` and `(signOut)` — are the
-  seam at which an authentication service is wired in; they are left unbound because
-  no such service exists in this workspace yet, and the shell and banner both handle
-  their absence as "no account signed in" rather than as a missing value.
+  outlet, so there is nothing for the root template to add. The three bindings
+  below are the whole of the session seam: the shell FORWARDS them to the banner
+  rather than resolving anything itself, so this file is the only place in the
+  workspace where the chrome meets the session store.
+
+  `[userName]` is a property binding and must stay one. The shell's input is
+  declared `userName?: string` and the component supplies `undefined` when no
+  account is signed in — which is what the banner tests for in order to render no
+  session cluster at all. An attribute form would pass the string "userName".
+
+  `[signingOut]` likewise. The shell coerces it with `booleanAttribute`, so an
+  attribute written without a value would read as `true` and permanently disable
+  the sign-out control.
 -->
-<app-shell />
+<app-shell
+  [userName]="userName()"
+  [signingOut]="signingOut()"
+  (signOut)="onSignOut()"
+/>

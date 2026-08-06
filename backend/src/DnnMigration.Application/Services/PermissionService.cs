@@ -176,6 +176,11 @@ public sealed class PermissionService : IPermissionService
     private const string UserNotFoundCode = "permission.user_not_found";
 
     /// <summary>
+    /// Reported when the named role does not exist within the portal.
+    /// </summary>
+    private const string RoleNotFoundCode = "permission.role_not_found";
+
+    /// <summary>
     /// Reported when the submitted key is not a defined member of the closed key set.
     /// </summary>
     private const string KeyInvalidCode = "permission.key_invalid";
@@ -737,12 +742,12 @@ public sealed class PermissionService : IPermissionService
         // falls back to. It also matches what the inherited branch already did for the same condition.
         //
         // THE PLACEMENTS ARE READ AT MOST ONCE PER CALL, and that is why they are held here rather than
-        // fetched by each of the two members that need them. Reconciling the addresses and deciding an
+        // fetched by each of the members that need them. Reconciling the addresses and deciding an
         // inherited view are two questions over the SAME set, so an earlier revision asked the store for it
         // twice on the one request shape that reaches both - a caller naming a placement and asking about
         // VIEW on a module that inherits it. The read stays LAZY, so a shape that needs no placement still
-        // makes no placement read: only a fully addressed pair, or the inherited-view branch below, brings
-        // the set into being.
+        // makes no placement read: only a fully addressed pair, the inherited-view branch below, or an edit
+        // question that the cheap tenant-administrator arm has already declined, brings the set into being.
         IReadOnlyList<TabModule>? placements = null;
 
         if (placementTabId is int namedTabId && placementTabModuleId is int namedTabModuleId)
@@ -813,17 +818,28 @@ public sealed class PermissionService : IPermissionService
         // deny precedence remains exactly what it was WITHIN the module scope, which is where the evaluator
         // settles it. Applied to the edit key only, which is the key the legacy member decided; view is
         // decided above, by the module's own grants or by the pages it sits on.
+        //
+        // THE TWO ARMS ARE ASKED CHEAPEST FIRST, WHICH A DISJUNCTION PERMITS AND AN EARLIER REVISION DID NOT
+        // DO. Membership of the tenant's administrators role costs two reads whatever the tenant looks like,
+        // and it is the arm that succeeds for every administrative caller. The page arm costs a read set per
+        // page the module sits on, and it is only reachable at all for a caller the first arm already
+        // answered no for - so asking it first made the common administrative path pay for the uncommon one.
+        // Reordering alternatives of a disjunction cannot change the verdict: neither arm writes anything,
+        // neither observes the other, and both are pure reads. It changes only which arm is asked when the
+        // answer is already settled.
         if (permissionKey == PermissionKey.EDIT)
         {
-            placements ??= await ReadPlacementsAsync(module, cancellationToken).ConfigureAwait(false);
-
-            if (await PageEditGrantedAsync(placements, placementTabId, userId, caller.RoleNames, cancellationToken)
+            if (await HoldsPortalAdministratorRoleAsync(portalId, caller.RoleNames, cancellationToken)
                 .ConfigureAwait(false))
             {
                 return Result<bool>.Success(true);
             }
 
-            if (await HoldsPortalAdministratorRoleAsync(portalId, caller.RoleNames, cancellationToken)
+            // Read only now that the cheap arm has declined. A shape that reconciled two named addresses
+            // above already holds the set and does not read it twice.
+            placements ??= await ReadPlacementsAsync(module, cancellationToken).ConfigureAwait(false);
+
+            if (await PageEditGrantedAsync(placements, placementTabId, userId, caller.RoleNames, cancellationToken)
                 .ConfigureAwait(false))
             {
                 return Result<bool>.Success(true);
@@ -1000,6 +1016,85 @@ public sealed class PermissionService : IPermissionService
             .ConfigureAwait(false);
 
         await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result.Success();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F8. The three cleanups the terminal <c>DeleteRole</c> procedure performed before it
+    /// removed the role row, reproduced in the order it performed them -
+    /// <c>03.00.10.SqlDataProvider</c> reads, verbatim:
+    ///     <c>delete from {objectQualifier}FolderPermission where RoleId = @RoleId</c>
+    ///     <c>delete from {objectQualifier}ModulePermission where RoleId = @RoleId</c>
+    ///     <c>delete from {objectQualifier}TabPermission where RoleId = @RoleId</c>
+    ///     <c>delete from {objectQualifier}Roles where RoleId = @RoleId</c>
+    /// The three earlier definitions of that procedure delete only from the role table - measured, at
+    /// <c>01.00.00</c>, <c>01.00.08</c> and <c>02.00.00</c>, the first two additionally guarded by
+    /// <c>if @RoleID &lt;&gt; 0</c> - so the grant sweep is a LATE addition to the legacy source and
+    /// <c>03.00.10</c> is its terminal form. That is why the sweep is reproduced rather than treated as an
+    /// obsolete step: it is the last word the legacy source has on the subject.
+    /// </para>
+    /// <para>
+    /// THE ORDER IS PRESERVED THOUGH NOTHING ENFORCES IT. No foreign key runs from a grant row to the role
+    /// row in the terminal schema, so the store would accept these four statements in any order; keeping
+    /// the legacy sequence costs nothing and means a reader comparing the two sources sees the same shape.
+    /// The role row itself is NOT removed here - that belongs to the role contract, which owns the
+    /// designation guard and the audit record - so this member sweeps and stops.
+    /// </para>
+    /// <para>
+    /// NOTHING IS COMMITTED, FLUSHED OR EVICTED HERE, exactly as on the account-scoped sibling above, and
+    /// no transaction is opened either: the unit of work refuses a nested scope, so taking one here would
+    /// fault the enclosing operation. The three removals reach the store as set-based statements when they
+    /// are issued rather than when changes are flushed, so THE CALLER MUST ALREADY HAVE A TRANSACTION OPEN.
+    /// That is not a suggestion: without one, a sweep followed by a failing role removal would leave the
+    /// role in place with every grant gone - a strictly worse state than the fault this member exists to
+    /// repair, because the grants cannot be reconstructed. The caller opens the scope and commits it, and
+    /// evicts afterwards through <see cref="InvalidateUserPermissionCachesAsync"/>.
+    /// </para>
+    /// <para>
+    /// Both guards run ahead of every removal, so a refusal leaves the store exactly as it was. The role is
+    /// read WITHIN the tenant, so an identifier belonging to another portal is reported as missing rather
+    /// than acted on; the alternative would let a caller acting for one tenant sweep another tenant's
+    /// grants with a mistyped identifier.
+    /// </para>
+    /// <para>
+    /// Only grants ADDRESSED TO the role are removed, and the rule lives in one place - the repository
+    /// members compare the grant's role column to this one identifier. A grant addressed to an account is
+    /// the account's own and belongs to the account cleanup; a grant addressed to one of the negative
+    /// pseudo-principals names no role row at all, so no role removal can be the reason to discard it.
+    /// </para>
+    /// </remarks>
+    public async Task<Result> StageRolePermissionRemovalAsync(
+        int portalId,
+        int roleId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
+        {
+            return Result.Failure(
+                PortalNotFoundCode,
+                FormattableString.Invariant($"Portal {portalId} does not exist."));
+        }
+
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+
+        if (role is null)
+        {
+            return Result.Failure(
+                RoleNotFoundCode,
+                FormattableString.Invariant($"Portal {portalId} has no role bearing identifier {roleId}."));
+        }
+
+        await _permissions.DeleteFolderPermissionsByRoleIdAsync(roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _permissions.DeleteModulePermissionsByRoleIdAsync(roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _permissions.DeleteTabPermissionsByRoleIdAsync(roleId, cancellationToken)
             .ConfigureAwait(false);
 
         return Result.Success();
@@ -1394,6 +1489,13 @@ public sealed class PermissionService : IPermissionService
     /// is answered from that page alone, which is the closest equivalent of the legacy active page; a
     /// named page the module is not placed on has already been refused by the reconciliation above.
     /// </para>
+    /// <para>
+    /// The unaddressed disjunction is put to the evaluator as ONE question over the whole placement set
+    /// rather than as one question per placement, so the cost of this arm no longer scales with the number
+    /// of pages a module sits on. The set-based member is specified to compose its verdict per page and then
+    /// disjoin, so it answers the identical question at fixed cost; it is not a pooled judgement, which
+    /// would let an allowing page cancel a denying one and answer a question nobody asked.
+    /// </para>
     /// </remarks>
     private async Task<bool> PageEditGrantedAsync(
         IReadOnlyList<TabModule> placements,
@@ -1418,19 +1520,22 @@ public sealed class PermissionService : IPermissionService
             return VerdictOf(namedPageGrant);
         }
 
-        foreach (TabModule placement in placements)
-        {
-            Result<bool> granted = await _evaluator
-                .HasTabPermissionAsync(placement.TabId, PermissionKey.EDIT, userId, roleNames, cancellationToken)
-                .ConfigureAwait(false);
+        // The unaddressed shape asks about EVERY page the module sits on, and it asks in ONE call rather
+        // than once per page. Asking per page cost a fixed read set per page, so a module placed across a
+        // tenant's page tree made a single authorisation check proportional to that tree. The set-based
+        // member composes its verdict per page and disjoins, which is the same disjunction this loop
+        // expressed - the quantifier documented above is unchanged, and a page that denies still contributes
+        // nothing rather than vetoing the pages that allow.
+        IReadOnlyCollection<int> placementTabIds = placements
+            .Select(placement => placement.TabId)
+            .Distinct()
+            .ToList();
 
-            if (VerdictOf(granted))
-            {
-                return true;
-            }
-        }
+        Result<bool> anyPageGrant = await _evaluator
+            .HasAnyTabPermissionAsync(placementTabIds, PermissionKey.EDIT, userId, roleNames, cancellationToken)
+            .ConfigureAwait(false);
 
-        return false;
+        return VerdictOf(anyPageGrant);
     }
 
     /// <summary>

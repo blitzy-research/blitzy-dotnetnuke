@@ -110,6 +110,16 @@ export class TokenStorageService {
   private readonly _session = signal<AuthSession | null>(null);
 
   /**
+   * How many times the held session has changed, counting from zero.
+   *
+   * Private and exposed read-only below, and advanced ONLY by {@link store} and
+   * {@link clear} — the two methods every session transition passes through. That is what
+   * makes the count authoritative: there is no way to change the session without changing
+   * this number, and no way to change this number without changing the session.
+   */
+  private readonly _generation = signal(0);
+
+  /**
    * The current session, or null when nobody is signed in.
    *
    * A signal rather than an observable so that a component reading it in a
@@ -117,6 +127,61 @@ export class TokenStorageService {
    * subscription to manage.
    */
   readonly session: Signal<AuthSession | null> = this._session.asReadonly();
+
+  /**
+   * A monotonically increasing count of session transitions — the AUTH EPOCH.
+   *
+   * ## What this exists to prevent
+   *
+   * Everything asynchronous in the authentication path takes time, and the session can be
+   * replaced or discarded while it is in the air. Before this counter existed, no caller
+   * could tell the difference between "the session I started under" and "whatever session
+   * happens to be held now", and three concrete defects followed from exactly that
+   * ambiguity:
+   *
+   * - A request that failed with 401 under account A would be retried carrying account B's
+   *   bearer token, because the retry re-read the token from storage rather than proving the
+   *   original session was still current. An operator signing out and back in as somebody
+   *   else could therefore see A's request execute as B.
+   * - A renewal in flight when a sign-out landed would store its rotated pair on arrival and
+   *   RESURRECT the session the operator had just ended — or, on failure, clear a NEWER
+   *   session established in the meantime.
+   * - Identity read from the current-user endpoint could be published after a sign-out,
+   *   leaving one account's roles and personal details on screen after another had signed in.
+   *
+   * ## How it is used
+   *
+   * The pattern is the same in all three places and is deliberately uniform: CAPTURE this
+   * value when the asynchronous work begins, and before ANY commit — storing a session,
+   * clearing one, publishing an identity, retrying a request, resetting shared state — ask
+   * {@link isCurrentGeneration} whether it still holds. If it does not, the work belongs to
+   * a session that no longer exists and its result must be DISCARDED rather than applied.
+   * Discarding is always the safe direction: the caller has already been signed out or
+   * replaced, so there is nothing to lose and a stale commit is the only thing that can go
+   * wrong.
+   *
+   * ## What it is not
+   *
+   * Not a session identifier, and it must never be sent anywhere or logged. It is a purely
+   * local ordinal whose only meaningful operation is equality against a value captured
+   * earlier in the same browsing context. Its absolute value carries no information: it
+   * counts transitions since this instance was constructed, so a specification asserts that
+   * it CHANGED rather than what it changed to.
+   *
+   * Not a replacement for cancellation either. Unsubscribing from an observable stops the
+   * work; this stops the RESULT of work that could not be stopped — a shared request other
+   * subscribers still need, or a promise already resolved. Both mechanisms are used, and the
+   * refresh path uses each for the half it can address.
+   *
+   * MIGRATION: no legacy counterpart exists, and none could. Legacy sign-out cleared the
+   * `.DOTNETNUKE` cookie (`Library/Components/Security/PortalSecurity.vb:L77` clears five
+   * cookies), which took effect synchronously on the next request because the session lived
+   * in the cookie rather than in client memory — there was no in-flight client-side renewal
+   * to invalidate, because there was no renewal credential at all. This counter is therefore
+   * net-new machinery made necessary by the move to bearer tokens, not a translated
+   * mechanism.
+   */
+  readonly generation: Signal<number> = this._generation.asReadonly();
 
   /**
    * The bearer token to present, or null when there is none.
@@ -209,10 +274,15 @@ export class TokenStorageService {
    * consumed refresh token in place, and presenting it again is treated by the
    * server as a replay and revokes the whole family.
    *
+   * Advances {@link generation}. Every transition does, including one session
+   * replacing another, because that IS an identity change from the point of view of
+   * anything holding a request already in flight.
+   *
    * @param session The session to hold.
    */
   store(session: AuthSession): void {
     this._session.set(session);
+    this.advanceGeneration();
   }
 
   /**
@@ -221,9 +291,55 @@ export class TokenStorageService {
    * Idempotent, so a sign-out racing an expiry does not need to test first. This
    * clears local state only — revoking the refresh token is a server call, and the
    * authentication service performs both.
+   *
+   * ⚠ ADVANCES {@link generation} UNCONDITIONALLY, INCLUDING WHEN NO SESSION WAS HELD.
+   * That looks redundant and is not. A clear is a deliberate statement that whatever
+   * session existed is over, and asynchronous work started under it must not commit
+   * afterwards. Advancing only when a session was present would mean two clears in
+   * succession left the second one silent — so a refresh that began between them would
+   * still observe a matching generation and would resurrect the session that had just
+   * been ended twice over.
    */
   clear(): void {
     this._session.set(null);
+    this.advanceGeneration();
+  }
+
+  /**
+   * Whether a generation captured earlier is still the current one.
+   *
+   * The single question every asynchronous authentication path asks before it commits
+   * anything, and the reason it lives here rather than at each call site: the comparison
+   * and the counter that feeds it belong to the same owner, so no caller can compare
+   * against a number this service did not issue.
+   *
+   * A plain equality test, deliberately — NOT `captured >= current`, and not a
+   * "difference of one" tolerance. Any advance at all means the session changed, and the
+   * only safe response to "the session changed" is to discard the work rather than to
+   * reason about how much it changed by.
+   *
+   * @param captured The generation read at the moment the work began.
+   * @returns True only when no session transition has occurred since.
+   */
+  isCurrentGeneration(captured: number): boolean {
+    return this._generation() === captured;
+  }
+
+  /**
+   * Advances the generation counter by one.
+   *
+   * Private, so the counter can only move as a CONSEQUENCE of a session transition and
+   * never on its own. A public bump would let a caller invalidate in-flight work without
+   * changing the session, which is a different operation with different consequences and
+   * has no call site here.
+   *
+   * Read-then-write on the signal rather than an `update` callback, so the increment is
+   * visibly a single step. Overflow is not a consideration: at one transition per
+   * millisecond this counter would need roughly three hundred thousand years to reach the
+   * exactly-representable integer limit.
+   */
+  private advanceGeneration(): void {
+    this._generation.set(this._generation() + 1);
   }
 
   /**

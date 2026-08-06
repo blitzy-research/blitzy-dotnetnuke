@@ -1979,10 +1979,8 @@ public class ModuleServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Placements);
 
-            // The set-based placement read the listing uses, served from the same placement world as the
-            // single-module read above so the harness cannot describe two different realities. The listing
-            // asks for many modules at once precisely so that its cost does not grow with the number of
-            // modules, and a stub that answered from a separate seam would let that property go untested.
+            // The set-based placement read, served from the same placement world as the single-module read
+            // above so the harness cannot describe two different realities.
             harness.Modules
                 .Setup(repository => repository.GetTabModulesByModuleIdsAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -1991,6 +1989,63 @@ public class ModuleServiceApplicationTests
                     harness.Placements
                         .Where(placement => moduleIds.Contains(placement.ModuleId))
                         .ToList());
+
+            // THE LISTING'S PAGE COMES FROM THE STORE, filtered, ordered, counted and windowed there. The
+            // fake reproduces the contract's documented semantics over the same one-module, many-placement
+            // world every other stub serves, so the paging facts below still describe what the listing
+            // publishes rather than what a canned answer contains: the row set is the module's placements,
+            // the total is how many there are, and the window is the coordinates asked for.
+            harness.Modules
+                .Setup(repository => repository.ListPlacementsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int _,
+                    int? tabId,
+                    bool includeDeleted,
+                    string? _,
+                    string? _,
+                    bool _,
+                    int pageIndex,
+                    int pageSize,
+                    CancellationToken _) =>
+                {
+                    Module? module = harness.StoredModule;
+
+                    List<TabModule> rows = module is null || (!includeDeleted && module.IsDeleted)
+                        ? []
+                        : harness.Placements
+                            .Where(placement => placement.ModuleId == module.ModuleId
+                                && (tabId is null || placement.TabId == tabId.Value))
+                            .OrderBy(placement => placement.TabId)
+                            .ThenBy(placement => placement.ModuleOrder)
+                            .ThenBy(placement => placement.TabModuleId)
+                            .Select(placement =>
+                            {
+                                placement.Module = module;
+                                return placement;
+                            })
+                            .ToList();
+
+                    if (pageSize == 0)
+                    {
+                        return PagedResult<TabModule>.Unpaged(rows);
+                    }
+
+                    List<TabModule> window = rows
+                        .Skip(Paging.SkipCount(pageIndex, pageSize))
+                        .Take(pageSize)
+                        .ToList();
+
+                    return PagedResult<TabModule>.Create(window, rows.Count, pageIndex, pageSize);
+                });
 
             harness.Modules
                 .Setup(repository => repository.GetTabModuleByIdAsync(

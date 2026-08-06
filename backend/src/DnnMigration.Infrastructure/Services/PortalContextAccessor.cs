@@ -132,6 +132,11 @@ internal sealed class PortalContextAccessor : IPortalContext
     /// <param name="portalAlias">
     /// The exact stored alias that this call resolved by, as a plain string.
     /// </param>
+    /// <param name="portalAliasId">
+    /// Surrogate key of the <c>dbo.PortalAlias</c> row this call resolved through. Stored verbatim;
+    /// see <see cref="PortalAliasId"/> for why the KEY rather than the host name is what an alias
+    /// administration screen must compare against.
+    /// </param>
     /// <param name="administratorId">
     /// Numeric key of the account designated administrator, or <see langword="null"/> when the
     /// portal designates none. Stored verbatim; never coerced onto an integer.
@@ -168,6 +173,7 @@ internal sealed class PortalContextAccessor : IPortalContext
         int portalId,
         string portalName,
         string portalAlias,
+        int portalAliasId,
         int? administratorId,
         int? administratorRoleId,
         string? administratorRoleName,
@@ -192,6 +198,7 @@ internal sealed class PortalContextAccessor : IPortalContext
         PortalId = portalId;
         PortalName = portalName;
         PortalAlias = portalAlias;
+        PortalAliasId = portalAliasId;
         AdministratorId = administratorId;
         AdministratorRoleId = administratorRoleId;
         AdministratorRoleName = administratorRoleName;
@@ -246,6 +253,19 @@ internal sealed class PortalContextAccessor : IPortalContext
     /// value. Always the exact stored alias; see migration note 5 immediately above.
     /// </remarks>
     public string PortalAlias { get; }
+
+    /// <summary>
+    /// Surrogate key of the <c>dbo.PortalAlias</c> row that this call was resolved by.
+    /// </summary>
+    /// <remarks>
+    /// Legacy origin: <c>PortalSettings.PortalAlias.PortalAliasID</c>, the single member the legacy
+    /// alias administration screen read from the resolved alias entity — <c>IsNotCurrent</c> at
+    /// <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60 compared each grid row's key
+    /// against it and hid the edit affordance on a match. Held exactly as the Api boundary supplied
+    /// it; migration note 4 above governs any comparison, which must test equality and never a
+    /// magnitude.
+    /// </remarks>
+    public int PortalAliasId { get; }
 
     /// <summary>
     /// Numeric key of the account designated administrator of the resolved portal, or

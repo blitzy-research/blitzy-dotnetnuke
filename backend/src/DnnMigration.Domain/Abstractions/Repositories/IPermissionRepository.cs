@@ -345,6 +345,34 @@ public interface IPermissionRepository
     /// </remarks>
     Task DeleteModulePermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>Removes every module grant addressed to one role.</summary>
+    /// <param name="roleId">Role identifier.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the first of the three cleanups the terminal <c>DeleteRole</c> procedure performed
+    /// before removing the role row - <c>03.00.10.SqlDataProvider</c> reads
+    /// <c>delete from {objectQualifier}ModulePermission where RoleId = @RoleId</c>. A bulk removal, so
+    /// nothing is returned: the legacy procedure reported no count either, and a role that held no module
+    /// grant is a legitimate outcome rather than a fault.
+    /// </para>
+    /// <para>
+    /// NO TENANT ARGUMENT, AND THE ASYMMETRY WITH THE ACCOUNT-SCOPED SIBLING IS DELIBERATE. That sibling
+    /// needs a portal because an account belongs to many tenants at once, so an account-only predicate
+    /// would strip its grants in every other tenant. A role belongs to exactly one tenant - the
+    /// <c>Roles</c> row carries <c>PortalID</c> - so the role identifier already bounds the removal to one
+    /// tenant, and adding a second predicate would state a narrowing the key already guarantees. The
+    /// caller proves the role belongs to the tenant it is acting for before reaching here.
+    /// </para>
+    /// <para>
+    /// The grant's role column is nullable and is compared to a plain value, so a grant addressed to an
+    /// account rather than a role is not matched. The negative pseudo-principals the terminal schema
+    /// persists in this column - which name no <c>Roles</c> row at all - are likewise untouched, because
+    /// the comparison is to one exact identifier the caller has already resolved to a real role.
+    /// </para>
+    /// </remarks>
+    Task DeleteModulePermissionsByRoleIdAsync(int roleId, CancellationToken cancellationToken = default);
+
     /// <summary>Removes one module grant.</summary>
     /// <param name="modulePermissionId">Module permission identifier.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -427,6 +455,33 @@ public interface IPermissionRepository
         int permissionId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Returns the grants recorded against any of several pages, in one read.</summary>
+    /// <param name="tabIds">
+    /// The pages whose grants are wanted. Every value matches the page bearing it exactly - the page identity
+    /// seeds at 0 - and an empty request asks for nothing rather than for everything, answered without a
+    /// round trip.
+    /// </param>
+    /// <param name="permissionId">
+    /// Permission identifier to narrow to, with the same wildcard convention the single-page member carries:
+    /// -1 requests every permission.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// The matching grants, FLAT rather than grouped, ordered by page and then exactly as the single-page
+    /// member orders them, so a caller grouping by <see cref="TabPermission.TabId"/> sees each page's grants
+    /// in the same sequence either member would produce. Denying grants come back alongside allowing ones.
+    /// </returns>
+    /// <remarks>
+    /// The set-based form of <see cref="GetTabPermissionsByTabIdAsync"/>. It exists because a decision taken
+    /// over several pages at once - "does the caller hold this grant on ANY of the pages this module sits
+    /// on" - otherwise costs one grant read per page, which makes an authorisation check on an all-pages
+    /// module proportional to the size of the tenant's page tree.
+    /// </remarks>
+    Task<IReadOnlyList<TabPermission>> GetTabPermissionsByTabIdsAsync(
+        IReadOnlyCollection<int> tabIds,
+        int permissionId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Removes every grant recorded against one page.</summary>
     /// <param name="tabId">Page identifier.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -447,6 +502,49 @@ public interface IPermissionRepository
     /// module counterpart, only grants naming the account itself are removed.
     /// </remarks>
     Task DeleteTabPermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Removes every page grant addressed to one role.</summary>
+    /// <param name="roleId">Role identifier.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// MIGRATION: the second of the three cleanups the terminal <c>DeleteRole</c> procedure performed -
+    /// <c>03.00.10.SqlDataProvider</c> reads
+    /// <c>delete from {objectQualifier}TabPermission where RoleId = @RoleId</c>. A bulk removal, so
+    /// nothing is returned. The absence of a tenant argument, the treatment of account-addressed grants
+    /// and the treatment of the negative pseudo-principals are all as recorded on the module counterpart
+    /// above, and for the same reasons.
+    /// </remarks>
+    Task DeleteTabPermissionsByRoleIdAsync(int roleId, CancellationToken cancellationToken = default);
+
+    /// <summary>Removes every folder grant addressed to one role, where the legacy folder table exists.</summary>
+    /// <param name="roleId">Role identifier.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the third cleanup the terminal <c>DeleteRole</c> procedure performed, and the FIRST
+    /// statement in its body - <c>03.00.10.SqlDataProvider</c> reads
+    /// <c>delete from {objectQualifier}FolderPermission where RoleId = @RoleId</c>. It is preserved
+    /// because leaving those rows behind is the same defect as leaving the other two behind: a later role
+    /// taking the vacated identifier would inherit file-system authority nobody granted it.
+    /// </para>
+    /// <para>
+    /// WHY THIS MEMBER IS SHAPED DIFFERENTLY FROM ITS TWO SIBLINGS. The folder grant table is NOT part of
+    /// the mapped model: file management is outside this migration's scope, so no entity, no configuration
+    /// and no <c>DbSet</c> exists for it, and the greenfield schema this solution provisions does not
+    /// create it. The table nevertheless exists in every upgraded DotNetNuke database, which is exactly the
+    /// installation this migration binds to. Both facts have to hold at once, so the removal is expressed
+    /// against the table rather than against an entity, and it is conditional on the table being present:
+    /// where it is absent the member removes nothing and reports success, and where it is present the rows
+    /// go. Nothing is created, altered or dropped either way, which is what keeps the schema untouched.
+    /// </para>
+    /// <para>
+    /// A bulk removal, so nothing is returned - and deliberately not a count, because a count of zero
+    /// would mean both "the table is not there" and "the role held no folder grant", which is the kind of
+    /// conflated answer this migration removes rather than introduces. Callers that need to know the rows
+    /// are gone assert against the store.
+    /// </para>
+    /// </remarks>
+    Task DeleteFolderPermissionsByRoleIdAsync(int roleId, CancellationToken cancellationToken = default);
 
     /// <summary>Removes one page grant.</summary>
     /// <param name="tabPermissionId">Page permission identifier.</param>

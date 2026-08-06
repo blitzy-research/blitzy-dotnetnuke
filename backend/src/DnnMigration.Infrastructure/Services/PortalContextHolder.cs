@@ -256,10 +256,20 @@ internal sealed class PortalContextHolder : IPortalContextHolder
             return Incomplete("the matched alias has no stored host name");
         }
 
+        // The alias KEY travels with the alias value, taken from the row the lookup matched. It is
+        // what lets an alias administration screen identify the row the request arrived through, which
+        // the legacy screen did with the same fact: IsNotCurrent at
+        // Website/admin/Portal/PortalAlias.ascx.vb L51-L60 compared each row's key against
+        // Me.PortalAlias.PortalAliasID() and hid the edit affordance on a match. Carrying the key
+        // rather than re-deriving the answer from the host name matters because stored casing need not
+        // match what a caller submitted - the legacy write path lower-cased while its reader did not -
+        // so a string comparison would need a casing rule of its own and would become a second,
+        // independent answer to a question this resolver has already settled exactly.
         _current = new PortalContextAccessor(
             portal.PortalId,
             portal.PortalName,
             alias.HttpAlias,
+            alias.PortalAliasId,
             administratorId,
             administratorRoleId,
             administratorRoleName,

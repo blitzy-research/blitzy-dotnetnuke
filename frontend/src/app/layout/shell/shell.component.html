@@ -49,6 +49,19 @@
      to the tab order, which is what lets the skip link actually move focus rather
      than only scroll. -->
 <main [id]="mainRegionId" class="shell__main" tabindex="-1">
+  <!-- The application's notification surface, mounted here rather than as a sixth
+       shell region for two reasons. It must survive navigation — a queue rendered by
+       a routed component would be destroyed by the very navigation an announcement
+       so often accompanies — and it must contribute NOTHING while it is empty, which
+       a grid region with its own track could not promise. Its own live region is
+       persistent and paints nothing until an entry arrives, so on a quiet screen this
+       element occupies no space at all.
+
+       It sits ABOVE the outlet so an announcement is the first thing in the main
+       region rather than something to scroll for, and inside `<main>` so it is part
+       of the region the skip link moves focus to. -->
+  <app-notification-list />
+
   <router-outlet />
 </main>
 

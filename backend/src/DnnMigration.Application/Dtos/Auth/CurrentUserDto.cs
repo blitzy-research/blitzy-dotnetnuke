@@ -167,6 +167,57 @@ public sealed class CurrentUserDto
     public bool IsSuperUser { get; set; }
 
     /// <summary>
+    /// Whether the caller administers <see cref="PortalId"/>, derived server-side
+    /// from that portal's own <c>AdministratorRoleId</c> designation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS MEMBER EXISTS RATHER THAN LETTING THE CLIENT INFER IT FROM
+    /// <see cref="Roles"/>. The client previously decided portal administration by
+    /// testing that list for the literal role name <c>Administrators</c>, which is
+    /// wrong in three independent ways. The designation is a per-portal
+    /// <em>column</em>, <c>Portals.AdministratorRoleId</c> (<c>int NULL</c>), so the
+    /// role that confers administration is whichever role that column names and is
+    /// not fixed to any name; the name itself is operator-editable, because
+    /// <c>Roles.RoleName</c> is an ordinary updatable column, so renaming the role
+    /// silently stripped every administrator of their affordances; and a portal may
+    /// designate a role that happens to be named <c>Administrators</c> in a
+    /// DIFFERENT portal, so a name match can be right about the word and wrong about
+    /// the tenant. Publishing the resolved fact removes all three: the server owns
+    /// the rule, and the client consumes an answer rather than re-deriving one.
+    /// </para>
+    /// <para>
+    /// A host account is reported <see langword="true"/>, and an unset designation is
+    /// reported <see langword="false"/>. Both match the server-side rule exactly: a
+    /// configuration gap must never grant, and it is never widened to any other role.
+    /// </para>
+    /// <para>
+    /// SECURITY: advisory in precisely the same sense as <see cref="Roles"/> and
+    /// <see cref="Permissions"/>. It exists so a console can hide an affordance the
+    /// caller cannot exercise; it unlocks nothing. A caller who tampers with this
+    /// response changes what a menu looks like and nothing about what the API will
+    /// permit, because every tenant-scoped policy re-evaluates against stored state on
+    /// every request - which is also why a demoted administrator is refused however
+    /// recently this snapshot said otherwise.
+    /// </para>
+    /// <para>
+    /// Reported <see langword="false"/> on the sign-in and refresh responses by design,
+    /// exactly as <see cref="Roles"/> and <see cref="Permissions"/> are empty there.
+    /// Those responses carry the authority-minimised snapshot and state nothing about
+    /// what the caller may do; a client that needs the fact reads it from the
+    /// current-user endpoint.
+    /// </para>
+    /// <para>
+    /// SENTINEL BOUNDARY: a plain <c>bool</c> rather than <c>bool?</c>, so
+    /// <see langword="false"/> travels as DATA and is never read as an absence - the
+    /// legacy null test reported <see langword="true"/> for <see langword="false"/>
+    /// (<c>Null.vb</c> L76-L80, L208-L237) and that conflation stops at this boundary
+    /// (Rule T7).
+    /// </para>
+    /// </remarks>
+    public bool IsPortalAdministrator { get; set; }
+
+    /// <summary>
     /// The names of the roles the caller holds in <see cref="PortalId"/>. Never
     /// <see langword="null"/>. An empty list means the caller holds none ONLY on
     /// the current-user read; on the sign-in and refresh responses it is always

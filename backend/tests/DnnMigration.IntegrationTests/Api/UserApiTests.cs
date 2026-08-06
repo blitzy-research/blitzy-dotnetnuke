@@ -2842,6 +2842,20 @@ public sealed class UserApiTests
     /// address and telephone are excluded deliberately: they are profile values the listing composes and the
     /// single read does not carry at all, so they have no counterpart to agree with.
     /// </para>
+    /// <para>
+    /// The members the tenant WITHHOLDS from a listing are excluded too, and their exclusion is DERIVED from
+    /// the tenant's own published settings rather than hard-coded, so the fact cannot drift out of step with
+    /// the configuration. A listing minimises the columns the tenant has switched off - it is a screen
+    /// projection subject to that tenant's configuration - while the keyed single read is the privileged read
+    /// and is not minimised. Requiring the two to agree on a withheld member would be requiring the listing
+    /// to publish PII the tenant has switched off, so the fact asserts agreement where the tenant publishes
+    /// and asserts the withholding itself where it does not.
+    /// </para>
+    /// <para>
+    /// Reading the flags from <c>GET /api/v1/users/settings</c> is also what demonstrates the answer to the
+    /// obvious objection: a withheld value and an unrecorded one are always separable by a caller, because the
+    /// flag that distinguishes them is published on the same API.
+    /// </para>
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -2873,9 +2887,66 @@ public sealed class UserApiTests
             read.StatusCode.Should().Be(HttpStatusCode.OK);
             UserDetailDto detail = await ReadDetailAsync(read);
 
+            using HttpResponseMessage publishedSettings = await client.GetAsync(
+                MembershipSettingsRoute(_fixture.Seed.PortalId));
+
+            publishedSettings.StatusCode.Should().BeOneOf(
+                new[] { HttpStatusCode.OK, HttpStatusCode.NotFound },
+                "the settings projection is stored against an accounts module instance, and a tenant that "
+                + "holds none legitimately reports no value");
+
+            // A tenant holding no accounts module is answered with the MEASURED LEGACY DEFAULTS, which is
+            // what the listing itself resolves for such a tenant - so "no settings row" is a determinate
+            // published answer rather than an unknown, and a caller reading 404 here knows exactly which
+            // flags are in force.
+            MembershipSettingsDto visibility = publishedSettings.StatusCode == HttpStatusCode.OK
+                ? (await publishedSettings.Content.ReadEnvelopeAsync<MembershipSettingsDto>())!
+                : new MembershipSettingsDto();
+
             // The listing composes these from the profile tables; the single read does not carry them, so
             // they have no counterpart and are not compared.
-            string[] listingOnly = [nameof(UserListItemDto.Address), nameof(UserListItemDto.Telephone)];
+            var listingOnly = new List<string>
+            {
+                nameof(UserListItemDto.Address),
+                nameof(UserListItemDto.Telephone),
+            };
+
+            // A column the tenant withholds is asserted BELOW as withheld, so it is excluded from the
+            // agreement comparison rather than being expected to match the privileged read.
+            var withheld = new List<string>();
+
+            void Withholds(bool published, string member)
+            {
+                if (!published)
+                {
+                    withheld.Add(member);
+                    listingOnly.Add(member);
+                }
+            }
+
+            static void AssertProjectedText(bool published, string? projected, string? submitted, string member)
+            {
+                if (published)
+                {
+                    projected.Should().Be(
+                        submitted,
+                        FormattableString.Invariant($"{member} is published by this tenant"));
+                }
+                else
+                {
+                    projected.Should().BeEmpty(
+                        FormattableString.Invariant(
+                            $"{member} is withheld by this tenant and must not cross the API boundary"));
+                }
+            }
+
+            Withholds(visibility.ColumnFirstName, nameof(UserListItemDto.FirstName));
+            Withholds(visibility.ColumnLastName, nameof(UserListItemDto.LastName));
+            Withholds(visibility.ColumnDisplayName, nameof(UserListItemDto.DisplayName));
+            Withholds(visibility.ColumnEmail, nameof(UserListItemDto.Email));
+            Withholds(visibility.ColumnCreatedDate, nameof(UserListItemDto.CreatedDate));
+            Withholds(visibility.ColumnLastLogin, nameof(UserListItemDto.LastLoginDate));
+            Withholds(visibility.ColumnAuthorized, nameof(UserListItemDto.IsApproved));
 
             IReadOnlyList<PropertyInfo> detailProperties = typeof(UserDetailDto)
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance);
@@ -2910,22 +2981,61 @@ public sealed class UserApiTests
                 compared.Add(listProperty.Name);
             }
 
-            // The comparison is only meaningful if it actually reached the members the defect emptied.
-            compared.Should().Contain(
-            [
+            // The comparison is only meaningful if it actually reached the members the drift emptied, so every
+            // one of the five is accounted for: either compared against the privileged read, or asserted as
+            // withheld by the tenant's own published setting. Neither list may simply omit it.
+            foreach (string member in new[]
+            {
                 nameof(UserListItemDto.Username),
                 nameof(UserListItemDto.FirstName),
                 nameof(UserListItemDto.LastName),
                 nameof(UserListItemDto.DisplayName),
                 nameof(UserListItemDto.Email),
-            ]);
+            })
+            {
+                (compared.Contains(member, StringComparer.Ordinal)
+                    || withheld.Contains(member, StringComparer.Ordinal))
+                    .Should().BeTrue(
+                        FormattableString.Invariant(
+                            $"{member} must be either compared with the single read or withheld by a setting"));
+            }
 
-            // And those five must carry the values that were submitted, not merely agree on emptiness.
+            // Username carries no visibility flag at all, so it is always published and always agrees.
+            compared.Should().Contain(nameof(UserListItemDto.Username));
             listed.Username.Should().Be(request.Username);
-            listed.FirstName.Should().Be(request.FirstName);
-            listed.LastName.Should().Be(request.LastName);
-            listed.DisplayName.Should().Be(request.DisplayName);
-            listed.Email.Should().Be(request.Email);
+
+            // A published column must carry the submitted value rather than merely agree on emptiness; a
+            // withheld one must carry the contract's absent value rather than the stored PII.
+            AssertProjectedText(
+                visibility.ColumnFirstName, listed.FirstName, request.FirstName, nameof(UserListItemDto.FirstName));
+            AssertProjectedText(
+                visibility.ColumnLastName, listed.LastName, request.LastName, nameof(UserListItemDto.LastName));
+            AssertProjectedText(
+                visibility.ColumnDisplayName,
+                listed.DisplayName,
+                request.DisplayName,
+                nameof(UserListItemDto.DisplayName));
+            AssertProjectedText(
+                visibility.ColumnEmail, listed.Email, request.Email, nameof(UserListItemDto.Email));
+
+            if (!visibility.ColumnCreatedDate)
+            {
+                listed.CreatedDate.Should().BeNull(
+                    "a nullable instant the tenant withholds is projected as absent");
+            }
+
+            if (!visibility.ColumnLastLogin)
+            {
+                listed.LastLoginDate.Should().BeNull(
+                    "a nullable instant the tenant withholds is projected as absent");
+            }
+
+            // At least one column must actually be withheld under the tenant's settings, or this fact would
+            // pass without ever exercising the minimisation it exists to pin. The measured legacy defaults
+            // switch the given-name, family-name, electronic-mail and last-login columns off, so a tenant that
+            // has never configured the accounts module withholds four of them.
+            withheld.Should().NotBeEmpty(
+                "the minimisation must be exercised, not merely permitted");
         }
         finally
         {
@@ -3215,14 +3325,20 @@ public sealed class UserApiTests
             .Subject;
         matched.Username.Should().Be(request.Username);
 
-        // MIGRATION: the listing projects the stored address, whatever the tenant's Column_Email setting
-        // says. That setting decided whether the legacy grid RENDERED the column; it never rewrote the
-        // value behind it, and emptying the value instead made a minimised row indistinguishable from an
-        // account holding no address while concealing nothing - GET .../users/settings publishes the same
-        // flag verbatim. Deciding whether to render the column belongs to the client.
-        matched.Email.Should().Be(
-            request.Email,
-            "the listing projects the stored address; hiding a column is the client's presentation decision");
+        // MIGRATION: the FILTER is server-side and the PROJECTION is minimised, and the two are independent.
+        // The tenant's measured legacy default switches the electronic-mail column off
+        // (UserModuleBase.vb:L109-L111 defaults Column_Email to False), so a default tenant withholds the
+        // address from the listing - and the filter above still matched on it, because narrowing happens in
+        // the query against the stored column and never depends on what the row is allowed to publish. This
+        // is the whole point of server-side minimisation: the caller can search by an address it is not
+        // handed back.
+        //
+        // The account is therefore identified by its login name and identifier, which carry no visibility
+        // flag, rather than by the withheld address.
+        matched.UserId.Should().Be(createdUser.UserId);
+        matched.Email.Should().BeEmpty(
+            "the tenant's default withholds the electronic-mail column, and a withheld column must not cross "
+            + "the API boundary even when it was the column filtered on");
 
         // A fragment lifted from the middle of the very address that was just matched by prefix. The account
         // demonstrably exists and demonstrably holds the fragment, so an empty page here can only be the

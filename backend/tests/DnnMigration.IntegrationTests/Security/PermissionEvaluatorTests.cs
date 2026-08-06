@@ -136,6 +136,9 @@ public sealed class PermissionEvaluatorTests
 
     private const string KeyInvalidCode = "permission.key_invalid";
 
+    /// <summary>Reported when the named role does not exist within the portal.</summary>
+    private const string RoleNotFoundCode = "permission.role_not_found";
+
     // Aliases for the domain constants, not copies of their values. Restating the literals here is how a
     // suite comes to assert a name the production code no longer uses, and these two names are the exact
     // strings matched against Roles.RoleName - so a drifted copy would pass while the application matched
@@ -2171,14 +2174,28 @@ public sealed class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().BeTrue("the page the module sits on grants edit to this caller");
+
+        // The pages are asked about COLLECTIVELY, in one call carrying the placement set, because a request
+        // that names no page is asking about all of them. Asking one page at a time made this arm cost a read
+        // set per placement.
         harness.Evaluator.Verify(
-            evaluator => evaluator.HasTabPermissionAsync(
-                TabId,
+            evaluator => evaluator.HasAnyTabPermissionAsync(
+                It.Is<IReadOnlyCollection<int>>(tabIds => tabIds.Count == 1 && tabIds.Contains(TabId)),
                 PermissionKey.EDIT,
                 UserId,
                 It.IsAny<IReadOnlyCollection<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Once());
+
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "the single-page verdict belongs to a request that names a page, and this one named none");
     }
 
     /// <summary>
@@ -2212,6 +2229,18 @@ public sealed class PermissionEvaluatorTests
 
         collective.Value.Should().BeTrue("one placement the caller may edit is enough");
 
+        // Two placements, still ONE question. The disjunction is composed inside the evaluator, per page, so
+        // this arm's cost no longer grows with the number of pages a module occupies.
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasAnyTabPermissionAsync(
+                It.Is<IReadOnlyCollection<int>>(tabIds =>
+                    tabIds.Count == 2 && tabIds.Contains(TabId) && tabIds.Contains(SecondTabId)),
+                PermissionKey.EDIT,
+                UserId,
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+
         Result<bool> addressed = await harness.Service.HasModulePermissionAsync(
             PortalId,
             UserId,
@@ -2223,6 +2252,101 @@ public sealed class PermissionEvaluatorTests
 
         addressed.Value.Should().BeFalse(
             "a request naming a page is answered from that page, and this one grants the caller nothing");
+
+        // A named page is still asked about singly, and the collective question was not asked a second time.
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                TabId,
+                PermissionKey.EDIT,
+                UserId,
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasAnyTabPermissionAsync(
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "the addressed request answers from the named page alone");
+    }
+
+    /// <summary>
+    /// The tenant-administrator alternative is asked FIRST, so an administrative caller settles the question
+    /// without the module's placements being read or any page being evaluated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The three alternatives form a disjunction, and reordering the alternatives of a disjunction cannot
+    /// change its verdict: none of the three writes anything, none observes the others, and all are pure
+    /// reads. What the order decides is COST. Tenant-administrator membership costs two reads whatever the
+    /// tenant looks like, and it is the arm that admits every administrative caller; the page arm costs a read
+    /// set for the pages a module occupies, and reaches its answer only for callers the first arm has already
+    /// admitted or declined. Asking the page arm first therefore made the common administrative path pay for
+    /// the uncommon one.
+    /// </para>
+    /// <para>
+    /// The module here carries NO loaded placements, so the placement read is a real read this fact can
+    /// observe being skipped rather than an artefact of what the aggregate happened to carry.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForEditAsksTheAdministratorArmBeforeTheCostlyPageArm()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.TabModules.Clear();
+        harness.ModuleGrant = false;
+        harness.TabGrant = true;
+        harness.AssignedRoles = ["Administrators"];
+        harness.AdministratorsRole = new Role
+        {
+            RoleId = AdministratorRoleId,
+            PortalId = PortalId,
+            RoleName = "Administrators",
+        };
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().BeTrue("the caller holds the tenant's designated administrators role");
+
+        harness.Modules.Verify(
+            modules => modules.GetTabModulesByModuleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "the placements are only needed by the arm the cheap arm made unnecessary");
+
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasAnyTabPermissionAsync(
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "the page arm is not consulted once the answer is settled");
+
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "the page arm is not consulted once the answer is settled");
     }
 
     /// <summary>
@@ -2851,6 +2975,184 @@ public sealed class PermissionEvaluatorTests
         harness.Permissions.Verify(
             permissions => permissions.DeleteTabPermissionsByUserIdAsync(
                 It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// SEC-F8: the role-scoped sweep removes all three grant families, in the order the terminal legacy
+    /// procedure removed them, and neither commits nor evicts.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>03.00.10.SqlDataProvider</c> is the terminal definition of <c>DeleteRole</c>, and it
+    /// deletes the storage grants, then the module grants, then the page grants, then the role row. The three
+    /// earlier definitions delete only the role row, so the sweep is a late addition to the legacy source
+    /// rather than a step it later dropped - which is why it is reproduced.
+    /// </para>
+    /// <para>
+    /// THREE families rather than two. The storage family has no entity in this migration, so its removal is
+    /// the one member expressed against the table rather than through the model; omitting it here would leave
+    /// a third of the legacy cleanup unreproduced, and the rows it removes carry file-system authority.
+    /// </para>
+    /// <para>
+    /// The sweep neither commits nor evicts for the same reason its account-scoped sibling does not: it is a
+    /// step of a larger removal whose caller decides when the batch becomes durable. Here that matters more
+    /// than it does there, because these removals are set-based and immediate - so a commit taken here would
+    /// make the grants durable ahead of the role row, and a role removal that then failed would leave the
+    /// role in place with its grants destroyed and no way to reconstruct them.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task StageRoleGrantRemoval_SweepsAllThreeFamiliesInTheLegacyOrderWithoutCommittingOrEvicting()
+    {
+        Harness harness = Harness.Ready();
+
+        // The role store answers every lookup with this row, so a non-null value is what makes the role
+        // resolvable at all. The identifier is zero deliberately: Roles.RoleID is IDENTITY(0, 1), so zero is
+        // the first real role an installation issues and no truthiness test may stand in for a lookup.
+        harness.AdministratorsRole = new Role
+        {
+            RoleId = AdministratorRoleId,
+            PortalId = PortalId,
+            RoleName = "Subscribers",
+        };
+
+        List<string> sweptFamilies = [];
+
+        harness.Permissions
+            .Setup(permissions => permissions.DeleteFolderPermissionsByRoleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => sweptFamilies.Add("storage"))
+            .Returns(Task.CompletedTask);
+        harness.Permissions
+            .Setup(permissions => permissions.DeleteModulePermissionsByRoleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => sweptFamilies.Add("module"))
+            .Returns(Task.CompletedTask);
+        harness.Permissions
+            .Setup(permissions => permissions.DeleteTabPermissionsByRoleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => sweptFamilies.Add("page"))
+            .Returns(Task.CompletedTask);
+
+        Result result = await harness.Service.StageRolePermissionRemovalAsync(
+            PortalId,
+            AdministratorRoleId,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+
+        sweptFamilies.Should().Equal(
+            ["storage", "module", "page"],
+            "the terminal legacy procedure removed them in that order, and nothing is gained by diverging");
+
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteModulePermissionsByRoleIdAsync(
+                AdministratorRoleId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByRoleIdAsync(
+                AdministratorRoleId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteFolderPermissionsByRoleIdAsync(
+                AdministratorRoleId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+
+        // The account-scoped removals are NOT issued: a grant addressed to an account belongs to the account
+        // and is removed when the account goes.
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.BeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(It.IsAny<int>()), Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(It.IsAny<int>()), Times.Never());
+    }
+
+    /// <summary>
+    /// SEC-F8: the role-scoped sweep refuses an unknown tenant or a role the tenant does not have, and
+    /// removes nothing at all.
+    /// </summary>
+    /// <param name="unknownPortal">
+    /// <see langword="true"/> to make the tenant unknown, <see langword="false"/> to make the role
+    /// unresolvable within it.
+    /// </param>
+    /// <remarks>
+    /// Both guards stand ahead of all three removals, so a caller that asks about the wrong thing changes
+    /// nothing. The tenant argument is what makes the second refusal possible: a role identifier belonging to
+    /// another portal must be reported as missing rather than swept, or a caller acting for one tenant could
+    /// destroy another tenant's grants with a mistyped identifier.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StageRoleGrantRemoval_RefusesAndSweepsNothing(bool unknownPortal)
+    {
+        Harness harness = Harness.Ready();
+
+        if (unknownPortal)
+        {
+            harness.AdministratorsRole = new Role
+            {
+                RoleId = AdministratorRoleId,
+                PortalId = PortalId,
+                RoleName = "Subscribers",
+            };
+
+            harness.Portals
+                .Setup(portals => portals.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(false);
+        }
+        else
+        {
+            // Left absent, which is how the role store reports a role the tenant does not have.
+            harness.AdministratorsRole = null;
+        }
+
+        Result result = await harness.Service.StageRolePermissionRemovalAsync(
+            PortalId,
+            AdministratorRoleId,
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(unknownPortal ? PortalNotFoundCode : RoleNotFoundCode);
+
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteFolderPermissionsByRoleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteModulePermissionsByRoleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByRoleIdAsync(
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
@@ -4018,8 +4320,16 @@ public sealed class PermissionEvaluatorTests
     /// to start reporting refusals as errors.
     /// </para>
     /// <para>
-    /// Asserted over every member by reflection rather than over a written list of five, so a sixth member
-    /// added later cannot be introduced bare without failing here.
+    /// Asserted over every member by reflection rather than over a written list, so a member added later
+    /// cannot be introduced bare without failing here.
+    /// </para>
+    /// <para>
+    /// The membership is pinned by NAME as well as by count, so growth stays deliberate. The sixth member is
+    /// the set-based page verdict: it answers the same question as the single-page verdict over a set of
+    /// pages, and it exists because asking the single-page member once per page made one authorisation check
+    /// cost a read set per page a module was placed on. It is a second ROUTE to an existing question rather
+    /// than a second reducer - the precedence rule still lives in exactly one place, which the neighbouring
+    /// "no second reducer anywhere" fact is what actually guards.
     /// </para>
     /// </remarks>
     [Fact]
@@ -4027,10 +4337,25 @@ public sealed class PermissionEvaluatorTests
     {
         MethodInfo[] members = typeof(IPermissionEvaluator).GetMethods();
 
-        members.Should().HaveCount(
-            5,
+        members.Select(member => member.Name).Should().BeEquivalentTo(
+            new[]
+            {
+                nameof(IPermissionEvaluator.ListEffectivePortalPermissionKeysAsync),
+                nameof(IPermissionEvaluator.ListEffectiveModulePermissionKeysAsync),
+                nameof(IPermissionEvaluator.ListEffectiveTabPermissionKeysAsync),
+                nameof(IPermissionEvaluator.HasModulePermissionAsync),
+                nameof(IPermissionEvaluator.HasTabPermissionAsync),
+                nameof(IPermissionEvaluator.HasAnyTabPermissionAsync),
+            },
             "the evaluator decides a portal-wide, a module-scoped and a page-scoped listing, plus the two "
-            + "single-key verdicts, and nothing else belongs on a decision contract");
+            + "single-key verdicts and the set-based page verdict, and nothing else belongs on a decision "
+            + "contract");
+
+        members.Should().HaveCount(
+            6,
+            "the evaluator decides a portal-wide, a module-scoped and a page-scoped listing, plus the two "
+            + "single-key verdicts and the set-based page verdict, and nothing else belongs on a decision "
+            + "contract");
 
         foreach (MethodInfo member in members)
         {
@@ -4122,23 +4447,53 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// No permission contract carries a member for the excluded file-management subsystem.
+    /// No permission contract carries a member for the excluded file-management subsystem, with one
+    /// deliberate exception that is a removal rather than a feature.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the path-scoped catalogue lookup and the eight file-system grant members are not
     /// ported. The subsystem they serve is out of scope, so there is no target feature for a grant keyed
     /// by a storage path to serve, and the target declares no file-system grant entity. The excluded
     /// vocabulary is checked as separate short tokens rather than as the subsystem's full type names,
-    /// because this folder is itself checked for those names and quoting them would report the suite as
-    /// reintroducing what it proves is absent.
+    /// because quoting them would report the suite as reintroducing what it proves is absent.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F8. THE ONE EXCEPTION IS THE ROLE-SCOPED CLEANUP, and it is admitted because the
+    /// terminal <c>DeleteRole</c> procedure performed it - <c>03.00.10.SqlDataProvider</c> deletes the
+    /// storage grants of the role being removed as its FIRST statement. The plan lists that grant triad
+    /// among the authorising reference sources of the in-scope security domain and counts its legacy
+    /// controller's cache sites among in-scope call sites, so the ROWS are within the migration's
+    /// knowledge even though the FEATURE is not. Leaving them behind is a data-integrity fault rather
+    /// than a scope reduction: neither the role table nor the grant table declares a key between them,
+    /// so the rows survive their principal, and the role identifier is reissued.
+    /// </para>
+    /// <para>
+    /// So this test now pins the BOUNDARY rather than banning a token, and it is stricter than the ban it
+    /// replaces on everything except that one member. The exception must be exactly one member, it must
+    /// produce nothing - a removal cannot disclose a grant, whereas a read could - and it must be
+    /// addressable only by role, never by a storage location. Those three conditions together are what
+    /// make it incapable of growing into the feature the subsystem exclusion forbids: no caller can ask
+    /// it about a folder, and no caller can learn anything from it.
+    /// </para>
     /// </remarks>
     [Fact]
     public void Contract_CarriesNoMemberForTheExcludedStorageSubsystem()
     {
         string[] excludedVocabulary = ["Folder", "Directory", "Path"];
 
+        const string PermittedRemoval = nameof(IPermissionRepository.DeleteFolderPermissionsByRoleIdAsync);
+
+        var admitted = new List<(Type Contract, MethodInfo Member)>();
+
         foreach ((Type contract, MethodInfo member) in ContractMembers())
         {
+            if (string.Equals(member.Name, PermittedRemoval, StringComparison.Ordinal))
+            {
+                admitted.Add((contract, member));
+                continue;
+            }
+
             foreach (string token in excludedVocabulary)
             {
                 member.Name.Should().NotContain(
@@ -4146,6 +4501,23 @@ public sealed class PermissionEvaluatorTests
                     $"{contract.Name}.{member.Name} names a subsystem this migration excludes, so no member should mention it");
             }
         }
+
+        (Type Contract, MethodInfo Member) exception = admitted.Should().ContainSingle(
+            "the storage subsystem is excluded except for the single cleanup the legacy role removal performed")
+            .Subject;
+
+        exception.Contract.Should().Be(
+            typeof(IPermissionRepository),
+            "a removal of rows belongs to the persistence surface; the application surface exposes the "
+            + "role-scoped sweep as one operation over all three grant families and never names a subsystem");
+
+        ProducedValue(exception.Member.ReturnType).Should().Be(
+            typeof(void),
+            "a removal reports nothing, so nothing about the excluded subsystem can be read back through it");
+
+        exception.Member.GetParameters().Select(parameter => parameter.Name).Should().Equal(
+            ["roleId", "cancellationToken"],
+            "it is addressable by role alone - a storage argument would make it the feature this exclusion forbids");
     }
 
     // =================================================================================================
@@ -6397,6 +6769,29 @@ public sealed class PermissionEvaluatorTests
                     int? userId,
                     IReadOnlyCollection<string> roleNames,
                     CancellationToken token) => Result<bool>.Success(harness.AnswerPage(tabId, key)));
+
+            // The set-based page answer is the DISJUNCTION of the single-page answers over the same stubbed
+            // world, which is precisely what the real evaluator specifies: a verdict composed per page and
+            // then disjoined, so a denying page contributes nothing rather than vetoing. Composing the double
+            // from AnswerPage rather than from a second table is deliberate - the two members cannot disagree
+            // here, so a fact that passes against one and fails against the other is measuring the service
+            // rather than the double.
+            harness.Evaluator
+                .Setup(evaluator => evaluator.HasAnyTabPermissionAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<IReadOnlyCollection<string>>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<IReadOnlyCollection<int>, PermissionKey, int?, IReadOnlyCollection<string>, CancellationToken>(
+                    (_, _, _, roleNames, _) => harness.Capture(roleNames))
+                .ReturnsAsync((
+                    IReadOnlyCollection<int> tabIds,
+                    PermissionKey key,
+                    int? userId,
+                    IReadOnlyCollection<string> roleNames,
+                    CancellationToken token) => Result<bool>.Success(
+                        tabIds.Any(tabId => harness.AnswerPage(tabId, key))));
 
             harness.Permissions
                 .Setup(permissions => permissions.DeleteModulePermissionsByUserIdAsync(

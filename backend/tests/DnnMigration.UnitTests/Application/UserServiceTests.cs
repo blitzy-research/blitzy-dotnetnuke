@@ -585,6 +585,14 @@ public class UserServiceApplicationTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Array.Empty<UserProfileValue>());
+
+            // The batched read a listing performs answers as emptily as the single-account read above, which
+            // is what these facts assert against: this harness declares no stored profile answers at all.
+            subject.Profiles.Setup(profiles => profiles.GetProfileValuesAsync(
+                    It.IsAny<int?>(),
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Array.Empty<UserProfileValue>());
             subject.Profiles.Setup(profiles => profiles.DeleteProfileValuesAsync(
                     It.IsAny<int?>(),
                     It.IsAny<int>(),

@@ -123,6 +123,7 @@ import {
   problemSupportReference,
 } from '../utils/form-errors.util';
 
+
 import type { ApiMeta, SortDirection } from '../models/paged-result.model';
 import type {
   CreatePortalAliasRequest,
@@ -192,9 +193,12 @@ export interface PortalFailure {
    * The state-refusal code the server published, or `null` when the failure was
    * not one of the recognised refusals.
    *
-   * The two this store can receive are the last-remaining-portal refusal, answered
-   * to a portal delete, and the duplicate-host-name refusal, answered to an alias
-   * create or update.
+   * The three this store can receive are the last-remaining-portal refusal, answered
+   * to a portal delete; the duplicate-host-name refusal, answered to an alias create
+   * or update; and the active-alias refusal, answered to an alias update or delete
+   * when the row addressed is the one the request resolved the tenant through. The
+   * last two both arrive as `409`, so the code and never the status is what tells
+   * them apart - see `isDuplicateAliasCode` and `isAliasInUseCode`.
    *
    * MIGRATION: THREE LEGACY RESOURCE KEYS, NONE OF WHICH IS THE VALUE COMPARED HERE.
    * Named in full so the parity claim stays checkable, each with where it was
@@ -443,6 +447,26 @@ export class PortalStore implements OnDestroy {
    */
   private readonly portalApi = inject(PortalService);
 
+  /*
+   * ⚠ THIS STORE IS DISCARDED AT A SESSION BOUNDARY, AND IT DOES NOT ARRANGE THAT ITSELF.
+   * Every slice here belongs to ONE TENANT and, through the permissions that admitted the
+   * read, to ONE OPERATOR. Ending a session discards the credential; it does not discard
+   * anything read with it, so without the discard the portals a previous operator listed
+   * would still be here, rendered by whatever screen the next operator lands on.
+   *
+   * The discard is driven from `core/state/session-teardown.service.ts` (reached from the
+   * transport layer when a renewal is refused, and from the identity store) and from
+   * `core/state/session-lifecycle.service.ts` (reached from the shell when the operator
+   * signs out). Both call this store's own `reset()`, which cancels its in-flight reads and
+   * writes BEFORE clearing its slices — the ordering that stops a response still in the air
+   * from refilling what was just emptied.
+   *
+   * ⚠ DO NOT ADD A REGISTRATION CALL HERE. Putting the fan-out in the two services and not
+   * in the stores is what keeps the dependency pointing one way: no domain store imports the
+   * identity store, so no domain store is in a position to start making authorization
+   * decisions of its own, and the data layer stays out of the initial bundle. A store that
+   * registered itself would need a reference in the opposite direction to do it.
+   */
   // -------------------------------------------------------------------------
   // IN-FLIGHT REQUEST HANDLES
   //

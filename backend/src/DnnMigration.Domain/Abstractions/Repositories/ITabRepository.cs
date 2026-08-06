@@ -122,6 +122,30 @@ public interface ITabRepository
     Task<Tab?> GetByIdAsync(int tabId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the pages bearing any of the supplied keys, in one read.
+    /// </summary>
+    /// <param name="tabIds">
+    /// The page keys wanted. Every value denotes exactly the row bearing it - this identity seeds at 0, so 0
+    /// is a real page and no value is read as "any" or "no" row - and an empty request asks for nothing rather
+    /// than for everything, answered without a round trip.
+    /// </param>
+    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <returns>
+    /// The pages that exist among the supplied keys, ordered by key. A key naming no row simply contributes
+    /// no page, so the count of the result is how a caller learns which keys were real. Recycled pages are
+    /// returned, as they are by the single-key read.
+    /// </returns>
+    /// <remarks>
+    /// The set-based form of <see cref="GetByIdAsync"/>, and it exists so that a decision taken over SEVERAL
+    /// named pages - most importantly "does the caller hold a grant on any of the pages this module sits on" -
+    /// can resolve the pages in one statement instead of one per page. It is not a substitute for the
+    /// single-key read, which remains the right shape wherever exactly one page is addressed.
+    /// </remarks>
+    Task<IReadOnlyList<Tab>> GetByIdsAsync(
+        IReadOnlyCollection<int> tabIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns every page belonging to one portal, in hierarchy order.
     /// </summary>
     /// <remarks>

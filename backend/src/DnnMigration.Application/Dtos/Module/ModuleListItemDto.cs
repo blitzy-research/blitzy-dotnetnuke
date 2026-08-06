@@ -10,64 +10,34 @@ namespace DnnMigration.Application.Dtos.Module;
 /// </summary>
 /// <remarks>
 /// <para>
-/// COMPOSED FROM THREE TABLES, AND <see cref="TabModuleId"/> IS THE ROW KEY.
-/// <see cref="ModuleId"/>, <see cref="ModuleDefId"/>, <see cref="ModuleTitle"/>,
-/// <see cref="AllTabs"/>, <see cref="IsDeleted"/>, <see cref="StartDate"/> and
-/// <see cref="EndDate"/> describe the module itself and come from <c>dbo.Modules</c>;
-/// <see cref="TabModuleId"/>, <see cref="TabId"/>, <see cref="ModuleOrder"/>,
-/// <see cref="Visibility"/> and <see cref="DisplayTitle"/> describe one placement of that module on
-/// one page and come from <c>dbo.TabModules</c>; <see cref="FriendlyName"/> is a read-only
-/// projection from <c>dbo.ModuleDefinitions</c>. A module with <see cref="AllTabs"/> set therefore
-/// appears as several rows - one per placement, each with its own <see cref="TabModuleId"/>,
-/// <see cref="TabId"/> and <see cref="ModuleOrder"/> - while sharing one <see cref="ModuleId"/>. A
-/// consumer that assumes a single physical row behind this contract will mis-model that case.
-/// </para>
-/// <para>
-/// THE PLACEMENT SPLIT IS DESTRUCTIVE IN THE SCHEMA, NOT A MODELLING PREFERENCE. Script 03.00.01
-/// adds <c>PortalID</c> to <c>Modules</c>, drops the foreign key that had tied <c>Modules</c> to
-/// <c>Tabs</c>, drops ten columns from <c>Modules</c> including <c>ModuleOrder</c>, and drops
-/// <c>TabID</c> itself; the replacement <c>TabModules</c> table is created in the same script with
-/// <c>TabModuleID int NOT NULL IDENTITY (1, 1)</c>. Only the cumulative terminal state is
-/// meaningful: the 01.00.00 baseline <c>Modules</c> table declares none of the six columns this
-/// contract reads from the module side.
+/// COMPOSED FROM THREE TABLES, AND <see cref="TabModuleId"/> IS THE ROW KEY. Seven members describe
+/// the module itself and come from <c>dbo.Modules</c>; five describe ONE PLACEMENT of that module on
+/// one page and come from <c>dbo.TabModules</c>; the display name and the three package members are
+/// read-only projections. A module with <see cref="AllTabs"/> set therefore appears as SEVERAL ROWS -
+/// one per placement, each with its own <see cref="TabModuleId"/>, <see cref="TabId"/> and
+/// <see cref="ModuleOrder"/> - while sharing one <see cref="ModuleId"/>. A consumer that assumes a
+/// single physical row behind this contract will mis-model that case.
 /// </para>
 /// <para>
 /// SENTINELS ARE PRESERVED, NOT NORMALISED, AND SEVERAL COLLIDE WITH REAL DATA. The legacy layer
 /// encoded absence in-band as -1 for integers, the empty string for text and
-/// <see cref="System.DateTime.MinValue"/> for dates. In this schema <see cref="ModuleId"/> and
+/// <see cref="System.DateTime.MinValue"/> for dates. Here <see cref="ModuleId"/> and
 /// <see cref="TabId"/> are seeded from 0 while <see cref="TabModuleId"/> and
 /// <see cref="ModuleDefId"/> are seeded from 1, and -1 is simultaneously a live
 /// <see cref="ModuleOrder"/> instruction, a genuine portal identifier and an "any page" wildcard in
-/// the legacy query surface. Two rules follow: never test an identifier on this type against 0 or
-/// -1 to decide whether it is present, and never assume a nullable member's legacy representation
-/// was itself null. Each member documents which of its boundary values carry meaning.
-/// </para>
-/// <para>
-/// NO DIRECT LEGACY GRID PRECEDENT. Unlike the portal, user and role listings this shape was not
-/// lifted from an existing data grid, because <c>Website/admin/Modules/</c> holds three screens only
-/// - settings, export and import - and no list page. The column set is synthesised from the
-/// settings screen's field conventions and from what the pre-existing query surface on
-/// <c>ModuleController.vb</c> can return, every method of which yields the same flattened legacy
-/// object.
+/// the legacy query surface. Two rules follow: never test an identifier on this type against 0 or -1
+/// to decide whether it is present, and never assume a nullable member's legacy representation was
+/// itself null. Each member documents which of its boundary values carry meaning.
 /// </para>
 /// <para>
 /// SECURITY: <c>BusinessControllerClass</c> is deliberately omitted. The legacy code passed that
 /// stored type name to a reflection-based activator at five call sites; the target resolves module
-/// behaviour from a closed, dependency-injected set through a factory. Publishing an activatable
-/// type name on the wire would invite arbitrary activation, so it must never appear on a response
-/// and never be accepted on a request.
-/// </para>
-/// <para>
-/// ALSO DELIBERATELY ABSENT: the portal identifier, because the request is already portal-scoped by
-/// the per-request portal context; pane-layout, rendering, container and skinning members, whose
-/// purpose was server-side markup generation; permission collections, since permission evaluation
-/// belongs to the infrastructure security layer and a separate read-only catalogue;
-/// <c>IsDefaultModule</c> and <c>AllModules</c>, which are intent flags belonging on an update
-/// request rather than module state; <c>CacheTime</c>, <c>IconFile</c>, <c>Header</c> and
-/// <c>Footer</c>, which are settings-screen concerns; definition, desktop-module and control
-/// metadata, reachable through <see cref="ModuleDefinitionDto"/>; and audit members, of which this
-/// schema declares none on either table. This type carries no validation attribute: a list row is
-/// never submitted.
+/// behaviour from a closed, dependency-injected set through a factory, so publishing an activatable
+/// type name on the wire would invite arbitrary activation. Also absent: the portal identifier (the
+/// request is already portal-scoped), the pane-layout, rendering, container and skinning members,
+/// permission collections, the two intent flags that belong on an update request, the settings-screen
+/// members, and definition metadata reachable through <see cref="ModuleDefinitionDto"/>. This type
+/// carries no validation attribute: a list row is never submitted.
 /// </para>
 /// </remarks>
 public sealed class ModuleListItemDto
@@ -77,10 +47,10 @@ public sealed class ModuleListItemDto
     /// (<c>int IDENTITY (0, 1) NOT NULL</c>, the table's primary key, 01.00.00 line 221).
     /// </summary>
     /// <remarks>
-    /// THE SEED IS 0, so 0 is a legitimate module identifier held by the very first module ever
-    /// created; a test of the form "identifier is less than or equal to zero" rejects a real row.
-    /// This value is also NOT unique across a listing - a module displayed on every page contributes
-    /// one row per placement, all sharing it - so use <see cref="TabModuleId"/> for row identity.
+    /// THE SEED IS 0, so 0 is a legitimate module identifier held by the first module ever created; a
+    /// test of the form "identifier is less than or equal to zero" rejects a real row. This value is also
+    /// NOT unique across a listing - a module displayed on every page contributes one row per placement,
+    /// all sharing it - so use <see cref="TabModuleId"/> for row identity.
     /// </remarks>
     public int ModuleId { get; set; }
 
@@ -90,11 +60,9 @@ public sealed class ModuleListItemDto
     /// primary key, 03.00.01 lines 19-21). This is the stable key for a row of the listing.
     /// </summary>
     /// <remarks>
-    /// Its seed is 1, a different seed from <see cref="ModuleId"/> and <see cref="TabId"/>, which
-    /// both start at 0 - three different seeds across the four identifiers on this type, which is
-    /// why no single "looks empty" numeric test is valid for any of them. This identifier is also
-    /// the key under which placement-scoped settings are stored, so it is what a caller carries
-    /// forward when opening settings for one specific placement rather than for the module.
+    /// Its seed is 1, a different seed from <see cref="ModuleId"/> and <see cref="TabId"/>, which both
+    /// start at 0, so no single "looks empty" numeric test is valid for any of them. This identifier is
+    /// also the key under which placement-scoped settings are stored.
     /// </remarks>
     public int TabModuleId { get; set; }
 
@@ -103,18 +71,11 @@ public sealed class ModuleListItemDto
     /// called this a page, not a tab: the settings screen labelled its picker "Move To Page:".
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The underlying <c>Tabs.TabID</c> is <c>int IDENTITY (0, 1) NOT NULL</c> (01.00.00 line 140),
-    /// so 0 is a legitimate page identifier and must not be read as "no page".
-    /// </para>
-    /// <para>
-    /// A sharper trap surrounds -1: in the legacy query surface, -1 supplied as a page identifier was
-    /// an "ANY PAGE" WILDCARD rather than an absent value - <c>ModuleController.vb</c> lines
-    /// 1223-1225 implement <c>GetModuleTabs(ModuleID)</c> as the per-module read with the
-    /// absent-integer constant in the page position precisely so that it returns every placement
-    /// across all pages. A value of this member is always a concrete page, because a row of this
-    /// listing is always a real placement.
-    /// </para>
+    /// The underlying <c>Tabs.TabID</c> is <c>int IDENTITY (0, 1) NOT NULL</c>, so 0 is a legitimate page
+    /// identifier and must not be read as "no page". A sharper trap surrounds -1: in the legacy QUERY
+    /// surface, -1 in a page position was an "ANY PAGE" WILDCARD rather than an absent value
+    /// (<c>ModuleController.vb</c> L1223-L1225). A value of this member is always a concrete page,
+    /// because a row of this listing is always a real placement.
     /// </remarks>
     public int TabId { get; set; }
 
@@ -122,12 +83,9 @@ public sealed class ModuleListItemDto
     /// The module definition this instance was created from, mapped from <c>Modules.ModuleDefID</c>.
     /// </summary>
     /// <remarks>
-    /// The referenced <c>ModuleDefinitions.ModuleDefID</c> is <c>int IDENTITY (1, 1) NOT NULL</c>
-    /// (01.00.00 line 66), so no boundary value on this member carries a second meaning. The full
-    /// definition metadata - its cache default and its capability flags - is still resolved from
-    /// <c>GET /api/v1/module-definitions</c>, whose contract is <see cref="ModuleDefinitionDto"/>; what
-    /// travels inline here is the same five-value catalogue set the single read carries, so a grid can
-    /// name each row's module type and package without a second request per row.
+    /// The referenced <c>ModuleDefinitions.ModuleDefID</c> is <c>int IDENTITY (1, 1) NOT NULL</c>, so no
+    /// boundary value on this member carries a second meaning. The five-value catalogue set travels inline
+    /// so a grid can name each row's module type and package without a second request per row.
     /// </remarks>
     public int ModuleDefId { get; set; }
 
@@ -136,18 +94,10 @@ public sealed class ModuleListItemDto
     /// <c>ModuleDefinitions.DesktopModuleID</c>.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// ABSENT MEANS UNRESOLVED, AND ZERO IS NOT A VALUE THIS MEMBER CAN CARRY, for the reason recorded
-    /// in full on <c>ModuleDetailDto.DesktopModuleId</c>: the package's own key column is a plain
-    /// <c>IDENTITY</c> seeding at one, and the terminal <c>ModuleDefinitions.DesktopModuleID</c> is
-    /// declared <c>NOT NULL</c> with a foreign key onto it.
-    /// </para>
-    /// <para>
-    /// MIGRATION: added so that a listing row and a single read of the same module report the same
-    /// package. Previously the listing omitted this and the three package members below entirely while
-    /// the single read declared all four, which left a caller unable to tell from a listing which
-    /// package any row came from.
-    /// </para>
+    /// ABSENT MEANS UNRESOLVED, AND ZERO IS NOT A VALUE THIS MEMBER CAN CARRY: the package's own key
+    /// column is a plain <c>IDENTITY</c> seeding at one, and the terminal
+    /// <c>ModuleDefinitions.DesktopModuleID</c> is declared <c>NOT NULL</c> with a foreign key onto it.
+    /// Null here therefore means the join did not resolve, never "no package".
     /// </remarks>
     public int? DesktopModuleId { get; set; }
 
@@ -158,21 +108,16 @@ public sealed class ModuleListItemDto
     /// </summary>
     /// <remarks>
     /// <para>
-    /// GENUINELY OPTIONAL. The legacy settings screen declares no presence validator on this field -
-    /// <c>modulesettings.ascx</c> carries none anywhere, and its comparison validators leave the title
-    /// untouched - so a module with no title is a valid legacy state rather than corrupt data. The
-    /// 256-character bound comes from the schema alone; the
-    /// legacy input carries no length attribute, and enforcement belongs to the validation layer and
-    /// the database rather than to this type.
+    /// GENUINELY OPTIONAL - the legacy settings screen declares no presence validator on this field, so a
+    /// module with no title is a valid legacy state rather than corrupt data.
     /// </para>
     /// <para>
-    /// The legacy representation of "no title" was the EMPTY STRING, not null: the legacy reader
-    /// applied the absent-string constant to this column on every read, so a database null and an
-    /// empty string were indistinguishable once loaded. This contract uses null for absence, which
-    /// makes them distinguishable again. Translating between the two representations is an explicit
-    /// obligation of the hand-written module mapper under <c>Application/Mapping/</c> and must not be
-    /// left to serialisation, because a silent conversion in either direction is an observable change
-    /// of behaviour for any caller that distinguishes an empty title from a missing one.
+    /// The legacy representation of "no title" was the EMPTY STRING, not null: the legacy reader applied
+    /// the absent-string constant to this column on every read, so a database null and an empty string
+    /// were indistinguishable once loaded. This contract uses null for absence, which makes them
+    /// distinguishable again. Translating between the two is an explicit obligation of the hand-written
+    /// module mapper and must not be left to serialisation, because a silent conversion in either
+    /// direction is an observable change of behaviour.
     /// </para>
     /// </remarks>
     public string? ModuleTitle { get; set; }
@@ -183,14 +128,11 @@ public sealed class ModuleListItemDto
     /// (<c>nvarchar(128)</c>).
     /// </summary>
     /// <remarks>
-    /// Carried inline purely so a grid can name each row's module type without a second request, and
-    /// NEVER WRITABLE: it belongs to the definition, not to this instance, and no create or update
-    /// contract accepts it. The legacy screen made the same statement structurally, rendering it into
-    /// a text box marked <c>Enabled="False"</c> (<c>modulesettings.ascx</c> line 28) and assigning it
-    /// without ever reading it back (<c>ModuleSettings.ascx.vb</c> line 125). Nullable because it is
-    /// the result of a join and so is absent whenever the joined definition row cannot be resolved -
-    /// a case the legacy layer surfaced as the empty string, with the same mapper obligation as
-    /// <see cref="ModuleTitle"/>.
+    /// Carried inline so a grid can name each row's module type without a second request, and NEVER
+    /// WRITABLE: it belongs to the definition, not to this instance, and no create or update contract
+    /// accepts it. Nullable because it is the result of a JOIN and so is absent whenever the joined
+    /// definition row cannot be resolved - a case the legacy layer surfaced as the empty string, with the
+    /// same mapper obligation as <see cref="ModuleTitle"/>.
     /// </remarks>
     public string? FriendlyName { get; set; }
 
@@ -199,10 +141,9 @@ public sealed class ModuleListItemDto
     /// (<c>nvarchar(128) NOT NULL</c>).
     /// </summary>
     /// <remarks>
-    /// NEVER WRITABLE: it belongs to the installed package, not to this instance, and no create or
-    /// update contract accepts it. Nullable because it is the result of a join two tables away and is
-    /// therefore absent whenever the definition or its package cannot be resolved, even though the
-    /// underlying column is declared <c>NOT NULL</c> in its own table.
+    /// NEVER WRITABLE: it belongs to the installed package, and no create or update contract accepts it.
+    /// Nullable because it is the result of a join TWO TABLES AWAY and is therefore absent whenever the
+    /// definition or its package cannot be resolved, even though the column is <c>NOT NULL</c>.
     /// </remarks>
     public string? ModuleName { get; set; }
 
@@ -223,9 +164,9 @@ public sealed class ModuleListItemDto
     /// </summary>
     /// <remarks>
     /// Carried as the OPAQUE STRING the column holds, never parsed into a version structure and never
-    /// compared: the legacy column is eight characters wide and its contents are whatever each package
-    /// author wrote, so ordering or comparing it here would impose a grammar the store does not enforce.
-    /// Nullable for the same two reasons as <see cref="Description"/>.
+    /// compared: its contents are whatever each package author wrote, so ordering or comparing it here
+    /// would impose a grammar the store does not enforce. Nullable for the same two reasons as
+    /// <see cref="Description"/>.
     /// </remarks>
     public string? Version { get; set; }
 
@@ -235,21 +176,15 @@ public sealed class ModuleListItemDto
     /// nearer the top of the pane.
     /// </summary>
     /// <remarks>
-    /// A per-placement fact, so two placements of one module can legitimately sit at different
-    /// positions on different pages. Non-nullable because -1 is a live instruction rather than an
-    /// absent value - see the note below - and no mapper may translate it to null.
+    /// A per-placement fact, so two placements of one module can legitimately sit at different positions
+    /// on different pages. Non-nullable because -1 is a live instruction rather than an absent value.
     /// </remarks>
-    // MIGRATION: ModuleOrder of -1 is a COMMAND meaning "append at the bottom of the pane", and it
-    // must survive verbatim in both directions. Three independent pieces of evidence in
-    // Library/Components/Modules/ModuleController.vb establish it: the documented contract of
-    // UpdateModuleOrder at line 1155 ("position within the controls list on page, -1 if to be added
-    // at the end"); the branch that consumes it at lines 667-669 ("' position module at bottom of
-    // pane"); and the same branch inside UpdateModuleOrder at lines 1163-1164, which reads the
-    // existing maximum order for the pane and appends past it. The portal-template import path
-    // assigns it directly at line 296 for exactly this purpose. The hazard is that the legacy
-    // absent-integer constant is ALSO -1, so a mapping that mechanically converted the sentinel to
-    // null here would silently destroy the append instruction and leave new modules at an arbitrary
-    // position.
+    // MIGRATION: ModuleOrder of -1 is a COMMAND meaning "append at the bottom of the pane", and it must
+    // survive verbatim in both directions - the documented contract of UpdateModuleOrder
+    // (ModuleController.vb L1155), the branch that consumes it (L667-L669) and the portal-template import
+    // path (L296) all establish it. The hazard is that the legacy absent-integer constant is ALSO -1, so
+    // a mapping that mechanically converted the sentinel to null here would silently destroy the append
+    // instruction.
     public int ModuleOrder { get; set; }
 
     /// <summary>
@@ -270,39 +205,23 @@ public sealed class ModuleListItemDto
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A per-placement fact: the column is declared on the placement table and nowhere else in the
-    /// upgrade chain. Non-nullable, with
-    /// <see cref="ModuleVisibility.Maximized"/> (ordinal 0) as the default, matching both the column
-    /// and the legacy constructor. The three ordinals persisted are exactly the three the legacy
-    /// radio button list offered (<c>modulesettings.ascx</c> lines 145-147, values 0, 1 and 2).
+    /// A per-placement fact, non-nullable, with <see cref="ModuleVisibility.Maximized"/> (ordinal 0) as
+    /// the default, matching both the column and the legacy constructor. The three persisted ordinals are
+    /// exactly the three the legacy radio button list offered.
     /// </para>
     /// <para>
-    /// <see cref="ModuleVisibility.None"/> MEANS "THE MODULE IS NOT RENDERED". It does not mean the
-    /// value is missing or has yet to be chosen. This is the single most likely misreading of the
-    /// enumeration: it is a deliberate display state an administrator selected, and a consumer that
-    /// treats it as "unset" and substitutes a default will make a suppressed module visible. The type
-    /// offers no "unknown" member and none may be added.
+    /// <see cref="ModuleVisibility.None"/> MEANS "THE MODULE IS NOT RENDERED". It does not mean the value
+    /// is missing or has yet to be chosen - it is a deliberate display state an administrator selected,
+    /// and a consumer that treats it as "unset" and substitutes a default will make a suppressed module
+    /// visible. The type offers no "unknown" member and none may be added.
     /// </para>
     /// </remarks>
-    // MIGRATION: the legacy reader collapsed three distinct stored inputs into one output.
-    // ModuleController.FillModuleInfo lines 81-85 select on
-    // Convert.ToInt32(Null.SetNull(dr("Visibility"), intVisibility)) with cases "0, Null.NullInteger"
-    // -> Maximized, "1" -> Minimized and "2" -> None, so a database null, a stored 0 and a stored -1
-    // all surfaced as Maximized. The target preserves that collapse rather than inventing a fourth
-    // state, which is why this member is not nullable: there was never an observable difference
-    // between the three inputs at the contract boundary, so introducing one now would change
-    // behaviour.
-    //
-    // MIGRATION: legacy defect, annotated and deliberately NOT repaired. That branch has no
-    // catch-all case, and neither does its mirror on the write path
-    // (Website/admin/Modules/ModuleSettings.ascx.vb lines 357-363), so a stored value outside
-    // {-1, 0, 1, 2} falls through every branch and leaves the field at its type default of 0,
-    // silently presenting an out-of-range row as Maximized instead of failing. The behaviour is
-    // preserved exactly as measured. A related legacy looseness matters for whoever writes the
-    // mapper: the read path assigned this enumeration straight into an integer-typed selected-index
-    // property (ModuleSettings.ascx.vb line 134), an implicit conversion that only compiled because
-    // the administration pages were built with strict type checking disabled. Every such coercion
-    // must be made explicit in the target, and any difference in outcome documented.
+    // MIGRATION: the legacy reader collapsed three distinct stored inputs into one output - a database
+    // null, a stored 0 and a stored -1 all surfaced as Maximized (ModuleController.FillModuleInfo
+    // L81-L85). The target preserves that collapse rather than inventing a fourth state, which is why
+    // this member is not nullable: there was never an observable difference at the contract boundary. The
+    // legacy branch has no catch-all case on either the read or the write path, so a stored value outside
+    // {-1, 0, 1, 2} silently presents as Maximized; that defect is preserved as measured.
     public ModuleVisibility Visibility { get; set; }
 
     /// <summary>
@@ -311,18 +230,14 @@ public sealed class ModuleListItemDto
     /// 6568). A row with this flag set still exists and can be restored; it is not a tombstone.
     /// </summary>
     /// <remarks>
-    /// Never absent, so non-nullable. Carried on the list row because a grid that silently mixed
-    /// deleted and live modules, or hid deleted ones with no way to see them, would lose a workflow
-    /// the legacy application supported.
+    /// Never absent, so non-nullable. Carried on the list row because a grid that silently mixed deleted
+    /// and live modules, or hid deleted ones with no way to see them, would lose a workflow the legacy
+    /// application supported.
     /// </remarks>
-    // MIGRATION: the legacy settings screen could only ever CLEAR this flag, never set it.
-    // Website/admin/Modules/ModuleSettings.ascx.vb line 364 contains the bare, unconditional
-    // assignment "objModule.IsDeleted = False" in the middle of its update handler, so saving a
-    // module's settings always un-deleted it as a side effect, whatever its stored state and whether
-    // or not the administrator intended it. This contract reports the stored state faithfully in both
-    // directions and does not reproduce that side effect; restoring a module is a deliberate
-    // operation in the target. The divergence is annotated because the legacy behaviour is
-    // externally observable.
+    // MIGRATION: the legacy settings screen could only ever CLEAR this flag, never set it - its update
+    // handler held the bare unconditional assignment "objModule.IsDeleted = False", so saving settings
+    // always un-deleted the module as a side effect. This contract reports the stored state faithfully in
+    // both directions and does not reproduce that side effect.
     public bool IsDeleted { get; set; }
 
     /// <summary>
@@ -333,21 +248,17 @@ public sealed class ModuleListItemDto
     /// <remarks>
     /// <para>
     /// THE MEMBER NAME AND ITS MEANING DISAGREE, AND THE DISAGREEMENT IS INHERITED. The legacy markup
-    /// labels the checkbox "Display Title?" (<c>modulesettings.ascx</c> line 152), but that inline
-    /// text is only a fallback: <c>Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx</c>
-    /// overrides it to "Display Container?" with the help text "Select this option if you would like
-    /// to display the Module container." The resource wording is authoritative because it is what an
-    /// administrator actually saw, so the flag governs the whole container chrome of which the title
-    /// bar is merely one part. The schema column name is preserved verbatim for traceability -
-    /// renaming it would sever the correspondence with the column and with every legacy call site.
+    /// labels the checkbox "Display Title?", but the resource file overrides it to "Display Container?"
+    /// with help text about the module container - and the resource wording is authoritative, because it
+    /// is what an administrator saw. The flag governs the whole container chrome, of which the title bar
+    /// is one part. The schema column name is preserved verbatim for traceability.
     /// </para>
     /// <para>
-    /// NOTE THE ASYMMETRY: <c>true</c> is the default of the COLUMN and of the legacy object, not of
-    /// this contract. This member is a plain automatic property, so an unpopulated instance reports
-    /// <c>false</c>. No initialiser is added, because one would make a default-constructed instance
-    /// indistinguishable from one deliberately set to <c>true</c>. Populating this member from the
-    /// stored value on every projection is therefore an obligation of the module mapper under
-    /// <c>Application/Mapping/</c>, never something to be left to a default.
+    /// NOTE THE ASYMMETRY: <c>true</c> is the default of the COLUMN and of the legacy object, not of this
+    /// contract. This is a plain automatic property, so an unpopulated instance reports <c>false</c>. No
+    /// initialiser is added, because one would make a default-constructed instance indistinguishable from
+    /// one deliberately set to <c>true</c>; populating it from the stored value is the mapper's
+    /// obligation.
     /// </para>
     /// </remarks>
     public bool DisplayTitle { get; set; }
@@ -358,24 +269,18 @@ public sealed class ModuleListItemDto
     /// date is set. Legacy label "Start Date:".
     /// </summary>
     /// <remarks>
-    /// Together with <see cref="EndDate"/> this pair GATES WHETHER THE MODULE RENDERS AT ALL, which
-    /// is why the sentinel translation below is stated explicitly rather than left to a default
-    /// conversion: getting it wrong does not corrupt a display value, it makes content appear or
-    /// disappear. The 11-character length attribute on the legacy input bounded the text box only,
-    /// never the column, which is a date type.
+    /// Together with <see cref="EndDate"/> this pair GATES WHETHER THE MODULE RENDERS AT ALL, which is why
+    /// the sentinel translation below is stated explicitly rather than left to a default conversion:
+    /// getting it wrong does not corrupt a display value, it makes content appear or disappear.
     /// </remarks>
     // MIGRATION: the legacy absent-date sentinel is DateTime.MinValue, not a database null, and the
-    // translation is an explicit obligation of the module mapper under Application/Mapping/ rather
-    // than something serialisation may decide. The sentinel is proven in both directions by the
-    // legacy screen. READ side, Website/admin/Modules/ModuleSettings.ascx.vb lines 152-157: the text
-    // box is assigned only "If Not Null.IsNull(objModule.StartDate)", so a sentinel date rendered as
-    // an EMPTY box - the screen presented it as absent. WRITE side, lines 367-372: an empty box wrote
-    // Null.NullDate, that is DateTime.MinValue, into the domain object and NOT a database null. The
-    // two representations are equivalent in legacy intent but distinct in value, so the mapper must
-    // convert MinValue to null when reading and null to MinValue when writing. A mapper that let
-    // MinValue through unconverted would emit the year 1 as though it were a real start date, making
-    // every such module appear permanently started; one that treated a genuine stored date as absent
-    // would suppress a module that should render.
+    // translation is an explicit obligation of the module mapper. Both directions are proven by the legacy
+    // screen: the read path assigned the text box only "If Not Null.IsNull(objModule.StartDate)", so a
+    // sentinel date rendered as an EMPTY box, and the write path wrote Null.NullDate - that is
+    // DateTime.MinValue - for an empty box rather than a database null. The mapper must convert MinValue
+    // to null when reading and null to MinValue when writing: letting MinValue through would emit the year
+    // 1 as a real start date, and treating a genuine stored date as absent would suppress a module that
+    // should render.
     public DateTime? StartDate { get; set; }
 
     /// <summary>
@@ -384,15 +289,12 @@ public sealed class ModuleListItemDto
     /// "End Date:".
     /// </summary>
     /// <remarks>
-    /// Subject to the identical sentinel treatment as <see cref="StartDate"/>, whose note carries
-    /// the measured evidence for both members; the legacy read guard and write branch for this member
-    /// sit at <c>ModuleSettings.ascx.vb</c> lines 155-157 and 373-378 and are structurally identical.
-    /// This member is the more dangerous of the two: an unconverted <c>DateTime.MinValue</c> leaking
-    /// into an END date states that the module stopped being displayed in the year 1, which would
-    /// suppress every module carrying no end date - the common case. THE TWO DATES ARE ALSO
-    /// INDEPENDENT: the legacy screen validated each only as a well-formed date, never enforcing that
-    /// the end date follows the start date, and that looseness is preserved - no ordering rule is
-    /// invented here or implied by this contract.
+    /// Subject to the identical sentinel treatment as <see cref="StartDate"/>, whose note carries the
+    /// measured evidence for both. This member is the more dangerous of the two: an unconverted
+    /// <c>DateTime.MinValue</c> in an END date states that the module stopped being displayed in the year
+    /// 1, which would suppress every module carrying no end date - the common case. THE TWO DATES ARE ALSO
+    /// INDEPENDENT: the legacy screen validated each only as a well-formed date and never enforced that
+    /// the end date follows the start date, and that looseness is preserved.
     /// </remarks>
     public DateTime? EndDate { get; set; }
 

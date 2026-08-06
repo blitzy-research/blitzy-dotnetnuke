@@ -1,0 +1,171 @@
+// Component stylesheet for the sign-in screen, served by the route /login.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .login__failure
+//     .login__notice
+//     .login__message
+//     .login__dismiss
+//     .login__form
+//     .login__fields
+//     .login__control
+//     .login__actions
+//     .login__submit
+//
+// THERE IS NO `.login` BLOCK CLASS, deliberately. The template emits no wrapper element of
+// its own - the page title, the failure banner, the failure region and the form are all
+// direct children of the component host - so the host IS the layout container and owns the
+// vertical rhythm. A block class here would either be dead or would require inventing an
+// element for it to sit on.
+//
+// The surface is deliberately flat - element and modifier classes only, no deep descendant
+// chains and no piercing selector. Shared components own their own appearance; this file
+// only places them. Focus indication is deliberately absent and must stay absent:
+// _reset.scss applies the shared focus-ring mixin to every anchor, button, input, select and
+// textarea, so the design system owns focus and a feature screen consumes it rather than
+// redeclaring it - which matters more on this screen than on any other, because it is the
+// first one a keyboard user meets.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT - THE HOST
+// -----------------------------------------------------------------------------
+// A custom element defaults to `display: inline` and would not contain its block-level
+// children correctly, so a box-generating display is required here regardless of layout.
+// Body type is declared here and inherited by every region below rather than restated per
+// rule, and it is declared on the component root rather than left to a global base rule:
+// without it the browser falls back to its own serif default for every label, help string
+// and message on the screen.
+//
+// MIGRATION: the measure is capped at the small breakpoint step. `Login.ascx:L5` set the
+// legacy table to a fixed 160 units and its three boxes to 150 (L10, L16, L29); a sign-in
+// form stretched across a desktop viewport is measurably harder to aim at than a narrow one,
+// so the intent is preserved as a fluid maximum rather than as a pixel match. That makes it
+// a deliberate SNAP to the declared scale, and it is why this file needs no breakpoint mixin
+// at all - reading `breakpoint()` for a raw width is the sanctioned use of that function.
+:host {
+  display: grid;
+  gap: var(--space-4);
+  max-inline-size: mx.breakpoint('sm');
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE FAILURE REGION
+// -----------------------------------------------------------------------------
+// Stacked, and its children left at their own content width by `start` justification so the
+// dismiss command is not stretched across the screen. The region carries NO frame of its own:
+// the banner above it is already a framed surface, and a second frame around a sentence and a
+// command would read as a nesting level that does not exist.
+.login__failure {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+// The calm state. Nothing has broken - the caller has simply attempted too often - so this
+// reads as a bordered informational region on the shared surface tone and NOT in the danger
+// colour. That distinction is the whole point of the state existing separately, and it is the
+// compensating control for the removed human-verification challenge, so a person has to be
+// able to tell it from a refused credential at a glance.
+.login__notice {
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+// The refusal sentence.
+//
+// ⚠ COLOUR IS NOT THE ONLY CARRIER. The sentence itself says what is wrong in words, and the
+// template gives the element `role="alert"` so a reader who perceives no colour at all still
+// receives it. The bold weight is what distinguishes it from the calm notice above without
+// introducing a second hue. The text variant of the danger colour is used rather than the raw
+// value, because the raw value is tuned for a border or an icon and does not clear the
+// contrast threshold as body text.
+.login__message {
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-bold);
+}
+
+// A colour change only, and deliberately not a filled button: dismissing a message is the
+// least consequential thing on this screen and must not compete with the submit command
+// below it for attention.
+.login__dismiss {
+  color: var(--color-primary);
+}
+
+// -----------------------------------------------------------------------------
+//  THE FORM
+// -----------------------------------------------------------------------------
+// One column, always. The legacy rows were a single stack of label-then-control pairs and
+// this screen has too few fields for a second column to help, so no responsive rearrangement
+// is declared - and none is withdrawn either, which is why this file declares no media query
+// through the mixin.
+.login__form,
+.login__fields {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// Every control fills the measure the host sets rather than sizing itself, so the three boxes
+// line up. `min-inline-size: 0` is load-bearing rather than defensive: a text input carries an
+// intrinsic minimum width from its own size attribute, and without this a long seeded account
+// name could push the field past the host's cap.
+.login__control {
+  inline-size: var(--size-full);
+  min-inline-size: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  THE SUBMIT ROW
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives white-space
+// collapsing, and wrapping is intrinsic so the progress indicator drops below the command on a
+// narrow viewport instead of overflowing it.
+.login__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// The only primary command on the screen, so it is emphasised by weight alone. No size or
+// position change: a control that moved between its resting and in-flight states would shift
+// under a pointer that was already on it.
+.login__submit {
+  font-weight: var(--font-weight-bold);
+}
+
+// =============================================================================
+//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: every spacing value above resolves to the shared spacing scale, and that scale is
+// itself a NET ADDITION - the legacy stylesheets declare no spacing system, only ad-hoc values,
+// and this screen's own spacing was `cellpadding="3"` on a layout table. The radius scale is a
+// net addition for the same reason and is used only to round the calm notice. No elevation is
+// introduced: the legacy design is flat.
+//
+// MIGRATION: the three near-identical legacy font stacks are consolidated into the single base
+// family token. The monospaced family is not used on this screen at all: the support reference -
+// the one value that would warrant it - is rendered by the shared banner, which owns the document
+// it is read from. The template records why no reference region exists here.
+//
+// MIGRATION: the legacy screen styled its refusal through `.NormalRed`, which conveyed failure
+// by red text ALONE. That is not reproduced: the sentence carries the meaning in words, the
+// template's `role="alert"` carries it to assistive technology, and the bold weight carries it
+// to a reader who perceives no colour - so the hue is the fourth carrier rather than the only
+// one. Reversing a colour-only signal costs nothing visually, which is why the precedence order
+// permits it.
+//
+// ⚠ NOTHING HERE RENDERS A CREDENTIAL. No rule reveals, echoes or reserves space for a typed
+// value, and no `content` declaration exists anywhere in this file - so a credential cannot
+// reach the painted output through the stylesheet even in a forced-colours or print context.
+// =============================================================================

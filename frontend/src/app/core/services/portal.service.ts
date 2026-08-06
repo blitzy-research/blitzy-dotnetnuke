@@ -6,16 +6,22 @@ import type { HttpParams } from '@angular/common/http';
 import type { Observable } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
-import { toPagedResult } from '../models/paged-result.model';
+import {
+  decodePortalAlias,
+  decodePortalDetail,
+  decodePortalListItem,
+  decodePortalSettings,
+} from '../models/portal.model';
+import { arrayOf, decodeResponse, envelopeOf, pageOf } from '../utils/decode.util';
 import { emptyQueryParams, portalListParams } from '../utils/http-params.util';
+import { presentedInContext } from './notification.service';
 
-import type { ApiResponse, PagedResponse } from '../models/paged-result.model';
+import type { Decoder } from '../utils/decode.util';
 import type {
   CreatePortalAliasRequest,
   CreatePortalRequest,
   PortalAlias,
   PortalDetail,
-  PortalListItem,
   PortalListPage,
   PortalSettings,
   UpdatePortalAliasRequest,
@@ -23,6 +29,24 @@ import type {
   UpdatePortalSettingsRequest,
 } from '../models/portal.model';
 import type { PagedRequestParams, PortalListFilter } from '../utils/http-params.util';
+
+/**
+ * One decoder per response shape this transport reads, composed once at module scope.
+ *
+ * Composed here rather than inside each method because a decoder is a pure value: building
+ * it once per module keeps the per-call work to the traversal itself, and puts the whole
+ * read surface of this service in one readable block. Each name states the envelope as well
+ * as the payload, because the two envelopes are not interchangeable — a page's metadata is
+ * required and populated where a single payload's is null, and conflating them is what
+ * allowed a page with no metadata to be read as a successful empty first page.
+ */
+const PORTAL_PAGE: Decoder<PortalListPage> = pageOf(decodePortalListItem);
+const PORTAL_DETAIL_RESPONSE: Decoder<PortalDetail> = envelopeOf(decodePortalDetail);
+const PORTAL_SETTINGS_RESPONSE: Decoder<PortalSettings> = envelopeOf(decodePortalSettings);
+const PORTAL_ALIAS_RESPONSE: Decoder<PortalAlias> = envelopeOf(decodePortalAlias);
+const PORTAL_ALIAS_LIST_RESPONSE: Decoder<readonly PortalAlias[]> = envelopeOf(
+  arrayOf(decodePortalAlias),
+);
 
 /**
  * The portal (tenant) resource, its settings projection and its host-name aliases.
@@ -58,19 +82,47 @@ import type { PagedRequestParams, PortalListFilter } from '../utils/http-params.
  * application is serving anything; a service call to it would be meaningless.
  *
  * ---------------------------------------------------------------------------
- * WHY EACH METHOD UNWRAPS AN ENVELOPE, AND WHY THAT IS NOT LOGIC.
+ * WHY EACH METHOD DECODES ITS RESPONSE, AND WHY THAT IS NOT LOGIC.
  *
  * The API does not return bare contracts. A single record arrives inside
  * `ApiResponse<T>` as `{ data, meta }`, and a page arrives as `{ items, meta }`
  * (`PagedResponse<T>`). Both shapes are transport framing rather than domain data, so
- * each method types its call as the framing it will actually receive and hands back
- * the payload. Typing a call as the bare payload instead is the quietest defect
- * available in this code base: it compiles, it returns 200, and every member of the
- * result reads as `undefined` because the real body had them one level deeper.
+ * each method reads the framing it will actually receive and hands back the payload.
+ * Typing a call as the bare payload instead is the quietest defect available in this
+ * code base: it compiles, it returns 200, and every member of the result reads as
+ * `undefined` because the real body had them one level deeper.
  *
- * The paged member routes its body through the normaliser the paging contract owns
- * rather than reading `items` and `meta` here, so the one place a page count may be
- * derived stays the one place that already documents doing it.
+ * ⚠ AND A TYPE ARGUMENT IS NOT A CHECK. `http.get<PortalDetail>(…)` compiles to
+ * `http.get(…)`: the interface is erased, nothing inspects the body, and the value the
+ * caller receives is trusted purely because a developer wrote a type where a value was
+ * expected. Every response is therefore read as `unknown` and passed through the
+ * decoder its contract publishes, so a renamed member, a `null` where a number was
+ * promised, a string where a count was promised or a missing page envelope FAILS THE
+ * OBSERVABLE at the boundary — with the member path named — instead of surfacing as a
+ * blank field, a `NaN` or a silently empty grid several layers away from its cause.
+ * The refusal names the member and its expected type and never the value, so it cannot
+ * disclose portal data into a log.
+ *
+ * Decoding is not domain logic and does not make this more than a transport: it
+ * asserts the contract the server publishes and derives nothing. The one derivation a
+ * page needs — a page count from a total and a size — stays inside the paging
+ * contract's own module, which is the only place that documents deriving it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHO ANNOUNCES A FAILURE.
+ *
+ * Every request below is marked as PRESENTED BY ITS CALLER, and that mark is what
+ * stops one failure being shown twice. Without it the global error interceptor queues a
+ * transient notification for every failed response, while the caller — `portal.store`
+ * for the screens, `portal-settings.component` for its own save and delete paths —
+ * ALSO presents the same problem document, as an in-page banner or as its own
+ * legacy-worded message. The operator saw both.
+ *
+ * The caller wins, for two reasons. It has the context to word the failure the way the
+ * legacy screen worded it, and an in-page block beside the form is what the legacy
+ * actually did: `UI.Skins.Skin.AddModuleMessage` rendered into the page, never as a
+ * transient global message. The interceptor still re-throws, so nothing is swallowed —
+ * it only stays silent.
  *
  * ---------------------------------------------------------------------------
  * WHAT THIS SERVICE DOES NOT PUT ON THE WIRE.
@@ -182,13 +234,16 @@ export class PortalService {
   ): Observable<PortalListPage> {
     const params: HttpParams = portalListParams(request, filter);
 
-    // Typed as the paged envelope because that is the shape received: `items` and
-    // `meta` sit at the top level of this body rather than inside `data`. The
-    // normaliser belongs to the paging contract, so the page count it may derive is
-    // derived in the one module that documents deriving it.
+    // Read as `unknown` and DECODED, not asserted. `items` and `meta` sit at the top
+    // level of this body rather than inside `data`, and the page decoder requires both:
+    // a body missing either is refused here rather than reaching the grid as a
+    // successful empty first page that hides however many portals actually exist.
     return this.http
-      .get<PagedResponse<PortalListItem>>(API_ENDPOINTS.portals.collection(), { params })
-      .pipe(map(toPagedResult));
+      .get<unknown>(API_ENDPOINTS.portals.collection(), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_PAGE, body)));
   }
 
   /**
@@ -222,8 +277,8 @@ export class PortalService {
    */
   getById(portalId: number): Observable<PortalDetail> {
     return this.http
-      .get<ApiResponse<PortalDetail>>(API_ENDPOINTS.portals.byId(portalId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.portals.byId(portalId), { context: presentedInContext() })
+      .pipe(map((body) => decodeResponse(PORTAL_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -250,8 +305,10 @@ export class PortalService {
    */
   create(request: CreatePortalRequest): Observable<PortalDetail> {
     return this.http
-      .post<ApiResponse<PortalDetail>>(API_ENDPOINTS.portals.collection(), request)
-      .pipe(map((envelope) => envelope.data));
+      .post<unknown>(API_ENDPOINTS.portals.collection(), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -275,8 +332,10 @@ export class PortalService {
    */
   update(portalId: number, request: UpdatePortalRequest): Observable<PortalDetail> {
     return this.http
-      .put<ApiResponse<PortalDetail>>(API_ENDPOINTS.portals.byId(portalId), request)
-      .pipe(map((envelope) => envelope.data));
+      .put<unknown>(API_ENDPOINTS.portals.byId(portalId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -290,7 +349,9 @@ export class PortalService {
    * cannot succeed while that state holds.
    */
   delete(portalId: number): Observable<void> {
-    return this.http.delete<void>(API_ENDPOINTS.portals.byId(portalId));
+    return this.http.delete<void>(API_ENDPOINTS.portals.byId(portalId), {
+      context: presentedInContext(),
+    });
   }
 
   /**
@@ -321,8 +382,10 @@ export class PortalService {
    */
   getSettings(portalId: number): Observable<PortalSettings> {
     return this.http
-      .get<ApiResponse<PortalSettings>>(API_ENDPOINTS.portals.settings(portalId))
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.portals.settings(portalId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_SETTINGS_RESPONSE, body)));
   }
 
   /**
@@ -346,8 +409,10 @@ export class PortalService {
     request: UpdatePortalSettingsRequest,
   ): Observable<PortalSettings> {
     return this.http
-      .put<ApiResponse<PortalSettings>>(API_ENDPOINTS.portals.settings(portalId), request)
-      .pipe(map((envelope) => envelope.data));
+      .put<unknown>(API_ENDPOINTS.portals.settings(portalId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_SETTINGS_RESPONSE, body)));
   }
 
   /**
@@ -386,11 +451,11 @@ export class PortalService {
     const params: HttpParams = emptyQueryParams();
 
     return this.http
-      .get<ApiResponse<readonly PortalAlias[]>>(
-        API_ENDPOINTS.portalAliases.forPortal.collection(portalId),
-        { params },
-      )
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.portalAliases.forPortal.collection(portalId), {
+        params,
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_ALIAS_LIST_RESPONSE, body)));
   }
 
   /**
@@ -407,11 +472,10 @@ export class PortalService {
     request: CreatePortalAliasRequest,
   ): Observable<PortalAlias> {
     return this.http
-      .post<ApiResponse<PortalAlias>>(
-        API_ENDPOINTS.portalAliases.forPortal.collection(portalId),
-        request,
-      )
-      .pipe(map((envelope) => envelope.data));
+      .post<unknown>(API_ENDPOINTS.portalAliases.forPortal.collection(portalId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_ALIAS_RESPONSE, body)));
   }
 
   /**
@@ -428,10 +492,10 @@ export class PortalService {
    */
   getAlias(portalId: number, portalAliasId: number): Observable<PortalAlias> {
     return this.http
-      .get<ApiResponse<PortalAlias>>(
-        API_ENDPOINTS.portalAliases.forPortal.byId({ portalId, portalAliasId }),
-      )
-      .pipe(map((envelope) => envelope.data));
+      .get<unknown>(API_ENDPOINTS.portalAliases.forPortal.byId({ portalId, portalAliasId }), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_ALIAS_RESPONSE, body)));
   }
 
   /**
@@ -459,6 +523,7 @@ export class PortalService {
     return this.http.put<void>(
       API_ENDPOINTS.portalAliases.forPortal.byId({ portalId, portalAliasId }),
       request,
+      { context: presentedInContext() },
     );
   }
 
@@ -474,6 +539,7 @@ export class PortalService {
   deleteAlias(portalId: number, portalAliasId: number): Observable<void> {
     return this.http.delete<void>(
       API_ENDPOINTS.portalAliases.forPortal.byId({ portalId, portalAliasId }),
+      { context: presentedInContext() },
     );
   }
 }

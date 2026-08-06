@@ -389,7 +389,14 @@ public sealed class ModuleService : IModuleService
     private const string ContentVersionAttributeName = "version";
 
     /// <summary>Maximum number of characters accepted in one portable-content XML document.</summary>
-    private const long ImportDocumentCharacterMaximum = 1_048_576;
+    /// <remarks>
+    /// TAKEN FROM THE PUBLISHED CONTRACT RATHER THAN RESTATED. The number used to be a private literal here,
+    /// which is how the transfer path came to disagree with itself: the client, the proxy, the host's body
+    /// limit and this ceiling were four independent numbers, and a document this ceiling accepted could not
+    /// fit through the body limit in front of it. The contract type owns the number, every other limit is
+    /// derived from it, and this alias exists only so the call sites below stay readable.
+    /// </remarks>
+    private const long ImportDocumentCharacterMaximum = ModuleImportRequest.ContentCharacterMaximum;
 
     /// <summary>Maximum number of XML nodes accepted before module-owned content is invoked.</summary>
     private const int ImportDocumentNodeMaximum = 10_000;
@@ -517,12 +524,6 @@ public sealed class ModuleService : IModuleService
     private const int UnpagedPageSize = 0;
 
     /// <summary>
-    /// Property the module listing orders by when a caller names none, reproducing the order the legacy
-    /// module settings screen presented.
-    /// </summary>
-    private const string DefaultModuleSortProperty = "ModuleTitle";
-
-    /// <summary>
     /// Attribution used when an import arrives without an authenticated caller.
     /// </summary>
     /// <remarks>
@@ -629,9 +630,22 @@ public sealed class ModuleService : IModuleService
     /// <para>
         /// THE WINDOW IS TAKEN OVER THE PLACEMENT ROWS, WHICH ARE THE UNIT THIS LISTING RETURNS, so
         /// <c>totalCount</c> is the exact number of rows the whole filtered collection holds and
-        /// <c>pageSize</c> is exactly the width the caller asked for. <see cref="ReadPlacementRowsAsync"/>
-        /// therefore returns the whole filtered, ordered ROW set rather than a page of it, and the
-        /// expansion from modules to rows happens before the window is cut.
+        /// <c>pageSize</c> is exactly the width the caller asked for. The window is cut BY THE STORE, over
+        /// the placements themselves, so the two figures are in the unit of the thing being counted
+        /// without this process having to see the collection to establish either of them.
+        /// </para>
+        /// <para>
+        /// MIGRATION: THE FILTERS, THE ORDERING, THE COUNT AND THE WINDOW ALL MOVED INTO THE STATEMENT, and
+        /// the reason is that paging the response is not the same thing as paging the work. This member used
+        /// to read every module the tenant owns, read every placement of every module that survived the
+        /// filters, expand and order the complete row set, and only then take its window - so a request for
+        /// ten rows performed the reads, the allocation and the sort of the entire tenant, and the eager
+        /// graph the module read carries meant the definition and package of every one of those modules was
+        /// hydrated too. Nothing about that was visible in the response, which is what made it durable. The
+        /// tenant, recycle-bin, page and title predicates are all relational, the ordering is expressible
+        /// on the joined columns, and the count is a count - so all four belong where the rows are, and
+        /// <see cref="IModuleRepository.ListPlacementsAsync"/> is where they now happen. The reads are two,
+        /// fixed, and bounded by the PAGE rather than by the tenant.
         /// </para>
         /// <para>
         /// MIGRATION: THIS REPLACES A PAGING CONTRACT THAT WAS ARITHMETICALLY UNSOUND, and the unsoundness is
@@ -683,36 +697,40 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Portal {portalId} does not exist."));
         }
 
-        // The complete ordered row set, in the unit the response carries. Both the window below and the
-        // total it is described by are taken from this one sequence, so the two cannot disagree.
-        IReadOnlyList<ModulePlacement> rows = await ReadPlacementRowsAsync(
+        // One window of placement rows, with its total, both established by the store over the same
+        // filtered set - so the two cannot disagree, and neither costs a read of the tenant.
+        PagedResult<TabModule> window = await _modules.ListPlacementsAsync(
             portalId,
             tabId,
             includeDeleted,
-            request,
+            request.HasQuery ? request.Query : null,
+            request.HasSort ? request.SortBy : null,
+            request.SortDir == SortDirection.Descending,
+            request.PageIndex,
+            request.PageSize,
             cancellationToken).ConfigureAwait(false);
 
         bool unpaged = request.PageSize == UnpagedPageSize;
 
-        IReadOnlyList<ModulePlacement> window = unpaged
-            ? rows
-            : rows
-                .Skip(Paging.SkipCount(request.PageIndex, request.PageSize))
-                .Take(request.PageSize)
-                .ToList();
-
-        // Read once, and only when there is a row to name. A window that lands past the end of the
-        // collection projects nothing, so it asks the definition catalogue nothing either.
-        IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue = window.Count == 0
+        // Read once, and only when there is a row to name, and narrowed to the definitions the WINDOW
+        // actually references. A window that lands past the end of the collection projects nothing, so it
+        // asks the definition catalogue nothing either.
+        IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue = window.Items.Count == 0
             ? new Dictionary<int, ModuleCatalogueFacts>()
-            : await ReadCatalogueFactsAsync(portalId, cancellationToken).ConfigureAwait(false);
+            : await ReadCatalogueFactsAsync(
+                portalId,
+                window.Items
+                    .Select(row => row.Module.ModuleDefinitionId)
+                    .Distinct()
+                    .ToList(),
+                cancellationToken).ConfigureAwait(false);
 
-        var items = new List<ModuleListItemDto>(window.Count);
-        foreach (ModulePlacement row in window)
+        var items = new List<ModuleListItemDto>(window.Items.Count);
+        foreach (TabModule row in window.Items)
         {
             items.Add(ModuleMappings.ToListItem(
                 row.Module,
-                row.Placement,
+                row,
                 ResolveCatalogue(row.Module, catalogue)));
         }
 
@@ -724,211 +742,9 @@ public sealed class ModuleService : IModuleService
                 ? PagedResult<ModuleListItemDto>.Unpaged(items)
                 : PagedResult<ModuleListItemDto>.Create(
                     items,
-                    rows.Count,
+                    window.TotalCount,
                     request.PageIndex,
                     request.PageSize));
-    }
-
-    /// <summary>
-    /// Composes the listing's complete row set - one row per placement - after applying the recycle-bin,
-    /// page and title filters and the module ordering.
-    /// </summary>
-    /// <param name="portalId">The tenant whose modules are read.</param>
-    /// <param name="tabId">Restrict to the modules placed on one page, or <see langword="null"/> for the whole tenant.</param>
-    /// <param name="includeDeleted">Whether modules already in the recycle bin are included.</param>
-        /// <param name="request">The paging request supplying the ordering and the optional title query.</param>
-        /// <param name="cancellationToken">Token observed for cancellation.</param>
-        /// <returns>
-        /// Every row the request selects, in the order the response must carry them: the modules in their
-        /// chosen order, and within each module its placements by page, then position, then placement key.
-        /// The page window is NOT applied here - the caller takes it over these rows, which is what keeps the
-        /// window and the answer in the same unit.
-        /// </returns>
-        /// <remarks>
-        /// MIGRATION: the legacy module block of the data provider carries no paging member of any kind, so
-        /// none is invented on the repository contract; the filters and the ordering are composed here,
-        /// in the layer that owns the paging request, and the window is cut by the caller over what this
-        /// returns. The predicates are applied in the same order and with the same meaning the single legacy
-        /// query had.
-    /// <para>
-    /// NO WINDOW IS TAKEN HERE, AND THAT IS THE POINT OF THIS MEMBER'S SHAPE. The rows the listing returns
-    /// are PLACEMENTS, and a module contributes one row per placement, so a window cut over modules is a
-    /// window in the wrong unit - which is exactly the defect that made the published paging metadata
-    /// unsound. The caller cuts its window over the expanded rows instead, which is why this returns the
-    /// whole ordered set rather than a <c>PagedResult</c>. The ordering still happens HERE, before the
-    /// expansion, so it orders the collection rather than one arbitrary page of it.
-    /// </para>
-    /// <para>
-    /// The page filter is answered by the page repository rather than by reading each candidate module's
-    /// placements in turn. "Which modules sit on this page" is a page-centric question, it belongs to
-    /// that contract by the same ownership split that keeps placement mutation on the module contract,
-    /// and it resolves in one read instead of one per candidate. That single read is returned alongside the
-    /// modules so the row expansion can reuse it and the page repository is consulted exactly once.
-    /// </para>
-    /// <para>
-    /// The placements the rows are built from are read SET-BASED, exactly once. When a page was named,
-    /// that page's own placement read already holds every placement the rows can be drawn from, so it is
-    /// reused rather than asked for again and no second read happens at all. When no page was named, one
-    /// batched read covers every module that survived the filters. Neither shape reads per module, which
-    /// is the property that keeps the cost of this listing independent of how many modules the tenant
-    /// holds.
-    /// </para>
-    /// </remarks>
-    private async Task<IReadOnlyList<ModulePlacement>> ReadPlacementRowsAsync(
-        int portalId,
-        int? tabId,
-        bool includeDeleted,
-        PagedRequest request,
-        CancellationToken cancellationToken)
-    {
-        IEnumerable<Module> candidates =
-            await _modules.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
-
-        if (!includeDeleted)
-        {
-            candidates = candidates.Where(module => !module.IsDeleted);
-        }
-
-        IReadOnlyList<TabModule>? placementsOnNamedPage = null;
-
-        if (tabId is int addressedTab)
-        {
-            // The presence of a value selects the filter, never its magnitude: TabID is IDENTITY(0, 1),
-            // so a page identifier of zero is a real page and must not be read as "unspecified".
-            placementsOnNamedPage =
-                await _tabs.GetTabModulesAsync(addressedTab, cancellationToken).ConfigureAwait(false);
-
-            HashSet<int> placedModuleIds = placementsOnNamedPage
-                .Select(placement => placement.ModuleId)
-                .ToHashSet();
-
-            candidates = candidates.Where(module => placedModuleIds.Contains(module.ModuleId));
-        }
-
-        if (request.HasQuery)
-        {
-            // ModuleTitle is nullable, so the null test precedes the comparison. The match stays
-            // case-insensitive, as the lower-cased legacy comparison was.
-            string wanted = request.Query!.Trim();
-            candidates = candidates.Where(module =>
-                module.ModuleTitle is not null
-                && module.ModuleTitle.Contains(wanted, StringComparison.OrdinalIgnoreCase));
-        }
-
-        List<Module> ordered = ApplyOrder(candidates, request).ToList();
-
-        // One read for every row, or none when a page was named and its placements are already in hand.
-        // An empty candidate set asks for nothing: the batched read short-circuits, but not issuing the
-        // call at all is clearer about the intent.
-        IReadOnlyList<TabModule> placements;
-        if (placementsOnNamedPage is not null)
-        {
-            placements = placementsOnNamedPage;
-        }
-        else if (ordered.Count == 0)
-        {
-            placements = Array.Empty<TabModule>();
-        }
-        else
-        {
-            placements = await _modules
-                .GetTabModulesByModuleIdsAsync(
-                    ordered.Select(module => module.ModuleId).ToList(),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        var placementsByModuleId = new Dictionary<int, List<TabModule>>();
-        foreach (TabModule placement in placements)
-        {
-            if (!placementsByModuleId.TryGetValue(placement.ModuleId, out List<TabModule>? group))
-            {
-                group = new List<TabModule>();
-                placementsByModuleId[placement.ModuleId] = group;
-            }
-
-            group.Add(placement);
-        }
-
-        var rows = new List<ModulePlacement>(ordered.Count);
-        foreach (Module module in ordered)
-        {
-            // A module placed nowhere contributes no row, which is what the legacy join-based read did.
-            if (!placementsByModuleId.TryGetValue(module.ModuleId, out List<TabModule>? modulePlacements))
-            {
-                continue;
-            }
-
-            foreach (TabModule placement in OrderPlacements(modulePlacements, tabId))
-            {
-                rows.Add(new ModulePlacement(module, placement));
-            }
-        }
-
-        return rows;
-    }
-
-    /// <summary>
-    /// Applies the caller's chosen ordering to the narrowed module set, before the page is taken.
-    /// </summary>
-    /// <param name="candidates">The modules that survived the deletion, page and title filters.</param>
-    /// <param name="request">The paging request carrying the sort field and its direction.</param>
-    /// <returns>The ordered module set.</returns>
-    /// <remarks>
-    /// An ordering is applied unconditionally, including when the caller names nothing and when the
-    /// caller names something this listing does not recognise, and every ordering ends on the primary key
-    /// so the order is total. Ordering happens here rather than after the page has been taken, because a
-    /// listing that ordered a page it had already cut would only be re-ordering the rows that one
-    /// arbitrary page happened to contain.
-    /// </remarks>
-    // MIGRATION: the arms below are exactly the five names the boundary admits for this collection,
-    // declared as Modules in Application/Validation/SortableFields.cs and enforced by the sealed
-    // ModulePagedRequestValidator, and each one is a projected member of ModuleListItemDto. That
-    // correspondence has to hold in both directions: a name the boundary admits without an arm here is a
-    // field the listing accepts and then ignores, and an arm without a permitted name is unreachable.
-    //
-    // Two members of the projection are deliberately NOT sortable, and their absence is measured rather
-    // than accidental. ModuleOrder is a per-pane placement position rather than a listing order: it is a
-    // column of dbo.TabModules and not of dbo.Modules, it is only meaningful within one pane of one page,
-    // and it carries the append sentinel -1 - so ordering a cross-page module listing by it would sort
-    // unrelated positions against each other and put every pending append first. DisplayTitle is derived
-    // at projection time from the module title and its definition's friendly name, so it exists only
-    // after this ordering has run; sorting by it would require the derivation to move into the read.
-    //
-    // The default arm reproduces the order this listing has always had, the module title compared
-    // case-insensitively. Note that ModuleTitle is nullable, so an untitled module sorts first ascending
-    // and last descending; that is the framework comparer's own behaviour and is left as it is, because
-    // grouping the untitled modules together at one end is the only ordering that carries information.
-    private static IEnumerable<Module> ApplyOrder(IEnumerable<Module> candidates, PagedRequest request)
-    {
-        bool descending = request.SortDir == SortDirection.Descending;
-        string property = request.HasSort ? request.SortBy!.Trim() : DefaultModuleSortProperty;
-
-        return property.ToUpperInvariant() switch
-        {
-            "MODULEID" => descending
-                ? candidates.OrderByDescending(module => module.ModuleId)
-                : candidates.OrderBy(module => module.ModuleId),
-            "ISDELETED" => descending
-                ? candidates.OrderByDescending(module => module.IsDeleted)
-                    .ThenByDescending(module => module.ModuleId)
-                : candidates.OrderBy(module => module.IsDeleted).ThenBy(module => module.ModuleId),
-            "STARTDATE" => descending
-                ? candidates.OrderByDescending(module => module.StartDate)
-                    .ThenByDescending(module => module.ModuleId)
-                : candidates.OrderBy(module => module.StartDate).ThenBy(module => module.ModuleId),
-            "ENDDATE" => descending
-                ? candidates.OrderByDescending(module => module.EndDate)
-                    .ThenByDescending(module => module.ModuleId)
-                : candidates.OrderBy(module => module.EndDate).ThenBy(module => module.ModuleId),
-            _ => descending
-                ? candidates
-                    .OrderByDescending(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
-                    .ThenByDescending(module => module.ModuleId)
-                : candidates
-                    .OrderBy(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(module => module.ModuleId),
-        };
     }
 
     /// <inheritdoc />
@@ -969,7 +785,7 @@ public sealed class ModuleService : IModuleService
         }
 
         IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue =
-            await ReadCatalogueFactsAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await ReadCatalogueFactsAsync(portalId, wantedDefinitionIds: null, cancellationToken).ConfigureAwait(false);
 
         return Result<ModuleDetailDto?>.Success(
             ModuleMappings.ToDetail(module, placement, ResolveCatalogue(module, catalogue)));
@@ -1375,7 +1191,7 @@ public sealed class ModuleService : IModuleService
         }
 
         IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue =
-            await ReadCatalogueFactsAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await ReadCatalogueFactsAsync(portalId, wantedDefinitionIds: null, cancellationToken).ConfigureAwait(false);
 
         ModuleDetailDto detail =
             ModuleMappings.ToDetail(module, placement, ResolveCatalogue(module, catalogue));
@@ -2609,15 +2425,22 @@ public sealed class ModuleService : IModuleService
         // otherwise be accepted here and then silently discarded, which returns a page the caller cannot
         // account for and cannot detect. Refusing states that plainly.
         //
-        // SortableFields.Modules holds exactly the five names ApplyOrder has an arm for, and that
-        // correspondence is the point: a name admitted here without an arm is a field the listing accepts
-        // and ignores, and an arm without an admitted name is unreachable. The ordering is applied to the
-        // modules BEFORE the page window is taken, so it orders the collection rather than re-sorting one
-        // arbitrary page - and because each module contributes its placement rows together, the rows are
-        // returned in the module order the caller asked for. The projection's two remaining members are
-        // refused rather than faked, for the reasons recorded on ApplyOrder: a placement position is not a
-        // listing order, and a title derived at projection time does not exist until after the ordering
-        // has run.
+        // SortableFields.Modules holds exactly the five names the store's placement ordering has an arm
+        // for - ModuleRepository.ApplyPlacementOrder - and that correspondence is the point: a name
+        // admitted here without an arm is a field the listing accepts and ignores, and an arm without an
+        // admitted name is unreachable. THIS is the layer that refuses an unrecognised name, which is why
+        // the store's ordering may safely fall back to its default rather than refusing again: a request
+        // that reaches the store has already been checked against this set.
+        //
+        // The ordering is applied by the store BEFORE the window is cut, so it orders the collection
+        // rather than re-sorting one arbitrary page - and because the rows are ordered by module first and
+        // by placement second, each module's placement rows are still returned together and in the module
+        // order the caller asked for. The projection's two remaining members are refused rather than
+        // faked: ModuleOrder is a per-pane placement position rather than a listing order - a column of
+        // dbo.TabModules, meaningful only within one pane of one page, and carrying the append sentinel -
+        // so ordering a cross-page listing by it would sort unrelated positions against each other and
+        // put every pending append first; and DisplayTitle is derived at projection time from the module
+        // title and its definition's friendly name, so it does not exist until after the ordering has run.
         if (!SortableFields.IsPermittedFor(request.SortBy, SortableFields.Modules))
         {
             return new ResultReason(
@@ -2673,22 +2496,6 @@ public sealed class ModuleService : IModuleService
     private readonly record struct NormalisedSettings(
         ResultReason? Reason,
         Dictionary<string, string> Values);
-
-    /// <summary>
-    /// One row of the module listing: a module together with the single placement that row describes.
-    /// </summary>
-    /// <param name="Module">The module the row projects.</param>
-    /// <param name="Placement">
-    /// The one placement this row carries. A module placed on several pages yields several rows, each
-    /// pairing the same module with a different placement.
-    /// </param>
-    /// <remarks>
-    /// The pair exists so that the row set can be ordered and windowed as ROWS before anything is
-    /// projected. Carrying the two references rather than the finished contract type is deliberate: the
-    /// definition names needed to project a row are read only once the window is known, so a row that
-    /// falls outside the window is never mapped at all.
-    /// </remarks>
-    private readonly record struct ModulePlacement(Module Module, TabModule Placement);
 
     /// <summary>
     /// Normalises a submitted settings map, rejecting anything the columns cannot hold.
@@ -2773,7 +2580,11 @@ public sealed class ModuleService : IModuleService
     {
         if (content.Length > ImportDocumentCharacterMaximum)
         {
-            throw new XmlException("Portable-content XML exceeds the configured character budget.");
+            // The refusal NAMES the ceiling, because a caller that is only told it exceeded a budget cannot
+            // tell how much smaller a document would be accepted - and the published limit is the whole
+            // point of the transfer contract this number belongs to.
+            throw new XmlException(FormattableString.Invariant(
+                $"Portable-content XML exceeds the {ImportDocumentCharacterMaximum} character maximum."));
         }
 
         XmlReaderSettings settings = CreateImportXmlReaderSettings();
@@ -2998,28 +2809,28 @@ public sealed class ModuleService : IModuleService
     }
 
     /// <summary>
-    /// Orders a module's placements deterministically, optionally narrowed to one page.
-    /// </summary>
-    /// <param name="placements">The module's placements.</param>
-    /// <param name="tabId">The page to narrow to, or <see langword="null"/> for every page.</param>
-    /// <returns>The placements in page, position and identifier order.</returns>
-    private static IEnumerable<TabModule> OrderPlacements(IReadOnlyList<TabModule> placements, int? tabId)
-        => placements
-            .Where(candidate => tabId is null || candidate.TabId == tabId.Value)
-            .OrderBy(candidate => candidate.TabId)
-            .ThenBy(candidate => candidate.ModuleOrder)
-            .ThenBy(candidate => candidate.TabModuleId);
-
-    /// <summary>
     /// Reads a portal's definition and package catalogue facts, keyed by definition identifier.
     /// </summary>
     /// <param name="portalId">The portal whose catalogue is read.</param>
+    /// <param name="wantedDefinitionIds">
+    /// The definitions the caller is about to project, or <see langword="null"/> to key the whole tenant
+    /// catalogue. Narrowing here is what keeps a page's auxiliary work proportional to the page: a page of
+    /// ten rows references at most ten definitions however many the tenant's grants cover.
+    /// </param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>Catalogue facts by definition identifier.</returns>
     /// <remarks>
     /// <para>
     /// One read serves a whole page. The definition read already loads each definition's package, so the
     /// package name, description and version cost nothing beyond the read that resolves the display name.
+    /// </para>
+    /// <para>
+    /// The narrowing is applied to what is KEYED rather than to what is read, because the tenant's
+    /// catalogue is answered by one portal-scoped statement whose cost does not vary with the set asked
+    /// for - the grant join is the same join either way - whereas a per-definition read would be one
+    /// statement per row. Keying only the definitions the window references is therefore the whole saving
+    /// available here, and it is the saving that matters: it is what stops a page's dictionary growing with
+    /// the tenant's package grants.
     /// </para>
     /// <para>
     /// MIGRATION: this read previously returned display names alone, which is why the package name,
@@ -3030,14 +2841,27 @@ public sealed class ModuleService : IModuleService
     /// </remarks>
     private async Task<IReadOnlyDictionary<int, ModuleCatalogueFacts>> ReadCatalogueFactsAsync(
         int portalId,
+        IReadOnlyCollection<int>? wantedDefinitionIds,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<ModuleDefinition> definitions =
             await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        var facts = new Dictionary<int, ModuleCatalogueFacts>(definitions.Count);
+        // A null set means "key everything", which is what the single-module reads want: they hold one
+        // module and its definition may or may not be covered by the tenant's grants, and ResolveCatalogue
+        // falls back to the module's own navigations when it is not. An EMPTY set is a different
+        // instruction and keys nothing, but no call site issues one - both callers skip this read entirely
+        // when they have no row to name.
+        HashSet<int>? wanted = wantedDefinitionIds is null ? null : new HashSet<int>(wantedDefinitionIds);
+
+        var facts = new Dictionary<int, ModuleCatalogueFacts>(wanted?.Count ?? definitions.Count);
         foreach (ModuleDefinition definition in definitions)
         {
+            if (wanted is not null && !wanted.Contains(definition.ModuleDefinitionId))
+            {
+                continue;
+            }
+
             facts[definition.ModuleDefinitionId] = ModuleCatalogueFacts.From(definition);
         }
 

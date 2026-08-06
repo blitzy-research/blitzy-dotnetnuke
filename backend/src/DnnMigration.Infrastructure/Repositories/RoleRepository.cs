@@ -1,4 +1,5 @@
 using DnnMigration.Domain.Abstractions.Repositories;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -147,6 +148,23 @@ internal sealed class RoleRepository : IRoleRepository
 {
     private readonly DnnDbContext _context;
 
+    /// <summary>
+    /// The role property a role listing orders by when the caller names none.
+    /// </summary>
+    /// <remarks>
+    /// The role name, which is the order the legacy administration grid presented and the order the
+    /// unpaged reads on this repository already use.
+    /// </remarks>
+    private const string DefaultRoleSortProperty = "RoleName";
+
+    /// <summary>
+    /// The account property a role-membership listing orders by when the caller names none.
+    /// </summary>
+    /// <remarks>
+    /// The display name, which is what the legacy membership grid rendered and led with.
+    /// </remarks>
+    private const string DefaultMembershipSortProperty = "DisplayName";
+
     /// <summary>Initialises a new instance of the <see cref="RoleRepository"/> class.</summary>
     /// <param name="context">The unit-of-work scoped database context.</param>
     /// <exception cref="ArgumentNullException"><paramref name="context"/> is <see langword="null"/>.</exception>
@@ -188,6 +206,151 @@ internal sealed class RoleRepository : IRoleRepository
             .ThenBy(r => r.RoleId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Read-only, so the rows are not tracked: the one call site projects them and reads the total, and it
+    /// mutates nothing.
+    /// </para>
+    /// <para>
+    /// The tenant predicate is STRICT equality and admits no installation-wide role, which is what makes
+    /// this member a different question from <see cref="GetByPortalIdAsync"/> rather than a paged version of
+    /// it. The composition this replaces read that broader member and then reapplied the strict test in
+    /// memory, so the narrowing is the same one - it has simply moved to the side of the boundary that can
+    /// apply it before the rows are materialised.
+    /// </para>
+    /// <para>
+    /// The name fragment is matched with a relational containment test over folded case, so the caller's
+    /// text stays DATA - a per-cent or underscore in it matches literally instead of widening the search -
+    /// and the answer does not depend on the collation the installation carries. The legacy comparison was
+    /// also case-insensitive.
+    /// </para>
+    /// <para>
+    /// MIGRATION: ordering moves into the statement, and the two arms where that could have been observable
+    /// were checked rather than assumed. The billing and trial frequency arms order by an enumeration whose
+    /// members are declared AS THE STORED CHARACTER CODES - <c>Day = 'D'</c>, <c>Week = 'W'</c>,
+    /// <c>Month = 'M'</c>, <c>Year = 'Y'</c>, <c>None = 'N'</c>, <c>OneTime = 'O'</c> - so the enumeration's
+    /// numeric order and the column's alphabetical order are the same order, and moving the sort into SQL
+    /// cannot reorder them. The name and description arms move from an ordinal, case-insensitive comparer to
+    /// the column's own collation, which agrees on case under the collation this schema is installed with and
+    /// can differ on punctuation and accents; that is the same trade the tenant listing already makes, and it
+    /// is the correct side of the boundary, because ordering here would require reading every row first.
+    /// </para>
+    /// </remarks>
+    public async Task<PagedResult<Role>> ListAsync(
+        int portalId,
+        int? roleGroupId,
+        bool ungroupedOnly,
+        string? nameQuery,
+        string? sortBy,
+        bool descending,
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<Role> query = _context.Roles
+            .AsNoTracking()
+            .Where(role => role.PortalId == portalId);
+
+        if (roleGroupId is int wantedGroup)
+        {
+            // RoleGroupID is IDENTITY(0, 1), so zero is a legitimate group key; the presence of a value
+            // selects the filter, never its magnitude.
+            query = query.Where(role => role.RoleGroupId == wantedGroup);
+        }
+        else if (ungroupedOnly)
+        {
+            // The legacy "< Global Roles >" selection. A test for the ABSENCE of a group, because
+            // Roles.RoleGroupID is nullable and an ungrouped role stores SQL null there.
+            query = query.Where(role => role.RoleGroupId == null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(nameQuery))
+        {
+            string wanted = nameQuery.Trim().ToLowerInvariant();
+            query = query.Where(role => role.RoleName.ToLower().Contains(wanted));
+        }
+
+        query = ApplyRoleOrder(query, sortBy, descending);
+
+        // The group is loaded WITH THE WINDOW, so the projection's group name costs one join over the rows
+        // being returned rather than over every role the tenant owns.
+        IQueryable<Role> projection = query.Include(role => role.RoleGroup);
+
+        if (pageSize == 0)
+        {
+            List<Role> all = await projection.ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            return PagedResult<Role>.Unpaged(all);
+        }
+
+        int totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+
+        List<Role> rows = await projection
+            .Skip(Paging.SkipCount(pageIndex, pageSize))
+            .Take(pageSize)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return PagedResult<Role>.Create(rows, totalCount, pageIndex, pageSize);
+    }
+
+    /// <summary>
+    /// Applies the caller's chosen role ordering, terminating on the primary key.
+    /// </summary>
+    /// <param name="query">The filtered role query.</param>
+    /// <param name="sortBy">The role property to order by, or <see langword="null"/> for the default.</param>
+    /// <param name="descending">Whether the ordering runs downwards.</param>
+    /// <returns>The ordered query.</returns>
+    /// <remarks>
+    /// Every arm terminates on <c>RoleID</c>, so the order is TOTAL and two roles sharing a sort value have a
+    /// defined relative position - without which the same page coordinates can return different rows on two
+    /// calls. An unrecognised name falls to the default rather than being refused here, because refusing a
+    /// sort field is a request-validation decision and the layer that owns the paging request has already
+    /// made it against this collection's own permitted set.
+    /// </remarks>
+    private static IQueryable<Role> ApplyRoleOrder(IQueryable<Role> query, string? sortBy, bool descending)
+    {
+        string property = string.IsNullOrWhiteSpace(sortBy) ? DefaultRoleSortProperty : sortBy.Trim();
+
+        return property.ToUpperInvariant() switch
+        {
+            "ROLEID" => descending
+                ? query.OrderByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.RoleId),
+            "DESCRIPTION" => descending
+                ? query.OrderByDescending(role => role.Description).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.Description).ThenBy(role => role.RoleId),
+            "SERVICEFEE" => descending
+                ? query.OrderByDescending(role => role.ServiceFee).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.ServiceFee).ThenBy(role => role.RoleId),
+            "BILLINGFREQUENCY" => descending
+                ? query.OrderByDescending(role => role.BillingFrequency).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.BillingFrequency).ThenBy(role => role.RoleId),
+            "BILLINGPERIOD" => descending
+                ? query.OrderByDescending(role => role.BillingPeriod).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.BillingPeriod).ThenBy(role => role.RoleId),
+            "TRIALFEE" => descending
+                ? query.OrderByDescending(role => role.TrialFee).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.TrialFee).ThenBy(role => role.RoleId),
+            "TRIALFREQUENCY" => descending
+                ? query.OrderByDescending(role => role.TrialFrequency).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.TrialFrequency).ThenBy(role => role.RoleId),
+            "TRIALPERIOD" => descending
+                ? query.OrderByDescending(role => role.TrialPeriod).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.TrialPeriod).ThenBy(role => role.RoleId),
+            "ISPUBLIC" => descending
+                ? query.OrderByDescending(role => role.IsPublic).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.IsPublic).ThenBy(role => role.RoleId),
+            "AUTOASSIGNMENT" => descending
+                ? query.OrderByDescending(role => role.AutoAssignment).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.AutoAssignment).ThenBy(role => role.RoleId),
+            _ => descending
+                ? query.OrderByDescending(role => role.RoleName).ThenByDescending(role => role.RoleId)
+                : query.OrderBy(role => role.RoleName).ThenBy(role => role.RoleId),
+        };
     }
 
     /// <inheritdoc />
@@ -561,6 +724,142 @@ internal sealed class RoleRepository : IRoleRepository
             .ThenBy(a => a.UserRoleId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Read-only, so the rows are not tracked. The role name is matched the same way the account-and-role
+    /// read above matches it - folded case, exact equality - so the two members answer about the same role
+    /// for the same argument.
+    /// </para>
+    /// <para>
+    /// The account fragment is matched against BOTH the display name and the login name, with a relational
+    /// containment test over folded case, so the caller's text stays data rather than becoming a pattern.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THREE OF THE ORDERING NAMES THIS COLLECTION ADMITS CANNOT BE ORDERED BY THE STORE, AND
+    /// ORDERING BY THEM IN THIS PROCESS WAS ALREADY A NO-OP - so the two facts cancel and the observable
+    /// order is unchanged. <c>CreatedDate</c>, <c>LastLoginDate</c> and <c>IsApproved</c> are
+    /// <c>Ignore</c>d by <c>UserConfiguration</c>: they are not columns of <c>dbo.Users</c> in this model but
+    /// values of the external <c>aspnet_Membership</c> store, and this read does not populate them. Every
+    /// account it composes therefore carries the CLR default for all three, so the in-memory sort that
+    /// preceded this one compared a constant across every row and the sequence it produced was decided
+    /// entirely by the tie-break that followed it. Those three arms accordingly order by the tie-break alone,
+    /// in the direction asked for, which reproduces that sequence exactly. They are left in the permitted set
+    /// rather than withdrawn from it, because withdrawing them would turn requests the endpoint accepts today
+    /// into refusals - a contract change no defect requires. Making them genuinely orderable would mean
+    /// bringing the membership store into this join, which is a separate piece of work.
+    /// </para>
+    /// <para>
+    /// The remaining arms order by mapped columns reached through the assignment's account. Ordering through
+    /// a navigation renders as a join, and a null on the far side sorts first ascending - which is the same
+    /// position the empty-account default the in-memory ordering substituted would have taken.
+    /// </para>
+    /// </remarks>
+    public async Task<PagedResult<UserRole>> ListRoleMembershipsAsync(
+        int portalId,
+        string roleName,
+        string? accountQuery,
+        string? sortBy,
+        bool descending,
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(roleName);
+
+        string wantedRole = roleName.Trim().ToLowerInvariant();
+
+        IQueryable<UserRole> query = _context.UserRoles
+            .AsNoTracking()
+            .Where(a => a.Role!.PortalId == portalId && a.Role!.RoleName.ToLower() == wantedRole);
+
+        if (!string.IsNullOrWhiteSpace(accountQuery))
+        {
+            string wantedAccount = accountQuery.Trim().ToLowerInvariant();
+            query = query.Where(a =>
+                a.User!.DisplayName.ToLower().Contains(wantedAccount)
+                || a.User!.Username.ToLower().Contains(wantedAccount));
+        }
+
+        query = ApplyMembershipOrder(query, sortBy, descending);
+
+        // The role and the account are loaded WITH THE WINDOW, so the three records that compose one row are
+        // materialised for the rows being returned and for no others.
+        IQueryable<UserRole> projection = query
+            .Include(a => a.Role)
+            .Include(a => a.User);
+
+        if (pageSize == 0)
+        {
+            List<UserRole> all = await projection.ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            return PagedResult<UserRole>.Unpaged(all);
+        }
+
+        int totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+
+        List<UserRole> rows = await projection
+            .Skip(Paging.SkipCount(pageIndex, pageSize))
+            .Take(pageSize)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return PagedResult<UserRole>.Create(rows, totalCount, pageIndex, pageSize);
+    }
+
+    /// <summary>
+    /// Applies the caller's chosen membership ordering, terminating on the assignment key.
+    /// </summary>
+    /// <param name="query">The filtered assignment query.</param>
+    /// <param name="sortBy">The account property to order by, or <see langword="null"/> for the default.</param>
+    /// <param name="descending">Whether the ordering runs downwards.</param>
+    /// <returns>The ordered query.</returns>
+    /// <remarks>
+    /// Every arm terminates on <c>UserRoleID</c>, so the order is total. The three arms that name a value of
+    /// the external membership store order by that tie-break alone; the remark on
+    /// <see cref="ListRoleMembershipsAsync"/> sets out why that is exactly what the in-memory ordering they
+    /// replace produced.
+    /// </remarks>
+    private static IQueryable<UserRole> ApplyMembershipOrder(
+        IQueryable<UserRole> query,
+        string? sortBy,
+        bool descending)
+    {
+        string property = string.IsNullOrWhiteSpace(sortBy) ? DefaultMembershipSortProperty : sortBy.Trim();
+
+        return property.ToUpperInvariant() switch
+        {
+            "USERID" => descending
+                ? query.OrderByDescending(a => a.UserId).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.UserId).ThenBy(a => a.UserRoleId),
+            "USERNAME" => descending
+                ? query.OrderByDescending(a => a.User!.Username).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.User!.Username).ThenBy(a => a.UserRoleId),
+            "FIRSTNAME" => descending
+                ? query.OrderByDescending(a => a.User!.FirstName).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.User!.FirstName).ThenBy(a => a.UserRoleId),
+            "LASTNAME" => descending
+                ? query.OrderByDescending(a => a.User!.LastName).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.User!.LastName).ThenBy(a => a.UserRoleId),
+            "EMAIL" => descending
+                ? query.OrderByDescending(a => a.User!.Email).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.User!.Email).ThenBy(a => a.UserRoleId),
+            "ISSUPERUSER" => descending
+                ? query.OrderByDescending(a => a.User!.IsSuperUser).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.User!.IsSuperUser).ThenBy(a => a.UserRoleId),
+
+            // The three membership-store values: every row carries the same CLR default for them, so the
+            // tie-break alone is the whole ordering, exactly as it was in memory.
+            "CREATEDDATE" or "LASTLOGINDATE" or "ISAPPROVED" => descending
+                ? query.OrderByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.UserRoleId),
+
+            _ => descending
+                ? query.OrderByDescending(a => a.User!.DisplayName).ThenByDescending(a => a.UserRoleId)
+                : query.OrderBy(a => a.User!.DisplayName).ThenBy(a => a.UserRoleId),
+        };
     }
 
     /// <inheritdoc />

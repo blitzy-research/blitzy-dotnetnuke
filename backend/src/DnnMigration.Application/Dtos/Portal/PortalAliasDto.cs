@@ -155,4 +155,53 @@ public sealed class PortalAliasDto
     /// </para>
     /// </remarks>
     public string? HttpAlias { get; set; }
+
+    // MIGRATION: This member restores a legacy affordance that would otherwise have been lost, and
+    // it is the one member on this contract that is COMPUTED rather than stored. There is no
+    // IsCurrent column: dbo.PortalAlias carries PortalAliasID, PortalID and HTTPAlias and nothing
+    // else (02.02.02.SqlDataProvider L3805-L3807), and Rule T4 forbids adding one. The value is
+    // derived per request by PortalService from IPortalContext.PortalAliasId, so the same row
+    // reports true through the host name it is bound to and false through every other host name -
+    // which is exactly what "current" means and exactly how the legacy screen behaved.
+    //
+    // The legacy behaviour being restored: Website/admin/Portal/PortalAlias.ascx.vb L51-L60 declares
+    // IsNotCurrent(Id), which parses each grid row's key and answers False when it equals
+    // Me.PortalAlias.PortalAliasID() - the alias the request itself arrived through, resolved
+    // server-side by the page base class - and portalalias.ascx L8 binds that answer to the edit
+    // hyperlink's Visible property. An operator therefore could not edit the alias they were
+    // browsing through, and the reason is not cosmetic: renaming it re-points the host name the
+    // current session is using at nothing, so the tenant stops resolving for everybody arriving that
+    // way and the operator cannot reach the screen that would undo it.
+    //
+    // WHY THE SERVER PUBLISHES IT RATHER THAN THE BROWSER INFERRING IT. Resolution is the server's
+    // rule: it matches the request host, port included, against stored aliases exactly, refuses an
+    // ambiguous match, and may be reached through a reverse proxy that rewrites the host the browser
+    // sees. A client-side guess from window.location would therefore be right on one deployment and
+    // wrong on another - and being wrong means either withholding the affordance from a row that is
+    // safe to edit, or offering it on the one row that is not.
+    //
+    // ⚠ THE FLAG IS AN AFFORDANCE, NEVER THE ENFORCEMENT POINT. PortalService refuses an update or a
+    // removal addressed at the current alias on its own account, with a stable failure code, so a
+    // crafted call that ignores this flag is refused anyway. A client is free to render the flag
+    // however it likes; it is not free to decide the rule.
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this alias is the one the current request resolved
+    /// through, and therefore must not be renamed or removed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Computed per request rather than stored — see the migration note immediately above. Reported
+    /// as <see langword="false"/> on every row whenever the request resolved no tenant at all, which
+    /// is the correct answer rather than a fallback: with no resolved alias, no row is the one being
+    /// browsed through.
+    /// </para>
+    /// <para>
+    /// <see langword="false"/> is DATA here and never an absence marker. The legacy sentinel helper
+    /// used <c>False</c> as its absent boolean
+    /// (<c>Library/Components/Shared/Null.vb</c> lines 76 to 80), so a legacy consumer could not tell
+    /// the two apart; this member always carries a decided answer and a reader must treat it as one.
+    /// </para>
+    /// </remarks>
+    public bool IsCurrent { get; set; }
 }
