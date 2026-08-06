@@ -1,3 +1,37 @@
+<!--
+  THE LABELLED-FIELD WRAPPER. The structure is derived line by line from
+  `Website/controls/labelcontrol.ascx`, whose 11 content lines are the whole of the
+  legacy control this replaces: a label, a help affordance, a block that the
+  affordance reveals, and nothing else. No wording, no styling and no control of its
+  own live here - every string arrives through an input and every value is a token in
+  the paired stylesheet.
+
+  MIGRATION: EVERY STRING THIS TEMPLATE DISPLAYS IS INTERPOLATED PLAIN TEXT, AND THAT
+  IS A SECURITY BOUNDARY RATHER THAN A STYLISTIC PREFERENCE. Measured across the 37
+  in-scope `App_LocalResources` resource files: of 1111 entries, 76 carry an HTML tag
+  and 29 open with break markup. The decisive entry is `Advertising.Text` in
+  `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx`, which holds a LIVE
+  Google AdSense script block with a REMOTE SOURCE; and this folder's own
+  `Website/admin/Security/App_LocalResources/EditRoles.ascx.resx` holds
+  `valRoleName.Text` opening with break markup, as do all nine of its validator
+  entries. The tags are stored XML-escaped, so a naive search returns nothing and
+  would wrongly clear the risk.
+
+  Every legacy value is therefore treated as UNTRUSTED MARKUP. Label, help and message
+  text are rendered with interpolation ONLY, so the framework escapes them and a
+  resource value carrying a script is shown as characters and never executed. No
+  trusted-markup binding, no sanitiser bypass and no pre-escaped member appears here
+  or is even reachable - the component deliberately exposes none. The legacy
+  application reached the same conclusion by hand:
+  `Website/admin/Security/AccessDenied.ascx.vb:L43` encodes its untrusted
+  query-string message before displaying it.
+
+  Interior break markup carried inside a legacy value is resolved to newline
+  characters by the component before it reaches this template, so no reader ever sees
+  those characters as text. That cleaning is the workspace's single shared normaliser
+  and is deliberately NOT repeated here: a function called from a binding would re-run
+  on every change-detection pass and could drift from the canonical rule.
+-->
 <div class="form-field">
   <!--
     The label and the help affordance share one row so that the affordance sits
@@ -57,18 +91,38 @@
 
     @if (hasHelp()) {
       <!--
-        MIGRATION: a keyboard-reachable button, which reverses a legacy defect
-        rather than reproducing it. `labelcontrol.ascx` declares `tabindex="-1"`
-        twice - on the link button at L3 and again on the image inside it at L4 - so
-        the legacy affordance was operable by pointer only. A real `button` is
-        reachable by Tab and activated by both Enter and Space with no scripting,
-        and `type="button"` is explicit so it can never submit an ancestor form,
-        which is the faithful translation of the legacy `CausesValidation="False"`.
+        MIGRATION: a keyboard-reachable button, which reverses a legacy defect rather
+        than reproducing it. `labelcontrol.ascx` withdraws the affordance from the tab
+        order with a NEGATIVE TAB INDEX twice over - on the link button at L3 and again
+        on the image nested inside it at L4 - so the legacy help was operable by
+        pointer only and unreachable by keyboard. The same defect repeats at
+        `helpbuttoncontrol.ascx` L2 and L3 and at `sectionheadcontrol.ascx` L3, five
+        declarations in all; the fifth spells the attribute with a capital I, so a
+        case-sensitive search undercounts them to four. Here the affordance is a real
+        `button`: reachable by Tab and activated by both Enter and Space with no
+        scripting at all, and `type="button"` is stated explicitly so it can never
+        submit an ancestor form, which is the faithful translation of the legacy
+        `CausesValidation="False"` on L3. Reversing this costs nothing visually, which
+        is why the precedence order permits it - accessibility outranks visual
+        continuity, and here the two do not even conflict.
 
         Its name is composed by reference from its own text plus the field's label,
         so a screen reader announces "Help, Role Name" rather than the twentieth
         undifferentiated "Help" on a long form, and no wording is invented to
         achieve it.
+
+        THE `aria-controls` DECISION, stated explicitly because there are two valid
+        answers and only one is used here. The revealed block is REMOVED FROM THE DOM
+        when collapsed rather than kept and hidden, so `aria-controls` is DROPPED while
+        there is nothing to control - the component resolves it to null and an
+        attribute binding omits the attribute entirely. The alternative, keeping the
+        block in the document and hiding it accessibly, was rejected: a collapsed help
+        block is not content a reader should be able to reach, and leaving it present
+        would put text in the accessibility tree that is not on the screen. Both this
+        attribute and the block itself are governed by the SAME condition, so the
+        reference exists exactly when its target does and can never dangle in either
+        direction. `aria-expanded` carries the state in both cases, which is what makes
+        the control reference optional for a disclosure to begin with.
 
         MIGRATION: `~/images/help.gif` is not carried across - it is a 344-byte
         raster and the only static binary in scope is the favicon - so the glyph is
@@ -109,11 +163,27 @@
 
   <!--
     The control slot. Unnamed and unconstrained, because a field routinely holds
-    SEVERAL controls: `editroles.ascx` L98-L115 puts a text box, a drop-down and two
-    validators under one label, and `roles.ascx` L5-L16 puts a drop-down, an edit
-    link and a delete button under another. Nothing here wraps, counts or reorders
-    the projected children, and no `&nbsp;` is emitted to separate them - the 70
-    literal ones in the legacy markup are replaced by the stylesheet's `gap`.
+    SEVERAL controls rather than one: `editroles.ascx` L98-L115 puts a text box, a
+    drop-down list and two compare validators under the single `plBillingPeriod` label,
+    and its own resource entry states the intent - 'These two fields are used in
+    conjunction to enter a Billing Period'; L130-L147 repeats the shape for the trial
+    period. `roles.ascx` L5-L16 puts a drop-down list, an edit link and a delete image
+    button under one label, and `editroles.ascx` L28 adds a hidden read-only twin
+    beside a text box. Nothing here wraps, counts, selects or reorders the projected
+    children.
+
+    MIGRATION: the legacy inter-control spacing was expressed as CONTENT - a pair of
+    non-breaking-space entities sits between the text box and the drop-down list at
+    `editroles.ascx` L105, and there are 70 such literal entities across the in-scope
+    admin markup. None is reproduced: spacing is the stylesheet's token-based `gap`,
+    which is adjustable and cannot be collapsed by the template compiler the way a
+    run of literal whitespace can.
+
+    MIGRATION: rich-text editing is a documented functional reduction rather than an
+    oversight. The legacy editor provider is out of scope, so a field that legacy
+    rendered through it is a plain `textarea` PROJECTED BY THE CALLER - this component
+    renders no control of its own and varies in no way by control type. That affects
+    the 19 `TextMode="MultiLine"` declarations in the in-scope screens.
 
     MIGRATION: the named `role="group"` preserves the composite field context, but
     that name is not inherited by descendant controls. The legacy `ControlName`
@@ -139,15 +209,21 @@
 
   @if (helpExpanded()) {
     <!--
-      Revealed as a BLOCK below the control in normal flow, which is what the legacy
-      control did: the literal `<br />` on `labelcontrol.ascx:L8` proves the block
-      break, and `default.css:L424-L439` styles `.Help` as a bordered, filled box.
-      It is a disclosure, never a tool tip and never a pop-up. That `<br />` is not
-      reproduced - spacing here comes from the stylesheet.
+      Revealed as a BLOCK in normal document flow, which is what the legacy control
+      did. Two independent proofs: `labelcontrol.ascx:L8` places a literal break
+      element between the label and the panel, and `default.css:L424-L439` styles
+      `.Help` with a one-pixel solid border on all four sides over a filled
+      background - a BOX. So this is a disclosure, and never a tool tip, a pop-up or
+      anything absolutely positioned.
+
+      MIGRATION: that break element is NOT reproduced. It was vertical spacing
+      expressed as content, and spacing here is the stylesheet's spacing scale
+      instead; this template emits no break element anywhere.
 
       The text is interpolated, so a resource value carrying markup is shown as
-      characters rather than executed. The component resolves legacy break markup
-      before it reaches here, so no reader ever sees the characters `<br>`.
+      characters rather than executed - see the governing note at the top of this
+      file. The component resolves any interior break markup before it reaches here,
+      so no reader is ever shown those characters as text.
     -->
     <p class="form-field__help" [id]="helpId()">{{ helpText() }}</p>
   }
@@ -173,6 +249,21 @@
       the messages, and identical messages are genuinely reachable, so tracking by
       value would raise a duplicated-key error exactly when the server reported the
       same failure twice.
+
+      MIGRATION: error state is carried by MORE THAN COLOUR. The legacy `.NormalRed`
+      class conveyed failure through red text alone, so three non-colour affordances
+      are layered here instead. The message is TEXT and says what is wrong in words,
+      so the information itself never depends on hue. `role="alert"` surfaces it to a
+      reader who perceives no colour at all. And the stylesheet gives the message bold
+      weight, which is what distinguishes it from the help text sitting directly above
+      it without introducing a second colour.
+
+      No word is authored here to prefix the message. This template holds no
+      user-facing wording of its own beyond the two accessibility strings the component
+      supplies as constants - the required marker's hidden word and the help button's
+      name - and inventing a third would put untranslatable wording in a template at a
+      point where localisation is out of scope, for a distinction the three affordances
+      above already carry.
     -->
     <div class="form-field__errors" [id]="errorId()" role="alert">
       @for (message of errorMessages(); track $index) {
