@@ -1,193 +1,91 @@
+// =============================================================================
+//  form-field — the shared labelled-control block
+// =============================================================================
+//  Replaces the legacy `Website/controls/labelcontrol.ascx` composite and the
+//  four style slots that the legacy DNN PropertyEditor control named for itself.
+//  That four-part contract is not an inference drawn from the markup — the
+//  in-scope admin markup declares it outright, seven times each for the label,
+//  control and help slots and five times for the error slot:
+//
+//    labelstyle-cssclass="SubHead"              ->  .form-field__label
+//    editcontrolstyle-cssclass="NormalTextBox"  ->  .form-field__control
+//    helpstyle-cssclass="Help"                  ->  .form-field__help
+//    errorstyle-cssclass="NormalRed"            ->  .form-field__error
+//
+//  declared at Website/admin/Users/UserSettings.ascx L20, L43 and L63,
+//  User.ascx L10, Membership.ascx L10 and EditProfileDefinition.ascx L27. Those
+//  four legacy classes are therefore the measured source for the four slots
+//  below, and every value each one carries is reproduced or else its divergence
+//  is recorded on the rule that diverges.
+//
+//  OWNERSHIP. This stylesheet owns the block's LAYOUT and the presentation of
+//  its four slots, and nothing else. The global form vocabulary in
+//  src/styles/_forms.scss owns every bare element — label, input, select,
+//  textarea, button, fieldset, legend — together with the invalid, disabled and
+//  readonly state hooks, and it defers field layout to this component in as many
+//  words. No rule below restyles a caller's control by tag name, so there is no
+//  specificity contest between the two files and no rule here can leak out of
+//  the component.
+//
+//  TOKENS ARE DELIBERATELY NOT `@use`d. _tokens.scss declares no Sass member at
+//  all — no mixin, no function, no variable — and emits a single `:root` block,
+//  so loading it here would import nothing while duplicating all 66 of its
+//  declarations into this component's own compiled stylesheet, against a 4 kB
+//  `anyComponentStyle` budget. Its own header states that it emits real CSS and
+//  must not be loaded from a component. Custom properties are global CSS and are
+//  reached with `var()`; only _mixins.scss is loaded, which emits no CSS
+//  whatsoever, so the load costs nothing. Every peer component stylesheet in the
+//  workspace resolves this the same way.
+//
+//  MIGRATION: the legacy stylesheet declares three overlapping font stacks —
+//  `Tahoma, Arial, Helvetica` 38 times, `Tahoma, Verdana, Arial, Sans-Serif`
+//  twice and `Verdana, sans-serif` once — and all four slots below drew from the
+//  first of them. They are consolidated into the single --font-family-base, and
+//  no rule in this file restates it: _reset.scss sets that token on `body` and
+//  applies `font: inherit` to `button`, `input`, `select` and `textarea`, so the
+//  consolidated stack reaches every slot and every hosted control by
+//  inheritance. The visual difference between the three stacks is imperceptible.
+
 @use '../../../../styles/mixins' as mx;
 
-// A custom element has no intrinsic display, so block flow is declared explicitly.
-:host {
-  display: block;
-}
-
-// Stacked label, control, help and error. A column with a gap rather than margins on
-// each child, so the spacing between the four parts is declared once and cannot be
-// doubled by a child that brings its own margin.
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin-block-end: var(--space-4);
-}
-
-// The label and its help affordance share one line, so the affordance sits beside the
-// label text where the legacy control put it. A row rather than an inline run, so the
-// gap between the two is the shared spacing token and never a space character in the
-// markup - the template compiler collapses those, and they cannot be adjusted.
+// The two-column arrangement, shared by the wide-viewport default at the foot of
+// this file and by the always-inline variant. Authored once as a local mixin so
+// the two cannot drift apart, and it deliberately contains no `:host` selector of
+// its own: it is included once at the top level of a media query and once nested
+// inside a host selector, and a `:host` nested inside another host selector
+// compiles to something that can never match anything.
 //
-// Baseline alignment rather than centre, so the button's text sits on the same line as
-// the label's regardless of which of the two is taller.
-.form-field__label-row {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-inline-size: 0;
-}
-
-// MIGRATION: the legacy label rule declared bold weight on the base font stack, and
-// that weight is carried across. The colour is left to inherit, exactly as the legacy
-// rule did, so a label sits in the surrounding text colour rather than the brand
-// colour - which is reserved for headings and links.
-.form-field__label {
-  display: block;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-bold);
-  line-height: var(--line-height-base);
-}
-
-// The marker is separated from the label text by a token-based inset rather than by a
-// space character in the markup. A literal space would be collapsed by the template
-// compiler and could not be adjusted.
-//
-// MIGRATION: the marker is TEXT - a glyph rendered in the label's own type size - so
-// it resolves to --color-danger-text rather than to --color-danger. The plain red
-// measures 4.0:1 on the page background, below the 4.5:1 minimum that governs text of
-// this size; the darker member of the same hue measures 7.20:1 and reads as the same
-// colour. --color-danger is now reserved for borders and indicators, where 4.0:1
-// clears the 3:1 floor that actually applies. The glyph is not the sole indicator in
-// any case: .form-field__required-text states the requirement in words for a reader
-// who cannot see it, and the control itself carries the programmatic attribute.
-.form-field__required {
-  margin-inline-start: var(--space-1);
-  color: var(--color-danger-text);
-}
-
-// The word that gives the marker glyph a meaning for a reader who cannot see it. The
-// mixin keeps it in the accessibility tree while removing it from view, so the glyph
-// and the word are one indicator expressed twice rather than two competing ones.
-.form-field__required-text {
-  @include mx.visually-hidden;
-}
-
-// MIGRATION: the legacy affordance was a raster image inside a link button, styled by
-// nothing at all. This is a real button, so its native chrome is cleared to leave the
-// glyph and its text - the only additions are the pointer, which the legacy link also
-// had, and the focus ring, which the legacy control withdrew from the tab order
-// entirely and therefore never needed.
-.form-field__help-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-
-  flex: none;
-
-  padding: 0;
-
-  background-color: transparent;
-  border: none;
-  color: var(--color-primary);
-
-  font-family: var(--font-family-base);
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-base);
-
-  cursor: pointer;
-
-  @include mx.focus-ring;
-
-  // Additive decoration only: withdrawn on a device with no fine pointer, and nothing
-  // an interaction depends on lives here. The change is instantaneous because the
-  // legacy stylesheet declares no transition, animation or transform anywhere, so
-  // there is no legacy motion to preserve and none is introduced.
-  @include mx.hover {
-    color: var(--color-primary-hover);
-  }
-}
-
-// Sized from the spacing scale rather than from intrinsic dimensions, and stroked in
-// `currentColor`, so the glyph tracks the button's own colour and typography.
-.form-field__help-icon {
-  flex: none;
-  inline-size: var(--space-4);
-  block-size: var(--space-4);
-}
-
-// The messages of one field, grouped so that the live region and the description
-// reference are one element rather than one per message. A column with a gap, so two
-// simultaneous messages are separated by the shared token and never run together.
-.form-field__errors {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-inline-size: 0;
-}
-
-.form-field__control {
-  display: flex;
-  flex-direction: column;
-  min-inline-size: 0;
-}
-
-// MIGRATION: the legacy help rule rendered its text one step smaller than body text
-// in the muted colour, and both are carried across as tokens.
-//
-// MIGRATION: an interior line break survives as a line break. The component resolves
-// the legacy break markup that the resource values carry into newline characters, and
-// `pre-line` renders those as the breaks they always were while still collapsing runs
-// of spaces - so a two-paragraph help entry reads as two paragraphs, exactly as it did
-// before, without any markup being interpreted.
-.form-field__help {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-base);
-  overflow-wrap: break-word;
-  white-space: pre-line;
-}
-
-// MIGRATION: the legacy validators rendered their messages in the error colour at
-// body size, and this is the one place the colour is deliberately NOT the measured
-// legacy value. A validation message is small text - the size ramp puts it a step
-// below body copy - and the measured legacy red reads 4.0:1 on the page background
-// against a 4.5:1 minimum, so reproducing it would leave the one sentence a reader
-// most needs to read as the least readable thing on the screen. It resolves to
-// --color-danger-text instead: the same hue at a lower lightness, 7.20:1 on the page
-// background and 6.21:1 on the neutral surface, so the message reads as the same red
-// and is legible. --color-danger keeps the roles where 4.0:1 is sufficient, namely
-// borders and non-text indicators.
-// Bold weight is a net addition, so the message is distinguishable from the help text
-// directly above it without introducing a second colour.
-.form-field__error {
-  margin: 0;
-  color: var(--color-danger-text);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-bold);
-  line-height: var(--line-height-base);
-  overflow-wrap: break-word;
-  white-space: pre-line;
-}
-
-// Above the breakpoint the label sits beside its control, which is the arrangement the
-// legacy admin screens used - a two-column table of label and field. Below it, the
-// stacked arrangement above applies unchanged, authored mobile-first.
-//
-// A grid rather than a row flex container, because only a grid can align the labels of
-// several sibling fields to one column edge; a flex row would size each label to its
-// own text and leave the controls ragged.
-@include mx.respond-above('md') {
+// A grid rather than a flex row, because only a grid aligns the labels of several
+// sibling fields to one column edge. A flex row would size each label to its own
+// text and leave every control on the screen ragged.
+@mixin two-column-field {
   .form-field {
     display: grid;
-    // Both tracks resolve to the shared vocabulary, and the label track is taken as a
-    // TRACK rather than composed here from the width token: the measured legacy
-    // label-cell width and the zero minimum that makes the column yield are one
-    // decision, and the other form surface that lays a field out this way has to make
-    // it identically. The control column is the shared fluid track — a fraction of the
-    // remaining space is a design value like any other, and the token is what
-    // guarantees the zero minimum that keeps a long unbreakable value from widening
-    // the grid past its container.
+
+    // Both tracks resolve to the shared layout vocabulary. The label column is
+    // taken as a TRACK rather than composed here from the width token, because
+    // the measured legacy label-cell width and the zero minimum that lets the
+    // column yield on a narrow viewport are one decision, and the other form
+    // surface that lays a field out this way has to make it identically.
+    //
+    // MIGRATION: the ratio is measured, not invented. A legacy field was a
+    // two-cell table row whose label cell carried its width on the markup —
+    // `<td class="SubHead" width="150">` followed by a `<dnn:Label>`, twelve
+    // times in Website/admin/Security/editroles.ascx alone, against control
+    // cells of `width="325"`. --field-label-inline-size, which
+    // --grid-track-label is built from, is that measured 150px expressed as
+    // 9.375rem so the column scales with the reader's type size; the control
+    // column takes the remaining space as a fraction rather than as the measured
+    // 325px, so the field fills its container instead of being pinned to one
+    // device-pixel count. No length from the legacy markup enters this file.
     grid-template-columns: var(--grid-track-label) var(--grid-track-fluid);
     column-gap: var(--space-4);
+
+    // The label sits on the same text baseline as the first line of the control
+    // beside it, rather than on the control's box edge.
     align-items: baseline;
   }
 
-  // The label row occupies the first column of the first row; the control the second.
-  // The row rather than the label itself, because the label and its help affordance
-  // travel together and the row is what the grid places.
   .form-field__label-row {
     grid-column: 1;
   }
@@ -196,11 +94,414 @@
     grid-column: 2;
   }
 
-  // Help and error text align under the control rather than under the label, because
-  // they describe the control. Placing them in the first column would read as though
-  // they described the label.
+  // Help and error text align under the CONTROL rather than under the label,
+  // because they describe the control. Placed in the label column they would read
+  // as describing the label instead.
   .form-field__help,
   .form-field__errors {
     grid-column: 2;
+  }
+}
+
+// A custom element has no intrinsic display, so block flow is stated explicitly.
+//
+// The rhythm below the field sits on the host rather than on the inner block.
+// Component styles are encapsulated, so a margin declared on `.form-field` could
+// never be overridden by the screen that places the field, whereas one on the
+// host element can be. The legacy screens took this spacing from table cell
+// padding and from stray `<br/>` elements, neither of which survives.
+:host {
+  display: block;
+  margin-block-end: var(--space-4);
+}
+
+// MIGRATION: the stacked arrangement is authored unconditionally and the
+// two-column one is layered on at the foot of the file. That is mobile-first, and
+// it is the direction _mixins.scss documents as the default so that queries
+// across the workspace cannot overlap. The responsive behaviour is a NET ADDITION
+// in its entirety: `Website/Portals/_default/default.css` and `portal.css`
+// between them declare `@media` zero times, so there is no legacy behaviour at
+// any viewport to preserve. No query is written here — the breakpoint scale is
+// declared once, in _mixins.scss, and reached by include.
+//
+// A column with a `gap` rather than a margin on each child, so the spacing
+// between the four slots is declared in one place and cannot be doubled by a
+// child that brings its own margin.
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+// The label and its help affordance share one line, so the affordance sits beside
+// the label text where the legacy composite put it. A flex row rather than an
+// inline run, so the space between the two is the shared token and never a
+// literal space character in the markup — the template compiler collapses those,
+// and they cannot be adjusted.
+//
+// Baseline alignment rather than centre, so the button's text sits on the label's
+// own line whichever of the two is taller.
+.form-field__label-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+// MIGRATION: measured from `.SubHead`, default.css L74-80 — the 11px step and
+// bold weight, both reproduced — and the colour is measured too. That rule
+// declares `color: #003366` on L79, which is --color-primary. An earlier reading
+// of this file left the colour to inherit on the stated basis that the legacy
+// rule did the same; the source does not support it. `.SubHead` is also the
+// highest-traffic class in the whole migration, carried by every one of the label
+// cells across the 39 in-scope admin screens, so this is the one slot least
+// worth getting wrong. --color-primary measures 12.61:1 on the page background.
+//
+// Declared here rather than left to the global `label` type selector, which
+// happens to resolve the same colour, so the slot stays correct on its own terms.
+//
+// `margin: 0` is load-bearing rather than tidiness: the global `label` rule
+// carries `margin-block-end: var(--space-1)`, and that inset would stack on top
+// of this block's own `gap` — the exact doubling the `gap` exists to prevent.
+// A label sits in a deliberately narrow column — the measured 150px track, which
+// is also allowed to yield below that — so a long unbroken word is a real
+// possibility rather than a theoretical one, and it must break rather than spill
+// out of the column and over the control beside it.
+//
+// BOTH declarations are needed, and `overflow-wrap: break-word` alone is NOT
+// enough — measured in a browser rather than assumed. This label is a flex item of
+// .form-field__label-row, so its automatic minimum size is its min-content width,
+// and `break-word` does not reduce a box's min-content contribution. A 38-character
+// label therefore rendered 200px wide inside the 150px track, on one unbroken
+// line, with its right edge 34px into the control column, hidden only by the
+// control's opaque background. `min-inline-size: 0` removes that automatic
+// minimum, and `anywhere` is the value that does reduce the intrinsic
+// contribution, so the word breaks and the track holds. Verified: the row's
+// scroll width and client width then agree at the track width.
+.form-field__label {
+  display: block;
+  margin: 0;
+  min-inline-size: 0;
+  color: var(--color-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+}
+
+// The marker is separated from the label text by a token inset rather than by a
+// space character in the markup, which the template compiler would collapse.
+//
+// MIGRATION: the marker is TEXT — a glyph at the label's own type size — so it
+// resolves to --color-danger-text rather than to --color-danger. The measured red
+// reads 4.0:1 on the page background, below the 4.5:1 minimum that governs text
+// of this size; the darker member of the same hue reads 7.20:1 and is seen as the
+// same colour. --color-danger is reserved for borders and non-text indicators,
+// where the 3:1 floor that actually applies is cleared. The glyph is never the
+// sole indicator: .form-field__required-text states the requirement in words, and
+// the control carries the programmatic attribute.
+.form-field__required {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger-text);
+}
+
+// The word that gives the marker glyph a meaning for a reader who cannot see it.
+// The mixin removes it from view while keeping it in the accessibility tree, so
+// the glyph and the word are one indicator expressed twice rather than two
+// competing ones.
+.form-field__required-text {
+  @include mx.visually-hidden;
+}
+
+// MIGRATION: the legacy affordance was a raster image inside a link button —
+// `imageurl="~/images/help.gif"` at labelcontrol.ascx L4 — and the image is not
+// carried across. There is no `url()` anywhere in this file; the glyph is an
+// inline SVG stroked in `currentColor`, so it tracks this button's own colour
+// without a second declaration. The legacy control also carried `tabindex="-1"`
+// on both the link and the image, so a keyboard user could not reach the help
+// text at all. This is a real button in the tab order with a visible focus ring,
+// which is a deliberate accessibility gain rather than a like-for-like port.
+//
+// MIGRATION: `.CommandButton`, default.css L442-447, is the nearest legacy
+// analogue and it is a TEXT LINK, not a filled button — it declares only the
+// family, the 11px step and normal weight, and its four anchor states at L450,
+// L456, L462 and L468 declare nothing but `text-decoration: underline` and a
+// colour. The global `button` rule paints a filled surface with a border and an
+// inset, so that chrome is cleared back to an unadorned affordance here and the
+// 11px step is restored. `.StandardButton`, L475-484, is the one genuinely filled
+// legacy button and it is deliberately NOT reproduced: it is referenced zero
+// times across the 39 in-scope admin screens, and both of the colours it declares
+// sit outside the token vocabulary.
+//
+// The hover colour is --color-primary-hover, not the measured legacy hover red at
+// L465. _tokens.scss records that measurement and the reason for departing from
+// it: the red reads 3.998:1 on the page background, so reproducing it would make
+// the hovered affordance the least readable thing on the row, and the same
+// substitution is already applied to every anchor in the workspace.
+.form-field__help-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+
+  // Never absorbs the row's free space, so the label keeps it.
+  flex: none;
+
+  padding: 0;
+
+  background-color: transparent;
+  border: none;
+  color: var(--color-primary);
+
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-base);
+
+  cursor: pointer;
+
+  // Re-applied deliberately after the reset above. The mixin is idempotent and
+  // emits `outline` and `outline-offset` rather than a border or a shadow, so
+  // clearing the border cannot disturb it — but the ring is the only thing that
+  // tells a keyboard user where they are, and it is stated here rather than
+  // assumed. Nothing in this file sets `outline` to `none`.
+  @include mx.focus-ring;
+
+  // Additive decoration only, withdrawn on a device with no fine pointer so that
+  // a tap cannot leave the affordance stuck in a hovered state. The change is
+  // instantaneous: the legacy stylesheet declares `transition`, `animation`,
+  // `@keyframes` and `transform` zero times, so there is no legacy motion to
+  // preserve and none is introduced — which is also why no reduced-motion guard
+  // is needed anywhere in this file.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+// MIGRATION: the spacing scale is a NET ADDITION — the legacy stylesheet has no
+// spacing system at all and no 4px step anywhere — so the glyph is sized from
+// that scale rather than from a measured dimension. The `viewBox` on the element
+// carries its aspect ratio, so no intrinsic width or height attribute is needed
+// and CSS keeps sole control of the size.
+.form-field__help-icon {
+  flex: none;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+// MIGRATION: a row that wraps, not a column. The legacy control cell routinely
+// held more than one control side by side — editroles.ascx L105 and L138 put a
+// billing-period text box beside a frequency drop-down — and separated them with
+// literal `&nbsp;` characters, of which there are 70 across the 39 in-scope
+// screens. Those spacers are replaced by a `gap` from the spacing scale, which is
+// the nearest step to the two-space run they produced and, unlike them, is
+// adjustable in one place. Wrapping is permitted so a row of several controls
+// reflows instead of overflowing its column.
+//
+// The hosted controls are untouched here, by design. Their typography is the
+// measured `.NormalTextBox` — default.css L123-128, the 12px step at normal
+// weight — and _forms.scss already resolves exactly that on `input`, `select` and
+// `textarea`. That is also what preserves the measured type relationship: the
+// control renders one step ABOVE the 11px label and help text
+// (--font-size-lg against --font-size-md), never below it, which is how the
+// legacy screens read.
+//
+// MIGRATION: the control chrome is a NET ADDITION with no fidelity owed.
+// `.NormalTextBox` declares a family, a size and a weight and nothing else — no
+// border, no padding, no background and no width — so the legacy text box was
+// drawn entirely by browser default chrome. What _forms.scss paints in its place
+// is a new decision, and it is that file's to record.
+.form-field__control {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+// MIGRATION: the measured legacy help panel, restored in full. `.Help` at
+// default.css L424-439 declares FOUR borders — `border-right` L426,
+// `border-top` L428, `border-left` L433 and `border-bottom` L436, each of them
+// `black 1px solid` — 2px of padding on all four sides at L427, L429, L432 and
+// L435, `font-weight: normal` L430, `font-size: 11px` L431, `color: black` L434
+// and `background-color: #ffff99` L438. Every one of those is reproduced below.
+// Two circulated readings of that rule are contradicted by the source and are
+// corrected here rather than carried: the claim that the rule has no bottom
+// border is refuted by L436, and an earlier version of this file rendered the
+// panel as small muted text with no border, no inset and no surface on the stated
+// basis that the legacy rule was a step smaller than body text in the muted
+// colour — the source says 11px, which is the same step as body text, on pale
+// yellow. The affordance had been lost entirely.
+//
+// This component is the SOLE owner of that translation. `.Help` is applied as a
+// bare class zero times across the 39 in-scope screens: it arrives only through
+// labelcontrol.ascx L9 and through the help slot of the PropertyEditor control,
+// and this template uses `.form-field__help` rather than the global `.form-help`
+// utility, so no other rule in the workspace renders it. The legacy parallel help
+// vocabulary — the `.Wizard*` family — is out of scope and is not referenced.
+//
+// The ink and the border are the same colour by construction. `color: inherit`
+// takes the document's default text colour, which is exactly what the legacy
+// `black` was: _tokens.scss declares no base text token on purpose, because the
+// legacy `Body` and `.Normal` rules declare no colour at all, so the measured
+// value IS the user-agent default. `currentColor` on the border then resolves to
+// that same ink. Both are literals the vocabulary permits, and together they
+// reproduce `black 1px solid` without a palette entry standing in for it.
+//
+// The width and style of the border are tokens; the legacy value is uniformly 1px
+// across the whole stylesheet. The 2px inset maps to --space-1, the smallest
+// step, which is 4px — the spacing scale is a net addition and has no 2px step,
+// so this is a deliberate approximation upward. The corner radius is a net
+// addition too: `border-radius` appears zero times in the legacy stylesheet,
+// whose design is square-cornered, and it is held to the smallest step for that
+// reason. No elevation is applied at all — `box-shadow` is likewise absent from
+// the legacy stylesheet, and this panel is a bordered block in normal flow, not a
+// floating surface.
+//
+// MIGRATION: a block BELOW the control in normal flow, which is what the legacy
+// composite was — labelcontrol.ascx puts a literal `<br />` on L8 between the
+// label on L2-L7 and the help panel on L9. It is not a tooltip, not a popover and
+// not positioned, so it can never obscure the control it describes and needs no
+// dismissal behaviour. The break itself is not reproduced: the template emits no
+// `<br>`, and the separation is this block's `gap`.
+//
+// `margin: 0` because this slot is a paragraph and _reset.scss deliberately
+// leaves user-agent flow margins on paragraphs; that margin would stack on the
+// block's `gap`. Interior line breaks survive as breaks: the component resolves
+// the `<br>` markup that the legacy resource strings carry into newline
+// characters, and `pre-line` renders those as the breaks they always were while
+// still collapsing runs of spaces.
+.form-field__help {
+  margin: 0;
+  padding: var(--space-1);
+
+  border: var(--border-width) var(--border-style) currentColor;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface-hint);
+  color: inherit;
+
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-base);
+
+  overflow-wrap: break-word;
+  white-space: pre-line;
+}
+
+// The messages of one field, grouped so that the live region and the description
+// reference are one element rather than one per message. A column with a `gap`,
+// so two simultaneous messages are separated by the shared token and never run
+// together.
+.form-field__errors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+// MIGRATION: measured from `.NormalRed`, default.css L114-120 — the 12px step and
+// bold weight, both reproduced. That step matters beyond this one rule, because it
+// is the measured type relationship of the whole legacy form: controls and their
+// validation messages are 12px (`.NormalTextBox` L126, `.NormalRed` L117) while
+// body and label text are 11px (`.Normal` L95, `.SubHead` L77), so a message
+// reads one step LARGER than the label above it. An earlier version of this file
+// set it a step smaller, which inverted that relationship and made the one
+// sentence a reader most needs to read the smallest text in the field.
+//
+// The colour is the single deliberate departure from the measurement. The measured
+// `#ff0000` is --color-danger, which _tokens.scss reserves for borders and
+// non-text indicators because it reads 4.0:1 on the page background against the
+// 4.5:1 minimum that governs text; --color-danger-text is the same hue at a lower
+// lightness and reads 7.20:1 on the page background and 6.86:1 on the help
+// surface, so the message is seen as the same red and is legible. Worth recording
+// alongside it: of the five occurrences of that red in the legacy stylesheet only
+// this one is error text — the other four, at L201, L340, L465 and L564, are all
+// `:hover` states — so the colour was never as exclusively a danger signal as its
+// name suggests.
+//
+// Colour is not the sole indicator in any case: the bold weight carries the same
+// emphasis the legacy rule did, the template groups the messages in a live region
+// that announces them, and the required marker states its meaning in words.
+.form-field__error {
+  margin: 0;
+  color: var(--color-danger-text);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+  white-space: pre-line;
+}
+
+// The variants are matched on the HOST element rather than on an inner class,
+// because the component declares no host class of its own — it has no `host`
+// metadata and no host binding — so a variant is something the screen placing the
+// field asks for. `:host(...)` is the only selector that can see a class set from
+// outside the component.
+
+// MIGRATION: the inline variant, for a field whose control is too small to carry
+// a line of its own. The legacy screens laid a check box out in exactly the same
+// two-cell row as a text box — editroles.ascx L51-L57 and L59-L65 put
+// `<dnn:Label>` in a `width="150"` cell and a bare `<asp:CheckBox>` beside it —
+// and of the check boxes across the in-scope screens only a handful carry their
+// own `Text`, so the great majority depend on that adjacent label. What this
+// variant changes is only the narrow viewport: the field keeps the two-column
+// arrangement at every width instead of stacking, because a lone check box
+// beneath its own label reads as an orphaned control. It takes the same measured
+// label track as every other field, so it still aligns with its siblings.
+:host(.form-field--inline) {
+  @include two-column-field;
+}
+
+// MIGRATION: the multi-line variant, for the 19 `TextMode="MultiLine"` controls
+// across the in-scope screens. The measured `Height="84px"` at editroles.ascx L40
+// is deliberately NOT reproduced as a length: the block size is left to the
+// textarea's own `rows` attribute, which is intrinsic content sizing rather than a
+// design value, so no literal enters this file and the control is free to size to
+// its content. What the variant owns is alignment — a tall control stretches to
+// fill the row it is given rather than sitting on a baseline partway down the box.
+//
+// MIGRATION: a documented functional reduction. Rich-text editing is out of
+// scope, so a multi-line field is a plain `<textarea>` where the legacy portal
+// could host an HTML editor provider.
+:host(.form-field--multiline) {
+  .form-field__control {
+    align-items: stretch;
+  }
+}
+
+// MIGRATION: `.NormalDisabled`, default.css L100-103, declares `color: Silver`
+// over the 11px normal body rule at L92-97. Silver is not in the token vocabulary
+// and is not restored: it measures 1.82:1 on the page background, which is not
+// readable text by any standard, and _tokens.scss records the substitution of
+// --color-text-muted for it — 4.73:1 on the surface it was actually paired with,
+// so the state clears AA where the measured value failed it outright. This is a
+// deliberate visible change and the accessibility gain is the whole reason for it.
+//
+// The hosted control's own disabled chrome belongs to _forms.scss, which owns
+// `:disabled`, `[aria-disabled]` and `[readonly]`. What this variant owns is the
+// field's own wording. `not-allowed` overrides the pointer that the global `label`
+// rule sets, so the cursor stops promising an interaction that is unavailable.
+:host(.form-field--disabled) {
+  .form-field__label {
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+
+  .form-field__help-toggle {
+    color: var(--color-text-muted);
+  }
+}
+
+// Above the breakpoint the label sits beside its control, which is the
+// arrangement every legacy admin screen used. Below it the stacked arrangement
+// above applies unchanged. Authored mobile-first, and the query itself comes from
+// the shared breakpoint scale rather than being written here.
+@include mx.respond-above('md') {
+  @include two-column-field;
+
+  // A multi-line control is tall, so its label pins to the top of the row instead
+  // of to a baseline that sits somewhere down the box. Declared only inside the
+  // grid, because in the stacked arrangement `align-self` would work on the
+  // inline axis and shrink the row instead of moving it.
+  :host(.form-field--multiline) .form-field__label-row {
+    align-self: start;
   }
 }

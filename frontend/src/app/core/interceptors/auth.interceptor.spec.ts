@@ -1,6 +1,7 @@
 import { HttpClient, provideHttpClient, withInterceptors } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { Router, provideRouter } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 
 import { AUTH_ENDPOINTS, apiUrl } from '../config/api-endpoints';
@@ -91,10 +92,16 @@ describe('authInterceptor', () => {
   let http: HttpClient;
   let controller: HttpTestingController;
   let storage: TokenStorageService;
+  let navigate: jasmine.Spy<Router['navigate']>;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [
+        // The interceptor leaves through the router when a session cannot be renewed, so
+        // the router has to be resolvable. The route table is empty on purpose: the
+        // navigation itself is stubbed below, which keeps every expectation about it
+        // synchronous and independent of whether the sign-in screen has been authored.
+        provideRouter([]),
         provideHttpClient(withInterceptors([authInterceptor])),
         provideHttpClientTesting(),
       ],
@@ -103,6 +110,12 @@ describe('authInterceptor', () => {
     http = TestBed.inject(HttpClient);
     controller = TestBed.inject(HttpTestingController);
     storage = TestBed.inject(TokenStorageService);
+
+    // Stubbed rather than exercised. A real navigation resolves over several microtasks
+    // that the interceptor deliberately does not await — it is re-throwing the server's
+    // own response and must not wait on routing — so asserting the call is deterministic
+    // where asserting the resulting URL would be a race.
+    navigate = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
   });
 
   afterEach(() => {
@@ -150,6 +163,35 @@ describe('authInterceptor', () => {
       await pending;
     });
 
+    // The three health probes are published at the HOST ROOT, outside the versioned API
+    // prefix, and are anonymous so that a container health check can reach them without a
+    // credential and without spending a rate-limit budget. A trailing slash and a query
+    // string are included because the probe is matched on its resolved path rather than on
+    // spelling.
+    const healthProbeUrls: readonly string[] = [
+      '/health',
+      '/health/',
+      '/health?full=true',
+      '/health/ready',
+      '/health/live',
+    ];
+
+    for (const url of healthProbeUrls) {
+      it(`leaves the health probe ${url} alone`, async () => {
+        storage.store(session('access-1', 'refresh-1'));
+
+        const pending = firstValueFrom(http.get(url));
+
+        const request = controller.expectOne(url);
+        expect(request.request.headers.has(AUTHORIZATION_HEADER))
+          .withContext('a health probe is anonymous and must never carry a credential')
+          .toBeFalse();
+
+        request.flush({ status: 'Healthy' });
+        await pending;
+      });
+    }
+
     // -----------------------------------------------------------------------------------
     // CREDENTIAL-EXFILTRATION REGRESSION CASES
     //
@@ -191,6 +233,26 @@ describe('authInterceptor', () => {
         await pending;
       });
     }
+
+    it('attaches nothing to a value that is not a URL in any recognised form', async () => {
+      // Both address tests resolve the URL rather than comparing strings, and a value the
+      // platform cannot resolve is therefore neither a probe nor an API address. It must
+      // fall through as "not ours" rather than raising out of the interceptor, because a
+      // predicate that threw would replace the server's answer with a type error.
+      storage.store(session('access-1', 'refresh-1'));
+
+      const unresolvable = 'http://';
+
+      const pending = firstValueFrom(http.get(unresolvable));
+
+      const request = controller.expectOne(unresolvable);
+      expect(request.request.headers.has(AUTHORIZATION_HEADER))
+        .withContext('an unresolvable value is not addressed to the API')
+        .toBeFalse();
+
+      request.flush({});
+      await pending;
+    });
 
     it('attaches nothing to a path that only shares a textual prefix with the base', async () => {
       // `/api/v10` is a different API version, not a descendant of `/api/v1`. A prefix test
@@ -440,6 +502,146 @@ describe('authInterceptor', () => {
 
       await expectAsync(pending).toBeRejected();
       controller.expectNone(AUTH_ENDPOINTS.refresh);
+    });
+
+    it('carries the SAME correlation identifier onto the retry', async () => {
+      // The retry is cloned from the ORIGINAL request, which the outer correlation-id
+      // interceptor has already stamped, so both attempts join into one operation in the
+      // server's logs. Asserted through a caller-supplied header rather than by adding the
+      // other interceptor to the chain, because the property under test is that the clone
+      // is taken from the original request and not rebuilt from scratch.
+      storage.store(session('access-old', 'refresh-old'));
+
+      const correlationId = 'correlation-under-test';
+
+      const pending = firstValueFrom(
+        http.get(PROTECTED_URL, { headers: { 'X-Correlation-Id': correlationId } }),
+      );
+
+      const first = controller.expectOne(PROTECTED_URL);
+      expect(first.request.headers.get('X-Correlation-Id')).toBe(correlationId);
+      first.flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      controller.expectOne(AUTH_ENDPOINTS.refresh).flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(controller, 'access-new');
+
+      const retry = controller.expectOne(PROTECTED_URL);
+      expect(retry.request.headers.get('X-Correlation-Id'))
+        .withContext('both attempts are one logical operation and must be joinable as one')
+        .toBe(correlationId);
+      retry.flush({});
+
+      await pending;
+    });
+
+    it('ends the session and routes to sign-in when the renewal is refused', async () => {
+      // Terminal: a renewal credential the server refuses cannot be retried, so the
+      // session is over and the operator has to be told to sign in rather than left on a
+      // screen that will refuse every subsequent action.
+      storage.store(session('access-old', 'refresh-old'));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      controller
+        .expectOne(PROTECTED_URL)
+        .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      controller
+        .expectOne(AUTH_ENDPOINTS.refresh)
+        .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      await expectAsync(pending).toBeRejected();
+
+      expect(storage.session()).withContext('the session is discarded').toBeNull();
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
+    });
+
+    it('ends the session when the renewal credential vanished mid-request', async () => {
+      // The access token is still held but the renewal credential is not, which is the
+      // state a concurrent sign-out leaves behind. An empty value is treated as absent
+      // rather than transmitted, because the legacy absent-string sentinel WAS the empty
+      // string and posting one would be refused as malformed.
+      storage.store(session('access-1', ''));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      controller
+        .expectOne(PROTECTED_URL)
+        .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      await expectAsync(pending).toBeRejected();
+
+      controller.expectNone(AUTH_ENDPOINTS.refresh);
+      expect(storage.session()).toBeNull();
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
+    });
+
+    it('still reports the original 401 when routing to sign-in itself fails', async () => {
+      // The interceptor is mid-way through re-throwing the response the server actually
+      // sent, and a routing problem must not displace it — nor become an unhandled
+      // rejection surfacing somewhere unrelated. The session is still discarded, because
+      // whether the operator can be moved is independent of whether the session is over.
+      navigate.and.rejectWith(new Error('the sign-in screen is not routable'));
+
+      storage.store(session('access-old', 'refresh-old'));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      controller
+        .expectOne(PROTECTED_URL)
+        .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      controller
+        .expectOne(AUTH_ENDPOINTS.refresh)
+        .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      const error = await pending.then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+      expect((error as { status?: number }).status)
+        .withContext('the caller still hears about their own request')
+        .toBe(401);
+      expect(storage.session()).toBeNull();
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
+    });
+
+    it('does not route away when a renewal succeeds', async () => {
+      storage.store(session('access-old', 'refresh-old'));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      controller
+        .expectOne(PROTECTED_URL)
+        .flush({ title: 'Unauthorized', status: 401 }, { status: 401, statusText: 'Unauthorized' });
+
+      controller.expectOne(AUTH_ENDPOINTS.refresh).flush(loginResponse('access-new', 'refresh-new'));
+      flushCurrentUser(controller, 'access-new');
+      controller.expectOne(PROTECTED_URL).flush({});
+
+      await pending;
+
+      expect(navigate)
+        .withContext('a session renewed without the operator noticing must not move them')
+        .not.toHaveBeenCalled();
+      expect(storage.session()).not.toBeNull();
+    });
+
+    it('does not route away on a status that is not an authentication failure', async () => {
+      for (const status of [403, 500]) {
+        storage.store(session('access-1', 'refresh-1'));
+
+        const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+        controller
+          .expectOne(PROTECTED_URL)
+          .flush({ title: 'Refused', status }, { status, statusText: 'Refused' });
+
+        await expectAsync(pending).toBeRejected();
+      }
+
+      expect(navigate).not.toHaveBeenCalled();
     });
 
     it('does not attempt to recover a failed refresh with another refresh', async () => {
