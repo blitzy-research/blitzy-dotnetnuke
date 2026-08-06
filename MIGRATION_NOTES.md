@@ -11865,22 +11865,138 @@ here rather than absorbed.
 `AssignUserToRole_UnrecognisedFrequencyCharacter_PreservesASubmittedFutureBound` in
 `backend/tests/DnnMigration.UnitTests/Application/RoleServiceTests.cs`.
 
-### The renewal bounds are primed from the request, where one of the two legacy members primed them from the row
+### A submitted membership bound is stored verbatim, and the derivation applies only where none was submitted
 
-**Legacy behaviour.** Two members wrote an assignment and they disagreed with each other. L295 stored the
-caller's effective and expiry dates **verbatim** and ran no derivation at all. L489 ran the whole
-derivation and had no date parameters to ignore, priming both bounds from the row it had just read
-(L513-L514) and the trial-used fact with them (L515).
+**Legacy behaviour.** Two members wrote an assignment and they disagreed with each other, and which of the
+two a caller reached decided whether its dates were honoured.
 
-**Target behaviour.** One member serves both, so one of the two readings had to give way. The derivation
-is kept, because it carries the paid-membership rules the migration must preserve, and the caller's dates
-are honoured as its input. The consequence is confined to a single case and is stated rather than hidden:
-renewing an assignment whose stored expiry is still in the **future** while submitting no expiry of one's
-own offsets from the present instant rather than from that stored expiry, so the unexpired remainder of
-the term is not carried forward. A caller wanting the legacy behaviour submits the stored expiry — which
-is exactly what the screen this member serves did, `SecurityRoles.ascx.vb:L273-L303` having read the
-existing assignment solely to pre-fill the two inputs it then posted back. The trial-used fact is still
-primed from the stored row, because nothing a caller submits may reset it.
+`AddUserRole(PortalID, UserId, RoleId, EffectiveDate, ExpiryDate)` at L295-L315 assigned
+`objUserRole.EffectiveDate` and `objUserRole.ExpiryDate` from its arguments on **both** the insert branch
+and the update branch, and ran no derivation whatever. This is the member the screen this contract replaces
+actually called: `SecurityRoles.ascx.vb:L542` calls the seven-argument static at L647, which forwards to it.
+
+`UpdateUserRole(PortalId, UserId, RoleId, Cancel)` at L489-L556 ran the whole derivation and declared **no
+date parameters at all**, priming both bounds from the row it had just read (L513-L514) and the trial-used
+fact with them (L515). Its clamps at L530-L534 — clearing a past effective date, advancing a past expiry to
+the ambient instant — therefore operated on **stored** bounds, never on a caller's.
+
+**Target behaviour.** One member serves both, so which of the two governs a given bound is decided
+explicitly: **a bound the caller submitted is stored exactly as submitted, and the derivation runs only
+where the caller submitted none.** The derivation itself is kept unchanged, because it carries the
+paid-membership rules the migration must preserve, and the L530-L534 clamps are reproduced inside it — where
+an absent expiry is exactly the state they were written for, since the legacy absent-date sentinel is the
+minimum date value and is therefore always in the past.
+
+An earlier revision of this migration ran the derivation **on top of** the submitted bounds, which silently
+rewrote them behind a `204 No Content` in four ways: a submitted expiry was used only as the offset base and
+came back a period later; a submitted expiry on a one-time role came back as the perpetual far-future date;
+a submitted expiry on a role declaring no period was discarded to nothing at all; and a submitted effective
+date already in the past was discarded to nothing as well. The caller was told its instruction had been
+accepted while the store held something else, and the most costly case was the least visible — a plausible
+date a period later than the one submitted, which no caller had reason to re-read.
+
+**Consequence that remains, stated rather than hidden.** The derivation path primes from the request rather
+than from the stored row, so renewing an assignment whose stored expiry is still in the **future** while
+submitting no expiry of one's own offsets from the present instant rather than from that stored expiry, and
+the unexpired remainder of the term is not carried forward. A caller wanting the legacy carry-forward submits
+the stored expiry — which is exactly what that screen did, `SecurityRoles.ascx.vb:L273-L303` having read the
+existing assignment solely to pre-fill the two inputs it then posted back, and which now lands verbatim as it
+did then. The trial-used fact is still primed from the stored row, because nothing a caller submits may reset
+it.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/RoleService.cs`.
+
+### The two roles a portal designates for a system purpose cannot be amended or removed
+
+**Legacy behaviour.** The role edit screen withheld both verbs outright for a designated role.
+`Website/admin/Security/EditRoles.ascx.vb` L174-L178 reads:
+
+```vb
+If RoleID = PortalSettings.AdministratorRoleId Or RoleID = PortalSettings.RegisteredRoleId Then
+    cmdDelete.Visible = False
+    cmdUpdate.Visible = False
+    ActivateControls(False)
+End If
+```
+
+so an operator could neither rename nor delete the portal's administrators role or its registered-members
+role, and the whole form was deactivated for them.
+
+**Target behaviour.** `RoleService.DeleteRoleAsync` and `RoleService.UpdateRoleAsync` both refuse a role the
+addressed portal designates, reporting `role.protected`, which the central translator maps to `403` on the
+`protected` token — the same token the assignment-level rule already uses. Nothing reaches the store.
+
+An earlier revision of this migration enforced neither, and the removal in particular was not a cosmetic
+gap. The assignment cascade takes every membership with the role, so removing a tenant's designated
+administrators role dispossessed every administrator it had, while the tenant's own `AdministratorRoleId`
+column was left naming a row that no longer existed. The tenant then had no principal able to restore the
+designation and — measured, not supposed — could no longer be resolved by its alias at all, because the
+tenant snapshot the resolution composes reads the designated role's **name**. One request could take a
+tenant permanently offline.
+
+The two designations are read from the addressed portal's own `Portals.AdministratorRoleId` and
+`Portals.RegisteredRoleId` columns and never from a literal: `Roles.RoleID` is `IDENTITY(0, 1)`, so no
+identifier is reserved, role zero is an ordinary key that merely happens to be first, and every portal
+designates its own pair. A portal that designates neither role has no protected roles rather than one
+protected by accident.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/RoleService.cs`.
+
+### A unique value taken by a concurrent request is a conflict, not a server fault
+
+**Legacy behaviour.** Every legacy write that had to be unique was guarded by a sequential read followed by
+an insert, and nothing stood between the two. `Website/admin/Security/EditRoles.ascx.vb` L251-L257 reads the
+tenant's roles and refuses a name it finds before calling the insert; `Website/admin/Portal/PortalAlias.ascx.vb`
+does the same for a host name. The terminal schema then constrains the pair independently —
+`03.00.09.SqlDataProvider:L304` adds `UNIQUE NONCLUSTERED ([PortalID], [RoleName])`,
+`04.00.04.SqlDataProvider:L1127` adds `CREATE UNIQUE INDEX IX_ProfilePropertyDefinition`, and
+`IX_PortalAlias`, `IX_Users` and `IX_RoleGroupName` do the same for their own columns. When two requests
+raced, the loser's insert was refused by the index rather than by the screen, and the unhandled provider
+error reached the Web Forms error page.
+
+**Target behaviour.** Each unique-constrained write catches the index's refusal and returns **the same
+reason code and the same wording its own sequential check emits**, so a caller cannot tell a lost race from
+an ordinary second attempt. The codes are unchanged — `role.name_duplicate`, `role_group.name_duplicate`,
+`portal.alias_duplicate`, `portal.administrator_duplicate`, `user.create.user-already-registered`,
+`profile-definition.duplicate-name` — and every one already carried a `duplicate` or `already_registered`
+token, which the central status translator answers as `409 Conflict` with no change to the status table.
+Portal provisioning, whose three commits stage several tables at once, selects between the alias and
+administrator codes from the **constraint the store named** rather than from which commit was in flight, and
+falls back to `portal.creation_conflict` for a constraint it does not recognise, so an unrecognised
+collision is still a conflict and never a fault.
+
+**Why the difference is deliberate.** Measured against a live installation before the fix: ten simultaneous
+identical role creations produced one `201`, seven `409` and **two `500`s**, and eight simultaneous identical
+alias bindings produced one `201`, four `409` and **three `500`s** — in both cases with exactly one row
+stored. The store had behaved perfectly; the racers it refused were nevertheless told the server had failed,
+which is wrong twice over. It misreports a correct store, and it raises a server-fault log entry for an
+ordinary collision, so a caller submitting duplicates can bury the error rate that real faults are alerted
+on. A sequential check cannot close the window — both racers read "not taken" before either commits — so the
+index is the only thing that can settle it and its refusal has to be translated rather than escaped.
+
+The translation is performed at the persistence seam, in `UnitOfWork.SaveChangesAsync`, which recognises SQL
+Server error `2627` (unique constraint) and `2601` (unique index) anywhere in the exception chain and raises
+the Domain-declared `DuplicateKeyException` carrying a best-effort constraint name. The whole inner chain is
+walked because the depth a provider fault arrives at varies with the execution strategy in play. Nothing
+above Infrastructure names a provider type, which is what lets the transport classify this outcome at all:
+the API project references neither the object-relational mapper nor the database client, so before the fix a
+duplicate could only reach it as the general case and be answered `500`. A defence-in-depth arm on the global
+handler answers `409` for a duplicate that escapes a path added later, with authored wording that publishes
+neither the constraint name nor any provider text.
+
+**Operational consequence.** A caller receives `409` with the field-specific code in every case, whether it
+lost a race or simply arrived second, and exactly one row survives any number of simultaneous identical
+submissions. One framework diagnostic is deliberately left alone: Entity Framework Core logs its own
+`SaveChangesFailed` event at `Error` when the index refuses the insert. Demoting it would require demoting
+every failed commit — including the foreign-key violations, deadlocks and timeouts that genuinely are server
+faults — so the noise is accepted rather than bought at the price of hiding real failures. It reaches the log
+only; no part of it reaches the caller.
+
+**Annotated in code at.** `backend/src/DnnMigration.Infrastructure/Persistence/UnitOfWork.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/DuplicateKeyTranslator.cs`,
+`backend/src/DnnMigration.Domain/Common/DuplicateKeyException.cs`,
+`backend/src/DnnMigration.Application/Services/{RoleService,PortalService,UserService}.cs`,
+`backend/src/DnnMigration.Api/ErrorHandling/GlobalExceptionHandler.cs`.
 
 ### Both clock readings are UTC where the legacy readings were server-local
 

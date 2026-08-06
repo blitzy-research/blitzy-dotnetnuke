@@ -900,10 +900,22 @@ public sealed class RolesController : ControllerBase
     /// <c>Null.NullDate</c> - that is, <c>DateTime.MinValue</c> - for an empty date box
     /// (<c>SecurityRoles.ascx.vb:L528-L539</c>), and the empty string sentinel behaved the same way for
     /// text. Here a date omitted from the body is <c>null</c> and stays <c>null</c>. What the service does
-    /// with an absent date is unchanged in effect: an expiry is derived from the role's billing or trial
+    /// with an ABSENT date is unchanged in effect: an expiry is derived from the role's billing or trial
     /// terms, using the six-code frequency table cited at the head of this file, and the code <c>O</c>
     /// still yields the far-future <c>9999-12-31</c>, which reaches the wire exactly as stored. No date
     /// arithmetic is performed in this file.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F5. A date the caller DOES submit is stored VERBATIM, and the derivation above is not
+    /// run over it. The two legacy members disagreed on this and were reached through different call sites:
+    /// <c>AddUserRole</c> (<c>RoleController.vb</c> L295-L315) - the member this endpoint's own legacy screen
+    /// called - stored both submitted bounds exactly as given and derived nothing, while the derivation lives
+    /// in <c>UpdateUserRole</c> (L489-L556), which declares no date parameters at all and reads every bound
+    /// it works from out of the stored assignment. An earlier revision ran the derivation on top of a
+    /// submitted bound, so a stated end date came back a period later, a stated end date on a one-time role
+    /// came back as the perpetual date, a stated end date on a role with no term was dropped altogether, and
+    /// a stated start date already in the past was dropped as well - each behind this endpoint's
+    /// <c>204 No Content</c>. The behavioural difference is recorded in <c>MIGRATION_NOTES.md</c>.
     /// </para>
     /// <para>
     /// MIGRATION: HOW AN ABSENT DATE LEAVES ON THE WAY BACK OUT. Serialisation is configured once with
@@ -926,12 +938,15 @@ public sealed class RolesController : ControllerBase
     /// would be scope creep dressed as fidelity.
     /// </para>
     /// <para>
-    /// MIGRATION: the portal administrator's dates are still protected. The legacy screen cleared both
-    /// date boxes when the addressed account was the portal's designated administrator and the addressed
-    /// role its administrator role (<c>SecurityRoles.ascx.vb:L523-L526</c>), comparing an <c>Integer</c>
-    /// to a <c>String</c> to decide it. The rule is preserved in the service with a typed comparison and
-    /// the coercion is recorded; the effect a caller sees is that submitted dates are discarded for that
-    /// one pairing rather than rejected.
+    /// MIGRATION: the portal administrator's dates are still protected, and this is the ONE exception to the
+    /// verbatim rule above. The legacy screen cleared both date boxes when the addressed account was the
+    /// portal's designated administrator and the addressed role its administrator role
+    /// (<c>SecurityRoles.ascx.vb:L522-L526</c>), comparing an <c>Integer</c> to a <c>String</c> to decide it.
+    /// The rule is enforced in the service with a typed comparison and the coercion is recorded; the effect a
+    /// caller sees is that submitted dates are discarded for that one pairing rather than rejected. Enforcing
+    /// it became necessary rather than merely faithful once submitted bounds were honoured: an expiry on the
+    /// administrator's own administrator membership would otherwise be stored, and would leave the tenant with
+    /// no administrator the moment it lapsed.
     /// </para>
     /// </remarks>
     [HttpPost("roles/{roleId:int}/users")]

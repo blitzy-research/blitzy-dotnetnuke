@@ -1343,78 +1343,88 @@ public sealed class ModuleApiTests
             _fixture.Seed.RegisteredRoleId,
             allowAccess: true);
 
-        // MIGRATION: THREE FIELDS, NOT FOUR. A submission naming a DIFFERENT page was the first entry here,
-        // because the revision that wrote this fact read the page as a move command and counted it among the
-        // administrator-only fields. Under the reconciled contract the page SELECTS the placement, so such a
-        // request is refused earlier - and with the placement-not-found answer rather than a forbidden one -
-        // which is asserted by its own fact. It is removed from this array rather than left to fail for a
-        // reason that has nothing to do with the gate this fact exists to prove. The three portal-wide effects
-        // that remain are exactly the ones the gate covers.
-        UpdateModuleRequest[] administratorOnly =
-        [
-            new() { TabId = _fixture.Seed.RootTabId, ModuleTitle = created.ModuleTitle, AllTabs = true },
-            new()
-            {
-                TabId = _fixture.Seed.RootTabId,
-                ModuleTitle = created.ModuleTitle,
-                SetAsDefaultSettings = true,
-            },
-            new()
-            {
-                TabId = _fixture.Seed.RootTabId,
-                ModuleTitle = created.ModuleTitle,
-                ApplyToAllModules = true,
-            },
-        ];
-
-        foreach (UpdateModuleRequest request in administratorOnly)
+        // MIGRATION: SEC-F2. THE WITHDRAWAL BELOW MOVED INTO A finally, and the reason is a consequence of
+        // that change rather than tidiness. A page EDIT grant is now one of the three alternatives that
+        // admit a module edit, so a grant leaked onto the SEEDED root page by an early return from this
+        // fact would widen the member persona for every later fact in this suite - and the ones asserting a
+        // refusal would then be satisfied by a grant they never asked for, passing while reporting nothing.
+        try
         {
-            using HttpResponseMessage response = await client.PutAsJsonAsync(
+            // MIGRATION: THREE FIELDS, NOT FOUR. A submission naming a DIFFERENT page was the first entry here,
+            // because the revision that wrote this fact read the page as a move command and counted it among the
+            // administrator-only fields. Under the reconciled contract the page SELECTS the placement, so such a
+            // request is refused earlier - and with the placement-not-found answer rather than a forbidden one -
+            // which is asserted by its own fact. It is removed from this array rather than left to fail for a
+            // reason that has nothing to do with the gate this fact exists to prove. The three portal-wide effects
+            // that remain are exactly the ones the gate covers.
+            UpdateModuleRequest[] administratorOnly =
+            [
+                new() { TabId = _fixture.Seed.RootTabId, ModuleTitle = created.ModuleTitle, AllTabs = true },
+                new()
+                {
+                    TabId = _fixture.Seed.RootTabId,
+                    ModuleTitle = created.ModuleTitle,
+                    SetAsDefaultSettings = true,
+                },
+                new()
+                {
+                    TabId = _fixture.Seed.RootTabId,
+                    ModuleTitle = created.ModuleTitle,
+                    ApplyToAllModules = true,
+                },
+            ];
+
+            foreach (UpdateModuleRequest request in administratorOnly)
+            {
+                using HttpResponseMessage response = await client.PutAsJsonAsync(
+                    ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+                    request,
+                    ApiTestFixture.Json);
+
+                response.StatusCode.Should().Be(
+                    HttpStatusCode.Forbidden,
+                    "a page-scoped grant does not carry authority over the tenant");
+            }
+
+            // An ordinary save by the same caller still works, which is the half that proves the gate is a DELTA
+            // test rather than a presence test. The contract requires the page identifier on every request, so a
+            // gate that refused whenever the field was present would refuse every non-administrator save.
+            using HttpResponseMessage ordinary = await client.PutAsJsonAsync(
                 ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
-                request,
+                new UpdateModuleRequest
+                {
+                    TabId = _fixture.Seed.RootTabId,
+                    ModuleTitle = "Renamed by a page editor",
+                },
                 ApiTestFixture.Json);
 
-            response.StatusCode.Should().Be(
-                HttpStatusCode.Forbidden,
-                "a page-scoped grant does not carry authority over the tenant");
+            ordinary.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            int storedTabId = await _fixture.Database.ScalarAsync<int>(
+                "SELECT [TabID] FROM [dbo].[TabModules] WHERE [TabModuleID] = @tabModuleId;",
+                new Dictionary<string, object?> { ["tabModuleId"] = created.TabModuleId });
+
+            storedTabId.Should().Be(
+                _fixture.Seed.RootTabId,
+                "the placement's page is write-once after creation, whatever a request submits");
+
+            int allTabs = await _fixture.Database.ScalarAsync<int>(
+                "SELECT CAST([AllTabs] AS int) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;",
+                new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+            allTabs.Should().Be(0, "the refused fan-out must not have reached the column either");
         }
-
-        // An ordinary save by the same caller still works, which is the half that proves the gate is a DELTA
-        // test rather than a presence test. The contract requires the page identifier on every request, so a
-        // gate that refused whenever the field was present would refuse every non-administrator save.
-        using HttpResponseMessage ordinary = await client.PutAsJsonAsync(
-            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
-            new UpdateModuleRequest
-            {
-                TabId = _fixture.Seed.RootTabId,
-                ModuleTitle = "Renamed by a page editor",
-            },
-            ApiTestFixture.Json);
-
-        ordinary.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        int storedTabId = await _fixture.Database.ScalarAsync<int>(
-            "SELECT [TabID] FROM [dbo].[TabModules] WHERE [TabModuleID] = @tabModuleId;",
-            new Dictionary<string, object?> { ["tabModuleId"] = created.TabModuleId });
-
-        storedTabId.Should().Be(
-            _fixture.Seed.RootTabId,
-            "the placement's page is write-once after creation, whatever a request submits");
-
-        int allTabs = await _fixture.Database.ScalarAsync<int>(
-            "SELECT CAST([AllTabs] AS int) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;",
-            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
-
-        allTabs.Should().Be(0, "the refused fan-out must not have reached the column either");
-
-        await RevokeTabPermissionAsync(
-            _fixture.Seed.RootTabId,
-            _fixture.Seed.TabEditPermissionId,
-            _fixture.Seed.RegisteredRoleId);
-        await RevokeTabPermissionAsync(
-            _fixture.Seed.ChildTabId,
-            _fixture.Seed.TabEditPermissionId,
-            _fixture.Seed.RegisteredRoleId);
+        finally
+        {
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.RootTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+        }
     }
 
     /// <summary>
@@ -1703,6 +1713,292 @@ public sealed class ModuleApiTests
         using HttpResponseMessage settings = await member.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
         settings.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// SEC-F2: the administrator of a tenant this API provisioned can carry out every module administration
+    /// operation on that tenant's own module, without any module-scope grant existing anywhere.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE THIRD LEGACY ALTERNATIVE, asserted end to end. <c>PortalModuleBase.vb:L222-L227</c> decides module
+    /// editability as a disjunction of three things - the module's own authorized-edit roles, the page's
+    /// administrator roles, and the tenant's Administrators role - and only the first was implemented. The
+    /// consequence was not a narrow gap: nothing in the exposed contract writes a module-scope grant at all,
+    /// so a tenant created through this API had NO principal able to update, configure, export, import or
+    /// remove a module it had just created. The tenant administrator could list and read, and every write was
+    /// refused 403.
+    /// </para>
+    /// <para>
+    /// Every write endpoint is exercised in ONE test on purpose. They share a single decision, so a
+    /// representative endpoint would leave the rest able to regress silently, and the whole point of the
+    /// finding was that the surface failed uniformly. The two content operations are asserted to reach their
+    /// CAPABILITY refusal - the seeded package declares no business controller - which is the only way to
+    /// prove authorisation admitted them: a 400 naming the missing capability can only be reached past the
+    /// permission gate, whereas a 403 is the gate itself.
+    /// </para>
+    /// <para>
+    /// The tenant is a freshly created one addressed at its own alias, signed in to with its own credential,
+    /// because that is the state the finding was reported in and the only state in which the third
+    /// alternative is the ONLY thing that can admit the caller. Deliberately NOT the seeded administrator:
+    /// the seeded fixture grants that persona rows the finding's subject does not have.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ModuleAdministration_IsAvailableToTheTenantsOwnAdministrator()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        TenantFacts tenant = await CreateTenantWithAdministratorAsync(host);
+
+        using HttpClient administrator = await _fixture.CreateTenantClientAsync(
+            tenant.Alias,
+            tenant.PortalId,
+            tenant.AdministratorUserName);
+
+        // Created by the administrator itself rather than by the host, so the create endpoint is measured
+        // under the same authority as every write below it. It is admitted by the page EDIT grant the portal
+        // provisioning writes for the tenant's administrator role.
+        using HttpResponseMessage created = await administrator.PostAsJsonAsync(
+            ModulesRoute(tenant.PortalId),
+            NewModuleRequest(tenant.HomeTabId),
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the tenant's administrator may place a module on its own home page");
+
+        ModuleDetailDto module = await ReadDetailAsync(created);
+
+        // The premise of the finding, stated as an assertion rather than assumed: not one module-scope grant
+        // exists for this module, so nothing but the tenant-administrator alternative can admit the writes.
+        int moduleGrants = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ModulePermission] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = module.ModuleId });
+
+        moduleGrants.Should().Be(
+            0,
+            "the exposed contract writes no module-scope grant, which is what made the missing alternatives fatal");
+
+        using HttpResponseMessage listed = await administrator.GetAsync(
+            ModuleListingRoute(tenant.PortalId, pageSize: 50));
+        listed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage read = await administrator.GetAsync(
+            ModuleRoute(tenant.PortalId, module.ModuleId));
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage updated = await administrator.PutAsJsonAsync(
+            ModuleRoute(tenant.PortalId, module.ModuleId),
+            new UpdateModuleRequest { TabId = tenant.HomeTabId, ModuleTitle = "Administered by the tenant" },
+            ApiTestFixture.Json);
+
+        updated.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(updated));
+        (await ReadDetailAsync(updated)).ModuleTitle.Should().Be("Administered by the tenant");
+
+        Uri settingsRoute = ModuleSettingsRoute(tenant.PortalId, module.ModuleId);
+
+        using HttpResponseMessage settingsRead = await administrator.GetAsync(settingsRoute);
+        settingsRead.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(settingsRead));
+
+        using HttpResponseMessage settingsWritten = await administrator.PutAsJsonAsync(
+            settingsRoute,
+            new ModuleSettingsDto
+            {
+                ModuleId = module.ModuleId,
+                TabModuleId = module.TabModuleId,
+                ModuleSettings = new Dictionary<string, string> { ["ShowSummary"] = "True" },
+                TabModuleSettings = new Dictionary<string, string> { ["ColumnWidth"] = "240" },
+            },
+            ApiTestFixture.Json);
+
+        settingsWritten.StatusCode.Should().Be(HttpStatusCode.NoContent, await Diagnose(settingsWritten));
+
+        using HttpResponseMessage exported = await administrator.PostAsJsonAsync(
+            ModuleExportRoute(tenant.PortalId, module.ModuleId),
+            new ModuleExportRequest { FileName = "content.xml" },
+            ApiTestFixture.Json);
+
+        exported.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "authorisation admits the export and the package's own capability refuses it");
+        (await exported.Content.ReadAsStringAsync()).Should().Contain("does not support content export");
+
+        using HttpResponseMessage imported = await administrator.PostAsJsonAsync(
+            ModuleImportRoute(tenant.PortalId),
+            new ModuleImportRequest
+            {
+                ModuleId = module.ModuleId,
+                Content = "<content type=\"IntegrationDesktopModule\" version=\"01.00.00\"><item /></content>",
+            },
+            ApiTestFixture.Json);
+
+        imported.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "authorisation admits the import and the package's own capability refuses it");
+        (await imported.Content.ReadAsStringAsync()).Should().Contain("does not support content import");
+
+        using HttpResponseMessage removed = await administrator.DeleteAsync(
+            ModuleRoute(tenant.PortalId, module.ModuleId));
+
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent, await Diagnose(removed));
+
+        bool deleted = await _fixture.Database.ScalarAsync<bool>(
+            "SELECT [IsDeleted] FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = module.ModuleId });
+
+        deleted.Should().BeTrue("the removal is the legacy soft delete, and it must actually have happened");
+    }
+
+    /// <summary>
+    /// SEC-F2: an ordinary member holding the EDIT grant on the page a module sits on may administer that
+    /// module, and the same grant on a page the module does NOT sit on admits nothing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE SECOND LEGACY ALTERNATIVE, and its scope. <c>PortalModuleBase.vb:L222-L227</c> consults
+    /// <c>PortalSettings.ActiveTab.AdministratorRoles</c>, which is the EDIT grant of the page the module is
+    /// being administered from - so a caller entrusted with a page is entrusted with what sits on it. The
+    /// negative half is what keeps that from becoming "any page anywhere": the grant is evaluated against the
+    /// pages the module actually occupies, so an editor of some OTHER page of the same tenant gains nothing.
+    /// </para>
+    /// <para>
+    /// The member holds no module-scope grant in either half, which is what makes the page grant the only
+    /// thing under examination. The page grants are withdrawn in a <c>finally</c> because the seeded pages
+    /// are shared by every test in this suite: a leaked page EDIT grant on the seeded root page would widen
+    /// the member persona for every later fact, and after SEC-F2 that would silently satisfy assertions about
+    /// refusal.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ModuleAdministration_FollowsThePagesEditGrantAndOnlyForThePagesTheModuleOccupies()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto module = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        using HttpClient member = await MemberClientAsync();
+
+        Uri settingsRoute = ModuleSettingsRoute(_fixture.Seed.PortalId, module.ModuleId);
+
+        try
+        {
+            // The negative half FIRST, so the refusal cannot be explained by a grant that had not been
+            // written yet: the member administers a different page of the same tenant, and the module is not
+            // on it.
+            await GrantTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId,
+                allowAccess: true);
+
+            using HttpResponseMessage elsewhere = await member.GetAsync(settingsRoute);
+
+            elsewhere.StatusCode.Should().Be(
+                HttpStatusCode.Forbidden,
+                "administering one page confers nothing over a module placed on another");
+
+            await GrantTabPermissionAsync(
+                _fixture.Seed.RootTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId,
+                allowAccess: true);
+
+            using HttpResponseMessage admitted = await member.GetAsync(settingsRoute);
+
+            admitted.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                await Diagnose(admitted));
+
+            using HttpResponseMessage updated = await member.PutAsJsonAsync(
+                ModuleRoute(_fixture.Seed.PortalId, module.ModuleId),
+                new UpdateModuleRequest { TabId = _fixture.Seed.RootTabId, ModuleTitle = "Edited by a page editor" },
+                ApiTestFixture.Json);
+
+            updated.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(updated));
+        }
+        finally
+        {
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.RootTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+        }
+    }
+
+    /// <summary>
+    /// SEC-F2: the installation host account administers a module in a tenant it holds no membership row in.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// A SECOND DEFECT WITH THE SAME SYMPTOM, and it was not in the permission service at all. The remediation
+    /// stage of the pipeline composed its own decision from a PORTAL-SCOPED account read, so for any tenant in
+    /// which the host account held no <c>dbo.UserPortals</c> row the read answered nothing, the stage read that
+    /// as "state could not be verified", and the installation operator was refused
+    /// <c>auth.remediation_required</c> on EVERY authenticated endpoint of that tenant - not merely the module
+    /// ones. Portal creation provisions no host membership row, so this applied to every tenant this API had
+    /// just created. The legacy host account was installation-wide and administered every portal without a
+    /// membership row, so the refusal was a parity break as well as an operability one.
+    /// </para>
+    /// <para>
+    /// The absence of the membership row is ASSERTED rather than assumed, because the finding was originally
+    /// diagnosed by inserting one and watching the refusal turn into success: a fixture that happened to
+    /// provision the row would make this test pass while the defect was still present. The token is obtained
+    /// by a real sign-in AT THE TENANT'S OWN ALIAS, which is what makes its tenant claim name that tenant -
+    /// a host token issued at the seeded alias names the seeded tenant and never reaches the defect.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ModuleAdministration_IsAvailableToTheHostAccountInATenantItIsNotAMemberOf()
+    {
+        using HttpClient seededHost = await _fixture.CreateHostClientAsync();
+        TenantFacts tenant = await CreateTenantWithAdministratorAsync(seededHost);
+
+        int membershipRows = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*) FROM [dbo].[UserPortals]
+            WHERE [UserId] = @userId AND [PortalId] = @portalId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = _fixture.Seed.HostUserId,
+                ["portalId"] = tenant.PortalId,
+            });
+
+        membershipRows.Should().Be(
+            0,
+            "the whole point of the finding is that a host account holds no membership row in a created tenant");
+
+        int moduleId = await InsertForeignModuleAsync(tenant.PortalId, tenant.HomeTabId);
+
+        using HttpClient host = await AuthenticatedClientFactory.CreateAuthenticatedClientAsync(
+            _fixture,
+            IntegrationSeed.HostUserName,
+            ApiTestFixture.KnownPassword,
+            tenant.PortalId,
+            tenant.Alias);
+
+        using HttpResponseMessage read = await host.GetAsync(ModuleRoute(tenant.PortalId, moduleId));
+        read.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(read));
+
+        using HttpResponseMessage settings = await host.GetAsync(
+            ModuleSettingsRoute(tenant.PortalId, moduleId));
+        settings.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(settings));
+
+        using HttpResponseMessage updated = await host.PutAsJsonAsync(
+            ModuleRoute(tenant.PortalId, moduleId),
+            new UpdateModuleRequest { TabId = tenant.HomeTabId, ModuleTitle = "Administered by the host" },
+            ApiTestFixture.Json);
+
+        updated.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(updated));
+
+        using HttpResponseMessage removed = await host.DeleteAsync(ModuleRoute(tenant.PortalId, moduleId));
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent, await Diagnose(removed));
     }
 
     /// <summary>
@@ -2066,9 +2362,17 @@ public sealed class ModuleApiTests
         // a tenant, so it carries the tenant-bound administrator policy - without which a caller holding a
         // grant in its own tenant could import into another one, because the grant evaluation would judge its
         // own tenant's roles against the named tenant's grants. Past that, the service evaluates the module
-        // EDIT grant itself, which is not implied by administering the tenant: only a host account is answered
-        // affirmatively without a grant. So the grant is granted to the role the administrator holds, and
-        // reaching the capability refusal is the proof that it was consulted and honoured.
+        // EDIT decision, and the grant written below is what satisfies it: reaching the capability refusal is
+        // the proof that the grant was consulted and honoured.
+        //
+        // MIGRATION: SEC-F2. A CLAIM MADE HERE WAS CORRECTED RATHER THAN LEFT STANDING. This comment used to
+        // assert that the module EDIT decision "is not implied by administering the tenant: only a host
+        // account is answered affirmatively without a grant". That was a description of the defect, not of
+        // the contract - PortalModuleBase.vb:L222-L227 decides editability as a disjunction whose third arm
+        // is membership of the tenant's Administrators role, so the administrator persona used here is now
+        // admitted with or without the grant below. The grant is retained deliberately: it keeps this fact
+        // about the CAPABILITY refusal rather than about which arm admitted the caller, and the arms
+        // themselves are asserted by the ModuleAdministration_* facts above.
         using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         await GrantModulePermissionAsync(
@@ -3414,6 +3718,88 @@ public sealed class ModuleApiTests
     /// <summary>Signs in as the seeded plain member, which holds no permission grant of any kind.</summary>
     /// <returns>An authenticated client with no module or page grants.</returns>
     private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
+
+    /// <summary>
+    /// The facts about a tenant this suite provisioned that an authorisation assertion needs: how to address
+    /// it, which page its provisioning created, and which account administers it.
+    /// </summary>
+    /// <param name="PortalId">The created tenant.</param>
+    /// <param name="Alias">The host name that resolves it.</param>
+    /// <param name="HomeTabId">The home page its provisioning created.</param>
+    /// <param name="AdministratorUserName">
+    /// The account its provisioning created as its administrator. Named rather than identified, because the
+    /// only thing a test does with it is sign in, and signing in with the name is what proves the credential
+    /// the provisioning stored is usable.
+    /// </param>
+    private readonly record struct TenantFacts(
+        int PortalId,
+        string Alias,
+        int HomeTabId,
+        string AdministratorUserName);
+
+    /// <summary>
+    /// Provisions a tenant through the API and reports what an authorisation assertion needs to act as it.
+    /// </summary>
+    /// <param name="host">The installation host account, the only caller entitled to create a tenant.</param>
+    /// <returns>The created tenant's identity, alias, home page and administrator account name.</returns>
+    /// <remarks>
+    /// Distinct from <see cref="CreateForeignPortalAsync"/>, which exists to be a tenant a request must NOT
+    /// reach and therefore never reports an account to act as. This one is the subject rather than the foil,
+    /// so it also carries the administrator's name - and it is created through the API rather than by insert
+    /// so that the rows its provisioning writes, including the home page's permission grants, are exactly the
+    /// ones production writes.
+    /// </remarks>
+    private static async Task<TenantFacts> CreateTenantWithAdministratorAsync(HttpClient host)
+    {
+        string suffix = Suffix();
+        string alias = "module-admin-" + suffix + ".local";
+        string administrator = "module_owner_" + suffix;
+
+        using HttpResponseMessage response = await host.PostAsJsonAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            new
+            {
+                portalName = "Module Administration " + suffix,
+                portalAlias = alias,
+                homeDirectory = string.Empty,
+                templateFile = "admin.template",
+                isChildPortal = false,
+                administratorFirstName = "Module",
+                administratorLastName = "Owner",
+                administratorUsername = administrator,
+                administratorPassword = ApiTestFixture.KnownPassword,
+                administratorEmail = "owner." + suffix + "@example.com",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await Diagnose(response));
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        JsonElement data = document.RootElement.GetProperty("data");
+
+        return new TenantFacts(
+            data.GetProperty("portalId").GetInt32(),
+            alias,
+            data.GetProperty("homeTabId").GetInt32(),
+            administrator);
+    }
+
+    /// <summary>Renders a response as an assertion message, so an unexpected status names its own reason.</summary>
+    /// <param name="response">The response whose status did not match.</param>
+    /// <returns>The status line and the body, bounded.</returns>
+    /// <remarks>
+    /// Written for the authorisation facts, where every refusal arrives on the same status as several
+    /// unrelated ones: <c>403</c> is the permission gate, the tenant binding AND the remediation gate, and
+    /// each carries a different problem type. An assertion that reported only "expected 200, found 403" would
+    /// therefore leave the reader unable to tell which gate answered.
+    /// </remarks>
+    private static async Task<string> Diagnose(HttpResponseMessage response)
+    {
+        string body = await response.Content.ReadAsStringAsync();
+
+        return FormattableString.Invariant(
+            $"the response was {(int)response.StatusCode} with body {body[..Math.Min(body.Length, 600)]}");
+    }
 
     /// <summary>Creates a second tenant and returns its identity, alias and home page.</summary>
     /// <param name="host">The installation host account.</param>

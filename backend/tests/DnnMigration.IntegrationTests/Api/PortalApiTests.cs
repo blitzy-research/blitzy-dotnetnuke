@@ -3737,6 +3737,98 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// Binding the same host name from several callers at once binds it exactly once, refuses every other
+    /// caller as an alias conflict, and answers no caller with a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Measured against a live installation before the fix: eight simultaneous identical
+    /// bindings produced one 201, four 409 and THREE 500s, with exactly one row stored. <c>IX_PortalAlias</c>
+    /// is unique over the host name and it did exactly its job; the three racers it refused were nevertheless
+    /// told the server had failed. The existence check in front of the insert cannot close that window,
+    /// because every racer reads "not bound" before any of them commits.
+    /// </para>
+    /// <para>
+    /// This matters more here than on any other contested resource, because an alias is how a tenant is
+    /// resolved at all. A second row for one host name would make resolution ambiguous for that address, so
+    /// the assertion that exactly one row survives is a tenant-isolation assertion and not merely a tidiness
+    /// one.
+    /// </para>
+    /// <para>
+    /// What the fact asserts is the OUTCOME - one binding, every other caller refused under the same code the
+    /// sequential check emits, no 5xx, one row. It does not assert which mechanism refused a given caller,
+    /// because the check and the index answer identically by design and which one wins depends on scheduling;
+    /// asserting that would be asserting a race. The translation is pinned deterministically by
+    /// <c>DuplicateKeyTranslationTests</c> and by the service-level facts.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AddPortalAlias_SubmittedConcurrentlyForOneHostName_BindsItOnceWithoutAnyServerFault()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
+
+        string aliasCollection = $"/api/v1/portals/{Route(created.PortalId)}/aliases";
+        string contested = "race-" + Suffix() + ".local";
+
+        const int Callers = 10;
+
+        IEnumerable<Task<HttpResponseMessage>> submissions = Enumerable.Range(0, Callers).Select(_ =>
+            client.PostAsJsonAsync(
+                new Uri(aliasCollection, UriKind.Relative),
+                new CreatePortalAliasRequest { HttpAlias = contested },
+                ApiTestFixture.Json));
+
+        HttpResponseMessage[] responses = await Task.WhenAll(submissions);
+
+        try
+        {
+            HttpStatusCode[] statuses = [.. responses.Select(response => response.StatusCode)];
+
+            statuses.Should().NotContain(
+                status => (int)status >= 500,
+                "a unique index refusing a duplicate host name is the index working, not the server failing");
+
+            statuses.Count(status => status == HttpStatusCode.Created).Should().Be(
+                1,
+                "one caller binds the host name and every other must be refused");
+
+            statuses.Where(status => status != HttpStatusCode.Created).Should()
+                .AllBeEquivalentTo(HttpStatusCode.Conflict);
+
+            foreach (HttpResponseMessage refused in responses
+                .Where(response => response.StatusCode != HttpStatusCode.Created))
+            {
+                ProblemDetails? refusal = await refused.Content
+                    .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+                refusal.Should().NotBeNull("a refusal is published as a problem document whatever its cause");
+                refusal!.Type.Should().Be(
+                    DuplicateAliasProblemType,
+                    "a caller that lost the race is told the same thing as one that arrived second");
+            }
+
+            int bound = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[PortalAlias] WHERE [HTTPAlias] = @httpAlias;",
+                new Dictionary<string, object?> { ["httpAlias"] = contested });
+
+            bound.Should().Be(
+                1,
+                "a second row for one host name would make tenant resolution ambiguous for that address");
+        }
+        finally
+        {
+            foreach (HttpResponseMessage response in responses)
+            {
+                response.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
     /// Every one of the six host-only values is refused to a portal administrator, and the refusal is a
     /// <c>403 Forbidden</c> rather than a server fault.
     /// </summary>

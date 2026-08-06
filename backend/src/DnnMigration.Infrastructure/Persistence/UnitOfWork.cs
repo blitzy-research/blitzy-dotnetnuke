@@ -1,5 +1,6 @@
 using System.Data;
 using DnnMigration.Domain.Abstractions.Repositories;
+using DnnMigration.Domain.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -94,8 +95,45 @@ internal sealed class UnitOfWork : IUnitOfWork
     // flushes more than once is atomic only inside a scope from BeginTransactionAsync, whose CommitAsync
     // is the durability boundary. Gaining atomicity is a deliberate behavioural improvement over the
     // legacy write paths and is recorded as such in MIGRATION_NOTES.md.
-    public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>
-        _dbContext.SaveChangesAsync(cancellationToken);
+    //
+    // MIGRATION: SEC-F6. A UNIQUE-INDEX VIOLATION IS TRANSLATED HERE, AND THIS IS THE ONLY PLACE IT COULD
+    // BE. Every create path in the application layer asks the store whether a value is taken before
+    // inserting, which answers the ordinary case precisely and cannot answer the concurrent one: two
+    // requests carrying the same name both read "not taken", and the loser's insert is refused by the
+    // index. Measured on a live installation, ten simultaneous identical role creations produced one 201,
+    // seven 409 and two 500 - the two that lost the race after passing the pre-check - and eight
+    // simultaneous identical alias creations produced one 201, four 409 and three 500. Exactly one row was
+    // stored each time, so the store had behaved correctly and only the report was wrong.
+    //
+    // The api project references neither this mapper nor the database client, by design, so the provider
+    // exception reached its handler as the general case and was published as a server fault. It cannot be
+    // classified up there, and it must not be: naming the client from the transport would put a provider
+    // dependency in the layer whose whole purpose is to be free of one. This assembly is the only one that
+    // may name it, so the provider fault becomes a Domain-level signal here and travels upward as a type
+    // every layer is entitled to catch.
+    //
+    // The two numbers are the store's own: 2627 is a unique CONSTRAINT violation and 2601 a unique INDEX
+    // violation, and this schema raises both - PRIMARY KEY and UNIQUE constraints give 2627 while the
+    // CREATE UNIQUE INDEX statements the 88-script chain leaves behind give 2601. Both are matched, and
+    // nothing else is: a foreign-key violation, a check violation or a deadlock is a different failure with
+    // a different correct answer and continues to travel as it did.
+    //
+    // DbUpdateConcurrencyException is excluded EXPLICITLY even though the number test would exclude it
+    // anyway. It derives from DbUpdateException, so a future edit that loosened the inner test would
+    // silently start reporting a lost update as a duplicate - and the two demand opposite things of a
+    // caller, one to re-read and retry, the other to choose a different value.
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException exception) when (exception is not DbUpdateConcurrencyException
+            && DuplicateKeyTranslator.Describes(exception, out string? constraintName))
+        {
+            throw DuplicateKeyException.ForConstraint(constraintName, exception);
+        }
+    }
 
     /// <inheritdoc />
     /// <exception cref="InvalidOperationException">

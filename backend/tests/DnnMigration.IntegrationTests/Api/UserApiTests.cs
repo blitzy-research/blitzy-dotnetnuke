@@ -1869,6 +1869,74 @@ public sealed class UserApiTests
     }
 
     /// <summary>
+    /// Declaring the same profile property name from several callers at once declares it exactly once, refuses
+    /// every other caller as a conflict, and answers no caller with a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6. <c>IX_ProfilePropertyDefinition</c> is unique over
+    /// <c>(PortalID, ModuleDefID, PropertyName)</c>, so every racer reads "not declared" before any of them
+    /// commits and the losers are refused by the index rather than by the read. The scope of what a contest
+    /// fact asserts, and why it does not assert which mechanism refused a given caller, is recorded on
+    /// <see cref="CreateUser_SubmittedConcurrentlyUnderOneLoginName_CreatesItOnceWithoutAnyServerFault"/>.
+    /// </remarks>
+    [Fact]
+    public async Task CreateProfileDefinition_SubmittedConcurrentlyUnderOneName_DeclaresItOnceWithoutAnyServerFault()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string contestedName = "ITestRace" + Suffix();
+        const int Callers = 10;
+
+        IEnumerable<Task<HttpResponseMessage>> submissions = Enumerable.Range(0, Callers).Select(_ =>
+        {
+            CreateProfilePropertyDefinitionRequest request = NewProfileDefinition(required: false);
+            request.PropertyName = contestedName;
+
+            return client.PostAsJsonAsync(
+                new Uri("/api/v1/profile-definitions", UriKind.Relative),
+                request,
+                ApiTestFixture.Json);
+        });
+
+        HttpResponseMessage[] responses = await Task.WhenAll(submissions);
+
+        try
+        {
+            HttpStatusCode[] statuses = [.. responses.Select(response => response.StatusCode)];
+
+            statuses.Should().NotContain(
+                status => (int)status >= 500,
+                "a unique index refusing a duplicate declaration is not a server fault");
+
+            statuses.Count(status => status == HttpStatusCode.Created).Should().Be(1);
+            statuses.Where(status => status != HttpStatusCode.Created).Should()
+                .AllBeEquivalentTo(HttpStatusCode.Conflict);
+
+            int declared = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[ProfilePropertyDefinition] "
+                + "WHERE [PropertyName] = @name AND [PortalID] = @portalId;",
+                new Dictionary<string, object?>
+                {
+                    ["name"] = contestedName,
+                    ["portalId"] = _fixture.Seed.PortalId,
+                });
+
+            declared.Should().Be(
+                1,
+                "one declaration may survive the contest; a second would make the catalogue ambiguous for "
+                + "every account whose values reference it by name");
+        }
+        finally
+        {
+            foreach (HttpResponseMessage response in responses)
+            {
+                response.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
     /// Tenant-authored validation expressions are length-bounded and must compile before they are persisted.
     /// </summary>
     [Fact]
@@ -3536,6 +3604,92 @@ public sealed class UserApiTests
         shared.Items.Select(item => item.UserId)
             .Should().Contain(firstAccount.UserId)
             .And.Contain(secondAccount.UserId);
+    }
+
+    /// <summary>
+    /// Submitting the same new login name from several callers at once creates the account exactly once,
+    /// refuses every other caller as a conflict, and answers no caller with a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Four sequential checks run in front of this insert and none of them can close the
+    /// window in front of it: <c>IX_Users</c> is unique over the login name, so every racer reads "not taken"
+    /// before any of them commits and the losers are refused by the index instead. Left untranslated, that
+    /// refusal reached the transport - which references neither the mapper nor the database client by design -
+    /// and was answered 500, reporting a server fault for a store that had correctly kept exactly one account.
+    /// </para>
+    /// <para>
+    /// The row count is read from the column, because that is the only place the claim can be settled. The
+    /// account create writes inside a transaction spanning the account, its memberships, its role assignments
+    /// and its credential, so a partially committed racer would be invisible to any listing while still
+    /// leaving a row behind.
+    /// </para>
+    /// <para>
+    /// The fact asserts the OUTCOME - one account, every other caller refused as a conflict, no 5xx, one row -
+    /// and deliberately not which mechanism refused a given caller: the checks and the index answer
+    /// identically by design, and which wins depends on scheduling. The translation itself is pinned
+    /// deterministically by <c>DuplicateKeyTranslationTests</c> and by the service-level facts.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_SubmittedConcurrentlyUnderOneLoginName_CreatesItOnceWithoutAnyServerFault()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        CreateUserRequest template = NewUserRequest();
+        const int Callers = 10;
+
+        IEnumerable<Task<HttpResponseMessage>> submissions = Enumerable.Range(0, Callers).Select(index =>
+        {
+            CreateUserRequest request = NewUserRequest();
+
+            // Only the contested value is shared. Everything else differs per caller, so a racer cannot be
+            // refused for some incidental collision and be mistaken for a login-name refusal.
+            request.Username = template.Username;
+            request.DisplayName = "Race Caller " + index.ToString(CultureInfo.InvariantCulture);
+
+            return client.PostAsJsonAsync(
+                UsersRoute(_fixture.Seed.PortalId),
+                request,
+                ApiTestFixture.Json);
+        });
+
+        HttpResponseMessage[] responses = await Task.WhenAll(submissions);
+
+        try
+        {
+            HttpStatusCode[] statuses = [.. responses.Select(response => response.StatusCode)];
+
+            statuses.Should().NotContain(
+                status => (int)status >= 500,
+                "the unique index refusing a duplicate login name is the index working correctly, and "
+                + "reporting it as a server fault also raises a fault-level log entry for a collision");
+
+            statuses.Count(status => status == HttpStatusCode.Created).Should().Be(
+                1,
+                "one caller takes the login name and every other must be refused");
+
+            statuses.Where(status => status != HttpStatusCode.Created).Should().AllBeEquivalentTo(
+                HttpStatusCode.Conflict,
+                "a login name that is now held is a conflict with existing state");
+
+            int accounts = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Users] WHERE [Username] = @username;",
+                new Dictionary<string, object?> { ["username"] = template.Username });
+
+            accounts.Should().Be(
+                1,
+                "a refused caller must leave no account behind, and two accounts sharing a login name would "
+                + "make sign-in ambiguous");
+        }
+        finally
+        {
+            foreach (HttpResponseMessage response in responses)
+            {
+                response.Dispose();
+            }
+        }
     }
 
     /// <summary>

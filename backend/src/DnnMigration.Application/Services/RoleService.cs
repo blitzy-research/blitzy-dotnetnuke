@@ -160,6 +160,20 @@ public sealed class RoleService : IRoleService
     private const string AssignmentProtectedCode = "role_assignment.protected";
 
     /// <summary>
+    /// Reason code reported when a role the tenant designates for a system purpose is amended or removed.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: SEC-F3. The <c>protected</c> token is load-bearing rather than descriptive. The central
+    /// translator derives the status from the token after the last separator and lists <c>protected</c>
+    /// among the forbidden tokens, so this condition answers <c>403</c> - the caller's request is well
+    /// formed and names a role that genuinely exists, and what refuses it is authority over that
+    /// particular role rather than anything about the submission. It deliberately matches the token
+    /// already carried by <see cref="AssignmentProtectedCode"/>, because the two express the same legacy
+    /// idea at two scopes and a reader should not have to learn two vocabularies for it.
+    /// </remarks>
+    private const string RoleProtectedCode = "role.protected";
+
+    /// <summary>
     /// Informational reason carried by a successful removal that expired an assignment instead of
     /// deleting it, so that a caller which must report the difference can.
     /// </summary>
@@ -563,7 +577,28 @@ public sealed class RoleService : IRoleService
             }
         }
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // MIGRATION: SEC-F6. THE PRE-CHECK ABOVE CANNOT CLOSE THE RACE, SO THE FLUSH ANSWERS FOR IT.
+        // IX_RoleName is unique over (PortalID, RoleName), and two requests carrying the same name arriving
+        // together both read "not taken" before either inserts - so the loser's insert is refused by the
+        // index rather than by the check. Measured on a live installation: ten simultaneous identical
+        // creations produced one 201, seven 409 and two 500, with exactly one row stored. The two 500s were
+        // the racers, told the server had failed when it had done precisely the right thing.
+        //
+        // The SAME reason code the pre-check emits is returned, deliberately, and with the same wording. A
+        // caller cannot act differently on "you were second" than on "it was already there", so publishing
+        // two codes for one outcome would only oblige it to handle both. The persistence layer translates
+        // the provider fault into the Domain signal caught here; nothing in this layer names a provider
+        // type, and nothing in the transport has to classify a store error.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateKeyException)
+        {
+            return Result<RoleDetailDto>.Failure(
+                RoleNameDuplicateCode,
+                $"Portal {portalId} already has a role named '{request.RoleName}'.");
+        }
 
         _cache.InvalidatePortal(portalId);
 
@@ -601,7 +636,14 @@ public sealed class RoleService : IRoleService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
+        // MIGRATION: SEC-F3. THE TENANT ROW IS READ RATHER THAN PROBED, because this member now needs two
+        // facts from it - that the tenant exists, and which two roles it has designated - and one read
+        // answers both. This is the same substitution RemoveUserFromRoleAsync already makes for the same
+        // reason, so the two protected-role rules resolve their designations identically.
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+        if (portal is null)
         {
             return Result<RoleDetailDto>.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
@@ -612,6 +654,24 @@ public sealed class RoleService : IRoleService
             return Result<RoleDetailDto>.Failure(
                 RoleNotFoundCode,
                 $"Portal {portalId} has no role bearing identifier {roleId}.");
+        }
+
+        // MIGRATION: SEC-F3. The legacy edit screen closed BOTH verbs for a designated role, not just the
+        // removal - Website/admin/Security/EditRoles.ascx.vb L174-L178 reads, verbatim:
+        //     If RoleID = PortalSettings.AdministratorRoleId Or RoleID = PortalSettings.RegisteredRoleId Then
+        //         cmdDelete.Visible = False
+        //         cmdUpdate.Visible = False
+        //         ActivateControls(False)
+        //     End If
+        // so the update path carries the guard as well. The refusal is stated AFTER the role resolution
+        // deliberately: a designation that names no surviving row is a missing role rather than a
+        // protected one, and answering "protected" for it would make an installation with a dangling
+        // designation impossible to diagnose.
+        if (IsPortalDesignatedRole(portal, roleId))
+        {
+            return Result<RoleDetailDto>.Failure(
+                RoleProtectedCode,
+                DescribeProtectedRole(portal, roleId, "amended"));
         }
 
         // The shape rules are re-asserted here as well as at the boundary. UpdateRoleRequestValidator is
@@ -697,7 +757,12 @@ public sealed class RoleService : IRoleService
         int roleId,
         CancellationToken cancellationToken = default)
     {
-        if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
+        // MIGRATION: SEC-F3. The tenant row is read rather than probed, for the reason recorded on the
+        // update path: the designations live on it, and one read answers both existence and designation.
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+        if (portal is null)
         {
             return Result.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
@@ -706,6 +771,21 @@ public sealed class RoleService : IRoleService
         if (role is null)
         {
             return Result.Failure(RoleNotFoundCode, $"Portal {portalId} has no role bearing identifier {roleId}.");
+        }
+
+        // MIGRATION: SEC-F3. THE DESIGNATED ROLES CANNOT BE REMOVED, and this is a repair of a genuine
+        // hole rather than a hardening. The legacy screen withheld the removal outright
+        // (EditRoles.ascx.vb L174-L178, quoted on the update path above); this contract accepted it and
+        // answered 204. What the removal then did is why the severity is what it is: the cascade takes
+        // every assignment with the role, so removing a tenant's designated administrators role
+        // dispossessed every administrator it had, while the tenant's own AdministratorRoleId column was
+        // left pointing at a row that no longer exists. The tenant then had no principal able to restore
+        // the designation and - measured, not supposed - could not even be resolved by alias afterwards,
+        // because the tenant snapshot the resolution composes reads the designated role's NAME. One
+        // request could therefore take a tenant permanently offline.
+        if (IsPortalDesignatedRole(portal, roleId))
+        {
+            return Result.Failure(RoleProtectedCode, DescribeProtectedRole(portal, roleId, "removed"));
         }
 
         // MIGRATION: a role's assignments go with it. FK_UserRoles_Roles is declared ON DELETE CASCADE
@@ -872,7 +952,13 @@ public sealed class RoleService : IRoleService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
+        // MIGRATION: SEC-F5. The tenant row is READ rather than probed, because the bound-protection rule
+        // below needs its two designations. The same substitution is made on the update and removal paths,
+        // for the same reason, so every rule keyed on a designation resolves it identically.
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+        if (portal is null)
         {
             return Result.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
@@ -895,11 +981,48 @@ public sealed class RoleService : IRoleService
             .GetUserRoleAsync(portalId, request.UserId, roleId, cancellationToken)
             .ConfigureAwait(false);
 
-        (DateTime? effectiveDate, DateTime? expiryDate) = DeriveAssignmentDates(
-            role,
-            request.EffectiveDate,
-            request.ExpiryDate,
-            existing?.IsTrialUsed ?? false);
+        // MIGRATION: THE PORTAL ADMINISTRATOR'S OWN ADMINISTRATOR MEMBERSHIP CARRIES NO CALLER-SUPPLIED
+        // BOUNDS. The legacy screen cleared both date boxes for exactly this pairing before reading them -
+        // SecurityRoles.ascx.vb L522-L526:
+        //     ' do not modify the portal Administrator account dates
+        //     If User.UserID = PortalSettings.AdministratorId And Role.RoleID = PortalSettings.AdministratorRoleId.ToString Then
+        //         txtEffectiveDate.Text = ""
+        //         txtExpiryDate.Text = ""
+        //     End If
+        // and L528-L539 then substituted the absent-date marker for each empty box, so the assignment
+        // member received absence for both. The comparison is made here with typed integers; the legacy
+        // one compared an Integer against a String and relied on Option Strict being off to coerce it,
+        // which is recorded rather than reproduced.
+        //
+        // It is enforced HERE and not merely in a screen, and SEC-F5 is why it had to be. While a
+        // submitted bound was silently rewritten by the derivation, this pairing was protected by
+        // accident. Now that a submitted bound is honoured, an expiry on this one membership would be
+        // honoured too - and when it lapsed the tenant would be left with no administrator, which is the
+        // same class of self-inflicted lockout the protected-role guard above exists to prevent. The
+        // bounds are DISCARDED rather than the request refused, exactly as the screen discarded them.
+        //
+        // THE DERIVATION IS BYPASSED ENTIRELY FOR THIS PAIRING, and that is the whole rule rather than a
+        // shortcut. The legacy screen blanked the two boxes and then called the VERBATIM member
+        // (AddUserRole, L295-L315), so the row it wrote carried absence for both bounds and no derivation
+        // ever ran over it. Feeding absence through the derivation instead is NOT equivalent, and the
+        // difference was measured rather than reasoned about: portal provisioning creates a tenant's three
+        // system roles with `BillingFrequency = 'M'` and `BillingPeriod = 0`, so the derivation reads a
+        // period that is present and zero, adds zero months to the current instant, and yields an expiry
+        // of NOW - an administrators-role membership that has expired by the time the response is written.
+        // Exercised against a live tenant, the very next request from that administrator was refused
+        // `auth.not_permitted`, because the authorisation handler reads assignment validity windows: one
+        // assignment call locked the tenant's only administrator out of its own tenant. Absence is
+        // therefore returned directly.
+        bool bearsProtectedBounds =
+            portal.AdministratorId == request.UserId && portal.AdministratorRoleId == roleId;
+
+        (DateTime? effectiveDate, DateTime? expiryDate) = bearsProtectedBounds
+            ? (null, null)
+            : DeriveAssignmentDates(
+                role,
+                request.EffectiveDate,
+                request.ExpiryDate,
+                existing?.IsTrialUsed ?? false);
 
         // MIGRATION: the legacy assignment member took the portal identifier as its first argument
         // (RoleController.vb:L295) and the repository member this one calls does NOT, because
@@ -1133,7 +1256,18 @@ public sealed class RoleService : IRoleService
         RoleGroup group = RoleMappings.ToNewGroup(portalId, request);
         await _roles.AddRoleGroupAsync(group, cancellationToken).ConfigureAwait(false);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // SEC-F6: the concurrent counterpart of the name check above, for the reason recorded in full on
+        // CreateRoleAsync. Same code, same wording, so one outcome has one taxonomy.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateKeyException)
+        {
+            return Result<RoleGroupDto>.Failure(
+                RoleGroupNameDuplicateCode,
+                $"Portal {portalId} already has a role group named '{request.RoleGroupName}'.");
+        }
 
         _cache.InvalidatePortal(portalId);
 
@@ -1238,14 +1372,18 @@ public sealed class RoleService : IRoleService
     /// <param name="trialUsed">Whether the member has already consumed this role's trial.</param>
     /// <returns>The dates to store.</returns>
     /// <remarks>
-    /// MIGRATION: reproduces RoleController.vb L503-L558 in the same order. The trial terms govern only
-    /// when the trial has not already been consumed and the trial frequency is not the never code;
-    /// otherwise the billing terms govern. An effective date already in the past is cleared, so the
-    /// assignment carries no start gate, and an expiry date already in the past is advanced to the
-    /// current instant so that the offset runs forward from now - which is also how an absent expiry
-    /// behaved, because the legacy absent-date sentinel was the minimum date value and therefore always
-    /// in the past. An absent period yields no expiry at all. The current instant comes from the
-    /// injected clock, never from an ambient reading.
+    /// <para>
+    /// MIGRATION: reproduces RoleController.vb L503-L558 in the same order for the bounds the caller left
+    /// ABSENT. The trial terms govern only when the trial has not already been consumed and the trial
+    /// frequency is not the never code; otherwise the billing terms govern. An absent period yields no
+    /// expiry at all. The current instant comes from the injected clock, never from an ambient reading.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F5. A bound the caller DID submit is returned verbatim and no derivation is run over
+    /// it, reproducing RoleController.vb L295-L315 - the member the legacy screen actually called, which
+    /// stored both dates exactly as given. The reasoning, and the four ways the previous revision silently
+    /// rewrote a submitted bound behind a 2xx response, are recorded at the decision itself.
+    /// </para>
     /// </remarks>
     private (DateTime? EffectiveDate, DateTime? ExpiryDate) DeriveAssignmentDates(
         Role role,
@@ -1316,32 +1454,46 @@ public sealed class RoleService : IRoleService
         requestedEffectiveDate = NormalizeLegacyDateMarker(requestedEffectiveDate);
         requestedExpiryDate = NormalizeLegacyDateMarker(requestedExpiryDate);
 
-        // MIGRATION: the two bounds are primed from the REQUEST, where the legacy billing member primed
-        // them from the row it had just read (RoleController.vb:L513-L514 assigning
-        // `userRole.EffectiveDate` and `userRole.ExpiryDate`). The consequence is confined to one case and
-        // is stated rather than hidden: renewing an assignment whose stored expiry is still in the FUTURE
-        // while submitting no expiry of one's own now offsets from the present instant rather than from
-        // that stored expiry, so the unexpired remainder of the term is not carried forward. A caller
-        // that wants the legacy behaviour submits the stored expiry, which is exactly what the screen this
-        // member serves did - `SecurityRoles.ascx.vb:L273-L303` read the existing assignment solely to
-        // pre-fill the two inputs it then posted back.
-        // The divergence is a consequence of the consolidation, not a choice made against the legacy: two
-        // legacy members are collapsed into this one, and they disagreed with each other. L295 stored the
-        // caller's two dates VERBATIM and ran no derivation at all, while L489 ran the derivation and
-        // ignored the caller entirely, having no date parameters to ignore. One member cannot reproduce
-        // both, so the derivation is kept - it is the behaviour that carries the paid-membership rules the
-        // migration must preserve - and the caller's dates are honoured as its input. The trial-used fact
-        // is still primed from the stored row, as L515 did, because nothing a caller submits may reset it.
+        // MIGRATION: SEC-F5. A SUBMITTED BOUND IS STORED VERBATIM, AND THE DERIVATION APPLIES ONLY WHERE
+        // THE CALLER SUBMITTED NONE. Two legacy members are collapsed into this one and they disagreed
+        // with each other, so which of the two governs a given bound has to be decided explicitly:
+        //
+        //   * RoleController.vb L295-L315 - `AddUserRole(PortalID, UserId, RoleId, EffectiveDate,
+        //     ExpiryDate)` - assigns `objUserRole.EffectiveDate = EffectiveDate` and
+        //     `objUserRole.ExpiryDate = ExpiryDate` on BOTH the insert and the update branch and runs no
+        //     derivation whatever. This is the member the screen this contract replaces actually called:
+        //     SecurityRoles.ascx.vb L542 calls the seven-argument static at L647, which forwards to it.
+        //   * RoleController.vb L489-L556 - `UpdateUserRole(PortalId, UserId, RoleId, Cancel)` - runs the
+        //     derivation and takes NO date arguments at all; every value it works from is read out of the
+        //     stored assignment at L513-L515.
+        //
+        // So the legacy never derived over a caller's own date, and it never ignored one either: the two
+        // cases were reached through two different members. An earlier revision of this method ran the
+        // derivation on TOP of the submitted bounds, which silently rewrote them on a 2xx response - a
+        // submitted expiry was used only as the offset base and came back a period later, a submitted
+        // expiry on a one-time role came back as the perpetual date, a submitted expiry on a role
+        // declaring no period was discarded to null, and a submitted effective date already in the past
+        // was discarded to null as well. A caller was told its instruction had been accepted while the
+        // store held something else.
+        //
+        // The clamps at L530-L534 belong to the DERIVATION and are reproduced there, not here. Their
+        // inputs were the STORED row's bounds, never a caller's, which is precisely why applying them to
+        // a submitted value was wrong. On the derivation path this member reaches them with no bound at
+        // all, and an absent bound is what L533-L534 turned into `Now` - so the seed below reproduces
+        // them exactly for every case they can still be reached in.
+        //
+        // The trial-used fact is still primed from the stored row, as L515 did, because nothing a caller
+        // submits may reset it. The pre-existing renewal divergence is unchanged and still applies to the
+        // derivation path only: an assignment renewed with NO submitted expiry offsets from the present
+        // instant rather than from its stored expiry, so an unexpired remainder is not carried forward. A
+        // caller wanting the legacy carry-forward submits the stored expiry - which is exactly what that
+        // screen did, since SecurityRoles.ascx.vb L273-L303 read the existing assignment solely to
+        // pre-fill the two inputs it then posted back, and which now lands verbatim as it did then.
         DateTime? effectiveDate = requestedEffectiveDate;
-        if (effectiveDate is DateTime submittedEffective && submittedEffective < now)
-        {
-            effectiveDate = null;
-        }
 
-        DateTime? expiryDate = requestedExpiryDate;
-        if (expiryDate is DateTime submittedExpiry && submittedExpiry < now)
+        if (requestedExpiryDate is DateTime submittedExpiry)
         {
-            expiryDate = now;
+            return (effectiveDate, submittedExpiry);
         }
 
         if (period is not int units)
@@ -1349,7 +1501,20 @@ public sealed class RoleService : IRoleService
             return (effectiveDate, null);
         }
 
-        DateTime offsetBase = expiryDate ?? now;
+        // The offset runs forward from the CURRENT INSTANT, which is what RoleController.vb L533-L534
+        // produced for the only bound state that can reach this line: an absent expiry arrived at the
+        // legacy engine as `Null.NullDate`, the minimum date value, which is always in the past, so the
+        // comparison always fired and always replaced it with `Now`.
+        //
+        // The FALL-THROUGH value, however, stays absent rather than becoming that instant, and this is a
+        // PRE-EXISTING DOCUMENTED DIVERGENCE that SEC-F5 deliberately leaves standing. The legacy engine's
+        // unrecognised-frequency case fell out of its selection carrying `Now`, so a role holding an
+        // unrecognised frequency character produced a membership that lapsed the instant it was created.
+        // Storing no bound is the sane reading of the same code path, it is what this contract has always
+        // answered, and it is pinned by its own unit fact - so reintroducing the legacy value here would
+        // be an unrequested behaviour change dressed up as fidelity.
+        DateTime? expiryDate = null;
+        DateTime offsetBase = now;
 
         expiryDate = frequency switch
         {
@@ -1402,6 +1567,51 @@ public sealed class RoleService : IRoleService
     /// </remarks>
     private static DateTime? NormalizeLegacyDateMarker(DateTime? bound) =>
         bound is DateTime value && value.Date == DateTime.MinValue.Date ? null : bound;
+
+    /// <summary>
+    /// Tests whether a role is one of the two the tenant designates for a system purpose.
+    /// </summary>
+    /// <param name="portal">The tenant row carrying the designations.</param>
+    /// <param name="roleId">The role in question.</param>
+    /// <returns><see langword="true"/> when the role is designated and therefore protected.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F3. The two designations are read from the ADDRESSED TENANT'S OWN COLUMNS -
+    /// <c>Portals.AdministratorRoleId</c> and <c>Portals.RegisteredRoleId</c> - and never from a literal,
+    /// because in this schema no identifier is reserved: <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so
+    /// role zero is an ordinary key that happens to be first, and every tenant designates its own pair.
+    /// Comparing against a constant would protect the wrong role in every tenant but the first, and would
+    /// leave the first tenant's real designations unprotected the moment they were re-pointed.
+    /// <para>
+    /// Both designations are nullable, and a null one matches nothing: <c>int?</c> equality against an
+    /// <c>int</c> is false when the nullable has no value, so a tenant that designates neither role has no
+    /// protected roles rather than a role protected by accident.
+    /// </para>
+    /// </remarks>
+    private static bool IsPortalDesignatedRole(Portal portal, int roleId)
+        => portal.AdministratorRoleId == roleId || portal.RegisteredRoleId == roleId;
+
+    /// <summary>
+    /// Describes a protected-role refusal in terms of the purpose the role is designated for.
+    /// </summary>
+    /// <param name="portal">The tenant row carrying the designations.</param>
+    /// <param name="roleId">The designated role the request named.</param>
+    /// <param name="attempted">The verb the caller attempted, for the sentence this composes.</param>
+    /// <returns>The refusal detail.</returns>
+    /// <remarks>
+    /// The purpose is named rather than merely asserted, because "this role is protected" leaves an
+    /// operator to guess which of the tenant's settings is protecting it. Nothing a caller submitted is
+    /// interpolated - only the tenant's own designation and an authored verb - so the detail is safe to
+    /// publish in a problem document.
+    /// </remarks>
+    private static string DescribeProtectedRole(Portal portal, int roleId, string attempted)
+    {
+        string purpose = portal.AdministratorRoleId == roleId
+            ? "administrators"
+            : "registered members";
+
+        return FormattableString.Invariant(
+            $"Role {roleId} is the portal's designated {purpose} role and cannot be {attempted}.");
+    }
 
     /// <summary>
     /// Advances an instant by a whole number of days, clamping rather than overflowing when the result

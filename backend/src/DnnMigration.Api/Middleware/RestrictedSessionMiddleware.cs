@@ -1,7 +1,7 @@
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Application.Abstractions;
-using DnnMigration.Application.Dtos.User;
+using DnnMigration.Application.Dtos.Auth;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -55,18 +55,21 @@ public sealed class RestrictedSessionMiddleware
     /// <summary>Applies the store-backed remediation boundary to one request.</summary>
     /// <param name="context">The current request.</param>
     /// <param name="currentUser">The authenticated caller projection.</param>
-    /// <param name="users">The account service that owns remediation facts.</param>
+    /// <param name="auth">
+    /// The authentication service that owns the remediation rule. It is the same member the authorisation
+    /// handler consults, which is what keeps one rule in one place - see the note at the decision below.
+    /// </param>
     /// <param name="problemDetailsFactory">Creates the standard problem response.</param>
     /// <returns>A task that completes after the request or refusal has been written.</returns>
     public async Task InvokeAsync(
         HttpContext context,
         ICurrentUser currentUser,
-        IUserService users,
+        IAuthService auth,
         ProblemDetailsFactory problemDetailsFactory)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(currentUser);
-        ArgumentNullException.ThrowIfNull(users);
+        ArgumentNullException.ThrowIfNull(auth);
         ArgumentNullException.ThrowIfNull(problemDetailsFactory);
 
         // MIGRATION: AN ANONYMOUSLY REACHABLE ENDPOINT IS EXEMPT, and this is a correction rather than a
@@ -107,17 +110,28 @@ public sealed class RestrictedSessionMiddleware
             return;
         }
 
-        Result<UserDetailDto?> account = await users
-            .GetUserAsync(portalId, userId, context.RequestAborted)
-            .ConfigureAwait(false);
-        Result<bool> profile = await users
-            .RequiresProfileCompletionAsync(portalId, userId, context.RequestAborted)
+        // MIGRATION: SEC-F2. ONE REMEDIATION RULE, ONE HOME, AND THIS IS THE CALL THAT MAKES IT SO.
+        // This stage used to compose the decision itself from two account-service reads - the portal-scoped
+        // account projection for the forced-credential flag, and the profile-completion probe - which was a
+        // SECOND implementation of a rule the authorisation handler already asked
+        // IAuthService.EvaluateRemediationAsync for. The two agreed until they did not, and the case where
+        // they disagreed was a host account: the account read is scoped to the addressed tenant, and a host
+        // account belongs to no tenant, so for any portal in which it holds no dbo.UserPortals row the read
+        // answered nothing, the guard below read that as "state could not be verified", and the installation
+        // operator was refused 403 on EVERY authenticated endpoint of that tenant - including the tenants
+        // this API had just created, since portal creation provisions no host membership row. The legacy host
+        // account was installation-wide and administered every portal without a membership row, so refusing
+        // it was a parity break as well as an operability one.
+        //
+        // EvaluateRemediationAsync is the rule: it resolves a host account without a portal scope, exempts a
+        // host account from profile completion, and still honours an explicit forced-credential flag for one.
+        // Delegating to it removes the duplicate rather than patching it, so the middleware and the
+        // authorisation handler cannot drift apart again.
+        Result<AuthenticationRemediationState> evaluated = await auth
+            .EvaluateRemediationAsync(portalId, userId, context.RequestAborted)
             .ConfigureAwait(false);
 
-        bool mustChangePassword = account.IsSuccess && account.Value?.MustChangePassword == true;
-        bool mustCompleteProfile = profile.IsSuccess && profile.Value;
-
-        if (account.IsFailure || profile.IsFailure || account.Value is null)
+        if (evaluated.IsFailure)
         {
             await WriteRefusalAsync(
                 context,
@@ -127,7 +141,11 @@ public sealed class RestrictedSessionMiddleware
             return;
         }
 
-        if (!mustChangePassword && !mustCompleteProfile)
+        AuthenticationRemediationState remediation = evaluated.Value;
+        bool mustChangePassword = remediation.MustChangePassword;
+        bool mustCompleteProfile = remediation.MustUpdateProfile;
+
+        if (!remediation.IsRequired)
         {
             await _next(context).ConfigureAwait(false);
             return;

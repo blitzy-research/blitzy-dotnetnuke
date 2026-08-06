@@ -1057,7 +1057,27 @@ public sealed class UserService : IUserService
             .ConfigureAwait(false))
         {
             _users.Add(account);
-            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // MIGRATION: SEC-F6. THE FOUR CHECKS ABOVE CANNOT CLOSE THE RACE. IX_Users is unique over the
+            // account name, so two requests carrying the same name arriving together both read "not taken"
+            // and the loser's insert is refused by the index. Without this the provider fault reached the
+            // transport, which references neither the mapper nor the database client by design and therefore
+            // answered 500 - a server fault for a store that had behaved correctly and kept exactly one row.
+            //
+            // The registered-in-this-portal code is returned, which is the code the FIRST of those checks
+            // emits: the winner of the race has by then created the account and registered it here, so that
+            // is precisely the state the loser now faces, and reporting it identically means a caller cannot
+            // tell a race from an ordinary second attempt - nor should it need to.
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (DuplicateKeyException)
+            {
+                return Result<UserDetailDto>.Failure(
+                    CreateUserAlreadyRegisteredCode,
+                    FormattableString.Invariant(
+                        $"Account \"{request.Username}\" is already registered in portal {portalId}."));
+            }
 
             try
             {
@@ -2439,7 +2459,30 @@ public sealed class UserService : IUserService
 
         ProfilePropertyDefinition created = UserMappings.ToNewDefinition(portalId, request);
         await _profiles.AddDefinitionAsync(created, cancellationToken).ConfigureAwait(false);
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // MIGRATION: SEC-F6. THE NAME TEST ABOVE CANNOT CLOSE THE RACE, SO THE FLUSH ANSWERS FOR IT.
+        // IX_ProfilePropertyDefinition is unique over (PortalID, ModuleDefID, PropertyName), so two
+        // requests declaring the same property name in the same tenant arriving together both read "not
+        // declared" before either inserts, and the loser's insert is refused by the index rather than by
+        // the read. Left untranslated the provider fault reached the transport, which references neither
+        // the mapper nor the database client by design, and was answered 500 - a server fault reported for
+        // a store that had behaved correctly and kept exactly one declaration.
+        //
+        // The SAME code and the SAME wording the name test emits are returned. The loser faces precisely
+        // the state that test describes - the winner has by now declared the property - so publishing a
+        // second code for it would oblige every caller to handle two codes for one outcome.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateKeyException)
+        {
+            return Result<ProfilePropertyDefinitionDto>.Failure(
+                ProfileDefinitionDuplicateNameCode,
+                FormattableString.Invariant(
+                    $"Portal {portalId} already declares a profile property named \"{request.PropertyName}\"."));
+        }
+
         _cache.InvalidateProfileDefinitions(portalId);
 
         int defaultVisibility =
@@ -2529,9 +2572,28 @@ public sealed class UserService : IUserService
         UserMappings.ApplyDefinitionUpdate(stored, request);
         await _profiles.UpdateDefinitionAsync(stored, cancellationToken).ConfigureAwait(false);
 
+        // MIGRATION: SEC-F6. THE NAME COMPARISON ABOVE CANNOT CLOSE THE RACE EITHER. A rename onto a name
+        // that is free when read and taken by the time the update is written is refused by
+        // IX_ProfilePropertyDefinition, and the reasoning already recorded above for withdrawn rows applies
+        // unchanged to a concurrent one: the honest answer is the duplicate-name result the comparison
+        // would have produced, not a server fault.
+        //
+        // THIS ARM PRECEDES THE CONCURRENCY ARM DELIBERATELY. The two describe different store outcomes -
+        // a name already occupied against a row changed underneath - and a caller acts differently on each,
+        // renaming for the first and reloading for the second. Ordering makes that independent of how the
+        // concurrency predicate happens to be written: it matches only the mapper's concurrency type by
+        // name and so would not claim a duplicate-key signal today, but a duplicate key must never be
+        // reported as a stale read even if that predicate is later widened.
         try
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateKeyException)
+        {
+            return Result<ProfilePropertyDefinitionDto>.Failure(
+                ProfileDefinitionDuplicateNameCode,
+                FormattableString.Invariant(
+                    $"Portal {portalId} already declares a profile property named \"{request.PropertyName}\"."));
         }
         catch (Exception exception) when (IsConcurrencyConflict(exception))
         {

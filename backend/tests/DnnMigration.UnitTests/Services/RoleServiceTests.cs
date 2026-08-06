@@ -967,6 +967,54 @@ public class RoleServiceTests
     }
 
     /// <summary>
+    /// A name taken between the check and the commit is refused with exactly the answer the check gives, so
+    /// losing a race is indistinguishable from arriving second.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. The check above cannot close this window. <c>IX_RoleName</c> is unique over
+    /// <c>(PortalID, RoleName)</c>, so two requests carrying the same name arriving together BOTH read "not
+    /// taken" and the loser's insert is refused by the index rather than by the check. Measured on a live
+    /// installation before the fix: ten simultaneous identical creations produced one 201, seven 409 and two
+    /// 500s, with exactly one row stored. The two 500s were the racers - told the server had failed when it
+    /// had done precisely the right thing.
+    /// </para>
+    /// <para>
+    /// The code AND the wording are asserted to be identical to the sequential refusal, deliberately. A
+    /// caller cannot act differently on "you were second" than on "it was already there", so publishing a
+    /// second code for one outcome would only oblige it to handle both; asserting the wording as well is what
+    /// stops the two drifting apart later.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_RefusesANameTakenBetweenTheCheckAndTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(DuplicateKeyException.ForConstraint("IX_RoleName", null));
+
+        Result<RoleDetailDto> outcome = await harness.Service
+            .CreateRoleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue(
+            "the store refused the insert, so the creation did not happen and must not be reported as if it "
+            + "had");
+        outcome.Reason!.Code.Should().Be(
+            RoleNameDuplicateCode,
+            "the racer faces exactly the state the sequential check describes, so it is told the same thing");
+        outcome.Reason!.Message.Should().Be(
+            $"Portal {PortalId} already has a role named '{RoleName}'.",
+            "identical wording is what keeps the two paths from drifting into two vocabularies");
+
+        harness.Cache.Verify(
+            cache => cache.InvalidatePortal(It.IsAny<int>()),
+            Times.Never,
+            "nothing was committed, so no cached state became stale");
+    }
+
+    /// <summary>
     /// The uniqueness check excludes nothing, because no row exists yet to exclude.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -1282,17 +1330,87 @@ public class RoleServiceTests
     /// Updating a role in a tenant that does not exist is refused.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F3. The absence is expressed as a MISSING ROW rather than as a false existence
+    /// probe, because this member now READS the tenant: it needs the two designations the protected-role
+    /// guard compares against, and one read answers both questions. The existence flag is cleared as well
+    /// so that the harness describes one world rather than two contradictory ones.
+    /// </remarks>
     [Fact]
     public async Task UpdateRole_RefusesAnUnknownTenant()
     {
         Harness harness = Harness.Ready();
         harness.PortalExists = false;
+        harness.PortalRow = null;
 
         Result<RoleDetailDto> outcome = await harness.Service
             .UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
+    }
+
+    /// <summary>
+    /// SEC-F3: neither of the two roles the tenant designates for a system purpose can be amended, and
+    /// nothing is staged or committed when one is named.
+    /// </summary>
+    /// <param name="designateAdministrators">
+    /// Whether the tenant designates the named role as its administrators role rather than as its
+    /// registered-members role. Both are asserted, because the legacy guard named both and a fix covering
+    /// one would leave the other open.
+    /// </param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy edit screen disabled <c>cmdUpdate</c> alongside <c>cmdDelete</c> for a designated role
+    /// (<c>EditRoles.ascx.vb</c> L174-L178), so the rule covers the amendment as well as the removal. The
+    /// commit is asserted absent because a refusal that had already staged a projection would leave the
+    /// tracked entity carrying the caller's values for whatever ran next in the same scope.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UpdateRole_RefusesTheTenantsDesignatedRole(bool designateAdministrators)
+    {
+        Harness harness = Harness.Ready();
+
+        if (designateAdministrators)
+        {
+            harness.PortalRow!.AdministratorRoleId = RoleId;
+        }
+        else
+        {
+            harness.PortalRow!.RegisteredRoleId = RoleId;
+        }
+
+        Result<RoleDetailDto> outcome = await harness.Service
+            .UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("role.protected");
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// SEC-F3: a role the tenant designates for nothing is amended normally, which is what proves the
+    /// guard is a comparison against the tenant's own columns rather than a blanket refusal.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateRole_AmendsARoleTheTenantDesignatesForNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalRow!.AdministratorRoleId = null;
+        harness.PortalRow!.RegisteredRoleId = null;
+
+        Result<RoleDetailDto> outcome = await harness.Service
+            .UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
     }
 
     /// <summary>
@@ -1613,16 +1731,66 @@ public class RoleServiceTests
     /// Deleting a role in a tenant that does not exist is refused.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F3. Expressed as a missing ROW for the reason recorded on the update path - the
+    /// member reads the tenant now, because the protected-role designations live on it.
+    /// </remarks>
     [Fact]
     public async Task DeleteRole_RefusesAnUnknownTenant()
     {
         Harness harness = Harness.Ready();
         harness.PortalExists = false;
+        harness.PortalRow = null;
 
         Result outcome = await harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
+    }
+
+    /// <summary>
+    /// SEC-F3: neither of the two roles the tenant designates for a system purpose can be removed, the
+    /// store is left untouched, and the refusal names the purpose that protects the role.
+    /// </summary>
+    /// <param name="designateAdministrators">
+    /// Whether the tenant designates the named role as its administrators role rather than as its
+    /// registered-members role.
+    /// </param>
+    /// <param name="expectedPurpose">The purpose the refusal must name, so the operator can act on it.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Nothing reaching the store is the assertion that matters most here. The removal cascades to every
+    /// assignment of the role, so a guard that refused the caller AFTER staging would still dispossess
+    /// every administrator of the tenant the moment anything else committed in the same scope.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, "administrators")]
+    [InlineData(false, "registered members")]
+    public async Task DeleteRole_RefusesTheTenantsDesignatedRole(
+        bool designateAdministrators,
+        string expectedPurpose)
+    {
+        Harness harness = Harness.Ready();
+
+        if (designateAdministrators)
+        {
+            harness.PortalRow!.AdministratorRoleId = RoleId;
+        }
+        else
+        {
+            harness.PortalRow!.AdministratorRoleId = OtherRoleId;
+            harness.PortalRow!.RegisteredRoleId = RoleId;
+        }
+
+        Result outcome = await harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("role.protected");
+        outcome.Reason!.Message.Should().Contain(expectedPurpose);
+        harness.RemovedRoles.Should().BeEmpty("a protected role never reaches the store");
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -2449,23 +2617,32 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// An effective date already in the past is discarded, so the assignment takes effect immediately
-    /// rather than appearing to have been granted retrospectively.
+    /// SEC-F5: an effective date already in the past is STORED AS SUBMITTED, because a start date is a
+    /// caller's instruction and a backdated grant is a legitimate one.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F5 replaced a fact asserting the opposite. This member had discarded a past start
+    /// date to null, on the authority of <c>RoleController.vb</c> L530 - but that line belongs to
+    /// <c>UpdateUserRole</c>, whose inputs are the STORED assignment's bounds and which takes no date
+    /// arguments at all. The member the legacy screen called with a caller's dates is
+    /// <c>AddUserRole</c> at L295-L315, which stored both verbatim. Discarding the value silently
+    /// contradicted the 2xx the caller was given.
+    /// </remarks>
     [Fact]
-    public async Task Assign_DiscardsAnEffectiveDateAlreadyInThePast()
+    public async Task Assign_StoresAnEffectiveDateAlreadyInThePastAsSubmitted()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = FreeRole();
+        DateTime backdated = Now.AddDays(-5);
 
         await harness.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            new RoleAssignmentRequest { UserId = UserId, EffectiveDate = Now.AddDays(-5) },
+            new RoleAssignmentRequest { UserId = UserId, EffectiveDate = backdated },
             CancellationToken.None);
 
-        harness.AddedAssignments.Should().ContainSingle().Which.EffectiveDate.Should().BeNull();
+        harness.AddedAssignments.Should().ContainSingle().Which.EffectiveDate.Should().Be(backdated);
     }
 
     /// <summary>
@@ -2577,52 +2754,85 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A role that declares no period stores no expiry at all, even when the caller submitted one, because
-    /// an expiry with no term behind it cannot be renewed by anything.
+    /// SEC-F5: a role that declares no period stores a SUBMITTED expiry verbatim, and stores none when the
+    /// caller submitted none.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F5. The submitted half previously answered null - the request was accepted, the
+    /// caller was told so, and the bound it had named was dropped on the floor because the role had no
+    /// term to renew. A bound needs no term behind it to be meaningful: it is the date the membership
+    /// ends. The absent half is unchanged and is asserted alongside it, because it is what makes this a
+    /// test of the SUBMISSION rather than of the role.
+    /// </remarks>
     [Fact]
-    public async Task Assign_LeavesTheExpiryAbsentWhenTheRoleDeclaresNoPeriod()
+    public async Task Assign_ForARoleDeclaringNoPeriod_StoresASubmittedExpiryAndDerivesNothingWithout()
     {
-        Harness harness = Harness.Ready();
-        harness.LookupRole = FreeRole();
+        Harness submitted = Harness.Ready();
+        submitted.LookupRole = FreeRole();
+        DateTime ends = Now.AddYears(1);
 
-        await harness.Service.AssignUserToRoleAsync(
+        await submitted.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            new RoleAssignmentRequest { UserId = UserId, ExpiryDate = Now.AddYears(1) },
+            new RoleAssignmentRequest { UserId = UserId, ExpiryDate = ends },
             CancellationToken.None);
 
-        harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().BeNull();
+        submitted.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().Be(ends);
+
+        Harness absent = Harness.Ready();
+        absent.LookupRole = FreeRole();
+
+        await absent.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            new RoleAssignmentRequest { UserId = UserId },
+            CancellationToken.None);
+
+        absent.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().BeNull(
+            "a role with no term derives no bound of its own");
     }
 
     /// <summary>
-    /// An expiry already in the past is treated as the present when the term is offset, so a stale date
-    /// does not produce an assignment that has already lapsed.
+    /// SEC-F5: an expiry already in the past is stored as submitted rather than advanced to the present
+    /// and then extended by the role's term.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F5. Recording an already-lapsed membership is a legitimate instruction - it is how a
+    /// subscription is closed off with the date it actually ended - and the previous behaviour turned it
+    /// into a membership valid for another month.
+    /// </remarks>
     [Fact]
-    public async Task Assign_TreatsAnExpiryAlreadyInThePastAsThePresentWhenOffsettingTheTerm()
+    public async Task Assign_StoresAnExpiryAlreadyInThePastAsSubmitted()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = MonthlyRole();
+        DateTime lapsed = Now.AddYears(-3);
 
         await harness.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            new RoleAssignmentRequest { UserId = UserId, ExpiryDate = Now.AddYears(-3) },
+            new RoleAssignmentRequest { UserId = UserId, ExpiryDate = lapsed },
             CancellationToken.None);
 
-        harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().Be(Now.AddMonths(1));
+        harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().Be(lapsed);
     }
 
     /// <summary>
-    /// An expiry still in the future is the base the term is added to, so renewing extends the existing
-    /// entitlement rather than restarting it.
+    /// SEC-F5: an expiry still in the future is stored as submitted rather than used as the base the
+    /// role's term is added to.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F5. This is the case in which the previous behaviour was hardest to notice and
+    /// costliest to have: the stored value was a plausible date, merely a period later than the one the
+    /// caller submitted, so an operator granting access until a stated day silently granted a month more.
+    /// The legacy carry-forward it was reproducing belongs to <c>UpdateUserRole</c>, which read the
+    /// STORED expiry and took no submitted one.
+    /// </remarks>
     [Fact]
-    public async Task Assign_OffsetsFromTheSubmittedExpiryWhenOneIsStillInTheFuture()
+    public async Task Assign_StoresASubmittedFutureExpiryWithoutAddingTheTerm()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = MonthlyRole();
@@ -2634,7 +2844,9 @@ public class RoleServiceTests
             new RoleAssignmentRequest { UserId = UserId, ExpiryDate = paidUntil },
             CancellationToken.None);
 
-        harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().Be(paidUntil.AddMonths(1));
+        UserRole stored = harness.AddedAssignments.Should().ContainSingle().Subject;
+        stored.ExpiryDate.Should().Be(paidUntil);
+        stored.ExpiryDate.Should().NotBe(paidUntil.AddMonths(1), "the term is not added to a stated bound");
     }
 
     /// <summary>
@@ -3296,6 +3508,40 @@ public class RoleServiceTests
             r => r.GetRoleGroupsAsync(PortalId, It.IsAny<CancellationToken>()),
             Times.Once);
         harness.AddedGroups.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A group name taken between the check and the commit is refused with exactly the answer the check
+    /// gives.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6, the concurrent counterpart of the check above. <c>IX_RoleGroupName</c> is unique
+    /// over <c>(PortalID, RoleGroupName)</c>, and the check reads the whole group collection and compares in
+    /// memory - which cannot see a group another request is inserting concurrently. The reasoning is recorded
+    /// in full on <see cref="CreateRole_RefusesANameTakenBetweenTheCheckAndTheCommit"/>; asserted separately
+    /// here because a translation added to one create path and forgotten on the next is exactly the failure
+    /// mode a shared explanation invites.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRoleGroup_RefusesANameTakenBetweenTheCheckAndTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(DuplicateKeyException.ForConstraint("IX_RoleGroupName", null));
+
+        Result<RoleGroupDto> outcome = await harness.Service
+            .CreateRoleGroupAsync(PortalId, ValidGroupRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(
+            RoleGroupNameDuplicateCode,
+            "one outcome carries one code whether the collision was found by the check or by the index");
+        outcome.Reason!.Message.Should()
+            .Be($"Portal {PortalId} already has a role group named '{RoleGroupName}'.");
+
+        harness.Cache.Verify(cache => cache.InvalidatePortal(It.IsAny<int>()), Times.Never);
     }
 
     /// <summary>
@@ -3992,9 +4238,11 @@ public class RoleServiceTests
             harness.Portals
                 .Setup(p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
+            // MIGRATION: SEC-F3/SEC-F5. The read is gated by the same existence flag as the probe, so the
+            // harness describes one world; see the fuller note on the sibling suite's harness.
             harness.Portals
                 .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.PortalRow);
+                .ReturnsAsync(() => harness.PortalExists ? harness.PortalRow : null);
 
             // Every stub below names a member of the role contract as it is actually declared: reads
             // scoped by portal, writes staged asynchronously and never returning a generated key. The

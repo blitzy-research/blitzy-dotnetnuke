@@ -940,6 +940,66 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// A value taken between the checks and the commit is reported as the conflict it is, named from the
+    /// constraint the store disclosed, and never as a server fault.
+    /// </summary>
+    /// <param name="constraintName">The constraint the store named when it refused the insert.</param>
+    /// <param name="expectedCode">The reason code the caller must receive.</param>
+    /// <param name="expectedMessage">The explanation the caller must receive.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Provisioning performs THREE commits, and the two checks above cannot close the
+    /// window in front of any of them: two requests submitting the same host name, or the same administrator
+    /// name, both read "not taken" before either inserts, and the loser is refused by the unique index. Left
+    /// untranslated that refusal reached the transport - which references neither the mapper nor the database
+    /// client by design - and was answered 500, telling the caller the server had failed for a store that had
+    /// correctly kept exactly one row.
+    /// </para>
+    /// <para>
+    /// The code is chosen from the CONSTRAINT the store named rather than from which commit was in flight,
+    /// because a single commit stages several tables and the failing one is not knowable from position. Both
+    /// names are asserted, so a mapping that answered one for both would fail here; and the fallback is
+    /// asserted too, because a constraint this mapping does not recognise must still be a conflict rather
+    /// than reverting to a 500. The three answers all carry a <c>duplicate</c> or <c>conflict</c> token, which
+    /// is what the transport's status vocabulary turns into 409 with no mapping-table change.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(
+        "IX_PortalAlias",
+        AliasDuplicateCode,
+        "The host name '" + HostAlias + "' is already bound to a portal.")]
+    [InlineData(
+        "IX_Users",
+        AdministratorDuplicateCode,
+        "The account name '" + AdministratorUsername + "' is already in use, so the portal administrator could not be created.")]
+    [InlineData(
+        "PK_SomethingElse",
+        "portal.creation_conflict",
+        "The portal could not be created because another request has just taken one of the values it requires to be unique.")]
+    public async Task CreatePortal_RefusesAValueTakenBetweenTheChecksAndTheCommit(
+        string constraintName,
+        string expectedCode,
+        string expectedMessage)
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(DuplicateKeyException.ForConstraint(constraintName, null));
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue(
+            "the store refused the insert, so no portal exists and the caller must not be told one does");
+        outcome.Reason!.Code.Should().Be(
+            expectedCode,
+            "the constraint the store named is what identifies which unique value was taken");
+        outcome.Reason!.Message.Should().Be(expectedMessage);
+    }
+
+    /// <summary>
     /// The installation's own host settings supply the hosting terms of a new tenant, so provisioning
     /// follows whatever the operator configured rather than a hard-coded set.
     /// </summary>
@@ -1580,15 +1640,21 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// C-02: a page permission key the catalogue does not define is skipped, and the tenant is still created.
+    /// SEC-F1: a page permission key the catalogue does not define fails the whole creation loudly, rather
+    /// than being skipped so that a half-provisioned tenant can answer <c>201 Created</c>.
     /// </summary>
     /// <remarks>
-    /// A grant naming a definition that does not exist would violate the foreign key and discard the whole
-    /// tenant over reference data the upgrade scripts own, so the page is created without that grant instead.
+    /// MIGRATION: THIS FACT REPLACES ITS OWN OPPOSITE. It previously asserted that the missing key was
+    /// skipped and the tenant created regardless, on the reasoning that failing a tenant over reference data
+    /// the upgrade scripts own was worse than provisioning it without one grant. That reasoning is what let a
+    /// tenant be created whose home page was viewable by nobody and administrable by nobody - and therefore
+    /// whose modules were unreachable to every principal, including its own administrator and the host - all
+    /// behind a success status. A tenant that cannot be administered has not been created, so the refusal is
+    /// the honest answer and the enclosing transaction discards everything staged before it.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreatePortal_SkipsAHomePageGrantTheCatalogueDoesNotDefine()
+    public async Task CreatePortal_RefusesWhenTheCatalogueDoesNotDefineARequiredHomePageGrant()
     {
         Harness harness = Harness.Ready();
         harness.PageScopeCatalogue =
@@ -1605,10 +1671,54 @@ public class PortalServiceTests
         Result<PortalDetailDto> outcome = await harness.Service
             .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
+        outcome.IsFailure.Should().BeTrue("the edit key the stock template granted is absent");
+        outcome.Reason!.Code.Should().Be("portal.creation_failed");
+        harness.AddedTabPermissions.Should().BeEmpty("no grant is staged once the sequence cannot complete");
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue(
+            "the creation is abandoned inside its transaction, so nothing it staged becomes durable");
+
+        // Recorded rather than silent: an operator needs to know which key the installation lacks, because
+        // the repair is an upgrade-script one.
+        AuditEvent refusal = harness.AuditRecords.Should().ContainSingle(record =>
+            record.Outcome == AuditOutcome.Failed).Subject;
+        refusal.FailureCode.Should().Be("portal.creation_failed");
+        refusal.Properties["PermissionCode"].Should().Be(TabScopeCode);
+        refusal.Properties["MissingViewDefinition"].Should().Be(bool.FalseString);
+        refusal.Properties["MissingEditDefinition"].Should().Be(bool.TrueString);
+    }
+
+    /// <summary>
+    /// SEC-F1: the home page's grants are resolved without consulting any page row, so a database that holds
+    /// no page at the zero identity seed still receives all three of them.
+    /// </summary>
+    /// <remarks>
+    /// This is the regression pin for the defect itself. The harness answers the page-scoped-by-TAB read with
+    /// nothing - which is what production answers for a page that does not exist yet, since the home page has
+    /// no identifier until the creation commits and <c>dbo.Tabs</c> is <c>IDENTITY (0, 1)</c> - and the three
+    /// grants must still be staged. Before the fix this produced zero grants and a <c>201 Created</c>.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_GrantsTheHomePageEvenWhenNoPageOccupiesTheZeroIdentitySeed()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
         outcome.IsSuccess.Should().BeTrue();
-        harness.AddedTabs.Should().ContainSingle();
-        harness.AddedTabPermissions.Should().HaveCount(2, "only the view key resolves");
-        harness.AddedTabPermissions.Should().OnlyContain(grant => grant.PermissionId == 3);
+        harness.AddedTabPermissions.Should().HaveCount(3);
+
+        harness.Permissions.Verify(
+            p => p.GetByTabIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the catalogue must never be resolved through a page that has no identifier yet");
+        harness.Permissions.Verify(
+            p => p.GetByCodeAndKeyAsync(TabScopeCode, PermissionKey.VIEW, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Permissions.Verify(
+            p => p.GetByCodeAndKeyAsync(TabScopeCode, PermissionKey.EDIT, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     /// <summary>
@@ -3053,6 +3163,42 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// A host name bound between the check and the commit is refused with exactly the answer the check gives,
+    /// and neither cache is discarded because nothing was written.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6. Measured on a live installation before the fix: eight simultaneous identical
+    /// bindings produced one 201, four 409 and THREE 500s, with exactly one row stored - the three 500s being
+    /// the racers, told the server had failed when the unique index had done exactly its job. The cache
+    /// assertions matter as much as the code: alias resolution is installation-wide, so discarding the host
+    /// entries on a binding that never happened would evict every tenant's resolution for nothing.
+    /// </remarks>
+    [Fact]
+    public async Task AddPortalAlias_RefusesAHostNameBoundBetweenTheCheckAndTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(DuplicateKeyException.ForConstraint("IX_PortalAlias", null));
+
+        Result<PortalAliasDto> outcome = await harness.Service.AddPortalAliasAsync(
+            PortalId,
+            new CreatePortalAliasRequest { HttpAlias = "new.example" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(
+            AliasDuplicateCode,
+            "the racer faces the state the check describes, so it is told the same thing in the same words");
+        outcome.Reason!.Message.Should()
+            .Be("The host name 'new.example' is already bound to a portal.");
+
+        harness.Cache.Verify(cache => cache.InvalidateHost(), Times.Never);
+        harness.Cache.Verify(cache => cache.InvalidatePortal(It.IsAny<int>()), Times.Never);
+    }
+
+    /// <summary>
     /// The submitted host name is trimmed, the tenant comes from the route - the request declares no tenant
     /// member to override it with - and both caches are discarded because a new host name changes tenant
     /// resolution.
@@ -3161,6 +3307,38 @@ public class PortalServiceTests
         refused.Reason!.Code.Should().Be(AliasDuplicateCode);
         refused.Reason!.Message.Should()
             .Be("The host name 'taken.example' is already bound to another portal alias.");
+    }
+
+    /// <summary>
+    /// A rename onto a host name bound between the check and the commit is refused with exactly the answer
+    /// the check gives.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6, the rename counterpart of the binding race. A rename is refused by the same unique
+    /// index for the same reason, and the check that excludes the row being renamed from its own comparison
+    /// cannot see a name another request is binding concurrently.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalAlias_RefusesAHostNameBoundBetweenTheCheckAndTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(DuplicateKeyException.ForConstraint("IX_PortalAlias", null));
+
+        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
+            PortalAliasId,
+            new UpdatePortalAliasRequest { HttpAlias = "taken.example" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(AliasDuplicateCode);
+        outcome.Reason!.Message.Should()
+            .Be("The host name 'taken.example' is already bound to another portal alias.");
+
+        harness.Cache.Verify(cache => cache.InvalidateHost(), Times.Never);
     }
 
     /// <summary>
@@ -3903,12 +4081,32 @@ public class PortalServiceTests
                     harness.AddedProfileDefinitions.Add(definition))
                 .Returns(Task.CompletedTask);
 
-            // The page scope catalogue is a REAL read in production - GetPermissionsByTabID selects every
-            // entry carrying the page scope code and ignores its page argument - so the stub likewise
-            // ignores the identifier it is handed, which is zero at the point the home page asks.
+            // MIGRATION: SEC-F1. THE STUB NOW MIRRORS PRODUCTION, AND THE CORRECTION IS THE POINT OF IT.
+            // The page-SCOPED read is what the service asks, and it is answered from the harness catalogue
+            // filtered by key, exactly as the repository filters by scope code and key and orders by
+            // identifier.
+            //
+            // The page-scoped-by-TAB read is deliberately stubbed to answer NOTHING. An earlier revision of
+            // this harness answered it with the whole catalogue, on the stated belief that production
+            // "ignores its page argument" - and that belief was false: the repository proves the page exists
+            // before it answers. Because the home page has no identifier until the creation commits, the
+            // service was asking about page zero, so on a database with no page keyed zero production got an
+            // empty catalogue and silently skipped all three grants while these facts passed. Answering
+            // empty here is what makes this suite able to fail if the resolution ever moves back.
+            harness.Permissions
+                .Setup(p => p.GetByCodeAndKeyAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((string code, PermissionKey key, CancellationToken _) =>
+                    harness.PageScopeCatalogue
+                        .Where(entry => string.Equals(entry.PermissionCode, code, StringComparison.Ordinal)
+                            && entry.PermissionKey == key)
+                        .OrderBy(entry => entry.PermissionId)
+                        .ToArray());
             harness.Permissions
                 .Setup(p => p.GetByTabIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.PageScopeCatalogue);
+                .ReturnsAsync(Array.Empty<Permission>());
             harness.Permissions
                 .Setup(p => p.AddTabPermissionAsync(
                     It.IsAny<TabPermission>(),

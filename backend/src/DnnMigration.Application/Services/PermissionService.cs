@@ -790,7 +790,47 @@ public sealed class PermissionService : IPermissionService
             .HasModulePermissionAsync(moduleId, permissionKey, userId, caller.RoleNames, cancellationToken)
             .ConfigureAwait(false);
 
-        return Result<bool>.Success(VerdictOf(granted));
+        if (VerdictOf(granted))
+        {
+            return Result<bool>.Success(true);
+        }
+
+        // MIGRATION: SEC-F2. THE LEGACY EDIT TEST HAD THREE ALTERNATIVES AND ONLY THE FIRST WAS IMPLEMENTED.
+        // PortalModuleBase.vb:L222-L227 reads, verbatim:
+        //     blnHasModuleEditPermissions = (PortalSecurity.IsInRoles(_moduleConfiguration.AuthorizedEditRoles) = True) OrElse _
+        //         (PortalSecurity.IsInRoles(PortalSettings.ActiveTab.AdministratorRoles) = True) OrElse _
+        //         (PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName) = True)
+        // The module's own grants are the first alternative and are what the evaluator above answers. The
+        // second is the EDIT grant on the page the module is being administered from, and the third is
+        // membership of the tenant's own Administrators role. Without them, a tenant provisioned through
+        // this API had NO principal at all who could update, configure, export or remove a module: nothing
+        // in the exposed contract writes a module-scope grant - CreateModuleRequest, UpdateModuleRequest and
+        // ModuleDetailDto carry no permission member and the permission controller is read-only - so the
+        // first alternative could never be satisfied for a module this API created.
+        //
+        // The disjunction is reproduced as a disjunction, deliberately. A module-scope DENY does not veto
+        // these two arms, because the legacy strings the two tests read were built from ALLOW rows alone;
+        // deny precedence remains exactly what it was WITHIN the module scope, which is where the evaluator
+        // settles it. Applied to the edit key only, which is the key the legacy member decided; view is
+        // decided above, by the module's own grants or by the pages it sits on.
+        if (permissionKey == PermissionKey.EDIT)
+        {
+            placements ??= await ReadPlacementsAsync(module, cancellationToken).ConfigureAwait(false);
+
+            if (await PageEditGrantedAsync(placements, placementTabId, userId, caller.RoleNames, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                return Result<bool>.Success(true);
+            }
+
+            if (await HoldsPortalAdministratorRoleAsync(portalId, caller.RoleNames, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                return Result<bool>.Success(true);
+            }
+        }
+
+        return Result<bool>.Success(false);
     }
 
     /// <inheritdoc />
@@ -1325,6 +1365,128 @@ public sealed class PermissionService : IPermissionService
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Reports whether the caller holds the edit grant on the page a module is being administered from.
+    /// </summary>
+    /// <param name="placements">The module's placements.</param>
+    /// <param name="addressedTabId">The page the request named, or <see langword="null"/> when it named none.</param>
+    /// <param name="userId">The caller, or <see langword="null"/> when anonymous.</param>
+    /// <param name="roleNames">The caller's role names, including the applicable pseudo-roles.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns><see langword="true"/> when a qualifying page grants edit to the caller.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F2. This is the second of the three alternatives at
+    /// <c>PortalModuleBase.vb:L222-L227</c> - <c>IsInRoles(PortalSettings.ActiveTab.AdministratorRoles)</c>,
+    /// where <c>ActiveTab.AdministratorRoles</c> is the set of roles holding EDIT on the page the module was
+    /// being administered from. The legacy notion of an "active" page was ambient request state, which this
+    /// solution deliberately does not have, so the page is taken from the request when it names one and from
+    /// the module's placements when it does not.
+    /// </para>
+    /// <para>
+    /// The quantifier differs from the inherited-view rule on purpose, and the difference follows the
+    /// legacy meaning of each. Inherited VIEW asks whether the module is visible wherever it is placed, so
+    /// every placement must grant it - a conjunction. EDIT asks whether the caller may administer the
+    /// module from a page it can edit, and the legacy caller reached the module through exactly ONE page,
+    /// so any placement whose page grants edit satisfies it - a disjunction. A request that names a page
+    /// is answered from that page alone, which is the closest equivalent of the legacy active page; a
+    /// named page the module is not placed on has already been refused by the reconciliation above.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> PageEditGrantedAsync(
+        IReadOnlyList<TabModule> placements,
+        int? addressedTabId,
+        int? userId,
+        IReadOnlyList<string> roleNames,
+        CancellationToken cancellationToken)
+    {
+        if (addressedTabId is int namedTabId)
+        {
+            // Both -1 and 0 are genuine identifiers in this schema, so this is a real comparison rather than
+            // a sentinel test.
+            if (!placements.Any(placement => placement.TabId == namedTabId))
+            {
+                return false;
+            }
+
+            Result<bool> namedPageGrant = await _evaluator
+                .HasTabPermissionAsync(namedTabId, PermissionKey.EDIT, userId, roleNames, cancellationToken)
+                .ConfigureAwait(false);
+
+            return VerdictOf(namedPageGrant);
+        }
+
+        foreach (TabModule placement in placements)
+        {
+            Result<bool> granted = await _evaluator
+                .HasTabPermissionAsync(placement.TabId, PermissionKey.EDIT, userId, roleNames, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (VerdictOf(granted))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Reports whether the caller holds the addressed tenant's own administrators role.
+    /// </summary>
+    /// <param name="portalId">The portal the question is asked within.</param>
+    /// <param name="roleNames">The caller's role names, including the applicable pseudo-roles.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns><see langword="true"/> when the caller is one of the tenant's administrators.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F2. This is the third alternative at <c>PortalModuleBase.vb:L222-L227</c> -
+    /// <c>IsInRoles(PortalSettings.AdministratorRoleName)</c>. The legacy read the name from the ambient
+    /// per-request composite; here the role is read from the ADDRESSED tenant's own row, so the question
+    /// answered is "does the caller administer the tenant this module belongs to" rather than "does it
+    /// administer the tenant it happened to arrive through".
+    /// </para>
+    /// <para>
+    /// The comparison is by NAME rather than by identifier because that is what the legacy test compared and
+    /// because the caller's identity is carried as role names throughout this service. It is ordinal and
+    /// case-insensitive, matching <c>PortalSecurity.IsInRoles</c>, which compared with the Visual Basic
+    /// string equality operator under the file's default (text-insensitive) comparison. A tenant whose row
+    /// names no administrators role, or names one that no longer exists, yields <see langword="false"/>
+    /// rather than an error: the absence of an administrators role is not a grant.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> HoldsPortalAdministratorRoleAsync(
+        int portalId,
+        IReadOnlyList<string> roleNames,
+        CancellationToken cancellationToken)
+    {
+        if (roleNames.Count == 0)
+        {
+            return false;
+        }
+
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (portal?.AdministratorRoleId is not int administratorRoleId)
+        {
+            return false;
+        }
+
+        Role? administratorsRole = await _roles
+            .GetByIdAsync(administratorRoleId, portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (administratorsRole is null || string.IsNullOrWhiteSpace(administratorsRole.RoleName))
+        {
+            return false;
+        }
+
+        return roleNames.Any(name =>
+            string.Equals(name, administratorsRole.RoleName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

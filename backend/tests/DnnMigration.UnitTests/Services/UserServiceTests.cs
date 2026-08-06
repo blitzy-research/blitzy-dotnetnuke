@@ -1196,6 +1196,45 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// An account name taken between the checks and the commit is refused with exactly the answer the first
+    /// of those checks gives, rather than being reported as a server fault.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Four checks run before this insert and none can close the window in front of it:
+    /// <c>IX_Users</c> is unique over the account name, so two requests carrying the same name arriving
+    /// together all read "not taken" and the loser's insert is refused by the index. Left untranslated the
+    /// provider fault reached the transport, which references neither the mapper nor the database client by
+    /// design, and was answered 500 - a server fault reported for a store that kept exactly one account.
+    /// </para>
+    /// <para>
+    /// The registered-in-this-portal code is returned, which is the code the FIRST of those checks emits:
+    /// by the time the loser is refused, the winner has created the account AND registered it in this
+    /// tenant, so that is precisely the state the loser now faces. Reporting it identically means a caller
+    /// cannot tell a race from an ordinary second attempt, nor should it need to.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_RefusesAnAccountNameTakenBetweenTheChecksAndTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.CommitFault = DuplicateKeyException.ForConstraint("IX_Users", null);
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue(
+            "the store refused the insert, so no account exists and the caller must not be told one does");
+        outcome.Reason!.Code.Should().Be(
+            CreateUserAlreadyRegisteredCode,
+            "the winner of the race has by now created the account and registered it here, which is exactly "
+            + "the state the first sequential check describes");
+        outcome.Reason!.Message.Should()
+            .Be($"Account \"{Username}\" is already registered in portal {PortalId}.");
+    }
+
+    /// <summary>
     /// A name the store reports as taken is refused even when no account row was loaded, because sign-in
     /// names are installation-wide and the credential store holds them too.
     /// </summary>
@@ -4519,6 +4558,38 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// A property name declared between the check and the commit is refused with exactly the answer the check
+    /// gives, and the catalogue cache is left alone because nothing was written.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6. <c>IX_ProfilePropertyDefinition</c> is unique over
+    /// <c>(PortalID, ModuleDefID, PropertyName)</c>, so two requests declaring the same property in the same
+    /// tenant arriving together both read "not declared" and the loser's insert is refused by the index rather
+    /// than by the read. The same code and the same wording as the check are returned, because the loser
+    /// faces precisely the state the check describes.
+    /// </remarks>
+    [Fact]
+    public async Task CreateProfilePropertyDefinition_RefusesANameDeclaredBetweenTheCheckAndTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.CommitFault = DuplicateKeyException.ForConstraint("IX_ProfilePropertyDefinition", null);
+
+        Result<ProfilePropertyDefinitionDto> outcome = await harness.Service
+            .CreateProfilePropertyDefinitionAsync(PortalId, DefinitionRequest("Street"), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(ProfileDefinitionDuplicateNameCode);
+        outcome.Reason!.Message.Should()
+            .Be($"Portal {PortalId} already declares a profile property named \"Street\".");
+
+        harness.Cache.Verify(
+            cache => cache.InvalidateProfileDefinitions(It.IsAny<int>()),
+            Times.Never,
+            "nothing was committed, so the catalogue every caller reads did not change");
+    }
+
+    /// <summary>
     /// A declaration is created against the tenant from the route, is not withdrawn, and the catalogue cache
     /// is discarded so the new property becomes visible.
     /// </summary>
@@ -4708,6 +4779,46 @@ public class UserServiceTests
         outcome.Reason!.Code.Should().Be(PersistenceConflictCode);
         outcome.Reason!.Message.Should()
             .Be("The definition was changed by another request; reload it and try again.");
+    }
+
+    /// <summary>
+    /// A rename onto a name declared between the check and the commit is reported as the duplicate it is, and
+    /// NOT as a stale read.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6, and the distinction is the point. This member already reported a competing write as
+    /// a conflict to retry, which is the right answer for a row that changed underneath - but it is the wrong
+    /// answer for a name another request took, because reloading and resubmitting the same rename will be
+    /// refused again for ever. The two outcomes carry different codes so the caller can rename in one case and
+    /// reload in the other, and the duplicate arm is placed FIRST in the service so a duplicate can never be
+    /// absorbed by the concurrency arm.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateProfilePropertyDefinition_ReportsANameTakenDuringTheWriteAsADuplicateNotAStaleRead()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.CommitFault = DuplicateKeyException.ForConstraint("IX_ProfilePropertyDefinition", null);
+
+        Result<ProfilePropertyDefinitionDto> outcome = await harness.Service
+            .UpdateProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                DefinitionUpdate("City"),
+                CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(
+            ProfileDefinitionDuplicateNameCode,
+            "the name is taken, so telling the caller to reload and retry would send it round a loop that "
+            + "cannot terminate");
+        outcome.Reason!.Message.Should()
+            .Be($"Portal {PortalId} already declares a profile property named \"City\".");
+
+        harness.Cache.Verify(
+            cache => cache.InvalidateProfileDefinitions(It.IsAny<int>()),
+            Times.Never);
     }
 
     /// <summary>

@@ -449,6 +449,43 @@ public sealed class ProblemDetailsContractTests
     }
 
     /// <summary>
+    /// Every reason code a lost uniqueness race is reported under is already a conflict in this vocabulary, so
+    /// no create path had to invent a status and none can drift onto a different one.
+    /// </summary>
+    /// <param name="failureCode">A code emitted when a unique value turned out to be taken.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Each of these codes was already emitted by a SEQUENTIAL pre-check and already
+    /// answered 409; the fix made the concurrent path emit the very same codes rather than letting the store's
+    /// refusal escape as a server fault. Pinning them here is what makes "no mapping-table change was needed"
+    /// a measured fact rather than a claim - the classification is by TOKEN, so a code renamed upstream from
+    /// <c>_duplicate</c> to something without a conflict token would silently start answering 500 again, which
+    /// is precisely the defect this work removed.
+    /// </para>
+    /// <para>
+    /// <c>portal.creation_conflict</c> is the one new code, used when the store names a constraint the
+    /// provisioning path does not recognise. It is asserted alongside the others because a fallback that fell
+    /// back to a server fault would defeat the purpose of having one.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData("role.name_duplicate")]
+    [InlineData("role_group.name_duplicate")]
+    [InlineData("portal.alias_duplicate")]
+    [InlineData("portal.administrator_duplicate")]
+    [InlineData("portal.creation_conflict")]
+    [InlineData("user.create.user-already-registered")]
+    [InlineData("profile-definition.duplicate-name")]
+    public void ALostUniquenessRace_IsAlwaysReportedAsAConflict(string failureCode)
+    {
+        ApiResults.MapStatusCode(failureCode).Should().Be(
+            StatusCodes.Status409Conflict,
+            "a unique value that turned out to be taken is a conflict with existing state, and the caller "
+            + "resolves it by submitting a different value rather than by retrying or reporting an outage");
+    }
+
+    /// <summary>
     /// The two module portability refusals sit on opposite sides of the caller-fault boundary, and the split
     /// is asserted together so neither can drift onto the other's status.
     /// </summary>

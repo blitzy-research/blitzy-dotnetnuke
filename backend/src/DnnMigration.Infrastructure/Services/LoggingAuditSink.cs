@@ -312,11 +312,20 @@ internal sealed class LoggingAuditSink : IAuditSink
             "KeywordsSupplied",
             "LineNumber",
             "LinePosition",
+
+            // MIGRATION: SEC-F1. Portal creation refuses when the installation's page-permission catalogue
+            // does not define a key its home page must grant, and these three facts are what make that
+            // refusal actionable: which scope code was consulted, and which of the two keys was absent. All
+            // three are authored constants or booleans - no caller input reaches them - which is why they
+            // belong in this vocabulary rather than in the withheld count.
+            "MissingEditDefinition",
+            "MissingViewDefinition",
             "MustChangePassword",
             "MustUpdateProfile",
             "Operation",
             "ParentId",
             "PayloadLength",
+            "PermissionCode",
             "PlacementCount",
             "PreviousFormat",
             "PreviousParentId",

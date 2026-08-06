@@ -1707,17 +1707,27 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A request that reaches neither the reconciliation nor the inherited-view branch makes no placement
-    /// read at all, so hoisting the read added no round trip to any shape.
+    /// A request answered before any placement consumer is reached makes no placement read at all, and a
+    /// request that does reach one reads the set exactly once, so hoisting the read added no round trip to
+    /// any shape.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The hoisted read is taken LAZILY, and this is the fact that keeps it that way. Only two consumers need
-    /// the set - the reconciliation, which has something to reconcile only when BOTH forms of address are
-    /// present, and the inherited-view decision - so a request naming one form and asking about a key other
-    /// than view needs it for neither. Reading unconditionally at the top of the member would trade a
-    /// duplicated round trip on one shape for a brand-new one on every other, which is why the shape that
-    /// must stay free of the read is asserted alongside the shape that must issue it exactly once.
+    /// <para>
+    /// The hoisted read is taken LAZILY, and this is the fact that keeps it that way. Reading unconditionally
+    /// at the top of the member would trade a duplicated round trip on one shape for a brand-new one on every
+    /// other, which is why the shape that must stay free of the read is asserted alongside the shape that must
+    /// issue it exactly once.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F2 ADDED A THIRD CONSUMER, and this fact was amended rather than deleted. The consumers
+    /// were the reconciliation, which has something to reconcile only when BOTH forms of address are present,
+    /// and the inherited-view decision; the edit decision now also needs the set, because the page a module
+    /// sits on may grant edit independently of the module's own grants - the second of the three alternatives
+    /// at <c>PortalModuleBase.vb:L222-L227</c>. The shape asserted to make no read is therefore the one where
+    /// the module's OWN grant already answers, which is the shape that genuinely needs nothing further; the
+    /// laziness property this fact protects is unchanged, and the read is still taken at most once.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task HasModulePermission_TakesTheHoistedPlacementReadLazily()
@@ -1726,6 +1736,7 @@ public sealed class PermissionEvaluatorTests
         singleAddress.Module.InheritViewPermissions = true;
         singleAddress.StoredPlacements = [Placement(TabId, FirstPlacementId)];
         singleAddress.ModuleKeys = ["EDIT"];
+        singleAddress.ModuleGrant = true;
 
         Result<bool> nonInheritingKey = await singleAddress.Service.HasModulePermissionAsync(
             PortalId,
@@ -1737,9 +1748,31 @@ public sealed class PermissionEvaluatorTests
             CancellationToken.None);
 
         nonInheritingKey.IsSuccess.Should().BeTrue(nonInheritingKey.Reason?.ToString());
+        nonInheritingKey.Value.Should().BeTrue("the module's own edit grant answers on its own");
         singleAddress.Modules.Verify(
             modules => modules.GetTabModulesByModuleIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never());
+
+        // And when the module's own grant does NOT answer, the set is read ONCE for the page arm rather than
+        // once per consumer.
+        Harness refusedByTheModule = Harness.Ready();
+        refusedByTheModule.StoredPlacements = [Placement(TabId, FirstPlacementId)];
+        refusedByTheModule.ModuleGrant = false;
+        refusedByTheModule.TabGrant = false;
+
+        Result<bool> refused = await refusedByTheModule.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: TabId,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        refused.Value.Should().BeFalse();
+        refusedByTheModule.Modules.Verify(
+            modules => modules.GetTabModulesByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
+            Times.Once());
 
         Harness unaddressed = Harness.Ready();
         unaddressed.Module.InheritViewPermissions = true;
@@ -2105,6 +2138,206 @@ public sealed class PermissionEvaluatorTests
                 It.IsAny<CancellationToken>()),
             Times.Never(),
             "a malformed request is refused before anything is read");
+    }
+
+    /// <summary>
+    /// SEC-F2: module edit is granted by the EDIT grant on a page the module is placed on, which is the
+    /// second of the three alternatives the legacy edit test offered.
+    /// </summary>
+    /// <remarks>
+    /// <c>PortalModuleBase.vb:L222-L227</c> admitted a caller holding
+    /// <c>PortalSettings.ActiveTab.AdministratorRoles</c> - the roles carrying EDIT on the page the module was
+    /// being administered from - independently of the module's own grants. Before this fact existed the target
+    /// implemented only the module-scope alternative, and since nothing in the exposed contract writes a
+    /// module-scope grant, no principal could edit a module this API created.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForEditIsGrantedByThePagesEditGrant()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.ModuleGrant = false;
+        harness.TabGrant = true;
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().BeTrue("the page the module sits on grants edit to this caller");
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                TabId,
+                PermissionKey.EDIT,
+                UserId,
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// SEC-F2: the page arm is a disjunction over the module's placements, so one editable page is enough -
+    /// and a request that names a page is answered from that page alone.
+    /// </summary>
+    /// <remarks>
+    /// The quantifier differs from inherited VIEW on purpose. Visibility asks whether the module is viewable
+    /// wherever it is placed, which is a conjunction; edit authority asks whether the caller may administer it
+    /// from a page it can edit, and the legacy caller reached a module through exactly one page.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForEditTakesAnyEditablePlacementAndHonoursAnAddressedPage()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.Module.TabModules.Add(Placement(SecondTabId));
+        harness.ModuleGrant = false;
+        harness.TabGrant = false;
+        harness.PageEditGrants[SecondTabId] = true;
+
+        Result<bool> collective = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        collective.Value.Should().BeTrue("one placement the caller may edit is enough");
+
+        Result<bool> addressed = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: TabId,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        addressed.Value.Should().BeFalse(
+            "a request naming a page is answered from that page, and this one grants the caller nothing");
+    }
+
+    /// <summary>
+    /// SEC-F2: module edit is granted to a member of the addressed tenant's own administrators role, which is
+    /// the third of the three alternatives the legacy edit test offered.
+    /// </summary>
+    /// <remarks>
+    /// <c>PortalModuleBase.vb:L222-L227</c> closed with <c>IsInRoles(PortalSettings.AdministratorRoleName)</c>.
+    /// The role is read from the ADDRESSED tenant's row rather than from the tenant the caller arrived
+    /// through, so the question answered is about the module's own tenant.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForEditIsGrantedToTheTenantsOwnAdministrator()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.ModuleGrant = false;
+        harness.TabGrant = false;
+        harness.AssignedRoles = ["Administrators", "Registered Users"];
+        harness.AdministratorsRole = new Role
+        {
+            RoleId = AdministratorRoleId,
+            PortalId = PortalId,
+            RoleName = "Administrators",
+        };
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().BeTrue("the caller holds the tenant's designated administrators role");
+        harness.RoleStore.Verify(
+            roles => roles.GetByIdAsync(AdministratorRoleId, PortalId, It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "the administrators role is resolved from the addressed tenant's own designation");
+    }
+
+    /// <summary>
+    /// SEC-F2: the two added alternatives admit nobody else. A caller holding neither the module's grant, nor
+    /// an editable page, nor the tenant's administrators role is still refused.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForEditStillRefusesACallerWithNoneOfTheThreeAlternatives()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.ModuleGrant = false;
+        harness.TabGrant = false;
+        harness.AssignedRoles = ["Registered Users"];
+        harness.AdministratorsRole = new Role
+        {
+            RoleId = AdministratorRoleId,
+            PortalId = PortalId,
+            RoleName = "Administrators",
+        };
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().BeFalse("none of the three legacy alternatives is satisfied");
+    }
+
+    /// <summary>
+    /// SEC-F2: the two added alternatives apply to the edit key only, so a view question is unaffected by
+    /// them.
+    /// </summary>
+    /// <remarks>
+    /// The legacy member they reproduce decided <c>IsEditable</c> and nothing else. View is settled by the
+    /// module's own grant, or by the pages it sits on when it inherits, and neither reading may be widened by
+    /// an edit rule.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForViewIsNotWidenedByTheEditAlternatives()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = false;
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.ModuleGrant = false;
+        harness.TabGrant = true;
+        harness.AssignedRoles = ["Administrators"];
+        harness.AdministratorsRole = new Role
+        {
+            RoleId = AdministratorRoleId,
+            PortalId = PortalId,
+            RoleName = "Administrators",
+        };
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().BeFalse(
+            "a non-inheriting module's visibility is its own grant, which this caller does not hold");
     }
 
     /// <summary>
@@ -5791,6 +6024,7 @@ public sealed class PermissionEvaluatorTests
             TabKeys = [];
             StoredPlacements = [];
             PageViewGrants = [];
+            PageEditGrants = [];
             CapturedRoleNames = [];
             PortalTabs = [Tab];
             CacheKeysRequested = [];
@@ -5863,7 +6097,26 @@ public sealed class PermissionEvaluatorTests
 
         public Dictionary<int, bool> PageViewGrants { get; }
 
+        /// <summary>
+        /// Per-page EDIT answers, for the arm of the module-edit decision that reads the page's own grant.
+        /// </summary>
+        /// <remarks>
+        /// Held separately from the view answers because SEC-F2 made the edit key consult pages too, and a
+        /// single dictionary would make a test unable to say "viewable here but not editable here".
+        /// </remarks>
+        public Dictionary<int, bool> PageEditGrants { get; }
+
         public List<string> CapturedRoleNames { get; }
+
+        /// <summary>
+        /// The tenant's designated administrators role, or <see langword="null"/> when the designation names
+        /// no row.
+        /// </summary>
+        /// <remarks>
+        /// Absent by default, so the portal-administrator arm of the module-edit decision contributes nothing
+        /// unless a test asks it to. That keeps every fact written before SEC-F2 answering exactly as it did.
+        /// </remarks>
+        public Role? AdministratorsRole { get; set; }
 
         public bool ModuleGrant { get; set; }
 
@@ -5941,6 +6194,16 @@ public sealed class PermissionEvaluatorTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RoleAssignments);
+
+            // SEC-F2: the module-edit decision resolves the tenant's designated administrators role by
+            // identifier so it can compare its NAME against the caller's roles, which is what the legacy test
+            // compared. Absent by default, so the arm contributes nothing unless a fact supplies the row.
+            harness.RoleStore
+                .Setup(roles => roles.GetByIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.AdministratorsRole);
 
             harness.Users
                 .Setup(users => users.GetAsync(
@@ -6169,9 +6432,21 @@ public sealed class PermissionEvaluatorTests
         /// <param name="permissionKey">The permission asked about.</param>
         /// <returns>Whether the page allows it.</returns>
         private bool AnswerPage(int tabId, PermissionKey permissionKey)
-            => permissionKey == PermissionKey.VIEW && PageViewGrants.TryGetValue(tabId, out bool granted)
-                ? granted
-                : TabGrant;
+        {
+            if (permissionKey == PermissionKey.VIEW && PageViewGrants.TryGetValue(tabId, out bool viewGranted))
+            {
+                return viewGranted;
+            }
+
+            // SEC-F2: the edit key now reaches pages as well, so a per-page edit answer is available for the
+            // facts that need one. Absent an entry the blanket answer applies, exactly as before.
+            if (permissionKey == PermissionKey.EDIT && PageEditGrants.TryGetValue(tabId, out bool editGranted))
+            {
+                return editGranted;
+            }
+
+            return TabGrant;
+        }
     }
 
     /// <summary>

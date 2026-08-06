@@ -109,6 +109,22 @@ public sealed class PortalService : IPortalService
     /// <summary>Reason code reported when a host name is already bound to a portal.</summary>
     private const string AliasDuplicateCode = "portal.alias_duplicate";
 
+    /// <summary>
+    /// Reason code reported when tenant creation lost a race for a unique value the store could name only
+    /// vaguely, so neither the alias nor the account-name code can be stated with confidence.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: SEC-F6. A LAST RESORT, and deliberately not the usual answer. Tenant creation writes
+    /// several unique-constrained rows in one sequence - the alias, the administrator account, its
+    /// credential, three roles - so a lost race has to be attributed before it can be reported under the
+    /// specific code the caller would otherwise have received from the pre-check. The attribution reads the
+    /// constraint the store named, which is best effort by construction, and this code covers the case where
+    /// the name is absent or is one this service does not recognise. The <c>conflict</c> token puts it on
+    /// <c>409</c> alongside the two specific codes, so a caller that handles the family correctly handles
+    /// this too, and nothing about a lost race can reach the caller as a server fault.
+    /// </remarks>
+    private const string CreationConflictCode = "portal.creation_conflict";
+
     /// <summary>Reason code reported when no alias carries the supplied identifier.</summary>
     private const string AliasNotFoundCode = "portal.alias_not_found";
 
@@ -239,6 +255,29 @@ public sealed class PortalService : IPortalService
     /// is reachable before any account has been enrolled in it.
     /// </remarks>
     private const int AllUsersRoleId = -1;
+
+    /// <summary>
+    /// The scope code under which the shipped page-permission catalogue is filed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The upgrade chain installs the page scope under this exact spelling - the insert is at
+    /// <c>02.02.00.SqlDataProvider:L1265</c> - and <c>Permission.PermissionCode</c> is free text rather than
+    /// an enumeration, so the catalogue is addressed by the code it was installed with. The constant lives
+    /// here because THIS service resolves the two page keys its home page needs; the same spelling is held
+    /// privately by the Infrastructure readers that filter on it, and neither copy is derived from the other
+    /// because a shared constant would put installation reference data into a layer that owns none.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F1. The catalogue is resolved BY THIS CODE and never by the page it is about to be
+    /// granted on. The tab-scoped reader proves the page exists before it answers, and a page staged inside
+    /// the creation transaction has no identifier yet - the property still reads zero, which
+    /// <c>dbo.Tabs</c> being <c>IDENTITY (0, 1)</c> makes a legitimate key belonging to somebody else -
+    /// so resolving through it made the new tenant's grants depend on whether an unrelated page happened to
+    /// occupy key zero. See <see cref="CreateHomePageAsync"/> for the failure that produced.
+    /// </para>
+    /// </remarks>
+    private const string TabPermissionScopeCode = "SYSTEM_TAB";
 
     private readonly IPortalRepository _portals;
     private readonly IPortalAliasRepository _aliases;
@@ -823,7 +862,16 @@ public sealed class PortalService : IPortalService
         // as the only thing between a failure and a half-built tenant: a routine that could not run if the
         // process was terminated, and that was written not to run on cancellation either. A rolled-back
         // transaction reverses all of it, including on paths nobody anticipated.
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        //
+        // SEC-F6: flushed through the conflict-aware helper, because this is the flush that writes the alias
+        // row and the alias is unique-indexed. See FlushCreationAsync for why every flush in this sequence
+        // goes through it.
+        Result aliasFlush = await FlushCreationAsync(alias, administratorUsername, cancellationToken)
+            .ConfigureAwait(false);
+        if (aliasFlush.IsFailure)
+        {
+            return Result<PortalDetailDto>.Failure(aliasFlush.Reason!);
+        }
 
         // MIGRATION: the legacy path had this same shape - insert the portal, create the administrator,
         // create the roles, then call UpdatePortalSetup to stamp the identifiers (PortalController.vb
@@ -872,19 +920,46 @@ public sealed class PortalService : IPortalService
             await CreateDefaultProfileDefinitionsAsync(portal.PortalId, cancellationToken)
                 .ConfigureAwait(false);
 
-            Tab homePage = await CreateHomePageAsync(portal, administratorsRole, cancellationToken)
+            // MIGRATION: SEC-F1. The page stage can now REFUSE, and the refusal is propagated rather than
+            // absorbed: returning here disposes the transaction scope without committing, so the portal, its
+            // alias, its three roles, its administrator, the credential and the profile definitions all
+            // disappear. A tenant whose home page carries no permission grants cannot be administered by
+            // anybody, so answering 201 for one would be reporting a success that is not one.
+            Result<Tab> pageStage = await CreateHomePageAsync(portal, administratorsRole, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (pageStage.IsFailure)
+            {
+                return Result<PortalDetailDto>.Failure(pageStage.Reason!);
+            }
+
+            Tab homePage = pageStage.Value;
 
             // Commits the definitions and the page, so the identifier the store assigns to the page is
             // readable for the stamp below.
-            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            //
+            // SEC-F6: conflict-aware, like every flush in this sequence. Nothing staged here is
+            // unique-indexed today, and the uniformity is the point: a flush added to this sequence later
+            // inherits the correct answer instead of reintroducing a server fault.
+            Result pageFlush = await FlushCreationAsync(alias, administratorUsername, cancellationToken)
+                .ConfigureAwait(false);
+            if (pageFlush.IsFailure)
+            {
+                return Result<PortalDetailDto>.Failure(pageFlush.Reason!);
+            }
 
             portal.AdministratorId = administrator.UserId;
             portal.AdministratorRoleId = administratorsRole.RoleId;
             portal.RegisteredRoleId = registeredUsersRole.RoleId;
             portal.HomeTabId = homePage.TabId;
 
-            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // SEC-F6: conflict-aware, for the reason given on the two flushes above.
+            Result stampFlush = await FlushCreationAsync(alias, administratorUsername, cancellationToken)
+                .ConfigureAwait(false);
+            if (stampFlush.IsFailure)
+            {
+                return Result<PortalDetailDto>.Failure(stampFlush.Reason!);
+            }
         }
 
         // Everything staged since the transaction was opened becomes durable here, and nothing before it.
@@ -1487,7 +1562,24 @@ public sealed class PortalService : IPortalService
         // Staged, then committed by the unit of work. Only after the commit does created.PortalAliasId
         // hold the generated key, which is what the mapping below reads.
         await _aliases.AddAsync(created, cancellationToken).ConfigureAwait(false);
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // MIGRATION: SEC-F6. THE EXISTENCE CHECK ABOVE CANNOT CLOSE THE RACE. Two requests binding the same
+        // host name arriving together both read "not taken", and the loser's insert is refused by the unique
+        // index instead. Measured on a live installation: eight simultaneous identical bindings produced one
+        // 201, four 409 and three 500, with exactly one row stored - the three 500s being the racers, told
+        // the server had failed when it had correctly refused a duplicate. The same reason code and the same
+        // wording as the check are returned, because a caller cannot act differently on "you were second"
+        // than on "it was already bound".
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateKeyException)
+        {
+            return Result<PortalAliasDto>.Failure(
+                AliasDuplicateCode,
+                $"The host name '{httpAlias}' is already bound to a portal.");
+        }
 
         // Alias resolution is installation-wide rather than portal-scoped, so binding a host name
         // invalidates the host entries as well as the portal's own.
@@ -1543,7 +1635,19 @@ public sealed class PortalService : IPortalService
         // visible at the call site, and so the same code is correct for an alias that was not read here.
         await _aliases.UpdateAsync(stored, cancellationToken).ConfigureAwait(false);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // SEC-F6: a rename races exactly as a binding does - the check reads, another request binds, the
+        // rename is refused by the index. Same code and wording as the check above, for the reason recorded
+        // in full on the create path.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateKeyException)
+        {
+            return Result.Failure(
+                AliasDuplicateCode,
+                $"The host name '{httpAlias}' is already bound to another portal alias.");
+        }
 
         _cache.InvalidateHost();
         _cache.InvalidatePortal(stored.PortalId);
@@ -1647,6 +1751,77 @@ public sealed class PortalService : IPortalService
             registeredRoleName,
             administratorEmail,
             superTabId);
+    }
+
+    /// <summary>
+    /// Flushes one stage of tenant creation, reporting a lost race for a unique value as the conflict it is.
+    /// </summary>
+    /// <param name="alias">The host name being bound, so the refusal can name it.</param>
+    /// <param name="administratorUsername">The account name being taken, so the refusal can name it.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>Success, or the conflict the store refused.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Tenant creation checks the alias and the account name before writing either, and
+    /// neither check can close the window between itself and the flush: two requests naming the same alias
+    /// both read "free", and the loser is refused by the unique index. Without this the provider fault
+    /// travelled to the transport, which references neither the mapper nor the database client by design and
+    /// therefore answered <c>500</c> - reporting a server failure for a store that had behaved correctly and
+    /// had kept exactly one row.
+    /// </para>
+    /// <para>
+    /// EVERY flush in the sequence goes through here, including the ones that stage nothing unique-indexed
+    /// today. The uniformity is deliberate: a flush added to the sequence later inherits the right answer,
+    /// whereas a hand-picked set of call sites would silently omit it.
+    /// </para>
+    /// <para>
+    /// The specific code is chosen from the constraint the store named, and the naming is BEST EFFORT, so an
+    /// unrecognised or absent name falls to <see cref="CreationConflictCode"/> rather than to a guess. Both
+    /// outcomes answer <c>409</c>, so the fallback costs the caller nothing beyond the field name; matching
+    /// is on the terminal schema's own index names, measured rather than assumed -
+    /// <c>IX_PortalAlias</c>/<c>PK_PortalAlias</c> for the alias, and <c>IX_Users</c>/<c>PK_Users</c> plus
+    /// the membership store's <c>IX_aspnet_Users_LoweredUserName</c> for the account. The name itself is
+    /// never published: it is a schema detail, and the wording returned here is the same wording the
+    /// corresponding pre-check emits.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> FlushCreationAsync(
+        string alias,
+        string administratorUsername,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return Result.Success();
+        }
+        catch (DuplicateKeyException exception)
+        {
+            string? constraint = exception.ConstraintName;
+
+            if (Names(constraint, "PortalAlias"))
+            {
+                return Result.Failure(
+                    AliasDuplicateCode,
+                    $"The host name '{alias}' is already bound to a portal.");
+            }
+
+            if (Names(constraint, "Users"))
+            {
+                return Result.Failure(
+                    AdministratorDuplicateCode,
+                    $"The account name '{administratorUsername}' is already in use, so the portal administrator could not be created.");
+            }
+
+            return Result.Failure(
+                CreationConflictCode,
+                "The portal could not be created because another request has just taken one of the values it "
+                + "requires to be unique.");
+        }
+
+        static bool Names(string? constraintName, string table) =>
+            constraintName is not null
+            && constraintName.Contains(table, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -2378,12 +2553,34 @@ public sealed class PortalService : IPortalService
     /// The three grants are those the stock template declared for its home page: view for all users, view for
     /// administrators and edit for administrators. The all-users grant is expressed by the role identifier
     /// the schema reserves for it rather than by a role row, which is why it carries no role of this tenant.
-    /// A grant is staged only when its catalogue definition can be found - the catalogue is installed by the
-    /// upgrade scripts, so on a real installation all three resolve, and on a database that lacks them the
-    /// page is still created rather than the whole tenant failing over reference data.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F1, AND THE TWO HALVES OF IT ARE SEPARATE CORRECTIONS. The first is WHERE the
+    /// catalogue comes from. It is now read by scope code, which is how the shipped page catalogue is
+    /// actually keyed, and no longer through the page-scoped reader: that reader proves the page exists
+    /// before it answers, and this page has no identifier until the commit that follows, so its property
+    /// still read zero - a legitimate key of an unrelated page, because <c>dbo.Tabs</c> is
+    /// <c>IDENTITY (0, 1)</c>. On an installation that happened to hold a page keyed zero the reader
+    /// answered with the whole catalogue and all three grants were written; on one that did not - the
+    /// natural state of a freshly provisioned database - it answered with nothing and all three grants were
+    /// skipped. Same code, same request, opposite outcome decided by unrelated data.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F1, second half. A missing definition is now a FAILURE rather than a skipped grant.
+    /// The earlier reading - create the page anyway rather than fail the tenant over reference data - is
+    /// what let the defect above answer <c>201 Created</c> while provisioning a tenant whose home page was
+    /// viewable by nobody and administrable by nobody, and whose modules were therefore unreachable to
+    /// every principal including its own administrator. A tenant that cannot be administered has not been
+    /// created, so the operation says so: the whole creation is rolled back by the enclosing transaction
+    /// and the caller is told the installation's catalogue is incomplete, which is a condition an operator
+    /// can repair. The two keys are required because the legacy template declared exactly them; nothing is
+    /// invented when one is absent, which is what the earlier rule was right about.
     /// </para>
     /// </remarks>
-    private async Task<Tab> CreateHomePageAsync(Portal portal, Role administratorsRole, CancellationToken token)
+    private async Task<Result<Tab>> CreateHomePageAsync(
+        Portal portal,
+        Role administratorsRole,
+        CancellationToken token)
     {
         var homePage = new Tab
         {
@@ -2400,50 +2597,100 @@ public sealed class PortalService : IPortalService
 
         await _tabs.AddAsync(homePage, token).ConfigureAwait(false);
 
-        // The page scope's catalogue definitions. Read once and matched by key, because the two keys this
-        // page needs are declared under the same scope code and one read answers for both.
-        IReadOnlyList<Permission> pageScope = await _permissions
-            .GetByTabIdAsync(homePage.TabId, token)
+        // Each key is resolved against the page SCOPE, so the answer does not depend on any page row. Both
+        // reads order by identifier inside the repository, so the definition selected here is the same one
+        // the page-scoped reader would have selected on an installation where that reader worked at all.
+        Permission? viewDefinition = await ResolvePageScopeDefinitionAsync(PermissionKey.VIEW, token)
+            .ConfigureAwait(false);
+        Permission? editDefinition = await ResolvePageScopeDefinitionAsync(PermissionKey.EDIT, token)
             .ConfigureAwait(false);
 
-        await GrantHomePagePermissionAsync(homePage, pageScope, PermissionKey.VIEW, AllUsersRoleId, token)
+        if (viewDefinition is null || editDefinition is null)
+        {
+            // Loud, and specific for the operator while staying generic for the caller. The record names the
+            // scope code and the missing keys, because the repair is an installation-level one - the upgrade
+            // scripts own these rows - and an operator reading only the response would have nothing to act
+            // on. It is emitted through the audit sink rather than a logger because this layer declares no
+            // logging package by design (see IAuditSink); the outcome is Failed rather than Denied, since
+            // the caller was entitled to create the tenant and the installation is what could not carry it.
+            // The response says the tenant was not created and why in caller-safe terms, and names no table.
+            RecordAudit(new AuditEvent(AuditEventNames.PortalCreated)
+            {
+                Outcome = AuditOutcome.Failed,
+                PortalId = portal.PortalId,
+                ResourceType = PortalResourceType,
+                ResourceId = portal.PortalId.ToString(CultureInfo.InvariantCulture),
+                FailureCode = CreationFailedCode,
+                Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["PermissionCode"] = TabPermissionScopeCode,
+                    ["MissingViewDefinition"] = (viewDefinition is null).ToString(CultureInfo.InvariantCulture),
+                    ["MissingEditDefinition"] = (editDefinition is null).ToString(CultureInfo.InvariantCulture),
+                },
+            });
+
+            return Result<Tab>.Failure(
+                CreationFailedCode,
+                "The installation's page-permission catalogue is incomplete, so the portal was not created.");
+        }
+
+        await GrantHomePagePermissionAsync(homePage, viewDefinition, AllUsersRoleId, token)
             .ConfigureAwait(false);
-        await GrantHomePagePermissionAsync(homePage, pageScope, PermissionKey.VIEW, administratorsRole.RoleId, token)
+        await GrantHomePagePermissionAsync(homePage, viewDefinition, administratorsRole.RoleId, token)
             .ConfigureAwait(false);
-        await GrantHomePagePermissionAsync(homePage, pageScope, PermissionKey.EDIT, administratorsRole.RoleId, token)
+        await GrantHomePagePermissionAsync(homePage, editDefinition, administratorsRole.RoleId, token)
             .ConfigureAwait(false);
 
-        return homePage;
+        return Result<Tab>.Success(homePage);
     }
 
     /// <summary>
-    /// Stages one page permission grant, when the catalogue defines the key it names.
+    /// Resolves one page-scope permission definition by the key it grants.
+    /// </summary>
+    /// <param name="permissionKey">The key whose definition is wanted.</param>
+    /// <param name="token">Token observed while the catalogue is read.</param>
+    /// <returns>The definition, or <see langword="null"/> when the catalogue does not declare the key.</returns>
+    /// <remarks>
+    /// The scope code and the key together are how the shipped catalogue is addressed, and the uniqueness
+    /// rule on that table spans the scope code, the owning definition and the key - so one code-and-key pair
+    /// may legitimately exist once per module definition. The lowest identifier is taken, which is the same
+    /// row the page-scoped reader's ordering would have yielded, so this change alters WHICH READ answers
+    /// and not WHICH ROW is granted.
+    /// </remarks>
+    private async Task<Permission?> ResolvePageScopeDefinitionAsync(
+        PermissionKey permissionKey,
+        CancellationToken token)
+    {
+        IReadOnlyList<Permission> definitions = await _permissions
+            .GetByCodeAndKeyAsync(TabPermissionScopeCode, permissionKey, token)
+            .ConfigureAwait(false);
+
+        return definitions.Count == 0 ? null : definitions[0];
+    }
+
+    /// <summary>
+    /// Stages one page permission grant against a definition the caller has already resolved.
     /// </summary>
     /// <param name="homePage">The page receiving the grant.</param>
-    /// <param name="pageScope">The page scope's catalogue definitions.</param>
-    /// <param name="permissionKey">The key to grant.</param>
+    /// <param name="definition">The catalogue definition the grant references.</param>
     /// <param name="roleId">The role receiving it.</param>
     /// <param name="token">Token observed while the grant is staged.</param>
     /// <remarks>
     /// The page is bound by NAVIGATION rather than by identifier, because the page has no identifier until the
-    /// commit that follows; the object graph resolves the foreign key for both rows in one write. A key the
-    /// catalogue does not define is skipped rather than invented, because a grant referencing a definition
-    /// that does not exist would violate the foreign key and fail the whole tenant creation over reference
-    /// data that the upgrade scripts own.
+    /// commit that follows; the object graph resolves the foreign key for both rows in one write.
+    /// <para>
+    /// MIGRATION: SEC-F1. This member no longer decides whether a grant happens - it takes a definition that
+    /// has already been proved to exist and stages the row. Resolution and refusal both moved up to
+    /// <see cref="CreateHomePageAsync"/>, so there is exactly one place that can decline to provision a
+    /// grant, and declining is now a failure rather than a silent return.
+    /// </para>
     /// </remarks>
     private async Task GrantHomePagePermissionAsync(
         Tab homePage,
-        IReadOnlyList<Permission> pageScope,
-        PermissionKey permissionKey,
+        Permission definition,
         int roleId,
         CancellationToken token)
     {
-        Permission? definition = pageScope.FirstOrDefault(entry => entry.PermissionKey == permissionKey);
-        if (definition is null)
-        {
-            return;
-        }
-
         await _permissions.AddTabPermissionAsync(
             new TabPermission
             {

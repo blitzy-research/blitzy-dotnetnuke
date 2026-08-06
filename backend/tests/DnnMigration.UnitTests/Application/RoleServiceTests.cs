@@ -321,10 +321,18 @@ public class RoleServiceApplicationTests
     /// A twelve-month period and a one-year period reach the same instant, including across a leap day.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The leap case is the one where a year offset and a naive three-hundred-and-sixty-five-day offset
-    /// disagree, so it is asserted rather than assumed. A future expiry is submitted to move the offset
-    /// base onto the twenty-ninth of February of a leap year; a one-year term from there clamps onto the
-    /// twenty-eighth, exactly as the legacy year interval did.
+    /// disagree, so it is asserted rather than assumed. A one-year term from the twenty-ninth of February
+    /// clamps onto the twenty-eighth, exactly as the legacy year interval did.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F5. The leap day is placed on the CLOCK rather than submitted as an expiry. It used
+    /// to be submitted, because a submitted bound was the base the term was offset from; a submitted bound
+    /// is now stored as given, so the only base a derivation has is the current instant - and moving the
+    /// clock is how this suite states one. The property under examination is unchanged: it is the offset
+    /// helper's calendar arithmetic, not where the base came from.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_YearFrequency_ClampsALeapDayOntoTheTwentyEighth()
@@ -332,11 +340,12 @@ public class RoleServiceApplicationTests
         Harness harness = Harness.Ready();
         harness.LookupRole = TermRole(Frequency.Year, period: 1);
         var leapDay = new DateTime(2028, 2, 29, 15, 9, 26, DateTimeKind.Utc);
+        harness.Clock.SetupGet(clock => clock.UtcNow).Returns(leapDay);
 
         Result outcome = await harness.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            Assignment(expiryDate: leapDay),
+            Assignment(),
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
@@ -717,30 +726,42 @@ public class RoleServiceApplicationTests
 
 
     /// <summary>
-    /// An effective date already in the PAST is cleared, so the membership carries no start gate.
+    /// An effective date already in the PAST is stored EXACTLY AS SUBMITTED, so a backdated grant is
+    /// recorded as the caller stated it.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: reproduces <c>RoleController.vb</c> L530-L532, which compared the effective date against
-    /// the ambient instant and replaced a past value with the absent-date sentinel. The migrated engine
-    /// clears it to a null date instead, because absence is absence (AAP Rule T7), and it compares against
-    /// the single injected reading rather than against a fresh one.
+    /// <para>
+    /// MIGRATION: SEC-F5 REPLACED A FACT ASSERTING THE OPPOSITE, and the correction is a correction of
+    /// ATTRIBUTION. The discarded-start-gate rule is real, but it lives at <c>RoleController.vb</c>
+    /// L530-L532 inside <c>UpdateUserRole</c> - a member that declares no date parameters and reads every
+    /// bound it works from out of the STORED assignment at L513-L515. The member the legacy screen called
+    /// with a caller's own dates is <c>AddUserRole</c> at L295-L315, which assigns both bounds to the row
+    /// verbatim on the insert branch and on the update branch alike. Applying the stored-bound rule to a
+    /// submitted bound discarded the caller's instruction while answering that it had been accepted.
+    /// </para>
+    /// <para>
+    /// The membership is still ACTIVE, which is the substantive property the withdrawn fact was reaching
+    /// for: a start date in the past opens the membership rather than gating it, whether it is recorded or
+    /// cleared. What changes is that the store now says WHEN it opened.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task AssignUserToRole_PastEffectiveDate_IsClearedSoTheMembershipStartsImmediately()
+    public async Task AssignUserToRole_PastEffectiveDate_IsStoredExactlyAsSubmitted()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = TermRole(Frequency.Day, period: 7);
+        DateTime backdated = Now.AddDays(-1);
 
         Result outcome = await harness.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            Assignment(effectiveDate: Now.AddDays(-1)),
+            Assignment(effectiveDate: backdated),
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
         UserRole stored = Assert.Single(harness.AddedAssignments);
-        stored.EffectiveDate.Should().BeNull("a start gate already behind us is no gate at all");
-        stored.GetStatus(Now).Should().Be(RoleStatus.Active);
+        stored.EffectiveDate.Should().Be(backdated, "a stated start date is the caller's instruction");
+        stored.GetStatus(Now).Should().Be(RoleStatus.Active, "a start already behind us opens the membership");
     }
 
     /// <summary>
@@ -771,59 +792,50 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// An expiry date already in the PAST is advanced to the current instant BEFORE the term is offset, so
-    /// the term runs forward from now rather than forward from a date that has already elapsed.
+    /// A SUBMITTED expiry date is stored exactly as submitted, whether it is already in the past or still
+    /// in the future, and the role's term is not added to it.
     /// </summary>
+    /// <param name="offsetDays">
+    /// How far the submitted bound sits from the frozen instant. Both signs are asserted, because the two
+    /// previously took different wrong turns: a past bound was advanced to the present and then extended,
+    /// while a future bound was used as the base the term was added to.
+    /// </param>
     /// <remarks>
-    /// MIGRATION: reproduces <c>RoleController.vb</c> L533-L534. The rule is easy to lose because its
-    /// effect is invisible unless the offset base is asserted: a lapsed membership renewed for seven days
-    /// must expire seven days from NOW, not seven days from whenever it lapsed. The submitted value is a
-    /// full month in the past so that the two candidate answers cannot coincide.
+    /// <para>
+    /// MIGRATION: SEC-F5 REPLACED TWO FACTS WITH THIS ONE, for the attribution reason recorded on the
+    /// effective-date fact above: <c>RoleController.vb</c> L533-L534 clamps the STORED bound inside
+    /// <c>UpdateUserRole</c>, which accepts no submitted dates, whereas the member the screen called
+    /// (<c>AddUserRole</c>, L295-L315) stored what it was given. Running the derivation over a caller's
+    /// own bound meant a stated end date came back a period later on a 2xx response - the most costly
+    /// shape of this defect, because the stored value was plausible and the caller had no reason to
+    /// re-read it.
+    /// </para>
+    /// <para>
+    /// The derivation itself is not withdrawn and is asserted by the frequency facts above, all of which
+    /// submit no bound. The two cases are separate because they are reached through different members in
+    /// the legacy source, and this fact pins which one a caller's date reaches.
+    /// </para>
     /// </remarks>
-    [Fact]
-    public async Task AssignUserToRole_PastExpiryDate_IsAdvancedToNowBeforeTheTermIsOffset()
+    [Theory]
+    [InlineData(-30)]
+    [InlineData(10)]
+    public async Task AssignUserToRole_SubmittedExpiryDate_IsStoredWithoutTheTermBeingAdded(int offsetDays)
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = TermRole(Frequency.Day, period: 7);
-        DateTime lapsed = Now.AddDays(-30);
+        DateTime submitted = Now.AddDays(offsetDays);
 
         Result outcome = await harness.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            Assignment(expiryDate: lapsed),
+            Assignment(expiryDate: submitted),
             CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
         UserRole stored = Assert.Single(harness.AddedAssignments);
-        stored.ExpiryDate.Should().Be(Now.AddDays(7), "the term runs forward from the current instant");
-        stored.ExpiryDate.Should().NotBe(lapsed.AddDays(7), "and not forward from the lapsed bound");
-    }
-
-    /// <summary>
-    /// An expiry date in the FUTURE becomes the offset base, so an unexpired term is extended rather than
-    /// restarted.
-    /// </summary>
-    /// <remarks>
-    /// The negative half of the advancing rule at <c>RoleController.vb</c> L533: a future bound is left
-    /// alone and the term is added to it. Asserting this separately proves the advance is conditional.
-    /// </remarks>
-    [Fact]
-    public async Task AssignUserToRole_FutureExpiryDate_BecomesTheOffsetBase()
-    {
-        Harness harness = Harness.Ready();
-        harness.LookupRole = TermRole(Frequency.Day, period: 7);
-        DateTime unexpired = Now.AddDays(10);
-
-        Result outcome = await harness.Service.AssignUserToRoleAsync(
-            PortalId,
-            RoleId,
-            Assignment(expiryDate: unexpired),
-            CancellationToken.None);
-
-        outcome.IsSuccess.Should().BeTrue();
-        UserRole stored = Assert.Single(harness.AddedAssignments);
-        stored.ExpiryDate.Should().Be(unexpired.AddDays(7));
-        stored.ExpiryDate.Should().Be(Now.AddDays(17));
+        stored.ExpiryDate.Should().Be(submitted, "a stated end date is the caller's instruction");
+        stored.ExpiryDate.Should().NotBe(submitted.AddDays(7), "the term is not added to a stated bound");
+        stored.ExpiryDate.Should().NotBe(Now.AddDays(7), "nor is the bound replaced by a derived one");
     }
 
     /// <summary>
@@ -1086,20 +1098,40 @@ public class RoleServiceApplicationTests
     [Fact]
     public async Task AssignUserToRole_ReadsTheInjectedClockExactlyOnce()
     {
-        Harness harness = Harness.Ready();
-        harness.LookupRole = TermRole(Frequency.Day, period: 7);
+        // MIGRATION: SEC-F5. BOTH SHAPES ARE ASSERTED, because there are now two of them. A submitted
+        // bound leaves the derivation early, and an edit that moved the reading down beside the offset
+        // would then read the clock ZERO times on that path - which no single-shape assertion would
+        // notice, and which would quietly reintroduce a second reading site the day a caller-independent
+        // value was needed above it. The shape that runs the whole derivation is asserted alongside it.
+        Harness derived = Harness.Ready();
+        derived.LookupRole = TermRole(Frequency.Day, period: 7);
 
-        Result outcome = await harness.Service.AssignUserToRoleAsync(
+        Result derivedOutcome = await derived.Service.AssignUserToRoleAsync(
             PortalId,
             RoleId,
-            Assignment(effectiveDate: Now.AddDays(-1), expiryDate: Now.AddDays(-1)),
+            Assignment(),
             CancellationToken.None);
 
-        outcome.IsSuccess.Should().BeTrue();
-        harness.Clock.VerifyGet(clock => clock.UtcNow, Times.Once);
-        UserRole stored = Assert.Single(harness.AddedAssignments);
-        stored.EffectiveDate.Should().BeNull();
-        stored.ExpiryDate.Should().Be(Now.AddDays(7));
+        derivedOutcome.IsSuccess.Should().BeTrue();
+        derived.Clock.VerifyGet(clock => clock.UtcNow, Times.Once);
+        Assert.Single(derived.AddedAssignments).ExpiryDate.Should().Be(Now.AddDays(7));
+
+        Harness submitted = Harness.Ready();
+        submitted.LookupRole = TermRole(Frequency.Day, period: 7);
+        DateTime ends = Now.AddDays(-1);
+
+        Result submittedOutcome = await submitted.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: ends, expiryDate: ends),
+            CancellationToken.None);
+
+        submittedOutcome.IsSuccess.Should().BeTrue();
+        submitted.Clock.VerifyGet(clock => clock.UtcNow, Times.Once);
+
+        UserRole stored = Assert.Single(submitted.AddedAssignments);
+        stored.EffectiveDate.Should().Be(ends);
+        stored.ExpiryDate.Should().Be(ends);
     }
 
     /// <summary>
@@ -1447,6 +1479,127 @@ public class RoleServiceApplicationTests
             unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never);
         harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Submitted bounds are DISCARDED, not honoured, for the one pairing the legacy screen protected: the
+    /// portal's designated administrator holding the portal's designated administrators role.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F5. <c>SecurityRoles.ascx.vb</c> L522-L526 cleared both date boxes for exactly this
+    /// pairing before reading them, and L528-L539 then substituted the absent-date marker for each empty
+    /// box, so the legacy assignment member received absence for both however the operator had filled the
+    /// form in. The comparison is typed here; the legacy one compared an <c>Integer</c> against a
+    /// <c>String</c> and relied on Option Strict being off.
+    /// </para>
+    /// <para>
+    /// Enforcing it became NECESSARY, not merely faithful, once a submitted bound was honoured. While the
+    /// derivation silently rewrote every submitted bound, this pairing was protected by accident - a
+    /// portal's administrators role carries no term, so a submitted expiry was discarded on its way
+    /// through. Honouring it would put an expiry on the tenant's only administrative membership, and when
+    /// that lapsed the tenant would have no administrator at all: the same self-inflicted lockout the
+    /// protected-role guard exists to prevent, reached by a different route.
+    /// </para>
+    /// <para>
+    /// The bounds are discarded rather than the request refused, because discarding is what the screen did.
+    /// A refusal would be a new behaviour, and it would break the enrolment of an administrator by a caller
+    /// that submits the two dates on every assignment it makes.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_PortalAdministratorToTheAdministratorRole_DiscardsSubmittedBounds()
+    {
+        Harness harness = Harness.Ready();
+
+        // THE ROLE IS SHAPED THE WAY PORTAL PROVISIONING ACTUALLY SHAPES IT, which is what makes this fact
+        // able to fail. Provisioning writes a tenant's three system roles with a MONTH frequency and a
+        // period of ZERO - measured against a provisioned tenant, not assumed - so the derivation would
+        // read a period that is present and zero, add zero months to the current instant, and produce an
+        // expiry of NOW. An earlier revision of this rule passed absence THROUGH the derivation rather
+        // than around it, and against this shape that yielded an administrators-role membership already
+        // expired when it was written; the tenant's own administrator was then refused by the
+        // authorisation handler on its very next request, because assignment validity windows are what the
+        // handler reads. A role carrying no terms at all could not distinguish the two implementations.
+        var administratorRole = new Role
+        {
+            RoleId = AdministratorRoleId,
+            PortalId = PortalId,
+            RoleName = "Administrators",
+            ServiceFee = 0m,
+            BillingFrequency = Frequency.Month,
+            BillingPeriod = 0,
+            TrialFrequency = Frequency.None,
+            TrialPeriod = 0,
+        };
+
+        harness.LookupRole = administratorRole;
+        harness.Member = Member(AdministratorUserId);
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            AdministratorRoleId,
+            new RoleAssignmentRequest
+            {
+                UserId = AdministratorUserId,
+                EffectiveDate = Now.AddDays(3),
+                ExpiryDate = Now.AddDays(30),
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        UserRole stored = Assert.Single(harness.AddedAssignments);
+        stored.EffectiveDate.Should().BeNull("the administrator's own membership carries no start gate");
+        stored.ExpiryDate.Should().BeNull("and no expiry, or the tenant would lose its administrator");
+    }
+
+    /// <summary>
+    /// The discard is confined to that ONE pairing: the same account submitting the same bounds for a
+    /// DIFFERENT role has them stored verbatim, and so does a different account in the administrators role.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy condition is a conjunction - the administrator AND the administrators role - so asserting
+    /// each half separately is what proves it is a conjunction rather than either half on its own. Without
+    /// this, a guard keyed on the account alone, or on the role alone, would pass the fact above while
+    /// silently discarding bounds a caller legitimately submitted.
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_ProtectedBoundsApplyOnlyToThatOnePairing()
+    {
+        DateTime ends = Now.AddDays(30);
+
+        Harness sameAccountOtherRole = Harness.Ready();
+        sameAccountOtherRole.LookupRole = TermRole(Frequency.Month, period: 1);
+        sameAccountOtherRole.Member = Member(AdministratorUserId);
+
+        Result otherRole = await sameAccountOtherRole.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            new RoleAssignmentRequest { UserId = AdministratorUserId, ExpiryDate = ends },
+            CancellationToken.None);
+
+        otherRole.IsSuccess.Should().BeTrue(otherRole.Error?.ToString());
+        Assert.Single(sameAccountOtherRole.AddedAssignments).ExpiryDate.Should().Be(
+            ends,
+            "the administrator's membership of an ordinary role is bounded like anyone else's");
+
+        Harness otherAccountAdminRole = Harness.Ready();
+        Role administratorRole = PaidRole(serviceFee: null);
+        administratorRole.RoleId = AdministratorRoleId;
+        otherAccountAdminRole.LookupRole = administratorRole;
+
+        Result otherAccount = await otherAccountAdminRole.Service.AssignUserToRoleAsync(
+            PortalId,
+            AdministratorRoleId,
+            new RoleAssignmentRequest { UserId = UserId, ExpiryDate = ends },
+            CancellationToken.None);
+
+        otherAccount.IsSuccess.Should().BeTrue(otherAccount.Error?.ToString());
+        Assert.Single(otherAccountAdminRole.AddedAssignments).ExpiryDate.Should().Be(
+            ends,
+            "a co-administrator's membership may legitimately be time-limited");
     }
 
     /// <summary>
@@ -2038,12 +2191,18 @@ public class RoleServiceApplicationTests
             harness.Portals
                 .Setup(repository => repository.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
+            // MIGRATION: SEC-F3/SEC-F5. The READ is gated by the same existence flag as the PROBE, so the
+            // harness describes ONE world. Several members now read the tenant row rather than probing for
+            // it - they need its designations - and a harness that answered "no such tenant" to the probe
+            // while handing out a row to the read would let a test assert a refusal that production could
+            // not produce, or miss one it does. A test may still clear the row alone, which is how it says
+            // "the tenant is there but carries no designation".
             harness.Portals
                 .Setup(repository => repository.GetByIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.PortalRow);
+                .ReturnsAsync(() => harness.PortalExists ? harness.PortalRow : null);
 
             // The portal is a CONDITION of the role read rather than a hint, exactly as the terminal
             // procedure's own predicate made it, so a role planted against another tenant is withheld and a

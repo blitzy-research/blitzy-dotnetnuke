@@ -463,11 +463,30 @@ public class PortalServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result.Success());
 
+            // MIGRATION: SEC-F1. The home page's grants are resolved by SCOPE CODE, so that is the read the
+            // harness answers. The page-scoped-by-TAB read stays stubbed to nothing, which is what production
+            // answers while the page is still uncommitted and therefore has no identifier of its own - and
+            // creation must nevertheless complete with its three grants.
             subject.Permissions
                 .Setup(permissions => permissions.GetByTabIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Array.Empty<Permission>());
+            subject.Permissions
+                .Setup(permissions => permissions.GetByCodeAndKeyAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((string code, PermissionKey key, CancellationToken _) => new[]
+                {
+                    new Permission
+                    {
+                        PermissionId = key == PermissionKey.VIEW ? 3 : 4,
+                        PermissionCode = code,
+                        PermissionKey = key,
+                        PermissionName = key == PermissionKey.VIEW ? "View Tab" : "Edit Tab",
+                    },
+                });
 
             subject.Tabs
                 .Setup(tabs => tabs.AddAsync(It.IsAny<Tab>(), It.IsAny<CancellationToken>()))

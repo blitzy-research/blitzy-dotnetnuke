@@ -774,6 +774,98 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
+    /// Submitting the same new role name from several callers at once creates it exactly once, refuses every
+    /// other caller as a conflict, and answers no caller with a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6. Measured against a live installation before the fix: ten simultaneous identical
+    /// creations produced one 201, seven 409 and TWO 500s, with exactly one row stored. The store had behaved
+    /// perfectly - <c>IX_RoleName</c> is unique over <c>(PortalID, RoleName)</c> and it kept one row - but the
+    /// two racers whose inserts it refused were told the SERVER had failed. The sequential name check cannot
+    /// close that window, because both racers read "not taken" before either inserts.
+    /// </para>
+    /// <para>
+    /// <strong>What this fact does and does not prove.</strong> It asserts the OUTCOME the finding was about:
+    /// one creation, every other caller refused as a conflict carrying the same code as the sequential
+    /// refusal, no 5xx, and exactly one row left in the column. It deliberately does NOT assert which
+    /// mechanism refused each caller - the pre-check and the unique index produce the identical answer by
+    /// design, and which one wins for a given caller depends on scheduling. Asserting that at least one
+    /// caller reached the index would be asserting a race outcome, which is how a suite acquires an
+    /// intermittent failure. The translation itself is pinned deterministically by
+    /// <c>DuplicateKeyTranslationTests</c> and by the per-path service facts, so nothing here needs to
+    /// depend on timing.
+    /// </para>
+    /// <para>
+    /// The row count is read from the column rather than through the listing, for the reason given on
+    /// <see cref="CountRolesNamedAsync"/>: the question is whether a refused request left anything behind,
+    /// and a listing filtered by the same rules that produced the refusal could not see it if it had.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string contestedName = "ITest Race " + Suffix();
+
+        // Enough callers to make the window worth opening, few enough that the suite stays quick.
+        const int Callers = 12;
+
+        IEnumerable<Task<HttpResponseMessage>> submissions = Enumerable.Range(0, Callers).Select(_ =>
+        {
+            CreateRoleRequest request = NewRoleRequest();
+            request.RoleName = contestedName;
+
+            return client.PostAsJsonAsync(
+                RolesRoute(_fixture.Seed.PortalId),
+                request,
+                ApiTestFixture.Json);
+        });
+
+        HttpResponseMessage[] responses = await Task.WhenAll(submissions);
+
+        try
+        {
+            HttpStatusCode[] statuses = [.. responses.Select(response => response.StatusCode)];
+
+            statuses.Should().NotContain(
+                status => (int)status >= 500,
+                "the store refusing a duplicate is the store working correctly; answering 5xx reports a "
+                + "server fault for it and raises a fault-level log entry for an ordinary collision");
+
+            statuses.Count(status => status == HttpStatusCode.Created).Should().Be(
+                1,
+                "one caller wins the name and the rest must be refused, whichever of them arrives first");
+
+            statuses.Where(status => status != HttpStatusCode.Created).Should().AllBeEquivalentTo(
+                HttpStatusCode.Conflict,
+                "every caller that did not win faces a name that is now taken, which is a conflict");
+
+            foreach (HttpResponseMessage refused in responses
+                .Where(response => response.StatusCode != HttpStatusCode.Created))
+            {
+                await ShouldCarryFailureCodeAsync(
+                    refused,
+                    HttpStatusCode.Conflict,
+                    "role.name_duplicate");
+            }
+
+            (await CountRolesNamedAsync(contestedName)).Should().Be(
+                1,
+                "exactly one row may survive the contest, and a refused caller must leave nothing behind");
+        }
+        finally
+        {
+            foreach (HttpResponseMessage response in responses)
+            {
+                response.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
     /// The same role name is free in a different tenant, which is what makes the uniqueness rule tenant-scoped
     /// rather than installation-wide. Both halves of that claim are asserted here: the name genuinely collides
     /// inside the tenant that already holds it, and it is genuinely accepted in a second tenant.
@@ -1310,6 +1402,205 @@ public sealed class RoleApiTests
         rows.Should().Be(0);
     }
 
+    /// <summary>
+    /// SEC-F3: neither role a tenant designates for a system purpose can be removed or amended, the rows
+    /// and their assignments survive untouched, and the tenant remains fully operable afterwards.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy edit screen withheld both verbs outright for a designated role - <c>cmdDelete</c> and
+    /// <c>cmdUpdate</c> hidden together with the whole form deactivated, at
+    /// <c>Website/admin/Security/EditRoles.ascx.vb</c> L174-L178 - and this contract accepted the removal and
+    /// answered <c>204</c>. The severity comes from what the removal then did, which is why this test does not
+    /// stop at the status code: the assignment cascade dispossesses every administrator the tenant has, the
+    /// tenant's own <c>AdministratorRoleId</c> is left naming a row that no longer exists, and the tenant
+    /// becomes unresolvable by alias, because the snapshot the resolution composes reads the designated
+    /// role's NAME. One request could take a tenant permanently offline with no principal left able to
+    /// repair it.
+    /// </para>
+    /// <para>
+    /// So the operability of the tenant AFTER the refusals is the substantive assertion: its administrator
+    /// signs in again through its own alias, and an ordinary role of the same tenant still deletes - which is
+    /// also what proves the guard is a comparison against the tenant's own designations rather than a blanket
+    /// refusal of every removal. A tenant of this test's own is used because the attempt is destructive when
+    /// it fails, and the shared seed is read by every other fact in this suite.
+    /// </para>
+    /// <para>
+    /// The two designations are read from the STORE rather than assumed, since each tenant designates its own
+    /// pair and <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> - no identifier is reserved and none can be
+    /// hard-coded.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeleteRole_RefusesTheTenantsDesignatedRolesAndLeavesTheTenantOperable()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedTenant tenant = await CreateIsolatedPortalAsync(host);
+
+        int administratorRoleId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [AdministratorRoleId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = tenant.PortalId });
+
+        int registeredRoleId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [RegisteredRoleId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = tenant.PortalId });
+
+        administratorRoleId.Should().NotBe(
+            registeredRoleId,
+            "the tenant designates two distinct roles, so both arms of the guard are genuinely exercised");
+
+        using HttpClient administrator = await TenantClientAsync(tenant);
+
+        foreach (int designated in new[] { administratorRoleId, registeredRoleId })
+        {
+            int assignmentsBefore = await CountAssignmentsAsync(designated);
+
+            using HttpResponseMessage removal = await administrator.DeleteAsync(
+                RoleRoute(tenant.PortalId, designated));
+
+            await ShouldCarryFailureCodeAsync(removal, HttpStatusCode.Forbidden, "role.protected");
+
+            using HttpResponseMessage amendment = await administrator.PutAsJsonAsync(
+                RoleRoute(tenant.PortalId, designated),
+                new UpdateRoleRequest
+                {
+                    RoleName = "Renamed" + Suffix(),
+                    Description = "Renamed by a request that must not be honoured",
+                },
+                ApiTestFixture.Json);
+
+            await ShouldCarryFailureCodeAsync(amendment, HttpStatusCode.Forbidden, "role.protected");
+
+            int rows = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+                new Dictionary<string, object?> { ["roleId"] = designated });
+
+            rows.Should().Be(1, "the designated role is still there");
+            (await CountAssignmentsAsync(designated)).Should().Be(
+                assignmentsBefore,
+                "and nothing it grants was cascaded away");
+        }
+
+        int designation = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [AdministratorRoleId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = tenant.PortalId });
+
+        designation.Should().Be(administratorRoleId, "the tenant's designation still names a surviving role");
+
+        // The tenant is still operable, which is the property the removal destroyed. A fresh sign-in is
+        // required rather than a reuse of the client above, because tenant resolution happens on the sign-in
+        // request too - a tenant whose designated role had gone could not even be resolved by its alias.
+        using HttpClient afterwards = await _fixture.CreateTenantClientAsync(
+            tenant.Alias,
+            tenant.PortalId,
+            tenant.AdministratorUserName);
+
+        using HttpResponseMessage listed = await afterwards.GetAsync(
+            new Uri(RolesRoute(tenant.PortalId).OriginalString + "?pageIndex=0&pageSize=50", UriKind.Relative));
+
+        listed.StatusCode.Should().Be(HttpStatusCode.OK, "the tenant's own administrator still administers it");
+
+        using HttpResponseMessage createdOrdinary = await afterwards.PostAsJsonAsync(
+            RolesRoute(tenant.PortalId),
+            NewRoleRequest(),
+            ApiTestFixture.Json);
+
+        createdOrdinary.StatusCode.Should().Be(HttpStatusCode.Created);
+        RoleDetailDto ordinary = await ReadDetailAsync(createdOrdinary);
+
+        using HttpResponseMessage removedOrdinary = await afterwards.DeleteAsync(
+            RoleRoute(tenant.PortalId, ordinary.RoleId));
+
+        removedOrdinary.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "a role the tenant designates for nothing is removed exactly as before");
+    }
+
+    /// <summary>
+    /// SEC-F5: assigning a tenant's designated administrator to that tenant's administrators role stores NO
+    /// bounds however the request is filled in, and the administrator still administers the tenant
+    /// afterwards.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy screen cleared both date boxes for exactly this pairing before reading them
+    /// (<c>SecurityRoles.ascx.vb</c> L522-L526) and then called the verbatim assignment member, so the row it
+    /// wrote carried absence for both bounds and no derivation ran over it. Reproducing only the first half -
+    /// feeding absence INTO the derivation - is not equivalent, and the difference is not academic: portal
+    /// provisioning creates a tenant's system roles with a month frequency and a period of ZERO, so the
+    /// derivation adds zero months to the present instant and writes an expiry of NOW. The membership is then
+    /// already outside its validity window, and the authorisation handler reads validity windows - so the
+    /// tenant's only administrator is refused on its very next request. One assignment call would lock a
+    /// tenant out of itself.
+    /// </para>
+    /// <para>
+    /// The assertion that matters is therefore the LAST one: the same administrator, signing in again, still
+    /// administers the tenant. Asserting only the two stored nulls would pass for an implementation that
+    /// stored the right values by a route that happened to work for roles carrying no terms.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Assignment_ForTheTenantsOwnAdministrator_StoresNoBoundsAndPreservesItsAuthority()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedTenant tenant = await CreateIsolatedPortalAsync(host);
+
+        int administratorRoleId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [AdministratorRoleId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = tenant.PortalId });
+
+        using HttpClient administrator = await TenantClientAsync(tenant);
+
+        using HttpResponseMessage assigned = await administrator.PostAsJsonAsync(
+            RoleUsersRoute(tenant.PortalId, administratorRoleId),
+            new RoleAssignmentRequest
+            {
+                UserId = tenant.AdministratorId,
+                EffectiveDate = new DateTime(2031, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                ExpiryDate = new DateTime(2031, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+            },
+            ApiTestFixture.Json);
+
+        assigned.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "the bounds are discarded rather than the request refused, exactly as the screen discarded them");
+
+        int bounded = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[UserRoles]
+            WHERE [RoleID] = @roleId
+              AND [UserID] = @userId
+              AND ([EffectiveDate] IS NOT NULL OR [ExpiryDate] IS NOT NULL);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["roleId"] = administratorRoleId,
+                ["userId"] = tenant.AdministratorId,
+            });
+
+        bounded.Should().Be(
+            0,
+            "neither a submitted bound nor a derived one may bound the tenant's own administrative membership");
+
+        // The property the stored nulls exist to protect. A fresh sign-in is used because the authority is
+        // re-read from the store on every request, so a membership written outside its validity window would
+        // refuse this call rather than the one that wrote it.
+        using HttpClient afterwards = await _fixture.CreateTenantClientAsync(
+            tenant.Alias,
+            tenant.PortalId,
+            tenant.AdministratorUserName);
+
+        using HttpResponseMessage listed = await afterwards.GetAsync(
+            new Uri(RolesRoute(tenant.PortalId).OriginalString + "?pageIndex=0&pageSize=50", UriKind.Relative));
+
+        listed.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the tenant's administrator must still administer the tenant after being re-assigned to its role");
+    }
+
     /// <summary>A delete against an unknown role answers <c>404 Not Found</c>.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1401,37 +1692,56 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A free role derives no expiry date, and a date the caller submits for one is discarded rather than
-    /// stored.
+    /// SEC-F5: a free role derives no expiry date of its own, and an expiry the caller submits is stored
+    /// EXACTLY AS SUBMITTED rather than discarded.
     /// </summary>
     /// <remarks>
-    /// This is the half of the derivation that is easiest to misread. The legacy rule is that the role's own
-    /// billing or trial period governs the expiry; a role with no period has nothing to expire, so a submitted
-    /// date has no meaning and is dropped. Its paid counterpart is the companion test below.
+    /// <para>
+    /// MIGRATION: SEC-F5 REPLACED A FACT ASSERTING THE OPPOSITE. It had read the legacy rule as "the role's
+    /// period governs the expiry, so a role with no period has nothing to expire and a submitted date has no
+    /// meaning". The rule is real but belongs to a different member: <c>RoleController.vb</c> L489-L556
+    /// (<c>UpdateUserRole</c>) derives an expiry and accepts no dates at all, while the member the legacy
+    /// screen called - <c>AddUserRole</c> at L295-L315, reached from <c>SecurityRoles.ascx.vb</c> L542 by
+    /// way of the seven-argument static at L647 - stores both submitted bounds verbatim on the insert and
+    /// the update branch alike. So the two facts coexisted in the legacy source and neither overrode the
+    /// other; consolidating them into one member made it necessary to say which governs, and a bound the
+    /// caller stated is the caller's.
+    /// </para>
+    /// <para>
+    /// The previous behaviour was SILENT DATA LOSS BEHIND A 204: the request was accepted, the caller was
+    /// told so, and the date it had named was never stored. Both halves are asserted here - the submitted
+    /// bound lands, and a submission without one still derives nothing - so the fact remains about the
+    /// derivation as well as about the submission.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task Assignment_ForAFreeRole_DiscardsASubmittedExpiryDate()
+    public async Task Assignment_ForAFreeRole_StoresASubmittedExpiryDateVerbatim()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
         RoleDetailDto created = await CreateRoleAsync(client);
+
+        // Whole seconds, because the column is `datetime` and its resolution is 3.33 milliseconds: a
+        // round-trip comparison against an arbitrary tick-precision instant would fail on the storage
+        // rounding rather than on anything this fact is about.
+        DateTime submitted = new DateTime(2031, 3, 17, 9, 45, 0, DateTimeKind.Utc);
 
         using HttpResponseMessage assigned = await client.PostAsJsonAsync(
             RoleUsersRoute(_fixture.Seed.PortalId, created.RoleId),
             new RoleAssignmentRequest
             {
                 UserId = _fixture.Seed.MemberUserId,
-                ExpiryDate = DateTime.UtcNow.AddYears(5),
+                ExpiryDate = submitted,
             },
             ApiTestFixture.Json);
 
         assigned.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        int dated = await _fixture.Database.ScalarAsync<int>(
+        DateTime stored = await _fixture.Database.ScalarAsync<DateTime>(
             """
-            SELECT COUNT(*)
+            SELECT [ExpiryDate]
             FROM [dbo].[UserRoles]
-            WHERE [RoleID] = @roleId AND [UserID] = @userId AND [ExpiryDate] IS NOT NULL;
+            WHERE [RoleID] = @roleId AND [UserID] = @userId;
             """,
             new Dictionary<string, object?>
             {
@@ -1439,7 +1749,33 @@ public sealed class RoleApiTests
                 ["userId"] = _fixture.Seed.MemberUserId,
             });
 
-        dated.Should().Be(0, "a role with no billing or trial period has nothing to expire");
+        stored.Should().Be(
+            submitted,
+            "the caller stated when the membership ends, and a 204 says that instruction was accepted");
+
+        // The other half: with no bound submitted, a role carrying no term still derives none.
+        RoleDetailDto second = await CreateRoleAsync(client);
+
+        using HttpResponseMessage withoutBound = await client.PostAsJsonAsync(
+            RoleUsersRoute(_fixture.Seed.PortalId, second.RoleId),
+            new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+            ApiTestFixture.Json);
+
+        withoutBound.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        int derived = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[UserRoles]
+            WHERE [RoleID] = @roleId AND [UserID] = @userId AND [ExpiryDate] IS NOT NULL;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["roleId"] = second.RoleId,
+                ["userId"] = _fixture.Seed.MemberUserId,
+            });
+
+        derived.Should().Be(0, "a role with no billing or trial period derives nothing to expire");
     }
 
     /// <summary>
@@ -1842,6 +2178,76 @@ public sealed class RoleApiTests
             response,
             HttpStatusCode.Conflict,
             "role_group.name_duplicate");
+    }
+
+    /// <summary>
+    /// Submitting the same new group name from several callers at once creates it exactly once, refuses every
+    /// other caller as a conflict, and answers no caller with a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: SEC-F6, the group counterpart of the role contest. <c>IX_RoleGroupName</c> is unique over
+    /// <c>(PortalID, RoleGroupName)</c>, and this path's check is weaker than the role path's - it reads the
+    /// whole group collection and compares in memory - so the window in front of the insert is if anything
+    /// wider. The scope of what this asserts, and why it does not assert which mechanism refused each caller,
+    /// is recorded on
+    /// <see cref="CreateRole_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault"/>.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRoleGroup_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string contestedName = "ITest Group Race " + Suffix();
+        const int Callers = 12;
+
+        IEnumerable<Task<HttpResponseMessage>> submissions = Enumerable.Range(0, Callers).Select(_ =>
+            client.PostAsJsonAsync(
+                RoleGroupsRoute(_fixture.Seed.PortalId),
+                new CreateRoleGroupRequest { RoleGroupName = contestedName },
+                ApiTestFixture.Json));
+
+        HttpResponseMessage[] responses = await Task.WhenAll(submissions);
+
+        try
+        {
+            HttpStatusCode[] statuses = [.. responses.Select(response => response.StatusCode)];
+
+            statuses.Should().NotContain(
+                status => (int)status >= 500,
+                "a unique index refusing a duplicate is not a server fault");
+
+            statuses.Count(status => status == HttpStatusCode.Created).Should().Be(1);
+            statuses.Where(status => status != HttpStatusCode.Created).Should()
+                .AllBeEquivalentTo(HttpStatusCode.Conflict);
+
+            foreach (HttpResponseMessage refused in responses
+                .Where(response => response.StatusCode != HttpStatusCode.Created))
+            {
+                await ShouldCarryFailureCodeAsync(
+                    refused,
+                    HttpStatusCode.Conflict,
+                    "role_group.name_duplicate");
+            }
+
+            int stored = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[RoleGroups] "
+                + "WHERE [RoleGroupName] = @groupName AND [PortalID] = @portalId;",
+                new Dictionary<string, object?>
+                {
+                    ["groupName"] = contestedName,
+                    ["portalId"] = _fixture.Seed.PortalId,
+                });
+
+            stored.Should().Be(1, "exactly one row may survive the contest");
+        }
+        finally
+        {
+            foreach (HttpResponseMessage response in responses)
+            {
+                response.Dispose();
+            }
+        }
     }
 
     /// <summary>

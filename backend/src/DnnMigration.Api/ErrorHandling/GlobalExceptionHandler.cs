@@ -178,6 +178,34 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         "The request could not be read. Check the request framing and headers, then submit it again.";
 
     /// <summary>
+    /// Explanation returned when the store refused a write because the value it carried is already
+    /// held by another record.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-F6, AND A SAFETY NET RATHER THAN THE ANSWER. Every create path that writes
+    /// through a unique constraint catches the duplicate-key signal itself and returns the SAME reason
+    /// code its own sequential pre-check emits, so a caller receives a 409 naming the field that
+    /// collided - the role name, the alias, the account name, the profile property - and never reaches
+    /// this text. This arm exists because "every path" is a property of today's code: a path added later
+    /// that forgets to catch would otherwise fall to the general case and be answered 500, telling the
+    /// caller the server failed when the store had behaved correctly and kept exactly one record.
+    /// Answering 409 with authored wording makes the status right even when the specific wording is not
+    /// available.
+    /// </para>
+    /// <para>
+    /// The constraint name is deliberately NOT published even though the signal carries one. An index
+    /// name is a schema fact of no use to a caller and of obvious use to an attacker mapping the store,
+    /// and it reaches the log through the diagnostic description like every other part of the chain.
+    /// The wording names no field, because at this point none is known: a handler that guessed would be
+    /// wrong for exactly the paths this net is here to cover.
+    /// </para>
+    /// </remarks>
+    private const string DuplicateRecordDetail =
+        "The submitted values conflict with a record that already exists. "
+        + "Reload the resource and submit different values.";
+
+    /// <summary>
     /// Text recorded in place of a route template when the failure happened before, or
     /// outside, endpoint selection.
     /// </summary>
@@ -484,6 +512,14 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// only available one, since such a failure is a server-side fault and telling its
     /// varieties apart is the application layer's business rather than the transport's.
     /// </para>
+    /// <para>
+    /// MIGRATION: SEC-F6 ADDED ONE STORE-SHAPED ARM, AND IT DOES NOT WEAKEN THE RULE ABOVE. A unique
+    /// constraint refusing a write is not a server fault, so it must not be answered 500 - but it is
+    /// recognised here through a DOMAIN signal raised at the persistence seam, not by inspecting a
+    /// provider exception. The rule holds unchanged: the layer that owns the classification performs it,
+    /// and this type still names no mapper or client type. Every other store failure continues to arrive
+    /// as the general case.
+    /// </para>
     /// </remarks>
     private static (int StatusCode, string Detail) Describe(Exception exception) => exception switch
     {
@@ -526,6 +562,24 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         // is challenged by the authentication handler and never arrives here. This is a
         // caller who is known and still not entitled, so 403 rather than 401.
         UnauthorizedAccessException => (StatusCodes.Status403Forbidden, ForbiddenDetail),
+
+        // MIGRATION: SEC-F6. A UNIQUE CONSTRAINT REFUSING A WRITE IS THE CALLER'S CONFLICT, NOT A SERVER
+        // FAULT. The store told us the value is already held; it did exactly its job and kept exactly one
+        // record, so 409 is what the caller needs to hear and 500 - what this family was answered before -
+        // was wrong on both counts, misreporting a correct store and raising a server-fault log entry for
+        // an ordinary collision.
+        //
+        // This arm does NOT contradict the paragraph above about naming no persistence type. It names
+        // none: the signal is a DOMAIN type, raised at the persistence seam where the provider fault is
+        // recognised and translated, precisely so the transport can classify this outcome without
+        // referencing the mapper or the database client. That translation is also why the arm is safe to
+        // place here rather than being "the application layer's business" - the classification has already
+        // been made by the layer that owns it.
+        //
+        // It is a net, not the route. Each create path catches the same signal and answers with the reason
+        // code its own pre-check emits, which is both more useful and reached first; see the remarks on
+        // DuplicateRecordDetail for why that text names no field and never publishes the constraint name.
+        DuplicateKeyException => (StatusCodes.Status409Conflict, DuplicateRecordDetail),
 
         // MIGRATION: A TRANSPORT REFUSAL CARRIES THE STATUS THE HOST ALREADY CHOSE. The host raises
         // this type when it declines to read a request itself - the body exceeding the configured size
