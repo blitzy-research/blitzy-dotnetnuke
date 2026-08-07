@@ -456,10 +456,12 @@ function credentialGroupValidator(requiresCurrentPassword: () => boolean): Valid
       return { passwordMismatch: true };
     }
 
-    // L290. Gated on `Not IsAdmin`, exactly as the legacy condition was. The empty
-    // comparison is excluded because two empty values are not a failure to DIFFER —
-    // they are a failure to be SUPPLIED, which the required rule and the length rule
-    // already report, and reporting both would contradict the single-message behaviour.
+    // L290. Gated on the same predicate as the required rule — see
+    // {@link UserPasswordComponent.requiresCurrentPassword} for why that predicate is the
+    // OPERATION rather than the caller's role. The empty comparison is excluded because two
+    // empty values are not a failure to DIFFER — they are a failure to be SUPPLIED, which the
+    // required rule and the length rule already report, and reporting both would contradict
+    // the single-message behaviour.
     if (
       requiresCurrentPassword() &&
       newPassword.length > 0 &&
@@ -799,23 +801,78 @@ export class UserPasswordComponent {
     return caller.userId === key;
   });
 
+  // -------------------------------------------------------------------------
+  // WHICH OPERATION A SUBMISSION PERFORMS
+  // -------------------------------------------------------------------------
+
+  /**
+   * The operation a submission would perform.
+   *
+   * MIGRATION: THE ONE LEGACY BUTTON BECOMES ONE OF TWO ENDPOINTS, CHOSEN BY WHO THE
+   * CALLER IS. The legacy screen called a single routine for every caller and passed the
+   * empty string as the credential in force when an administrator was acting on another
+   * account. The API separates the two, and it separates them by AUTHORISATION rather than
+   * by convenience: the change endpoint is restricted to the account holder and requires
+   * the credential in force, while the reset endpoint is restricted to a tenant
+   * administrator and refuses a request that carries one. A single endpoint could not have
+   * been authorised correctly for both.
+   *
+   * The predicate is `isSelf`, and it is `isSelf` rather than the caller's role on purpose. An
+   * administrator changing their OWN credential took the legacy change path — the reset panel
+   * was hidden for them, as the note on {@link resetHelpText} records — so they take the
+   * change path here too, which is also the only path the change endpoint's own authorisation
+   * admits them to. Because this predicate now also drives
+   * {@link UserPasswordComponent.requiresCurrentPassword}, that caller IS asked for the
+   * credential in force: the change contract requires it of every caller, so asking beside the
+   * box is the only way the request can succeed at all.
+   *
+   * A caller who is neither the account holder nor an administrator resolves to the reset
+   * operation and is refused by the server with a permission status. That path is
+   * unreachable through the guarded route and is not relied on; it exists because a
+   * predicate must answer for every input.
+   */
+  readonly plannedOperation: Signal<ChangePasswordOperation> = computed(() =>
+    this.isSelf() ? OPERATION_CHANGE : OPERATION_RESET,
+  );
+
+  // ⚠ DECLARED ABOVE THE FORM, AND THE POSITION IS LOAD-BEARING. Class fields initialise in
+  // declaration order, and the form's group validator below closes over
+  // {@link UserPasswordComponent.requiresCurrentPassword}, which reads this member — the
+  // `FormGroup` constructor runs its validators immediately, so a declaration after the form
+  // left this member undefined at that moment and construction threw. Moving it here is what
+  // makes the screen constructible; a later reader who returns it to the section it used to sit
+  // in will break every case in this screen's specification.
+
   /**
    * Whether the current-credential rules APPLY.
    *
-   * ⚠ THIS IS NOT THE SAME PREDICATE AS {@link showCurrentPassword}, AND THE DIFFERENCE
-   * IS MEASURED. `Password.ascx.vb` gates DISPLAY on `IsAdmin And Not IsUser` (L150) but
-   * gates both ENFORCEMENT rules on `Not IsAdmin` alone (L284 and L290). For an
-   * administrator editing their own credential the control is therefore rendered and the
-   * rules are skipped. That is inconsistent, it is what the legacy application did, and
-   * it is reproduced rather than corrected: domain-logic preservation forbids
-   * opportunistic correction, and the inconsistency is annotated instead.
+   * ⚠ GATED ON THE OPERATION, NOT ON THE CALLER'S ROLE, AND THE CHANGE IS DELIBERATE. The
+   * legacy screen gated DISPLAY on `IsAdmin And Not IsUser` (`Password.ascx.vb:L150`) but
+   * gated both ENFORCEMENT rules on `Not IsAdmin` alone (`:L284` and `:L290`), so an
+   * administrator changing their OWN credential saw the control and was excused the rules.
    *
-   * The asymmetry is safe in one specific direction, which is worth stating because it
-   * is what makes the validator wiring sound: `Not IsAdmin` implies `Not (IsAdmin And Not
-   * IsUser)`, so enforcement is a strict subset of display and the required rule can
-   * never end up attached to a control the template does not render.
+   * That excusal cannot be reproduced, because the endpoint it would reach refuses it. The
+   * legacy screen called ONE routine for every caller; the API separates the two operations
+   * by authorisation, and its change rule requires the credential in force whenever the
+   * operation is a change — with no exception for the caller's role. An administrator
+   * changing their own credential therefore performs a CHANGE, and a change with a blank
+   * credential in force is refused by the server every single time.
+   *
+   * So the legacy behaviour here is unreachable rather than merely inadvisable: excusing the
+   * rule does not let that caller through, it only moves the refusal from beside the box to
+   * a round trip away, with the field message arriving from the server instead. Gating on
+   * the operation reproduces the OUTCOME the system as a whole produces, which is what
+   * behavioural equivalence means when one layer's rule has become unreachable.
+   *
+   * The gate remains a subset of display, which is what keeps the validator wiring sound: a
+   * caller who is not the account holder resolves to the RESET operation, so the rule is off
+   * for exactly the caller whose control the template does not render — and the reset
+   * contract additionally requires the credential in force to be ABSENT, which the dispatch
+   * guarantees by sending null.
    */
-  readonly requiresCurrentPassword: Signal<boolean> = computed(() => !this.isAdmin());
+  readonly requiresCurrentPassword: Signal<boolean> = computed(
+    () => this.plannedOperation() === OPERATION_CHANGE,
+  );
 
   /**
    * Whether the current-credential control is RENDERED.
@@ -857,6 +914,24 @@ export class UserPasswordComponent {
   readonly credentialMaxLength = CREDENTIAL_MAX_LENGTH;
 
   /**
+   * Whether the current-credential rules apply, as a PLAIN FIELD the group validator can read.
+   *
+   * ⚠ A MIRROR OF {@link UserPasswordComponent.requiresCurrentPassword}, AND IT EXISTS FOR ONE
+   * CONCRETE REASON: the `FormGroup` constructor runs its validators immediately, while the class
+   * is still initialising its fields. The gate resolves through the addressed account key, which
+   * comes from a REQUIRED input, and a required input read before Angular has bound it throws
+   * rather than answering — so a group validator that consulted the signal directly made this
+   * screen impossible to construct. A plain field answers at construction and is written by the
+   * one effect that already owns keeping the gate in step, so there is exactly one writer.
+   *
+   * FALSE is the correct value for the construction moment: the rule it feeds is the
+   * must-differ comparison, nothing has been submitted yet, and the effect below has set the
+   * truth before the form can be interacted with. The REQUIRED rule is unaffected — it is
+   * attached and detached by that same effect.
+   */
+  private currentCredentialRuleApplies = false;
+
+  /**
    * The credential form.
    *
    * Every control is non-nullable, so the raw value is fully typed and resetting returns
@@ -893,7 +968,7 @@ export class UserPasswordComponent {
       // which needs both values and therefore belongs to the group.
       confirmPassword: new FormControl('', { nonNullable: true }),
     },
-    { validators: [credentialGroupValidator(() => this.requiresCurrentPassword())] },
+    { validators: [credentialGroupValidator(() => this.currentCredentialRuleApplies)] },
   );
 
   // -------------------------------------------------------------------------
@@ -1181,41 +1256,6 @@ export class UserPasswordComponent {
   /** `ResetPassword.Text`, for the administrative section heading and the dialog title. */
   readonly resetSectionHeading = RESET_PASSWORD_TEXT;
 
-  // -------------------------------------------------------------------------
-  // WHICH OPERATION A SUBMISSION PERFORMS
-  // -------------------------------------------------------------------------
-
-  /**
-   * The operation a submission would perform.
-   *
-   * MIGRATION: THE ONE LEGACY BUTTON BECOMES ONE OF TWO ENDPOINTS, CHOSEN BY WHO THE
-   * CALLER IS. The legacy screen called a single routine for every caller and passed the
-   * empty string as the credential in force when an administrator was acting on another
-   * account. The API separates the two, and it separates them by AUTHORISATION rather than
-   * by convenience: the change endpoint is restricted to the account holder and requires
-   * the credential in force, while the reset endpoint is restricted to a tenant
-   * administrator and refuses a request that carries one. A single endpoint could not have
-   * been authorised correctly for both.
-   *
-   * The predicate is `isSelf`, and it is `isSelf` rather than the enforcement gate on
-   * purpose. An administrator changing their OWN credential took the legacy change path —
-   * the reset panel was hidden for them, as the note on {@link resetHelpText} records — so
-   * they take the change path here too, which is also the only path the change endpoint's
-   * own authorisation admits them to. That caller is not asked for the credential in force
-   * by any client-side rule, because the legacy enforcement gate excused them; if they
-   * leave it blank the server rejects the request and names the reason, which is the same
-   * class of outcome the legacy screen produced when it passed a blank credential to the
-   * provider and the provider refused it.
-   *
-   * A caller who is neither the account holder nor an administrator resolves to the reset
-   * operation and is refused by the server with a permission status. That path is
-   * unreachable through the guarded route and is not relied on; it exists because a
-   * predicate must answer for every input.
-   */
-  readonly plannedOperation: Signal<ChangePasswordOperation> = computed(() =>
-    this.isSelf() ? OPERATION_CHANGE : OPERATION_RESET,
-  );
-
   /**
    * Whether a submission needs the administrative-reset confirmation first.
    *
@@ -1454,6 +1494,9 @@ export class UserPasswordComponent {
       const requiresCurrent = this.requiresCurrentPassword();
 
       untracked(() => {
+        // Written FIRST, because the re-validation the next line performs is what evaluates the
+        // group rule that reads it.
+        this.currentCredentialRuleApplies = requiresCurrent;
         this.applyCurrentPasswordRule(requiresCurrent);
       });
     });

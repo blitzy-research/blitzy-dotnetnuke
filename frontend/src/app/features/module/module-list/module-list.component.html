@@ -11,8 +11,8 @@
   MIGRATION: THIS SCREEN HAS NO LEGACY ANCESTOR AND NONE IS MANUFACTURED FOR IT.
   `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO - that directory holds
   `export.ascx`, `import.ascx`, `modulesettings.ascx`, their three code-behinds, one icon and
-  `App_LocalResources`, and nothing that lists modules. The nine `<table>` elements in
-  `modulesettings.ascx` are all `summary="… Design Table"` layout tables. What IS measured and
+  `App_LocalResources`, and nothing that lists modules. All NINE table elements in
+  `modulesettings.ascx` are `summary="… Design Table"` layout tables. What IS measured and
   honoured exactly is the grid CONVENTION of `Website/admin/Portal/portals.ascx` - commands
   first, identity next, dates last, headings centred - and the column WORDING of
   `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx`. The sibling component
@@ -33,18 +33,51 @@
   belong to `app/layout/**`, which emits each exactly once, and `app-page-header` renders the
   screen's single `h1`. This template renders inside the shell's `main`.
 
-  EVERY STRING IS INTERPOLATED PLAIN TEXT OR A BOUND CONSTANT. Legacy resource values are
-  untrusted markup - a substantial minority carry HTML, stored escaped so a naive search
-  clears them wrongly, and one holds a live third-party script - so nothing here uses a
-  raw-markup binding, a sanitiser bypass or a trusted-markup wrapper. The wording constants
-  live on the sibling component so a specification can assert against the same value the
-  screen renders, and so that the one value carrying significant spacing survives the
-  template compiler's whitespace collapsing.
+  MIGRATION: A LEGACY RESOURCE VALUE IS TREATED AS UNTRUSTED MARKUP AND IS NEVER BOUND AS
+  HTML. Measured in this feature's own resource files rather than assumed: of the three files
+  under `Website/admin/Modules/App_LocalResources/`, EIGHT values carry a raw HTML tag -
+  `Export.ascx.resx` one, `Import.ascx.resx` one and `ModuleSettings.ascx.resx` six, the six
+  being `ModuleHelp.Text` (which opens with an `<h1>`), `InheritPermissions.Text` (two `<b>`
+  runs) and ALL FOUR of its validator messages, every one of which begins with a leading
+  `<br>`: `valStartDate.ErrorMessage`, `valEndDate.ErrorMessage`, `valCacheTime.ErrorMessage`
+  and `valBorder.ErrorMessage`. The escaping is what makes the hazard easy to miss - the tags
+  are stored HTML-escaped, so a search for `<script` across
+  `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` returns 0 while a search
+  for `&lt;script` returns 2, and what it finds in `Advertising.Text` is a live third-party
+  advertising script with a remote source. Consequently EVERY string on this screen is
+  interpolated plain text or a bound constant: nothing here uses a raw-markup binding, a
+  sanitiser bypass or a trusted-markup wrapper, and an injected heading could not reach the
+  document even if a value carried one. Stripping a leading `<br>` is the shared form-error
+  utility's concern and is deliberately not re-implemented here.
 
-  NEITHER THE SPINNER NOR THE EMPTY STATE IS RENDERED HERE, deliberately: the shared table
-  renders both itself, in one spanning row, and lets loading win over empty. Emitting either
-  here would duplicate them - which is why the sibling component's `imports` list contains
-  neither component.
+  MIGRATION: LOCALISATION IS NOT PORTED, AND THE RESOURCE FILES ARE A WORDING SOURCE ONLY.
+  The Web Forms resource mechanism has no target equivalent in scope: none of the in-scope
+  legacy localisation calls is reproduced, no translation runtime is present in the pinned
+  dependency surface, and no message-tagging attribute or extraction helper appears anywhere
+  in this template. `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx` and
+  `Website/App_GlobalResources/SharedResources.resx` were read so existing operators meet
+  wording they recognise, and for nothing else. Where a resource key exists its VALUE is
+  authoritative - never a markup attribute, and never the key's own name - and the sibling
+  component holds each as a named constant with its citation.
+
+  MIGRATION: NEITHER THE SPINNER NOR THE EMPTY STATE IS RENDERED HERE, AND THAT IS THE CHOICE
+  BETWEEN THE TWO AVAILABLE MECHANISMS. The shared grid renders both itself, inside ONE row
+  whose single cell spans every column including the commands, and it lets the wait win over
+  emptiness. This screen therefore passes the listing flag in and emits NEITHER component -
+  which is why the sibling component's `imports` list contains neither, and why gating
+  externally as well would put two indicators in front of a person for one wait. The pager is
+  likewise left UNGATED: it decides for itself whether it has anything to offer, so a
+  condition here would be a second opinion about that.
+
+  MIGRATION: ORDERING, PANE PLACEMENT, COPYING, BULK REMOVAL, CACHE CLEARING AND
+  SYNCHRONISATION HAVE NO ENDPOINT AND THEREFORE NO AFFORDANCE. Each exists in
+  `Library/Components/Modules/ModuleController.vb` and none survives into the target surface:
+  `MoveModule` (`:L1078`), the two `CopyModule` overloads (`:L700` and `:L743`),
+  `DeleteAllModules` (`:L795`), `UpdateModuleOrder` (`:L1160`), `UpdateTabModuleOrder`
+  (`:L1197`) and `SynchronizeModule` (`:L614`). So there is no drag-to-reorder, no pane
+  picker, no bulk selection, no copy command, no cache-clear button and no synchronise button
+  anywhere below, and the placement position is DISPLAYED as data rather than edited. An
+  affordance whose request the server would refuse is worse than no affordance at all.
 -->
 
 <div class="module-list">
@@ -83,6 +116,26 @@
     sibling component records it EXACTLY AS EMITTED: no wildcard is appended, no pattern syntax
     is introduced and no escaping is applied, because match semantics belong to the server
     alone.
+
+    MIGRATION: THE ALPHABET FILTER STRIP IS DELIBERATELY NOT CARRIED OVER. Both measured
+    legacy grids opened with one - `Website/admin/Portal/portals.ascx:L4-L11` and
+    `Website/admin/Users/users.ascx:L14-L20` each declare a centred `plLetterSearch` panel
+    repeating a `CommandButton` hyperlink per initial letter, separated by a PAIR OF LITERAL
+    NON-BREAKING-SPACE ENTITIES (`portals.ascx:L8`, `users.ascx:L17`). It is not reproduced for
+    three measured reasons: the listing endpoint accepts a free-text term and no
+    initial-letter parameter, so every letter would have to be sent as a one-character query
+    and would match mid-word; the shared component set is closed and contains no letter-strip
+    member; and the doubled-entity spacing it depends on is exactly the layout-by-entity
+    practice this migration replaces with a design-token gap, so no such entity is written
+    anywhere in this file. ONE filter control is rendered, and functional parity is kept
+    because a letter is expressible as a term.
+
+    MIGRATION: THE SEARCH-TYPE DROPDOWN IS DELIBERATELY NOT CARRIED OVER EITHER.
+    `Website/admin/Users/users.ascx:L8` declares `<asp:dropdownlist id=ddlSearchType>` beside
+    its text box, letting an operator choose WHICH field the term matched. The module listing
+    endpoint exposes no field-selector parameter, so the control would have nothing to send;
+    there is also no shared component for a select, and adding one is barred by the closed
+    component set. The term is matched by the server across the fields it chooses.
   -->
   <app-search-input
     class="module-list__search"
@@ -140,6 +193,38 @@
     Row selection is deliberately NOT bound. There is no per-row detail pane on this screen and
     the row commands are links; a row-level activation as well would give one row two
     destinations.
+
+    MIGRATION: THE GRID'S ACCESSIBILITY AFFORDANCES ARE NET-NEW ADDITIONS, MADE AT ZERO VISUAL
+    COST. Neither measured legacy grid had any of them: `Website/admin/Portal/portals.ascx`
+    declares its grid at `:L13-L19` and its columns at `:L20-L55` with NO `<caption>`, NO
+    `summary`, and no column-scope information of any kind, and its two command columns
+    (`:L21` and `:L22`) are raster images carrying neither `HeaderText` nor alternative text -
+    so both reached assistive technology as unnamed graphics.
+    `Website/admin/Users/users.ascx:L35-L39` is worse still: an entirely header-less template
+    column whose only content is an online-status icon with no alternative text. Added here:
+    the projected `<caption>` above, which the shared grid renders as a real caption element
+    kept in the accessibility tree while carried out of the painted output; a column scope on
+    every heading, which the shared grid emits itself; and an accessible name on every one of
+    the four row commands, naming the placement it acts on because "Edit" repeated down a
+    column tells a screen-reader user nothing about which row they are on. None of these
+    changes a single painted pixel.
+
+    MIGRATION: THE LEGACY ROW-STRIPE DEFECT IS ANNOTATED AND NOT REPRODUCED.
+    `Website/admin/Portal/portals.ascx:L17` points its `alternatingitemstyle` at the legacy
+    class named DataGrid_AlternatingItem, and
+    `Website/Portals/_default/default.css:L131-L137` defines that class with
+    `background-color: White` over `color: Red` - so every SECOND row of the portal grid rendered
+    its text in RED, the same colour that stylesheet reserves for validation failures. That is
+    a defect rather than a design: a stripe is a positional cue and must not borrow the
+    vocabulary of an error, and colour alone must never be the sole carrier of meaning. The
+    Minimal Change Clause forbids opportunistically FIXING a discovered legacy defect, and it
+    is not fixed - it is simply not carried across, because striping belongs to the shared
+    grid's own presentation. Two further legacy style hooks are likewise not reproduced:
+    `DataGrid_Pager` (`portals.ascx:L19`, `users.ascx:L30`) is referenced by both grids and
+    defined in ZERO stylesheets repository-wide, and `users.ascx:L24-L28` uses a completely
+    different vocabulary from `portals.ascx` for the same job - `NormalBold`, `Normal`,
+    `NormalTextBox` and `NormalRed` - so there was no consistent convention to preserve. The
+    shared grid owns its appearance from design tokens instead.
   -->
   <app-data-table
     [columns]="columns()"
@@ -185,12 +270,45 @@
   promotion, the focus trap, Escape handling and focus restoration, and it focuses the
   cancelling affordance rather than the destructive one.
 
-  MIGRATION: the legacy confirmation was a scripted browser prompt. Its wording is preserved
-  exactly - `SharedResources.resx` declares `DeleteModule.Confirm` with a SPACE BEFORE ITS
-  QUESTION MARK, which is why the sentence is bound from a constant rather than written here:
-  the template compiler collapses runs of whitespace in a text node but never inside an
-  interpolated value. Correcting that spacing would be precisely the opportunistic edit the
-  Minimal Change Clause forbids.
+  MIGRATION: the legacy confirmation was a scripted browser prompt, wired at
+  `Website/admin/Modules/ModuleSettings.ascx.vb:L205` as
+  `ClientAPI.AddButtonConfirm(cmdDelete, Localization.GetString("DeleteItem"))` - note the
+  resource lookup carries NO file argument, which is what resolves it against the GLOBAL
+  register. Its wording is preserved exactly, but from the more specific of the two keys that
+  register holds: `Website/App_GlobalResources/SharedResources.resx` declares the generic
+  `DeleteItem.Text` as `'Are You Sure You Wish To Delete This Item?'` AND the module-specific
+  `DeleteModule.Confirm` as `'Are You Sure You Wish To Delete This Module ?'` - with a SPACE
+  BEFORE ITS QUESTION MARK. The module-specific key wins because Minimal Change Clause item 4
+  requires equivalent messages and a module screen saying "Item" is the weaker match; the
+  spacing is preserved because correcting it would be precisely the opportunistic edit item 1
+  forbids. That significant space is also why the sentence is bound from a constant rather
+  than written here: the template compiler collapses runs of whitespace inside a text node but
+  never inside an interpolated value. The bulk wording is never used - `DeleteItems.Text`,
+  `'Are You Sure You Wish To Delete These Items?'`, addresses a bulk removal that has no
+  endpoint.
+
+  MIGRATION: THE REMOVAL IS SOFT AND TWO-TIERED, SO THE WORDING PROMISES NO PERMANENCE.
+  `Library/Components/Modules/ModuleController.vb:L837` `DeleteTabModule(TabId, ModuleId)`
+  hard-deletes ONLY the per-page reference row (`:L843`), reorders the survivors on that page
+  (`:L846`), and then tests whether any other page still references the module (`:L849`). Only
+  if none does does it soft-delete, under the source's own verbatim comment at `:L850`,
+  `' soft delete the module`, followed by `objModule.TabID = Null.NullInteger` (`:L851`),
+  `objModule.IsDeleted = True` (`:L852`) and `UpdateModule(objModule)` (`:L853`). Nothing is
+  therefore destroyed outright, which is why this sentence says none of "permanently",
+  "cannot be undone", "irreversible" or "you will not be able to recover" - each would be a
+  false promise about a flag flip. It also means a `204` does NOT imply the row disappears, so
+  nothing prunes the listing optimistically; the store re-reads and the endpoint decides.
+
+  MIGRATION: THE LEGACY DOCUMENTATION CONTRADICTS THE LEGACY CODE, AND THE DEFECT IS ANNOTATED
+  RATHER THAN FIXED. `ModuleController.vb:L829` reads
+  `''' Delete a module reference permanently from the database.` while `:L850`, twenty-one
+  lines below it in the same routine, says `' soft delete the module`. The code is
+  authoritative and the comment is wrong. Minimal Change Clause item 1 forbids the
+  opportunistic correction of a discovered legacy defect, so it is recorded and left alone -
+  and the neighbouring `DeleteModule` at `:L819` IS the hard delete, which is emphatically NOT
+  the operation this screen invokes. There is additionally NO restore, recycle-bin, purge or
+  undelete affordance anywhere below, because no such endpoint exists: a soft-removed module
+  simply stops appearing.
 
   `danger` marks the confirming affordance as destructive. It is a valueless attribute, coerced
   by the shared component, and is the only signal this screen gives it - the dialogue owns
@@ -294,10 +412,17 @@
 <!--
   THE SCHEDULE.
 
-  Both dates go through the shared display pipe in its default short-date mode, which already
-  renders the legacy minimum-date sentinel as BLANK - reproducing the `Null.IsNull` guard at
-  `Website/admin/Modules/ModuleSettings.ascx.vb:L152-L156` without a guard of this screen's own,
-  and without erasing a far-future date such as 9999-12-31, which is a REAL value.
+  MIGRATION: A MINIMUM-VALUE DATE RENDERS AS AN EMPTY CELL, WHICH IS EXACTLY WHAT THE LEGACY
+  SCREEN DID. `Website/admin/Modules/ModuleSettings.ascx.vb:L152-L154` reads
+  `If Not Null.IsNull(objModule.StartDate) Then txtStartDate.Text =
+  objModule.StartDate.ToShortDateString / End If`, and `:L155-L157` is the identical pair for
+  the end date - so on the sentinel the field was LEFT BLANK rather than showing `01/01/0001`.
+  `Library/Components/Shared/Null.vb` defines that sentinel as `Date.MinValue`. Both values
+  pass through the shared display pipe in its DEFAULT short-date mode, matching the legacy
+  `ToShortDateString`, and that pipe already blanks the sentinel by comparing the UTC date part
+  only - so this screen contains no date guard of its own and cannot drift from the pipe's
+  behaviour. A far-future date such as 9999-12-31 is a REAL value and is NOT blanked; the pipe
+  tests for `0001-01-01` specifically and never for an upper bound.
 -->
 <ng-template #startDateCell let-row>{{ row.startDate | dateDisplay }}</ng-template>
 <ng-template #endDateCell let-row>{{ row.endDate | dateDisplay }}</ng-template>

@@ -395,28 +395,64 @@ function pageOf<T>(items: readonly T[], totalCount: number): PagedResponse<T> {
 }
 
 /**
- * A conflict document, in the shape the API publishes for a refusal.
+ * An obviously synthetic trace-context value and correlation identifier.
  *
- * The type member is `about:blank` — the value the problem-details standard itself
- * nominates when there is no more specific identifier — rather than an absolute address,
- * because this file states its wire contract in root-relative terms throughout and an
- * absolute one here would contradict that for no benefit. What matters to the single case
- * that uses this fixture is not the value of any member but that the WHOLE document
- * arrives unchanged, so no member is read individually and no message is asserted.
+ * Neither is a credential — the server emits the correlation identifier back on a failure
+ * precisely so it can be quoted in a bug report — but the trace value is written as
+ * all-but-zero so no reader mistakes it for a real one. Both are attached to EVERY problem
+ * document by `ValidationProblemDetailsFactory`, so a fixture without them describes a
+ * response this API does not send.
  */
-const CONFLICT_PROBLEM = {
-  type: 'about:blank',
+const TRACE_ID = '00-00000000000000000000000000000001-0000000000000001-00';
+const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+
+/**
+ * The refusal a protected membership removal earns, as a COMPLETE and INTERNALLY CONSISTENT
+ * document.
+ *
+ * ⚠️ THE BODY'S STATUS AND THE TRANSPORT STATUS MUST AGREE. An earlier revision of this file
+ * used one fixture that said `409` in its body while every case flushed it at `403`. A real
+ * response cannot disagree with itself — `ApiResults.Problem` writes the body's `status` from
+ * the same `MapStatusCode` call that sets the transport status — and a consumer that read
+ * the body's member rather than the transport's would have been specified against a
+ * contradiction, passing here and misclassifying in production.
+ *
+ * ⚠️ THE STATUS IS 403 BECAUSE THE REASON TOKEN IS `protected`. `role_assignment.protected`
+ * refuses the removal of the portal administrator or the registered-users membership, and
+ * the server's `ForbiddenTokens` table maps `protected` to 403 — so this is NOT a conflict,
+ * and nothing the caller does to the request will change the answer. That is the substantive
+ * difference from `role_group.in_use`, which IS a conflict at 409 because emptying the group
+ * makes the identical request succeed.
+ *
+ * MIGRATION: the wording descends from the legacy resource key `RoleRemoveError`.
+ * `RoleController.vb:L494-L497` shows why the removal is refused rather than performed: the
+ * legacy member set an expiry of yesterday and UPDATED the assignment for an expired
+ * membership, so the two protected memberships were never actually deletable.
+ */
+const PROTECTED_ASSIGNMENT_PROBLEM = {
+  type: 'urn:dnnmigration:error:role_assignment.protected',
+  title: 'Forbidden',
+  status: 403,
+  detail: 'You Can Not Remove The Portal Administrator Or The Registered Users Role',
+  traceId: TRACE_ID,
+  correlationId: CORRELATION_ID,
+} as const;
+
+/**
+ * The refusal a still-populated role group's removal earns.
+ *
+ * `role_group.in_use` carries the `in_use` token, which the server's `ConflictTokens` table
+ * maps to 409: a removal refused because the thing is still referenced is a perfectly well
+ * formed request that the STATE of the resource declines, and releasing the references makes
+ * the identical request succeed.
+ */
+const GROUP_IN_USE_PROBLEM = {
+  type: 'urn:dnnmigration:error:role_group.in_use',
   title: 'Conflict',
   status: 409,
   detail: 'The role group still classifies at least one role.',
-  instance: ROLE_GROUP_URL,
-  // An obviously synthetic trace-context value. It is not a credential — the server emits
-  // the correlation identifier back on a failure precisely so it can be quoted in a bug
-  // report — but it is written as all-but-zero so no reader mistakes it for a real one.
-  traceId: '00-00000000000000000000000000000001-0000000000000001-00',
-  errors: {
-    roleGroupId: ['The group must be emptied before it can be removed.'],
-  },
+  traceId: TRACE_ID,
+  correlationId: CORRELATION_ID,
 } as const;
 
 /**
@@ -1042,22 +1078,34 @@ describe('RoleService', () => {
       await expectAsync(pending).toBeResolved();
     });
 
-    it('lets a refusal propagate without translating it', async () => {
+    it('lets a protected-role refusal propagate without translating it', async () => {
+      // `role.protected` carries the `protected` token, so the server maps it to 403. The
+      // removal declares 204/401/403/404 and no 409 at all — a role the product created and
+      // depends on is refused on permission grounds, not because of a state collision the
+      // caller could clear.
+      const document = {
+        type: 'urn:dnnmigration:error:role.protected',
+        title: 'Forbidden',
+        status: 403,
+        detail: 'This role is required by the product and cannot be removed.',
+        traceId: TRACE_ID,
+        correlationId: CORRELATION_ID,
+      } as const;
+
       const settled = firstValueFrom(service.deleteRole(ROLE_ID)).then(
         () => 'resolved',
         (reason: unknown) => reason,
       );
 
-      httpMock
-        .expectOne(ROLE_URL)
-        .flush(CONFLICT_PROBLEM, { status: 409, statusText: 'Conflict' });
+      httpMock.expectOne(ROLE_URL).flush(document, { status: 403, statusText: 'Forbidden' });
 
       const outcome: unknown = await settled;
 
       if (!(outcome instanceof HttpErrorResponse)) {
         throw new Error(`Expected the refusal to propagate as a failure, got ${String(outcome)}`);
       }
-      expect(outcome.status).toBe(409);
+      expect(outcome.status).toBe(403);
+      expect(outcome.error).toEqual(document);
     });
   });
 
@@ -1152,17 +1200,45 @@ describe('RoleService', () => {
       await expectAsync(pending).toBeResolved();
     });
 
-    it('also completes on a 201, proving it does not branch on the success status', async () => {
-      // `RoleController.vb:L550-L555` branches on the assignment's own identifier still
-      // holding the absent-integer marker it was given at `:L503`, updating the existing row
-      // when it does not and adding one when it does. The response does not publish which of
-      // the two happened, and a client reading the status to re-derive it would be inventing
-      // a fact the server chose not to state. Passing on BOTH statuses is that proof.
-      const pending = firstValueFrom(service.assignUser(ROLE_ID, ASSIGNMENT_REQUEST));
+    it('emits no response DTO, because a 204 carries no body at all', async () => {
+      // ⚠️ 204 IS THE ONLY SUCCESS STATUS THIS ACTION DECLARES.
+      // `POST /api/v1/roles/{roleId}/users` reports through `ApiResults.Complete(Result)`,
+      // whose success arm is `NoContent()`, and `RolesController` declares exactly
+      // 204/400/401/403/404 for it. An earlier revision of this spec also flushed a 201 and
+      // claimed that passing on both proved the client "does not branch on the success
+      // status" — but 201 is a status this endpoint cannot produce, so the case asserted
+      // nothing about the real contract while implying to a reader that a created
+      // representation might arrive. It does not: a 204 is forbidden from carrying a body.
+      //
+      // The property genuinely worth pinning is the one below. `RoleController.vb:L550-L555`
+      // branched on the assignment's own identifier still holding the absent-integer marker
+      // it was given at `:L503`, UPDATING an existing row when it did not and ADDING one when
+      // it did. The API deliberately does not publish which of the two happened, so no
+      // representation comes back and a client cannot re-derive the distinction. That is why
+      // the observable is `void`-typed and why nothing is emitted here but the empty body.
+      const emitted: unknown[] = [];
+      let completed = false;
 
-      httpMock.expectOne(ROLE_MEMBERS_URL).flush(null, { status: 201, statusText: 'Created' });
+      service.assignUser(ROLE_ID, ASSIGNMENT_REQUEST).subscribe({
+        next: (value) => emitted.push(value),
+        complete: () => {
+          completed = true;
+        },
+      });
 
-      await expectAsync(pending).toBeResolved();
+      const request = httpMock.expectOne(ROLE_MEMBERS_URL);
+
+      expect(request.request.method).toBe('POST');
+      expect(request.request.body)
+        .withContext('the assignment travels exactly as the caller composed it')
+        .toEqual(ASSIGNMENT_REQUEST);
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(completed).toBeTrue();
+      expect(emitted)
+        .withContext('no membership representation comes back, so none is emitted')
+        .toEqual([null]);
     });
 
     it('passes the assignment body through unmodified', async () => {
@@ -1282,7 +1358,7 @@ describe('RoleService', () => {
 
       httpMock
         .expectOne(ROLE_MEMBER_URL)
-        .flush(CONFLICT_PROBLEM, { status: 403, statusText: 'Forbidden' });
+        .flush(PROTECTED_ASSIGNMENT_PROBLEM, { status: 403, statusText: 'Forbidden' });
 
       const outcome: unknown = await settled;
 
@@ -1290,6 +1366,10 @@ describe('RoleService', () => {
         throw new Error(`Expected the refusal to propagate as a failure, got ${String(outcome)}`);
       }
       expect(outcome.status).toBe(403);
+      // The body agrees with the transport. That is the property an internally inconsistent
+      // fixture cannot assert, and the one a consumer reading `problem.status` depends on.
+      expect(outcome.error).toEqual(PROTECTED_ASSIGNMENT_PROBLEM);
+      expect((outcome.error as { readonly status: number }).status).toBe(outcome.status);
     });
   });
 
@@ -1529,7 +1609,7 @@ describe('RoleService', () => {
       const request = httpMock.expectOne(ROLE_GROUP_URL);
       expect(request.request.method).toBe('DELETE');
 
-      request.flush(CONFLICT_PROBLEM, {
+      request.flush(GROUP_IN_USE_PROBLEM, {
         status: 409,
         statusText: 'Conflict',
         headers: { 'Content-Type': 'application/problem+json' },
@@ -1549,7 +1629,10 @@ describe('RoleService', () => {
       // registers, so no individual member is read and no message is asserted. That also
       // sidesteps the workspace's ban on dotted access into an index signature: there is no
       // property access to get wrong.
-      expect(outcome.error).toEqual(CONFLICT_PROBLEM);
+      expect(outcome.error).toEqual(GROUP_IN_USE_PROBLEM);
+      expect((outcome.error as { readonly status: number }).status)
+        .withContext('the body agrees with the transport, as a real response does')
+        .toBe(409);
     });
 
     it('does not retry a refusal', async () => {
@@ -1560,7 +1643,7 @@ describe('RoleService', () => {
 
       httpMock
         .expectOne(ROLE_GROUP_URL)
-        .flush(CONFLICT_PROBLEM, { status: 409, statusText: 'Conflict' });
+        .flush(GROUP_IN_USE_PROBLEM, { status: 409, statusText: 'Conflict' });
 
       await settled;
 

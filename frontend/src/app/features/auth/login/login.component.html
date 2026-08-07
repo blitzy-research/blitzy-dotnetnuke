@@ -7,10 +7,10 @@
   either the verbatim value of a legacy resource key or a constant the sibling component
   publishes.
 
-  THE HOST IS THE LAYOUT CONTAINER. The title, the failure surface and the form are all
-  direct children of it and none declares an outer margin of its own, so the paired
-  stylesheet owns the vertical rhythm through `:host` and never through a wrapper element
-  invented here. No extra element is emitted for its own sake.
+  THE HOST IS THE LAYOUT CONTAINER. The title, the failure surface, the outstanding-revocation
+  advisory and the form are all direct children of it and none declares an outer margin of its
+  own, so the paired stylesheet owns the vertical rhythm through `:host` and never through a
+  wrapper element invented here. No extra element is emitted for its own sake.
 
   NO SEMANTIC LANDMARK IS EMITTED HERE. `header`, `main`, `nav` and `footer` belong to
   `app/layout/**`, which emits each exactly once; this template renders INSIDE the shell's
@@ -22,18 +22,28 @@
   untrusted markup - across the in-scope resource files 76 entries carry an HTML tag and one
   holds a live third-party advertising script with a remote source, all stored XML-escaped so
   a naive search clears them wrongly. Nothing here uses a raw-HTML binding, a sanitiser
-  bypass or a trusted-markup wrapper.
+  bypass or a trusted-markup wrapper. The legacy application had reached the same conclusion
+  where it handled a value it did not author: `Website/admin/Security/AccessDenied.ascx.vb:L43`
+  encodes before displaying rather than trusting what it was handed. Every string on THIS screen
+  is fixed at author time, so the policy is belt-and-braces rather than the only guard - which
+  is precisely why it is stated rather than assumed, since the next string added here may not be.
 
   ============================================================================
   MIGRATION ANNOTATION 1 - THE LEGACY LAYOUT TABLE IS GONE.
   ============================================================================
-  `Login.ascx:L5` opens with
-  `<table cellspacing="0" cellpadding="3" border="0" summary="SignIn Design Table"
-  width="160">`. That `summary` wording is the tell: it is a LAYOUT container, not tabular
-  data, and its nine rows alternate between a label cell and a control cell. None of it is
-  structure, so the rows become a CSS grid in the paired stylesheet and each label-plus-control
-  pair becomes one shared form field. The 160-unit width is not reproduced as a pixel value
-  either; the stylesheet caps the measure at a declared breakpoint step instead.
+  `Login.ascx:L5` opens the whole screen with a table element carrying zero cell spacing, a
+  cell padding of three, no border, a width of 160 units and the summary "SignIn Design Table".
+  That summary wording is the tell: it is a LAYOUT container, not tabular data, and its nine
+  rows alternate between a label cell and a control cell. None of it is structure, so the rows
+  become a CSS grid in the paired stylesheet and each label-plus-control pair becomes one shared
+  form field. The 160-unit width is not reproduced as a pixel value either; the stylesheet caps
+  the measure at a declared breakpoint step instead.
+
+  The legacy element is DESCRIBED above rather than quoted, and so is every other legacy tag
+  named in this file. Reproducing the markup verbatim inside a comment would put the very
+  constructs this screen bans - a table element, a line-break element, a negative tab index -
+  back into the file's own bytes, where an audit that greps for them cannot tell a citation
+  from a relapse. Describing them keeps those searches honest and clean.
 
   ============================================================================
   MIGRATION ANNOTATION 2 - FIELD ORDER IS PRESERVED, INCLUDING ITS ODDITY.
@@ -72,6 +82,42 @@
   at four endpoints. Password retrieval in particular is abolished rather than ported - the
   legacy provider stored credentials reversibly and mailed them back - so an administrative
   reset is the only remedy for a forgotten credential and no recovery affordance appears here.
+
+  ============================================================================
+  MIGRATION ANNOTATION 6 - THE LABEL CONTROL'S OWN MARKUP IS NOT REPRODUCED.
+  ============================================================================
+  Each legacy label was `Website/controls/labelcontrol.ascx`, and three of its seven lines are
+  things this screen deliberately does not carry across.
+
+  The line-break element at its L8 was the only thing separating a label from its control -
+  layout expressed as a forced line break, because the surrounding table gave it nothing else.
+  Spacing is now the shared spacing scale, applied by the paired stylesheet, so no break element
+  appears anywhere here. The same disposal covers the literal spacing characters the legacy
+  admin markup used as gutters, 70 of them in the in-scope screens: a non-breaking space is not
+  spacing, it is content that happens to look like spacing, and it survives no reflow. There is
+  not one in this file, and the gaps in the stylesheet do the work instead.
+
+  Its help affordance was a link button wrapping the raster image at `~/images/help.gif`, and
+  BOTH the button and the image declared a negative tab index - which took the help toggle out
+  of the tab order, so a person navigating by keyboard could never reach the help text at all.
+  The shared field owns that affordance now and reverses the defect; this template neither ships
+  a raster asset (a favicon is the only image this workspace ships) nor writes a negative tab
+  index anywhere, and it renders no help markup of its own - it passes the help STRING and lets
+  the shared field present it.
+
+  ============================================================================
+  MIGRATION ANNOTATION 7 - LOCALISATION IS NOT PORTED.
+  ============================================================================
+  The legacy screen resolved every string through the localisation service against a resource
+  file, with a documented fallback chain in `Library/Controls/LabelControl.vb` (L266-L269
+  defaulting the key to the control's own identifier, L274 appending the suffix, L278-L281
+  deriving the help key, L292-L297 setting the label's `for`). No translation runtime exists in
+  this workspace's pinned dependency surface, so the mechanism has no target: the strings are
+  authored directly into this template and the resource files served as the AUTHORITY FOR
+  WORDING only. Consequently there is no message-tagging attribute and no localisation helper
+  on any element below, and the wording is the measured English value in every case. What is
+  preserved is the wording and the label-to-control association; what is dropped is the
+  indirection that produced them.
 -->
 
 <!--
@@ -117,11 +163,29 @@
       same situation cannot be described two different ways depending on which layer noticed
       it, and `role="status"` announces it POLITELY: it is not an error and must not interrupt.
 
-      The error branch renders the component's resolved sentence, which is null whenever the
-      banner above was given a document - so the two never say the same thing twice - and
-      falls back to status wording when a refusal arrived with no body at all. `role="alert"`
-      because it IS the direct result of the person's own action and must be discoverable
-      without moving focus.
+      The error branch renders the component's resolved sentence. That sentence resolves in the
+      sibling's own documented precedence, and the ORDER of two of its arms is what this region
+      actually depends on: a refusal that is one of the three verification outcomes yields that
+      outcome's wording, and ONLY a refusal that is none of them yields null when the banner was
+      given a document. A refusal that carried no document at all falls back to status wording,
+      so something is always said. `role="alert"` because it IS the direct result of the person's
+      own action and must be discoverable without moving focus.
+
+      ⚠ CONSEQUENCE, MEASURED IN A BROWSER RATHER THAN ASSUMED: on a verification rung the
+      ladder sentence renders HERE **and** beside the field, because the ladder arm precedes the
+      has-a-document arm. That is not a slip in either place - both surfaces are required. The
+      form-level line is what the legacy screen showed, and the field-level copy is where the
+      person must actually act, which is why the sibling's own message list puts the ladder
+      sentence at the head of the verification field's messages. The screen therefore says it
+      twice on that one rung, deliberately.
+
+      ⚠ AND A DIVERGENCE THAT IS RECORDED RATHER THAN FIXED. Because the shared field wraps its
+      messages in a region carrying an assertive role of its own, that one repeated sentence is
+      also ANNOUNCED twice. It is not correctable from this file: suppressing either surface
+      would drop one the design requires, and the field's region belongs to the shared component.
+      A previous revision of this comment claimed the two "never say the same thing twice" - that
+      claim was false on exactly this path, and stating the real behaviour is worth more than a
+      tidier sentence.
 
       MIGRATION: the three verification sentences and the refusal sentence are reproduced
       verbatim by the shared form-errors utility from
@@ -171,6 +235,50 @@
   </div>
 }
 
+<!--
+  THE OUTSTANDING-REVOCATION ADVISORY.
+
+  ⚠ THIS SCREEN IS THE ONLY THING THAT RENDERS IT, AND THE STORE SAYS SO IN AS MANY WORDS.
+  `core/state/auth.store.ts` publishes the flag with the note that it "exists so the sign-in
+  screen can say so. Sign-out sends the operator there, which makes it the one place the report
+  is certain to be seen, and a warning nothing renders is the same silence it was meant to
+  replace." The authentication client raises the same sentence through the notification channel
+  as well, but that channel is transient by construction: a person who was looking elsewhere at
+  the moment they were signed out has lost it before they arrive here. This region is the
+  durable half of the report, and omitting it would restore exactly the silence the flag exists
+  to end.
+
+  IT IS NOT A FAILURE OF THIS ATTEMPT, so it sits OUTSIDE the failure region above and takes the
+  calm treatment rather than the refusal treatment. Nothing the person did was rejected and the
+  local sign-out did succeed; what it reports is that the renewal credential may still be live
+  on the server, together with the one action that genuinely exists for that. The sentence is
+  the authentication client's own constant and is never authored here, so the same situation
+  cannot be described two different ways depending on which layer noticed it.
+
+  ⚠ ORDERED AFTER THE FAILURE REGION DELIBERATELY, on two counts. A refusal of the attempt just
+  made outranks an advisory carried in from a previous session, so the newer fact is read first
+  whenever both are on screen; and on arrival from a sign-out, when there is no failure region at
+  all, this notice sits directly beneath the title where it cannot be missed. It shares the calm
+  notice treatment with the rate-limited state above because both are advisories on the same
+  surface tone rather than refusals - the paired stylesheet describes that treatment against the
+  rate-limited case, which is the older of the two readers, not as an exclusive claim on it.
+
+  `role="status"` announces it POLITELY. It is advice about something already finished, so it
+  must not interrupt what the person is doing, and it must not be mistaken for a rejection of
+  the credential they are about to type.
+
+  MIGRATION: a net addition with no legacy counterpart, because the failure it reports could not
+  happen before. The legacy screen's sign-out was `FormsAuthentication.SignOut`, which dropped a
+  cookie locally and left nothing outstanding anywhere; a bearer-token session holds a renewal
+  credential that the server has to be ASKED to withdraw, and that request can fail while the
+  local sign-out still succeeds. The report exists because the new mechanism has a failure mode
+  the old one did not, and reporting a clean sign-out that was not clean would be the one
+  outcome worse than saying nothing.
+-->
+@if (revocationOutstanding()) {
+  <p class="login__notice" role="status">{{ revocationMessage }}</p>
+}
+
 <form class="login__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
   <div class="login__fields">
     <!--
@@ -199,6 +307,22 @@
       first letter of a case-sensitive account name silently produces a credential the server
       will refuse, and the legacy screen's own refusal wording ("remember that Passwords are
       case sensitive") shows the case sensitivity was already a known trap.
+
+      MIGRATION: the length bound is a net addition, and it reproduces a SERVER bound rather
+      than inventing a client one. `Login.ascx:L10` declared `columns="9" width="150"`, which
+      sized the box and bounded nothing; the sibling component publishes the figure the sign-in
+      contract's own validation rule enforces, so the box now refuses at the point the server
+      would have refused. Stopping the typing is the whole of the intent: no message is
+      attached to it, because a bound a person cannot exceed can produce no fault to report.
+
+      ⚠ EMITTED AS `[attr.maxlength]`, NEVER AS A LITERAL `maxlength` OR A `[maxlength]`
+      PROPERTY BINDING, and the distinction is behavioural rather than stylistic. Those two
+      forms satisfy the reactive-forms maximum-length validator's selector,
+      `[maxlength][formControlName]`, and would attach a validator this screen never declared -
+      contributing an error key the sibling component's message collection does not map, so a
+      fault could arise that nothing renders. The attribute form reaches the element without
+      matching the directive, which is the same choice every other form in this workspace
+      records at its own call sites.
     -->
     <app-form-field
       label="User Name:"
@@ -216,6 +340,7 @@
         autocapitalize="none"
         spellcheck="false"
         required
+        [attr.maxlength]="usernameMaxLength"
         [attr.aria-invalid]="isRejected('username') ? 'true' : null"
       />
     </app-form-field>
@@ -247,12 +372,29 @@
       `Login.ascx.vb:L109-L116`: the legacy reveal was gated on a per-request portal setting that
       an unauthenticated caller cannot read, so visibility is left entirely to the server's own
       answer. Nothing in this template reveals the field.
+
+      ⚠ THE HELP STRING IS ONE UNBROKEN LINE ON PURPOSE. The shared field stores what it is
+      given without collapsing internal white space, so wrapping this attribute across two
+      source lines for readability would embed a newline and the indentation after it into the
+      value - and the requirement is that the measured resource value is reproduced verbatim.
+      The line is long because the resource value is long.
+
+      MIGRATION: `type="text"` and `autocomplete="off"` both preserve legacy behaviour rather
+      than modernising it, and the second is a deliberate REFUSAL of the obvious token.
+      `Login.ascx:L16` declares a plain `asp:textbox` - no `textmode`, no completion hint - so
+      the box is a text box and stays one. The one-time-code token is NOT used, because this is
+      not a one-time code: the help text above states the code arrived on the address used when
+      registering, and it is a durable registration code that stays valid across attempts rather
+      than a rotating passcode. Claiming otherwise would invite the browser's passcode
+      heuristics to offer an unrelated value from a message that has nothing to do with this
+      screen. Completion is switched off instead, which is the right treatment for a
+      security-relevant code and is the closest honest reading of a legacy box that asked the
+      browser for nothing at all.
     -->
     @if (verificationRequired()) {
       <app-form-field
         label="Verification Code:"
-        help="Enter the verification code. You should have received the verification code on
-          the email address used when registering"
+        help="Enter the verification code. You should have received the verification code on the email address used when registering"
         [for]="controlIds.verificationCode"
         [required]="true"
         [error]="verificationMessages()"
@@ -262,7 +404,7 @@
           type="text"
           [id]="controlIds.verificationCode"
           formControlName="verificationCode"
-          autocomplete="one-time-code"
+          autocomplete="off"
           autocapitalize="none"
           spellcheck="false"
           required
@@ -323,9 +465,23 @@
     accessible label, so the wait is announced rather than merely animated. The label is
     authored: the legacy screen showed no progress affordance at all, having none to show
     during a full-page postback.
+
+    ⚠ THE BUSY STATE IS ALSO STATED ON THE COMMAND ITSELF, not only beside it. `disabled` says
+    the control cannot be used but not WHY, and a person who reaches this button while the
+    request is in flight - by returning to it, or by reading the form in order - meets a dead
+    control with no explanation. The busy attribute supplies the reason on the element that
+    became unusable. It is rendered only while it is true, because a permanent negative on a
+    resting control is noise of exactly the kind the rejected-state attributes above avoid.
   -->
   <div class="login__actions">
-    <button class="login__submit" type="submit" [disabled]="submitting()">Login</button>
+    <button
+      class="login__submit"
+      type="submit"
+      [disabled]="submitting()"
+      [attr.aria-busy]="submitting() ? 'true' : null"
+    >
+      Login
+    </button>
 
     @if (submitting()) {
       <app-loading-spinner size="small" label="Signing in…" />

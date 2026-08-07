@@ -143,6 +143,8 @@ import type {
 } from '../models/problem-details.model';
 import type { ConflictCode, ProblemSeverity } from '../utils/form-errors.util';
 
+
+
 /**
  * Everything a consumer needs to know about one failed operation, classified once.
  *
@@ -441,6 +443,7 @@ const FIRST_PAGE_INDEX = 0;
  */
 @Injectable({ providedIn: 'root' })
 export class PortalStore implements OnDestroy {
+
   /**
    * The typed transport. Every request in this file goes through it, and no URL,
    * query string or header is composed here.

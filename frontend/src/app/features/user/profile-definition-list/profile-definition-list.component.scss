@@ -32,16 +32,26 @@
 //      .profile-definitions__form-grid
 //      .profile-definitions__form-actions
 //      .profile-definitions__form-hint
+//      [data-visually-hidden]          (attribute, not a class — see section 7)
 //
-//  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
-//  carries nine shared components — page header, data table, pagination, form
-//  field, search input, confirm dialog, error banner, loading spinner and empty
-//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
-//  and the wire models under `core/models/`. It carries no user.service.ts and
-//  no signal store, so this component performs no HTTP: its data arrives through
-//  inputs and its intent leaves through outputs. That seam is what makes every
-//  branch below directly testable from the paired specification, with no HTTP
-//  testing controller involved.
+//  WHAT THE SCREEN CONSUMES. The workspace carries nine shared components — page
+//  header, data table, pagination, form field, search input, confirm dialog,
+//  error banner, loading spinner and empty state — plus the `hasPermission`
+//  directive, `core/config/api-endpoints.ts` and the wire models under
+//  `core/models/`.
+//
+//  CORRECTED PREMISE. An earlier revision of this header asserted that the
+//  workspace "carries no user.service.ts and no signal store, so this component
+//  performs no HTTP: its data arrives through inputs and its intent leaves
+//  through outputs". That premise is STALE and the conclusion drawn from it was
+//  wrong. Both `core/services/user.service.ts` and `core/state/user.store.ts`
+//  exist and are declared dependencies of this screen. The component this styles
+//  is the one the router mounts directly, so nothing upstream could ever have
+//  supplied those inputs: the presentational shape guaranteed a permanently
+//  empty grid with every affordance a silent no-op. The component now injects
+//  `UserStore`, loads its own catalogue and owns its own staged edits. The
+//  paired specification exercises it through the HTTP testing controller
+//  accordingly.
 // =============================================================================
 //  profile-definition-list.component.scss
 //  Profile property definitions — the administration screen that replaces the
@@ -527,3 +537,45 @@
 //  substitute and reproduces the legacy rendering exactly). No custom property is
 //  declared here to fill any of them.
 // =============================================================================
+
+// -----------------------------------------------------------------------------
+//  7. PROJECTED VISUALLY-HIDDEN LABEL
+// -----------------------------------------------------------------------------
+//  DEFECT FIXED — FOUND BY RUNTIME MEASUREMENT, NOT BY REVIEW. Six spans in the
+//  paired template carry `data-visually-hidden`: the four row-command labels and
+//  the two check-box labels in the Required and Visible cells. Each names the row
+//  as well as the action, because "Edit" or "Required" alone, repeated down a grid
+//  of twenty-three rows, does not say WHICH property it acts on — the announced
+//  text is the only thing distinguishing one row's button from the next.
+//
+//  The attribute alone does nothing. The workspace's only rule for it is
+//  `caption[data-visually-hidden]` in src/styles/_tables.scss, which is qualified
+//  by element type and therefore cannot match a span; src/styles.scss mentions the
+//  attribute in prose only. So every one of those six labels PAINTED. A browser
+//  measured the consequence: the Required and Visible cells rendered the property
+//  name beside the Yes/No word, and on a row with a long name the text overflowed
+//  its cell and collided with the next column at a 1440px viewport.
+//
+//  That is a double failure. It breaks UI3 — text present for assistive
+//  technology must carry ZERO visual cost — and it breaks parity with the ported
+//  screen, whose Required and Visible cells rendered a check box and nothing else.
+//
+//  The fix is the mixin, reached through an attribute selector for two reasons.
+//  It matches the workspace's own established shape for this hook, the
+//  `caption[data-visually-hidden]` rule above being the precedent, so the template
+//  keeps one vocabulary for "hidden from sight, present in the reading order"
+//  rather than gaining a parallel BEM class that means the same thing. And it is
+//  unqualified here on purpose: the hook has to work on whichever element a cell
+//  template needs it on, which is what the element-qualified global rule could not
+//  do. The mixin clips rather than removing, so the text keeps a box, keeps its
+//  place in the reading order and stays available to a screen reader.
+//
+//  ⚠ WHY A COMPONENT-SCOPED RULE REACHES INTO THE SHARED TABLE. These spans sit
+//  inside `<ng-template>` blocks that the shared data table instantiates in its
+//  own cells. Emulated encapsulation stamps the content attribute from the
+//  template's DECLARING component, not from wherever it is rendered, so this rule
+//  matches them there. The shared component is not touched, and nothing outside
+//  this screen is affected.
+[data-visually-hidden] {
+  @include mx.visually-hidden;
+}

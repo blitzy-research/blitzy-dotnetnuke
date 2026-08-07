@@ -239,6 +239,15 @@ const MODULE_REQUIRED_MESSAGE = 'Please specify the module to import into';
 const FILE_UNREADABLE_MESSAGE = 'The selected file could not be read. Choose the file again.';
 
 /**
+ * The wording for a chosen document that holds nothing.
+ *
+ * The API'S OWN SENTENCE, reproduced verbatim, because its import rule refuses exactly this condition:
+ * `Content` must not be null, empty OR whitespace only. A person who chooses an empty document therefore
+ * reads the same sentence whether the screen or the server noticed.
+ */
+const FILE_EMPTY_MESSAGE = 'The submitted document is empty.';
+
+/**
  * Confirmation of a completed import.
  *
  * MIGRATION: SUCCESS FEEDBACK IS ADDED. `Import.ascx.vb` L151, and L202 inside the helper, both
@@ -272,16 +281,15 @@ const IMPORTING_LABEL = 'Importing…';
  */
 const MODULE_LIST_ROUTE = '/modules';
 
-/**
- * The largest page the listing endpoint accepts, requested so the picker reaches as far as one call
- * can.
- *
- * The listing defaults to ten rows, which would hide most of a tenant's modules behind paging that a
- * picker has no way to expose. One hundred is the server's own ceiling — it answers a larger value
- * with a field-level refusal — so this is the widest single read available. A tenant with more than a
- * hundred module placements is therefore a documented limit of this screen rather than a silent one.
+/*
+ * MIGRATION: the page size a picker needs is no longer declared here. The listing defaults to ten
+ * rows, which would hide most of a tenant's modules behind paging a picker has no way to expose, and
+ * this screen used to widen the SHARED listing query to compensate — resizing a sibling listing under
+ * its own operator. The width is now the store's own decision, taken once inside its dedicated picker
+ * command against the paging contract's published ceiling, so no screen re-states it and no screen can
+ * disagree with another about it. A tenant holding more placements than one page remains a documented
+ * limit of a picker rather than a silent truncation.
  */
-const MODULE_CHOICE_PAGE_SIZE = 100;
 
 /**
  * The document types the picker suggests.
@@ -604,6 +612,16 @@ export class ModuleImportComponent {
   private readonly _fileTooLarge = signal(false);
 
   /**
+   * Whether the document that was read holds nothing.
+   *
+   * Held APART from the read failure, because the two are different situations with different
+   * sentences: one document could not be read at all, the other was read perfectly and turned out to be
+   * empty. Telling somebody their readable file is unreadable would send them looking for a fault that
+   * is not there. Cleared by choosing again, on the same terms as the read failure.
+   */
+  private readonly _fileEmpty = signal(false);
+
+  /**
    * Whether submit has been attempted.
    *
    * Field-level messages stay hidden until either the field has been touched or submit has been
@@ -638,8 +656,14 @@ export class ModuleImportComponent {
   // Every member below is read-only. No writable signal is exposed, so the template and a
   // specification can observe this screen's state but cannot reach in and change it.
 
-  /** Whether the module listing is in flight. */
-  protected readonly loadingModules = this.store.listLoading;
+  /**
+   * Whether the choice read is in flight.
+   *
+   * The CHOICES flag, not the listing flag. The two are separate members of the store precisely so that
+   * this screen's picker read and a sibling listing's read are distinguishable — see
+   * `ModuleStore.loadChoices`.
+   */
+  protected readonly loadingModules = this.store.choicesLoading;
 
   /**
    * The selectable modules, one option per distinct module.
@@ -666,7 +690,7 @@ export class ModuleImportComponent {
    *   contract and carried through without conversion.
    */
   protected readonly moduleChoices = computed<readonly ModuleImportChoice[]>(() =>
-    toModuleChoices(this.store.modules()),
+    toModuleChoices(this.store.choices()),
   );
 
   /** Whether there is at least one module to choose from. */
@@ -763,11 +787,15 @@ export class ModuleImportComponent {
     this.store.clearTransferOutcome();
     this.store.clearFailure();
 
-    // A picker is only as useful as its reach, so the widest page the endpoint allows is requested
-    // before the listing is read. The size is part of the store's own query state, so setting it here
-    // is how this screen states its need rather than a mutation smuggled past the store.
-    this.store.setPageSize(MODULE_CHOICE_PAGE_SIZE);
-    this.store.loadModules();
+    // The choices are read through the store's DEDICATED PICKER COMMAND, which asks for the widest page
+    // the endpoint allows and lands in a slice of its own.
+    //
+    // MIGRATION: this screen previously widened the SHARED listing page size and re-read the shared
+    // listing, which is a defect rather than a shortcut: the module listing is provided at the root, so
+    // merely opening this screen resized a sibling listing under its own operator, discarded the page
+    // they were on and replaced its rows. Stating the need as its own read leaves the browsable listing
+    // untouched — nothing this screen does is observable on `ModuleStore.page` or `ModuleStore.query`.
+    this.store.loadChoices();
 
     // A genuine side effect: confirm, then leave. Reading `importCompleted` is the only way a screen
     // learns the outcome, because the store's command reports through its state slice rather than
@@ -859,6 +887,12 @@ export class ModuleImportComponent {
       return FILE_UNREADABLE_MESSAGE;
     }
 
+    // Ranked with the read failure above and for the same reason: an emptiness refusal means nothing was
+    // sent, so any message still held from an earlier attempt describes a superseded request.
+    if (this._fileEmpty()) {
+      return FILE_EMPTY_MESSAGE;
+    }
+
     const problem = this.problem();
 
     for (const key of CONTENT_FIELD_KEYS) {
@@ -920,6 +954,7 @@ export class ModuleImportComponent {
     this._selectedFile.set(tooLarge ? null : chosen);
     this._fileTooLarge.set(tooLarge);
     this._fileReadFailed.set(false);
+    this._fileEmpty.set(false);
     this.supersedeFailure();
 
     const control = this.form.controls.file;
@@ -977,6 +1012,7 @@ export class ModuleImportComponent {
     this._submitAttempted.set(true);
     this._fileReadFailed.set(false);
     this._fileTooLarge.set(false);
+    this._fileEmpty.set(false);
 
     // The supersede latch is deliberately NOT cleared here. Clearing it up front would re-expose the
     // previous attempt's refusal on every submit that never reaches the transport - an invalid form, or
@@ -1042,13 +1078,34 @@ export class ModuleImportComponent {
       return;
     }
 
+    // MIGRATION: AN EMPTY DOCUMENT IS REFUSED HERE RATHER THAN SENT. The API's import rule refuses
+    // content that is null, empty or whitespace only, so transmitting it spends a request - and an upload
+    // of the whole document - to learn what was already knowable the moment it was read. The condition is
+    // tested exactly as the server tests it, whitespace included, so the two cannot disagree about which
+    // documents are empty.
+    //
+    // The choice is LEFT IN PLACE and the failure flag is raised, which is the same treatment an
+    // unreadable document gets: both are situations the operator resolves by choosing a different file,
+    // and clearing the field would hide which file they had just tried.
+    //
+    // This does not weaken the note below about the empty string being data. That note is about the WIRE
+    // - nothing rewrites an empty string into null on its way out - and it still holds: no empty content
+    // reaches the request at all now, so no coercion of one is possible.
+    if (content.trim().length === 0) {
+      this._fileEmpty.set(true);
+      this.notifications.error(FILE_EMPTY_MESSAGE);
+
+      return;
+    }
+
     // MIGRATION: EVERY MEMBER IS TRANSMITTED VERBATIM. The contract declares all four members, so all
     //   four are supplied. `folder` is sent as null because the target has no server-side folder concept
     //   left to name — the contract accepts it for parity and resolves nothing from it — and `fileName`
     //   carries the chosen document's own name as the descriptive metadata the contract documents it to
     //   be. The identifier is passed through untouched: minus one, if the form somehow holds it, is a
-    //   legitimate transmitted value and is NOT rewritten to null, and the text is sent exactly as read,
-    //   including when it is empty, because the empty string is data and the server is what refuses it.
+    //   legitimate transmitted value and is NOT rewritten to null, and the text is sent exactly as read.
+    //   The guard above means an empty document never reaches here, so no coercion of one is possible;
+    //   what the read produced is what travels, byte for byte, whitespace and all.
     const request: ModuleImportRequest = {
       moduleId,
       content,

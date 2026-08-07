@@ -1,8 +1,10 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { ChangeDetectionStrategy, type Type } from '@angular/core';
+import { type Type } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 
+import { API_ENDPOINTS } from '../../../core/config/api-endpoints';
 import type { ApiResponse } from '../../../core/models/paged-result.model';
 import {
   PROFILE_VISIBILITY,
@@ -13,7 +15,7 @@ import {
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
-import { UserProfileComponent } from './user-profile.component';
+import { NOT_SPECIFIED_OPTION_TEXT, UserProfileComponent } from './user-profile.component';
 
 /**
  * Specification for the dynamic profile editor.
@@ -42,6 +44,42 @@ describe('UserProfileComponent', () => {
 
   /** The account the fixtures belong to. */
   const USER_ID = 7;
+
+  /**
+   * The address of one account, built from the shared endpoint table rather than spelled.
+   *
+   * ⚠️ BUILT, NOT SPELLED, SO A ROUTE-TEMPLATE CHANGE FAILS HERE INSTEAD OF DRIFTING. Every
+   * literal in this file is additionally pinned against these builders by the endpoint block
+   * below, so the two can never disagree: a segment rename breaks the pin, and the pin names
+   * exactly what changed.
+   *
+   * @param userId The account.
+   * @returns The relative address.
+   */
+  function accountUrl(userId: number): string {
+    return API_ENDPOINTS.users.byId(userId);
+  }
+
+  /**
+   * The address of one account's profile.
+   *
+   * @param userId The account.
+   * @returns The relative address.
+   */
+  function profileUrl(userId: number): string {
+    return API_ENDPOINTS.users.profile(userId);
+  }
+
+  /**
+   * The address of the tenant's profile-declaration collection.
+   *
+   * ⚠️ PRESENT SO ITS ABSENCE FROM THE NETWORK CAN BE ASSERTED. This screen deliberately does
+   * NOT read it: a declaration arrives embedded in each profile entry, so fetching the list as
+   * well would be a redundant round trip for data already in hand. The endpoint is named here
+   * from the shared table so that the "one request, not two" contract is pinned against the real
+   * address rather than against a guess at it.
+   */
+  const profileDefinitionsUrl: string = API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection();
 
   /**
    * The reason phrase the API publishes as the problem `title`, keyed by status.
@@ -266,7 +304,16 @@ describe('UserProfileComponent', () => {
       // request nothing intercepted. No interceptor is registered: the correlation
       // identifier, the bearer token and the problem-document translation are three
       // separately specified units, and running them here would assert several at once.
-      providers: [provideHttpClient(), provideHttpClientTesting()],
+      //
+      // `provideRouter([])` supplies the router injectables with an EMPTY route table. The
+      // deprecated router testing module is deliberately NOT used - it is removed in a later
+      // major and its `ActivatedRoute` stub is a different object from the one the application
+      // actually resolves. An empty table is correct rather than merely convenient: this screen
+      // is reached by `loadComponent` and navigates nowhere, so any route declared here would be
+      // a route the production configuration does not have. The provider is present because the
+      // shared components this screen composes may inject router services, and a fixture that
+      // omitted them would fail on an injection error that says nothing about the profile.
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
     }).compileComponents();
 
     fixture = TestBed.createComponent(UserProfileComponent);
@@ -285,13 +332,11 @@ describe('UserProfileComponent', () => {
       expect(fixture.componentInstance).toBeTruthy();
     });
 
-    it('declares the on-push change detection strategy the migration plan mandates', () => {
-      const definition = (UserProfileComponent as Type<UserProfileComponent> & {
-        readonly ɵcmp?: { readonly onPush?: boolean };
-      }).ɵcmp;
-
-      expect(present(definition, 'the compiled component definition').onPush).toBeTrue();
-    });
+    // The on-push strategy, the selector and the exported class name are asserted together under
+    // "the structural contract" below, because they are one contract: the route resolves the class
+    // by name, the shell instantiates it by selector, and the change-detection strategy is what
+    // makes the signal-driven rendering correct. Splitting them across two places invited one to be
+    // updated without the others.
 
     it('dispatches nothing until the route supplies an account', () => {
       fixture.detectChanges();
@@ -303,6 +348,14 @@ describe('UserProfileComponent', () => {
     });
   });
 
+  // MIGRATION: THE ACCOUNT IS ADDRESSED BY A PLAIN ROUTE SEGMENT WHERE THE LEGACY VIEW PAGE USED AN
+  // ENCRYPTED QUERY PARAMETER. `ViewProfile.ascx.vb` L61-L63 read `userticket` and passed it through
+  // `UrlUtils.DecryptParameter` before `Int32.Parse`; `UrlUtils` is out of scope and the target uses
+  // `users/:userId/profile`. The identifier is consequently VISIBLE in the address bar where it
+  // previously was not - which is a deliberate, documented divergence and not a weakening of access
+  // control. The access control is the server's 403 and always was: the legacy ticket was obfuscation,
+  // never authorisation, and the cases below prove the plain segment is converted explicitly and that a
+  // malformed one loads nothing rather than dispatching a request for a row that cannot exist.
   describe('the route contract', () => {
     it('accepts the account through an input named exactly userId', () => {
       // The router binds a route parameter to an input BY NAME. If this input were named
@@ -432,6 +485,43 @@ describe('UserProfileComponent', () => {
       expect(host().querySelector('app-empty-state')).not.toBeNull();
       expect(host().querySelector('form')).toBeNull();
     });
+
+    it('renders no group, no field and no update action', () => {
+      // A tenant declaring nothing is a legitimate configuration rather than a failure, so the
+      // affordances are ABSENT FROM THE DOCUMENT rather than hidden by a stylesheet: a control that
+      // merely looks inert is still reachable by keyboard and still announced.
+      load([]);
+
+      expect(host().querySelector('fieldset')).toBeNull();
+      expect(host().querySelector('legend')).toBeNull();
+      expect(controls().length).toBe(0);
+      expect(host().querySelector('.user-profile__actions')).toBeNull();
+      expect(host().querySelector('button[type="submit"]')).toBeNull();
+      // Not an error, so no banner content and nothing announced.
+      expect((present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim())
+        .toBe('');
+      expect(notifications.notifications().length).toBe(0);
+    });
+
+    it('names the screen that resolves it, in prose rather than as a link', () => {
+      // MIGRATION: the destination is named in PROSE and not as a router link. This component
+      // declares no router-link directive, so a link would either navigate nowhere or force a full
+      // document load - and a full load would discard the memory-held session and sign the operator
+      // out mid-edit.
+      load([]);
+
+      const message = present(host().querySelector('app-empty-state'), 'the empty state').textContent ?? '';
+      expect(message).toContain('Profile Properties');
+      expect(present(host().querySelector('app-empty-state'), 'the empty state').querySelector('a')).toBeNull();
+    });
+
+    it('renders the empty state in view mode too, where there is likewise nothing to read', () => {
+      fixture.componentRef.setInput('mode', 'view');
+      load([]);
+
+      expect(host().querySelector('app-empty-state')).not.toBeNull();
+      expect(host().querySelector('dl')).toBeNull();
+    });
   });
 
   describe('ordering and grouping', () => {
@@ -469,8 +559,16 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders every property, including one the tenant marked not visible', () => {
-      // `Profile.ascx.vb` L162-L168 set `Visible = True` on every property for an
-      // administrator immediately before binding, and this route is administrator-only.
+      // MIGRATION: THE LEGACY VISIBILITY FILTER COLLAPSES TO "SHOW EVERYTHING", and that is the legacy
+      // OUTCOME rather than a relaxation of it. `Profile.ascx.vb` L162-L168 set `Visible = True` on every
+      // property for an administrator immediately before binding, and this route is administrator-only.
+      // The view page's own filter (`ViewProfile.ascx.vb` L84-L97) reaches the same conclusion here: it
+      // narrows an `AdminOnly` property to `(IsAdmin Or IsUser)` and a `MembersOnly` one to
+      // `Request.IsAuthenticated`, and on an administrator-only, authenticated route all three
+      // `UserVisibilityMode` branches evaluate to visible. `UserVisibilityMode` is additionally NOT one
+      // of the nine ported enumerations, so the ported model could not express the filter even if the
+      // route did not collapse it. A client-side filter is therefore NOT implemented rather than
+      // implemented and then always passing, and no filter is tested that the model cannot express.
       load([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', visible: true, viewOrder: 1 })),
         entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', visible: false, viewOrder: 2 })),
@@ -571,7 +669,10 @@ describe('UserProfileComponent', () => {
       const written = httpMock.expectOne(
         (request) => request.method === 'PUT' && request.url === `/api/v1/users/${USER_ID}/profile`,
       );
-      expect((written.request.body as { properties: readonly { propertyValue: string }[] }).properties[0].propertyValue).toBe('letters');
+      const carried = written.request.body as {
+        readonly properties: readonly { readonly propertyValue: string }[];
+      };
+      expect(present(carried.properties[0], 'the submitted property').propertyValue).toBe('letters');
 
       written.flush(null);
       httpMock
@@ -863,10 +964,15 @@ describe('UserProfileComponent', () => {
     });
 
     it('does NOT submit an invalid form, so the administrator bypass is not reproduced', () => {
-      // `Profile.ascx.vb` L94-L104 read `If ProfileProperties.IsValid Or IsAdmin`, so an
-      // administrator skipped every declared rule. On an administrator-only route that
-      // would make client validation entirely vacuous, which contradicts the requirement
-      // that validation rules must match. Deliberately not carried across.
+      // MIGRATION: THE LEGACY ADMINISTRATOR VALIDATION BYPASS IS DELIBERATELY NOT REPRODUCED.
+      // `Profile.ascx.vb` L94-L104 read `If ProfileProperties.IsValid Or IsAdmin Then _IsValid = True`,
+      // so an administrator was considered valid unconditionally and every declared rule - required,
+      // length, pattern - was skipped for them. Because THIS route is administrator-only, reproducing
+      // that would make client-side validation entirely vacuous on the only screen that has it, which
+      // contradicts the requirement that validation rules must match. The declared rules are therefore
+      // applied to every operator and an invalid form issues NO write. Nothing is weakened: the server
+      // validates independently and answers 400 with a problem document either way, so the change makes
+      // the client agree with the server rather than disagree with it.
       load([entry(declaration({ required: true }))]);
 
       submit();
@@ -963,6 +1069,76 @@ describe('UserProfileComponent', () => {
       ]);
 
       expect((present(host().querySelector('dd'), 'the value').textContent ?? '').trim()).toBe('');
+    });
+
+    it('renders values as read-only text rather than as inert controls', () => {
+      // ⚠️ READ-ONLY, NOT DISABLED, AND NOT MERELY STYLED INERT. A disabled control is removed from
+      // the accessibility tree AND from the form's value, so a screen-reader user would be told the
+      // profile is empty; a control that only LOOKS inert invites an edit that cannot be saved. The
+      // values are therefore plain text in a description list, which is read-only structurally.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', viewOrder: 2 }), {
+          propertyValue: 'Smith',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      expect(host().querySelector('input')).toBeNull();
+      expect(host().querySelector('textarea')).toBeNull();
+      expect(host().querySelector('select')).toBeNull();
+      expect(host().querySelector('[disabled]')).toBeNull();
+      expect(host().querySelector('[aria-disabled="true"]')).toBeNull();
+
+      // The association between a name and its value is structural, so it survives with no styling
+      // at all - which is what makes it readable by a screen reader.
+      expect(Array.from(host().querySelectorAll('dt')).map((term) => (term.textContent ?? '').trim()))
+        .toEqual(['First Name:', 'Last Name:']);
+      expect(
+        Array.from(host().querySelectorAll('dd')).map((value) => (value.textContent ?? '').trim()),
+      ).toEqual(['John', 'Smith']);
+    });
+
+    it('offers no update action even when a caller asks for the visibility control', () => {
+      // MIGRATION: `ShowUpdate="False"` is honoured STRUCTURALLY - the whole form element is absent -
+      // rather than by disabling a button that is still in the document.
+      fixture.componentRef.setInput('manageVisibility', true);
+      load([entry(declaration())]);
+
+      expect(host().querySelector('form')).toBeNull();
+      expect(host().querySelector('button[type="submit"]')).toBeNull();
+      expect(host().querySelector('select')).toBeNull();
+    });
+
+    it('still groups by category and reports each group\'s disclosure state', () => {
+      load([
+        entry(
+          declaration({
+            propertyDefinitionId: 1,
+            propertyCategory: 'Name',
+            propertyName: 'FirstName',
+            viewOrder: 1,
+          }),
+        ),
+        entry(
+          declaration({
+            propertyDefinitionId: 2,
+            propertyCategory: 'Contact Info',
+            propertyName: 'Telephone',
+            viewOrder: 2,
+          }),
+        ),
+      ]);
+
+      expect(headings()).toEqual(['Name', 'Contact Info']);
+      expect(
+        Array.from(host().querySelectorAll<HTMLButtonElement>('.user-profile__toggle')).map((toggle) =>
+          toggle.getAttribute('aria-expanded'),
+        ),
+      ).toEqual(['true', 'true']);
     });
   });
 
@@ -1205,6 +1381,1071 @@ describe('UserProfileComponent', () => {
       fixture.detectChanges();
 
       expect(httpMock.match((request) => request.method === 'PUT').length).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE ADDRESSES THIS SCREEN USES
+  // ---------------------------------------------------------------------------
+  //
+  // ⚠️⚠️ EVERY ADDRESS MUST BE RELATIVE, AND AN ABSOLUTE ONE WOULD PASS HERE WHILE BREAKING THE
+  // DEPLOYED APPLICATION. The test builder declares no file replacement, so a spec compiles
+  // against the PRODUCTION environment, whose base is the relative `/api/v1`; the container serves
+  // the bundle from nginx, which forwards `/api/` to the API service. An absolute
+  // absolute address naming the API service by its compose service name and port resolves only
+  // inside the Docker network and never from a browser, and one naming the loopback host and the
+  // API port turns every call into a cross-origin request. Neither failure is visible to a
+  // compiler, and neither literal appears anywhere in this file - not even as an example - so the
+  // rule is asserted below rather than merely described.
+  describe('the addresses this screen uses', () => {
+    it('addresses the profile relatively, through the shared endpoint table', () => {
+      // Pinned against the literal every other case in this file spells, so the two can never
+      // disagree: renaming a segment breaks this expectation and names what changed.
+      expect(profileUrl(USER_ID)).toBe(`/api/v1/users/${USER_ID}/profile`);
+      expect(accountUrl(USER_ID)).toBe(`/api/v1/users/${USER_ID}`);
+    });
+
+    it('addresses the declaration collection relatively and without a tenant parameter', () => {
+      // MIGRATION: the tenant is resolved SERVER-SIDE from the request's host against the alias
+      // table, exactly as the legacy `GetPortalSettings` procedure resolved it from the alias - so
+      // no `portalId` travels in the query string and none is asserted here.
+      expect(profileDefinitionsUrl).toBe('/api/v1/profile-definitions');
+    });
+
+    it('carries no scheme and no host on any address it uses', () => {
+      for (const address of [accountUrl(USER_ID), profileUrl(USER_ID), profileDefinitionsUrl]) {
+        expect(address.startsWith('/'))
+          .withContext(`${address} must be relative so the proxy can forward it`)
+          .toBeTrue();
+        expect(/^[a-z][a-z0-9+.-]*:/i.test(address))
+          .withContext(`${address} must carry no scheme`)
+          .toBeFalse();
+      }
+    });
+
+    it('reads the profile and the account, and nothing else', () => {
+      // ONE REQUEST FOR THE FIELDS, NOT TWO. A declaration arrives embedded in each profile entry,
+      // so the declaration collection is deliberately never read: it would be a second round trip
+      // for data already in hand. The account is read as well, but for the heading rather than for
+      // the fields.
+      load([entry(declaration())]);
+
+      expect(httpMock.match(() => true).length)
+        .withContext('every dispatched request has already been answered')
+        .toBe(0);
+    });
+
+    it('never reads /api/v1/profile-definitions', () => {
+      load([entry(declaration({ propertyName: 'FirstName' }))]);
+
+      // Asserted through `match` rather than `expectNone` so the count is a real expectation:
+      // `expectNone` throws on a match but registers nothing when it finds none, which makes a
+      // silently mis-wired fixture look like a pass.
+      expect(httpMock.match((request) => request.url === profileDefinitionsUrl).length).toBe(0);
+      expect(httpMock.match((request) => request.url.includes('profile-definitions')).length).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE STRUCTURAL CONTRACT THE ROUTE DEPENDS ON
+  // ---------------------------------------------------------------------------
+  //
+  // `user.routes.ts` reaches this screen through `loadComponent`, so the exported class name is
+  // load-bearing, and the selector is what the shell instantiates. Neither is checked by a
+  // compiler at the point that matters, so both are pinned.
+  describe('the structural contract', () => {
+    /** The compiled component definition, read once. */
+    function componentDef(): { readonly selectors?: readonly unknown[]; readonly onPush?: boolean } {
+      const compiled = (
+        UserProfileComponent as Type<UserProfileComponent> & {
+          readonly ɵcmp?: { readonly selectors?: readonly unknown[]; readonly onPush?: boolean };
+        }
+      ).ɵcmp;
+
+      return present(compiled, 'the compiled component definition');
+    }
+
+    it('declares the selector the shell instantiates', () => {
+      expect(JSON.stringify(componentDef().selectors)).toContain('app-user-profile');
+    });
+
+    it('is exported under the name the lazy route imports', () => {
+      // `loadComponent: () => import(...).then((m) => m.UserProfileComponent)` resolves BY NAME, so
+      // renaming the class produces a route that loads nothing with no compile error at the route.
+      expect(UserProfileComponent.name).toBe('UserProfileComponent');
+    });
+
+    it('declares the on-push strategy the non-functional requirements mandate', () => {
+      expect(componentDef().onPush).toBeTrue();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE FOUR CATEGORIES DOTNETNUKE SEEDED, AS THE INSTALLER SEEDS THEM
+  // ---------------------------------------------------------------------------
+  //
+  // Grouping is a BEHAVIOURAL requirement rather than decoration: the legacy editor was declared
+  // `groupByMode="Section"` with `groupHeaderIncludeRule="True"` (`Profile.ascx` L18 and L25), so a
+  // legacy operator read this screen as four captioned groups and must still read it that way.
+  //
+  // ⚠️ NINETEEN PROPERTIES, NOT TWENTY. `Profile.ascx.resx` holds 67 `<data>` nodes, four of which
+  // are the inert designer placeholders, leaving 63 keyed entries: 19 x 3 keys = 57, plus the four
+  // `.Header` values, plus `ProfileProperties_Country.Not Specified`, plus `ProfileTitle.Text`.
+  // Every figure below is read from `04.00.04.SqlDataProvider` L1307-L1332, which is the installer
+  // procedure that seeds them, so no property, category, order or bound is invented here.
+  describe('the four categories DotNetNuke seeds', () => {
+    /**
+     * One seeded declaration, exactly as `AddDefaultPropertyDefinitions` seeds it.
+     *
+     * ⚠️ THE DATA TYPE IS NOT REPRODUCED, AND THAT IS DELIBERATE. The installer resolves it BY
+     * NAME out of the excluded `Lists` table - `SELECT EntryID ... WHERE ListName='DataType' AND
+     * Value='Text'` - so the stored integer is DATABASE-ASSIGNED and differs between installations.
+     * Writing one here would pin a value no installation guarantees. An arbitrary integer is used
+     * instead and the text-control fallback is asserted separately.
+     *
+     * @param viewOrder The seeded display order, which doubles as the identifier here because the
+     *   installer's orders are distinct.
+     * @param category The seeded category.
+     * @param propertyName The seeded property name.
+     * @param length The seeded bound: 50 for a text property, 0 for one the installer gave a
+     *   specialised data type, where 0 means NO bound rather than a bound of nothing.
+     * @returns The profile entry, with no value recorded against it.
+     */
+    function seeded(
+      viewOrder: number,
+      category: string,
+      propertyName: string,
+      length: number,
+    ): UserProfileValue {
+      return entry(
+        declaration({
+          propertyDefinitionId: viewOrder,
+          propertyCategory: category,
+          propertyName,
+          viewOrder,
+          length,
+          // Seeded `Required = 0` and `ValidationExpression = ''` for all nineteen.
+          required: false,
+          validationExpression: '',
+          visible: true,
+        }),
+      );
+    }
+
+    /** The nineteen seeded declarations, in the installer's own order. */
+    function seededProperties(): readonly UserProfileValue[] {
+      return [
+        seeded(1, 'Name', 'Prefix', 50),
+        seeded(3, 'Name', 'FirstName', 50),
+        seeded(5, 'Name', 'MiddleName', 50),
+        seeded(7, 'Name', 'LastName', 50),
+        seeded(9, 'Name', 'Suffix', 50),
+        seeded(11, 'Address', 'Unit', 50),
+        seeded(13, 'Address', 'Street', 50),
+        seeded(15, 'Address', 'City', 50),
+        seeded(17, 'Address', 'Region', 0),
+        seeded(19, 'Address', 'Country', 0),
+        seeded(21, 'Address', 'PostalCode', 50),
+        seeded(23, 'Contact Info', 'Telephone', 50),
+        seeded(25, 'Contact Info', 'Cell', 50),
+        seeded(27, 'Contact Info', 'Fax', 50),
+        seeded(29, 'Contact Info', 'Website', 50),
+        seeded(31, 'Contact Info', 'IM', 50),
+        // ⚠️ BIOGRAPHY IS SEEDED AT 33, AHEAD of TimeZone at 35 and PreferredLocale at 37.
+        seeded(33, 'Preferences', 'Biography', 0),
+        seeded(35, 'Preferences', 'TimeZone', 0),
+        seeded(37, 'Preferences', 'PreferredLocale', 0),
+      ];
+    }
+
+    it('seeds exactly nineteen properties, which is what the resource file accounts for', () => {
+      expect(seededProperties().length).toBe(19);
+    });
+
+    it('renders one captioned group per seeded category, in the seeded order', () => {
+      load(seededProperties());
+
+      // ⚠️ "Contact Info" CONTAINS A SPACE. Its resource key is
+      // `ProfileProperties_Contact Info.Header`, the only heading key in the file with one, and the
+      // value is byte-identical to the category - which is why the category string is rendered
+      // straight out of the declaration and no key is ever composed or parsed.
+      expect(headings()).toEqual(['Name', 'Address', 'Contact Info', 'Preferences']);
+    });
+
+    it('renders each group as a field set with a legend, so every group is named', () => {
+      load(seededProperties());
+
+      const groups = Array.from(host().querySelectorAll('fieldset.user-profile__group'));
+      expect(groups.length).toBe(4);
+
+      for (const group of groups) {
+        // A field set whose legend is empty is announced as a group and then says nothing about
+        // itself, which is worse than no grouping at all.
+        expect((present(group.querySelector('legend'), 'the group legend').textContent ?? '').trim().length)
+          .toBeGreaterThan(0);
+      }
+    });
+
+    it('reports the disclosure state of every group, not merely the first', () => {
+      load(seededProperties());
+
+      const toggles = Array.from(
+        host().querySelectorAll<HTMLButtonElement>('.user-profile__toggle'),
+      );
+      expect(toggles.length).toBe(4);
+      expect(toggles.map((toggle) => toggle.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'true',
+        'true',
+        'true',
+      ]);
+    });
+
+    it('renders all nineteen fields, in the seeded display order within each group', () => {
+      load(seededProperties());
+
+      expect(controls().length).toBe(19);
+      expect(labels()).toEqual([
+        'Prefix',
+        'First Name',
+        'Middle Name',
+        'Last Name',
+        'Suffix',
+        'Unit',
+        'Street',
+        'City',
+        'Region',
+        'Country',
+        'Postal Code',
+        'Telephone',
+        'Cell/Mobile',
+        'Fax',
+        'Website',
+        'IM',
+        // ⚠️ MEASURED, NOT ASSUMED: Biography is seeded at view order 33 and therefore precedes
+        // TimeZone (35) and PreferredLocale (37). Any other order would be an invention.
+        'Biography',
+        'Time Zone',
+        'Preferred Locale',
+      ]);
+    });
+
+    it('groups the seeded properties in the counts the installer seeds', () => {
+      load(seededProperties());
+
+      const counts = Array.from(host().querySelectorAll('fieldset.user-profile__group')).map(
+        (group) => group.querySelectorAll('input[type="text"], textarea').length,
+      );
+
+      // Name 5, Address 6, Contact Info 5, Preferences 3 - and 5 + 6 + 5 + 3 = 19.
+      expect(counts).toEqual([5, 6, 5, 3]);
+    });
+
+    it('marks none of the seeded properties required, because the installer marks none', () => {
+      load(seededProperties());
+
+      // Every seeded row passes `@Required = 0`. A screen that demanded any of them would refuse a
+      // profile the legacy application saved without complaint.
+      expect(host().querySelectorAll('.form-field__required').length).toBe(0);
+      expect(host().querySelector('.form-field__error')).toBeNull();
+    });
+
+    it('bounds a seeded text property at fifty and leaves a specialised one unbounded', () => {
+      load(seededProperties());
+
+      const byLabel = new Map(
+        Array.from(host().querySelectorAll('.form-field')).map((field) => [
+          (field.querySelector('.form-field__label')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+          field.querySelector('input[type="text"], textarea'),
+        ]),
+      );
+
+      expect(present(byLabel.get('First Name'), 'the first-name control')?.getAttribute('maxlength')).toBe(
+        '50',
+      );
+      // Seeded with a specialised data type and therefore `@Length = 0`, which is the ABSENCE of a
+      // bound. Publishing `maxlength="0"` here would stop the operator typing at all.
+      expect(
+        present(byLabel.get('Biography'), 'the biography control')?.hasAttribute('maxlength'),
+      ).toBeFalse();
+    });
+
+    it('renders the seeded rich-text property as a single-line control, a reported reduction', () => {
+      // MIGRATION: A DELIBERATE, REPORTED FUNCTIONAL REDUCTION. Biography was edited through the
+      // excluded rich-text provider and is seeded with `@Length = 0`, so the length-driven choice
+      // between one line and several resolves to one line. The declared DATA TYPE cannot drive the
+      // choice instead, because it is an unresolved database-assigned integer. No rich-text control
+      // is substituted and no lookalike is invented.
+      load(seededProperties());
+
+      expect(host().querySelector('textarea')).toBeNull();
+      expect(host().querySelectorAll('input[type="text"]').length).toBe(19);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE TWO CONTROL TITLES, AND THE TWO RESOURCE FILES THEY COME FROM
+  // ---------------------------------------------------------------------------
+  describe('the mode-dependent control title', () => {
+    it('titles the editable screen as the legacy edit page was titled', () => {
+      // Measured as `ControlTitle_profile.Text` = "Manage Profile".
+      //
+      // ⚠️ THAT KEY IS NOT IN THIS SCREEN'S OWN RESOURCE FILE. It is in
+      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx` L202-L203, because the
+      // legacy title belonged to the container that HOSTED the editor rather than to the editor.
+      // Reading only the local file would have found no title at all.
+      load([entry(declaration())]);
+
+      expect(present(host().querySelector('app-page-header'), 'the page header').textContent).toContain(
+        'Manage Profile',
+      );
+    });
+
+    it('titles the read-only screen as the legacy view page was titled', () => {
+      // Measured as `ControlTitle_viewprofile.Text` = "View Profile" - the SINGLE entry in
+      // `ViewProfile.ascx.resx`, which is a five-line page whose whole body hosts this same editor.
+      fixture.componentRef.setInput('mode', 'view');
+      load([entry(declaration())]);
+
+      const header = present(host().querySelector('app-page-header'), 'the page header').textContent ?? '';
+      expect(header).toContain('View Profile');
+      expect(header).not.toContain('Manage Profile');
+    });
+
+    it('renders the per-record heading in both modes, as the legacy page did', () => {
+      // The legacy assigned the record heading inside `DataBind()` regardless of the editor mode,
+      // so a legacy operator READING a profile also saw the word "Edit" in that row. Preserving
+      // that is behavioural equivalence rather than an oversight.
+      fixture.componentRef.setInput('mode', 'view');
+      load([entry(declaration())]);
+
+      expect(present(host().querySelector('app-page-header'), 'the page header').textContent).toContain(
+        'Edit Profile - jsmith (Id: 7)',
+      );
+    });
+
+    it('lets a caller supply the supporting line instead', () => {
+      fixture.componentRef.setInput('subheading', 'Supplied by the caller');
+      load([entry(declaration())]);
+
+      const header = present(host().querySelector('app-page-header'), 'the page header').textContent ?? '';
+      expect(header).toContain('Supplied by the caller');
+      expect(header).not.toContain('Manage Profile');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // ⚠️⚠️ TEXT FROM THE API IS UNTRUSTED MARKUP, BY MEASUREMENT
+  // ---------------------------------------------------------------------------
+  //
+  // Across the thirty-seven in-scope resource files - 1,111 keyed entries in 1,211 raw `<data>`
+  // nodes - SEVENTY-SIX values carry a raw HTML tag and FOUR carry a live `script` element, stored
+  // XML-escaped so a naive search clears them wrongly. This screen's own sixty-three values happen
+  // to carry none, which is exactly why the rule must be asserted rather than assumed: the runtime
+  // property list, its names, its categories and the server's per-field messages all arrive from
+  // the API, not from that file.
+  //
+  // The legacy code knew this. `AccessDenied.ascx.vb` L43 re-ENCODED the message it had just decoded
+  // before showing it, so escaping is preservation of a legacy safety property rather than a new
+  // restriction.
+  //
+  // Every case below asserts the same two things: the text is present VERBATIM, brackets included,
+  // and NO element was created from it. The first without the second would pass for a screen that
+  // rendered the markup and then happened to contain the text.
+  describe('text that arrives from the API is never treated as markup', () => {
+    /** A property name carrying a live script element, as four measured resource values do. */
+    const SCRIPT_NAME = '<script>window.__pwned = true;</script>';
+
+    /** A property name carrying emphasis markup, as thirty-two measured resource values do. */
+    const BOLD_NAME = '<b>Bold</b>';
+
+    it('renders a property name carrying a script element as escaped text', () => {
+      load([entry(declaration({ propertyName: SCRIPT_NAME }))]);
+
+      // The label falls back to the property name for anything the wording table does not hold, so
+      // the property NAME is the untrusted path into the label.
+      expect(labels()).toEqual([SCRIPT_NAME]);
+      expect(host().querySelector('script')).toBeNull();
+      expect(
+        (host().ownerDocument as Document | null)?.querySelector('script[data-profile]') ?? null,
+      ).toBeNull();
+    });
+
+    it('creates no element from a property name carrying markup', () => {
+      load([entry(declaration({ propertyName: BOLD_NAME }))]);
+
+      expect(host().querySelector('b')).toBeNull();
+      // The brackets survive, which is the proof that the string was interpolated rather than parsed.
+      expect(present(host().querySelector('.form-field__label'), 'the label').textContent).toContain(
+        '<b>Bold</b>',
+      );
+    });
+
+    it('renders a category carrying markup as an escaped legend', () => {
+      load([entry(declaration({ propertyCategory: BOLD_NAME }))]);
+
+      expect(headings()).toEqual([BOLD_NAME]);
+      expect(present(host().querySelector('legend'), 'the legend').querySelector('b')).toBeNull();
+    });
+
+    it('renders a server per-field message carrying markup as escaped text', () => {
+      load([entry(declaration({ propertyName: 'FirstName' }))]);
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock.expectOne((request) => request.method === 'PUT' && request.url === profileUrl(USER_ID)).flush(
+        {
+          type: 'urn:dnnmigration:error:request.invalid',
+          title: 'One or more validation errors occurred.',
+          status: 400,
+          detail: 'The request could not be processed as submitted.',
+          traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          correlationId: '6e2b0c94-3f57-4a81-b2d6-84c1f9e50a7b',
+          // ⚠️ THE KEYS ARE .NET MODEL-STATE NAMES AND ARE PASCAL-CASED. They name model members
+          // rather than JSON members, so the camel-case body policy does not reach them, and the
+          // document is read with a BRACKET because property access on an index signature is a
+          // compile error in this workspace.
+          errors: { FirstName: ['<b>Rejected</b> by the server.'] },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const message = present(host().querySelector('.form-field__error'), 'the error message');
+      expect(message.textContent).toContain('<b>Rejected</b>');
+      expect(message.querySelector('b')).toBeNull();
+    });
+
+    it('strips the leading break markup the legacy validator messages carried', () => {
+      // ⚠️ MEASURED AS INCONSISTENT: 28 of the 34 in-scope validator messages begin with a literal
+      // `<br>`, which the legacy page emitted as MARKUP to push the message onto its own line. It is
+      // layout expressed as content, and because nothing here treats a message as markup an operator
+      // would otherwise literally read the characters `<br>` in front of every message. The break is
+      // therefore RESOLVED to a line break rather than rendered, and the line break itself comes
+      // from the stylesheet.
+      load([entry(declaration({ propertyName: 'FirstName' }))]);
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock.expectOne((request) => request.method === 'PUT' && request.url === profileUrl(USER_ID)).flush(
+        {
+          type: 'urn:dnnmigration:error:request.invalid',
+          title: 'One or more validation errors occurred.',
+          status: 400,
+          detail: 'The request could not be processed as submitted.',
+          traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          correlationId: '6e2b0c94-3f57-4a81-b2d6-84c1f9e50a7b',
+          errors: { FirstName: ['<br>You Must Enter a Valid Name'] },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const message = present(host().querySelector('.form-field__error'), 'the error message');
+      expect((message.textContent ?? '').trim()).toBe('You Must Enter a Valid Name');
+      expect(message.textContent).not.toContain('<br>');
+      expect(message.querySelector('br')).toBeNull();
+    });
+
+    it('renders a problem detail carrying markup as escaped banner text', () => {
+      fixture.componentRef.setInput('userId', String(USER_ID));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne(accountUrl(USER_ID))
+        .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
+      httpMock
+        .expectOne(profileUrl(USER_ID))
+        .flush(
+          problemOf(500, 'server.unexpected_failure', 'Failed: <script>alert(1)</script>'),
+          { status: 500, statusText: 'Internal Server Error' },
+        );
+      fixture.detectChanges();
+
+      const banner = present(host().querySelector('app-error-banner'), 'the banner');
+      expect(banner.textContent).toContain('<script>alert(1)</script>');
+      expect(banner.querySelector('script')).toBeNull();
+    });
+
+    it('never writes a recorded value into the document as markup', () => {
+      // A recorded value reaches a control's `value` rather than its content, so it cannot create an
+      // element even in principle - but the property is asserted because the reverse mistake, using
+      // a raw-HTML binding to show a value, is exactly what this rule forbids.
+      load([
+        entry(declaration(), {
+          propertyValue: BOLD_NAME,
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      expect(present(controls()[0], 'the value control').value).toBe(BOLD_NAME);
+      expect(host().querySelector('b')).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE WORDING THAT SURVIVES WITHOUT A CONTROL TO CARRY IT
+  // ---------------------------------------------------------------------------
+  describe('the list-backed empty option', () => {
+    it('publishes the legacy empty-option wording verbatim', () => {
+      // MIGRATION: measured as `ProfileProperties_Country.Not Specified`, whose suffix is the ONLY
+      // one in the entire thirty-seven-file resource census that contains a space - and therefore
+      // the only key that is not a legal identifier. It labels the blank entry of a list-backed
+      // control.
+      //
+      // ⚠️ NO LIST-BACKED CONTROL IS RENDERED FOR A PROFILE VALUE, and the reason is a reported gap
+      // rather than an omission: the declared data type is an unresolved, database-assigned integer
+      // (a foreign key into the excluded `Lists` table, resolved BY NAME), so nothing can decide
+      // that a property is a country. The wording is published so it survives the migration and is
+      // reachable the moment data-type resolution lands.
+      expect(NOT_SPECIFIED_OPTION_TEXT).toBe('Not Specified');
+    });
+
+    it('renders no list-backed control for a profile value, which is the reported gap', () => {
+      load([entry(declaration({ propertyName: 'Country' }))]);
+
+      // The country property is rendered as text. A `select` appears on this screen only for the
+      // visibility affordance, which is off by default.
+      expect(host().querySelector('select')).toBeNull();
+      expect(controls().length).toBe(1);
+      expect(labels()).toEqual(['Country']);
+    });
+
+    it('tolerates a property name that is not a legal identifier', () => {
+      // The wording table is a string-keyed record, so a name containing a space, a dot or a
+      // bracket must miss cleanly and fall back to the name itself rather than throwing or
+      // resolving something inherited from `Object.prototype`.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'Contact Info', viewOrder: 1 })),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'constructor', viewOrder: 2 })),
+        entry(declaration({ propertyDefinitionId: 3, propertyName: 'toString', viewOrder: 3 })),
+      ]);
+
+      expect(labels()).toEqual(['Contact Info', 'constructor', 'toString']);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE UPDATE AFFORDANCE
+  // ---------------------------------------------------------------------------
+  describe('the update action', () => {
+    /** The action row's buttons, in document order. */
+    function actions(): readonly HTMLButtonElement[] {
+      return Array.from(
+        host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'),
+      );
+    }
+
+    it('is text-only, because no legacy raster asset is carried across', () => {
+      // MIGRATION: the legacy affordance was `<dnn:commandbutton ... imageurl="~/images/save.gif">`
+      // (`Profile.ascx` L33). The frontend ships one static asset - a favicon - so the icon is
+      // neither reproduced nor substituted with a lookalike, and the action is text-only.
+      load([entry(declaration())]);
+
+      expect(host().querySelector('img')).toBeNull();
+      expect(host().querySelector('svg[role="img"]')).toBeNull();
+    });
+
+    it('is worded "Update", which resolves from the global resource file', () => {
+      // MIGRATION: `cmdUpdate.Text` is ABSENT from this screen's own resource file; the wording
+      // resolves from `Website/App_GlobalResources/SharedResources.resx` through the two-level
+      // fallback. Reading only the local file would have found no wording at all.
+      load([entry(declaration())]);
+
+      const submit = present(actions()[0], 'the update action');
+      expect(submit.type).toBe('submit');
+      expect((submit.textContent ?? '').trim()).toBe('Update');
+    });
+
+    it('reports that a write is in flight and refuses a second one', () => {
+      load([
+        entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
+      ]);
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      const written = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === profileUrl(USER_ID),
+      );
+
+      // Both actions are disabled while the write is outstanding, and the wording says so.
+      expect((present(actions()[0], 'the update action').textContent ?? '').trim()).toBe('Saving…');
+      expect(present(actions()[0], 'the update action').disabled).toBeTrue();
+      expect(present(actions()[1], 'the cancel action').disabled).toBeTrue();
+
+      // A second submission raised while the first is in flight writes nothing.
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+      expect(httpMock.match((request) => request.method === 'PUT').length).toBe(0);
+
+      // ⚠️ `204` WITH A NULL BODY. The endpoint is declared
+      // `[ProducesResponseType(StatusCodes.Status204NoContent)]` on `PUT {userId:int}/profile`, so a
+      // fixture answering `200` would encode a contract this API does not have - and would remove
+      // the very reason the store re-reads afterwards.
+      written.flush(null, { status: 204, statusText: 'No Content' });
+
+      // The success path re-reads the profile rather than assuming it: the server records the
+      // instant each value was last written, and a locally assembled profile would carry none.
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: {
+            userId: USER_ID,
+            properties: [
+              entry(declaration(), {
+                propertyValue: 'John',
+                lastUpdatedDate: '2024-06-01T12:00:00Z',
+              }),
+            ],
+          },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+
+      // Settled: the wording is back, both actions are live again, and no banner appeared.
+      expect((present(actions()[0], 'the update action').textContent ?? '').trim()).toBe('Update');
+      expect(present(actions()[0], 'the update action').disabled).toBeFalse();
+      expect(present(actions()[1], 'the cancel action').disabled).toBeFalse();
+      expect((present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim())
+        .toBe('');
+      expect(notifications.notifications().length).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // EVERY MEASURED LEGACY VALIDATION EXPRESSION, AGAINST THE SAME RULE
+  // ---------------------------------------------------------------------------
+  //
+  // MIGRATION: THE TENANT'S VALIDATION EXPRESSION IS NOT EVALUATED IN THE BROWSER, AND THAT IS A
+  // DELIBERATE DIVERGENCE FROM `Profile.ascx` L15, WHICH DECLARED `enableClientValidation="true"`.
+  //
+  // ⚠️⚠️ THESE CASES PIN THE ABSENCE OF A CLIENT-SIDE PATTERN RULE, WHICH IS NOT THE SAME THING AS
+  // THE RULE BEING UNENFORCED. The endpoint enforces it, compiling the expression with a
+  // fifty-millisecond match timeout, a length ceiling and a bounded compiled-expression cache, and
+  // reports a refusal per field through its model-state document, which this screen already renders.
+  //
+  // The browser cannot make the same promise. A `ValidationExpression` is ADMINISTRATOR-AUTHORED
+  // DATA, so it is untrusted input to whatever engine runs it, and a catastrophically backtracking
+  // pattern takes exponential time on an ordinary input. Evaluated here it would run synchronously on
+  // the UI thread on EVERY KEYSTROKE of a control whose length is frequently unbounded, because a
+  // declared length of zero means no maximum - and the browser's engine exposes no match timeout of
+  // any kind, so such an evaluation cannot be bounded, only avoided.
+  //
+  // The expressions below are the ones the legacy tree actually contains, each cited, so the case is
+  // about measured data rather than about invented data:
+  //   * `^[0-9]*$`                                    `Website/admin/Vendors/banneroptions.ascx` L36
+  //   * `[\w\.-]+(\+[\w-]*)?@([\w-]+\.)+[\w-]+`       `Website/controls/user.ascx` L62
+  //   * `\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*` `Website/admin/Users/bulkemail.ascx` L46
+  //   * `^[a-zA-Z0-9._%\-+']+$`                       `ProfilePropertyDefinition.vb` L228
+  describe('every measured legacy validation expression', () => {
+    /** One measured expression, with a value it plainly refuses and one it plainly accepts. */
+    interface MeasuredExpression {
+      /** What the expression is for, named in the case title. */
+      readonly what: string;
+      /** The expression exactly as the legacy markup declares it. */
+      readonly expression: string;
+      /** A value the expression refuses. */
+      readonly refused: string;
+      /** A value the expression accepts. */
+      readonly accepted: string;
+    }
+
+    const MEASURED: readonly MeasuredExpression[] = Object.freeze([
+      {
+        what: 'a whole number',
+        expression: '^[0-9]*$',
+        refused: 'letters',
+        accepted: '42',
+      },
+      {
+        what: 'an address with a plus-tagged local part',
+        expression: '[\\w\\.-]+(\\+[\\w-]*)?@([\\w-]+\\.)+[\\w-]+',
+        refused: 'not-an-address',
+        accepted: 'jane.doe+tag@example.co.uk',
+      },
+      {
+        what: 'an address as the bulk-mail screen declared it',
+        expression: '\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*',
+        refused: 'jane@',
+        accepted: 'jane@example.com',
+      },
+      {
+        what: 'a declaration name',
+        expression: "^[a-zA-Z0-9._%\\-+']+$",
+        refused: 'has a space',
+        accepted: "o'brien-1",
+      },
+    ]);
+
+    it('declares each expression exactly as the legacy markup declares it', () => {
+      // A guard on the fixtures themselves: an expression mistranscribed here would make every case
+      // below assert against a rule the legacy application never had. Each pair is checked with the
+      // browser's own engine, which is the one place a pattern IS compiled - in a test, never in the
+      // component.
+      for (const measured of MEASURED) {
+        const compiled = new RegExp(measured.expression);
+
+        expect(compiled.test(measured.accepted))
+          .withContext(`${measured.expression} must accept ${measured.accepted}`)
+          .toBeTrue();
+        expect(compiled.test(measured.refused))
+          .withContext(`${measured.expression} must refuse ${measured.refused}`)
+          .toBeFalse();
+      }
+    });
+
+    for (const measured of MEASURED) {
+      it(`reports nothing beside a value the ${measured.what} expression refuses`, () => {
+        load([entry(declaration({ validationExpression: measured.expression }))]);
+
+        const control = present(controls()[0], 'the value control');
+        control.value = measured.refused;
+        control.dispatchEvent(new Event('input'));
+        control.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        expect(host().querySelector('.form-field__error')).toBeNull();
+        expect(present(controls()[0], 'the value control').hasAttribute('aria-invalid')).toBeFalse();
+      });
+
+      it(`reports nothing beside a value the ${measured.what} expression accepts`, () => {
+        load([entry(declaration({ validationExpression: measured.expression }))]);
+
+        const control = present(controls()[0], 'the value control');
+        control.value = measured.accepted;
+        control.dispatchEvent(new Event('input'));
+        control.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        expect(host().querySelector('.form-field__error')).toBeNull();
+      });
+    }
+
+    // `ValidationExpression nvarchar(100) NULL` permits null, and the installer seeds the EMPTY
+    // STRING for all nineteen properties, so BOTH spellings of "no expression" occur in real data
+    // and both must behave identically. One case each, so neither can be satisfied by the other.
+    for (const absent of [null, ''] as const) {
+      it(`adds no pattern rule for the ${absent === null ? 'null' : 'empty'} expression`, () => {
+        expect(() => load([entry(declaration({ validationExpression: absent }))])).not.toThrow();
+
+        const control = present(controls()[0], 'the value control');
+        control.value = 'anything at all';
+        control.dispatchEvent(new Event('input'));
+        control.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        expect(host().querySelector('.form-field__error')).toBeNull();
+      });
+    }
+
+    it('renders every other property when one expression could never compile', () => {
+      // ⚠️ THE EXPRESSION IS UNTRUSTED CALLER-SUPPLIED DATA, so an uncompilable one must degrade one
+      // field rather than throw and take the screen down. Nothing compiles it any longer, which is
+      // why this costs nothing - but the case is kept because it is the shape of stored data most
+      // likely to be present, and it would fail loudly the moment anyone reintroduced a client-side
+      // evaluation without guarding it.
+      expect(() =>
+        load([
+          entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 })),
+          entry(
+            declaration({
+              propertyDefinitionId: 2,
+              propertyName: 'LastName',
+              viewOrder: 2,
+              validationExpression: '((',
+            }),
+          ),
+          entry(
+            declaration({
+              propertyDefinitionId: 3,
+              propertyName: 'Suffix',
+              viewOrder: 3,
+              validationExpression: '[unclosed',
+            }),
+          ),
+        ]),
+      ).not.toThrow();
+
+      // All three render, and the two uncompilable declarations carry no rule.
+      expect(controls().length).toBe(3);
+      expect(labels()).toEqual(['First Name', 'Last Name', 'Suffix']);
+      expect(host().querySelector('.form-field__error')).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // WHAT THE DECLARED DATA TYPE CANNOT DO
+  // ---------------------------------------------------------------------------
+  describe('the declared data type', () => {
+    it('renders a text control whatever integer the declaration carries', () => {
+      // MIGRATION: A REPORTED FUNCTIONAL REDUCTION, NOT A SHORTCUT. `DataType` is a foreign key into
+      // the EXCLUDED `Lists` table, resolved BY NAME by the installer
+      // (`SELECT EntryID ... WHERE ListName='DataType' AND Value='Text'`), so the stored integer is
+      // DATABASE-ASSIGNED and differs between installations. A hardcoded integer-to-control map
+      // would silently render the WRONG control wherever the list seeded in a different order, so
+      // the thirteen legacy control kinds - unknown, text, integer, true/false, time zone, locale,
+      // page, rich text, country, region, list, date, date-time - are not offered.
+      //
+      // ⚠️ THE INTEGERS BELOW ARE DELIBERATELY ARBITRARY AND CARRY NO MEANING. Choosing values that
+      // looked like real `EntryID`s would suggest this screen knows what they mean, which is exactly
+      // the mistake the reduction exists to avoid.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', dataType: 101, viewOrder: 1 })),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'Country', dataType: 202, viewOrder: 2 })),
+        entry(declaration({ propertyDefinitionId: 3, propertyName: 'TimeZone', dataType: 303, viewOrder: 3 })),
+        entry(declaration({ propertyDefinitionId: 4, propertyName: 'Biography', dataType: 404, viewOrder: 4 })),
+      ]);
+
+      expect(host().querySelectorAll('input[type="text"]').length).toBe(4);
+      expect(host().querySelector('input[type="number"]')).toBeNull();
+      expect(host().querySelector('input[type="date"]')).toBeNull();
+      expect(host().querySelector('input[type="checkbox"]')).toBeNull();
+      expect(host().querySelector('select')).toBeNull();
+    });
+
+    it('tolerates the legacy sentinel a declaration may carry as its data type', () => {
+      // `ProfilePropertyDefinition.vb` L47 initialises `DataType` to `Null.NullInteger`, which is
+      // `-1`. It is a legitimate stored value and must not be mistaken for an absent one.
+      expect(() => load([entry(declaration({ dataType: -1 }))])).not.toThrow();
+
+      expect(controls().length).toBe(1);
+    });
+
+    it('chooses a multi-line control on the declared LENGTH rather than the type', () => {
+      load([
+        entry(
+          declaration({
+            propertyDefinitionId: 1,
+            propertyName: 'FirstName',
+            dataType: 404,
+            length: 50,
+            viewOrder: 1,
+          }),
+        ),
+        entry(
+          declaration({
+            propertyDefinitionId: 2,
+            propertyName: 'Biography',
+            dataType: 101,
+            length: 3750,
+            viewOrder: 2,
+          }),
+        ),
+      ]);
+
+      // The property with the LONGER declared bound gets the multi-line control, and the data types
+      // are swapped relative to what a type-driven choice would need - so this can only pass if the
+      // length decided it.
+      expect(host().querySelectorAll('textarea').length).toBe(1);
+      expect(host().querySelectorAll('input[type="text"]').length).toBe(1);
+      expect(present(host().querySelector('textarea'), 'the multi-line control').getAttribute('maxlength'))
+        .toBe('3750');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // A DECLARATION THAT DOES NOT BELONG TO THIS ACCOUNT'S TENANT
+  // ---------------------------------------------------------------------------
+  describe('a declaration scoped outside this tenant', () => {
+    it('renders a declaration whose tenant differs from the account\'s', () => {
+      // `04.03.03.SqlDataProvider` L77-L84 altered `ProfilePropertyDefinition.PortalID` to NULL and
+      // ran `UPDATE ... SET PortalId = NULL WHERE PortalId = -1` - the ONE place the schema itself
+      // migrated the `-1` sentinel to a real SQL NULL - so a null tenant means a GLOBAL, host-level
+      // declaration that every tenant inherits.
+      //
+      // ⚠️ REPORTED GAP: the published client contract declares `portalId: number`, NOT
+      // `number | null`, so a host-level declaration cannot be expressed on this side of the
+      // boundary at all. A `portalId: null` fixture would not compile, and inventing one would
+      // assert a contract that does not exist. What CAN be asserted is the consequence that
+      // matters: the server decides which declarations a profile carries, and this screen renders
+      // every entry it is given whatever tenant the declaration names.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, portalId: 0, propertyName: 'FirstName', viewOrder: 1 })),
+        entry(declaration({ propertyDefinitionId: 2, portalId: -1, propertyName: 'LastName', viewOrder: 2 })),
+        entry(declaration({ propertyDefinitionId: 3, portalId: 42, propertyName: 'Suffix', viewOrder: 3 })),
+      ]);
+
+      expect(controls().length).toBe(3);
+      expect(labels()).toEqual(['First Name', 'Last Name', 'Suffix']);
+    });
+
+    it('applies no client-side soft-delete filter', () => {
+      // `Deleted bit NOT NULL` exists on the table but is ABSENT from the fifteen properties of the
+      // legacy class, because `GetPropertyDefinitionsByPortal(portalId, True)` filtered it
+      // SERVER-SIDE. Filtering again here would duplicate a decision this screen cannot see the
+      // inputs to, so the contract carries no such member and none is asserted.
+      load([entry(declaration({ propertyName: 'FirstName' }))]);
+
+      expect(controls().length).toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // ⚠️ THE OPTION STRICT ASYMMETRY, MADE EXPLICIT
+  // ---------------------------------------------------------------------------
+  //
+  // The class library compiled with Option Strict ON, but `Website/release.config` L125 compiled the
+  // admin pages with `<compilation debug="false" strict="false">` - Option Strict OFF - so the
+  // thirty-nine admin code-behinds may legally contain late binding and implicit narrowing that
+  // TypeScript rejects outright. Every such coercion has to be made EXPLICIT during translation, and
+  // each one is a place the behaviour could quietly differ. The cases below pin the three that reach
+  // this screen.
+  describe('the coercions the legacy pages performed implicitly', () => {
+    it('coerces the visibility setting the way a valueless attribute would', () => {
+      // `Profile.ascx.vb` L58-L63 computed `CType(setting, Boolean) And IsUser`, where `setting` is
+      // an `Object` returned by the settings accessor - a conversion legal only because the page
+      // compiled with strict checking off. It is explicit here: the input is declared boolean and
+      // transformed by `booleanAttribute`, so an attribute written WITHOUT a value still means true,
+      // which is the HTML rule for a boolean attribute.
+      fixture.componentRef.setInput('manageVisibility', '');
+      load([entry(declaration())]);
+
+      expect(host().querySelector('select')).not.toBeNull();
+    });
+
+    it('reads the string "false" as false rather than as a non-empty truth', () => {
+      // The trap the transform exists to close: a bare truthiness test would read the four-character
+      // string `'false'` as TRUE and offer an affordance the tenant switched off.
+      fixture.componentRef.setInput('manageVisibility', 'false');
+      load([entry(declaration())]);
+
+      expect(host().querySelector('select')).toBeNull();
+    });
+
+    it('reads the string "true" as true', () => {
+      fixture.componentRef.setInput('manageVisibility', 'true');
+      load([entry(declaration())]);
+
+      expect(host().querySelector('select')).not.toBeNull();
+    });
+
+    it('converts the route parameter explicitly, refusing the forms a loose parse would accept', () => {
+      // The route delivers a STRING and the conversion happens once, in one place. A loose conversion
+      // would accept a hexadecimal literal, an exponent and a decimal point - `'0x10'` becomes 16 -
+      // and would check neither the exactly-representable ceiling nor the API's 32-bit range. Each
+      // form below must load NOTHING rather than dispatch a request for a row that does not exist.
+      for (const loose of ['0x10', '7.0', '1e1', ' 7', '7 ', '+7', '', 'seven']) {
+        fixture.componentRef.setInput('userId', loose);
+        fixture.detectChanges();
+
+        expect(httpMock.match(() => true).length)
+          .withContext(`"${loose}" must not be read as an account identifier`)
+          .toBe(0);
+      }
+    });
+
+    it('accepts the negative integer that is simultaneously a real key and a sentinel', () => {
+      // ⚠️ `Null.NullInteger` IS `-1`, AND `Portals.PortalID` IS `IDENTITY(-1,1)`, so minus one is a
+      // real row identifier as well as the legacy marker for "absent". `Roles.RoleID` seeds at zero
+      // for the same reason. Presence is therefore tested EXPLICITLY - never by truthiness, never by
+      // a comparison against zero, and never by coalescing to a sentinel - so a well-formed negative
+      // identifier is dispatched rather than swallowed.
+      fixture.componentRef.setInput('userId', '-1');
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === accountUrl(-1))
+        .flush({ data: null, meta: null } satisfies ApiResponse<UserDetail | null>);
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(-1))
+        .flush({ data: null, meta: null } satisfies ApiResponse<UserProfile | null>);
+      fixture.detectChanges();
+
+      expect(host().querySelector('app-empty-state')).not.toBeNull();
+    });
+
+    it('submits a visibility as a number, never as the string an option value would be', () => {
+      // The template binds each option with `ngValue` rather than `value` precisely because the
+      // control holds a NUMBER: a plain value binding writes the option back as a string, and the
+      // submitted visibility would then stop matching the integer codes the API declares. This is the
+      // integer-to-string coercion that Option Strict OFF would have performed silently, made
+      // explicit and asserted at the boundary where it matters.
+      fixture.componentRef.setInput('manageVisibility', true);
+      load([
+        entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
+      ]);
+
+      const select = present(host().querySelector<HTMLSelectElement>('select'), 'the visibility control');
+      select.selectedIndex = 2;
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      const written = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === profileUrl(USER_ID),
+      );
+      const body = written.request.body as {
+        readonly properties: readonly { readonly visibility: unknown }[];
+      };
+      const submitted = present(body.properties[0], 'the submitted property').visibility;
+
+      expect(typeof submitted).toBe('number');
+      expect(submitted).toBe(PROFILE_VISIBILITY.adminOnly);
+
+      written.flush(null, { status: 204, statusText: 'No Content' });
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties: [] },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+    });
+
+    it('submits every value as a string, whatever the declaration says it means', () => {
+      // MIGRATION: `UserProfile.PropertyValue` is `nvarchar` and the legacy accessor returned a
+      // STRING for every data type - a date, an integer and a boolean alike - so the wire form is a
+      // string in every case and no local conversion is performed. A screen that parsed a value into
+      // a number or a date would submit a differently formatted string than the legacy screen did.
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'Telephone', viewOrder: 1 }), {
+          propertyValue: '0123',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'Birthday', viewOrder: 2 }), {
+          propertyValue: '2024-03-01',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+        entry(declaration({ propertyDefinitionId: 3, propertyName: 'Subscribed', viewOrder: 3 }), {
+          propertyValue: 'True',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      const written = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === profileUrl(USER_ID),
+      );
+      const body = written.request.body as {
+        readonly properties: readonly { readonly propertyValue: unknown }[];
+      };
+
+      // The leading zero survives, the date is not reformatted, and the legacy boolean spelling
+      // `True` is carried through with its capital letter rather than being lower-cased.
+      expect(body.properties.map((property) => property.propertyValue)).toEqual([
+        '0123',
+        '2024-03-01',
+        'True',
+      ]);
+      for (const property of body.properties) {
+        expect(typeof property.propertyValue).toBe('string');
+      }
+
+      written.flush(null, { status: 204, statusText: 'No Content' });
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties: [] },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
     });
   });
 

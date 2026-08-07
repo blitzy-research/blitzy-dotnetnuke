@@ -49,21 +49,18 @@
 import {
   ChangeDetectionStrategy,
   Component,
-  DestroyRef,
   computed,
   effect,
   inject,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import type { Signal, WritableSignal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import type { Subscription } from 'rxjs';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { Router } from '@angular/router';
 import {
-  isProblemDetails,
   problemDetailsFieldErrors,
   problemDetailsMessage,
 } from '../../../core/models/problem-details.model';
@@ -77,8 +74,8 @@ import type {
   UpdateRoleRequest,
 } from '../../../core/models/role.model';
 import { NotificationService } from '../../../core/services/notification.service';
-import { RoleService } from '../../../core/services/role.service';
 import { RoleStore } from '../../../core/state/role.store';
+import type { RoleStoreFailure, RoleStoreOperation } from '../../../core/state/role.store';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -262,6 +259,59 @@ const RSVP_CODE_MAX_LENGTH = 50;
  */
 const ICON_FILE_MAX_LENGTH = 100;
 
+/** The error key the contained-path rule reports. */
+const ICON_NOT_CONTAINED_ERROR = 'iconNotContained';
+
+/**
+ * The wording for an icon reference that escapes the portal's own folder.
+ *
+ * The API'S OWN SENTENCE, reproduced verbatim, because the rule is the API's: no legacy counterpart
+ * exists at all, since `ctlIcon` was a picker that could only produce a path inside the portal and so
+ * had nothing to validate. Replacing the picker with a text box is what made the rule necessary on the
+ * client, and reproducing the server's sentence is what keeps one rule described one way.
+ */
+const ICON_NOT_CONTAINED_MESSAGE =
+  "Icon File must be a relative path within the portal's own folder.";
+
+/**
+ * Refuses an icon reference that is rooted, drive-qualified, or traverses upwards.
+ *
+ * Mirrors the API's containment rule EXACTLY, condition for condition and in the same order, because a
+ * client that is stricter refuses a reference the server would store and one that is laxer spends a
+ * round trip to learn what was knowable. The three conditions are:
+ *
+ * - a parent-directory segment ANYWHERE in the value, tested as a substring rather than per segment,
+ *   which is what the server tests — so `a..b` is refused too, deliberately and identically;
+ * - a leading separator of either kind, which makes the reference absolute on either platform;
+ * - a colon anywhere, which turns the value into a drive-qualified path or a URI.
+ *
+ * The empty value is VALID and means "no icon chosen", which is what the legacy screens stored. The
+ * value is not trimmed: the server tests what it is given, and trimming here would accept a reference
+ * whose stored form the server would then refuse.
+ *
+ * @param control The icon control.
+ * @returns The containment error, or `null`.
+ */
+function containedIconPathValidator(control: AbstractControl<string>): ValidationErrors | null {
+  const value = control.value;
+
+  if (value.length === 0) {
+    return null;
+  }
+
+  if (value.includes('..')) {
+    return { [ICON_NOT_CONTAINED_ERROR]: true };
+  }
+
+  const first = value.charAt(0);
+
+  if (first === '/' || first === '\\' || value.includes(':')) {
+    return { [ICON_NOT_CONTAINED_ERROR]: true };
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // MESSAGES — the wording a user actually saw
 // ---------------------------------------------------------------------------
@@ -419,6 +469,34 @@ const NOT_FOUND = 404;
 
 /** A name collision. The legacy detected this itself, before saving. */
 const CONFLICT = 409;
+
+/**
+ * The three store commands this screen issues and then waits on.
+ *
+ * Named as a union of the store's own operation identifiers rather than as strings of this
+ * screen's invention, so the outcome bridge can match the store's recorded failure against the
+ * command it is waiting for and a rename on either side is a compile error.
+ */
+type AwaitedRoleMutation = Extract<RoleStoreOperation, 'createRole' | 'updateRole' | 'deleteRole'>;
+
+/** What each mutation announces when it succeeds. */
+const MUTATION_SUCCESS_MESSAGE: Readonly<Record<AwaitedRoleMutation, string>> = Object.freeze({
+  createRole: ROLE_CREATED_MESSAGE,
+  updateRole: ROLE_UPDATED_MESSAGE,
+  deleteRole: ROLE_DELETED_MESSAGE,
+});
+
+/**
+ * What each mutation says when it fails and the server explained nothing usable.
+ *
+ * A creation and an update share one sentence because the legacy did: `EditRoles.ascx.vb` reached
+ * both from the same handler and presented the same message on either.
+ */
+const MUTATION_FAILURE_MESSAGE: Readonly<Record<AwaitedRoleMutation, string>> = Object.freeze({
+  createRole: SAVE_FAILED_MESSAGE,
+  updateRole: SAVE_FAILED_MESSAGE,
+  deleteRole: DELETE_FAILED_MESSAGE,
+});
 
 // ---------------------------------------------------------------------------
 // VALIDATORS — every one of them empty-tolerant
@@ -744,37 +822,13 @@ function textOrEmpty(value: string | null | undefined): string {
   return typeof value === 'string' ? value : '';
 }
 
-/**
- * Reads an HTTP status from a rejected request without asserting a shape.
- *
- * @param error Whatever the transport rejected with.
- * @returns The status, or `null` when the rejection carries none.
+/*
+ * MIGRATION: two local error readers - one for the transport status, one for the problem document -
+ * used to live here, because every command on this screen subscribed to the transport itself and had
+ * to unpick whatever the rejection carried. Both are gone. The store records the status and the
+ * document as separate members of one failure, so there is nothing left to unpick and no second,
+ * divergent reader of a shape the shared model already describes.
  */
-function statusOf(error: unknown): number | null {
-  if (typeof error !== 'object' || error === null || !('status' in error)) {
-    return null;
-  }
-  const held: unknown = (error as { status: unknown }).status;
-  return typeof held === 'number' ? held : null;
-}
-
-/**
- * Extracts an RFC 7807 document from a rejected request.
- *
- * The API answers every refusal with `application/problem+json`, and the error interceptor leaves
- * the parsed body on `error`. Anything that is not a problem document yields `null` so that the
- * caller falls back to its own wording rather than rendering a transport object.
- *
- * @param error Whatever the transport rejected with.
- * @returns The problem document, or `null`.
- */
-function problemOf(error: unknown): ProblemDetails | null {
-  if (typeof error !== 'object' || error === null || !('error' in error)) {
-    return null;
-  }
-  const body: unknown = (error as { error: unknown }).error;
-  return isProblemDetails(body) ? body : null;
-}
 
 /** The resolved outcome of the billing group, or of the trial group. */
 interface ResolvedTerms {
@@ -900,51 +954,58 @@ export class RoleFormComponent {
   // COLLABORATORS
   // -------------------------------------------------------------------------
 
-  private readonly roleService = inject(RoleService);
+  /**
+   * The shared role state, and THE ONLY ROUTE TO THE API FROM THIS SCREEN.
+   *
+   * ⚠ THE TRANSPORT IS DELIBERATELY NOT INJECTED. Every read and every write this screen performs
+   * goes through the store, so there is exactly one copy of the role, one loading flag per slice and
+   * one failure slot in the application. When this screen subscribed to `RoleService` directly it
+   * held its own copy of all three, and the store's listing could be left showing a role that had
+   * just been renamed or removed - which is precisely what the review recorded.
+   */
   private readonly roleStore = inject(RoleStore);
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
 
-  /**
-   * Bounds every request this screen starts to this screen's own lifetime.
-   *
-   * Not a stylistic preference. Each of the four requests below ends by navigating, and a response
-   * that arrives after the user has already left would yank them back — a save confirmed against a
-   * screen that no longer exists would redirect them to the role list from wherever they had gone.
-   * The legacy could not have this problem because a postback was synchronous and the page was
-   * being replaced anyway.
+  /*
+   * MIGRATION: a `DestroyRef` used to be held here to bound every request to this screen's lifetime,
+   * because a response arriving after the operator had left would have navigated them back. The
+   * store now owns every request and cancels them on its own terms, and the two outcome bridges are
+   * effects created in the injection context - so they are retired with the component and there is
+   * nothing left for this screen to bound.
    */
-  private readonly destroyRef = inject(DestroyRef);
 
   // -------------------------------------------------------------------------
   // LOCAL STATE
   // -------------------------------------------------------------------------
 
-  /**
-   * The role read in flight, held so that a NEW read can cancel the one it replaces.
-   *
-   * Destruction-time cleanup alone was not enough. Both edit visits resolve to the SAME route
-   * configuration, so moving from one role to another re-runs the effect below WITHOUT the component
-   * being recreated - which is precisely the case `takeUntilDestroyed` cannot cover. A slow answer for
-   * the role just left would then hydrate the form over the role now addressed, and because hydration
-   * marks the form pristine the user would have no indication that the values on screen belong to
-   * something else. Cancelling the previous read first makes that impossible: unsubscribing abandons the
-   * exchange and detaches this observer, so a late answer reaches nothing.
-   *
-   * Only the READ is replaced this way. The three writes are never cancelled by a later request, because
-   * cancelling one would only stop this client listening while leaving whatever the server committed
-   * unreported - see the note on {@link RoleFormComponent.destroyRef}.
-   */
-  private roleRequest: Subscription | null = null;
-
+  
   /** The role currently loaded, or `null` in creation mode and before the first response. */
   private readonly loadedRole: WritableSignal<Role | null> = signal<Role | null>(null);
 
-  /** True while the role is being read. */
-  private readonly loadingRole: WritableSignal<boolean> = signal<boolean>(false);
+  /**
+   * The role key whose read this screen is waiting for, or `null` when it is waiting for none.
+   *
+   * ⚠ A MARKER OF OUR OWN RATHER THAN THE STORE'S SHARED FLAG. The store raises one loading
+   * flag per slice for the whole application, so a read started by another screen would
+   * otherwise settle this one - applying a role this screen never asked for, or reporting a
+   * failure that belongs to somebody else. Set when the read is dispatched and cleared by the
+   * read bridge when it settles.
+   */
+  private readonly awaitedRoleKey: WritableSignal<number | null> = signal<number | null>(null);
 
-  /** True while a create, update or delete is in flight. */
-  private readonly savingRole: WritableSignal<boolean> = signal<boolean>(false);
+  /** Which mutation this screen is waiting for, or `null` when it is waiting for none. */
+  private readonly awaitedMutation: WritableSignal<AwaitedRoleMutation | null> =
+    signal<AwaitedRoleMutation | null>(null);
+
+  /**
+   * The role key already applied to the form.
+   *
+   * Stops a second arrival of the SAME role overwriting what the operator has typed. The store
+   * replaces its selected role on a successful update, so without this the form would be reset
+   * from the server's echo the moment a save succeeded.
+   */
+  private readonly appliedRoleKey: WritableSignal<number | null> = signal<number | null>(null);
 
   /** The last refusal, as an RFC 7807 document, for the shared error banner. */
   private readonly failure: WritableSignal<ProblemDetails | null> = signal<ProblemDetails | null>(
@@ -1020,7 +1081,7 @@ export class RoleFormComponent {
     }),
     iconFile: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(ICON_FILE_MAX_LENGTH)],
+      validators: [Validators.maxLength(ICON_FILE_MAX_LENGTH), containedIconPathValidator],
     }),
   });
 
@@ -1113,11 +1174,18 @@ export class RoleFormComponent {
 
   /** True while either the role or the role-group list is still arriving. */
   protected readonly loading: Signal<boolean> = computed(
-    () => this.loadingRole() || this.roleStore.roleGroupsLoading(),
+    () => this.awaitedRoleKey() !== null || this.roleStore.roleGroupsLoading(),
   );
 
-  /** True while a mutation is in flight; the template disables its commands on this. */
-  protected readonly saving: Signal<boolean> = this.savingRole.asReadonly();
+  /**
+   * True while a mutation issued by THIS screen is in flight; the template disables its
+   * commands on this.
+   *
+   * Derived from the marker rather than from `roleStore.saving()`, so a write started on
+   * another screen cannot disable this form, and so the commands stay disabled until the
+   * outcome bridge has actually reported - not merely until the request returned.
+   */
+  protected readonly saving: Signal<boolean> = computed(() => this.awaitedMutation() !== null);
 
   /** The refusal to render in the shared error banner, or `null`. */
   protected readonly problem: Signal<ProblemDetails | null> = this.failure.asReadonly();
@@ -1228,14 +1296,116 @@ export class RoleFormComponent {
     // role is re-read when the route moves from one role to another — which happens without the
     // component being recreated, because both edit visits resolve to the same route
     // configuration — and is not re-read when anything else in the screen changes.
+    //
+    // ⚠ THE BODY IS `untracked` AND THAT IS LOAD-BEARING, NOT TIDINESS. Everything below the first
+    // line is imperative work that reaches into the store, and a store command reads store state on
+    // its way — clearing the held failure begins by testing whether there is one. Left tracked, this
+    // effect would therefore depend on that failure, and the sequence was demonstrable: a refused
+    // write recorded a failure, this effect re-ran, its role read cleared the failure it had just
+    // reacted to, and the write bridge then found no failure and announced the write as a SUCCESS.
+    // A refusal reported as a success, plus a second role read nobody asked for.
     effect(() => {
       const key = this.roleKey();
-      this.applyMode(key !== null);
-      if (key === null) {
-        this.resetToCreateDefaults();
+
+      untracked(() => {
+        this.applyMode(key !== null);
+
+        if (key === null) {
+          this.resetToCreateDefaults();
+
+          return;
+        }
+
+        this.loadRole(key);
+      });
+    });
+
+    /*
+     * THE READ BRIDGE.
+     *
+     * The completion point the store's `void`-returning read does not provide. It acts only while
+     * this screen is waiting for a read of its own - the marker - and only once that read has
+     * settled, which is what stops a read dispatched by another screen applying a role here or
+     * reporting somebody else's failure.
+     *
+     * The failure is matched on the operation as well, because the store holds ONE failure slot for
+     * every command: a write that failed while a read was outstanding would otherwise be reported
+     * as an unreadable role and bounce the operator off a form they were still filling in.
+     */
+    effect(() => {
+      const awaited: number | null = this.awaitedRoleKey();
+      const loading: boolean = this.roleStore.selectedRoleLoading();
+      const role: Role | null = this.roleStore.selectedRole();
+      const failure: RoleStoreFailure | null = this.roleStore.failure();
+
+      if (awaited === null || loading) {
         return;
       }
-      this.loadRole(key);
+
+      untracked(() => {
+        this.awaitedRoleKey.set(null);
+
+        if (failure !== null && failure.operation === 'loadRole') {
+          // `:L170-L172` treated an unreadable role as an attempt to reach an item outside the
+          // module and bounced to the Security Roles page. A missing role does the same here.
+          if (failure.status === NOT_FOUND) {
+            this.notifications.notify('warning', ROLE_NOT_FOUND_MESSAGE);
+            this.navigateToList();
+
+            return;
+          }
+
+          this.reportFailure(failure, LOAD_FAILED_MESSAGE);
+
+          return;
+        }
+
+        // Compared on identity with a strict equality, never on truthiness: the role table is
+        // seeded `IDENTITY(0, 1)`, so a role key of zero is a real role and a falsy test would
+        // refuse to apply the tenant's first role to the form.
+        if (role === null || role.roleId !== awaited) {
+          return;
+        }
+
+        if (this.appliedRoleKey() === awaited) {
+          return;
+        }
+
+        this.appliedRoleKey.set(awaited);
+        this.applyRole(role);
+      });
+    });
+
+    /*
+     * THE WRITE BRIDGE.
+     *
+     * Announces and navigates ONLY once the write has actually settled, which is the defect the
+     * review recorded: the previous code announced success and left the screen from inside the
+     * subscription's `next`, which is correct, but it also held a second copy of the outcome that
+     * the store knew nothing about. Three conditions decide - the marker proves the write was ours,
+     * the flag falling proves it settled, and the operation-matched failure proves which way.
+     */
+    effect(() => {
+      const awaited: AwaitedRoleMutation | null = this.awaitedMutation();
+      const inFlight: boolean = this.roleStore.saving();
+      const failure: RoleStoreFailure | null = this.roleStore.failure();
+
+      if (awaited === null || inFlight) {
+        return;
+      }
+
+      untracked(() => {
+        this.awaitedMutation.set(null);
+
+        if (failure !== null && failure.operation === awaited) {
+          this.reportFailure(failure, MUTATION_FAILURE_MESSAGE[awaited]);
+
+          return;
+        }
+
+        this.notifications.notify('success', MUTATION_SUCCESS_MESSAGE[awaited]);
+        this.afterMutation();
+      });
     });
 
     // Resolves the role-group selection once BOTH the role and the group list have arrived.
@@ -1418,6 +1588,12 @@ export class RoleFormComponent {
       return ROLE_NAME_REQUIRED_MESSAGE;
     }
 
+    // Reported before the length rule, because a reference can break both and the containment failure is
+    // the one the person must act on: shortening an absolute path does not make it relative.
+    if (errors[ICON_NOT_CONTAINED_ERROR] !== undefined) {
+      return ICON_NOT_CONTAINED_MESSAGE;
+    }
+
     const maxLength: unknown = errors['maxlength'];
     if (typeof maxLength === 'object' && maxLength !== null) {
       const requested: unknown = (maxLength as { requiredLength?: unknown }).requiredLength;
@@ -1497,59 +1673,17 @@ export class RoleFormComponent {
    * @param key The role id, which may legitimately be `0`.
    */
   private loadRole(key: number): void {
-    this.roleRequest?.unsubscribe();
-    this.loadingRole.set(true);
+    // Routed through the store, which owns the request, its handle and its loading flag, and which
+    // supersedes any earlier read of this slice before issuing this one - so moving from one role
+    // to another cannot let the first answer land on the second form. The outcome, including the
+    // not-found bounce `:L170-L172` performed, reaches this screen through the read bridge in the
+    // constructor rather than through a subscription here.
     this.failure.set(null);
-
-    this.roleRequest = this.roleService
-      .getRole(key)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (response) => {
-          if (this.addressChanged(key)) {
-            return;
-          }
-          this.roleRequest = null;
-          this.loadingRole.set(false);
-          this.applyRole(response.data);
-        },
-        error: (error: unknown) => {
-          if (this.addressChanged(key)) {
-            return;
-          }
-          this.roleRequest = null;
-          this.loadingRole.set(false);
-          // `:L170-L172` treated an unreadable role as an attempt to reach an item outside the
-          // module and bounced to the Security Roles page. A missing role does the same here.
-          if (statusOf(error) === NOT_FOUND) {
-            this.notifications.notify('warning', ROLE_NOT_FOUND_MESSAGE);
-            this.navigateToList();
-            return;
-          }
-          this.reportFailure(error, LOAD_FAILED_MESSAGE);
-        },
-      });
+    this.awaitedRoleKey.set(key);
+    this.roleStore.selectRole(key);
   }
 
-  /**
-   * Whether the route has moved to a different role since a read was started.
-   *
-   * The fence is KEYED on the role rather than counted, because the key is the identity: an answer is
-   * adopted when it describes the role now addressed and dropped when it does not, which is the same
-   * test whether the route moved once or several times while the answer was in flight. Cancelling the
-   * superseded read already stops it arriving; this is the second fence, and it is the one that holds
-   * for anything that arrives regardless - a redirect the reporting path performs, or a retry.
-   *
-   * Compared with an exact `!==` on a value that may legitimately be ZERO, since the role table's
-   * identity seeds at zero and a truthiness test would read the first role of every tenant as absent.
-   *
-   * @param key The role the read was issued for.
-   * @returns `true` when the answer must be ignored.
-   */
-  private addressChanged(key: number): boolean {
-    return this.roleKey() !== key;
-  }
-
+  
   /**
    * Populates the form from a loaded role — `EditRoles.ascx.vb:L139-L169`.
    *
@@ -1625,21 +1759,8 @@ export class RoleFormComponent {
    * place that can record it truthfully.
    */
   private createRole(): void {
-    this.savingRole.set(true);
-    this.roleService
-      .createRole(this.toCreateRequest())
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: () => {
-          this.savingRole.set(false);
-          this.notifications.notify('success', ROLE_CREATED_MESSAGE);
-          this.afterMutation();
-        },
-        error: (error: unknown) => {
-          this.savingRole.set(false);
-          this.reportFailure(error, SAVE_FAILED_MESSAGE);
-        },
-      });
+    this.awaitedMutation.set('createRole');
+    this.roleStore.createRole(this.toCreateRequest());
   }
 
   /**
@@ -1654,21 +1775,8 @@ export class RoleFormComponent {
    * @param key The role id being updated, which may legitimately be `0`.
    */
   private updateRole(key: number): void {
-    this.savingRole.set(true);
-    this.roleService
-      .updateRole(key, this.toUpdateRequest())
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: () => {
-          this.savingRole.set(false);
-          this.notifications.notify('success', ROLE_UPDATED_MESSAGE);
-          this.afterMutation();
-        },
-        error: (error: unknown) => {
-          this.savingRole.set(false);
-          this.reportFailure(error, SAVE_FAILED_MESSAGE);
-        },
-      });
+    this.awaitedMutation.set('updateRole');
+    this.roleStore.updateRole(key, this.toUpdateRequest());
   }
 
   /**
@@ -1681,22 +1789,9 @@ export class RoleFormComponent {
    * @param key The role id being deleted, which may legitimately be `0`.
    */
   private deleteRole(key: number): void {
-    this.savingRole.set(true);
     this.failure.set(null);
-    this.roleService
-      .deleteRole(key)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: () => {
-          this.savingRole.set(false);
-          this.notifications.notify('success', ROLE_DELETED_MESSAGE);
-          this.afterMutation();
-        },
-        error: (error: unknown) => {
-          this.savingRole.set(false);
-          this.reportFailure(error, DELETE_FAILED_MESSAGE);
-        },
-      });
+    this.awaitedMutation.set('deleteRole');
+    this.roleStore.deleteRole(key);
   }
 
   /**
@@ -1711,7 +1806,10 @@ export class RoleFormComponent {
    * delete handlers ended with.
    */
   private afterMutation(): void {
-    this.roleStore.loadRoles();
+    // ⚠ NO RE-READ IS ASKED FOR HERE ANY MORE. The store refreshes the listing itself after a
+    // creation and after a deletion, and patches the changed row immutably after an update, so a
+    // read requested here would be a second identical request racing the store's own - and
+    // whichever answered last would decide what the listing showed.
     this.navigateToList();
   }
 
@@ -1897,9 +1995,12 @@ export class RoleFormComponent {
    * @param error Whatever the transport rejected with.
    * @param fallback The wording to use when the document says nothing useful.
    */
-  private reportFailure(error: unknown, fallback: string): void {
-    const problem = problemOf(error);
-    const status = statusOf(error);
+  private reportFailure(failure: RoleStoreFailure, fallback: string): void {
+    // ⚠ THE STATUS IS READ FROM THE STORE'S RECORD, NOT FROM THE DOCUMENT. The two go missing
+    // independently - a transport failure has a status and no document - so deriving one from the
+    // other would collapse the distinction these branches exist to make.
+    const problem: ProblemDetails | null = failure.problem;
+    const status: number | null = failure.status;
 
     this.failure.set(problem);
 
@@ -1956,4 +2057,3 @@ export class RoleFormComponent {
     }
   }
 }
-

@@ -59,33 +59,44 @@
  * form — so {@link RoleAssignmentComponent.requestRemoval} is public and may be reached
  * from anywhere in the template.
  *
- * ## Why this screen reads the membership listing itself
+ * ## Every role read and every role write goes through the store
  *
- * The shared role store exposes an assignment listing, but its page coordinate is private
- * with only a page-INDEX setter, so a screen that also has to prefill from one account's
- * membership cannot drive it. This component therefore reads the listing through the same
- * interface the store itself uses and holds ONE page of it in its own signals. No URL is
- * built here, no HTTP client is touched here, and no header is set here.
+ * The role, the membership listing and both membership writes are all owned by
+ * {@link RoleStore}. This component holds NO copy of any of them: the role and the rows are
+ * derived from the store's slices, and the two writes are commands issued to it.
  *
- * ## Why the grid is paged even though the legacy grid was not
+ * That is a correction. This screen previously called the role transport directly while the
+ * store held its own copy of the same role and the same memberships, so the two could
+ * disagree — a removal accepted here left a sibling screen's listing showing the row, and a
+ * role renamed on the editor left this heading showing the old name. One owner removes the
+ * possibility rather than papering over it.
  *
- * MIGRATION: the legacy grid was UNPAGED — `securityroles.ascx:L56` declares no
- * `AllowPaging`, no pager style and `enableviewstate="false"` — and the first port
- * reproduced that literally: it asked for the largest page the contract allows and then
- * followed every further page the server reported, concurrently, holding the union. That
- * is not a faithful reproduction of an unpaged grid, it is an unbounded read: the listing
- * behind it counts and windows in SQL per request, so following N pages costs N windowed
- * queries whose retained result grows without limit, and a mis-reported page count turned
- * one screen into a fan-out. One ACTIVE page is rendered instead, with the shared pager
- * making the rest reachable, and the page a read answers replaces the one before it rather
- * than accumulating. Every membership remains reachable, so no Delete command goes out of
- * reach; what changes is that reaching the eleventh one takes a pager click, which is the
- * affordance the rest of this application already uses for exactly this situation.
+ * The listing is read at the COMPLETE scope, `RoleStore.loadAllAssignments`, because the
+ * legacy grid was unpaged — `securityroles.ascx:L56` declares no `AllowPaging`, no pager
+ * style and `enableviewstate="false"` — so a first page would put an eleventh member's
+ * Delete command out of reach. The store follows every page the server reports and
+ * remembers that the caller asked for the whole set, so the re-read it performs after each
+ * write reproduces the whole set rather than collapsing it to a page.
  *
- * The two places that needed the WHOLE set — the action's label and the date prefill — do
- * not read the visible page. They ask the server about the one account that was chosen, so
- * their answer is the same whichever page happens to be on screen; see
- * {@link RoleAssignmentComponent.selectUser}.
+ * The one transport this screen still calls directly is the ACCOUNT LOOKUP behind the search
+ * field, `UserService.list`. That is deliberate and is not the defect above: the matches it
+ * returns are a transient candidate list held nowhere else, owned by nothing else and
+ * discarded when the field is cleared, so there is no second copy to diverge from. Routing it
+ * through the account store would instead make this screen mutate that store's shared search
+ * term and page coordinate, which would move a sibling account listing under its own
+ * operator — trading a copy that cannot diverge for state that genuinely can.
+ *
+ * ## How an outcome is observed
+ *
+ * A store command reports nothing to its caller; it settles a flag and, on failure, records a
+ * document. Every outcome on this screen is therefore observed by an effect that waits for
+ * the flag to fall and matches the recorded failure's OPERATION against the command that was
+ * issued. The operation match is load-bearing: the store re-reads the listing after a
+ * successful write, so without it that re-read's failure would be reported as the write's.
+ *
+ * A message that must appear AFTER the listing has refreshed — the removal refusal, whose
+ * order `SecurityRoles.ascx.vb:L579-L584` fixes — is deferred and raised once the read
+ * settles, rather than being raised beside the write.
  */
 
 import {
@@ -95,13 +106,17 @@ import {
   Input,
   TemplateRef,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
   viewChild,
   type Signal,
   type WritableSignal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+
+import type { Subscription } from 'rxjs';
 import {
   FormControl,
   FormGroup,
@@ -110,12 +125,8 @@ import {
   type ValidationErrors,
 } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import type { Subscription } from 'rxjs';
 
-import {
-  DEFAULT_PAGE_SIZE,
-  MAX_PAGE_SIZE,
-} from '../../../core/models/paged-result.model';
+import { DEFAULT_PAGE_SIZE, toPagedResult } from '../../../core/models/paged-result.model';
 import { isProblemDetails, type ProblemDetails } from '../../../core/models/problem-details.model';
 import type { Role, RoleAssignmentRequest, UserRole } from '../../../core/models/role.model';
 import type { UserListItem, UserListQuery } from '../../../core/models/user.model';
@@ -123,15 +134,19 @@ import {
   NotificationService,
   type NotificationSeverity,
 } from '../../../core/services/notification.service';
-import { RoleService } from '../../../core/services/role.service';
 import { UserService } from '../../../core/services/user.service';
 import {
+  RoleStore,
+  type RoleStoreFailure,
+  type RoleStoreOperation,
+} from '../../../core/state/role.store';
+import {
   conflictMessage,
-  failureCode,
   fieldErrorMessages,
   isValidationProblemDetails,
   summarizeProblem,
 } from '../../../core/utils/form-errors.util';
+import { parseRouteId } from '../../../core/utils/route-id.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import {
   DataTableComponent,
@@ -141,7 +156,6 @@ import {
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
-import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 
@@ -207,11 +221,11 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
    * The sentence stating why the notification choice cannot be made.
    *
    * MIGRATION: `SecurityRoles.ascx.vb:L542` and `:L569` passed this choice to a routine that mailed the
-   * account holder, and the assignment contract still carries the member - so the member is transmitted
+   * account holder, and the assignment contract still carries the member — so the member is transmitted
    * rather than dropped. What is NOT carried is the mail subsystem, which this migration excludes
    * wholesale, so no notification is sent for any value of the flag.
    *
-   * SAID HERE, BEFORE THE DECISION, RATHER THAN NOT AT ALL. The control used to arrive TICKED and its
+   * ⚠ SAID HERE, BEFORE THE DECISION, RATHER THAN NOT AT ALL. The control used to arrive TICKED and its
    * true value was transmitted, so the operator asked for a notification, received a success, and had
    * every reason to believe one had gone out. Stating the gap beside the control is the honest
    * alternative, and it is the same treatment the account editor's notify control receives.
@@ -470,31 +484,14 @@ const USER_LOOKUP_PAGE_SIZE = DEFAULT_PAGE_SIZE;
  */
 const PROTECTED_ASSIGNMENT_CODE = 'role_assignment.protected';
 
-/** The first page of any listing, counted from nought as the paging contract counts. */
-const FIRST_PAGE_INDEX = 0;
-
 /**
- * How many memberships one page of the grid holds.
+ * The membership write this screen is waiting on, named by the store operation that reports it.
  *
- * The application's default rather than a size chosen here, so this grid pages on the same
- * coordinate as every other listing in the workspace and an operator meets one pager
- * behaviour throughout. Exactly ONE page is held at a time; see the note on the class.
+ * Held rather than inferred from the store's saving flag, because that flag is raised by EVERY
+ * role write in the application — a sibling screen's role rename would otherwise look to this
+ * screen like its own membership write settling.
  */
-const MEMBERSHIP_PAGE_SIZE = DEFAULT_PAGE_SIZE;
-
-/**
- * The page size of the single-account membership probe.
- *
- * The probe filters the role's memberships by the chosen account's login name, which the
- * listing matches as a case-insensitive substring of either the login name or the display
- * name, so a handful of rows can come back for a name that is a fragment of another. The
- * largest page the contract allows is asked for so that the one row being looked for cannot
- * fall off the end of the answer in any realistic tenant; when the server reports that even
- * that was truncated, the probe reports "not known" rather than "no membership", which
- * {@link RoleAssignmentComponent.applyProbeAnswer} treats as the empty prefill the legacy
- * screen showed for an account it had no row for.
- */
-const MEMBERSHIP_PROBE_PAGE_SIZE = MAX_PAGE_SIZE;
+type AwaitedAssignmentWrite = Extract<RoleStoreOperation, 'assignUser' | 'removeAssignment'>;
 
 
 /**
@@ -676,18 +673,12 @@ export function dateOrderValidator(group: AbstractControl): ValidationErrors | n
  * @returns The identifier, or `null` when the route carried nothing usable.
  */
 export function parseRouteIdentifier(value: number | string | null | undefined): number | null {
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? value : null;
-  }
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const text = value.trim();
-  if (/^[+-]?\d+$/.test(text) === false) {
-    return null;
-  }
-  const parsed = Number.parseInt(text, 10);
-  return Number.isNaN(parsed) ? null : parsed;
+  // The parse is delegated to the one parser in the workspace that performs it: it applies
+  // the same shape test this function applied, plus the safe-integer ceiling and the API's
+  // 32-bit range, which this function did not. `null` for absence is already this screen's
+  // representation, so nothing is adapted — and on this screen a missing parameter is
+  // `null` while every supplied number, minus one and zero included, is a real identifier.
+  return parseRouteId(value);
 }
 
 /**
@@ -743,7 +734,6 @@ function pairingKey(roleId: number, userId: number): string {
     FormFieldComponent,
     SearchInputComponent,
     DataTableComponent,
-    PaginationComponent,
     ConfirmDialogComponent,
     DateDisplayPipe,
   ],
@@ -770,23 +760,65 @@ export class RoleAssignmentComponent {
   // MIGRATION: 13. 'Security Role' column omitted because role-centric mode hid it; :L245.
   // MIGRATION: 14. no required validator on the account field; :L520-L521 was a guard clause.
   // MIGRATION: 15. silent blank on a failed lookup -> visible no-matches state; :L476-L488.
-  // MIGRATION: 16. unpaged grid -> one page plus the shared pager; :L56; see the class note.
-  // MIGRATION: 17. whole-set scans for the label and the prefill -> one keyed server probe;
-  // MIGRATION:     :L253, :L273-L303, :L656-L658; see selectUser and probeMembership.
 
-  private readonly roleService = inject(RoleService);
+  private readonly store = inject(RoleStore);
   private readonly userService = inject(UserService);
   private readonly notifications = inject(NotificationService);
   private readonly destroyRef = inject(DestroyRef);
 
   private readonly roleIdSignal: WritableSignal<number | null> = signal<number | null>(null);
-  private readonly roleSignal: WritableSignal<Role | null> = signal<Role | null>(null);
-  private readonly roleLoadingSignal: WritableSignal<boolean> = signal(false);
-  private readonly assignmentsSignal: WritableSignal<readonly UserRole[]> = signal<
-    readonly UserRole[]
-  >([]);
-  private readonly assignmentsLoadingSignal: WritableSignal<boolean> = signal(false);
-  private readonly savingSignal: WritableSignal<boolean> = signal(false);
+
+  /**
+   * The role whose read this screen is waiting on, or `null` when none is outstanding.
+   *
+   * Absence is `null` and nothing else: `Roles.RoleID` is seeded `IDENTITY(0, 1)`, so a role
+   * key of zero is the portal's first role and `0` cannot mean "not waiting".
+   */
+  private readonly awaitedRoleKey: WritableSignal<number | null> = signal<number | null>(null);
+
+  /**
+   * The account lookup in flight, or `null` when none is.
+   *
+   * ⚠ A HANDLE, NOT MERELY A TEARDOWN. `takeUntilDestroyed` ends a lookup when the screen goes away,
+   * which is a different question from ending the one a newer term replaces. Two lookups outstanding
+   * at once answer in whichever order the network chooses, so without this the answer to `a` can land
+   * after the answer to `ann` and leave the wider match set on screen under the narrower term.
+   */
+  private userLookupRequest: Subscription | null = null;
+
+  /** The membership write this screen is waiting on, or `null` when none is outstanding. */
+  private readonly awaitedWrite: WritableSignal<AwaitedAssignmentWrite | null> =
+    signal<AwaitedAssignmentWrite | null>(null);
+
+  /**
+   * The membership an outstanding removal addressed, so a refusal can be attributed to it.
+   *
+   * Needed because the store command reports the failure without echoing what was addressed,
+   * and a refused pairing has to be remembered against the row that was refused.
+   */
+  private readonly outstandingRemoval: WritableSignal<UserRole | null> = signal<UserRole | null>(
+    null,
+  );
+
+  /**
+   * A message to raise once the membership listing has finished refreshing, or `null`.
+   *
+   * The order is load-bearing rather than cosmetic: `SecurityRoles.ascx.vb:L579-L584` rebound
+   * the grid unconditionally and raised the refusal only afterwards, so the operator read the
+   * message against a refreshed grid.
+   */
+  private readonly deferredNotice: WritableSignal<DeferredNotice | null> =
+    signal<DeferredNotice | null>(null);
+
+  /**
+   * Whether a membership read is in flight that this screen has not yet reported on.
+   *
+   * A latch rather than a mirror. The listing flag falls once per read, and the deferred
+   * message must be raised on that fall exactly once — including for the re-read the store
+   * performs after a write, which this screen did not dispatch itself.
+   */
+  private readonly assignmentsSettling: WritableSignal<boolean> = signal(false);
+
   private readonly problemSignal: WritableSignal<ProblemDetails | null> =
     signal<ProblemDetails | null>(null);
   private readonly userMatchesSignal: WritableSignal<readonly UserListItem[]> = signal<
@@ -811,59 +843,6 @@ export class RoleAssignmentComponent {
   private readonly registeredRoleIdSignal: WritableSignal<number | null> = signal<number | null>(
     null,
   );
-
-  /** The page of memberships on screen, counted from nought. */
-  private readonly pageIndexSignal: WritableSignal<number> = signal(FIRST_PAGE_INDEX);
-
-  /** How many memberships the role has in total, as the last read reported it. */
-  private readonly totalCountSignal: WritableSignal<number> = signal(0);
-
-  /**
-   * The chosen account's existing membership of this role, as the probe answered.
-   *
-   * `null` means "no membership is known", which covers three cases the screen treats
-   * identically because the legacy screen did: no account is chosen, the account holds no
-   * membership, and the probe could not settle the question. All three show empty bounds and
-   * the 'Add User' label — the state the legacy grid showed when no row matched.
-   */
-  private readonly selectedMembershipSignal: WritableSignal<UserRole | null> =
-    signal<UserRole | null>(null);
-
-  /**
-   * The in-flight read of each slice, held so a NEW read can cancel the one it replaces.
-   *
-   * Destruction-time cleanup alone is not enough: within one mounted screen the addressed
-   * role, the page, the search term and the chosen account all change while a read is in
-   * flight, and an HTTP answer that arrives after its request stopped being the current one
-   * would overwrite newer state with older. One handle per slice, unsubscribed before it is
-   * replaced, makes that impossible — unsubscribing a request observable both abandons the
-   * exchange and detaches this observer, so a late answer reaches nothing.
-   *
-   * A read is still piped through {@link takeUntilDestroyed} as well, so nothing survives
-   * the screen itself; these handles govern replacement WITHIN its lifetime.
-   */
-  private roleRequest: Subscription | null = null;
-
-  /** @see roleRequest */
-  private assignmentsRequest: Subscription | null = null;
-
-  /** @see roleRequest */
-  private userLookupRequest: Subscription | null = null;
-
-  /** @see roleRequest */
-  private membershipProbeRequest: Subscription | null = null;
-
-  /**
-   * Which addressed role the screen's state belongs to.
-   *
-   * A counter rather than a flag, and advanced by {@link resetForRole}, so an answer can be
-   * matched against the role it was asked for instead of merely against "some role is
-   * addressed". Unsubscribing already stops a superseded read from landing; this is the
-   * second fence, and it is the one that holds if a read is ever composed in a way that
-   * escapes its handle — a deferred callback, a retry, or a stream that completes
-   * synchronously before its handle has been assigned.
-   */
-  private roleGeneration = 0;
 
   /**
    * The screen's typed form.
@@ -892,10 +871,10 @@ export class RoleAssignmentComponent {
         nonNullable: true,
         validators: [calendarDateValidator],
       }),
-      // UNTICKED AND DISABLED, departing from the measured initial state deliberately. The
-      // contract's member is still transmitted - a disabled control reports its value like any
-      // other - but it now carries FALSE, which is the truthful request: nothing is asking for a
-      // notification, because nothing can send one. See notifyHelp above.
+      // ⚠ UNTICKED AND DISABLED, DEPARTING FROM THE MEASURED INITIAL STATE DELIBERATELY. The contract's
+      // member is still transmitted — a disabled control reports its value like any other — but it now
+      // carries FALSE, which is the truthful request: nothing is asking for a notification, because
+      // nothing can send one. See the help wording above.
       notify: new FormControl<boolean>({ value: false, disabled: true }, { nonNullable: true }),
     },
     { validators: [dateOrderValidator] },
@@ -907,46 +886,69 @@ export class RoleAssignmentComponent {
   /** The role addressed by the route, or `null` when the route carried nothing usable. */
   public readonly resolvedRoleId: Signal<number | null> = this.roleIdSignal.asReadonly();
 
-  /** The addressed role once it has been fetched, used for the heading. */
-  public readonly role: Signal<Role | null> = this.roleSignal.asReadonly();
+  /**
+   * The addressed role once the store holds it, used for the heading.
+   *
+   * Derived from the store's selected role and GATED ON IDENTITY, so a role another screen
+   * selected can never appear in this heading. The gate also makes the reset on a change of
+   * address automatic: the moment the addressed key changes, the previously held role stops
+   * matching and this reads `null` without anything being cleared.
+   */
+  public readonly role: Signal<Role | null> = computed(() => {
+    const addressed = this.roleIdSignal();
+    const selected = this.store.selectedRole();
+
+    if (addressed === null || selected === null) {
+      return null;
+    }
+
+    return selected.roleId === addressed ? selected : null;
+  });
 
   /** Whether the addressed role is still being fetched. */
-  public readonly roleLoading: Signal<boolean> = this.roleLoadingSignal.asReadonly();
-
-  /** The page of memberships on screen. Exactly one page is held; the pager reaches the rest. */
-  public readonly assignments: Signal<readonly UserRole[]> = this.assignmentsSignal.asReadonly();
-
-  /** Whether the membership listing is in flight. */
-  public readonly assignmentsLoading: Signal<boolean> =
-    this.assignmentsLoadingSignal.asReadonly();
-
-  /** The page on screen, counted from nought, for the shared pager's `page` input. */
-  public readonly pageIndex: Signal<number> = this.pageIndexSignal.asReadonly();
-
-  /** The page size in effect, for the shared pager's `pageSize` input. */
-  public readonly pageSize: Signal<number> = signal(MEMBERSHIP_PAGE_SIZE).asReadonly();
-
-  /** How many memberships the role has, for the shared pager's `totalCount` input. */
-  public readonly totalCount: Signal<number> = this.totalCountSignal.asReadonly();
+  public readonly roleLoading: Signal<boolean> = computed(() => this.awaitedRoleKey() !== null);
 
   /**
-   * Whether the pager has anything to offer.
+   * Every membership of the addressed role, unpaged.
    *
-   * The same predicate the rest of the workspace draws its pager on — more memberships exist
-   * than fit on one page — so a role with ten or fewer members renders exactly what the
-   * unpaged legacy grid rendered, with no pager in sight. This says whether the control has
-   * work to do; whether it is DRAWN is the template's decision and the control's own.
+   * Gated on identity for the same reason as {@link role}: the store's assignment slice is
+   * keyed by the role it was read for, and a slice read for another role is not this screen's
+   * grid.
    */
-  public readonly pagerRequired: Signal<boolean> = computed(
-    () => MEMBERSHIP_PAGE_SIZE < this.totalCountSignal(),
-  );
+  public readonly assignments: Signal<readonly UserRole[]> = computed(() => {
+    const addressed = this.roleIdSignal();
 
-  /** The chosen account's existing membership of this role, or `null` when none is known. */
-  public readonly selectedMembership: Signal<UserRole | null> =
-    this.selectedMembershipSignal.asReadonly();
+    if (addressed === null || this.store.assignmentsRoleId() !== addressed) {
+      return [];
+    }
 
-  /** Whether a write is in flight, so the action can be held. */
-  public readonly saving: Signal<boolean> = this.savingSignal.asReadonly();
+    return this.store.assignmentItems();
+  });
+
+  /**
+   * Whether the membership listing is in flight.
+   *
+   * Read from the store rather than latched here, so the re-read the store performs after a
+   * write also turns the spinner — without it the rows would change under the operator with no
+   * indication that anything was happening.
+   */
+  public readonly assignmentsLoading: Signal<boolean> = computed(() => {
+    const addressed = this.roleIdSignal();
+
+    if (addressed === null || this.store.assignmentsRoleId() !== addressed) {
+      return false;
+    }
+
+    return this.store.assignmentsLoading();
+  });
+
+  /**
+   * Whether a membership write of this screen's is in flight, so the action can be held.
+   *
+   * Deliberately NOT the store's saving flag, which every role write in the application
+   * raises. See {@link AwaitedAssignmentWrite}.
+   */
+  public readonly saving: Signal<boolean> = computed(() => this.awaitedWrite() !== null);
 
   /** The last failure as a problem document, for the shared banner's `problem` input. */
   public readonly problem: Signal<ProblemDetails | null> = this.problemSignal.asReadonly();
@@ -998,7 +1000,7 @@ export class RoleAssignmentComponent {
    * is substituted here.
    */
   public readonly title: Signal<string> = computed(() => {
-    const current = this.roleSignal();
+    const current = this.role();
     if (current === null) {
       return ROLE_ASSIGNMENT_TEXT.titleFallback;
     }
@@ -1018,7 +1020,7 @@ export class RoleAssignmentComponent {
     return (
       state.userId !== null &&
       state.valid &&
-      this.savingSignal() === false &&
+      this.saving() === false &&
       this.roleIdSignal() !== null
     );
   });
@@ -1031,22 +1033,14 @@ export class RoleAssignmentComponent {
    * `SecurityRoles.ascx.vb:L650` tested the role identifier against the null sentinel, which
    * is false here, so `:L651-L653` was dead code on this screen; `:L656` tested the ACCOUNT
    * identifier, which is true here, and `:L657-L658` is the branch that ran — it relabelled
-   * the action when a grid row's account matched the chosen one.
-   *
-   * MIGRATION: the fact is read from the SERVER'S answer about the chosen account rather than
-   * by scanning the rendered rows. The legacy grid held every membership, so "a rendered row
-   * matches" and "the account holds this role" were the same statement there; with one page
-   * rendered they are not, and scanning the page would relabel the action according to which
-   * page happens to be on screen. The probe answers the question the legacy test was actually
-   * asking, so the label is right on page one and on page nine alike.
+   * the action when a grid row's account matched the chosen one. That is reproduced exactly.
    */
   public readonly actionLabel: Signal<string> = computed(() => {
     const chosen = this.formStateSignal().userId;
     if (chosen === null) {
       return ROLE_ASSIGNMENT_TEXT.addUser;
     }
-    const membership = this.selectedMembershipSignal();
-    const holdsRole = membership !== null && membership.userId === chosen;
+    const holdsRole = this.assignments().some((row) => row.userId === chosen);
     return holdsRole ? ROLE_ASSIGNMENT_TEXT.updateUserRole : ROLE_ASSIGNMENT_TEXT.addUser;
   });
 
@@ -1293,6 +1287,115 @@ export class RoleAssignmentComponent {
     this.form.events.pipe(takeUntilDestroyed()).subscribe(() => {
       this.formStateSignal.set(this.readFormState());
     });
+
+    // ROLE READ BRIDGE. The store reports a read by settling its flag, so the outcome is
+    // observed rather than returned: once the flag falls with a read of ours outstanding, a
+    // failure recorded AGAINST THAT OPERATION is reported and the marker is released. The
+    // operation match matters because the store's flag is shared with every screen that
+    // selects a role.
+    //
+    // Nothing is copied out on success. The heading reads the store's selected role through an
+    // identity-gated projection, so the only work left here is releasing the marker.
+    effect(() => {
+      const awaited = this.awaitedRoleKey();
+      const inFlight = this.store.selectedRoleLoading();
+      const failure = this.store.failure();
+
+      if (awaited === null || inFlight === true) {
+        return;
+      }
+
+      untracked(() => {
+        this.awaitedRoleKey.set(null);
+
+        if (failure !== null && failure.operation === 'loadRole') {
+          this.raise(this.failureNoticeFor(failure));
+        }
+      });
+    });
+
+    // MEMBERSHIP READ BRIDGE. Raises the deferred message on the fall of the listing flag, and
+    // reports a listing failure alongside it — the order the legacy handler fixed
+    // (`SecurityRoles.ascx.vb:L579-L584`) and the pairing its error path used, which raised the
+    // deferred message and the read failure both.
+    //
+    // The latch is what makes this fire exactly once per read, including for the re-read the
+    // store performs after a write, which this screen never dispatched and so cannot mark.
+    effect(() => {
+      const loading = this.assignmentsLoading();
+      const failure = this.store.failure();
+
+      untracked(() => {
+        if (loading === true) {
+          this.assignmentsSettling.set(true);
+          return;
+        }
+
+        if (this.assignmentsSettling() === false) {
+          return;
+        }
+
+        this.assignmentsSettling.set(false);
+        const notice = this.deferredNotice();
+        this.deferredNotice.set(null);
+        this.raise(notice);
+
+        if (failure !== null && failure.operation === 'loadAssignments') {
+          this.raise(this.failureNoticeFor(failure));
+        }
+      });
+    });
+
+    // MEMBERSHIP WRITE BRIDGE. A write is reported the same way: the marker proves the write was
+    // ours, the flag falling proves it settled, and the operation-matched failure proves which
+    // way it went.
+    //
+    // Success announces NOTHING and re-reads nothing. The legacy handler was silent on both
+    // writes — `SecurityRoles.ascx.vb:L546` rebound the grid and said nothing — and the store
+    // performs that re-read itself, so a second one here would race the first.
+    //
+    // A refusal is the ordered path: the pairing is remembered against the row that was
+    // refused, the listing is re-read, and the message is raised only once that read settles.
+    effect(() => {
+      const awaited = this.awaitedWrite();
+      const inFlight = this.store.saving();
+      const failure = this.store.failure();
+
+      if (awaited === null || inFlight === true) {
+        return;
+      }
+
+      untracked(() => {
+        this.awaitedWrite.set(null);
+        const target = this.outstandingRemoval();
+        this.outstandingRemoval.set(null);
+
+        if (failure === null || failure.operation !== awaited) {
+          return;
+        }
+
+        if (awaited === 'assignUser') {
+          this.raise(this.failureNoticeFor(failure));
+          return;
+        }
+
+        this.problemSignal.set(failure.problem);
+
+        if (failure.conflict === PROTECTED_ASSIGNMENT_CODE && target !== null) {
+          this.markProtectedPairing(target.roleId, target.userId);
+        }
+
+        const roleId = this.roleIdSignal();
+        const notice = this.removalNoticeFor(failure);
+
+        if (roleId === null) {
+          this.raise(notice);
+          return;
+        }
+
+        this.loadAssignments(roleId, notice);
+      });
+    });
   }
 
 
@@ -1351,18 +1454,18 @@ export class RoleAssignmentComponent {
    * The term is sent RAW. The listing matches on a prefix, so appending a wildcard would
    * search for the wildcard itself.
    *
-   * Each lookup CANCELS the one before it. The operator types, so terms supersede one another
-   * quickly and the answers need not come back in the order they were asked for; without the
-   * cancellation a slow answer to 'a' could land after the answer to 'ann' and put the wider
-   * match list back under the narrower term.
-   *
    * @param term The name fragment the operator typed.
    */
   public onUserSearch(term: string): void {
     const query = term.trim();
+    this.userLookupTermSignal.set(query);
+
+    // The lookup this term replaces is ABANDONED before the next one starts, and also when the box
+    // is emptied - a lookup nobody is waiting for is still a request the tenant pays for, and its
+    // answer would otherwise repopulate a list the operator has just cleared.
     this.userLookupRequest?.unsubscribe();
     this.userLookupRequest = null;
-    this.userLookupTermSignal.set(query);
+
     if (query.length === 0) {
       this.userLookupLoadingSignal.set(false);
       this.userMatchesSignal.set([]);
@@ -1370,31 +1473,21 @@ export class RoleAssignmentComponent {
     }
     this.userLookupLoadingSignal.set(true);
     const request: UserListQuery = {
-      pageIndex: FIRST_PAGE_INDEX,
+      pageIndex: 0,
       pageSize: USER_LOOKUP_PAGE_SIZE,
       userName: query,
     };
-    const generation = this.roleGeneration;
     this.userLookupRequest = this.userService
       .list(request)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (page): void => {
-          if (this.roleGeneration !== generation) {
-            return;
-          }
-          this.userLookupRequest = null;
           this.userLookupLoadingSignal.set(false);
-          // The service decodes its own answer against the published contract, so the page
-          // arrives already framed AND record-checked. Re-framing it here would erase the
-          // record type and re-do a validation the service boundary owns.
+          // `UserService.list` already answers a decoded page, so the envelope needs no
+          // second unwrapping here.
           this.userMatchesSignal.set(page.items);
         },
         error: (error: unknown): void => {
-          if (this.roleGeneration !== generation) {
-            return;
-          }
-          this.userLookupRequest = null;
           this.userLookupLoadingSignal.set(false);
           this.userMatchesSignal.set([]);
           this.raise(this.failureNotice(error));
@@ -1409,15 +1502,6 @@ export class RoleAssignmentComponent {
    * branch is reproduced. Where a membership already exists the legacy screen showed its two
    * bounds, skipping either one the null test reported as unset (`:L281-L286`); that is done
    * here, from the values the membership contract publishes.
-   *
-   * MIGRATION: the membership is asked of the SERVER rather than found among the rendered
-   * rows. The legacy screen looked it up in a grid that held every membership
-   * (`:L253` bound the account's whole role set), so a lookup over what was on screen was a
-   * lookup over everything; with one page on screen it no longer is, and an account whose
-   * membership sits on another page would have been prefilled with nothing. One keyed read
-   * restores the legacy answer without restoring the unbounded set that used to back it. The
-   * bounds are cleared FIRST, so the previous account's dates never sit under a new name
-   * while the read is in flight.
    *
    * MIGRATION: the second branch — the DERIVED DEFAULT EXPIRY at `:L290-L296` — is
    * deliberately NOT reproduced, and this is a reduction rather than an omission. That branch
@@ -1436,21 +1520,18 @@ export class RoleAssignmentComponent {
   public selectUser(user: UserListItem): void {
     this.selectedUserSignal.set(user);
     this.form.controls.userId.setValue(user.userId);
-    this.applyProbeAnswer(null, true);
-    const roleId = this.roleIdSignal();
-    if (roleId === null) {
-      return;
-    }
-    this.probeMembership(roleId, user, true);
+    this.applyPrefill(user.userId);
   }
 
   /** Forgets the chosen account and clears the bounds that were prefilled from it. */
   public clearSelectedUser(): void {
-    this.membershipProbeRequest?.unsubscribe();
-    this.membershipProbeRequest = null;
     this.selectedUserSignal.set(null);
     this.form.controls.userId.setValue(null);
-    this.applyProbeAnswer(null, true);
+    this.form.controls.effectiveDate.setValue(NO_DATE);
+    this.form.controls.expiryDate.setValue(NO_DATE);
+    this.form.controls.effectiveDate.markAsUntouched();
+    this.form.controls.expiryDate.markAsUntouched();
+    this.formStateSignal.set(this.readFormState());
   }
 
   /**
@@ -1474,7 +1555,7 @@ export class RoleAssignmentComponent {
    * difference, recorded rather than absorbed.
    */
   public submit(): void {
-    if (this.savingSignal() === true) {
+    if (this.saving() === true) {
       return;
     }
     if (this.form.invalid === true) {
@@ -1488,21 +1569,8 @@ export class RoleAssignmentComponent {
       return;
     }
     this.problemSignal.set(null);
-    this.savingSignal.set(true);
-    this.roleService
-      .assignUser(roleId, this.buildAssignmentRequest(roleId, userId))
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (): void => {
-          this.savingSignal.set(false);
-          this.loadAssignments(roleId, null);
-          this.reprobeSelectedMembership();
-        },
-        error: (error: unknown): void => {
-          this.savingSignal.set(false);
-          this.raise(this.failureNotice(error));
-        },
-      });
+    this.awaitedWrite.set('assignUser');
+    this.store.assignUser(roleId, this.buildAssignmentRequest(roleId, userId));
   }
 
   /**
@@ -1552,7 +1620,7 @@ export class RoleAssignmentComponent {
   public confirmRemoval(): void {
     const target = this.pendingRemovalSignal();
     this.pendingRemovalSignal.set(null);
-    if (target === null || this.savingSignal() === true) {
+    if (target === null || this.saving() === true) {
       return;
     }
     const roleId = this.roleIdSignal();
@@ -1560,27 +1628,9 @@ export class RoleAssignmentComponent {
       return;
     }
     this.problemSignal.set(null);
-    this.savingSignal.set(true);
-    this.roleService
-      .removeUser(roleId, target.userId)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (): void => {
-          this.savingSignal.set(false);
-          this.loadAssignments(roleId, null);
-          this.reprobeSelectedMembership();
-        },
-        error: (error: unknown): void => {
-          this.savingSignal.set(false);
-          const problem = readProblemDetails(error);
-          this.problemSignal.set(problem);
-          const code = failureCode(problem);
-          if (code === PROTECTED_ASSIGNMENT_CODE) {
-            this.markProtectedPairing(target.roleId, target.userId);
-          }
-          this.loadAssignments(roleId, this.removalNotice(problem, code));
-        },
-      });
+    this.outstandingRemoval.set(target);
+    this.awaitedWrite.set('removeAssignment');
+    this.store.removeAssignment(roleId, target.userId);
   }
 
   /** Clears the banner once the operator has read it. */
@@ -1596,26 +1646,6 @@ export class RoleAssignmentComponent {
     }
     this.problemSignal.set(null);
     this.loadRole(roleId);
-    this.loadAssignments(roleId, null);
-    this.reprobeSelectedMembership();
-  }
-
-  /**
-   * Moves the grid to another page of memberships.
-   *
-   * The index is passed through untouched: the shared pager reports a ZERO-BASED index and the
-   * listing takes one, so there is no base to convert between. The read that follows cancels
-   * whichever page read was in flight, so clicking through the pager cannot leave an earlier
-   * page's answer to land on top of a later one.
-   *
-   * @param pageIndex The page to read, counted from nought.
-   */
-  public onPageChange(pageIndex: number): void {
-    const roleId = this.roleIdSignal();
-    if (roleId === null || pageIndex === this.pageIndexSignal()) {
-      return;
-    }
-    this.pageIndexSignal.set(pageIndex);
     this.loadAssignments(roleId, null);
   }
 
@@ -1657,241 +1687,66 @@ export class RoleAssignmentComponent {
   /**
    * Returns the screen to its initial state, which a change of addressed role requires.
    *
-   * Every in-flight read is CANCELLED first and the generation is advanced, so nothing asked
-   * for on behalf of the previous role can repopulate the state that was just cleared. Both
-   * matter for the same reason: this method runs from the route-input setter, so a role change
-   * arrives while the previous role's role read, page read, account lookup and membership
-   * probe may all still be outstanding.
+   * The role and the rows are NOT cleared here and do not need to be: both are derived from
+   * the store gated on the addressed key, so they empty themselves the moment the key changes.
+   * What is cleared is everything this screen owns outright — the outstanding markers, the
+   * banner, the lookup, the confirmation and the form.
    */
   private resetForRole(): void {
-    this.cancelReads();
-    this.roleGeneration += 1;
-    this.roleSignal.set(null);
-    this.roleLoadingSignal.set(false);
-    this.assignmentsSignal.set([]);
-    this.assignmentsLoadingSignal.set(false);
-    this.pageIndexSignal.set(FIRST_PAGE_INDEX);
-    this.totalCountSignal.set(0);
-    this.savingSignal.set(false);
+    this.awaitedRoleKey.set(null);
+    this.awaitedWrite.set(null);
+    this.outstandingRemoval.set(null);
+    this.deferredNotice.set(null);
+    this.assignmentsSettling.set(false);
     this.problemSignal.set(null);
     this.userMatchesSignal.set([]);
     this.userLookupLoadingSignal.set(false);
     this.userLookupTermSignal.set('');
     this.selectedUserSignal.set(null);
-    this.selectedMembershipSignal.set(null);
     this.pendingRemovalSignal.set(null);
     this.protectedPairingsSignal.set(new Set<string>());
     this.form.reset();
     this.formStateSignal.set(this.readFormState());
   }
 
-  /** Abandons every read this screen has outstanding, and forgets their handles. */
-  private cancelReads(): void {
-    this.roleRequest?.unsubscribe();
-    this.roleRequest = null;
-    this.assignmentsRequest?.unsubscribe();
-    this.assignmentsRequest = null;
-    this.userLookupRequest?.unsubscribe();
-    this.userLookupRequest = null;
-    this.membershipProbeRequest?.unsubscribe();
-    this.membershipProbeRequest = null;
-  }
-
   /**
-   * Fetches the addressed role, which supplies the heading's name.
+   * Asks the store for the addressed role, which supplies the heading's name.
    *
-   * Cancels whichever role read was outstanding, so a slow answer for the role the operator
-   * has navigated away from cannot put its name back into the heading.
+   * The marker is set BEFORE the command, because the command dispatches synchronously and the
+   * bridge that observes its outcome needs to know a read of ours is outstanding.
    *
-   * @param roleId The addressed role.
+   * @param roleId The role to read.
    */
   private loadRole(roleId: number): void {
-    this.roleRequest?.unsubscribe();
-    this.roleLoadingSignal.set(true);
-    const generation = this.roleGeneration;
-    this.roleRequest = this.roleService
-      .getRole(roleId)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (envelope): void => {
-          if (this.roleGeneration !== generation) {
-            return;
-          }
-          this.roleRequest = null;
-          this.roleLoadingSignal.set(false);
-          this.roleSignal.set(envelope.data);
-        },
-        error: (error: unknown): void => {
-          if (this.roleGeneration !== generation) {
-            return;
-          }
-          this.roleRequest = null;
-          this.roleLoadingSignal.set(false);
-          this.raise(this.failureNotice(error));
-        },
-      });
+    this.awaitedRoleKey.set(roleId);
+    this.store.selectRole(roleId);
   }
 
   /**
-   * Reads ONE page of the addressed role's memberships and raises any deferred message
-   * afterwards.
+   * Asks the store for every membership of the addressed role, deferring one message until it
+   * has settled.
    *
-   * One request, whatever the role's size. The page coordinate comes from the screen's own
-   * state, so this one method serves the initial read, a pager click, a retry and the re-read
-   * that follows every write, and each of those cancels whichever page read was still in
-   * flight rather than racing it.
+   * MIGRATION: the grid is UNPAGED, as `securityroles.ascx:L56` declares it, so the COMPLETE
+   * scope is requested — `RoleStore.loadAllAssignments` follows every page the server reports
+   * and remembers the scope, so the re-read each write performs stays complete. Nothing here
+   * consumes the shared pager, because the legacy grid had none.
    *
-   * MIGRATION: the total the server reports is kept, because it is what tells the pager
-   * whether there is anything beyond this page. It is read from the answer and never
-   * accumulated from the rows on screen.
-   *
-   * A page can be left PAST THE END by a removal — take the only member of the last page away
-   * and the coordinate the operator is standing on no longer exists. The legacy grid could not
-   * reach that state, because it had no pages; here the read that discovers it steps back to
-   * the last page that does exist and asks once more. That correction is deliberately bounded:
-   * the corrective read is issued with clamping disabled, so a listing that keeps shrinking
-   * underneath the screen produces at most one extra request per read and never a loop. A
-   * deferred message rides along with the correction rather than being raised twice, which
-   * keeps the legacy ordering — the grid is refreshed, and only then is the message shown.
+   * The notice is recorded before the command is issued, so the read that raises it is always
+   * the read this call started. See {@link RoleAssignmentComponent.deferredNotice}.
    *
    * @param roleId The addressed role.
    * @param notice A message to raise once the read has settled, or `null`.
-   * @param allowClamp Whether a past-the-end answer may issue one corrective read.
    */
-  private loadAssignments(
-    roleId: number,
-    notice: DeferredNotice | null,
-    allowClamp = true,
-  ): void {
-    this.assignmentsRequest?.unsubscribe();
-    this.assignmentsLoadingSignal.set(true);
-    const generation = this.roleGeneration;
-    const requestedPageIndex = this.pageIndexSignal();
-    this.assignmentsRequest = this.roleService
-      .listUsers(roleId, { pageIndex: requestedPageIndex, pageSize: MEMBERSHIP_PAGE_SIZE })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (response): void => {
-          if (this.roleGeneration !== generation) {
-            return;
-          }
-          this.assignmentsRequest = null;
-          const page = response;
-          this.totalCountSignal.set(page.meta.totalCount);
-          const pastTheEnd =
-            page.items.length === 0 &&
-            requestedPageIndex > FIRST_PAGE_INDEX &&
-            page.meta.totalCount > 0;
-          if (allowClamp && pastTheEnd) {
-            const lastPageIndex = Math.max(page.meta.totalPages - 1, FIRST_PAGE_INDEX);
-            this.pageIndexSignal.set(lastPageIndex);
-            this.loadAssignments(roleId, notice, false);
-            return;
-          }
-          this.assignmentsLoadingSignal.set(false);
-          this.assignmentsSignal.set(page.items);
-          this.raise(notice);
-        },
-        error: (error: unknown): void => {
-          if (this.roleGeneration !== generation) {
-            return;
-          }
-          this.assignmentsRequest = null;
-          this.assignmentsLoadingSignal.set(false);
-          this.raise(notice);
-          this.raise(this.failureNotice(error));
-        },
-      });
+  private loadAssignments(roleId: number, notice: DeferredNotice | null): void {
+    this.deferredNotice.set(notice);
+    this.store.loadAllAssignments(roleId);
   }
 
-  /**
-   * Asks the server whether one account already holds the addressed role, and on what terms.
-   *
-   * The listing's free-text filter is a case-insensitive SUBSTRING match against either the
-   * login name or the display name, so filtering by the chosen account's login name narrows
-   * the role's memberships to a handful and the wanted row is then picked out by identifier —
-   * the name is the filter, the identifier is the match. A name is not an identifier, which is
-   * why the identifier decides and the name only reduces what has to be looked through.
-   *
-   * @param roleId The addressed role.
-   * @param user The account the operator chose.
-   * @param prefillBounds Whether the answer may also write the two date boxes.
-   */
-  private probeMembership(roleId: number, user: UserListItem, prefillBounds: boolean): void {
-    this.membershipProbeRequest?.unsubscribe();
-    const generation = this.roleGeneration;
-    this.membershipProbeRequest = this.roleService
-      .listUsers(roleId, {
-        pageIndex: FIRST_PAGE_INDEX,
-        pageSize: MEMBERSHIP_PROBE_PAGE_SIZE,
-        query: user.username,
-      })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (response): void => {
-          if (this.roleGeneration !== generation || this.selectedUserSignal() !== user) {
-            return;
-          }
-          this.membershipProbeRequest = null;
-          const page = response;
-          const found = page.items.find((row) => row.userId === user.userId);
-          this.applyProbeAnswer(found ?? null, prefillBounds);
-        },
-        error: (error: unknown): void => {
-          if (this.roleGeneration !== generation || this.selectedUserSignal() !== user) {
-            return;
-          }
-          this.membershipProbeRequest = null;
-          // A failed probe leaves the screen in the state it shows for an account with no
-          // membership - empty bounds and the 'Add User' label - because that is the state the
-          // legacy screen showed whenever its lookup found no row, and because the write is an
-          // upsert either way: the server settles which of the two it is. The failure is still
-          // reported, so the operator is not left thinking the account definitely has none.
-          this.applyProbeAnswer(null, prefillBounds);
-          this.raise(this.failureNotice(error));
-        },
-      });
-  }
-
-  /**
-   * Re-asks whether the chosen account holds the role, after a write may have changed it.
-   *
-   * MIGRATION: this refreshes the FACT and deliberately leaves the two date boxes alone. The
-   * legacy handler did not touch the form after a write — `SecurityRoles.ascx.vb:L546` rebound
-   * the grid and nothing else — so an operator who left the expiry empty and let the server
-   * derive one saw an empty box afterwards, not the derived value. Writing the stored bounds
-   * back here would put a value the operator never typed into a box that a second submit would
-   * then send explicitly, which is a change to what gets STORED and not merely to what is
-   * shown. Only the label's fact is refreshed, which is the one thing the legacy rebind did
-   * change.
-   */
-  private reprobeSelectedMembership(): void {
-    const roleId = this.roleIdSignal();
-    const user = this.selectedUserSignal();
-    if (roleId === null || user === null) {
-      return;
-    }
-    this.probeMembership(roleId, user, false);
-  }
-
-  /**
-   * Records the probe's answer, and prefills the two bounds from it when asked to.
-   *
-   * Passing `null` is how the screen expresses "no membership is known", and with prefilling
-   * on it produces exactly the state the legacy screen showed for an account with no row: both
-   * boxes empty and neither of them marked as visited, so no dynamic validator has anything to
-   * say about a value the operator never typed.
-   *
-   * @param membership The chosen account's membership of this role, or `null`.
-   * @param prefillBounds Whether the two date boxes are written from the answer.
-   */
-  private applyProbeAnswer(membership: UserRole | null, prefillBounds: boolean): void {
-    this.selectedMembershipSignal.set(membership);
-    if (prefillBounds === false) {
-      return;
-    }
-    const effective = membership === null ? NO_DATE : toCalendarDateValue(membership.effectiveDate);
-    const expiry = membership === null ? NO_DATE : toCalendarDateValue(membership.expiryDate);
+  /** Prefills the two bounds from the chosen account's existing membership, if it has one. */
+  private applyPrefill(userId: number): void {
+    const existing = this.assignments().find((row) => row.userId === userId);
+    const effective = existing === undefined ? NO_DATE : toCalendarDateValue(existing.effectiveDate);
+    const expiry = existing === undefined ? NO_DATE : toCalendarDateValue(existing.expiryDate);
     this.form.controls.effectiveDate.setValue(effective);
     this.form.controls.expiryDate.setValue(expiry);
     this.form.controls.effectiveDate.markAsUntouched();
@@ -1949,27 +1804,43 @@ export class RoleAssignmentComponent {
   /**
    * Turns a refused removal into the message the legacy screen showed.
    *
-   * @param problem The problem document the refusal carried, or `null`.
-   * @param code The failure code read out of that document, or `null`.
+   * The refusal is recognised by the store's own CONFLICT CODE rather than by a status: the API
+   * answers a protected membership and an unprivileged caller alike with 403 and separates them
+   * on the problem type. The store already ran that recognition, so no code is re-read here.
+   *
+   * @param failure The failure the store recorded for the removal.
    * @returns The deferred message, to be raised after the re-read.
    */
-  private removalNotice(problem: ProblemDetails | null, code: string | null): DeferredNotice {
-    if (code === PROTECTED_ASSIGNMENT_CODE) {
-      // The WORDING is the conflict vocabulary's, because that is where the legacy `RoleRemoveError`
-      // sentence lives. The SEVERITY is the shared summariser's, for the reason set out on
-      // {@link failureNotice}: this refusal arrives as `403` - the vocabulary records that explicitly,
-      // since every other conflict code arrives as `409` - and an access failure is a WARNING rather
-      // than an error in the three-valued vocabulary the legacy screens used. Hard-coding a severity
-      // here would give one decision two homes that could disagree.
-      const published = conflictMessage(code);
-      const refusal = summarizeProblem(problem);
+  private removalNoticeFor(failure: RoleStoreFailure): DeferredNotice {
+    if (failure.conflict === PROTECTED_ASSIGNMENT_CODE) {
+      const published = conflictMessage(failure.conflict);
       return {
-        severity: refusal.severity,
+        // ⚠ THE WORDING IS OVERRIDDEN HERE; THE SEVERITY IS NOT. The published legacy sentence says
+        // something the generic summary cannot, so it replaces the message - but the severity has one
+        // home, the shared summariser, which reads it from the status. Hard-coding it here gave this
+        // refusal a red error while an access refusal answered with the same 403 was a yellow warning,
+        // so one decision had two homes and they disagreed.
+        severity: failure.summary.severity,
         message: published === null ? ROLE_ASSIGNMENT_TEXT.removalRefused : published,
       };
     }
-    const summary = summarizeProblem(problem);
-    return { severity: summary.severity, message: summary.message };
+    return { severity: failure.summary.severity, message: failure.summary.message };
+  }
+
+  /**
+   * Records a store failure for the banner and describes it for the notification queue.
+   *
+   * The counterpart of {@link RoleAssignmentComponent.failureNotice} for an outcome the store
+   * observed rather than one this screen's own request threw. The wording and severity come
+   * from the summary the store already composed, so the two paths cannot describe the same
+   * answer differently.
+   *
+   * @param failure The failure the store recorded.
+   * @returns The message to raise.
+   */
+  private failureNoticeFor(failure: RoleStoreFailure): DeferredNotice {
+    this.problemSignal.set(failure.problem);
+    return { severity: failure.summary.severity, message: failure.summary.message };
   }
 
   /**
@@ -2011,4 +1882,3 @@ export class RoleAssignmentComponent {
     });
   }
 }
-

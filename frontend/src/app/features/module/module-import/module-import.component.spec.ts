@@ -101,6 +101,12 @@ const CANCEL_ACTION_LABEL = 'Cancel';
 const FILE_REQUIRED_MESSAGE = 'Please specify the file to import';
 const MODULE_REQUIRED_MESSAGE = 'Please specify the module to import into';
 const FILE_UNREADABLE_MESSAGE = 'The selected file could not be read. Choose the file again.';
+/**
+ * The screen's own wording for a document that reads as empty or whitespace-only, kept distinct from
+ * the unreadable-document wording above because the two are resolved differently by the operator.
+ */
+const FILE_EMPTY_MESSAGE = 'The submitted document is empty.';
+
 const IMPORT_SUCCEEDED_MESSAGE = 'Content was imported into the module.';
 const NO_MODULES_MESSAGE = 'There are no modules available to import content into.';
 
@@ -143,7 +149,7 @@ const MALFORMED_DOCUMENT = '<announcements><announcement><title>unclosed';
 const ENTITY_BEARING_DOCUMENT =
   '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY external SYSTEM "file:///etc/passwd">]><root>&external;</root>';
 
-/** The empty document. Empty text is DATA, and the server is what refuses it. */
+/** The empty document, which this screen refuses before it spends a request on it. */
 const EMPTY_DOCUMENT = '';
 
 /** A file name carrying path traversal and markup, neither of which this screen resolves or renders. */
@@ -656,7 +662,7 @@ describe('ModuleImportComponent', () => {
       fixture.detectChanges();
     });
 
-    it('sends an empty document as the empty string, because empty text is data', async () => {
+    it('refuses an empty document before it is uploaded, and sends nothing', async () => {
       arrive();
 
       chooseModule('Announcements');
@@ -664,18 +670,16 @@ describe('ModuleImportComponent', () => {
 
       await submit();
 
-      const call = expectImport();
+      // A document that reads as empty or whitespace-only can only ever be refused, so it is refused
+      // HERE rather than spending a request and an upload of the whole file to be told so. The message
+      // is the screen's own and is deliberately distinct from the unreadable-document one, because the
+      // operator resolves the two differently.
+      expect(notifySpy).toHaveBeenCalledWith('error', FILE_EMPTY_MESSAGE, null);
+      httpMock.expectNone(() => true);
 
-      // The empty string is the legacy absent-string marker AND a legitimate payload, and the server
-      // is what refuses it. Coalescing it to null here would send a different request than the
-      // operator made.
-      expect((call.request.body as { content: string }).content).toBe('');
-
-      call.flush(
-        problem('module.content_invalid', 400, 'The submitted content could not be read.'),
-        { status: 400, statusText: 'Bad Request' },
-      );
-      fixture.detectChanges();
+      // ⚠ THIS DOES NOT WEAKEN THE RULE THAT AN EMPTY STRING IS DATA. Nothing on this screen rewrites
+      // an empty string into null on its way out; the point is that no empty content reaches a request
+      // at all, so there is no coercion of one to observe.
     });
 
     it('carries a hostile document name as metadata without resolving or rendering it', async () => {

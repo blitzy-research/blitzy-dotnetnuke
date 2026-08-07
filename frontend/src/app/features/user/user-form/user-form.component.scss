@@ -1,50 +1,72 @@
-// Component stylesheet for the account create-and-edit form, served by the routes
+// Component stylesheet for the account create-and-edit screen, served by the routes
 // /users/new and /users/:userId.
 //
-// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
-// component's own content attribute, so a class name that drifts does not error - it
-// silently matches nothing and the screen renders unstyled. The template must therefore
-// emit exactly this vocabulary:
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with this
+// component's own content attribute, so a class name that drifts does not error — it
+// silently matches nothing and the region renders unstyled. The template emits exactly
+// eighteen classes and every one of them is styled here:
 //
-//     .user-form
-//     .user-form__panels
-//     .user-form__section
-//     .user-form__section-toggle
-//     .user-form__section-body
-//     .user-form__legend
+//     .user-form                     .user-form__membership
+//     .user-form__panels             .user-form__membership-row
+//     .user-form__section            .user-form__membership-term
+//     .user-form__legend             .user-form__membership-value
+//     .user-form__section-toggle     .user-form__membership-actions
+//     .user-form__section-body       .user-form__actions
 //     .user-form__grid
-//     .user-form__membership
-//     .user-form__membership-row
-//     .user-form__membership-term
-//     .user-form__membership-value
-//     .user-form__membership-actions
-//     .user-form__actions
 //
-// The block class sits on the `form`, which is NOT the root of the template - the page
-// header precedes it - so the host is styled as well, and the two rules have distinct jobs:
-// the host owns the rhythm between the header and the form, the block owns the rhythm inside
-// the form.
+//     .user-form__credential         .user-form__credential-value
+//     .user-form__credential-title   .user-form__credential-actions
+//     .user-form__credential-advisory
 //
-// The surface is deliberately flat, and focus indication is deliberately absent: the global
-// reset applies the shared focus-ring mixin to every anchor, button, input, select, textarea
-// and summary, so the design system owns focus and this file only places components.
+// The five `__credential-*` classes are the one-time generated-password hand-over at
+// template L152-L163. They are REPORTED as absent from the class table this file was
+// specified against, and they are styled rather than skipped because the template is the
+// authority for what exists and because that region is the only route by which an operator
+// ever receives a generated credential — leaving it unbounded would strand a
+// security-relevant affordance in undifferentiated body text.
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DO
+// ---------------------------------------
+// It does not restate the global layer. `_forms.scss` already gives every `fieldset` its
+// border, radius, padding and margin reset, gives every `legend` the measured `.SubHead`
+// treatment — 11px, bold, brand — and gives every `button` its box and hover; `_reset.scss`
+// already gives `dt` that same `.SubHead` treatment and already applies the shared
+// focus-ring mixin to `a, button, input, select, textarea` and `[tabindex]` — so focus
+// indication for all seven buttons and all three links on this screen is ALREADY in place
+// and is not duplicated here.
+//
+// It does not lay out label-beside-control either. That belongs to `app-form-field`, whose
+// own stylesheet resolves `grid-template-columns: var(--grid-track-label)
+// var(--grid-track-fluid)` from the `md` step upward — `--grid-track-label` being built on
+// `--field-label-inline-size`, the 9.375rem token that IS the measured `labelwidth="150px"`
+// of `Website/admin/Users/User.ascx` L12. Reaching into that component to re-do it would
+// require piercing its encapsulation, which is forbidden, so `.user-form__grid` stacks
+// whole fields and lets each field split itself.
+//
+// What the global layer deliberately leaves alone is the browser's flow margins on
+// headings, paragraphs and lists (`_reset.scss` L33-L37). Every container below spaces its
+// children with `gap`, so those margins would compound with it; neutralising them for this
+// component's own elements is the complement of that decision, not a contradiction of it.
 
 @use '../../../../styles/mixins' as mx;
 
 // -----------------------------------------------------------------------------
-//  ROOT - THE HOST AND THE FORM
+//  ROOT
 // -----------------------------------------------------------------------------
-// A custom element defaults to `display: inline` and would not contain its block-level
-// children correctly, so a box-generating display is required on the host regardless of
-// layout. Body type is declared here and inherited by every region below rather than
-// restated per rule: without it the browser falls back to its own serif default for every
-// legend, label, term and value on the screen.
+// A custom element has no intrinsic display, so a box-generating value is stated
+// explicitly. Type is NOT restated: `body` already sets the base family, size and line
+// height and every region here inherits them.
 :host {
   display: grid;
   gap: var(--space-4);
-  font-family: var(--font-family-base);
-  font-size: var(--font-size-md);
-  line-height: var(--line-height-tight);
+}
+
+// The screen renders eight bare paragraphs — the absent-account and refusal notices, the
+// password help and alert, the required-field legend and the eight membership help lines.
+// Their user-agent block margins are removed once, here, because every ancestor spaces its
+// children with `gap`.
+p {
+  margin-block: 0;
 }
 
 .user-form {
@@ -52,103 +74,162 @@
   gap: var(--space-4);
 }
 
+// -----------------------------------------------------------------------------
+//  THE TWO PANELS — the measured side-by-side arrangement
+// -----------------------------------------------------------------------------
+// `Website/admin/Users/manageusers.ascx` L59-L63 places `ctlUser` and `ctlMembership` in
+// ONE `<tr>` named `UserRow`, separated by a `<td width="10">` spacer. The credential form
+// and the membership panel are therefore one screen laid out in two columns, and that
+// relationship is what this rule reproduces.
+//
+// MIGRATION: the measured 10px gutter is snapped to `--space-3` (0.75rem / 12px), the
+// nearest step on the spacing scale. The scale itself is a net addition — the legacy
+// stylesheets declare no spacing system at all — and a 2px difference on one gutter is
+// imperceptible.
+//
+// MIGRATION: the collapse is authored narrow-first and the two-column form layered above
+// `lg`, which is the direction `_mixins.scss` documents as default. `lg` rather than `md`
+// is arithmetic, not taste: the measured panels are 350px (`User.ascx` L14) plus the 10px
+// spacer plus 400px (`Membership.ascx` L6), so 760px of content. A 768px viewport at `md`
+// cannot supply that once the application shell has taken its sidebar; a 1024px viewport at
+// `lg` can. Below the step the panels stack, which is also a net addition, since the legacy
+// stylesheets contain no media query anywhere.
+//
+// `align-items: start` keeps the shorter membership panel at its natural height instead of
+// stretching it to match the taller credential column.
 .user-form__panels {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-3);
+  align-items: start;
+
+  @include mx.respond-above('lg') {
+    grid-template-columns: var(--grid-track-fluid) var(--grid-track-fluid);
+  }
 }
 
 // -----------------------------------------------------------------------------
 //  SECTIONS AND THEIR DISCLOSURES
 // -----------------------------------------------------------------------------
-// A bordered fieldset per group of related facts. Three of the four carry a toggle that
-// collapses the body; the section frame stays identical either way, because a collapsed
-// group must read as a closed region and not as a different KIND of region.
+// The global `fieldset` rule already supplies the border, the radius, the padding and the
+// `min-inline-size` correction that lets a field set shrink inside a grid, so only two
+// things are added: the surface fill that marks the group as a region, and the removal of
+// the global trailing margin, which would otherwise compound with the panel grid's `gap`.
 .user-form__section {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: var(--border-width) var(--border-style) var(--color-border);
-  border-radius: var(--radius-md);
-  background-color: var(--color-background);
+  background-color: var(--color-surface);
+  margin-block-end: 0;
 }
 
-// A `legend` is painted by the browser as part of its fieldset's border, so inline padding
-// is what opens the gap in that border - a margin would move the text without breaking the
-// line.
+// Typography is INHERITED, not restated: the global `legend` rule is already the measured
+// `.SubHead` — `default.css` L74-L80, 11px, bold, brand colour — exactly what a section
+// caption should be here. The one addition is defensive, because the membership caption is
+// composed from stored account wording and a long unbroken token would otherwise widen the
+// panel past its column.
 .user-form__legend {
-  padding-inline: var(--space-1);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-primary);
+  overflow-wrap: break-word;
 }
 
-// The toggle is a real button holding a decorative chevron. It is reset to the surrounding
-// type and given a start-aligned full-width box so the whole row is a press target rather
-// than just the glyph, and the pointer cursor is added because a button that looks like a
-// heading otherwise gives no sign that it is operable.
+// The disclosure control. It keeps the global button box — border, radius, padding, hover
+// and active all come from `_forms.scss` — and changes only what a disclosure needs: a full
+// bleed row so the whole strip is the press target rather than just the glyph, start-aligned
+// text because a button centres its content by default, and a lighter fill so the control
+// stays legible against the section's own surface.
+//
+// The focus ring IS already applied globally to every button. It is re-asserted here, and
+// only here, because this is the one control whose box this file restyles; the mixin is
+// documented idempotent and safe to apply again on an individual control, so re-asserting it
+// guarantees the indicator cannot be defeated by the fill above it. No other button or link
+// on this screen repeats it.
 .user-form__section-toggle {
   display: flex;
-  gap: var(--space-2);
   align-items: center;
+  gap: var(--space-2);
   inline-size: var(--size-full);
-  padding: var(--space-2) var(--space-3);
-  border: var(--border-width) var(--border-style) var(--color-border);
-  border-radius: var(--radius-sm);
-  background-color: var(--color-surface);
-  color: inherit;
-  font: inherit;
+  background-color: var(--color-background);
   text-align: start;
-  cursor: pointer;
-}
 
-.user-form__section-body {
-  display: grid;
-  gap: var(--space-3);
-}
+  @include mx.focus-ring;
 
-// -----------------------------------------------------------------------------
-//  FIELD GRID
-// -----------------------------------------------------------------------------
-// One column until there is room for two, so a label never sits above a control squeezed to
-// a few characters. `minmax(0, 1fr)` rather than `1fr` because a grid track's automatic
-// minimum is its content, and one long unbroken address would otherwise push the second
-// column off the screen. The breakpoint comes from the shared scale through the mixin rather
-// than from a hand-written query, which is what keeps every screen breaking at the same
-// widths.
-//
-// The class is applied TOGETHER with `__section-body` in the template, so both rules are in
-// effect on the same element: the body supplies the stacked default and this supplies the
-// two-column arrangement above the step. Declaring `display` in both is intentional and
-// idempotent.
-.user-form__grid {
-  display: grid;
-  gap: var(--space-3);
+  // The caret carries `viewBox="0 0 8 8"` and NO width or height attribute, which is the
+  // correct authoring form — CSS owns the size. It must therefore be sized here: the global
+  // `svg` rule sets `height: auto` and `max-width: 100%` but supplies no intrinsic size, so
+  // without this the element would fall back to the replaced-element default and render as a
+  // full-width triangle. `--space-2` is 0.5rem, matching the 8-unit view box one-to-one so
+  // the diagonal lands on whole pixels. `flex: none` keeps it from absorbing free space.
+  svg {
+    flex: none;
+    inline-size: var(--space-2);
+    block-size: var(--space-2);
+  }
 
-  @include mx.respond-above('md') {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  // Collapsed the caret points along the inline axis; expanded it points down the block
+  // axis. `--rotate-quarter-turn` exists in the token vocabulary for exactly this. The state
+  // is read from the `aria-expanded` attribute the template already binds, so the rotation
+  // cannot drift out of step with what assistive technology is told, and it is never the
+  // sole cue — the button's own label alternates between "Show" and "Hide". No transition is
+  // declared: the workspace has no reduced-motion mixin and a component may not author a
+  // media query, so the state change is instant and there is no motion to opt out of.
+  &[aria-expanded='true'] svg {
+    transform: rotate(var(--rotate-quarter-turn));
   }
 }
 
+// Spacing only, and deliberately no `display`. The template puts this class on the SAME
+// element as `.user-form__grid` in three places, so declaring a layout in both would leave
+// the winner to source order; separating the concerns means the body owns its offset from
+// the control above it and the grid owns the arrangement of what is inside.
+.user-form__section-body {
+  margin-block-start: var(--space-3);
+}
+
 // -----------------------------------------------------------------------------
-//  MEMBERSHIP FACTS
+//  FIELD ROWS
 // -----------------------------------------------------------------------------
-// A real description list rendered as a term-and-detail grid. The two tracks are the shared
-// PAIR - the token vocabulary documents them as meaningless apart, because the proportion
-// between them is the design value and neither number carries it alone - so this screen and
-// the profile screen read at the same proportion instead of each choosing its own. Baseline
-// alignment keeps a term level with the first line of a value that has wrapped.
-.user-form__membership {
+// ONE field per row, which is what the legacy laid out: every row of `tblAddUser`
+// (`User.ascx` L18) and `tblPassword` (L29) is a single label-and-control pair, never two
+// side by side. Each `app-form-field` splits itself into the measured 150px label column and
+// its control from the `md` step upward, so a second level of columns here would divide the
+// row a second time and produce four columns of content where the legacy had one pair.
+//
+// MIGRATION: both of those legacy elements are LAYOUT tables — L29 says so in its own
+// `summary="Password Management"` and neither carries a header cell — so they become a grid
+// and no table element appears in the template.
+.user-form__grid {
   display: grid;
   gap: var(--space-3);
 }
 
-// The narrow layout is authored unconditionally and the two-column one layered over it
-// through the shared mixin, which is the documented direction and the same shape the profile
-// screen's own value list uses. Below the step a term sits above its value rather than being
-// squeezed into a fifth of a handset's width.
+// -----------------------------------------------------------------------------
+//  MEMBERSHIP — the read-only panel
+// -----------------------------------------------------------------------------
+// This class sits on the SAME `<fieldset>` as `.user-form__section`, so the two carry equal
+// specificity and it is declared after it deliberately.
+//
+// REPORTED GAP: `Membership.ascx` L6 measures the panel at `width="400px"` and there is no
+// width token for it. Rather than approximate one, the panel takes its width from its column
+// in the panel grid, which is the responsive-correct behaviour and needs no literal.
+//
+// The description list's user-agent block margins are removed for the reason given at the
+// top of the file, and it becomes the row container.
+.user-form__membership {
+  dl {
+    display: grid;
+    gap: var(--space-2);
+    margin-block: 0;
+  }
+}
+
+// A term-and-detail pair. Narrow, the term sits above its value; from the `sm` step the two
+// share a row, baseline-aligned so a term stays level with the first line of a value that
+// has wrapped.
+//
+// REPORTED GAP: `Membership.ascx` L8 measures the term column at `labelwidth="200px"` and no
+// 200px term token exists. `--grid-track-term` and `--grid-track-detail` are the vocabulary's
+// term-and-detail pair and are used instead, so this screen reads at the same proportion as
+// every other term list. Their own annotation states that a term has no measured legacy
+// width to preserve, which is true generally and NOT true of this screen — reported, not
+// edited.
 .user-form__membership-row {
   display: grid;
-  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-1);
 
   @include mx.respond-above('sm') {
@@ -158,56 +239,142 @@
   }
 }
 
+// Typography is inherited: the global `dt` rule is already the measured `.SubHead`, which is
+// what `Membership.ascx` L11 asked for with `labelstyle-cssclass="SubHead"`. Only the
+// defensive wrap is added.
 .user-form__membership-term {
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-muted);
-}
-
-// A stored date or a lock-out reason can be long and has no natural break, so it wraps rather
-// than overflowing its track.
-.user-form__membership-value {
-  min-inline-size: 0;
   overflow-wrap: break-word;
 }
 
+// `margin-inline-start: 0` is load-bearing rather than tidy. A `dd` carries a user-agent
+// indent of about 40px, and the global layer leaves flow margins alone by design, so without
+// this every value would sit indented inside its own grid track and no value would line up
+// with the column it belongs to. `min-inline-size: 0` lets the track shrink below the width
+// of a long unbroken value instead of pushing the panel out of its column.
+.user-form__membership-value {
+  margin-inline-start: 0;
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+
+  // Each value is followed by a sentence explaining the field, which is what
+  // `Membership.ascx` L10 styled with `helpstyle-cssclass="Help"`. De-emphasising it is what
+  // keeps the value itself readable as the value. The legacy `.Help` box — a bordered pale
+  // panel — belongs to the shared field component and is not rebuilt here; the size stays at
+  // the inherited 11px, matching the measured `.Help` size, and only the colour steps back.
+  // `--color-text-muted` measures 4.73:1 on `--color-surface`, clearing AA for normal text.
+  p {
+    color: var(--color-text-muted);
+  }
+}
+
+// The four per-user commands. `Membership.ascx` L13 wraps them in `<p align="center">`, so
+// they are centred; they wrap rather than overflow so the fourth stays reachable at every
+// width, and the separation is a real `gap` rather than the legacy runs of `&nbsp;`, which
+// would not survive white-space collapsing.
 .user-form__membership-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: var(--space-2);
-  align-items: center;
+  margin-block-start: var(--space-3);
 }
 
 // -----------------------------------------------------------------------------
 //  COMMAND ROW
 // -----------------------------------------------------------------------------
-// A real gap rather than literal spacing characters, so the separation survives white-space
-// collapsing, and wrapping is intrinsic so the last command stays reachable at every width.
+// CENTRED, preserving the measured `pnlUpdate align="center"` of `User.ascx` L71. Start
+// alignment was the alternative and is rejected: the attribute is an explicit measurement,
+// centring costs nothing in usability for a two-command row, and the membership commands
+// above are centred by the same measurement, so start alignment here would have put two
+// command rows on one screen out of step with each other for no gain. The gap stands in for
+// the three `&nbsp;` characters the legacy used to separate delete from save.
 .user-form__actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  ONE-TIME CREDENTIAL HAND-OVER
+// -----------------------------------------------------------------------------
+// NET-NEW, with no legacy counterpart: the legacy mailed a generated password
+// (`User.ascx.vb` L164) and there is no mail endpoint here, so this region is the only way
+// the value reaches the operator who just created the account.
+//
+// It is painted with `--color-surface-hint`, the measured pale yellow of the legacy `.Help`
+// rule (`default.css` L438) — the only surface in the legacy stylesheet that marks a region
+// as advisory rather than as content, which is precisely what this region is. Inherited text
+// measures 20.02:1 on it. The border uses `--color-border-strong` rather than the decorative
+// hairline so the boundary of a region holding a secret is actually perceivable.
+.user-form__credential {
+  display: grid;
   gap: var(--space-2);
-  align-items: center;
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface-hint);
+}
+
+// Type is inherited from the global `h2` rule; only the flow margin is removed so the
+// heading spaces on the container's `gap` like everything else in it.
+.user-form__credential-title {
+  margin-block: 0;
+}
+
+// The line that tells the operator this value is shown once. `--color-danger-text` is the
+// accessible danger colour and measures 6.86:1 on this surface; the wording itself carries
+// the meaning, so colour is not the sole indicator.
+.user-form__credential-advisory {
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-bold);
+}
+
+// The value is rendered in a `code` element so every character is unambiguous.
+// `--font-family-mono` is the measured legacy `Lucida Console` stack, and the step up to
+// `--font-size-lg` counteracts the smaller optical size a monospace face renders at, so the
+// credential is no harder to read than the prose around it. It wraps anywhere, because a
+// generated credential has no natural break point and must never be clipped.
+.user-form__credential-value {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-lg);
+  overflow-wrap: anywhere;
+}
+
+// Centred for consistency with the two command rows above it. There is no legacy alignment
+// to preserve here, the region being net-new.
+.user-form__credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
 }
 
 // =============================================================================
-//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+//  DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
 // =============================================================================
 //
-// MIGRATION: the legacy screen (`Website/admin/Users/User.ascx` inside `ManageUsers.ascx`)
-// presented the credential fields, the account options, the password fields and the
-// membership facts as one undifferentiated run of layout-table rows. Grouping them into four
-// framed sections with collapsible bodies is a NET ADDITION: every field remains present,
-// reachable and bound exactly as before, and no group is collapsed in a way that hides a
-// value the operator must act on.
+// MIGRATION: the spacing, radius and elevation scales that every value above resolves to
+// are NET ADDITIONS. The legacy design has no spacing system, is square-cornered and is
+// flat. Nothing here reads a value the legacy declared and changes it; the scales exist so
+// that no value has to be written as a literal. No elevation is used on this screen at all.
 //
-// MIGRATION: the membership facts were legacy table rows of label and value. They become a
-// real description list, which is a SEMANTIC improvement rather than a visual one - the pairs
-// were always a term-and-value relationship and the legacy table asserted a tabular one it
-// did not have.
+// MIGRATION: the legacy portal declared three near-identical font stacks and the token
+// vocabulary consolidates them into one base family. The screen inherits that family; the
+// difference between `Tahoma, Arial, Helvetica` and `Tahoma, Verdana, Arial, sans-serif` is
+// imperceptible, because the first family resolves on every platform either way.
 //
-// MIGRATION: the spacing, radius and surface scales every value above resolves to are net
-// additions - the legacy design is square-cornered, flat and has no spacing system - as is the
-// two-column collapse, because the legacy stylesheets declare no media query anywhere. All of
-// it is intentional visual refinement that alters no behaviour, recorded with the rest in
-// MIGRATION_NOTES.md.
+// MIGRATION: the credential fields, the create-only options, the password fields and the
+// membership facts were one undifferentiated run of layout-table rows. Grouping them into
+// framed field sets with collapsible bodies is a net addition. No field is removed, none is
+// hidden behind a hover, none is sized to nothing, and the two groups that carry a value the
+// operator must act on — the create-only options and the membership facts — are reachable in
+// both states of their disclosure.
+//
+// MIGRATION: the membership facts become a real description list. The legacy rows asserted a
+// tabular relationship they never had; a term and its value is what they always were.
+//
+// MIGRATION: no data assumption is encoded anywhere above. There is no `:empty` rule and no
+// value-dependent selector, so a membership date the legacy stored as its sentinel minimum
+// renders as ordinary text and never as an error state.
 // =============================================================================

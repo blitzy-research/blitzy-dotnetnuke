@@ -183,9 +183,15 @@
  */
 
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { EMPTY, expand, finalize, reduce, switchMap, tap } from 'rxjs';
+import { EMPTY, expand, finalize, forkJoin, map, of, reduce, switchMap, tap } from 'rxjs';
 
-import { emptyPagedResult, toPagedResult, DEFAULT_PAGE_SIZE } from '../models/paged-result.model';
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  emptyPagedResult,
+  toPagedResult,
+  unpagedResult,
+} from '../models/paged-result.model';
 import { isProblemDetails } from '../models/problem-details.model';
 import { RoleService } from '../services/role.service';
 import { failureCode, isConflictCode, summarizeProblem } from '../utils/form-errors.util';
@@ -494,6 +500,7 @@ export interface RoleStoreFailure {
    */
   readonly problem: ProblemDetails | null;
 
+
   /**
    * The server's conflict code verbatim, or `null` when the failure was not a
    * recognised conflict.
@@ -560,6 +567,33 @@ const INITIAL_PAGE_COORDINATE: RolePageCoordinate = Object.freeze({
   sortDir: null,
   query: null,
 });
+
+/**
+ * How much of a role's membership the assignment slice currently holds.
+ *
+ * `'page'` is one window of the listing, located by {@link RoleStore.assignmentsPage} and
+ * moved with {@link RoleStore.setAssignmentsPage}. `'complete'` is EVERY membership of the
+ * role in one set, which the membership screen needs because its legacy grid was unpaged
+ * (`Website/admin/Security/securityroles.ascx:L56` declares no pager) and it renders the
+ * whole set at once.
+ *
+ * The scope is REMEMBERED rather than passed per call, and that is the point of the type.
+ * Both assignment writes re-read the listing themselves — see {@link RoleStore.assignUser}
+ * and {@link RoleStore.removeAssignment} — so a caller that asked for the complete set and
+ * then wrote would otherwise have the whole set silently replaced by the first page. The
+ * recorded scope makes every re-read reproduce what the caller actually asked for.
+ */
+type AssignmentReadScope = 'page' | 'complete';
+
+/**
+ * The largest number of assignment pages a complete read will follow.
+ *
+ * A guard against a mis-reported page count, not a business limit: the total is read from
+ * the server's own metadata, and were that wrong an uncapped loop would turn one screen
+ * into unbounded traffic. At {@link MAX_PAGE_SIZE} rows a page this covers a hundred
+ * thousand memberships of a single role, which is far beyond what any tenant holds.
+ */
+const MAX_ASSIGNMENT_PAGES = 1000;
 
 /**
  * How many roles one request of the complete-listing walk asks for.
@@ -713,6 +747,7 @@ function readStatus(error: unknown): number | null {
  */
 @Injectable({ providedIn: 'root' })
 export class RoleStore implements OnDestroy {
+
   private readonly roleService = inject(RoleService);
 
   // -------------------------------------------------------------------------
@@ -811,6 +846,13 @@ export class RoleStore implements OnDestroy {
   /** The coordinate the assignment listing was last read at. */
   private readonly _assignmentsPage = signal<RolePageCoordinate>(INITIAL_PAGE_COORDINATE);
 
+  /**
+   * How much of the membership the assignment slice was last asked for.
+   *
+   * See {@link AssignmentReadScope} for why it is remembered rather than passed per read.
+   */
+  private readonly _assignmentsScope = signal<AssignmentReadScope>('page');
+
   private readonly _rolesLoading = signal<boolean>(false);
   private readonly _roleGroupsLoading = signal<boolean>(false);
   private readonly _selectedRoleLoading = signal<boolean>(false);
@@ -847,6 +889,14 @@ export class RoleStore implements OnDestroy {
 
   /** The coordinate the assignment listing was last read at. */
   readonly assignmentsPage = this._assignmentsPage.asReadonly();
+
+  /**
+   * Whether the held assignments are one page or the whole membership.
+   *
+   * Published so a screen can tell whether the pager it is bound to has anything to move
+   * through: under `'complete'` the set is whole and the metadata reports a single page.
+   */
+  readonly assignmentsScope = this._assignmentsScope.asReadonly();
 
   readonly rolesLoading = this._rolesLoading.asReadonly();
   readonly roleGroupsLoading = this._roleGroupsLoading.asReadonly();
@@ -1157,11 +1207,20 @@ export class RoleStore implements OnDestroy {
     });
   }
 
-  /** Discards the held failure, so a fresh command starts from a clean slate. */
+  /**
+   * Discards the held failure, so a fresh command starts from a clean slate.
+   *
+   * ⚠ THE ASSIGNMENT IS UNCONDITIONAL, AND THE GUARD IT REPLACES WAS ACTIVELY HARMFUL. Testing the
+   * slice first bought nothing — a signal set to a value it already holds compares equal and
+   * notifies nobody — while the test itself was a READ, and every command begins by calling this.
+   * Any caller reaching a command from inside a reactive computation therefore took a dependency on
+   * the failure slice without asking for one, and the consequence was demonstrable: a screen whose
+   * route observer issued a read re-ran on a recorded failure, cleared the very failure it had
+   * reacted to, and left the observer waiting on that failure to report a refused write as a
+   * success. Writing unconditionally reads nothing and behaves identically.
+   */
   private clearFailure(): void {
-    if (this._failure() !== null) {
-      this._failure.set(null);
-    }
+    this._failure.set(null);
   }
 
   /**
@@ -1234,6 +1293,7 @@ export class RoleStore implements OnDestroy {
           this.recordFailure(this._roleGroups().length === 0 ? 'loadRoleGroups' : 'loadRoles', error);
         },
       });
+
   }
 
   /**
@@ -1341,7 +1401,19 @@ export class RoleStore implements OnDestroy {
    */
   loadAssignments(roleId: number): void {
     this.assignmentsRequest?.unsubscribe();
+
+    // ⚠ A CHANGE OF ROLE DISCARDS THE ROWS IN HAND, AND DOES SO NOW RATHER THAN ON ARRIVAL. The
+    // addressed role is published immediately, so leaving the previous role's memberships in place
+    // would publish them UNDER THE NEW ROLE for as long as the read takes - a consumer that checks
+    // {@link RoleStore.assignmentsRoleId} before rendering, which is the correct check, would be
+    // told the rows belong to a role they do not. A RE-READ of the same role keeps its rows, so a
+    // refresh after a write does not blank the grid it is refreshing.
+    if (this._assignmentsRoleId() !== roleId) {
+      this._assignments.set(emptyPagedResult<UserRole>());
+    }
+
     this._assignmentsRoleId.set(roleId);
+    this._assignmentsScope.set('page');
     this._assignmentsLoading.set(true);
     this.clearFailure();
 
@@ -1359,6 +1431,124 @@ export class RoleStore implements OnDestroy {
   }
 
   /**
+   * Reads EVERY membership of one role, following each page the server reports.
+   *
+   * Legacy: the membership grid at `Website/admin/Security/securityroles.ascx:L56`, which
+   * declared no pager at all and bound the whole membership
+   * (`SecurityRoles.ascx.vb:L204`). The screen that replaces it renders the same whole set,
+   * so it needs the whole set — a first page would silently hide memberships from an
+   * operator deciding whether to add or remove one.
+   *
+   * The first page is requested at {@link MAX_PAGE_SIZE}, the largest the contract permits,
+   * and any further pages the server's metadata reports are fetched together and appended in
+   * page order. The follow-on count is capped by {@link MAX_ASSIGNMENT_PAGES}.
+   *
+   * What lands in the slice is an UNPAGED envelope built by {@link unpagedResult}: the total
+   * is the number of rows actually held and the page count is one, because one set now holds
+   * everything. That is deliberately not the server's paged metadata — republishing "page 0
+   * of 3" beside a set that holds all three pages would misdescribe what is held, and a
+   * pager bound to it would offer moves that cannot change anything.
+   *
+   * The scope is recorded, so the re-read each assignment write performs reproduces the
+   * complete set rather than collapsing it to the first page. See
+   * {@link AssignmentReadScope}.
+   *
+   * ⚠ THE HANDLE IS SHARED WITH THE PAGED READ. Both write the same slice, so dispatching
+   * either one abandons whatever the other had in flight — which is what stops a slower
+   * paged response from overwriting a complete set, or the reverse.
+   *
+   * @param roleId The role whose whole membership to read.
+   */
+  loadAllAssignments(roleId: number): void {
+    this.assignmentsRequest?.unsubscribe();
+
+    // ⚠ A CHANGE OF ROLE DISCARDS THE ROWS IN HAND, AND DOES SO NOW RATHER THAN ON ARRIVAL. The
+    // addressed role is published immediately, so leaving the previous role's memberships in place
+    // would publish them UNDER THE NEW ROLE for as long as the read takes - a consumer that checks
+    // {@link RoleStore.assignmentsRoleId} before rendering, which is the correct check, would be
+    // told the rows belong to a role they do not. A RE-READ of the same role keeps its rows, so a
+    // refresh after a write does not blank the grid it is refreshing.
+    if (this._assignmentsRoleId() !== roleId) {
+      this._assignments.set(emptyPagedResult<UserRole>());
+    }
+
+    this._assignmentsRoleId.set(roleId);
+    this._assignmentsScope.set('complete');
+    this._assignmentsLoading.set(true);
+    this.clearFailure();
+
+    this.assignmentsRequest = this.roleService
+      .listUsers(roleId, { pageIndex: 0, pageSize: MAX_PAGE_SIZE })
+      .pipe(
+        switchMap((response) => this.followAssignmentPages(roleId, toPagedResult(response))),
+        finalize(() => this._assignmentsLoading.set(false)),
+      )
+      .subscribe({
+        next: (rows) => {
+          this._assignments.set(unpagedResult(rows));
+        },
+        error: (error: unknown) => {
+          this.recordFailure('loadAssignments', error);
+        },
+      });
+  }
+
+  /**
+   * Fetches every assignment page after the first and appends them in page order.
+   *
+   * Emits the first page's rows unchanged when the server reports no further page, which is
+   * the ordinary case and costs no extra request.
+   *
+   * @param roleId The role being read.
+   * @param first The first page, already normalised.
+   * @returns Every membership across every reported page, in page order.
+   */
+  private followAssignmentPages(
+    roleId: number,
+    first: PagedResult<UserRole>,
+  ): Observable<readonly UserRole[]> {
+    const reported = Math.min(first.meta.totalPages, MAX_ASSIGNMENT_PAGES);
+    const followers: number[] = [];
+
+    for (let pageIndex = 1; pageIndex < reported; pageIndex += 1) {
+      followers.push(pageIndex);
+    }
+
+    if (followers.length === 0) {
+      return of(first.items);
+    }
+
+    const pageReads: readonly Observable<PagedResponse<UserRole>>[] = followers.map((pageIndex) =>
+      this.roleService.listUsers(roleId, { pageIndex, pageSize: MAX_PAGE_SIZE }),
+    );
+
+    return forkJoin(pageReads).pipe(
+      map((pages): readonly UserRole[] => [
+        ...first.items,
+        ...pages.flatMap((page) => toPagedResult<UserRole>(page).items),
+      ]),
+    );
+  }
+
+  /**
+   * Re-reads the assignments of one role at the scope last asked for.
+   *
+   * The single re-read path for both assignment writes and for
+   * {@link RoleStore.reloadAssignments}, so neither can narrow a complete set to its first
+   * page by accident.
+   *
+   * @param roleId The role to re-read.
+   */
+  private redispatchAssignments(roleId: number): void {
+    if (this._assignmentsScope() === 'complete') {
+      this.loadAllAssignments(roleId);
+      return;
+    }
+
+    this.loadAssignments(roleId);
+  }
+
+  /**
    * Re-reads the assignments for the role already in scope.
    *
    * Does nothing when no role is in scope, which is tested with an explicit absence check
@@ -1371,7 +1561,7 @@ export class RoleStore implements OnDestroy {
       return;
     }
 
-    this.loadAssignments(roleId);
+    this.redispatchAssignments(roleId);
   }
 
   // -------------------------------------------------------------------------
@@ -1605,7 +1795,10 @@ export class RoleStore implements OnDestroy {
         .subscribe({
           next: () => {
             this._assignmentsRoleId.set(roleId);
-            this.loadAssignments(roleId);
+            // ⚠ RE-READ AT THE SCOPE THAT WAS ASKED FOR, never at the paged one. The membership
+            // screen asks for the listing WHOLE, and a paged re-read here would silently shrink the
+            // grid to its first page the moment an enrolment succeeded.
+            this.redispatchAssignments(roleId);
           },
           error: (error: unknown) => {
             this.recordFailure('assignUser', error);
@@ -1659,7 +1852,10 @@ export class RoleStore implements OnDestroy {
           next: () => {
             // Deliberately a re-read and not a removal. See the note above: the row may
             // still exist, expired as of yesterday, and an empty success cannot say.
-            this.loadAssignments(roleId);
+            //
+            // At the scope that was asked for, for the same reason as the enrolment write: a paged
+            // re-read would shrink a whole listing to its first page.
+            this.redispatchAssignments(roleId);
           },
           error: (error: unknown) => {
             this.recordFailure('removeAssignment', error);
@@ -1831,6 +2027,12 @@ export class RoleStore implements OnDestroy {
    * makes clear that nothing held here describes the new session either way.
    *
    * Not a cache eviction: there is no cache to evict. See MIGRATION note 14.
+   *
+   * ⚠ IN-FLIGHT WORK IS CANCELLED FIRST, reads and writes alike. Without that, a response
+   * that was already on the wire when the session ended would land after the reset and
+   * repopulate exactly what the reset had cleared — one operator's roles, groups and
+   * assignments becoming visible to the next. `core/state/session.coordinator.ts` calls
+   * this member on every session boundary, so it has to leave nothing listening.
    */
   reset(): void {
     this.cancelReads();
@@ -1844,6 +2046,7 @@ export class RoleStore implements OnDestroy {
     this._assignmentsRoleId.set(null);
     this._rolesPage.set(INITIAL_ROLES_COORDINATE);
     this._assignmentsPage.set(INITIAL_PAGE_COORDINATE);
+    this._assignmentsScope.set('page');
     this._rolesLoading.set(false);
     this._roleGroupsLoading.set(false);
     this._selectedRoleLoading.set(false);

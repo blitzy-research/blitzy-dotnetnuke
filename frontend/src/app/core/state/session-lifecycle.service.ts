@@ -106,6 +106,18 @@ export class SessionLifecycleService {
    * worst possible moment to run a constructor, and every one of these is a root singleton
    * that the application has almost certainly built already.
    */
+  // ⚠ THE FOUR TENANT STORES ARE INJECTED HERE, AND THE DIRECTION MUST NOT BE REVERSED.
+  //
+  // Having each store enrol itself from its own constructor instead looks tidier and closes a
+  // dependency cycle the injector refuses at runtime: the authentication store injects
+  // `SessionTeardownService`, that service injects all four stores, and a store that reached back
+  // for this coordinator would arrive at the authentication store again. Angular answers that with
+  // NG0200 on the first screen that mounts, and no compiler catches it.
+  //
+  // Nothing is gained by the reversal either. `SessionTeardownService` already imports all four
+  // stores and is itself reached from the bearer interceptor and the authentication store, both of
+  // which are in the initial bundle - so the stores are in that bundle whichever way this reference
+  // points.
   private readonly portalStore = inject(PortalStore);
 
   /** @see {@link portalStore} for why every store is injected eagerly. */

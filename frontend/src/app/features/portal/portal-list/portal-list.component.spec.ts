@@ -44,6 +44,7 @@ import { PortalListComponent } from './portal-list.component';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { PortalListItem } from '../../../core/models/portal.model';
+import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { AppNotification } from '../../../core/services/notification.service';
 import type {
   DataTableColumn,
@@ -61,6 +62,56 @@ const SECOND_PORTAL_ID = 0;
 
 /** The legacy absent-date marker, which survives on the wire. */
 const NULL_DATE = '0001-01-01T00:00:00';
+
+/** The URN prefix every failure code this API publishes is carried behind. */
+const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
+
+/** A fixed trace identifier, shaped like the trace parent the server derives one from. */
+const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+
+/** A fixed correlation identifier - the value an operator quotes when reporting a refusal. */
+const CORRELATION_ID = '0f7d3c81-9a24-4b6e-8c5d-2e91b7a40f36';
+
+/** The reason phrase the API publishes as the problem `title`, keyed by status. */
+const STATUS_TITLE: Readonly<Record<number, string>> = Object.freeze({
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  500: 'Internal Server Error',
+});
+
+/**
+ * A problem document as this API publishes one.
+ *
+ * ⚠️ FOUR THINGS AN EARLIER REVISION OF THESE FIXTURES GOT WRONG, EACH OF WHICH LETS A DEFECT
+ * PASS. They wrote `type: 'about:blank'`, which this API never sends: a refusal reaches the wire
+ * through one shared problem factory that fills an unspecified type from the status vocabulary,
+ * so the type is ALWAYS a `urn:dnnmigration:error:` code and a screen branching on the code
+ * would have been tested against a document from which no code can be read. They wrote titles
+ * such as `'Server Error'` that belong to no status. They omitted both identifiers, so nothing
+ * proved the support reference survives. And they omitted `detail` on the conflict, which meant
+ * the message-precedence rule fell through to the title instead of exercising the real path.
+ *
+ * There is deliberately NO `instance` member: every call site in the API supplies null for it and
+ * the framework's problem type omits a null one per member, so a live document has none.
+ *
+ * @param status The status the server answered with.
+ * @param code The failure code, published behind the URN prefix.
+ * @param detail The authored explanation.
+ * @returns The document.
+ */
+function problemOf(status: number, code: string, detail: string): ProblemDetails {
+  return {
+    type: `${FAILURE_TYPE_PREFIX}${code}`,
+    title: STATUS_TITLE[status] ?? 'Error',
+    status,
+    detail,
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
+  };
+}
 
 function portalRow(overrides: Partial<PortalListItem> = {}): PortalListItem {
   return {
@@ -681,6 +732,207 @@ describe('PortalListComponent', () => {
       ).toBe(0);
     });
 
+    // ⚠️ HOSTILE HOST NAMES. `dbo.PortalAlias.HTTPAlias` is an operator-supplied string with no
+    // scheme constraint on it, so a host name is UNTRUSTED INPUT that reaches an anchor's `href`
+    // and its text. The cases below are the security half of this group, and they exist because
+    // the cases above cover only well-formed values - which is exactly the coverage that lets an
+    // injection through.
+    //
+    // ONE mechanism defends this, and it is an ALLOWLIST rather than a denylist. The projection
+    // prefixes `http://` unless the value already carries `mailto:`, `://`, `~` or a double
+    // backslash, and then requires the result to PARSE as a URL whose protocol is exactly `http:`
+    // or `https:` and whose host is non-empty. Everything else projects a null href, and a null
+    // href renders no anchor at all - the stored value still appears, as interpolated text.
+    //
+    // That is deliberately stronger than demoting a hostile value to a path under an http origin,
+    // and stronger than leaning on the framework's URL sanitiser to mark an executable scheme
+    // `unsafe:`. Both of those still emit a focusable anchor pointing somewhere; this emits none.
+    //
+    // In every case below the value must therefore render with NO anchor, its label must be TEXT
+    // rather than markup, and no `innerHTML` may appear anywhere in the template.
+
+    it('renders a bare javascript scheme with no anchor at all, and shows it as text', () => {
+      settleFirstPage([
+        portalRow({ portalId: SECOND_PORTAL_ID, aliases: ['javascript:alert(1)'] }),
+      ]);
+
+      // The value carries none of the four markers, so `http://` is prefixed - and
+      // `http://javascript:alert(1)` does not parse, because `alert(1)` is not a port. No address
+      // is projected, so nothing is navigable.
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a'))
+        .withContext('nothing navigable')
+        .toHaveSize(0);
+
+      const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
+
+      expect((cell?.textContent ?? '').trim()).toBe('javascript:alert(1)');
+      expect(cell?.children.length).withContext('text, not markup').toBe(0);
+    });
+
+    it('renders a javascript scheme that carries the address marker with no anchor either', () => {
+      // `javascript://` contains `://`, so it is taken as already absolute and parsed as stored. It
+      // parses - and its protocol is `javascript:`, which the allowlist does not admit. Nothing here
+      // relies on the framework rewriting an executable attribute, because no attribute is emitted.
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: ['javascript://comment%0aalert(1)'],
+        }),
+      ]);
+
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
+      expect(queryAll<HTMLElement>('.portal-list__alias').map((node) => (node.textContent ?? '').trim()))
+        .toContain('javascript://comment%0aalert(1)');
+    });
+
+    it('renders a data scheme inertly, as text and with no address', () => {
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: ['data:text/html,<script>alert(1)</script>'],
+        }),
+      ]);
+
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
+
+      const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
+
+      // The script text is TEXT: the cell holds no child element at all, so nothing was parsed as
+      // markup on its way to the DOM.
+      expect(cell?.querySelector('script')).toBeNull();
+      expect(cell?.children.length).toBe(0);
+      expect(cell?.textContent).toContain('<script>alert(1)</script>');
+    });
+
+    it('renders a markup label as text, with no element parsed out of it', () => {
+      // Measured across the in-scope resource files: values carrying an HTML tag are common and four
+      // carry a script element. A host name is operator-supplied, so it is treated the same way.
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: ['<img src=x onerror=alert(1)>host.example'],
+        }),
+      ]);
+
+      const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
+
+      // Prefixing yields `http://<img …>host.example`, which is not a host, so no address is
+      // projected and the value is shown as it was stored.
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
+      expect(cell?.querySelector('img'))
+        .withContext('interpolation escapes it; nothing is parsed as an element')
+        .toBeNull();
+      expect(cell?.children.length).toBe(0);
+      expect(cell?.textContent).toContain('<img src=x onerror=alert(1)>host.example');
+    });
+
+    it('shows a network share and an application-relative path exactly as stored, unlinked', () => {
+      // The two legacy exclusions, and they are exclusions rather than oversights: a share and a
+      // tilde-rooted path are addresses in their own right, so no scheme is prefixed - and neither
+      // parses as an http address, so neither becomes a link. Rewriting either would produce a value
+      // that resolves nowhere and would make this row disagree with the edit screen.
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: ['\\\\fileserver\\portals', '~/portals/dnn'],
+        }),
+      ]);
+
+      const shown: readonly string[] = queryAll<HTMLElement>('.portal-list__alias').map((node) =>
+        (node.textContent ?? '').trim(),
+      );
+
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
+      expect(shown).toHaveSize(2);
+      expect(shown).toContain('\\\\fileserver\\portals');
+      expect(shown).toContain('~/portals/dnn');
+    });
+
+    it('carries a control character into the label as text and into no address at all', () => {
+      // C0 controls and DEL can be stored in the column, and a control embedded in a scheme is the
+      // classic way of smuggling one past a naive prefix test. Here there is no prefix test to pass:
+      // the prefixed value has to parse as an http address, and this one does not.
+      const hostile = 'java\u0000script\u0009:alert(1)\u007f';
+
+      settleFirstPage([portalRow({ portalId: SECOND_PORTAL_ID, aliases: [hostile] })]);
+
+      const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
+
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
+      expect(cell?.children.length).toBe(0);
+      expect(cell?.textContent).toContain('alert(1)');
+    });
+
+    it('renders NOTHING for an empty host name, and the handling is stable across rows', () => {
+      // ⚠️ THE EMPTY STRING IS THE LEGACY SPELLING OF AN ABSENT STRING, so it arrives often. The
+      // legacy screen appended an anchor per row with no emptiness test, producing `<a href=""></a>`
+      // - a focusable, unlabelled link pointing at the current page. Rendering nothing is the honest
+      // representation, and it is asserted alongside a real host name in the same row so that the
+      // empty value is proved to be DROPPED rather than to have suppressed the row.
+      settleFirstPage([
+        portalRow({ portalId: SECOND_PORTAL_ID, aliases: ['', 'one.example', '', ''] }),
+      ]);
+
+      const anchors: readonly HTMLAnchorElement[] = queryAll<HTMLAnchorElement>(
+        '.portal-list__alias > a',
+      );
+
+      expect(anchors.length).toBe(1);
+      expect(anchors[0]?.getAttribute('href')).toBe('http://one.example');
+      expect(anchors[0]?.getAttribute('href'))
+        .withContext('never the empty attribute the legacy screen rendered')
+        .not.toBe('');
+      expect(queryAll<HTMLElement>('.portal-list__alias').length).toBe(1);
+    });
+
+    it('uses no innerHTML anywhere in the rendered host-name cell', () => {
+      // The class-level guarantee behind every case above: the template interpolates and binds, and
+      // nothing in it assigns markup. Asserted structurally - a cell whose only element child is the
+      // visually-hidden new-context phrase, with everything else a text node, cannot have been
+      // produced by an assignment of markup.
+      //
+      // Both arms are exercised in one row: the markup-bearing value is refused by the address
+      // allowlist and rendered as text, and the well-formed one becomes an anchor.
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: ['<b>bold</b>.example', 'plain.example'],
+        }),
+      ]);
+
+      const cells: readonly HTMLElement[] = queryAll<HTMLElement>('.portal-list__alias');
+
+      expect(cells).withContext('both host names are shown').toHaveSize(2);
+      expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a'))
+        .withContext('only the well-formed one is navigable')
+        .toHaveSize(1);
+
+      for (const cell of cells) {
+        expect(cell.querySelector('b')).withContext('nothing is parsed as markup').toBeNull();
+
+        for (const element of Array.from(cell.querySelectorAll('*'))) {
+          expect(['A', 'SPAN'])
+            .withContext('only an anchor and its hidden phrase are emitted')
+            .toContain(element.tagName);
+        }
+
+        const anchor: HTMLAnchorElement | null = cell.querySelector('a');
+
+        if (anchor !== null) {
+          const clone = anchor.cloneNode(true) as HTMLAnchorElement;
+          clone.querySelector('.portal-list__new-context')?.remove();
+
+          expect(clone.children.length)
+            .withContext('the anchor holds its label as text and nothing else')
+            .toBe(0);
+
+          for (const node of Array.from(clone.childNodes)) {
+            expect(node.nodeType).toBe(Node.TEXT_NODE);
+          }
+        }
+      }
+    });
+
     it('answers a row that is not on the page in hand with no host names', () => {
       settleFirstPage([portalRow({ portalId: 1, aliases: ['one.example'] })]);
 
@@ -800,19 +1052,31 @@ describe('PortalListComponent', () => {
       invoke<void>('requestDeletion', portalRow({ portalId: 7 }));
       invoke<void>('onDeletionConfirmed');
 
+      // The live refusal, complete: the code the server publishes, the title that belongs to the
+      // status, the authored sentence, and both identifiers. `last_remaining` is the token the
+      // shared status translator reads to answer 409.
       http.expectOne(`${PORTALS_URL}/7`).flush(
-        { type: 'about:blank', title: 'Conflict', status: 409 },
+        problemOf(
+          409,
+          'portal.last_remaining',
+          'You Can Not Delete The Last Portal In Your Database',
+        ),
         { status: 409, statusText: 'Conflict' },
       );
       fixture.detectChanges();
 
       const queued: readonly AppNotification[] = notifications.notifications();
       expect(queued.length).toBe(1);
-      // The legacy screen surfaced this at RedError, not at the success severity.
+      // The legacy screen surfaced this at RedError, not at the success severity - and 409 is one
+      // of the statuses that stays an error, since only 401, 403, 404 and 429 soften to a warning.
       expect(queued[0]?.severity).toBe('error');
       expect(queued[0]?.message).toBe(
         'You Can Not Delete The Last Portal In Your Database',
       );
+
+      // The row survives, because nothing was deleted. A screen that removed it optimistically
+      // would show the operator an empty installation it still has.
+      expect(host().querySelectorAll('tbody tr').length).toBe(1);
     });
 
     it('announces a permission refusal at WARNING severity, never at error', () => {
@@ -821,13 +1085,15 @@ describe('PortalListComponent', () => {
       invoke<void>('requestDeletion', portalRow({ portalId: 9 }));
       invoke<void>('onDeletionConfirmed');
 
+      // `auth.not_permitted` is the code the authorisation result handler publishes for every
+      // refused policy in this API; the leading break tag is a legacy wording artefact that the
+      // shared summariser strips.
       http.expectOne(`${PORTALS_URL}/9`).flush(
-        {
-          type: 'about:blank',
-          title: 'Forbidden',
-          status: 403,
-          detail: '<br>You do not have permission to perform this action.',
-        },
+        problemOf(
+          403,
+          'auth.not_permitted',
+          '<br>You do not have permission to perform this action.',
+        ),
         { status: 403, statusText: 'Forbidden' },
       );
       fixture.detectChanges();
@@ -958,14 +1224,20 @@ describe('PortalListComponent', () => {
       http
         .expectOne((candidate) => candidate.url === PORTALS_URL)
         .flush(
-          { type: 'about:blank', title: 'Server Error', status: 500, detail: 'Boom.' },
-          { status: 500, statusText: 'Server Error' },
+          problemOf(
+            500,
+            'server.unexpected_failure',
+            'An unexpected error occurred while processing the request.',
+          ),
+          { status: 500, statusText: 'Internal Server Error' },
         );
       fixture.detectChanges();
 
       const banner: HTMLElement | null = host().querySelector<HTMLElement>('app-error-banner');
       expect(banner).not.toBeNull();
-      expect(banner?.textContent).toContain('Boom.');
+      expect(banner?.textContent).toContain(
+        'An unexpected error occurred while processing the request.',
+      );
 
       invoke<void>('onRetry');
       http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()]));

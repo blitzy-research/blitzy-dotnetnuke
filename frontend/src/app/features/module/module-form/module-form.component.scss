@@ -1,83 +1,272 @@
-// Component stylesheet for the module placement create-and-edit form, served by the
-// routes /modules/new and /modules/:moduleId.
+// =============================================================================
+//  module-form.component.scss — the module placement create-and-edit screen
+// =============================================================================
 //
-// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
-// component's own content attribute, so a class name that drifts does not error - it
-// silently matches nothing and the screen renders unstyled. The template must therefore
-// emit exactly this vocabulary:
+//  Paired with module-form.component.ts (styleUrl, ChangeDetectionStrategy.OnPush)
+//  and module-form.component.html. Reached by loadComponent from BOTH the 'new' and
+//  the ':moduleId' routes, so everything below lands in the module feature's LAZY
+//  chunk and never in the initial bundle. That is the standing reason this file stays
+//  lean: it is downloaded on navigation, not at first paint.
 //
-//     .module-form
-//     .module-form__body
-//     .module-form__group
-//     .module-form__group--nested
-//     .module-form__group-title
-//     .module-form__group-title--nested
-//     .module-form__choices
-//     .module-form__choice
-//     .module-form__notice
-//     .module-form__action
-//     .module-form__action--primary
-//     .module-form__action--danger
+//  Ported from Website/admin/Modules/modulesettings.ascx. That screen laid its
+//  settings out as NINE nested `table` elements, EIGHT of them carrying
+//  `summary="... Design Table"`, and two of those summary values are duplicated
+//  ("Appearance Design Table" and "Security Details Design Table" each appear twice)
+//  — a caption that describes a different table than the one it sits on is
+//  conclusive proof the element carried no data semantics. The template emits no
+//  `table` at all; grouping is `fieldset`/`legend` and geometry is grid and flex
+//  here.
 //
-// The block class sits on the `form` element itself, which IS the root of this template,
-// so no `:host` rule is needed: a single flow container cannot be split across the host
-// and the form without one of the two acquiring a gap it has nothing to apply it to.
+//  LOAD PATH — FOUR LEVELS, AND WHY THREE FAILS
+//  -------------------------------------------
+//  The workspace configures no Sass load path: angular.json declares no
+//  stylePreprocessorOptions.includePaths and tsconfig.json declares no baseUrl or
+//  paths, so every import is relative and there is no barrel to forward from.
+//  Counting directories from this file to src/ gives FOUR:
+//    module-form(1) -> module(2) -> features(3) -> app(4)
+//  A three-level path resolves to the non-existent src/app/styles/mixins and fails
+//  the build with "Can't find stylesheet to import." A layout or directive
+//  stylesheet is one level shallower and legitimately writes three; the sibling .ts
+//  writes three for core/ and shared/, which are different targets at a different
+//  depth. Neither is a template for this line. _mixins.scss publishes the verified
+//  table itself and its `src/app/features/<f>/<screen>/` row is the four-level form.
 //
-// The surface is deliberately flat - one block class plus element and modifier classes,
-// no deep descendant chains and no piercing selector. Shared components own their own
-// appearance; this file only places them. Focus indication is deliberately absent and
-// must stay absent: _reset.scss applies the shared focus-ring mixin to every anchor,
-// button, input, select, textarea and summary, so the design system owns focus and a
-// feature screen consumes it rather than redeclaring it.
+//  Sass modules are per-file and NOT ambient, so the `@use` in src/styles.scss does
+//  not reach this file — it must load the partial itself. _mixins.scss is a
+//  pure-abstraction partial that emits zero CSS, so loading it costs nothing.
+//  _tokens.scss is deliberately NOT loaded: it emits a document-root block that
+//  src/styles.scss already emits once globally, and loading it here would duplicate
+//  that block inside this component's scoped stylesheet. Tokens are therefore
+//  consumed as custom properties, which the browser resolves at run time.
+//
+//  MARKUP CONTRACT — THE TWELVE CLASSES THE TEMPLATE EMITS
+//  ------------------------------------------------------
+//  Emulated view encapsulation rewrites every selector below with this component's
+//  content attribute, so a class name that drifts does not error — it silently
+//  matches nothing and the screen renders unstyled. The template emits exactly:
+//
+//      .module-form                      the form element, and this template's root
+//      .module-form__body                the field regions, once the module is read
+//      .module-form__group               a fieldset of related settings
+//      .module-form__group--nested       the one level of sub-grouping
+//      .module-form__group-title         its legend
+//      .module-form__group-title--nested the sub-group legend
+//      .module-form__choices             the visibility radiogroup
+//      .module-form__choice              one option within it
+//      .module-form__notice              an unreadable address, or a missing module
+//      .module-form__action              a command, projected into the page heading
+//      .module-form__action--primary     save
+//      .module-form__action--danger      remove
+//
+//  The block class sits on the `form` element, which IS this template's root, so no
+//  host rule is needed: a single flow container cannot be split across the host and
+//  the form without one of the two acquiring a gap it has nothing to apply it to.
+//
+//  WHAT THIS FILE DELIBERATELY DOES NOT DECLARE — VERIFIED, NOT ASSUMED
+//  -------------------------------------------------------------------
+//  The surface is flat: one block class plus element and modifier classes, no deep
+//  descendant chains, and no piercing selector anywhere. Shared components own their
+//  own appearance; this file only PLACES them. Each delegation below was checked
+//  against the file that actually owns it, because a delegation asserted without
+//  checking is indistinguishable from an omission:
+//
+//   * FOCUS INDICATION. Applied globally, and twice over: _reset.scss section 8 and
+//     _forms.scss section 6 both `@include mx.focus-ring` on button, input, select
+//     and textarea. Every focusable surface this template contains is one of those
+//     four elements — the radio row's `.module-form__choice` is a `label`, which is
+//     not focusable, and the control it labels is an `input`. This component
+//     therefore owns NO focusable surface of its own, and re-declaring the ring
+//     would duplicate a rule the design system already guarantees. _forms.scss
+//     records that nothing anywhere suppresses the outline.
+//
+//   * THE READ-ONLY TREATMENT. _forms.scss section 8 declares
+//     `input[readonly], textarea[readonly]` with the secondary surface and the
+//     stronger border, and holds that border against its own hover rule. It states
+//     the reasoning this screen depends on: read-only is NOT disabled, so the text
+//     keeps full contrast because the value is real, still focusable, still
+//     copyable and still submitted. The definition-name field this template renders
+//     with `readonly` is covered by it.
+//
+//   * THE DISABLED TREATMENT. _forms.scss section 8 also declares
+//     `input:disabled, select:disabled, textarea:disabled, button:disabled` and the
+//     `aria-disabled` companions. The save command carries `[disabled]="busy()"`
+//     and is covered.
+//
+//   * THE LABEL-BESIDE-CONTROL ARRANGEMENT AND ITS RESPONSIVE BEHAVIOUR. Owned by
+//     the shared form field, which stacks the label above its control by default
+//     and lays the two out as a fixed label track beside a fluid control track
+//     above the 'md' step, through the same shared breakpoint mixin this file uses.
+//     A feature screen that restated that arrangement would fork it.
+//
+//   * THE COMMAND ARRANGEMENT. The three commands are projected into the shared page
+//     heading, whose actions region is a wrapping flex row with its own gap. Their
+//     row, wrapping and spacing are therefore not this file's to set.
+//
+//   * THE BUTTON, CONTROL AND HELP APPEARANCE. _forms.scss owns all three.
+//
+//  MIGRATION REGISTER — DIVERGENCES RECORDED RATHER THAN ABSORBED
+//  -------------------------------------------------------------
+//  MIGRATION: THE LAYOUT TABLES ARE GONE. The legacy screen's nine tables expressed
+//    spacing as markup. They become grid and flex here and no table survives, so the
+//    label-and-control pairing is preserved as a PATTERN while its scaffolding is
+//    not. Assistive technology gains from this rather than losing: a layout table is
+//    announced as a table with rows and columns that mean nothing.
+//
+//  MIGRATION: THE SPACING SCALE IS A NET ADDITION. Every gap and padding below
+//    resolves to the shared four-pixel-based scale, and that scale has no legacy
+//    counterpart — the legacy stylesheets declare no spacing system at all, only
+//    ad-hoc values on individual rules. An intentional visual refinement that alters
+//    no behaviour.
+//
+//  MIGRATION: THE RADIUS SCALE IS A NET ADDITION for the same reason; the legacy
+//    design is square-cornered throughout. It is used here only to distinguish the
+//    two nesting levels of a settings group, and the two levels are ALSO
+//    distinguished by surface and by border colour, so the distinction never rests
+//    on the corner alone.
+//
+//  MIGRATION: THE FONT STACK IS CONSOLIDATED. The legacy stylesheet carries three
+//    near-identical stacks — the label and body rules use one, other rules use two
+//    further variants — which collapse into the single base family token. The
+//    rendered difference is imperceptible and no behaviour changes.
+//
+//  MIGRATION: NO ELEVATION IS USED HERE. The elevation scale is a net addition
+//    available in the vocabulary, and this screen deliberately spends none of it: a
+//    settings form is flat content, and the two nesting levels are already legible
+//    from surface and border. Shadow is reserved for surfaces that genuinely float.
+//
+//  MIGRATION: NO COLOUR OR BORDER VALUE ORIGINATES IN DATA. The legacy screen let an
+//    administrator type a colour and a border width into two text boxes, the second
+//    validated as a single integer. Both are excluded from the module contract, the
+//    template renders neither, and no value from either reaches a style declaration
+//    anywhere in this file. Nothing here is interpolated from a bound value.
+//
+//  REPORTED GAP — NOT FIXABLE FROM A STYLESHEET
+//  --------------------------------------------
+//  The shared form field exposes a multi-line variant as a CONSUMER-APPLIED host
+//  class: its own stylesheet matches that class to pin a label to the top of a tall
+//  row instead of to the first text baseline, and its component class declares no
+//  such member, so the class can only arrive from markup. Two peer feature templates
+//  apply it, and their stylesheets note the same contract. THIS screen's two
+//  six-row text areas — the module header and the module footer — carry it on
+//  neither, so above the 'md' step their labels baseline-align to the first line of
+//  a tall control. Correcting that means adding the class in the template, which is
+//  another agent's file; reaching the shared component's internal label row from
+//  here would need a piercing selector, which is forbidden and would also couple
+//  this screen to that component's private structure. Recorded here and reported
+//  rather than worked around.
+// =============================================================================
 
 @use '../../../../styles/mixins' as mx;
 
 // -----------------------------------------------------------------------------
 //  ROOT
 // -----------------------------------------------------------------------------
-// Body type is declared here and inherited by every region below rather than restated
-// per rule, and it is declared on the component root rather than left to a global base
-// rule: that keeps the component self-sufficient, because without it the browser falls
-// back to its own serif default for every legend, label and help string on the screen.
+// Body type is declared once here and inherited by every region below rather than
+// restated per rule, and it is declared on the component root rather than left to a
+// global base rule so the component is self-sufficient: without it, every legend and
+// label on the screen falls back to the browser's own serif default. It reaches the
+// controls too, because _reset.scss has them inherit `font`, after which _forms.scss
+// sets their own size — which is how the measured legacy proportion survives, body
+// prose one step below control text.
+//
+// An explicit single fluid column rather than the implicit one `display: grid` would
+// otherwise create. The token resolves to a track with a ZERO minimum, and that
+// minimum is the point: an implicit track sizes to its content, so one long unbroken
+// word, or a select whose longest option is long, would widen the track past its
+// container and put a horizontal scrollbar on the whole screen. Stated explicitly, the
+// track can never exceed the space it is given.
 .module-form {
   display: grid;
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-4);
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
   line-height: var(--line-height-tight);
 }
 
+// The field regions, rendered once the addressed module has been read. Separate from
+// the root because the root also holds the heading and the error banner, and those
+// are spaced from the body rather than from each other.
 .module-form__body {
   display: grid;
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-4);
 }
 
 // -----------------------------------------------------------------------------
 //  GROUPS, INCLUDING EXACTLY ONE LEVEL OF NESTING
 // -----------------------------------------------------------------------------
-// A fieldset per group of related settings. The nested modifier exists because the
-// permission sub-groups sit INSIDE the group they qualify, and the nesting is expressed
-// by a lighter surface and tighter padding rather than by a descendant selector: a
+// A fieldset per group of related settings, and the same rule serves both nesting
+// levels because both carry this class. The nested modifier that follows changes only
+// what differs, and it is a MODIFIER rather than a descendant selector on purpose: a
 // descendant selector would couple the two levels and stop matching the moment the
-// markup was reordered, which is precisely the failure this contract is written to
-// prevent.
+// markup was reordered, which is precisely the failure the markup contract above
+// exists to prevent.
+//
+// The single fluid column is what makes every field a full-width row, which is the
+// legacy arrangement — one setting per table row — carried across without the table.
+// It is also why the two six-row text areas need no spanning rule: in a
+// one-column grid a row already occupies the full width, so a span declaration would
+// assert something the grid guarantees.
+//
+// `min-inline-size: 0` is load-bearing and is not defensive boilerplate. A fieldset
+// is one of the few elements with an intrinsic minimum size of its own content, and
+// _reset.scss normalises fieldset nowhere, so without this an inner control wide
+// enough to exceed its column would push the fieldset past the track the parent grid
+// gave it — defeating the zero-minimum track above at the one point it matters, since
+// these groups nest inside one another.
 .module-form__group {
   display: grid;
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-3);
+  min-inline-size: 0;
   padding: var(--space-4);
   border: var(--border-width) var(--border-style) var(--color-border);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
 }
 
+// The sub-group reads as recessed rather than as merely smaller: a secondary surface,
+// a stronger border and tighter padding. Three signals, so the level survives the
+// loss of any one of them — in forced-colours mode the surface and border are
+// substituted by the user agent and the padding still carries the nesting.
 .module-form__group--nested {
   padding: var(--space-3);
   border-color: var(--color-border-strong);
   background-color: var(--color-surface);
 }
 
-// A `legend` is rendered by the browser as part of its fieldset's border, so its inline
-// padding is what opens the gap in that border rather than a margin.
+// Narrow-viewport relief, and a measured need rather than a reflex. The two nesting
+// levels compound their INLINE padding: an outer group plus a nested one spends the
+// step-four padding twice and the step-three padding twice before a control is
+// reached, which is fifty-six pixels of a three-hundred-and-twenty-pixel handset —
+// over a sixth of the viewport — and the shared field is stacked at that width, so
+// the control has the full remaining measure and every pixel of it counts.
+//
+// Only the INLINE padding is withdrawn. The block padding costs nothing horizontally
+// and keeps the vertical separation between groups that the border alone does not
+// convey, so removing it would trade a real gain for a real loss.
+//
+// Declared here, AFTER both group rules, and deliberately so. Both rules target the
+// same elements at equal specificity, and the nested modifier sets `padding` as a
+// shorthand — which resolves all four sides. Placed before it, this override would be
+// silently discarded on exactly the nested groups that need it most. A media query
+// adds no specificity of its own, so source order is the whole of the mechanism.
+//
+// The query itself comes from the shared breakpoint scale through its mixin. This
+// file writes no at-rule of its own: only _mixins.scss may, so that a step is
+// declared once for the workspace and cannot drift.
+@include mx.respond-below('sm') {
+  .module-form__group {
+    padding-inline: var(--space-2);
+  }
+}
+
+// A legend is painted by the browser as part of its fieldset's border, so INLINE
+// padding is what opens the gap in that border — a margin would move the legend
+// without interrupting the line it sits on. Emphasised and brand-coloured, which is
+// the treatment the legacy label carried: bold, the brand colour, one step above body
+// prose. Expressed through tokens; the legacy pixel values are evidence of intent.
 .module-form__group-title {
   padding-inline: var(--space-1);
   font-size: var(--font-size-lg);
@@ -85,68 +274,148 @@
   color: var(--color-primary);
 }
 
+// The sub-group caption steps DOWN to body size and to the muted colour, so the
+// hierarchy is read from weight and colour rather than from size alone. It keeps the
+// bold weight it inherits from the rule above, which is what stops it reading as
+// ordinary prose. The muted token clears the contrast minimum for normal text on both
+// surfaces this screen paints behind it.
 .module-form__group-title--nested {
   font-size: var(--font-size-md);
   color: var(--color-text-muted);
 }
 
 // -----------------------------------------------------------------------------
-//  CHOICES
+//  THE VISIBILITY RADIOGROUP
 // -----------------------------------------------------------------------------
-// One choice per line, because the options are sentences rather than single words and a
-// row would truncate them at the narrow widths this screen must still work at. Baseline
-// alignment puts the control on the first line of a wrapped label instead of centring it
-// against the whole block.
+// One option per line. The options are phrases rather than single words, so a
+// horizontal row would either truncate them or force the group wider than its
+// column at the narrow widths this screen still has to work at. The fluid column
+// applies here for the same zero-minimum reason as above — this group sits inside the
+// shared field's control track, which it must not be able to widen.
+//
+// The element is a div carrying the radiogroup role, not a fieldset, and its own
+// accessible name comes from the shared field's label through aria-labelledby. The
+// group's spacing is all this file contributes; the role and the name are the
+// template's.
 .module-form__choices {
   display: grid;
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-2);
   padding: 0;
   border: 0;
   margin: 0;
 }
 
+// A label wrapping its own radio, so the whole phrase is part of the hit target
+// rather than only the control. Flex places the two on one line; baseline alignment
+// puts the control on the FIRST line of a phrase that has wrapped, instead of
+// centring it against the whole block, which is where a two-line option would
+// otherwise leave it floating. Baseline is declared here deliberately and does win:
+// the global rule for a label that contains a radio centres it, and a component
+// class outweighs that rule's element-plus-:has() weight, so no importance flag is
+// needed to hold the baseline.
+//
+// The margin reset is NOT defensive boilerplate — it corrects a measured defect.
+// _forms.scss gives every `label` a small block-end margin, which is right for the
+// ordinary case where a label sits ABOVE its control and needs separating from it.
+// A choice row is the opposite shape: the label WRAPS its control, and it is a row
+// in a grid whose spacing the container already owns through `gap`. Left in place
+// the margin is contributed a second time, so the rhythm renders one step wider
+// than the `gap` declared above claims, and a trailing margin hangs below the LAST
+// option where there is no following row to separate it from. Spacing between grid
+// children belongs to the container's gap, never to a sibling margin.
+//
+//  ⚠ BLITZY [A11Y]: a choice row's pointer target is smaller than the 44-by-44
+//  recommendation, and it is implemented per the design source rather than silently
+//  enlarged. Measured in the browser, the row is about 17px in the block axis and
+//  the radio itself about 13px square. The legacy affordance was no better: the
+//  screen rendered an `asp:radiobuttonlist` of 11px text rows inside a layout-table
+//  cell with no padding of its own, so a larger target would be a change to the
+//  design rather than a faithful port of it — and visual continuity with the legacy
+//  portal outranks the generic recommendation in this project's precedence order.
+//  Two things do genuinely improve on the legacy baseline, and neither costs a pixel
+//  of layout: the label WRAPS its own radio, so the whole phrase is part of the hit
+//  target instead of only the 13px control, and the shared focus ring makes the row
+//  traversable and clearly indicated by keyboard.
+//  The shortfall cannot be closed from here in any case. The block size is a
+//  consequence of the shared type scale and of the control sizing that _forms.scss
+//  owns, and no token in the vocabulary expresses 44px — so reaching it would need
+//  either a hardcoded length, which the zero-hardcoded-values rule forbids outright,
+//  or a fabricated token, which only _tokens.scss may declare. Flagged here for
+//  designer review rather than corrected by inventing a value.
 .module-form__choice {
   display: flex;
   gap: var(--space-2);
   align-items: baseline;
+  margin-block-end: 0;
 }
 
+// -----------------------------------------------------------------------------
+//  THE TWO REPORTED STATES
+// -----------------------------------------------------------------------------
+// An address that names no module, or a module that no longer exists. Both are
+// legitimate states rather than faults, which is why this is muted prose and not the
+// error banner — the banner carries a live region and a problem document, and putting
+// an ordinary "not found" through it would announce a server failure that did not
+// happen.
+//
+// In both states this paragraph is the ONLY content on the screen: the field regions
+// are not rendered. It therefore takes the inherited body size rather than declaring
+// a smaller one — the sole message on a screen must not be the smallest text on it.
+// The muted colour is the de-emphasis, and it clears the contrast minimum for normal
+// text on the page background.
+//
+// The looser line height is for prose specifically. The root sets the tight step,
+// which suits legends and single-line labels; a sentence that wraps reads better with
+// the base step, and this is the one place on the screen where a sentence wraps.
+//
+// The measure is capped through the shared breakpoint scale's own accessor, which is
+// the sanctioned way to reach a raw step: a line of prose that runs the full width of
+// a wide display is hard to track back to the next line. Nothing here restates a
+// step or writes a query.
+//
+// `overflow-wrap` is a genuine requirement rather than a habit: the unreadable-address
+// message quotes the offending address back to the reader, and an address is
+// arbitrary, unbounded and frequently unbroken by spaces. Without this, one long
+// token would overflow the paragraph and scroll the screen sideways.
 .module-form__notice {
   max-inline-size: mx.breakpoint('md');
   color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
 }
 
 // -----------------------------------------------------------------------------
-//  COMMANDS
+//  COMMANDS — TYPE ONLY, NEVER PLACEMENT
 // -----------------------------------------------------------------------------
-// These sit inside the page header's action slot, so their arrangement belongs to that
-// shared component and is not restated here. What IS declared here is the one thing the
-// shared component cannot know: which command is primary and which is destructive.
+// These sit in the shared page heading's actions region, so their row, their wrapping
+// and the space between them belong to that component. _forms.scss owns their
+// appearance, at body size and normal weight, which is the plain command the legacy
+// screen rendered. What is left for this file is the one thing neither can know:
+// which command is primary and which is destructive.
 //
-// Both modifiers are a TYPE change only. A destructive command that also moved or
-// resized would be a different affordance in a different place, which is exactly how a
-// reader mis-clicks the one command that cannot be undone.
+// Both modifiers are a TYPE change ONLY. A destructive command that also moved,
+// resized or gained a fill would be a different affordance in a different place,
+// which is exactly how a reader mis-clicks the one command that cannot be undone.
+//
+// Neither modifier collides with the global disabled rule, and the reason is worth
+// stating because the arithmetic is not obvious. A component style is rewritten with
+// this component's content attribute, so a single class here outweighs an element
+// plus a pseudo-class. The primary modifier sets only weight, which the disabled rule
+// does not touch, so a disabled save correctly renders in the disabled colours while
+// keeping its emphasis. The remove command is never disabled — the template gives it
+// no disabled binding, matching the legacy affordance, which likewise stayed live on
+// an invalid page — so its colour cannot mask the disabled state either. Nothing here
+// needs, or uses, an importance flag.
 .module-form__action--primary {
   font-weight: var(--font-weight-bold);
 }
 
+// The accessible danger colour, not the raw danger token. The raw token is the
+// measured legacy red and renders below the contrast minimum for normal text; the
+// vocabulary declares a darker companion for danger TEXT precisely so a destructive
+// label is legible. Colour is not the sole indicator: the command is worded
+// destructively and it opens a confirmation dialog before anything is removed.
 .module-form__action--danger {
   color: var(--color-danger-text);
 }
-
-// =============================================================================
-//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
-// =============================================================================
-//
-// MIGRATION: every spacing value above resolves to the shared spacing scale, and that
-// scale is itself a NET ADDITION - the legacy stylesheets declare no spacing system,
-// only ad-hoc values. The radius scale is a net addition for the same reason, and it is
-// used here only to distinguish the two nesting levels of a settings group. Both are
-// intentional visual refinements that alter no behaviour.
-//
-// MIGRATION: the legacy screen laid its settings out as nested layout tables. Those are
-// spacing as markup, not structure, so they become CSS grid and flow here and no table
-// survives. This is recorded in MIGRATION_NOTES.md with the rest of the visual
-// refinements.
-// =============================================================================

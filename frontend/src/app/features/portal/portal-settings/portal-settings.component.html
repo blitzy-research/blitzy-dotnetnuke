@@ -1,11 +1,26 @@
 <!--
   THE PORTAL SETTINGS SCREEN.
 
-  Structure, measured from `Website/admin/Portal/sitesettings.ascx`: of its thirteen
-  section heads exactly three carry `IncludeRule="True"` and are therefore top level, and
-  the third of those is the stylesheet editor, which goes with the excluded skinning
-  subsystem. Two remain, so this screen is a two-tab strip whose panels hold the surviving
-  nested sections as disclosures.
+  MIGRATION: THE TWO-LEVEL SECTION-HEAD HIERARCHY BECOMES A TWO-TAB STRIP OVER NESTED
+    COLLAPSIBLE GROUPS, AND THE THIRD TOP-LEVEL GROUP IS DROPPED WITH SKINNING. Measured
+    from `Website/admin/Portal/sitesettings.ascx`: it declares THIRTEEN section heads, of
+    which exactly THREE carry `IncludeRule="True"` and are therefore top level — the basic
+    group at L14, the advanced group at L204 and the stylesheet editor at L539. The other
+    ten are their children, paired to their bodies by `Section="tblX"`. The stylesheet
+    editor goes with the excluded skinning subsystem, so two top-level groups remain and
+    this screen is a two-tab strip whose panels hold the surviving children as grouped
+    field sets. The advanced group's own `IsExpanded="False"` translates to "not the tab
+    that opens first", and each CHILD keeps its own measured default: site details, site
+    marketing, security settings and page management open; other settings and host
+    settings closed.
+
+  MIGRATION: THE SITE WIZARD COLLAPSES INTO THIS SCREEN AND PRODUCES NO ROUTE OF ITS OWN.
+    `Website/admin/Portal/sitewizard.ascx` is a reference input only. There is no wizard
+    route, no step navigator, no next-or-back pair and no step state anywhere below: its
+    remaining subject matter is these same portal columns, and the legacy section heads
+    already let a caller visit them in any order. The portal-template screen likewise
+    produces no target file — no selector, no send-out action and no take-in action appears
+    here, because the interface publishes no portal-template resource to call.
 
   MIGRATION: THE TAB STRIP AND THE DISCLOSURES ARE AUTHORED HERE RATHER THAN AS SHARED
     COMPONENTS. The shared inventory is closed at ten members and this is the only screen
@@ -14,16 +29,54 @@
     keyboard movement they oblige, because declaring them without it would be worse than
     declaring neither.
 
+  MIGRATION: THE LEGACY TOGGLE'S NEGATIVE TAB INDEX IS REVERSED, NOT REPRODUCED.
+    `Website/controls/sectionheadcontrol.ascx` L3 withdraws its toggle from the tab order
+    with a negative tab index — spelled with a capital I, so a case-sensitive search
+    undercounts it — leaving every legacy section head operable by pointer only. Each
+    toggle below is a real `button` reachable by Tab and activated by Enter and Space,
+    carrying its expanded state and a reference to the body it controls. The strip's own
+    triggers use a roving tab index for the same reason: one stop for the strip, arrow keys
+    within it. Reversing this costs no rendered pixel, which is why it is done here.
+
   MIGRATION: EVERY STRING HERE IS INTERPOLATED PLAIN TEXT. Legacy resource values are
     untrusted markup — this screen's own resource file holds a live third-party advertising
     script, stored XML-escaped so a naive search clears it wrongly — so no raw-markup
     binding, no sanitiser bypass and no trusted-markup wrapper appears anywhere below. The
     help sentences that need structure are authored as real elements instead.
 
+  MIGRATION: WORDING COMES FROM THE RESOURCE VALUE, NEVER FROM THE MARKUP ATTRIBUTE, AND
+    THE TWO DISAGREE TWICE ON THIS SCREEN. `sitesettings.ascx` L73 declares
+    `text="Marketing"` while `Marketing.Text` resolves to "Site Marketing"; L51 declares
+    `Text="Key Words:"` with a space while `plKeyWords.Text` resolves to "Keywords:". The
+    resource value wins in both cases. The page title is likewise the settings-mode
+    entry — "Site Settings" — and not the edit-mode "Edit Portals". Every string below is
+    supplied by the paired class from that measured set, so this template invents none.
+
   MIGRATION: THE LEGACY LAYOUT TABLES ARE GONE. `sitesettings.ascx` nested its fields in
-    tables with `cellspacing`, `cellpadding` and pixel widths. Tabular markup is for
-    tabular data; the layout here is grid and flex declared in the paired stylesheet, and
-    every value it uses is a design token.
+    tables with `cellspacing`, `cellpadding` and pixel widths — its own `summary`
+    attributes name them design tables. Tabular markup is for tabular data and there is
+    none on this screen; the layout here is grid and flex declared in the paired
+    stylesheet, and every value it uses is a design token.
+
+  MIGRATION: SIX LEGACY GROUPS RENDER NOTHING AT ALL, BECAUSE EVERY FIELD THEY HELD IS OUT
+    OF SCOPE. Appearance and the stylesheet editor go with skinning; the payment group goes
+    with the excluded commerce surface, and its stored processor credential is never
+    rendered, held or logged here. The usability group and the secure-transport group go
+    further: both are measured to be module-setting rows of the "Site Settings" module
+    rather than portal columns — `PortalSettings.vb` L923 resolves the site settings read
+    to a module-settings read and L970 resolves the write the same way — so neither is a
+    column this resource can carry. THERE IS NO PORTAL-SETTINGS TABLE: a case-insensitive
+    sweep for one across all eighty-eight schema scripts returns nothing, and the legacy
+    composite of that name is a per-request ambient object assembled from portal columns.
+    No key-and-value settings editor is offered below, and no group is rendered empty or
+    filled with invented content in place of what it lost.
+
+  MIGRATION: FOUR FURTHER FIELDS ARE DROPPED FROM GROUPS THAT DO SURVIVE. The default
+    language selector goes with the unported localisation mechanism; the site-log retention
+    box goes with the excluded logging provider; the premium-module dual list goes with the
+    excluded provider families; and the home directory box was already disabled in the
+    legacy markup, so it offered no workflow to preserve. Each is named here so that its
+    absence reads as a decision rather than an omission.
 -->
 <section class="portal-settings">
   <!--
@@ -68,6 +121,18 @@
         <!--
           Only the selected tab is in the sequential tab order; the arrow keys move between
           them, which is the strip's own contract rather than the document's.
+
+          THE CONTROL REFERENCE IS DROPPED WHILE THERE IS NOTHING TO CONTROL. Only the
+          selected panel is in the document — the other is DESTROYED, not hidden — so naming
+          it from the unselected trigger would point at an element that does not exist, and a
+          reference that resolves to nothing is worse than no reference: assistive technology
+          is told a relationship exists and then cannot follow it. The attribute binding
+          resolves to null and the attribute is omitted entirely, so the reference exists
+          exactly when its target does. `aria-selected` still carries the state, which is
+          what makes the reference optional in the first place. This is not invented here —
+          `shared/components/form-field` reached the identical conclusion for its own
+          disclosure, for the identical reason, and this screen follows that precedent rather
+          than contradicting it.
         -->
         <button
           #tabControl
@@ -76,7 +141,7 @@
           role="tab"
           [id]="tabControlId(tab)"
           [attr.aria-selected]="isTabActive(tab)"
-          [attr.aria-controls]="tabPanelId(tab)"
+          [attr.aria-controls]="isTabActive(tab) ? tabPanelId(tab) : null"
           [attr.tabindex]="isTabActive(tab) ? 0 : -1"
           (click)="selectTab(tab)"
         >
@@ -96,19 +161,37 @@
         >
           <p class="portal-settings__intro">{{ tabHelp['basic'] }}</p>
 
-          <!-- Site Details. Open by default: its section head declared no collapsed state. -->
-          <section class="portal-settings__section">
-            <h2>
+          <!--
+            Site Details. Open by default: its section head declared no collapsed state.
+
+            EACH NESTED GROUP IS A GROUPED FIELD SET WITH A CAPTION, and that is a
+            structural decision rather than a stylistic one. The legacy child section head
+            was a caption standing over a set of related controls, which is precisely what a
+            field set and its caption express; the caption becomes the group's accessible
+            name for free, so a reader arriving at any control inside is told which group it
+            belongs to. The paired stylesheet states the same contract from its side — it
+            declares nothing that a field set and its caption already provide — so the
+            grouping boundary, its radius, its inset and the caption's type all resolve to
+            tokens in the global form partial rather than being restated here.
+
+            The toggle sits INSIDE the caption, so the group's name and the control that
+            opens it are one thing. It carries its own expanded state and a reference to the
+            body it controls, and the body is REMOVED when closed rather than hidden, so the
+            reference names something whenever it exists and text that is not on the screen
+            is never left in the accessibility tree.
+          -->
+          <fieldset class="portal-settings__section">
+            <legend>
               <button
                 type="button"
                 class="portal-settings__toggle"
                 [attr.aria-expanded]="isSectionOpen('siteDetails')"
-                [attr.aria-controls]="sectionBodyId('siteDetails')"
+                [attr.aria-controls]="isSectionOpen('siteDetails') ? sectionBodyId('siteDetails') : null"
                 (click)="toggleSection('siteDetails')"
               >
                 {{ sectionLabel['siteDetails'] }}
               </button>
-            </h2>
+            </legend>
 
             @if (isSectionOpen('siteDetails')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('siteDetails')">
@@ -207,26 +290,34 @@
                 </app-form-field>
               </div>
             }
-          </section>
+          </fieldset>
 
           <!--
-            MIGRATION: Site Marketing survives with EXACTLY ONE field. The search-engine,
-            site-map and verification boxes go with the excluded search provider, and the
-            advertising block is never rendered at all. Banner advertising is a portal column
-            and remains. Its section head declared itself expanded, and it is.
+            MIGRATION: Site Marketing survives with EXACTLY ONE field, so it is rendered
+            rather than dropped. Its body at `sitesettings.ascx` L75-L128 holds five labelled
+            rows; four go and one stays. The search-engine selector, the site-map box and the
+            verification box go with the excluded search provider, along with their three
+            submit handlers. The advertising row goes further and is never rendered at all:
+            its resource value holds a live third-party script with a remote source, which is
+            the reason no value on this screen is ever bound as markup. Banner advertising is
+            a genuine portal column and remains. Its section head declared itself expanded,
+            and it is.
+
+            The caption reads "Site Marketing" — the resource value — and not the markup
+            attribute's "Marketing".
           -->
-          <section class="portal-settings__section">
-            <h2>
+          <fieldset class="portal-settings__section">
+            <legend>
               <button
                 type="button"
                 class="portal-settings__toggle"
                 [attr.aria-expanded]="isSectionOpen('marketing')"
-                [attr.aria-controls]="sectionBodyId('marketing')"
+                [attr.aria-controls]="isSectionOpen('marketing') ? sectionBodyId('marketing') : null"
                 (click)="toggleSection('marketing')"
               >
                 {{ sectionLabel['marketing'] }}
               </button>
-            </h2>
+            </legend>
 
             @if (isSectionOpen('marketing')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('marketing')">
@@ -251,6 +342,22 @@
                       Horizontal, three choices, matching the legacy list item for item. The
                       wrapper the field component places around projected content is a group
                       named by the label, which is what a set of radio choices needs.
+                    -->
+                    <!--
+                      BLITZY [A11Y]: a native radio renders at the user agent's own 13 by 13
+                      pixel box, below the 24 by 24 minimum that the current success criterion
+                      for target size states. It is REPORTED here rather than corrected here,
+                      for two reasons that both point the same way. The size is not set by this
+                      screen: the global form partial styles this control's accent colour,
+                      margin and cursor and deliberately sets no box, so the value is the user
+                      agent default and every radio in the workspace shares it — a per-screen
+                      correction would fix one of them and diverge from the rest. And the only
+                      instrument available from a template is an inline style, which the design
+                      system forbids outright. The legacy screen rendered the same user-agent
+                      control, so this is continuity rather than regression. The wrapping label
+                      does enlarge the pointer area, and the group is fully keyboard operable,
+                      so nothing here is unreachable. Owner: the global form partial.
+                      The same note applies to the registration group on the other tab.
                     -->
                     @for (choice of bannerChoices; track choice.value) {
                       <label>
@@ -284,7 +391,7 @@
                 </app-form-field>
               </div>
             }
-          </section>
+          </fieldset>
         </div>
       }
 
@@ -298,19 +405,22 @@
         >
           <p class="portal-settings__intro">{{ tabHelp['advanced'] }}</p>
 
-          <!-- Security Settings. Open by default. -->
-          <section class="portal-settings__section">
-            <h2>
+          <!--
+            Security Settings. Open by default: its section head declared no collapsed
+            state. One surviving field — the registration mode, a portal column.
+          -->
+          <fieldset class="portal-settings__section">
+            <legend>
               <button
                 type="button"
                 class="portal-settings__toggle"
                 [attr.aria-expanded]="isSectionOpen('security')"
-                [attr.aria-controls]="sectionBodyId('security')"
+                [attr.aria-controls]="isSectionOpen('security') ? sectionBodyId('security') : null"
                 (click)="toggleSection('security')"
               >
                 {{ sectionLabel['security'] }}
               </button>
-            </h2>
+            </legend>
 
             @if (isSectionOpen('security')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('security')">
@@ -319,6 +429,11 @@
                   [help]="fieldHelp['userRegistration']"
                 >
                   <div class="portal-settings__control">
+                    <!--
+                      BLITZY [A11Y]: the user-agent radio box falls below the stated target-size
+                      minimum here for the same reason, and with the same owner, as the banner
+                      group on the other tab. Reported, not corrected from a feature template.
+                    -->
                     @for (choice of registrationChoices; track choice.value) {
                       <label>
                         <!--
@@ -340,25 +455,31 @@
                 </app-form-field>
               </div>
             }
-          </section>
+          </fieldset>
 
           <!--
             Page Management. Open by default. All four selectors share ONE option list: the
-            legacy screen issued the identical query four times, and doing that here would be
-            four requests for one answer.
+            legacy screen issued the identical query four times — `sitesettings.ascx.vb`
+            L299, L304, L309 and L314 are the same call with the same arguments — and doing
+            that here would be four requests for one answer.
+
+            The caption reads "Page Management", the resource value behind the `Pages` key.
+            No page may be created, deleted, reordered, moved or transferred from this
+            screen: these are selectors over pages that already exist, which is all the
+            legacy screen offered here too.
           -->
-          <section class="portal-settings__section">
-            <h2>
+          <fieldset class="portal-settings__section">
+            <legend>
               <button
                 type="button"
                 class="portal-settings__toggle"
                 [attr.aria-expanded]="isSectionOpen('pages')"
-                [attr.aria-controls]="sectionBodyId('pages')"
+                [attr.aria-controls]="isSectionOpen('pages') ? sectionBodyId('pages') : null"
                 (click)="toggleSection('pages')"
               >
                 {{ sectionLabel['pages'] }}
               </button>
-            </h2>
+            </legend>
 
             @if (isSectionOpen('pages')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('pages')">
@@ -432,27 +553,29 @@
                 </app-form-field>
               </div>
             }
-          </section>
+          </fieldset>
 
           <!--
-            MIGRATION: Other Settings survives with EXACTLY TWO fields. The default-language
-            selector goes with the unported localisation subsystem, the site-log retention box
-            with the excluded logging provider, and the premium-module list with the excluded
-            provider families. The administrator and the portal time zone are portal columns
-            and remain. Its section head declared itself collapsed, and it is.
+            MIGRATION: Other Settings survives with EXACTLY TWO fields, so it is rendered
+            rather than dropped. Its body at `sitesettings.ascx` L387-L418 holds five labelled
+            rows; three go and two stay. The default-language selector goes with the unported
+            localisation mechanism, the site-log retention box with the excluded logging
+            provider, and the premium-module dual list with the excluded provider families.
+            The administrator and the portal time zone are genuine portal columns and remain.
+            Its section head declared itself collapsed, and it is.
           -->
-          <section class="portal-settings__section">
-            <h2>
+          <fieldset class="portal-settings__section">
+            <legend>
               <button
                 type="button"
                 class="portal-settings__toggle"
                 [attr.aria-expanded]="isSectionOpen('other')"
-                [attr.aria-controls]="sectionBodyId('other')"
+                [attr.aria-controls]="isSectionOpen('other') ? sectionBodyId('other') : null"
                 (click)="toggleSection('other')"
               >
                 {{ sectionLabel['other'] }}
               </button>
-            </h2>
+            </legend>
 
             @if (isSectionOpen('other')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('other')">
@@ -491,22 +614,45 @@
                   [error]="messagesFor('timeZoneOffset')"
                 >
                   <div class="portal-settings__control portal-settings__control--medium">
+                    <!--
+                      The note below is referenced from the CONTROL rather than from the field,
+                      which is the finer-grained of the two wirings the field component
+                      documents as supported. The field already describes its group from the
+                      measured help text; this adds the unit to the input's own description, so
+                      the two compose instead of competing and a reader hears the unit at the
+                      moment it starts typing a number.
+                    -->
                     <input
                       type="text"
                       inputmode="numeric"
                       formControlName="timeZoneOffset"
                       [id]="controlId('timeZoneOffset')"
+                      aria-describedby="portal-settings-timeZoneOffset-unit"
                       autocomplete="off"
                     />
-                    <p class="portal-settings__notice">
-                      The offset from Coordinated Universal Time, in minutes. Behind UTC is
-                      negative — for example −480 for Pacific Time.
-                    </p>
                   </div>
                 </app-form-field>
+
+                <!--
+                  THE UNIT NOTE IS A SIBLING OF THE FIELD, NOT A CHILD OF IT, and the placement
+                  is load-bearing rather than incidental. Two nested measures cap it if it sits
+                  inside: the screen's own wrapper keeps a short numeric input from stretching
+                  to the width of the group, and the field component's own two-track layout
+                  caps its control slot as well. A sentence placed inside either one wraps into
+                  a narrow column — measured at five fragments inside the inner cap and three
+                  inside the outer, the last of them a single orphaned word. The surrounding
+                  group is a single-column grid, so as a sibling the note takes the group's full
+                  measure and reads as two lines. It loses nothing by moving: it never was part
+                  of the field's accessible description by position, and it is now part of it by
+                  explicit reference from the control above.
+                -->
+                <p class="portal-settings__notice" id="portal-settings-timeZoneOffset-unit">
+                  The offset from Coordinated Universal Time, in minutes. Behind UTC is
+                  negative — for example −480 for Pacific Time.
+                </p>
               </div>
             }
-          </section>
+          </fieldset>
 
           <!--
             Host Settings.
@@ -523,18 +669,18 @@
             postback did — a hidden control kept its value in the serialised control tree.
           -->
           @if (isSuperUser()) {
-            <section class="portal-settings__section">
-              <h2>
+            <fieldset class="portal-settings__section">
+              <legend>
                 <button
                   type="button"
                   class="portal-settings__toggle"
                   [attr.aria-expanded]="isSectionOpen('host')"
-                  [attr.aria-controls]="sectionBodyId('host')"
+                  [attr.aria-controls]="isSectionOpen('host') ? sectionBodyId('host') : null"
                   (click)="toggleSection('host')"
                 >
                   {{ sectionLabel['host'] }}
                 </button>
-              </h2>
+              </legend>
 
               @if (isSectionOpen('host')) {
                 <div class="portal-settings__grid" [id]="sectionBodyId('host')">
@@ -543,6 +689,14 @@
                     separate calendar link; the control now provides the picker itself, so the
                     link has nothing to open. An absent expiry shows an EMPTY box — never a
                     placeholder date.
+
+                    THE LENGTH LIMIT IS DECLARED EVEN THOUGH A DATE CONTROL IGNORES IT, and
+                    that is deliberate rather than an oversight. The measured limit is part of
+                    the field's contract, the paired class enforces it as a validator so it is
+                    live regardless, and declaring it here keeps the markup honest about the
+                    constraint the field carries. If the control ever degrades to plain text —
+                    which is exactly what a browser without date support does — the attribute
+                    becomes effective again with no change required.
                   -->
                   <app-form-field
                     [label]="fieldLabel['expiryDate']"
@@ -639,7 +793,7 @@
                   </app-form-field>
                 </div>
               }
-            </section>
+            </fieldset>
           }
         </div>
       }

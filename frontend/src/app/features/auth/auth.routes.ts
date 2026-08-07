@@ -13,11 +13,11 @@ import type { Routes } from '@angular/router';
  * the route table: the gate must never be attached to the sign-in route, because a gate
  * that refuses the very screen it redirects to cannot be satisfied by any caller and
  * the application never starts. The guard hardens its own half of that invariant —
- * `isSignInRoute` at L135 admits the sign-in address unconditionally, so a mistake
+ * `isSignInRoute` at L136 admits the sign-in address unconditionally, so a mistake
  * degrades to "the sign-in screen is reachable" rather than to a redirect cycle — but
  * the route table must not rely on that safety net. The same applies to
- * `core/guards/permission.guard.ts`, which redirects an unauthenticated caller to this
- * same address at L364.
+ * `core/guards/permission.guard.ts`, which holds this very address as its own
+ * `SIGN_IN_ROUTE` constant at L162 and sends an unauthenticated caller to it at L622.
  *
  * WHY A BARREL FOR ONE SCREEN. The other four feature groups each hold several screens
  * and the barrel earns its place by grouping them. This one holds a single screen, and
@@ -28,6 +28,14 @@ import type { Routes } from '@angular/router';
  * home for the password-recovery screen the legacy console reached from the same form
  * (`Website/admin/Security/SendPassword.ascx.vb`), and a group already declared takes a
  * sibling without touching the top-level table.
+ *
+ * ONE ROUTE, SO THE ORDERING CONSTRAINT IS VACUOUS HERE. `app.routes.ts:L107-L109` records
+ * that each barrel states the declaration-order rule at its head, and this is that
+ * statement: the array holds a single empty path, so no parameter segment exists to
+ * swallow a literal one and there is no order to get wrong. It is written down because the
+ * rule goes live the instant the sibling above is added — a literal segment would then have
+ * to be declared ABOVE any parameter route, and this entry would still have to keep the
+ * empty path rather than be re-prefixed with `login`.
  *
  * MIGRATION: signing in moves from a MODULE ON A PAGE to a route of its own. The legacy
  * arrangement had no sign-in address at all. The credential form was a user control,

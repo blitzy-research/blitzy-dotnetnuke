@@ -1,11 +1,23 @@
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+  type TestRequest,
+} from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
 
 import { ModuleSettingsComponent } from './module-settings.component';
-import { MODULE_VISIBILITY, type UpdateModuleRequest } from '../../../core/models/module.model';
+import {
+  MODULE_VISIBILITY,
+  type ModuleDefinition,
+  type ModuleDetail,
+  type ModuleSettingsBag,
+  type UpdateModuleRequest,
+} from '../../../core/models/module.model';
+import type { ValidationProblemDetails } from '../../../core/models/problem-details.model';
+import type { TabListItem } from '../../../core/models/tab.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import type { ModuleSettingsViewModel } from './module-settings.view-model';
 
@@ -70,9 +82,137 @@ function moduleOf(overrides: Partial<ModuleSettingsViewModel> = {}): ModuleSetti
   };
 }
 
+/**
+ * Builds the module read payload the server publishes, overriding only what a test cares about.
+ *
+ * Every one of the twenty-three members the read decoder requires is present, and the falsy ones are
+ * present EXPLICITLY rather than omitted. That is not defensive padding: the API serialises with
+ * `DefaultIgnoreCondition = JsonIgnoreCondition.Never`, so `-1`, `0`, `''` and `false` all appear in the
+ * real JSON, and a fixture that dropped them would be testing a wire shape the server never sends.
+ *
+ * @param overrides The members to replace.
+ * @returns A complete module read payload.
+ */
+function moduleDetailOf(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
+  return {
+    // 0 is a REAL module: `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`.
+    moduleId: 0,
+    tabModuleId: 31,
+    // 0 is a REAL page: `dbo.Tabs.TabID` is `IDENTITY(0, 1)`.
+    tabId: 0,
+    // 0 is a REAL tenant: `dbo.Portals.PortalID` is `IDENTITY(-1, 1)`, so -1 and 0 are both real.
+    portalId: 0,
+    moduleDefId: 14,
+    desktopModuleId: 3,
+    moduleTitle: 'Latest News',
+    allTabs: false,
+    header: '',
+    footer: '',
+    startDate: null,
+    endDate: null,
+    inheritViewPermissions: false,
+    isDeleted: false,
+    moduleOrder: 0,
+    cacheTime: 0,
+    iconFile: '',
+    visibility: MODULE_VISIBILITY.maximized,
+    displayTitle: false,
+    friendlyName: 'Announcements',
+    moduleName: 'DNN_Announcements',
+    description: null,
+    version: '01.00.00',
+    ...overrides,
+  };
+}
+
+/**
+ * Builds the definition read payload, which is the ONLY carrier of the cache default.
+ *
+ * `defaultCacheTime` defaults to 0 here, matching `ModuleDefinitionInfo.vb`, whose constructor sets
+ * `_DefaultCacheTime = 0`. A default of 0 means "caching supported, zero-second default" and is a
+ * different fact from -1, which means "this definition records no default at all".
+ *
+ * @param overrides The members to replace.
+ * @returns A complete definition read payload.
+ */
+function definitionOf(overrides: Partial<ModuleDefinition> = {}): ModuleDefinition {
+  return {
+    moduleDefId: 14,
+    friendlyName: 'Announcements',
+    desktopModuleId: 3,
+    defaultCacheTime: 0,
+    moduleName: 'DNN_Announcements',
+    description: null,
+    version: '01.00.00',
+    isPremium: false,
+    isAdmin: false,
+    isPortable: true,
+    ...overrides,
+  };
+}
+
+/**
+ * Builds one page of the tenant's page list for the "Move To Page" picker.
+ *
+ * `tabId` defaults to 0 and `parentId` to -1, because both are real values this schema produces: `TabID`
+ * is `IDENTITY(0, 1)` so the first page is 0, and a root-level page records -1 as its parent. Neither may
+ * be read as "absent".
+ *
+ * @param overrides The members to replace.
+ * @returns A complete page list entry.
+ */
+function tabOf(overrides: Partial<TabListItem> = {}): TabListItem {
+  return {
+    tabId: 0,
+    tabName: 'Home',
+    title: null,
+    tabOrder: 1,
+    parentId: -1,
+    level: 0,
+    tabPath: '//Home',
+    isVisible: true,
+    disableLink: false,
+    isDeleted: false,
+    hasChildren: false,
+    isSecure: false,
+    url: null,
+    iconFile: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Builds the settings bag the placement read returns.
+ *
+ * Two maps, held apart exactly as the server returns them: one is recorded against the module and applies
+ * on every page it appears on, the other belongs to one occurrence on one page, and they land in two
+ * different tables.
+ *
+ * @param overrides The members to replace.
+ * @returns A complete settings bag.
+ */
+function settingsBagOf(overrides: Partial<ModuleSettingsBag> = {}): ModuleSettingsBag {
+  return {
+    moduleId: 0,
+    tabModuleId: 31,
+    moduleSettings: {},
+    tabModuleSettings: {},
+    ...overrides,
+  };
+}
+
 describe('ModuleSettingsComponent', () => {
   let fixture: ComponentFixture<ModuleSettingsComponent>;
   let component: ModuleSettingsComponent;
+
+  /**
+   * The testing backend, asserted against in `afterEach` so no request escapes unaccounted for.
+   *
+   * Held at the outermost scope on purpose: the guard has to apply to EVERY spec in the file, including the
+   * presentational ones that are expected to issue nothing at all, because "issues nothing" is itself a
+   * claim worth proving.
+   */
+  let httpMock: HttpTestingController;
 
   /**
    * Assigns an input the way an OnPush component requires.
@@ -147,9 +287,10 @@ describe('ModuleSettingsComponent', () => {
   function open(section: string): void {
     const head = toggleFor(section);
     expect(head).withContext(`the head for ${section} must be rendered`).not.toBeNull();
-    // Non-null asserted on the argument, guarded by the expectation immediately above.
-    if (head!.getAttribute('aria-expanded') === 'false') {
-      head!.click();
+    // Optionally chained rather than non-null asserted: the expectation above is what fails the spec if
+    // the element is missing, so the call itself needs no assertion operator.
+    if (head?.getAttribute('aria-expanded') === 'false') {
+      head?.click();
       fixture.detectChanges();
     }
   }
@@ -217,9 +358,16 @@ describe('ModuleSettingsComponent', () => {
   function type(fieldName: string, value: string): void {
     const element = field<HTMLInputElement>(fieldName);
     expect(element).withContext(`${fieldName} must be rendered`).not.toBeNull();
-    // Non-null asserted on the argument, guarded by the expectation immediately above.
-    element!.value = value;
-    element!.dispatchEvent(new Event('input'));
+
+    // Narrowed by a real control-flow check rather than by a non-null assertion. An assignment target
+    // cannot be optionally chained, so this is the one place a guard is needed instead, and returning early
+    // is honest: the expectation above has already failed the spec, so there is nothing left to type into.
+    if (element === null) {
+      return;
+    }
+
+    element.value = value;
+    element.dispatchEvent(new Event('input'));
     fixture.detectChanges();
   }
 
@@ -241,22 +389,78 @@ describe('ModuleSettingsComponent', () => {
   function submit(): void {
     const form = q<HTMLFormElement>('form.module-settings');
     expect(form).withContext('the form must be rendered').not.toBeNull();
-    // Non-null asserted on the argument, guarded by the expectation immediately above.
-    form!.dispatchEvent(new Event('submit'));
+    // Optionally chained rather than non-null asserted: the expectation above is what fails the spec if
+    // the element is missing, so the call itself needs no assertion operator.
+    form?.dispatchEvent(new Event('submit'));
     fixture.detectChanges();
   }
 
+  /**
+   * Confirms the open destructive dialog.
+   *
+   * The shared dialog prefixes a warning glyph to a dangerous confirm label, so the button is located by
+   * its danger class rather than by its text.
+   */
+  function confirmDialog(): void {
+    const confirmButton = q<HTMLButtonElement>('.confirm-dialog__button--danger');
+    expect(confirmButton).withContext('the confirmation must be open').not.toBeNull();
+    // Optionally chained rather than non-null asserted: the expectation above is what fails the spec if
+    // the element is missing, so the call itself needs no assertion operator.
+    confirmButton?.click();
+    fixture.detectChanges();
+  }
+
+  /**
+   * Abandons the open destructive dialog.
+   */
+  function cancelDialog(): void {
+    const cancelButton = qa<HTMLButtonElement>('.confirm-dialog__button').find(
+      (button) => (button.textContent ?? '').trim() === 'Cancel',
+    );
+    expect(cancelButton).withContext('the confirmation must offer a way out').toBeTruthy();
+    // Optionally chained rather than non-null asserted: the expectation above is what fails the spec if
+    // the element is missing, so the call itself needs no assertion operator.
+    cancelButton?.click();
+    fixture.detectChanges();
+  }
+
+  /**
+   * Consumes the listing re-read the store issues after a settled write.
+   *
+   * MIGRATION: THIS RE-READ BELONGS TO THE STORE, NOT TO THIS SCREEN, AND IT IS CONSUMED RATHER THAN
+   * ASSERTED AS A BEHAVIOUR. `core/state/module.store.ts` re-reads the module listing once a removal
+   * settles, because a removal DETACHES a placement rather than destroying a row -
+   * `DeleteTabModule(TabId, ModuleId)` at `ModuleController.vb:L837`, never `DeleteModule` at L819 - so
+   * only the listing knows whether the row should still be shown. It is answered here so the closing
+   * `verify()` has nothing outstanding to report, while the separate `expectNone` on the module's OWN url
+   * is what proves that the removed module itself is never re-fetched.
+   */
+  function drainListingReread(): void {
+    for (const request of httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+    )) {
+      request.flush({ data: [], meta: { totalCount: 0, pageIndex: 0, pageSize: 10 } });
+    }
+
+    fixture.detectChanges();
+  }
+
+
   beforeEach(async () => {
     // The screen orchestrates its own reads and writes through `core/state/module.store.ts`, which reaches
-    // `ModuleService` and `TabService` and therefore `HttpClient`. The testing backend is supplied so the
-    // graph resolves and NO REQUEST REACHES A NETWORK: every call the component issues is parked on the
-    // controller and simply never answered, which leaves the store's own signals at their initial values and
-    // lets these specs drive the screen through its inputs exactly as before. `provideRouter([])` satisfies
-    // the return-to-listing navigation the cancel and delete paths perform.
+    // `ModuleService` and `TabService` and therefore `HttpClient`. NEITHER SERVICE IS MOCKED, deliberately:
+    // a stub would only prove that it returned what it was told to, whereas the real transport put behind
+    // the testing backend proves the exact url, the exact verb and the exact request body, and lets
+    // `verify()` prove that no endpoint outside the published contract was invoked. `provideHttpClient()`
+    // is registered BEFORE `provideHttpClientTesting()` because the testing backend replaces the real one.
+    // `provideRouter([])` satisfies the return-to-listing navigation the cancel and delete paths perform,
+    // and installs no guards - guard behaviour belongs to the guards' own specs, not here.
     await TestBed.configureTestingModule({
       imports: [ModuleSettingsComponent],
       providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
     }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
 
     fixture = TestBed.createComponent(ModuleSettingsComponent);
     component = fixture.componentInstance;
@@ -265,6 +469,16 @@ describe('ModuleSettingsComponent', () => {
       { value: 8, label: 'About' },
     ]);
     fixture.detectChanges();
+  });
+
+  // THE CLOSED-CONTRACT GUARD, AND THE REASON EVERY "NO REQUEST WAS ISSUED" CLAIM IN THIS FILE IS A PROOF
+  // RATHER THAN A HOPE. `verify()` fails the spec when ANY request is still outstanding, so a screen that
+  // invented an endpoint - a dedicated relocation command above all, which does not exist in the module API
+  // and must never be expected - cannot pass by having its request quietly ignored. It is equally what
+  // makes the `expectNone` assertions load-bearing: without this, "no re-fetch happened" would only mean
+  // "no re-fetch was looked for".
+  afterEach(() => {
+    httpMock.verify();
   });
 
   it('creates', () => {
@@ -330,6 +544,13 @@ describe('ModuleSettingsComponent', () => {
       expect(component['form'].controls.tabId.disabled)
         .withContext('an undefined privilege input must not lock the page picker on every routed visit')
         .toBeFalse();
+
+      // The two reads the routed activation triggered are consumed here rather than left parked, so the
+      // closing `verify()` has nothing outstanding to report. Answering them with a null payload is the
+      // honest response for this test: it asserts the binder survives, not what the module contains.
+      httpMock.expectOne('/api/v1/modules/0').flush({ data: null });
+      httpMock.expectOne('/api/v1/modules/0/settings').flush({ data: null });
+      fixture.detectChanges();
     });
   });
 
@@ -339,13 +560,13 @@ describe('ModuleSettingsComponent', () => {
 
       const header = q('app-page-header h1');
       expect(header).not.toBeNull();
-      expect((header!.textContent ?? '').trim()).toBe('Module Settings');
+      expect((header?.textContent ?? '').trim()).toBe('Module Settings');
     });
 
     it('takes a supplied heading in place of the legacy module definition name', () => {
       setInput('heading', 'Announcements Settings');
 
-      expect((q('app-page-header h1')!.textContent ?? '').trim()).toBe('Announcements Settings');
+      expect((q('app-page-header h1')?.textContent ?? '').trim()).toBe('Announcements Settings');
     });
 
     it('shows a spinner and no form while the module is being fetched', () => {
@@ -360,7 +581,7 @@ describe('ModuleSettingsComponent', () => {
 
       expect(q('app-empty-state')).not.toBeNull();
       expect(q('form.module-settings')).toBeNull();
-      expect((q('app-empty-state')!.textContent ?? '').trim()).toContain('No module settings are available.');
+      expect((q('app-empty-state')?.textContent ?? '').trim()).toContain('No module settings are available.');
     });
 
     it('renders the form once a module resolves', () => {
@@ -467,17 +688,17 @@ describe('ModuleSettingsComponent', () => {
       head.click();
       fixture.detectChanges();
 
-      expect(toggleFor('pageSettings')!.getAttribute('aria-expanded')).toBe('true');
+      expect(toggleFor('pageSettings')?.getAttribute('aria-expanded')).toBe('true');
       // aria-controls would point outside the document while the region is closed, which is worse than
       // omitting it. aria-expanded alone is a complete disclosure pattern.
-      expect(toggleFor('pageSettings')!.hasAttribute('aria-controls')).toBeFalse();
+      expect(toggleFor('pageSettings')?.hasAttribute('aria-controls')).toBeFalse();
     });
 
     it('closes an open region again', () => {
       open('pageSettings');
       expect(toggleFor('appearance')).not.toBeNull();
 
-      toggleFor('pageSettings')!.click();
+      toggleFor('pageSettings')?.click();
       fixture.detectChanges();
 
       expect(toggleFor('appearance')).toBeNull();
@@ -524,54 +745,54 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('seeds every text and numeric field from the supplied module', () => {
-      expect(field<HTMLInputElement>('moduleTitle')!.value).toBe('Latest News');
-      expect(field<HTMLTextAreaElement>('header')!.value).toBe('Header markup');
-      expect(field<HTMLTextAreaElement>('footer')!.value).toBe('Footer markup');
-      expect(field<HTMLInputElement>('iconFile')!.value).toBe('module.gif');
-      expect(field<HTMLInputElement>('cacheTime')!.value).toBe('120');
+      expect(field<HTMLInputElement>('moduleTitle')?.value).toBe('Latest News');
+      expect(field<HTMLTextAreaElement>('header')?.value).toBe('Header markup');
+      expect(field<HTMLTextAreaElement>('footer')?.value).toBe('Footer markup');
+      expect(field<HTMLInputElement>('iconFile')?.value).toBe('module.gif');
+      expect(field<HTMLInputElement>('cacheTime')?.value).toBe('120');
     });
 
     it('seeds visibility from the stored numeric code', () => {
       const chosen = radios('visibility').find((radio) => radio.checked);
       expect(chosen).toBeTruthy();
-      expect(chosen!.id).toBe('module-settings-visibility-1', 'Minimized is the second choice');
+      expect(chosen?.id).toBe('module-settings-visibility-1', 'Minimized is the second choice');
     });
 
     it('seeds the two boolean placement switches', () => {
-      expect(field<HTMLInputElement>('displayTitle')!.checked).toBeFalse();
-      expect(field<HTMLInputElement>('inheritViewPermissions')!.checked).toBeFalse();
-      expect(field<HTMLInputElement>('allTabs')!.checked).toBeTrue();
+      expect(field<HTMLInputElement>('displayTitle')?.checked).toBeFalse();
+      expect(field<HTMLInputElement>('inheritViewPermissions')?.checked).toBeFalse();
+      expect(field<HTMLInputElement>('allTabs')?.checked).toBeTrue();
     });
 
     it('narrows an instant to a date by slicing, so the shown day cannot shift with the viewer zone', () => {
       // Parsing the instant and formatting it locally would move a midnight-UTC date by a day in any zone
       // behind UTC, so a module scheduled for the first would be shown as the last day of the month before.
-      expect(field<HTMLInputElement>('startDate')!.value).toBe('2024-03-01');
-      expect(field<HTMLInputElement>('endDate')!.value).toBe('2024-12-31');
+      expect(field<HTMLInputElement>('startDate')?.value).toBe('2024-03-01');
+      expect(field<HTMLInputElement>('endDate')?.value).toBe('2024-12-31');
     });
 
     it('leaves the two intent flags unset rather than echoing a previous instruction', () => {
       // Neither is a column on the module: each describes work the server performs after the update, so
       // echoing one back onto the form would silently reapply it on the next submission.
-      expect(field<HTMLInputElement>('setAsDefaultSettings')!.checked).toBeFalse();
-      expect(field<HTMLInputElement>('applyToAllModules')!.checked).toBeFalse();
+      expect(field<HTMLInputElement>('setAsDefaultSettings')?.checked).toBeFalse();
+      expect(field<HTMLInputElement>('applyToAllModules')?.checked).toBeFalse();
     });
 
     it('shows absent stored values as empty controls and a missing cache period as zero', () => {
       setInput('settings', moduleOf({ moduleTitle: null, iconFile: null, cacheTime: null }));
       openEverything();
 
-      expect(field<HTMLInputElement>('moduleTitle')!.value).toBe('');
-      expect(field<HTMLInputElement>('iconFile')!.value).toBe('');
-      expect(field<HTMLInputElement>('cacheTime')!.value).toBe('0');
+      expect(field<HTMLInputElement>('moduleTitle')?.value).toBe('');
+      expect(field<HTMLInputElement>('iconFile')?.value).toBe('');
+      expect(field<HTMLInputElement>('cacheTime')?.value).toBe('0');
     });
 
     it('re-seeds when a different module is supplied', () => {
       setInput('settings', moduleOf({ moduleTitle: 'Replaced', iconFile: 'replacement.gif' }));
       openEverything();
 
-      expect(field<HTMLInputElement>('moduleTitle')!.value).toBe('Replaced');
-      expect(field<HTMLInputElement>('iconFile')!.value).toBe('replacement.gif');
+      expect(field<HTMLInputElement>('moduleTitle')?.value).toBe('Replaced');
+      expect(field<HTMLInputElement>('iconFile')?.value).toBe('replacement.gif');
     });
 
     it('leaves the operator\'s open regions open across a re-seed', () => {
@@ -582,8 +803,8 @@ describe('ModuleSettingsComponent', () => {
       setInput('settings', moduleOf({ moduleTitle: 'Refreshed' }));
 
       expect(toggleFor('other')).withContext('a nested open region must stay open').not.toBeNull();
-      expect(toggleFor('pageSettings')!.getAttribute('aria-expanded')).toBe('true');
-      expect(field<HTMLInputElement>('moduleTitle')!.value).toBe('Refreshed');
+      expect(toggleFor('pageSettings')?.getAttribute('aria-expanded')).toBe('true');
+      expect(field<HTMLInputElement>('moduleTitle')?.value).toBe('Refreshed');
     });
   });
 
@@ -600,8 +821,8 @@ describe('ModuleSettingsComponent', () => {
       // taking the markup value would have relabelled a control operators already know.
       const label = q<HTMLLabelElement>('label[for="module-settings-displayTitle"]');
       expect(label).not.toBeNull();
-      expect((label!.textContent ?? '')).toContain('Display Container?');
-      expect((label!.textContent ?? '')).not.toContain('Display Title?');
+      expect((label?.textContent ?? '')).toContain('Display Container?');
+      expect((label?.textContent ?? '')).not.toContain('Display Title?');
     });
 
     it('preserves the legacy double space after a sentence, character for character', () => {
@@ -625,7 +846,7 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('preserves the space the legacy resource carries before its closing parenthesis', () => {
-      expect(qa('.module-settings__intro')[0].textContent!.trim()).toBe(
+      expect(qa('.module-settings__intro')[0].textContent?.trim()).toBe(
         'In this section, you can define the settings that relate to the Module content and permissions '
           + '(ie. those settings that will be the same on all pages that the Module appears ).',
       );
@@ -633,8 +854,8 @@ describe('ModuleSettingsComponent', () => {
 
     it('renders the inherit label as plain text, losing the legacy embedded bold', () => {
       const label = q<HTMLLabelElement>('label[for="module-settings-inheritViewPermissions"]');
-      expect((label!.textContent ?? '').trim()).toBe('Inherit View permissions from Page');
-      expect(label!.querySelector('b')).withContext('an interpolated value is not parsed as markup').toBeNull();
+      expect((label?.textContent ?? '').trim()).toBe('Inherit View permissions from Page');
+      expect(label?.querySelector('b')).withContext('an interpolated value is not parsed as markup').toBeNull();
     });
 
     it('renders every declared hint exactly as declared, across every region', () => {
@@ -713,8 +934,8 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('advertises each column bound through maxlength', () => {
-      expect(field<HTMLInputElement>('moduleTitle')!.getAttribute('maxlength')).toBe('256');
-      expect(field<HTMLInputElement>('iconFile')!.getAttribute('maxlength')).toBe('100');
+      expect(field<HTMLInputElement>('moduleTitle')?.getAttribute('maxlength')).toBe('256');
+      expect(field<HTMLInputElement>('iconFile')?.getAttribute('maxlength')).toBe('100');
     });
 
     it('does not submit an invalid form, and reveals every message at once', () => {
@@ -743,20 +964,20 @@ describe('ModuleSettingsComponent', () => {
       setInput('canManageAllPages', false);
       openEverything();
 
-      expect(field<HTMLSelectElement>('tabId')!.disabled).toBeTrue();
-      expect(field<HTMLInputElement>('allTabs')!.disabled).toBeTrue();
-      expect(field<HTMLInputElement>('setAsDefaultSettings')!.disabled).toBeTrue();
-      expect(field<HTMLInputElement>('applyToAllModules')!.disabled).toBeTrue();
+      expect(field<HTMLSelectElement>('tabId')?.disabled).toBeTrue();
+      expect(field<HTMLInputElement>('allTabs')?.disabled).toBeTrue();
+      expect(field<HTMLInputElement>('setAsDefaultSettings')?.disabled).toBeTrue();
+      expect(field<HTMLInputElement>('applyToAllModules')?.disabled).toBeTrue();
     });
 
     it('releases them for a portal administrator', () => {
       setInput('canManageAllPages', true);
       openEverything();
 
-      expect(field<HTMLSelectElement>('tabId')!.disabled).toBeFalse();
-      expect(field<HTMLInputElement>('allTabs')!.disabled).toBeFalse();
-      expect(field<HTMLInputElement>('setAsDefaultSettings')!.disabled).toBeFalse();
-      expect(field<HTMLInputElement>('applyToAllModules')!.disabled).toBeFalse();
+      expect(field<HTMLSelectElement>('tabId')?.disabled).toBeFalse();
+      expect(field<HTMLInputElement>('allTabs')?.disabled).toBeFalse();
+      expect(field<HTMLInputElement>('setAsDefaultSettings')?.disabled).toBeFalse();
+      expect(field<HTMLInputElement>('applyToAllModules')?.disabled).toBeFalse();
     });
 
     it('keeps a locked setting at its stored value in the submission rather than clearing it', () => {
@@ -779,7 +1000,7 @@ describe('ModuleSettingsComponent', () => {
       setInput('settings', moduleOf({ moduleTitle: 'Another' }));
       openEverything();
 
-      expect(field<HTMLInputElement>('allTabs')!.disabled).toBeTrue();
+      expect(field<HTMLInputElement>('allTabs')?.disabled).toBeTrue();
     });
   });
 
@@ -912,7 +1133,7 @@ describe('ModuleSettingsComponent', () => {
 
       expect(field('isDefaultModule')).withContext('the superseded spelling must not be rendered').toBeNull();
 
-      field<HTMLInputElement>('setAsDefaultSettings')!.click();
+      field<HTMLInputElement>('setAsDefaultSettings')?.click();
       fixture.detectChanges();
       submit();
 
@@ -925,7 +1146,7 @@ describe('ModuleSettingsComponent', () => {
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      field<HTMLInputElement>('applyToAllModules')!.click();
+      field<HTMLInputElement>('applyToAllModules')?.click();
       fixture.detectChanges();
       submit();
 
@@ -935,7 +1156,7 @@ describe('ModuleSettingsComponent', () => {
     it('disables the submit affordance while a submission is in flight', () => {
       setInput('saving', true);
 
-      expect(actionButton('Update')!.disabled).toBeTrue();
+      expect(actionButton('Update')?.disabled).toBeTrue();
     });
   });
 
@@ -1021,6 +1242,16 @@ describe('ModuleSettingsComponent', () => {
       // Unpinned, so the picker follows the tenant's pages exactly as the route path leaves it.
       setInput('pages', null);
       fixture.componentRef.setInput('moduleId', '0');
+
+      // The placement is supplied the way the route supplies it - as a string from a query parameter - so
+      // every write below addresses ONE occurrence of the module rather than the module itself. Omitting it
+      // is a materially different request, and with removal being soft the difference is consequential:
+      // naming a placement removes that placement, while naming none reaches the module.
+      //
+      // ⚠ ASSIGNED HERE, BEFORE THE SEEDED ANSWERS, AND NOT INSIDE A TEST. Both reads are keyed on the
+      // placement, so assigning it re-issues them; assigning it later leaves two unanswered reads, the shell
+      // renders its spinner instead of the form, and every affordance the tests reach for is simply absent.
+      fixture.componentRef.setInput('tabModuleId', '31');
       fixture.detectChanges();
 
       answer('GET', '/api/v1/modules/0', ECHO);
@@ -1107,6 +1338,134 @@ describe('ModuleSettingsComponent', () => {
 
       drain();
     });
+
+    /**
+     * Confirms the destructive dialog, which is the only way to reach the removal.
+     *
+     * The affordance is behind a privilege input, and the shared dialog prefixes a warning glyph to a
+     * dangerous confirm label, so the confirm button is located by its danger class rather than by its text.
+     */
+    function confirmRemoval(): void {
+      setInput('canDelete', true);
+
+      const open = actionButton('Delete');
+      expect(open).withContext('the deletion affordance must be offered').not.toBeNull();
+      // Non-null asserted on the argument, guarded by the expectation immediately above.
+      open!.click();
+      fixture.detectChanges();
+
+      const confirm = q<HTMLButtonElement>('.confirm-dialog__button--danger');
+      expect(confirm).withContext('the confirmation must be showing').not.toBeNull();
+      // Non-null asserted on the argument, guarded by the expectation immediately above.
+      confirm!.click();
+      fixture.detectChanges();
+    }
+
+    it('claims nothing and goes nowhere until the removal has actually been carried out', () => {
+      let removed = 0;
+      component.remove.subscribe(() => (removed += 1));
+
+      confirmRemoval();
+
+      // ⚠ THE ASSERTION THE DEFECT WOULD FAIL. All three of these used to be raised in the same statement
+      // block as the command, so the operator was told the module had been removed, the host component was
+      // told the same, and the screen was left - all before the server had been asked, let alone answered.
+      expect(notify)
+        .withContext('nothing is announced while the removal is still outstanding')
+        .not.toHaveBeenCalled();
+      expect(removed).withContext('and the host component is not told either').toBe(0);
+      expect(navigate).withContext('and the screen is not left').not.toHaveBeenCalled();
+
+      const removal = http.expectOne(
+        (candidate) => candidate.method === 'DELETE' && candidate.url === '/api/v1/modules/0',
+      );
+
+      // The placement travels as a query parameter, so the address is matched without its query above and the
+      // placement is asserted here. Thirty-one is the tabModuleId the seeded module carries.
+      expect(removal.request.params.get('tabModuleId')).toBe('31');
+
+      removal.flush(null);
+      fixture.detectChanges();
+
+      expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+      expect(removed).withContext('the host component is told once the server has answered').toBe(1);
+      expect(navigate).toHaveBeenCalledWith(['/modules']);
+
+      drain();
+    });
+
+    it('makes no claim, emits nothing and stays put when the removal is refused', () => {
+      let removed = 0;
+      component.remove.subscribe(() => (removed += 1));
+
+      confirmRemoval();
+
+      const removal = http.expectOne(
+        (candidate) => candidate.method === 'DELETE' && candidate.url === '/api/v1/modules/0',
+      );
+
+      // A 403 is the refusal most likely to be met here in practice: the tenant resolves from the request's
+      // own host, so an operator who does not administer the addressed module's portal is refused on the
+      // server no matter what this screen offered.
+      removal.flush(
+        { type: 'about:blank', title: 'Forbidden', status: 403, detail: 'Not your tenant.', errors: {} },
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      fixture.detectChanges();
+
+      expect(notify)
+        .withContext('a refusal is never reported as a removal')
+        .not.toHaveBeenCalledWith('success', jasmine.any(String));
+      expect(removed).withContext('and the host component is not told a removal happened').toBe(0);
+      expect(navigate)
+        .withContext('the operator stays on the screen, where the reason is readable')
+        .not.toHaveBeenCalled();
+
+      drain();
+    });
+
+    it('does not resolve a removal against the listing re-read that follows it', () => {
+      // A successful removal makes the store re-read the listing, and that re-read can fail on its own
+      // account. Matching the operation as well as the write flag is what stops the store's aggregate
+      // failure from being reported as a failed removal - and, in the other direction, stops the re-read's
+      // own success from being announced twice.
+      let removed = 0;
+      component.remove.subscribe(() => (removed += 1));
+
+      confirmRemoval();
+
+      http
+        .expectOne((candidate) => candidate.method === 'DELETE' && candidate.url === '/api/v1/modules/0')
+        .flush(null);
+
+      fixture.detectChanges();
+
+      expect(removed).withContext('the removal itself settled successfully').toBe(1);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      const reread = http.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+
+      expect(reread.length).withContext('the store re-reads the listing after a removal').toBe(1);
+
+      for (const request of reread) {
+        request.flush(
+          { type: 'about:blank', title: 'Server Error', status: 500, detail: null, errors: {} },
+          { status: 500, statusText: 'Server Error' },
+        );
+      }
+
+      fixture.detectChanges();
+
+      // Still exactly one announcement. The re-read's failure is the banner's business, not a second verdict
+      // on a removal that had already succeeded.
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(removed).toBe(1);
+
+      drain();
+    });
   });
 
   describe('abandonment and deletion', () => {
@@ -1118,7 +1477,7 @@ describe('ModuleSettingsComponent', () => {
       let cancelled = 0;
       component.cancel.subscribe(() => (cancelled += 1));
 
-      actionButton('Cancel')!.click();
+      actionButton('Cancel')?.click();
       fixture.detectChanges();
 
       expect(cancelled).toBe(1);
@@ -1136,22 +1495,22 @@ describe('ModuleSettingsComponent', () => {
       setInput('canDelete', true);
       expect(q('app-confirm-dialog')).withContext('presence in the document is what opens the dialog').toBeNull();
 
-      actionButton('Delete')!.click();
+      actionButton('Delete')?.click();
       fixture.detectChanges();
 
       const dialog = q('app-confirm-dialog');
       expect(dialog).not.toBeNull();
-      expect(dialog!.textContent).toContain('Latest News');
+      expect(dialog?.textContent).toContain('Latest News');
     });
 
     it('falls back to the definition name when the module carries no title', () => {
       setInput('canDelete', true);
       setInput('settings', moduleOf({ moduleTitle: null }));
 
-      actionButton('Delete')!.click();
+      actionButton('Delete')?.click();
       fixture.detectChanges();
 
-      expect(q('app-confirm-dialog')!.textContent).toContain('Announcements');
+      expect(q('app-confirm-dialog')?.textContent).toContain('Announcements');
     });
 
     it('emits nothing when the confirmation is abandoned, and closes it', () => {
@@ -1159,14 +1518,14 @@ describe('ModuleSettingsComponent', () => {
       let removed = 0;
       component.remove.subscribe(() => (removed += 1));
 
-      actionButton('Delete')!.click();
+      actionButton('Delete')?.click();
       fixture.detectChanges();
 
       const cancelButton = qa<HTMLButtonElement>('.confirm-dialog__button').find(
         (button) => (button.textContent ?? '').trim() === 'Cancel',
       );
       expect(cancelButton).toBeTruthy();
-      cancelButton!.click();
+      cancelButton?.click();
       fixture.detectChanges();
 
       expect(removed).toBe(0);
@@ -1178,16 +1537,16 @@ describe('ModuleSettingsComponent', () => {
       let removed = 0;
       component.remove.subscribe(() => (removed += 1));
 
-      actionButton('Delete')!.click();
+      actionButton('Delete')?.click();
       fixture.detectChanges();
 
       // The shared dialog prefixes a warning glyph to a dangerous confirm label, so the button's text is not
       // the bare label. It is located by its danger class and matched on its ending.
       const confirmButton = q<HTMLButtonElement>('.confirm-dialog__button--danger');
       expect(confirmButton).not.toBeNull();
-      expect((confirmButton!.textContent ?? '').trim().endsWith('Delete')).toBeTrue();
+      expect((confirmButton?.textContent ?? '').trim().endsWith('Delete')).toBeTrue();
 
-      confirmButton!.click();
+      confirmButton?.click();
       fixture.detectChanges();
 
       expect(removed).toBe(1);
@@ -1210,15 +1569,19 @@ describe('ModuleSettingsComponent', () => {
     it('offers the legacy move-to-page selector over the supplied page lookup', () => {
       const selector = field<HTMLSelectElement>('tabId');
       expect(selector).not.toBeNull();
-      expect(Array.from(selector!.options).map((option) => option.textContent?.trim())).toEqual(['Home', 'About']);
+      // `?? []` rather than an assertion operator: a missing selector then yields an empty list, which the
+      // expectation below rejects just as clearly, and the guard above has already failed the spec.
+      expect(
+        Array.from(selector?.options ?? []).map((option) => option.textContent?.trim()),
+      ).toEqual(['Home', 'About']);
       expect(host().textContent).toContain('Move To Page');
     });
 
     it('offers a plain multi-line control rather than a rich text editor', () => {
       const header = field<HTMLTextAreaElement>('header');
       expect(header).not.toBeNull();
-      expect(header!.tagName.toLowerCase()).toBe('textarea');
-      expect(header!.getAttribute('rows')).toBe('6', 'the legacy control declared rows="6"');
+      expect(header?.tagName.toLowerCase()).toBe('textarea');
+      expect(header?.getAttribute('rows')).toBe('6', 'the legacy control declared rows="6"');
     });
 
     it('names the visibility choice group with a label that claims no control of its own', () => {
@@ -1226,7 +1589,7 @@ describe('ModuleSettingsComponent', () => {
       // make clicking its title select an option.
       const label = q<HTMLLabelElement>('#module-settings-visibility-label');
       expect(label).withContext('visibility must have a visible name').not.toBeNull();
-      expect(label!.hasAttribute('for')).toBeFalse();
+      expect(label?.hasAttribute('for')).toBeFalse();
 
       const group = q('[role="radiogroup"][aria-labelledby="module-settings-visibility-label"]');
       expect(group).withContext('visibility must be a named radiogroup').not.toBeNull();
@@ -1242,7 +1605,7 @@ describe('ModuleSettingsComponent', () => {
       for (const name of ['moduleTitle', 'cacheTime', 'iconFile', 'header', 'footer']) {
         const control = field<HTMLElement>(name);
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
-        expect(control!.getAttribute('aria-describedby')).toBe(`module-settings-${name}-hint`);
+        expect(control?.getAttribute('aria-describedby')).toBe(`module-settings-${name}-hint`);
       }
     });
   });
@@ -1426,7 +1789,7 @@ describe('ModuleSettingsComponent', () => {
     it('names the hint alone while there is nothing to report', () => {
       const control = field<HTMLElement>('moduleTitle');
       expect(control).not.toBeNull();
-      expect(control!.getAttribute('aria-describedby')).toBe('module-settings-moduleTitle-hint');
+      expect(control?.getAttribute('aria-describedby')).toBe('module-settings-moduleTitle-hint');
 
       // Named and absent would be a dangling reference, so the region is not emitted at all.
       expect(qa('#module-settings-moduleTitle-message').length).toBe(0);
@@ -1440,13 +1803,13 @@ describe('ModuleSettingsComponent', () => {
 
       const region = q('#module-settings-moduleTitle-message');
       expect(region).withContext('the refused control must render its message').not.toBeNull();
-      expect(region!.getAttribute('role')).toBe('alert');
-      expect((region!.textContent ?? '').trim()).toBe('A module title is required.');
+      expect(region?.getAttribute('role')).toBe('alert');
+      expect((region?.textContent ?? '').trim()).toBe('A module title is required.');
 
       const control = field<HTMLElement>('moduleTitle');
       expect(control).not.toBeNull();
       // The hint is named FIRST, so the order of the description does not change when a message appears.
-      expect(control!.getAttribute('aria-describedby'))
+      expect(control?.getAttribute('aria-describedby'))
         .toBe('module-settings-moduleTitle-hint module-settings-moduleTitle-message');
 
       drain();
@@ -1462,7 +1825,7 @@ describe('ModuleSettingsComponent', () => {
       for (const name of ['moduleTitle', 'cacheTime']) {
         const control = field<HTMLElement>(name);
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
-        expect(control!.getAttribute('aria-describedby'))
+        expect(control?.getAttribute('aria-describedby'))
           .withContext(`${name} must name its own message region`)
           .toBe(`module-settings-${name}-hint module-settings-${name}-message`);
       }
@@ -1511,7 +1874,7 @@ describe('ModuleSettingsComponent', () => {
 
       const control = field<HTMLElement>('cacheTime');
       expect(control).not.toBeNull();
-      expect(control!.getAttribute('aria-describedby'))
+      expect(control?.getAttribute('aria-describedby'))
         .toBe('module-settings-cacheTime-hint module-settings-cacheTime-message');
 
       drain();
@@ -1525,7 +1888,7 @@ describe('ModuleSettingsComponent', () => {
       expect(control).withContext('the inherit switch must be rendered').not.toBeNull();
       // The switch sits in the permissions region and is described by THAT hint, but the server reports it
       // under its own control name - so the two identifiers deliberately differ.
-      expect(control!.getAttribute('aria-describedby'))
+      expect(control?.getAttribute('aria-describedby'))
         .toBe('module-settings-permissions-hint module-settings-inheritViewPermissions-message');
 
       drain();
@@ -1536,5 +1899,752 @@ describe('ModuleSettingsComponent', () => {
     setInput('settings', moduleOf());
 
     expect(fixture.debugElement.queryAll(By.css('a[routerLink]')).length).toBe(0);
+  });
+
+  // =====================================================================================================
+  // THE WIRE CONTRACT
+  // =====================================================================================================
+  //
+  // Everything above drives the screen through its inputs and asserts what it RENDERS. This block does the
+  // other half, and it is the half that cannot be faked: it lets the real `ModuleService` and the real
+  // `TabService` issue real `HttpClient` calls, intercepts them, and asserts the url, the verb and - above
+  // all - THE REQUEST BODY. A substituted service could not prove any of those; it would only echo back
+  // whatever it was configured to return.
+  //
+  // MIGRATION: EVERY URL ASSERTED HERE IS RELATIVE, AND THAT IS A DEPLOYMENT REQUIREMENT RATHER THAN A
+  //   STYLE CHOICE. `angular.json` declares `fileReplacements` under its `development` configuration only,
+  //   so the `test` target compiles against the workspace's default environment module - which IS the
+  //   production one, the polarity being inverted from the usual Angular scaffold - and that module
+  //   publishes the relative base path `/api/v1` because the reverse proxy forwards `/api/` to the API
+  //   container on the same origin. An absolute origin would pass a spec written against it while breaking
+  //   the container deployment, so not one appears anywhere in this file - neither in an assertion nor in
+  //   an import, since importing the environment module here would defeat the point of the base path being
+  //   relative in the first place.
+  //
+  // MIGRATION: `GET /api/v1/module-definitions/{moduleDefId}` IS PART OF THIS SCREEN'S READ SET, and it is
+  //   worth stating plainly because a reader working only from the module endpoint list would not expect
+  //   it. The three-state cache rule below is unimplementable without it: `defaultCacheTime` is recorded on
+  //   the DEFINITION and on nothing else, exactly as `ModuleSettings.ascx.vb:L136-L142` read
+  //   `objModuleDef.DefaultCacheTime` from a definition it fetched separately. The endpoint is the
+  //   published read-only definition lookup, not an invention.
+  describe('wire contract', () => {
+    /** The routed address used throughout: module 0, which is a REAL identifier. */
+    const MODULE_URL = '/api/v1/modules/0';
+    const SETTINGS_URL = '/api/v1/modules/0/settings';
+    const DEFINITION_URL = '/api/v1/module-definitions/14';
+    const TABS_URL = '/api/v1/portals/0/tabs';
+
+    let notify: jasmine.Spy;
+
+    /**
+     * Drives the routed activation and answers the four reads the screen issues, in order.
+     *
+     * The order is the screen's own: the module and its settings are requested from the address, and the
+     * definition and the tenant's page list become addressable only once the module has resolved and
+     * disclosed its `moduleDefId` and `portalId`. Answering them in any other order would not reflect the
+     * real sequence.
+     *
+     * @param detail The module payload to publish.
+     * @param definition The definition payload to publish.
+     * @param tabs The tenant's pages to publish.
+     */
+    function activate(
+      detail: ModuleDetail = moduleDetailOf(),
+      definition: ModuleDefinition = definitionOf(),
+      tabs: readonly TabListItem[] = [tabOf()],
+    ): void {
+      fixture.componentRef.setInput('pages', null);
+      fixture.componentRef.setInput('moduleId', 0);
+      fixture.detectChanges();
+
+      httpMock.expectOne(MODULE_URL).flush({ data: detail });
+      httpMock.expectOne(SETTINGS_URL).flush({ data: settingsBagOf() });
+      fixture.detectChanges();
+
+      httpMock.expectOne(DEFINITION_URL).flush({ data: definition });
+      httpMock.expectOne(TABS_URL).flush({ data: tabs });
+      fixture.detectChanges();
+    }
+
+    /**
+     * Submits the form and returns the intercepted module replacement.
+     *
+     * @returns The request the screen actually issued.
+     */
+    function interceptSubmission(): TestRequest {
+      submit();
+
+      return httpMock.expectOne(
+        (candidate) => candidate.method === 'PUT' && candidate.url === MODULE_URL,
+      );
+    }
+
+    beforeEach(() => {
+      notify = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE ADDRESS
+    // ---------------------------------------------------------------------------------------------------
+
+    describe('addressing', () => {
+      /**
+       * MIGRATION: MODULE 0 IS A REAL MODULE, AND THIS IS THE GUARD AGAINST EVERY TRUTH TEST.
+       * `dbo.Modules.ModuleID` is declared `IDENTITY (0, 1)`, so the first module ever created carries the
+       * identifier 0. `if (moduleId)`, `moduleId > 0` and `moduleId ?? -1` would each silently refuse to
+       * load it, and none of the three would fail to compile. The screen must read `=== undefined` and
+       * nothing else, which is what these two expectations prove: had it applied a truth test, no request
+       * would exist to match and both would fail.
+       */
+      it('reads module 0, because zero is a real identifier and never an absence', () => {
+        fixture.componentRef.setInput('moduleId', 0);
+        fixture.detectChanges();
+
+        expect(httpMock.expectOne(MODULE_URL).request.method).toBe('GET');
+        expect(httpMock.expectOne(SETTINGS_URL).request.method).toBe('GET');
+
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
+      });
+
+      it('coerces the string the router supplies, so the path parameter still addresses module 0', () => {
+        fixture.componentRef.setInput('moduleId', '0');
+        fixture.detectChanges();
+
+        // Proven by the url alone: '/api/v1/modules/0' and not '/api/v1/modules/undefined' or NaN.
+        httpMock.expectOne(MODULE_URL).flush({ data: null });
+        httpMock.expectOne(SETTINGS_URL).flush({ data: null });
+        fixture.detectChanges();
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE THREE-STATE CACHE RULE
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // MIGRATION: THREE STATES, KEPT APART, EXACTLY AS THE LEGACY SCREEN KEPT THEM. `ModuleSettings.ascx
+    //   .vb:L136-L142` reads, verbatim: `If objModuleDef.DefaultCacheTime = Null.NullInteger Then rowCache
+    //   .Visible = False Else txtCacheTime.Text = objModule.CacheTime.ToString`. Three distinct facts fall
+    //   out of those five lines and each gets its own expectation below, because only separate expectations
+    //   can prove the absence of a coalesce. `cacheTime` and `defaultCacheTime` are DIFFERENT PROPERTIES on
+    //   DIFFERENT OBJECTS - `ModuleInfo.vb` initialises `_CacheTime` to 0 while `ModuleDefinitionInfo.vb`
+    //   initialises `_DefaultCacheTime` to 0 in its constructor and the schema admits -1 - so any
+    //   `cacheTime ?? defaultCacheTime`, any `effectiveCacheTime`, or any `!defaultCacheTime` truth test
+    //   would collapse two of the three states into one and pass a weaker suite than this one.
+    describe('the three-state cache rule', () => {
+      /** (a) -1 means the definition records no default at all, so the field must not exist. */
+      it('removes the cache field from the DOM when the definition records no default', () => {
+        activate(moduleDetailOf(), definitionOf({ defaultCacheTime: -1 }));
+        openEverything();
+
+        // ABSENT, not hidden. `@if` removes the node outright, whereas a CSS hide would still be queryable,
+        // so querying for null is what distinguishes the two.
+        expect(field('cacheTime'))
+          .withContext('a definition default of -1 must remove the cache field, not merely hide it')
+          .toBeNull();
+      });
+
+      /** (b) 0 means caching IS supported with a zero-second default, so the field must show. */
+      it('keeps the cache field when the definition default is zero, which is a supported default', () => {
+        activate(moduleDetailOf(), definitionOf({ defaultCacheTime: 0 }));
+        openEverything();
+
+        expect(field('cacheTime'))
+          .withContext('a definition default of 0 supports caching and must NOT remove the field')
+          .not.toBeNull();
+      });
+
+      /** (c) A stored period of 0 is a legitimate saved value: it must display AND be posted. */
+      it('displays a stored cache period of zero as 0 and posts it as 0, never as blank', () => {
+        activate(moduleDetailOf({ cacheTime: 0 }), definitionOf({ defaultCacheTime: 0 }));
+        openEverything();
+
+        expect(field<HTMLInputElement>('cacheTime')?.value)
+          .withContext('a stored period of 0 must render as "0" and never as an empty control')
+          .toBe('0');
+
+        const request = interceptSubmission();
+        const body = request.request.body as UpdateModuleRequest;
+
+        expect(body.cacheTime)
+          .withContext('0 seconds is a saved value and must reach the server as the number 0')
+          .toBe(0);
+
+        request.flush({ data: moduleDetailOf({ cacheTime: 0 }) });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // FALSY VALUES ON THE WIRE
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // MIGRATION: A FALSY VALUE IS DATA, AND THIS IS WHERE THAT IS ENFORCED RATHER THAN ASSERTED IN PROSE.
+    //   `Library/Components/Shared/Null.vb` returns the EMPTY STRING as its string sentinel (L71-L75) and
+    //   FALSE as its boolean sentinel (L76-L80), and the integer sentinel is -1 while 0 is an ordinary
+    //   value. So `''`, `false`, `0` and `-1` are all values this schema legitimately stores and
+    //   transmits, and a serialiser that dropped a member because it was falsy would silently clear a
+    //   column. The API's own posture matches: it writes every member with
+    //   `JsonIgnoreCondition.Never`, so a member missing from a request is a client defect, never a
+    //   shorthand for a default.
+    //
+    // MIGRATION: THE LEGACY ALIGNMENT PICKER HAS NO COUNTERPART HERE, AND THE REASON IS A CONTRACT GAP
+    //   RATHER THAN AN OMISSION IN THIS SPEC. `modulesettings.ascx:L122-L127` declared `cboAlign` with four
+    //   items - left, center, right, and `value=""` labelled "Not Specified" under the resource key
+    //   `Not_Specified` - and that fourth item is `Null.NullString`, a transmitted value rather than an
+    //   absence. It cannot be asserted on this screen because `UpdateModuleRequest` does not project
+    //   `alignment`, and neither does `ModuleDetail`: the six placement columns the legacy screen edited -
+    //   paneName, alignment, color, border, displayPrint and displaySyndicate - are absent from BOTH
+    //   contracts, so there is no control to select and no member to inspect. Posting one would draw an
+    //   HTTP 400 under the API's `JsonUnmappedMemberHandling.Disallow`. The RULE the alignment case exists
+    //   to prove is therefore proven below on the members the contract does project, which carry exactly
+    //   the same hazard: an emptied string, three falsy booleans and two zero-valued numbers.
+    describe('falsy values survive the request body', () => {
+      it('carries an emptied nullable string as an explicit member rather than dropping it', () => {
+        activate(moduleDetailOf({ header: 'Header markup' }));
+        openEverything();
+
+        type('header', '');
+
+        const request = interceptSubmission();
+        const body = request.request.body as UpdateModuleRequest;
+
+        expect('header' in body)
+          .withContext('an emptied field must be TRANSMITTED so the column is cleared, never omitted')
+          .toBeTrue();
+
+        request.flush({ data: moduleDetailOf({ header: null }) });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+
+      /**
+       * MIGRATION: THE MEASURED ABSENCE OF VALIDATION IS ITSELF A PARITY REQUIREMENT, NOT AN OVERSIGHT.
+       * `modulesettings.ascx:L32` declares `txtTitle` with neither a `maxlength` attribute nor any
+       * validator, and the feature-wide census finds 0 `RequiredFieldValidator` and 0
+       * `RegularExpressionValidator`, so an empty title was accepted and saved by the legacy screen. Adding
+       * `Validators.required` here would reject input the legacy screen took, which is precisely the
+       * opportunistic tightening the migration discipline forbids. The companion case, `txtColor` at L132,
+       * likewise carried no validator - and it has no control at all here, for the contract reason recorded
+       * on the fourth data-type check.
+       */
+      it('accepts an empty title and submits it, because the legacy screen required nothing', () => {
+        activate(moduleDetailOf({ moduleTitle: 'Latest News' }));
+        openEverything();
+
+        type('moduleTitle', '');
+
+        expect(component['form'].controls.moduleTitle.valid)
+          .withContext('an empty title carried no legacy validator and must not be refused')
+          .toBeTrue();
+        expect(messageFor('moduleTitle'))
+          .withContext('no message may be surfaced for a field the legacy screen never validated')
+          .toBeNull();
+
+        // And it must actually reach the server, which is the difference between "not refused locally" and
+        // "accepted": a form blocked by a hidden rule would issue no request for this to match.
+        const request = interceptSubmission();
+        request.flush({ data: moduleDetailOf({ moduleTitle: null }) });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+
+      it('carries every falsy boolean and every zero-valued number as itself', () => {
+        activate(
+          moduleDetailOf({
+            allTabs: false,
+            displayTitle: false,
+            inheritViewPermissions: false,
+            isDeleted: false,
+            moduleOrder: 0,
+            cacheTime: 0,
+            tabId: 0,
+            visibility: MODULE_VISIBILITY.maximized,
+          }),
+        );
+
+        const request = interceptSubmission();
+        const body = request.request.body as UpdateModuleRequest;
+
+        // `false` is the boolean sentinel AND an ordinary stored value; both must reach the server.
+        expect(body.allTabs).toBeFalse();
+        expect(body.displayTitle).toBeFalse();
+        expect(body.inheritViewPermissions).toBeFalse();
+
+        // 0 is an ordinary value for all four of these. `undefined` here would mean a member was stripped.
+        expect(body.moduleOrder).toBe(0);
+        expect(body.cacheTime).toBe(0);
+        expect(body.tabId).toBe(0);
+        expect(body.visibility).toBe(0);
+
+        // And the members must be PRESENT, which is a stronger claim than merely being falsy-equal.
+        for (const member of [
+          'allTabs',
+          'displayTitle',
+          'inheritViewPermissions',
+          'moduleOrder',
+          'cacheTime',
+          'tabId',
+          'visibility',
+        ]) {
+          expect(member in body)
+            .withContext(`${member} must be present in the body even when its value is falsy`)
+            .toBeTrue();
+        }
+
+        request.flush({ data: moduleDetailOf() });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+
+      /**
+       * MIGRATION: THE VISIBILITY ORDINALS ARE LOAD-BEARING BECAUSE THE LEGACY ENUM DECLARED NO VALUES.
+       * `Library/Components/Modules/ModuleInfo.vb:L30-L34` declares a three-member visibility enumeration -
+       * Maximized, then Minimized, then None - with NO explicit assignments, so the compiler's implicit
+       * ordinals 0, 1 and 2 are the values actually written to the column. `ModuleSettings.ascx.vb:L228`
+       * confirms the base with its own comment: `cboVisibility.SelectedIndex = 0 ' maximized`. 0 therefore
+       * means Maximized and is never "unset", and 2 means None - a chosen state in which the module is not
+       * rendered - and is never "missing". The target names the same three codes through `ModuleVisibility`,
+       * which is the only spelling used anywhere here.
+       */
+      it('binds the stored code 0 to Maximized, which is a choice and not an unset field', () => {
+        activate(moduleDetailOf({ visibility: MODULE_VISIBILITY.maximized }));
+        openEverything();
+
+        const chosen = radios('visibility').find((radio) => radio.checked);
+
+        expect(chosen)
+          .withContext('a stored code of 0 must select a radio, not leave the group blank')
+          .toBeTruthy();
+        expect(chosen?.id)
+          .withContext('0 is the FIRST choice, Maximized - the enum declared no explicit values')
+          .toBe('module-settings-visibility-0');
+      });
+
+      it('binds the stored code 2 to None, the third choice, in which the module is not rendered', () => {
+        activate(moduleDetailOf({ visibility: MODULE_VISIBILITY.none }));
+        openEverything();
+
+        expect(radios('visibility').find((radio) => radio.checked)?.id)
+          .withContext('2 is None, a real presentation choice, and must select the third radio')
+          .toBe('module-settings-visibility-2');
+      });
+
+      it('sends the visibility code as its number, so 0 means Maximized and 2 means None', () => {
+        activate(moduleDetailOf({ visibility: MODULE_VISIBILITY.none }));
+
+        const asRead = interceptSubmission();
+        expect((asRead.request.body as UpdateModuleRequest).visibility)
+          .withContext('2 is None, a real presentation choice, and must round-trip as the number 2')
+          .toBe(2);
+        asRead.flush({ data: moduleDetailOf({ visibility: MODULE_VISIBILITY.none }) });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE MOVE-TO-PAGE PICKER
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // MIGRATION: THE MOVE TRAVELS AS A FIELD ON THE UPDATE AND NEVER AS AN INVENTED ENDPOINT. The legacy
+    //   relocation was a second call - `MoveModule(ModuleId, TabId, newTabId, "")` at
+    //   `ModuleController.vb:L1078`, fired from `ModuleSettings.ascx.vb:L403-L408` after the update had
+    //   returned - and no counterpart exists in the module API. A DEDICATED RELOCATION COMMAND UNDER THE
+    //   MODULE RESOURCE DOES NOT EXIST, and none is expected anywhere in this file - not in an assertion and
+    //   not as a literal path in a comment, so a search for one across this spec finds nothing. The closing
+    //   `verify()` is what turns that from an intention into a proof, because a screen that invented such a
+    //   call would leave an unmatched request behind. The page travels on the update instead.
+    describe('the move-to-page picker', () => {
+      it('reads the tenant page list unpaged, sending no query parameter of any kind', () => {
+        fixture.componentRef.setInput('pages', null);
+        fixture.componentRef.setInput('moduleId', 0);
+        fixture.detectChanges();
+
+        httpMock.expectOne(MODULE_URL).flush({ data: moduleDetailOf() });
+        httpMock.expectOne(SETTINGS_URL).flush({ data: settingsBagOf() });
+        fixture.detectChanges();
+
+        httpMock.expectOne(DEFINITION_URL).flush({ data: definitionOf() });
+
+        const tabsRequest = httpMock.expectOne(TABS_URL);
+
+        // UNPAGED, and asserted as such: the portal-scoped page list carries no page coordinate, no
+        // ordering and no filter, so any parameter at all would be a fabricated contract.
+        expect(tabsRequest.request.params.keys().length)
+          .withContext('the portal page list is unpaged, so no query parameter may be sent')
+          .toBe(0);
+        expect(tabsRequest.request.method).toBe('GET');
+
+        tabsRequest.flush({ data: [tabOf()] });
+        fixture.detectChanges();
+      });
+
+      /**
+       * MIGRATION: PAGE 0 AND PARENT -1 ARE BOTH REAL AND BOTH MUST SURVIVE. `dbo.Tabs.TabID` is
+       * `IDENTITY (0, 1)`, so the first page in a tenant carries the identifier 0 and must appear as a
+       * selectable option rather than being filtered out by a truth test. A root-level page records -1 as
+       * its parent, which collides with the legacy `Null.NullInteger` sentinel - so -1 must be carried as
+       * an ordinary value here and never read as "no parent supplied".
+       */
+      it('offers page 0 as a selectable option and accepts a root page whose parent is -1', () => {
+        activate(moduleDetailOf({ tabId: 0 }), definitionOf(), [
+          tabOf({ tabId: 0, tabName: 'Home', parentId: -1, level: 0 }),
+          tabOf({ tabId: 1, tabName: 'About', parentId: 0, level: 1, tabPath: '//About' }),
+        ]);
+
+        // The picker sits in a region that starts closed, and a closed region's body is REMOVED rather than
+        // hidden, so it has to be opened before the options exist to be queried at all.
+        openEverything();
+
+        const options = qa<HTMLOptionElement>('select option');
+
+        expect(options.length)
+          .withContext('both pages must be offered, including the one identified by 0')
+          .toBe(2);
+        expect(options.map((option) => (option.textContent ?? '').trim())).toEqual([
+          'Home',
+          'About',
+        ]);
+      });
+
+      it('posts the chosen page as a member of the update rather than through a move endpoint', () => {
+        activate(moduleDetailOf({ tabId: 0 }), definitionOf(), [
+          tabOf({ tabId: 0, tabName: 'Home', parentId: -1 }),
+          tabOf({ tabId: 1, tabName: 'About', parentId: 0, level: 1, tabPath: '//About' }),
+        ]);
+
+        component['form'].controls.tabId.setValue(1);
+        fixture.detectChanges();
+
+        const request = interceptSubmission();
+
+        expect((request.request.body as UpdateModuleRequest).tabId)
+          .withContext('the relocation travels on the update the operator already submits')
+          .toBe(1);
+
+        request.flush({ data: moduleDetailOf({ tabId: 1 }) });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE DATE SENTINEL, OVER THE WIRE
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // MIGRATION: THE SENTINEL TEST IS ON THE CALENDAR DATE ALONE, WHICH IS WHAT THE LEGACY TEST WAS.
+    //   `Null.vb` sets `NullDate` to `Date.MinValue` (L64-L69) and its date overload of `IsNull`
+    //   (L222-L224) compares `objDate.Date.Equals(NullDate.Date)` under the source's own standing comment
+    //   about avoiding "subtle time differences". A stored instant of 0001-01-01 is therefore the sentinel
+    //   EVEN WITH A NON-ZERO TIME COMPONENT, and the second expectation below is the guard against a
+    //   `getTime()` equality, which would match midnight and miss 13:45 on the very same day.
+    describe('the date sentinel', () => {
+      it('blanks the sentinel date rather than rendering year one', () => {
+        activate(moduleDetailOf({ startDate: '0001-01-01T00:00:00', endDate: null }));
+        openEverything();
+
+        expect(field<HTMLInputElement>('startDate')?.value)
+          .withContext('the sentinel must render as an empty control, never as 01/01/0001')
+          .toBe('');
+      });
+
+      it('blanks the sentinel date even when it carries a non-zero time component', () => {
+        activate(moduleDetailOf({ startDate: '0001-01-01T13:45:00', endDate: null }));
+        openEverything();
+
+        // The whole point: a timestamp equality against Date.MinValue would let this one through.
+        expect(field<HTMLInputElement>('startDate')?.value)
+          .withContext('the comparison is on the calendar date alone, so 13:45 on 0001-01-01 is sentinel')
+          .toBe('');
+      });
+
+      it('renders 9999-12-31 normally, because the upper bound is a real stored value', () => {
+        activate(moduleDetailOf({ startDate: null, endDate: '9999-12-31T00:00:00' }));
+        openEverything();
+
+        expect(field<HTMLInputElement>('endDate')?.value)
+          .withContext('9999-12-31 is a real value in this schema and must not be blanked')
+          .toBe('9999-12-31');
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // REMOVAL
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // MIGRATION: THE CONFIRMATION IS PARITY, NOT AN ADDITION. `ModuleSettings.ascx.vb:L205` is
+    //   `ClientAPI.AddButtonConfirm(cmdDelete, Localization.GetString("DeleteItem"))`, and
+    //   `DeleteItem.Text` in the 353-entry `Website/App_GlobalResources/SharedResources.resx` is 'Are You
+    //   Sure You Wish To Delete This Item?'. The legacy delete was guarded by a browser confirm, so
+    //   guarding it with a dialog reproduces the affordance rather than inventing one.
+    //
+    // MIGRATION: THE REMOVAL IS SOFT AND THERE IS NO WAY BACK FROM THIS SCREEN. The legacy handler called
+    //   `DeleteTabModule(TabId, ModuleId)` (`ModuleController.vb:L837`), which detaches the placement,
+    //   rather than `DeleteModule` (L819). No restore and no purge endpoint exists, so none is expected.
+    // ---------------------------------------------------------------------------------------------------
+    // THE TWO NON-VALIDATING ACTIONS
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // MIGRATION: ONLY ONE OF THE THREE ACTION BUTTONS EVER VALIDATED. `modulesettings.ascx:L222-L224`
+    //   declares `cmdUpdate` with no `causesvalidation` attribute, so it defaulted to true, while BOTH
+    //   `cmdCancel` (L223) and `cmdDelete` (L224) carry an explicit `causesvalidation="False"`. Abandoning
+    //   or removing therefore worked from a form the validators would have rejected, and reproducing that
+    //   means proving two things about each: that no message is raised, and that the action still happens.
+    describe('the non-validating actions', () => {
+      it('abandons from an invalid form without validating it or issuing a request', () => {
+        activate();
+        openEverything();
+
+        // The value is assigned to the CONTROL rather than typed into the element, which is the convention
+        // the validator specs above already established and it is forced by the markup: the field renders as
+        // `<input type="date">`, and a date input normalises unparseable text to the empty string, which the
+        // data-type check correctly passes. `2024-02-31` is the honest way to reach the invalid state - it
+        // matches the expected pattern yet names a day February does not have.
+        //
+        // It is deliberately left UNTOUCHED. That is what makes this test discriminating: a message is
+        // rendered only for a touched control, so submitting - which marks every control touched to reveal
+        // all messages at once - would surface one, while abandoning must not. Marking it touched here would
+        // have manufactured the very message the assertion then looks for.
+        component['form'].controls.startDate.setValue('2024-02-31');
+        fixture.detectChanges();
+
+        expect(component['form'].controls.startDate.valid)
+          .withContext('the precondition for this test is a form the validators would refuse')
+          .toBeFalse();
+        expect(messageFor('startDate'))
+          .withContext('an untouched control shows nothing yet, which is this test\'s baseline')
+          .toBeNull();
+
+        let cancelled = 0;
+        component.cancel.subscribe(() => (cancelled += 1));
+
+        actionButton('Cancel')?.click();
+        fixture.detectChanges();
+
+        expect(cancelled).withContext('cancel must act, not be swallowed by validation').toBe(1);
+        expect(component['form'].controls.startDate.touched)
+          .withContext('causesvalidation="False" means abandoning runs no validation pass')
+          .toBeFalse();
+        expect(messageFor('startDate'))
+          .withContext('and so no message is revealed, unlike a submission from the same state')
+          .toBeNull();
+
+        // And nothing was sent: no write may escape an abandonment.
+        httpMock.expectNone(
+          (candidate) => candidate.method === 'PUT' || candidate.method === 'DELETE',
+        );
+      });
+    });
+
+    describe('removal', () => {
+      it('opens the confirmation before issuing anything, and issues nothing until it is confirmed', () => {
+        activate();
+        fixture.componentRef.setInput('canDelete', true);
+        fixture.detectChanges();
+
+        // An invalid form must not block the destructive path: `cmdDelete` carried
+        // `causesvalidation="False"` at `modulesettings.ascx:L224`.
+        openEverything();
+        type('startDate', 'not-a-date');
+
+        actionButton('Delete')?.click();
+        fixture.detectChanges();
+
+        expect(q('app-confirm-dialog'))
+          .withContext('the confirmation must be presented before the write')
+          .not.toBeNull();
+
+        // The proof that nothing was issued: an unexpected request here would fail this expectation, and
+        // an unmatched one would fail the closing verify().
+        httpMock.expectNone((candidate) => candidate.method === 'DELETE');
+      });
+
+      it('issues exactly one DELETE once confirmed, and reads the 204 as success', () => {
+        activate();
+        fixture.componentRef.setInput('canDelete', true);
+        fixture.detectChanges();
+
+        actionButton('Delete')?.click();
+        fixture.detectChanges();
+
+        confirmDialog();
+
+        const request = httpMock.expectOne(
+          (candidate) => candidate.method === 'DELETE' && candidate.url === MODULE_URL,
+        );
+
+        // 204 with NO BODY, which is what the endpoint publishes. Flushing a payload here would test a
+        // contract the server does not implement.
+        request.flush(null, { status: 204, statusText: 'No Content' });
+        fixture.detectChanges();
+
+        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+
+        // MIGRATION: THE DELETED MODULE IS NOT RE-READ, and this is the assertion that proves it. The
+        // store does re-read the LISTING afterwards - the placement is detached rather than destroyed, so
+        // only the listing knows whether the row should still appear - but re-reading the module that was
+        // just removed would be a contract breach, and there is no restore endpoint to make it meaningful.
+        httpMock.expectNone((candidate) => candidate.method === 'GET' && candidate.url === MODULE_URL);
+        drainListingReread();
+      });
+
+      it('issues nothing when the confirmation is abandoned', () => {
+        activate();
+        fixture.componentRef.setInput('canDelete', true);
+        fixture.detectChanges();
+
+        actionButton('Delete')?.click();
+        fixture.detectChanges();
+
+        cancelDialog();
+
+        httpMock.expectNone((candidate) => candidate.method === 'DELETE');
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // REFUSALS AND REJECTIONS
+    // ---------------------------------------------------------------------------------------------------
+    describe('refusals and rejections', () => {
+      /**
+       * MIGRATION: A REFUSAL IS AN ADVISORY AT WARNING SEVERITY, NOT AN ERROR, AND THE LEGACY SCREEN IS
+       * UNAMBIGUOUS ABOUT IT. `Website/admin/Security/AccessDenied.ascx.vb` is fifty lines, performs no
+       * permission check of its own, and its `Page_Load` (L41-L47) has exactly two branches - one for a
+       * supplied message and one for the default wording - BOTH of which raise
+       * `ModuleMessage.ModuleMessageType.YellowWarning`. Neither raises `RedError`, though the vocabulary
+       * offered it and the tree uses it 27 times elsewhere. So a 403 is announced as a warning and is
+       * deliberately NOT dressed as a danger banner.
+       */
+      it('announces a refused write at warning severity, never as an error', () => {
+        activate();
+
+        const request = interceptSubmission();
+
+        request.flush(
+          {
+            type: 'about:blank',
+            title: 'Forbidden',
+            status: 403,
+            detail: 'This module appears on every page and cannot be moved.',
+          },
+          { status: 403, statusText: 'Forbidden' },
+        );
+        fixture.detectChanges();
+
+        expect(notify).toHaveBeenCalledWith('warning', jasmine.any(String));
+        expect(notify).not.toHaveBeenCalledWith('error', jasmine.any(String));
+        expect(notify).not.toHaveBeenCalledWith('success', jasmine.any(String));
+      });
+
+      it('announces a settled write at success severity', () => {
+        activate();
+
+        const request = interceptSubmission();
+        request.flush({ data: moduleDetailOf() });
+        fixture.detectChanges();
+
+        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+        drainListingReread();
+      });
+
+      /**
+       * MIGRATION: THE PER-FIELD DICTIONARY IS READ WITH BRACKET ACCESS, WHICH THE COMPILER ENFORCES.
+       * `ValidationProblemDetails.errors` is an index signature and `noPropertyAccessFromIndexSignature`
+       * is enabled, so `problem.errors.ModuleTitle` would not compile at all. The keys are .NET
+       * `ModelStateDictionary` keys and are NOT camel-cased, which is why the fixture below spells
+       * `ModuleTitle` with a leading capital exactly as the server publishes it.
+       */
+      it('lands a rejected field on its own control, keyed as the server spelled it', () => {
+        activate();
+
+        // `detail` and `instance` are deliberately OMITTED rather than set to null. Unlike the DTO
+        // contracts, whose members the API writes unconditionally, the problem-details members are declared
+        // optional - `readonly detail?: string` - because RFC 7807 makes them optional and the model
+        // mirrors the specification. Assigning null would not type-check, which is the model doing its job.
+        const problem: ValidationProblemDetails = {
+          type: 'about:blank',
+          title: 'One or more validation errors occurred.',
+          status: 400,
+          traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          errors: {
+            // Bracket-written on purpose; a dotted read would be a compile error under the strict flags.
+            ['ModuleTitle']: ['The title could not be applied.'],
+          },
+        };
+
+        const request = interceptSubmission();
+        request.flush(problem, { status: 400, statusText: 'Bad Request' });
+        fixture.detectChanges();
+
+        expect(problem.errors['ModuleTitle'])
+          .withContext('the dictionary is read with brackets, as the strict flags require')
+          .toEqual(['The title could not be applied.']);
+
+        openEverything();
+        expect(messageFor('moduleTitle')).toBe('The title could not be applied.');
+      });
+
+      it('offers a not-found affordance and stays standing when the address resolves to nothing', () => {
+        expect(() => {
+          fixture.componentRef.setInput('moduleId', 0);
+          fixture.detectChanges();
+
+          httpMock
+            .expectOne(MODULE_URL)
+            .flush(
+              { type: 'about:blank', title: 'Not Found', status: 404 },
+              { status: 404, statusText: 'Not Found' },
+            );
+          httpMock
+            .expectOne(SETTINGS_URL)
+            .flush(
+              { type: 'about:blank', title: 'Not Found', status: 404 },
+              { status: 404, statusText: 'Not Found' },
+            );
+          fixture.detectChanges();
+        }).not.toThrow();
+
+        // A stale bookmark is a legitimate state, so the screen explains itself rather than spinning or
+        // rendering a form over nothing.
+        expect(q('app-empty-state'))
+          .withContext('an unresolved address must produce an affordance, not a crash')
+          .not.toBeNull();
+        expect(q('form.module-settings')).toBeNull();
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE FOURTH VALIDATOR
+    // ---------------------------------------------------------------------------------------------------
+
+    /**
+     * MIGRATION: THE FOURTH DATA-TYPE CHECK IS PRESERVED AS A RULE THOUGH IT HAS NO TRANSPORTABLE CONTROL.
+     * A case-insensitive census of `Website/admin/Modules/` returns `asp:RequiredFieldValidator` 0,
+     * `asp:RegularExpressionValidator` 0, `asp:CompareValidator` 4, `asp:CustomValidator` 0,
+     * `asp:RangeValidator` 0 and `asp:ValidationSummary` 0 - so four `CompareValidator`s were the entire
+     * validation surface of the feature. Three of the four guard controls that still exist and are
+     * asserted above: `valtxtStartDate` (L78), `valtxtEndDate` (L88) and `valCacheTime` (L172). The
+     * fourth, `valBorder` (L138), guarded `txtBorder`, and `border` is one of six placement columns
+     * `UpdateModuleRequest` does not project - so there is no input to reject and no member to send. Its
+     * wording is nevertheless carried verbatim, break tag stripped, so that the rule is not lost and the
+     * control can be restored without re-deriving it the moment the server projects the column.
+     *
+     * Note the legacy inconsistency reproduced rather than corrected: the wording promises a range of 0
+     * to 9 while the declared validator was a plain integer data-type check that enforced no range at all.
+     */
+    it('preserves the fourth data-type check as wording, its control having no wire contract', () => {
+      expect(component['borderInvalidMessage'])
+        .withContext('valBorder.ErrorMessage, verbatim, without the layout break tag it carries')
+        .toBe('Invalid Border (must be a number between 0 and 9)');
+
+      // And there is genuinely no control to guard, which is the contract gap rather than an oversight.
+      setInput('settings', moduleOf());
+      openEverything();
+      expect(field('border')).toBeNull();
+      expect(field('alignment')).toBeNull();
+      expect(field('color')).toBeNull();
+    });
   });
 });

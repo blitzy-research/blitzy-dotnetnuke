@@ -1,934 +1,1292 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
-
-import {
-  PROFILE_VISIBILITY,
-  type CreateProfilePropertyDefinitionRequest,
-  type ProfilePropertyDefinition,
-} from '../../../core/models/profile.model';
-import {
-  ProfileDefinitionListComponent,
-  type ProfileDefinitionBulkFlag,
-  type ProfileDefinitionReorder,
-  type ProfileDefinitionUpdate,
-} from './profile-definition-list.component';
-
 /**
- * Builds a declaration, defaulted so each expectation states only what it depends on.
+ * Specification for {@link ProfileDefinitionListComponent} — the profile-property catalogue at
+ * `/settings/profile-definitions`.
  *
- * @param overrides The members to replace.
- * @returns A declaration.
+ * ## WHY THIS SCREEN NEEDS ITS OWN SPECIFICATION
+ *
+ * It is THREE things sharing one surface: an unpaged grid, a batch of staged edits that are only
+ * written when the operator says so, and an inline editor that both creates and replaces. The risk
+ * lives in the seams between them — an edit staged in the grid must survive until Apply, must be
+ * discarded by Refresh, and must not be lost when a sibling write in the same batch is refused.
+ *
+ * ## HOW IT IS DRIVEN
+ *
+ *   - Mounted as the standalone unit it is, with the REAL {@link UserStore} pinned to each case's
+ *     injector, and every request answered through `HttpTestingController`.
+ *   - `NotificationService.notify` is spied and called through. No router is spied: this screen
+ *     navigates nowhere at all, which is itself asserted.
+ *
+ * ## THE FACTS THAT SHAPE EVERY CASE
+ *
+ * ⚠ THE READ IS UNPAGED AND TAKES NO PARAMETER. `GET /api/v1/profile-definitions` carries no page
+ * coordinate and no tenant argument — the API resolves the tenant from the request — and the body
+ * is an envelope around a PLAIN ARRAY. A fixture shaped as a paged listing flushes successfully
+ * and unwraps to no rows at all.
+ *
+ * ⚠ THERE IS NO REORDER ENDPOINT AND NO BULK ENDPOINT. Moving a row is a swap of two positions and
+ * therefore TWO replaces; setting a flag across the catalogue is one replace per affected row.
+ * Every case that exercises either asserts the request COUNT as well as the bodies.
+ *
+ * ⚠ A STAGED EDIT IS DERIVED, NOT HELD AS A FLAG. "Unapplied" means "differs from what the server
+ * last reported", so a row stops being unapplied the moment the server agrees with it — which is
+ * what makes a partially refused batch recoverable by pressing Apply again.
  */
-function defn(overrides: Partial<ProfilePropertyDefinition> = {}): ProfilePropertyDefinition {
-  return {
-    propertyDefinitionId: 1,
-    portalId: 0,
-    moduleDefId: null,
-    dataType: 349,
-    defaultValue: null,
-    propertyCategory: 'Name',
-    propertyName: 'First Name',
-    length: 50,
-    required: false,
-    validationExpression: null,
-    viewOrder: 0,
-    visible: true,
-    visibility: PROFILE_VISIBILITY.adminOnly,
-    ...overrides,
-  };
+import { TestBed } from '@angular/core/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideRouter } from '@angular/router';
+
+import { NotificationService } from '../../../core/services/notification.service';
+import { UserStore } from '../../../core/state/user.store';
+import { ProfileDefinitionListComponent } from './profile-definition-list.component';
+
+import type { ComponentFixture } from '@angular/core/testing';
+import type { TestRequest } from '@angular/common/http/testing';
+import type { ApiResponse } from '../../../core/models/paged-result.model';
+import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type { ProfilePropertyDefinition } from '../../../core/models/profile.model';
+
+// =====================================================================================================
+// ADDRESSES
+// =====================================================================================================
+
+const DEFINITIONS_URL = '/api/v1/profile-definitions';
+
+function definitionUrl(propertyDefinitionId: number): string {
+  return `${DEFINITIONS_URL}/${propertyDefinitionId}`;
 }
+
+// =====================================================================================================
+// THE WORDING THIS SCREEN PUBLISHES
+// =====================================================================================================
+
+const PAGE_TITLE = 'Manage Profile Properties';
+const ADD_LABEL = 'Add New Profile Property';
+const APPLY_LABEL = 'Apply Changes';
+const REFRESH_LABEL = 'Refresh Grid';
+const CANCEL_LABEL = 'Return to Profile Properties List';
+const CREATE_HEADING = 'Add New Property Details';
+const EDIT_HEADING = 'Edit Property Details';
+const CREATE_SUBMIT_LABEL = 'Create New Property';
+const EDIT_SUBMIT_LABEL = 'Update Property';
+const REMOVAL_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
+const NAME_REQUIRED_MESSAGE = 'The Property Name is required';
+const NAME_PATTERN_MESSAGE = 'The property name cannot contain spaces';
+const DATA_TYPE_REQUIRED_MESSAGE = 'The Data Type is required';
+
+/** `DuplicateName.Text`, double spaces included. A single space here fails the case, correctly. */
+const DUPLICATE_NAME_MESSAGE =
+  'This Property already exists.  Property Names must be unique.  Please select a different ' +
+  'name for this property.';
+
+/** The eight headings the legacy published, plus the four it left empty. */
+const DATA_HEADINGS = [
+  'Name',
+  'Category',
+  'DataType',
+  'Length',
+  'Default Value',
+  'Validation Expression',
+  'Required',
+  'Visible',
+];
+
+/** The four command columns, whose headings the legacy resource file left as `<value />`. */
+const COMMAND_HEADINGS = ['Edit', 'Delete', 'Move Down', 'Move Up'];
+
+/** The four names whose delete command the legacy hid. */
+const UNDELETABLE = ['LastName', 'FirstName', 'TimeZone', 'PreferredLocale'];
 
 describe('ProfileDefinitionListComponent', () => {
   let fixture: ComponentFixture<ProfileDefinitionListComponent>;
-  let component: ProfileDefinitionListComponent;
-  let created: CreateProfilePropertyDefinitionRequest[];
-  let updated: ProfileDefinitionUpdate[];
-  let removed: ProfilePropertyDefinition[];
-  let reordered: ProfileDefinitionReorder[];
-  let flagged: ProfileDefinitionBulkFlag[];
+  let httpMock: HttpTestingController;
+  let notify: jasmine.Spy;
 
-  /**
-   * Sets one of the component's inputs and re-renders.
-   *
-   * @param name The input to set.
-   * @param value The value to set.
-   */
-  function setInput(name: 'definitions' | 'heading' | 'loading' | 'saving', value: unknown): void {
-    fixture.componentRef.setInput(name, value);
-    fixture.detectChanges();
+  // ---------------------------------------------------------------------------------------------
+  // FIXTURES
+  // ---------------------------------------------------------------------------------------------
+
+  function definition(
+    overrides: Partial<ProfilePropertyDefinition> = {},
+  ): ProfilePropertyDefinition {
+    return {
+      propertyDefinitionId: 1,
+      portalId: 0,
+      moduleDefId: null,
+      dataType: 349,
+      defaultValue: '',
+      propertyCategory: 'Name',
+      propertyName: 'FirstName',
+      length: 0,
+      required: false,
+      validationExpression: '',
+      viewOrder: 0,
+      visible: true,
+      visibility: 2,
+      ...overrides,
+    };
   }
 
-  /**
-   * Returns the component's host element.
-   */
-  function host(): HTMLElement {
-    return fixture.nativeElement as HTMLElement;
+  /** Three declarations in position order, none of them one of the four undeletable names. */
+  function catalogue(): readonly ProfilePropertyDefinition[] {
+    return [
+      definition({ propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0 }),
+      definition({ propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1 }),
+      definition({ propertyDefinitionId: 13, propertyName: 'Biography', viewOrder: 2 }),
+    ];
   }
 
-  /**
-   * Returns every rendered body row.
-   */
-  function rows(): HTMLTableRowElement[] {
-    return Array.from(host().querySelectorAll<HTMLTableRowElement>('tbody tr'));
+  function envelope<T>(data: T): ApiResponse<T> {
+    return { data, meta: null };
   }
 
-  /**
-   * Returns the four row-action controls of one row.
-   *
-   * @param index The row's position.
-   */
-  function rowActions(index: number): HTMLButtonElement[] {
-    return Array.from(
-      rows()[index].querySelectorAll<HTMLButtonElement>('button.profile-definitions__row-action'),
-    );
+  function problem(status: number, type?: string): ProblemDetails {
+    return {
+      type,
+      title: 'Request refused',
+      status,
+      detail: 'The server refused the request.',
+    };
   }
 
-  /**
-   * Returns the bulk flag checkboxes, required first.
-   */
-  function bulkBoxes(): HTMLInputElement[] {
-    return Array.from(
-      host().querySelectorAll<HTMLInputElement>('.profile-definitions__bulk input[type="checkbox"]'),
-    );
-  }
-
-  /**
-   * Returns the editor disclosure control.
-   */
-  function disclosure(): HTMLButtonElement | null {
-    return host().querySelector('button.profile-definitions__form-toggle');
-  }
-
-  /**
-   * Returns the grid-level create control.
-   */
-  function addButton(): HTMLButtonElement | null {
-    return host().querySelector('.profile-definitions__grid-actions button');
-  }
-
-  /**
-   * Returns the inline editor, when it is open.
-   */
-  function editor(): HTMLElement | null {
-    return host().querySelector('fieldset.profile-definitions__form');
-  }
-
-  /**
-   * Returns one of the editor's controls.
-   *
-   * @param id The control's identifier.
-   */
-  function field<T extends HTMLElement>(id: string): T | null {
-    return host().querySelector<T>(`#${id}`);
-  }
-
-  /**
-   * Sets a text control's value the way a user would.
-   *
-   * @param element The control.
-   * @param next The text to enter.
-   */
-  function type(element: HTMLInputElement, next: string): void {
-    element.value = next;
-    element.dispatchEvent(new Event('input'));
-    fixture.detectChanges();
-  }
-
-  /**
-   * Submits the inline editor.
-   */
-  function submit(): void {
-    host().querySelector('form')?.dispatchEvent(new Event('submit'));
-    fixture.detectChanges();
-  }
-
-  /**
-   * Returns the confirmation dialog, when one is open.
-   */
-  function dialog(): HTMLElement | null {
-    return host().querySelector('app-confirm-dialog');
-  }
-
-  /**
-   * Returns the dialog's two controls, cancel first.
-   */
-  function dialogButtons(): HTMLButtonElement[] {
-    return Array.from(
-      host().querySelectorAll<HTMLButtonElement>('button.confirm-dialog__button'),
-    );
-  }
+  // ---------------------------------------------------------------------------------------------
+  // HARNESS
+  // ---------------------------------------------------------------------------------------------
 
   beforeEach(async () => {
+    // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it.
+    // Reversing the two leaves the live backend in place and every expectation times out.
     await TestBed.configureTestingModule({
       imports: [ProfileDefinitionListComponent],
+      // The store is listed so each case gets its own instance. It is `providedIn: 'root'`, so
+      // without this every case would share one catalogue and one failure slot.
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([]), UserStore],
     }).compileComponents();
 
-    fixture = TestBed.createComponent(ProfileDefinitionListComponent);
-    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    notify = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
+  });
 
-    created = [];
-    updated = [];
-    removed = [];
-    reordered = [];
-    flagged = [];
-    component.create.subscribe((value) => created.push(value));
-    component.update.subscribe((value) => updated.push(value));
-    component.remove.subscribe((value) => removed.push(value));
-    component.reorder.subscribe((value) => reordered.push(value));
-    component.bulkFlag.subscribe((value) => flagged.push(value));
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  /** Creates the component and runs the first change detection. */
+  function create(): void {
+    fixture = TestBed.createComponent(ProfileDefinitionListComponent);
+    fixture.detectChanges();
+  }
+
+  /** Consumes exactly one pending request, asserted by verb AND address. */
+  function expectRequest(method: string, url: string, label = 'a request'): TestRequest {
+    const matches = httpMock.match((candidate) => candidate.url === url);
+    const wanted = matches.filter((candidate) => candidate.request.method === method);
+
+    expect(wanted.length)
+      .withContext(`expected exactly one ${method} ${url} for ${label}`)
+      .toBe(1);
+
+    const found = wanted.at(0);
+
+    if (found === undefined) {
+      throw new Error(`no ${method} ${url} was pending for ${label}`);
+    }
+
+    return found;
+  }
+
+  /** Consumes every pending write against a definition, in the order they were issued. */
+  function pendingWrites(method: string): readonly TestRequest[] {
+    return httpMock.match(
+      (candidate) =>
+        candidate.method === method && candidate.url.startsWith(`${DEFINITIONS_URL}/`),
+    );
+  }
+
+  /** Mounts the screen and answers its one read with the supplied catalogue. */
+  function arrive(rows: readonly ProfilePropertyDefinition[] = catalogue()): void {
+    create();
+    expectRequest('GET', DEFINITIONS_URL, 'the catalogue read').flush(envelope(rows));
+    fixture.detectChanges();
+  }
+
+  /**
+   * Flushes every catalogue re-read a batch of writes provoked.
+   *
+   * ⚠ A BATCH PROVOKES ONE RE-READ PER SUCCESSFUL WRITE, AND ALL BUT THE LAST ARE CANCELLED. The
+   * store abandons an outstanding read before dispatching another, so with n successful writes
+   * there are n reads of which n-1 are cancelled. A cancelled request cannot be flushed, so each
+   * is consumed and skipped rather than answered.
+   *
+   * @param rows The catalogue to answer the surviving read with.
+   */
+  function settleReReads(rows: readonly ProfilePropertyDefinition[] = catalogue()): void {
+    const reads = httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === DEFINITIONS_URL,
+    );
+
+    expect(reads.length).withContext('at least one catalogue re-read').toBeGreaterThan(0);
+
+    for (const read of reads) {
+      if (!read.cancelled) {
+        read.flush(envelope(rows));
+      }
+    }
 
     fixture.detectChanges();
-  });
+  }
 
-  describe('construction', () => {
-    it('creates', () => {
-      expect(component).toBeTruthy();
+  /** Accepts every pending replace, without inspecting any of them. */
+  function settleReplaces(): void {
+    for (const write of pendingWrites('PUT')) {
+      write.flush(envelope(definition()));
+    }
+
+    fixture.detectChanges();
+  }
+
+  function text(): string {
+    return (fixture.nativeElement as HTMLElement).textContent ?? '';
+  }
+
+  function query<T extends Element>(selector: string): readonly T[] {
+    return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<T>(selector));
+  }
+
+  /** Every button whose rendered text contains the wording, in document order. */
+  function buttonsNamed(wording: string): readonly HTMLButtonElement[] {
+    return query<HTMLButtonElement>('button').filter((button) =>
+      (button.textContent ?? '').includes(wording),
+    );
+  }
+
+  /** Exactly one button by its rendered wording. */
+  function button(wording: string): HTMLButtonElement {
+    const found = buttonsNamed(wording);
+
+    expect(found.length).withContext(`expected exactly one "${wording}" button`).toBe(1);
+
+    const first = found.at(0);
+
+    if (first === undefined) {
+      throw new Error(`no button named "${wording}"`);
+    }
+
+    return first;
+  }
+
+  function press(wording: string): void {
+    button(wording).click();
+    fixture.detectChanges();
+  }
+
+  /**
+   * A button inside the removal dialog, by its rendered wording.
+   *
+   * Scoped to the dialog deliberately: the grid also renders one "Delete" command per removable
+   * row, so an unscoped search for that wording finds four buttons and cannot say which is the
+   * confirmation.
+   */
+  function dialogButton(wording: string): HTMLButtonElement {
+    const found = query<HTMLButtonElement>('app-confirm-dialog button').filter((candidate) =>
+      (candidate.textContent ?? '').includes(wording),
+    );
+
+    expect(found.length).withContext(`exactly one dialog button named "${wording}"`).toBe(1);
+
+    const first = found.at(0);
+
+    if (first === undefined) {
+      throw new Error(`the dialog has no button named "${wording}"`);
+    }
+
+    return first;
+  }
+
+  function pressDialog(wording: string): void {
+    dialogButton(wording).click();
+    fixture.detectChanges();
+  }
+
+  /** The property names in the order the grid renders them. */
+  function renderedNames(): readonly string[] {
+    return query<HTMLTableRowElement>('tbody tr').map((row) => {
+      const cells = Array.from(row.querySelectorAll('td'));
+
+      // Column four is the name; the four commands come first.
+      return (cells.at(4)?.textContent ?? '').trim();
+    });
+  }
+
+  /** The grid's own check box for a column, one per row, in rendered order. */
+  function rowCheckboxes(column: 'required' | 'visible'): readonly HTMLInputElement[] {
+    const offset = column === 'required' ? 10 : 11;
+
+    return query<HTMLTableRowElement>('tbody tr').flatMap((row) => {
+      const cell = Array.from(row.querySelectorAll('td')).at(offset);
+      const box = cell?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+
+      return box === null || box === undefined ? [] : [box];
+    });
+  }
+
+  /** The two bulk toggles, which sit outside the table. */
+  function bulkToggles(): readonly HTMLInputElement[] {
+    return query<HTMLInputElement>('.profile-definitions__bulk input[type="checkbox"]');
+  }
+
+  function toggle(box: HTMLInputElement | undefined): void {
+    if (box === undefined) {
+      throw new Error('the expected check box was not rendered');
+    }
+
+    box.click();
+    fixture.detectChanges();
+  }
+
+  function control(id: string): HTMLInputElement | HTMLTextAreaElement {
+    const found = (fixture.nativeElement as HTMLElement).querySelector<
+      HTMLInputElement | HTMLTextAreaElement
+    >(`#${id}`);
+
+    if (found === null) {
+      throw new Error(`the control #${id} was not rendered`);
+    }
+
+    return found;
+  }
+
+  function type(id: string, value: string): void {
+    const field = control(id);
+    field.value = value;
+    field.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  function check(id: string, value: boolean): void {
+    const field = control(id);
+
+    if (!(field instanceof HTMLInputElement)) {
+      throw new Error(`#${id} is not a check box`);
+    }
+
+    if (field.checked !== value) {
+      field.click();
+      fixture.detectChanges();
+    }
+  }
+
+  /** Fills the create form with a valid declaration. */
+  function fillValidForm(name = 'Twitter'): void {
+    type('profile-definition-name', name);
+    type('profile-definition-data-type', '349');
+    type('profile-definition-category', 'Contact');
+    fixture.detectChanges();
+  }
+
+  // =============================================================================================
+  // ARRIVAL
+  // =============================================================================================
+
+  describe('arrival', () => {
+    it('issues one unpaged read carrying no page coordinate and no tenant argument', () => {
+      create();
+
+      const read = expectRequest('GET', DEFINITIONS_URL, 'the catalogue read');
+
+      expect(read.request.params.keys().length).toBe(0);
+      read.flush(envelope(catalogue()));
+      fixture.detectChanges();
+
+      expect(text()).toContain(PAGE_TITLE);
     });
 
-    it('declares the on-push change detection strategy the migration plan mandates', () => {
-      const meta = (ProfileDefinitionListComponent as unknown as { ɵcmp?: { onPush?: boolean } })
-        .ɵcmp;
+    it('renders the eight data headings the legacy published', () => {
+      arrive();
 
-      expect(meta?.onPush).toBeTrue();
+      const headings = query<HTMLTableCellElement>('thead th').map((cell) =>
+        (cell.textContent ?? '').trim(),
+      );
+
+      for (const heading of DATA_HEADINGS) {
+        expect(headings.some((rendered) => rendered.includes(heading)))
+          .withContext(`heading "${heading}"`)
+          .toBeTrue();
+      }
     });
 
-    it('is standalone, so the route can load it directly', () => {
-      const meta = (
-        ProfileDefinitionListComponent as unknown as { ɵcmp?: { standalone?: boolean } }
-      ).ɵcmp;
+    it('declares twelve columns, four of them commands whose heading the legacy left empty', () => {
+      arrive();
 
-      expect(meta?.standalone).toBeTrue();
+      // DL-1: the count is the legacy's own, proven three ways in the component's own notes.
+      expect(query<HTMLTableCellElement>('thead th').length).toBe(12);
+
+      // DL-9: each command column keeps a real accessible name while painting nothing, so the
+      // heading text is present in the document but visually hidden.
+      const hidden = query<HTMLTableCellElement>('thead th')
+        .filter((cell) => cell.querySelector('.data-table__label--hidden') !== null)
+        .map((cell) => (cell.textContent ?? '').trim());
+
+      for (const heading of COMMAND_HEADINGS) {
+        expect(hidden.some((rendered) => rendered.includes(heading)))
+          .withContext(`hidden command heading "${heading}"`)
+          .toBeTrue();
+      }
     });
 
-    it('renders the shared page header with a default title', () => {
-      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe(
-        'Profile Properties',
+    it('renders the help paragraph verbatim, double spaces included', () => {
+      arrive();
+
+      expect(text()).toContain(
+        'You can change the order of the profile fields, and whether they are Required or ' +
+          'Visible on this screen.  Click on the "Apply Changes" button to save any changes ' +
+          'you make.',
       );
     });
 
-    it('restores safe defaults when route input binding supplies no data', () => {
-      expect(() => {
-        setInput('definitions', undefined);
-        setInput('heading', undefined);
-      }).not.toThrow();
+    it('orders the rows by position, not by the order the array arrived in', () => {
+      arrive([
+        definition({ propertyDefinitionId: 21, propertyName: 'Third', viewOrder: 7 }),
+        definition({ propertyDefinitionId: 22, propertyName: 'First', viewOrder: 0 }),
+        definition({ propertyDefinitionId: 23, propertyName: 'Second', viewOrder: 3 }),
+      ]);
 
-      expect(component.definitions).toEqual([]);
-      expect(host().querySelector('app-page-header h1')?.textContent?.trim()).toBe(
-        'Profile Properties',
+      expect(renderedNames()).toEqual(['First', 'Second', 'Third']);
+    });
+
+    it('treats a position of zero as a real value rather than as unset', () => {
+      arrive([
+        definition({ propertyDefinitionId: 31, propertyName: 'Zeroth', viewOrder: 0 }),
+        definition({ propertyDefinitionId: 32, propertyName: 'Next', viewOrder: 1 }),
+      ]);
+
+      // A truthiness test on the position would have sorted the zero row to the far end.
+      expect(renderedNames()).toEqual(['Zeroth', 'Next']);
+    });
+
+    it('renders an unresolved data type as empty rather than as the sentinel', () => {
+      arrive([definition({ propertyDefinitionId: 41, propertyName: 'Unknown', dataType: -1 })]);
+
+      const cells = query<HTMLTableCellElement>('tbody tr td');
+
+      expect((cells.at(6)?.textContent ?? '').trim()).toBe('');
+    });
+
+    it('never paints the word null for an absent default value or expression', () => {
+      arrive([
+        definition({
+          propertyDefinitionId: 51,
+          propertyName: 'Sparse',
+          defaultValue: null,
+          validationExpression: null,
+        }),
+      ]);
+
+      expect(text()).not.toContain('null');
+      expect(text()).not.toContain('undefined');
+    });
+
+    it('renders no pagination, because the read is unpaged', () => {
+      arrive();
+
+      expect(query('app-pagination').length).toBe(0);
+    });
+
+    it('offers no sortable heading, because the legacy grid declared none', () => {
+      arrive();
+
+      expect(query('thead th button').length).toBe(0);
+    });
+  });
+
+  // =============================================================================================
+  // THE DELETE COMMAND'S VISIBILITY — DL-7
+  // =============================================================================================
+
+  describe('the delete command', () => {
+    it('is withheld for the four properties the platform depends on', () => {
+      arrive(
+        UNDELETABLE.map((propertyName, index) =>
+          definition({ propertyDefinitionId: 60 + index, propertyName, viewOrder: index }),
+        ),
       );
-      expect(host().querySelector('app-empty-state')).not.toBeNull();
+
+      expect(buttonsNamed('Delete').length).toBe(0);
     });
 
-    it('opens with the help paragraph, which the stylesheet owns', () => {
-      expect(host().querySelector('p.profile-definitions__help')).not.toBeNull();
+    it('matches those four names without regard to case, as the legacy did', () => {
+      arrive([definition({ propertyDefinitionId: 70, propertyName: 'lAsTnAmE', viewOrder: 0 })]);
+
+      expect(buttonsNamed('Delete').length).toBe(0);
     });
 
-    it('opens with the editor closed', () => {
-      expect(editor()).toBeNull();
-      expect(disclosure()?.getAttribute('aria-expanded')).toBe('false');
-    });
-  });
+    it('is offered for every other property', () => {
+      arrive();
 
-  describe('while the catalogue is being fetched', () => {
-    beforeEach(() => {
-      setInput('loading', true);
+      expect(buttonsNamed('Delete').length).toBe(3);
     });
 
-    it('renders the shared progress indicator', () => {
-      expect(host().querySelector('app-loading-spinner')).not.toBeNull();
-    });
+    it('is withheld rather than disabled, so no unavailable action is announced', () => {
+      arrive([
+        definition({ propertyDefinitionId: 80, propertyName: 'FirstName', viewOrder: 0 }),
+        definition({ propertyDefinitionId: 81, propertyName: 'Nickname', viewOrder: 1 }),
+      ]);
 
-    it('renders neither the table nor the editor', () => {
-      expect(host().querySelector('table')).toBeNull();
-      expect(disclosure()).toBeNull();
-    });
-  });
+      const commands = buttonsNamed('Delete');
 
-  describe('when the catalogue is empty', () => {
-    it('renders the empty state', () => {
-      expect(host().querySelector('app-empty-state')).not.toBeNull();
-    });
-
-    it('renders no table and no bulk region', () => {
-      expect(host().querySelector('table')).toBeNull();
-      expect(host().querySelector('.profile-definitions__bulk')).toBeNull();
-    });
-
-    it('still offers the create affordance, because an empty catalogue is where one starts', () => {
-      expect(addButton()).not.toBeNull();
-      expect(disclosure()).not.toBeNull();
+      expect(commands.length).toBe(1);
+      expect(commands.at(0)?.disabled).toBeFalse();
     });
   });
 
-  describe('the catalogue table', () => {
-    beforeEach(() => {
-      setInput('definitions', [
-        defn({
-          propertyDefinitionId: 1,
-          propertyName: 'First Name',
-          propertyCategory: 'Name',
-          length: 50,
+  // =============================================================================================
+  // REORDERING — DL-2
+  // =============================================================================================
+
+  describe('reordering', () => {
+    it('withholds move up on the first row and move down on the last', () => {
+      arrive();
+
+      expect(buttonsNamed('Move Up').length).toBe(2);
+      expect(buttonsNamed('Move Down').length).toBe(2);
+    });
+
+    it('exchanges two positions locally and requests nothing at all', () => {
+      arrive();
+
+      buttonsNamed('Move Down').at(0)?.click();
+      fixture.detectChanges();
+
+      expect(renderedNames()).toEqual(['Website', 'Nickname', 'Biography']);
+      // No move endpoint exists, so nothing may be requested until Apply.
+      httpMock.expectNone(() => true);
+    });
+
+    it('stages two rows for one move, and applies them as two replaces', () => {
+      arrive();
+
+      buttonsNamed('Move Down').at(0)?.click();
+      fixture.detectChanges();
+
+      expect(text()).toContain('2 unapplied change(s)');
+
+      press(APPLY_LABEL);
+
+      const writes = pendingWrites('PUT');
+
+      expect(writes.length).toBe(2);
+
+      const byUrl = new Map(writes.map((write) => [write.request.url, write.request.body]));
+
+      expect(byUrl.get(definitionUrl(11))).toEqual(
+        jasmine.objectContaining({ propertyName: 'Nickname', viewOrder: 1 }),
+      );
+      expect(byUrl.get(definitionUrl(12))).toEqual(
+        jasmine.objectContaining({ propertyName: 'Website', viewOrder: 0 }),
+      );
+
+      for (const write of writes) {
+        write.flush(envelope(definition()));
+      }
+
+      settleReReads();
+    });
+
+    it('carries all nine writable members on a move, because the verb replaces', () => {
+      arrive([
+        definition({
+          propertyDefinitionId: 91,
+          propertyName: 'Alpha',
+          propertyCategory: 'Group',
+          dataType: 350,
+          defaultValue: 'x',
+          length: 40,
           required: true,
+          validationExpression: '^a$',
+          viewOrder: 0,
           visible: true,
-          visibility: PROFILE_VISIBILITY.allUsers,
-          defaultValue: 'Unknown',
-          validationExpression: '^[A-Za-z]+$',
         }),
-        defn({
-          propertyDefinitionId: 2,
-          propertyName: 'Street',
-          propertyCategory: 'Address',
-          length: 0,
-          required: false,
-          visible: false,
-          visibility: PROFILE_VISIBILITY.adminOnly,
-        }),
-      ]);
-    });
-
-    it('names the table for assistive technology without showing the caption', () => {
-      const caption = host().querySelector('caption');
-
-      expect(caption).not.toBeNull();
-      expect(caption?.hasAttribute('data-visually-hidden')).toBeTrue();
-    });
-
-    it('renders one row per declaration, in the order supplied', () => {
-      expect(rows().length).toBe(2);
-      expect(rows().map((row) => row.querySelector('th')?.textContent?.trim())).toEqual([
-        'First Name',
-        'Street',
-      ]);
-    });
-
-    it('makes each name a row-scoped header, so every cell is announced with it', () => {
-      expect(rows()[0].querySelector('th')?.getAttribute('scope')).toBe('row');
-    });
-
-    it('declares every column header with a column scope', () => {
-      const headers = Array.from(host().querySelectorAll('thead th'));
-
-      expect(headers.length).toBe(9);
-      expect(headers.every((header) => header.getAttribute('scope') === 'col')).toBeTrue();
-    });
-
-    it('renders the two flags as words rather than as raw booleans', () => {
-      const cells = Array.from(rows()[0].querySelectorAll('td')).map((cell) =>
-        cell.textContent?.trim(),
-      );
-
-      expect(cells[2]).toBe('Yes');
-      expect(cells[3]).toBe('Yes');
-    });
-
-    it('renders a cleared flag as the negative word, not as a blank cell', () => {
-      const cells = Array.from(rows()[1].querySelectorAll('td')).map((cell) =>
-        cell.textContent?.trim(),
-      );
-
-      expect(cells[2]).toBe('No');
-      expect(cells[3]).toBe('No');
-    });
-
-    it('renders the visibility as wording rather than as its stored code', () => {
-      expect(rows()[0].querySelectorAll('td')[4].textContent?.trim()).toBe('All users');
-      expect(rows()[1].querySelectorAll('td')[4].textContent?.trim()).toBe(
-        'Administrators only',
-      );
-    });
-
-    it('reports an unrecognised visibility code as itself rather than guessing', () => {
-      setInput('definitions', [defn({ visibility: 97 })]);
-
-      expect(rows()[0].querySelectorAll('td')[4].textContent?.trim()).toBe('Code 97');
-    });
-
-    it('presents a default value and an expression in the monospaced style', () => {
-      const codes = Array.from(rows()[0].querySelectorAll('code.profile-definitions__code'));
-
-      expect(codes.map((code) => code.textContent?.trim())).toEqual([
-        'Unknown',
-        '^[A-Za-z]+$',
-      ]);
-    });
-
-    it('renders no monospaced element when neither a default nor an expression exists', () => {
-      expect(rows()[1].querySelectorAll('code.profile-definitions__code').length).toBe(0);
-    });
-  });
-
-  describe('bulk flags', () => {
-    it('shows both flags as set when every declaration carries them', () => {
-      setInput('definitions', [
-        defn({ propertyDefinitionId: 1, required: true, visible: true }),
-        defn({ propertyDefinitionId: 2, required: true, visible: true }),
+        definition({ propertyDefinitionId: 92, propertyName: 'Beta', viewOrder: 1 }),
       ]);
 
-      expect(bulkBoxes().map((box) => box.checked)).toEqual([true, true]);
-      expect(bulkBoxes().map((box) => box.indeterminate)).toEqual([false, false]);
-    });
-
-    it('shows both flags as clear when no declaration carries them', () => {
-      setInput('definitions', [
-        defn({ propertyDefinitionId: 1, required: false, visible: false }),
-        defn({ propertyDefinitionId: 2, required: false, visible: false }),
-      ]);
-
-      expect(bulkBoxes().map((box) => box.checked)).toEqual([false, false]);
-      expect(bulkBoxes().map((box) => box.indeterminate)).toEqual([false, false]);
-    });
-
-    it('shows a mixed flag as neither set nor clear', () => {
-      setInput('definitions', [
-        defn({ propertyDefinitionId: 1, required: true, visible: true }),
-        defn({ propertyDefinitionId: 2, required: false, visible: true }),
-      ]);
-
-      // A mixed set is not "off": presenting it as off would invite an operator to
-      // switch it on and believe nothing changed for half the catalogue.
-      expect(bulkBoxes()[0].indeterminate).toBeTrue();
-      expect(bulkBoxes()[0].checked).toBeFalse();
-      expect(bulkBoxes()[1].indeterminate).toBeFalse();
-      expect(bulkBoxes()[1].checked).toBeTrue();
-    });
-
-    it('emits which flag was set and what it was set to', () => {
-      setInput('definitions', [defn({ required: false })]);
-
-      const box = bulkBoxes()[0];
-      box.checked = true;
-      box.dispatchEvent(new Event('change'));
-
-      expect(flagged).toEqual([{ flag: 'required', value: true }]);
-    });
-
-    it('emits a clearing gesture as well as a setting one', () => {
-      setInput('definitions', [defn({ visible: true })]);
-
-      const box = bulkBoxes()[1];
-      box.checked = false;
-      box.dispatchEvent(new Event('change'));
-
-      expect(flagged).toEqual([{ flag: 'visible', value: false }]);
-    });
-
-    it('is disabled while a mutation is in flight', () => {
-      setInput('definitions', [defn()]);
-      setInput('saving', true);
-
-      expect(bulkBoxes().every((box) => box.disabled)).toBeTrue();
-    });
-
-    it('associates each checkbox with a label, so the pair is one control', () => {
-      setInput('definitions', [defn()]);
-
-      const labels = Array.from(
-        host().querySelectorAll('.profile-definitions__bulk label.profile-definitions__bulk-item'),
-      );
-
-      expect(labels.length).toBe(2);
-      expect(labels.every((label) => label.querySelector('input[type="checkbox"]') !== null)).toBeTrue();
-    });
-  });
-
-  describe('row actions', () => {
-    beforeEach(() => {
-      setInput('definitions', [
-        defn({ propertyDefinitionId: 1, propertyName: 'First Name' }),
-        defn({ propertyDefinitionId: 2, propertyName: 'Street' }),
-        defn({ propertyDefinitionId: 3, propertyName: 'City' }),
-      ]);
-    });
-
-    it('renders the four affordances the legacy grid offered', () => {
-      expect(rowActions(0).length).toBe(4);
-    });
-
-    it('cannot move the first declaration earlier', () => {
-      expect(rowActions(0)[2].disabled).toBeTrue();
-      expect(rowActions(0)[3].disabled).toBeFalse();
-    });
-
-    it('cannot move the last declaration later', () => {
-      expect(rowActions(2)[2].disabled).toBeFalse();
-      expect(rowActions(2)[3].disabled).toBeTrue();
-    });
-
-    it('can move a middle declaration either way', () => {
-      expect(rowActions(1)[2].disabled).toBeFalse();
-      expect(rowActions(1)[3].disabled).toBeFalse();
-    });
-
-    it('names each direction affordance by the declaration it moves', () => {
-      expect(rowActions(1)[2].getAttribute('aria-label')).toBe('Move Street up');
-      expect(rowActions(1)[3].getAttribute('aria-label')).toBe('Move Street down');
-    });
-
-    it('hides the direction glyph from assistive technology, so the name is not doubled', () => {
-      expect(rowActions(1)[2].querySelector('span')?.getAttribute('aria-hidden')).toBe('true');
-    });
-
-    it('emits the declaration and the direction', () => {
-      rowActions(1)[2].click();
-      rowActions(1)[3].click();
-
-      expect(reordered).toEqual([
-        { propertyDefinitionId: 2, direction: 'up' },
-        { propertyDefinitionId: 2, direction: 'down' },
-      ]);
-    });
-
-    it('refuses a move past the boundary even when asked directly', () => {
-      // The disabled attribute stops a click; the guard stops a synthetic or
-      // programmatic call, so the boundary is a property of the component rather than
-      // of its markup.
-      const internals = component as unknown as {
-        onReorder(definition: ProfilePropertyDefinition, direction: 'up' | 'down'): void;
-      };
-
-      internals.onReorder(defn({ propertyDefinitionId: 1 }), 'up');
-      internals.onReorder(defn({ propertyDefinitionId: 3 }), 'down');
-
-      expect(reordered).toEqual([]);
-    });
-
-    it('refuses a move for a declaration the screen does not hold', () => {
-      const internals = component as unknown as {
-        onReorder(definition: ProfilePropertyDefinition, direction: 'up' | 'down'): void;
-      };
-
-      internals.onReorder(defn({ propertyDefinitionId: 99 }), 'up');
-      internals.onReorder(defn({ propertyDefinitionId: 99 }), 'down');
-
-      expect(reordered).toEqual([]);
-    });
-
-    it('disables every affordance while a mutation is in flight', () => {
-      setInput('saving', true);
-
-      expect(rowActions(1).every((button) => button.disabled)).toBeTrue();
-    });
-  });
-
-  describe('creating a declaration', () => {
-    beforeEach(() => {
-      setInput('definitions', [defn({ propertyDefinitionId: 1 }), defn({ propertyDefinitionId: 2 })]);
-      addButton()!.click();
+      buttonsNamed('Move Down').at(0)?.click();
       fixture.detectChanges();
+      press(APPLY_LABEL);
+
+      const writes = pendingWrites('PUT');
+      const first = writes.find((write) => write.request.url === definitionUrl(91));
+
+      expect(first?.request.body).toEqual({
+        propertyName: 'Alpha',
+        propertyCategory: 'Group',
+        dataType: 350,
+        defaultValue: 'x',
+        length: 40,
+        required: true,
+        validationExpression: '^a$',
+        viewOrder: 1,
+        visible: true,
+      });
+
+      for (const write of writes) {
+        write.flush(envelope(definition()));
+      }
+
+      fixture.detectChanges();
+      settleReReads();
     });
 
-    it('opens the editor', () => {
-      expect(editor()).not.toBeNull();
-      expect(disclosure()?.getAttribute('aria-expanded')).toBe('true');
-    });
-
-    it('legends the editor as an addition', () => {
-      expect(
-        host().querySelector('legend.profile-definitions__form-legend')?.textContent?.trim(),
-      ).toBe('Add a profile property');
-    });
-
-    it('starts the display order one past the current last, so nothing collides', () => {
-      expect(field<HTMLInputElement>('definition-order')?.value).toBe('2');
-    });
-
-    it('starts visible and not required, matching the shipped defaults', () => {
-      expect(field<HTMLInputElement>('definition-visible')).toBeNull();
-      const checkboxes = Array.from(
-        editor()!.querySelectorAll<HTMLInputElement>('.profile-definitions__form-grid input[type="checkbox"]'),
-      );
-
-      expect(checkboxes.map((box) => box.checked)).toEqual([false, true]);
-    });
-
-    it('labels the submit affordance as an addition', () => {
-      expect(host().querySelector('button[type="submit"]')?.textContent?.trim()).toBe('Add');
-    });
-
-    it('emits a creation carrying the entered shape', () => {
-      type(field<HTMLInputElement>('definition-name')!, '  Nickname  ');
-      type(field<HTMLInputElement>('definition-category')!, '  Name  ');
-      submit();
-
-      expect(created.length).toBe(1);
-      expect(updated).toEqual([]);
-      // Trimmed: a name with stray white space would collide with itself on the next
-      // duplicate check and would render with a visible gap.
-      expect(created[0].propertyName).toBe('Nickname');
-      expect(created[0].propertyCategory).toBe('Name');
-    });
-
-    it('reports an absent default and an absent expression as nothing, not as blank text', () => {
-      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-      submit();
-
-      expect(created[0].defaultValue).toBeNull();
-      expect(created[0].validationExpression).toBeNull();
-    });
-
-    it('carries a supplied default and expression verbatim', () => {
-      type(field<HTMLInputElement>('definition-name')!, 'Telephone');
-      type(field<HTMLInputElement>('definition-default')!, '000');
-      type(field<HTMLInputElement>('definition-validation')!, '^[0-9]+$');
-      submit();
-
-      expect(created[0].defaultValue).toBe('000');
-      expect(created[0].validationExpression).toBe('^[0-9]+$');
-    });
-
-    it('carries the numeric fields as numbers rather than as text', () => {
-      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-      type(field<HTMLInputElement>('definition-length')!, '120');
-      submit();
-
-      expect(created[0].length).toBe(120);
-      expect(typeof created[0].length).toBe('number');
-    });
-
-    it('carries the module association as null, and offers no control for it', () => {
-      // Only the create verb declares this member, and the screen offers no module
-      // picker - exactly as the legacy editor did not - so null is what a create has to
-      // send. Zero would be wrong: the definition identity column is IDENTITY(1, 1), so
-      // zero names no row.
-      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-      submit();
-
-      expect(created[0].moduleDefId).toBeNull();
-      expect(field<HTMLInputElement>('definition-module')).toBeNull();
-    });
-
-    it('sends exactly the ten members the create contract declares', () => {
-      // The API refuses an undeclared request member rather than discarding it, so an
-      // extra key is not cosmetic - it fails the whole save with a 400 naming the key.
-      // Pinned by key rather than by type, because no compiler sees across the two
-      // languages.
-      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-      submit();
-
-      expect(Object.keys(created[0]).sort()).toEqual([
-        'dataType',
-        'defaultValue',
-        'length',
-        'moduleDefId',
-        'propertyCategory',
-        'propertyName',
-        'required',
-        'validationExpression',
-        'viewOrder',
-        'visible',
+    it('leaves two rows holding the same position unmoved, as the legacy did', () => {
+      arrive([
+        definition({ propertyDefinitionId: 101, propertyName: 'Same A', viewOrder: 4 }),
+        definition({ propertyDefinitionId: 102, propertyName: 'Same B', viewOrder: 4 }),
       ]);
-    });
 
-    it('offers no visibility control, because no write contract accepts one', () => {
-      // ProfilePropertyDefinition has no visibility column anywhere in the 88-script
-      // upgrade chain, so neither request contract declares the member. A control here
-      // would collect a choice the server then refuses the request over.
-      expect(field<HTMLSelectElement>('definition-visibility')).toBeNull();
+      buttonsNamed('Move Down').at(0)?.click();
+      fixture.detectChanges();
 
-      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-      submit();
-
-      expect('visibility' in created[0]).toBeFalse();
+      // Exchanging equal positions changes nothing, so the order holds and nothing is staged.
+      expect(renderedNames()).toEqual(['Same A', 'Same B']);
+      expect(button(APPLY_LABEL).disabled).toBeTrue();
     });
   });
 
-  describe('editing a declaration', () => {
-    beforeEach(() => {
-      setInput('definitions', [
-        defn({
-          propertyDefinitionId: 5,
-          propertyName: 'Street',
-          propertyCategory: 'Address',
-          length: 120,
+  // =============================================================================================
+  // THE STAGED BATCH
+  // =============================================================================================
+
+  describe('the staged batch', () => {
+    it('disables Apply until something is staged', () => {
+      arrive();
+
+      expect(button(APPLY_LABEL).disabled).toBeTrue();
+
+      toggle(rowCheckboxes('required').at(0));
+
+      expect(button(APPLY_LABEL).disabled).toBeFalse();
+      expect(text()).toContain('1 unapplied change(s)');
+    });
+
+    it('disables Apply again when an edit is reversed, without requesting anything', () => {
+      arrive();
+
+      toggle(rowCheckboxes('required').at(0));
+      toggle(rowCheckboxes('required').at(0));
+
+      expect(button(APPLY_LABEL).disabled).toBeTrue();
+      httpMock.expectNone(() => true);
+    });
+
+    it('writes only the staged row', () => {
+      arrive();
+
+      toggle(rowCheckboxes('visible').at(1));
+      press(APPLY_LABEL);
+
+      const writes = pendingWrites('PUT');
+
+      expect(writes.length).toBe(1);
+      expect(writes.at(0)?.request.url).toBe(definitionUrl(12));
+      expect(writes.at(0)?.request.body).toEqual(
+        jasmine.objectContaining({ propertyName: 'Website', visible: false }),
+      );
+
+      writes.at(0)?.flush(envelope(definition()));
+      settleReReads();
+    });
+
+    it('discards every staged edit when the grid is refreshed', () => {
+      arrive();
+
+      toggle(rowCheckboxes('required').at(0));
+
+      expect(button(APPLY_LABEL).disabled).toBeFalse();
+
+      press(REFRESH_LABEL);
+
+      expectRequest('GET', DEFINITIONS_URL, 'the refresh read').flush(envelope(catalogue()));
+      fixture.detectChanges();
+
+      expect(button(APPLY_LABEL).disabled).toBeTrue();
+      expect(rowCheckboxes('required').at(0)?.checked).toBeFalse();
+    });
+
+    it('announces nothing on a successful batch, as the legacy did not either', () => {
+      arrive();
+
+      toggle(rowCheckboxes('required').at(0));
+      press(APPLY_LABEL);
+
+      settleReplaces();
+      settleReReads();
+
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('keeps a refused row staged while the row that landed drops out', () => {
+      arrive();
+
+      toggle(rowCheckboxes('required').at(0));
+      toggle(rowCheckboxes('required').at(1));
+
+      expect(text()).toContain('2 unapplied change(s)');
+
+      press(APPLY_LABEL);
+
+      const writes = pendingWrites('PUT');
+
+      expect(writes.length).toBe(2);
+
+      const landed = writes.find((write) => write.request.url === definitionUrl(11));
+      const refused = writes.find((write) => write.request.url === definitionUrl(12));
+
+      // The first write is accepted and the second refused, which is exactly the partial outcome
+      // n independent writes and no transaction make possible.
+      landed?.flush(envelope(definition({ propertyDefinitionId: 11, required: true })));
+      refused?.flush(problem(409), { status: 409, statusText: 'Conflict' });
+      fixture.detectChanges();
+
+      settleReReads([
+        definition({
+          propertyDefinitionId: 11,
+          propertyName: 'Nickname',
+          viewOrder: 0,
           required: true,
-          visible: false,
+        }),
+        definition({ propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1 }),
+        definition({ propertyDefinitionId: 13, propertyName: 'Biography', viewOrder: 2 }),
+      ]);
+
+      // One change remains outstanding — the refused row — and Apply is still offered for it.
+      expect(text()).toContain('1 unapplied change(s)');
+      expect(button(APPLY_LABEL).disabled).toBeFalse();
+    });
+  });
+
+  // =============================================================================================
+  // THE BULK TOGGLES — DL-6
+  // =============================================================================================
+
+  describe('the bulk toggles', () => {
+    it('are rendered outside the table, because the shared grid has no header template', () => {
+      arrive();
+
+      expect(bulkToggles().length).toBe(2);
+      expect(query('.profile-definitions__bulk table').length).toBe(0);
+    });
+
+    it('report the all-true state and not merely the first row', () => {
+      arrive([
+        definition({ propertyDefinitionId: 111, propertyName: 'A', viewOrder: 0, visible: true }),
+        definition({ propertyDefinitionId: 112, propertyName: 'B', viewOrder: 1, visible: false }),
+      ]);
+
+      // Visible is the second toggle. One row false is enough to clear it.
+      expect(bulkToggles().at(1)?.checked).toBeFalse();
+    });
+
+    it('stage every row that does not already hold the value, and no others', () => {
+      arrive([
+        definition({ propertyDefinitionId: 121, propertyName: 'A', viewOrder: 0, required: true }),
+        definition({ propertyDefinitionId: 122, propertyName: 'B', viewOrder: 1, required: false }),
+        definition({ propertyDefinitionId: 123, propertyName: 'C', viewOrder: 2, required: false }),
+      ]);
+
+      toggle(bulkToggles().at(0));
+
+      expect(text()).toContain('2 unapplied change(s)');
+
+      press(APPLY_LABEL);
+
+      const writes = pendingWrites('PUT');
+
+      expect(writes.length).toBe(2);
+      expect(writes.map((write) => write.request.url).sort()).toEqual(
+        [definitionUrl(122), definitionUrl(123)].sort(),
+      );
+
+      for (const write of writes) {
+        write.flush(envelope(definition()));
+      }
+
+      fixture.detectChanges();
+      settleReReads();
+    });
+
+    it('are not rendered at all when the catalogue is empty', () => {
+      arrive([]);
+
+      expect(bulkToggles().length).toBe(0);
+    });
+  });
+
+  // =============================================================================================
+  // THE INLINE FORM
+  // =============================================================================================
+
+  describe('the inline create form', () => {
+    it('is closed on arrival and opens in place without navigating', () => {
+      arrive();
+
+      expect(text()).not.toContain(CREATE_HEADING);
+
+      press(ADD_LABEL);
+
+      expect(text()).toContain(CREATE_HEADING);
+      expect(button(CREATE_SUBMIT_LABEL)).toBeTruthy();
+      // No detail route exists, so nothing may be requested by opening the editor.
+      httpMock.expectNone(() => true);
+    });
+
+    it('opens with the legacy field initialisers, including visible false', () => {
+      arrive();
+      press(ADD_LABEL);
+
+      expect(control('profile-definition-name').value).toBe('');
+      expect(control('profile-definition-data-type').value).toBe('-1');
+      expect(control('profile-definition-view-order').value).toBe('0');
+
+      const visible = control('profile-definition-visible');
+
+      expect(visible instanceof HTMLInputElement ? visible.checked : true).toBeFalse();
+    });
+
+    it('shows no validation message before a submission is attempted', () => {
+      arrive();
+      press(ADD_LABEL);
+
+      expect(text()).not.toContain(NAME_REQUIRED_MESSAGE);
+    });
+
+    it('reports every failing rule on submit and requests nothing', () => {
+      arrive();
+      press(ADD_LABEL);
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(text()).toContain(NAME_REQUIRED_MESSAGE);
+      expect(text()).toContain(DATA_TYPE_REQUIRED_MESSAGE);
+      httpMock.expectNone(() => true);
+    });
+
+    it('refuses a name carrying a space, with the legacy sentence', () => {
+      arrive();
+      press(ADD_LABEL);
+      fillValidForm('Twitter Handle');
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(text()).toContain(NAME_PATTERN_MESSAGE);
+      httpMock.expectNone(() => true);
+    });
+
+    it('refuses the data type while it still holds the legacy sentinel', () => {
+      arrive();
+      press(ADD_LABEL);
+      type('profile-definition-name', 'Twitter');
+      type('profile-definition-category', 'Contact');
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(text()).toContain(DATA_TYPE_REQUIRED_MESSAGE);
+      httpMock.expectNone(() => true);
+    });
+
+    it('refuses an expression that cannot be compiled, without throwing', () => {
+      arrive();
+      press(ADD_LABEL);
+      fillValidForm();
+
+      expect(() => type('profile-definition-expression', '([')).not.toThrow();
+
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(text()).toContain('not a valid regular expression');
+      httpMock.expectNone(() => true);
+    });
+
+    it('accepts an expression that deliberately matches nothing', () => {
+      arrive();
+      press(ADD_LABEL);
+      fillValidForm();
+      type('profile-definition-expression', '(?!)');
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(expectRequest('POST', DEFINITIONS_URL).request.body).toEqual(
+        jasmine.objectContaining({ validationExpression: '(?!)' }),
+      );
+    });
+
+    it('posts the nine members plus the module association, sending the empty-string sentinel', () => {
+      arrive();
+      press(ADD_LABEL);
+      fillValidForm();
+      check('profile-definition-required', true);
+      press(CREATE_SUBMIT_LABEL);
+
+      const write = expectRequest('POST', DEFINITIONS_URL, 'the create');
+
+      expect(write.request.body).toEqual({
+        propertyName: 'Twitter',
+        propertyCategory: 'Contact',
+        dataType: 349,
+        defaultValue: '',
+        length: 0,
+        required: true,
+        validationExpression: '',
+        viewOrder: 0,
+        visible: false,
+        moduleDefId: null,
+      });
+
+      write.flush(envelope(definition({ propertyDefinitionId: 99, propertyName: 'Twitter' })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      settleReReads();
+
+      expect(text()).not.toContain(CREATE_HEADING);
+      expect(notify).toHaveBeenCalledWith('success', 'The profile property was created.');
+    });
+
+    it('trims the keyed category and leaves the free-text members untouched', () => {
+      arrive();
+      press(ADD_LABEL);
+      type('profile-definition-name', 'Twitter');
+      type('profile-definition-data-type', '349');
+      type('profile-definition-category', '  Contact  ');
+      type('profile-definition-default-value', ' spaced ');
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(expectRequest('POST', DEFINITIONS_URL).request.body).toEqual(
+        jasmine.objectContaining({
+          propertyName: 'Twitter',
+          propertyCategory: 'Contact',
+          defaultValue: ' spaced ',
+        }),
+      );
+    });
+
+    it('refuses a padded name outright, because the pattern admits no space at all', () => {
+      arrive();
+      press(ADD_LABEL);
+      type('profile-definition-name', '  Twitter  ');
+      type('profile-definition-data-type', '349');
+      type('profile-definition-category', 'Contact');
+      press(CREATE_SUBMIT_LABEL);
+
+      // Faithful: the legacy pattern validator ran against the raw posted value too, so a padded
+      // name was refused rather than quietly accepted. The trim on submit is what makes the
+      // CATEGORY forgiving, and the category carries no pattern.
+      expect(text()).toContain(NAME_PATTERN_MESSAGE);
+      httpMock.expectNone(() => true);
+    });
+
+    it('closes without writing when the operator returns to the list', () => {
+      arrive();
+      press(ADD_LABEL);
+      fillValidForm();
+      press(CANCEL_LABEL);
+
+      expect(text()).not.toContain(CREATE_HEADING);
+      httpMock.expectNone(() => true);
+    });
+  });
+
+  // =============================================================================================
+  // THE DUPLICATE-NAME REFUSAL, AND THE DEFECT AROUND IT
+  // =============================================================================================
+
+  describe('a refused create', () => {
+    function submitDuplicate(): void {
+      arrive();
+      press(ADD_LABEL);
+      fillValidForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', DEFINITIONS_URL, 'the create').flush(
+        problem(409, 'urn:dnnmigration:error:profile-definition.duplicate-name'),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+    }
+
+    it('announces the legacy sentence verbatim, at the error severity the legacy chose', () => {
+      submitDuplicate();
+
+      expect(notify).toHaveBeenCalledWith('error', DUPLICATE_NAME_MESSAGE, null);
+    });
+
+    it('leaves the form open so the name can be corrected', () => {
+      submitDuplicate();
+
+      expect(text()).toContain(CREATE_HEADING);
+      expect(control('profile-definition-name').value).toBe('Twitter');
+    });
+
+    it('does NOT adopt an edit identifier, so a second attempt is still a create', () => {
+      submitDuplicate();
+
+      // The legacy assigned the failed call's return value into its view-state identifier before
+      // testing it, so the next save took the update branch with a nonsense key. This asserts the
+      // defect is not reproduced.
+      type('profile-definition-name', 'TwitterHandle');
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(pendingWrites('PUT').length).toBe(0);
+      expectRequest('POST', DEFINITIONS_URL, 'the second create').flush(
+        envelope(definition({ propertyDefinitionId: 98 })),
+        { status: 201, statusText: 'Created' },
+      );
+      settleReReads();
+    });
+  });
+
+  // =============================================================================================
+  // THE INLINE EDIT FORM — DL-12
+  // =============================================================================================
+
+  describe('the inline edit form', () => {
+    function openEditor(): void {
+      arrive([
+        definition({
+          propertyDefinitionId: 131,
+          propertyName: 'Nickname',
+          propertyCategory: 'Contact',
+          dataType: 349,
+          defaultValue: 'none',
+          length: 25,
+          required: true,
+          validationExpression: '^\\w+$',
           viewOrder: 3,
-          defaultValue: 'Unknown',
-          validationExpression: '^.+$',
-          visibility: PROFILE_VISIBILITY.membersOnly,
+          visible: true,
         }),
       ]);
-      rowActions(0)[0].click();
+
+      buttonsNamed('Edit').at(0)?.click();
       fixture.detectChanges();
+    }
+
+    it('opens pre-populated in place rather than navigating to a detail address', () => {
+      openEditor();
+
+      expect(text()).toContain(EDIT_HEADING);
+      expect(control('profile-definition-name').value).toBe('Nickname');
+      expect(control('profile-definition-view-order').value).toBe('3');
+      expect(button(EDIT_SUBMIT_LABEL)).toBeTruthy();
+      httpMock.expectNone(() => true);
     });
 
-    it('opens the editor legended as an amendment', () => {
-      expect(
-        host().querySelector('legend.profile-definitions__form-legend')?.textContent?.trim(),
-      ).toBe('Edit profile property');
+    it('marks the name and the data type read-only rather than disabling them', () => {
+      openEditor();
+
+      const name = control('profile-definition-name');
+      const dataType = control('profile-definition-data-type');
+
+      expect(name.hasAttribute('readonly')).toBeTrue();
+      expect(dataType.hasAttribute('readonly')).toBeTrue();
+      // ⚠ A disabled control is excluded from the form's value, which would drop two required
+      // members from every replace request.
+      expect(name instanceof HTMLInputElement ? name.disabled : true).toBeFalse();
+      expect(dataType instanceof HTMLInputElement ? dataType.disabled : true).toBeFalse();
     });
 
-    it('populates every field from the declaration', () => {
-      expect(field<HTMLInputElement>('definition-name')?.value).toBe('Street');
-      expect(field<HTMLInputElement>('definition-category')?.value).toBe('Address');
-      expect(field<HTMLInputElement>('definition-length')?.value).toBe('120');
-      expect(field<HTMLInputElement>('definition-order')?.value).toBe('3');
-      expect(field<HTMLInputElement>('definition-default')?.value).toBe('Unknown');
-      expect(field<HTMLInputElement>('definition-validation')?.value).toBe('^.+$');
+    it('leaves both editable while creating', () => {
+      arrive();
+      press(ADD_LABEL);
+
+      expect(control('profile-definition-name').hasAttribute('readonly')).toBeFalse();
+      expect(control('profile-definition-data-type').hasAttribute('readonly')).toBeFalse();
     });
 
-    it('sends exactly the nine members the replace contract declares', () => {
-      // One fewer than the create contract: the module association can be established
-      // when a declaration is made and never afterwards, because the terminal update
-      // procedure neither declares the parameter nor names the column. Sending it here
-      // would be refused.
-      submit();
+    it('replaces with all nine members, the read-only pair included', () => {
+      openEditor();
+      type('profile-definition-category', 'Social');
+      press(EDIT_SUBMIT_LABEL);
 
-      expect(Object.keys(updated[0].submission).sort()).toEqual([
-        'dataType',
-        'defaultValue',
-        'length',
-        'propertyCategory',
-        'propertyName',
-        'required',
-        'validationExpression',
-        'viewOrder',
-        'visible',
-      ]);
-      expect('moduleDefId' in updated[0].submission).toBeFalse();
-      expect('visibility' in updated[0].submission).toBeFalse();
+      const write = expectRequest('PUT', definitionUrl(131), 'the replace');
+
+      expect(write.request.body).toEqual({
+        propertyName: 'Nickname',
+        propertyCategory: 'Social',
+        dataType: 349,
+        defaultValue: 'none',
+        length: 25,
+        required: true,
+        validationExpression: '^\\w+$',
+        viewOrder: 3,
+        visible: true,
+      });
+
+      write.flush(envelope(definition({ propertyDefinitionId: 131 })));
+      settleReReads();
+
+      expect(text()).not.toContain(EDIT_HEADING);
+      expect(notify).toHaveBeenCalledWith('success', 'The profile property was updated.');
     });
 
-    it('populates a null default and a null expression as blank controls', () => {
-      setInput('definitions', [
-        defn({ propertyDefinitionId: 6, defaultValue: null, validationExpression: null }),
-      ]);
-      rowActions(0)[0].click();
-      fixture.detectChanges();
+    it('shows the position the operator staged in the grid, not the stored one', () => {
+      arrive();
 
-      expect(field<HTMLInputElement>('definition-default')?.value).toBe('');
-      expect(field<HTMLInputElement>('definition-validation')?.value).toBe('');
-    });
-
-    it('labels the submit affordance as an amendment', () => {
-      expect(host().querySelector('button[type="submit"]')?.textContent?.trim()).toBe('Update');
-    });
-
-    it('emits an amendment carrying the declaration identifier', () => {
-      type(field<HTMLInputElement>('definition-name')!, 'Street Address');
-      submit();
-
-      expect(created).toEqual([]);
-      expect(updated.length).toBe(1);
-      expect(updated[0].propertyDefinitionId).toBe(5);
-      expect(updated[0].submission.propertyName).toBe('Street Address');
-    });
-
-    it('decides create-or-amend from how the editor was opened, not from the payload', () => {
-      // Closing and reopening through the disclosure control must start a NEW property
-      // even though the previous target is still in the catalogue.
-      disclosure()!.click();
-      fixture.detectChanges();
-      disclosure()!.click();
+      buttonsNamed('Move Down').at(0)?.click();
       fixture.detectChanges();
 
-      type(field<HTMLInputElement>('definition-name')!, 'Something New');
-      submit();
+      // Nickname moved to position one; the editor must agree with the grid.
+      buttonsNamed('Edit').at(1)?.click();
+      fixture.detectChanges();
 
-      expect(updated).toEqual([]);
-      expect(created.length).toBe(1);
-    });
-
-    it('keeps the editor open when the catalogue refreshes with the same declaration', () => {
-      setInput('definitions', [defn({ propertyDefinitionId: 5, propertyName: 'Street (revised)' })]);
-
-      expect(editor()).not.toBeNull();
-      expect(
-        host().querySelector('legend.profile-definitions__form-legend')?.textContent?.trim(),
-      ).toBe('Edit profile property');
-    });
-
-    it('closes the editor when the declaration it was editing disappears', () => {
-      // Leaving the editor open on a row that no longer exists would let an amendment be
-      // applied to something that has been deleted by another operator.
-      setInput('definitions', [defn({ propertyDefinitionId: 7 })]);
-
-      expect(editor()).toBeNull();
-      expect(disclosure()?.getAttribute('aria-expanded')).toBe('false');
+      expect(control('profile-definition-name').value).toBe('Nickname');
+      expect(control('profile-definition-view-order').value).toBe('1');
     });
   });
 
-  describe('editor validation', () => {
-    beforeEach(() => {
-      setInput('definitions', []);
-      addButton()!.click();
-      fixture.detectChanges();
-    });
+  // =============================================================================================
+  // REMOVAL — DL-13
+  // =============================================================================================
 
-    it('shows no message before the operator has touched the name', () => {
-      expect(host().querySelector('#definition-name-message')).toBeNull();
-    });
-
-    it('marks the name as required in the label and on the control', () => {
-      expect(editor()?.querySelector('.form-required')?.getAttribute('aria-hidden')).toBe('true');
-      expect(field<HTMLInputElement>('definition-name')?.getAttribute('aria-required')).toBe(
-        'true',
-      );
-    });
-
-    it('reports a blank name once the operator has cleared it', () => {
-      type(field<HTMLInputElement>('definition-name')!, 'x');
-      type(field<HTMLInputElement>('definition-name')!, '');
-
-      expect(host().querySelector('#definition-name-message')?.textContent?.trim()).toBe(
-        'A property name is required.',
-      );
-      expect(field<HTMLInputElement>('definition-name')?.getAttribute('aria-invalid')).toBe('true');
-    });
-
-    it('emits nothing and reveals the message when an invalid editor is submitted', () => {
-      submit();
-
-      expect(created).toEqual([]);
-      expect(host().querySelector('#definition-name-message')).not.toBeNull();
-    });
-
-    it('emits nothing while a mutation is already in flight', () => {
-      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-      setInput('saving', true);
-
-      submit();
-
-      expect(created).toEqual([]);
-    });
-
-    it('disables both editor actions while a mutation is in flight', () => {
-      setInput('saving', true);
-
-      const buttons = Array.from(
-        host().querySelectorAll<HTMLButtonElement>('.profile-definitions__form-actions button'),
-      );
-
-      expect(buttons.length).toBe(2);
-      expect(buttons.every((button) => button.disabled)).toBeTrue();
-    });
-
-    it('closes the editor when the operator cancels', () => {
-      const cancel = Array.from(
-        host().querySelectorAll<HTMLButtonElement>('.profile-definitions__form-actions button'),
-      )[1];
-
-      cancel.click();
+  describe('removal', () => {
+    function confirmRemoval(): void {
+      arrive();
+      buttonsNamed('Delete').at(0)?.click();
       fixture.detectChanges();
 
-      expect(editor()).toBeNull();
+      pressDialog('Delete');
+    }
+
+    it('asks first, with the legacy confirmation wording', () => {
+      arrive();
+
+      expect(query('app-confirm-dialog').length).toBe(0);
+
+      buttonsNamed('Delete').at(0)?.click();
+      fixture.detectChanges();
+
+      expect(query('app-confirm-dialog').length).toBe(1);
+      expect(text()).toContain(REMOVAL_MESSAGE);
+      // The confirmation must carry a real accessible name: the legacy overwrote its own
+      // "Delete" text with a resource key that does not exist, leaving it empty.
+      expect(dialogButton('Delete').textContent ?? '').toContain('Delete');
+      httpMock.expectNone(() => true);
+    });
+
+    it('requests nothing when the operator backs out', () => {
+      arrive();
+      buttonsNamed('Delete').at(0)?.click();
+      fixture.detectChanges();
+
+      pressDialog('Cancel');
+
+      expect(query('app-confirm-dialog').length).toBe(0);
+      httpMock.expectNone(() => true);
+    });
+
+    it('removes immediately once confirmed, and is not part of the batch', () => {
+      confirmRemoval();
+
+      const write = expectRequest('DELETE', definitionUrl(11), 'the removal');
+
+      write.flush(null, { status: 204, statusText: 'No Content' });
+      settleReReads();
+
+      expect(notify).toHaveBeenCalledWith(
+        'success',
+        'Profile property "Nickname" was deleted.',
+      );
+    });
+
+    it('reports a declaration in use distinctly from one that is already gone', () => {
+      confirmRemoval();
+
+      expectRequest('DELETE', definitionUrl(11)).flush(problem(409), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+      fixture.detectChanges();
+
+      expect(notify).toHaveBeenCalledWith(
+        'error',
+        'That profile property is in use, so it was not deleted. Remove the recorded values first.',
+        null,
+      );
+    });
+
+    it('reports a declaration that has already been removed', () => {
+      confirmRemoval();
+
+      expectRequest('DELETE', definitionUrl(11)).flush(
+        problem(404, 'urn:dnnmigration:error:profile-definition.not-found'),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+
+      expect(notify).toHaveBeenCalledWith(
+        'warning',
+        'That profile property no longer exists. The list has been refreshed.',
+        null,
+      );
+    });
+
+    // A confirmed delete destroys the button that opened the dialog, so the dialog's own
+    // focus-return has nothing to return to and focus collapses to the document body. That was
+    // measured in a browser, and these two cases pin the fix so it cannot silently regress.
+    it('moves focus to the primary action once a removal succeeds', async () => {
+      confirmRemoval();
+
+      expectRequest('DELETE', definitionUrl(11)).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      settleReReads();
+
+      // ⚠ AWAITED, BECAUSE THE MOVE IS DEFERRED TO THE NEXT RENDER ON PURPOSE. Every control is
+      // disabled while the write is in flight, and the reporting effect is flushed BEFORE the
+      // view that clears `disabled` is refreshed, so a focus call made inline would land on a
+      // still-disabled button and be ignored in silence. The component schedules the move with
+      // `afterNextRender`; settling the fixture is what lets that callback run here. This was
+      // measured, not assumed: the inline version left focus on the body.
+      await fixture.whenStable();
+
+      const anchor: HTMLButtonElement | undefined = buttonsNamed(ADD_LABEL).at(0);
+
+      expect(anchor).toBeDefined();
+      // The anchor being enabled is a PRECONDITION of the assertion below, not an incidental
+      // detail: a disabled control cannot hold focus.
+      expect(anchor?.disabled).toBe(false);
+      expect(document.activeElement).toBe(anchor ?? null);
+    });
+
+    it('leaves focus alone when the removal was refused', async () => {
+      confirmRemoval();
+
+      expectRequest('DELETE', definitionUrl(11)).flush(problem(409), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+      fixture.detectChanges();
+
+      // Settled the same way the success case is, so the two are compared on equal terms: this
+      // asserts that NO deferred move was scheduled, not merely that one has yet to run.
+      await fixture.whenStable();
+
+      // The row survives a refusal, so its own command still exists and the anchor must NOT be
+      // stolen: moving focus here would displace the operator for no reason.
+      expect(document.activeElement).not.toBe(buttonsNamed(ADD_LABEL).at(0) ?? null);
     });
   });
 
-  describe('the editor disclosure', () => {
-    it('reports the editor state through aria-expanded', () => {
-      expect(disclosure()?.getAttribute('aria-expanded')).toBe('false');
+  // =============================================================================================
+  // A FAILED READ
+  // =============================================================================================
 
-      disclosure()!.click();
+  describe('a failed read', () => {
+    it('surfaces the refusal without leaving the screen blank of explanation', () => {
+      create();
+
+      expectRequest('GET', DEFINITIONS_URL, 'the catalogue read').flush(problem(500), {
+        status: 500,
+        statusText: 'Server Error',
+      });
       fixture.detectChanges();
 
-      expect(disclosure()?.getAttribute('aria-expanded')).toBe('true');
-    });
-
-    it('changes its own wording with the state', () => {
-      expect(disclosure()?.textContent?.trim()).toBe('Show the property editor');
-
-      disclosure()!.click();
-      fixture.detectChanges();
-
-      expect(disclosure()?.textContent?.trim()).toBe('Hide the property editor');
-    });
-
-    it('closes an open editor', () => {
-      disclosure()!.click();
-      fixture.detectChanges();
-      disclosure()!.click();
-      fixture.detectChanges();
-
-      expect(editor()).toBeNull();
-    });
-
-    it('is disabled while a mutation is in flight', () => {
-      setInput('saving', true);
-
-      expect(disclosure()?.disabled).toBeTrue();
-    });
-  });
-
-  describe('removing a declaration', () => {
-    beforeEach(() => {
-      setInput('definitions', [
-        defn({ propertyDefinitionId: 4, propertyName: 'Street' }),
-        defn({ propertyDefinitionId: 5, propertyName: 'City' }),
-      ]);
-    });
-
-    it('opens no dialog until removal is requested', () => {
-      expect(dialog()).toBeNull();
-    });
-
-    it('opens the shared confirmation naming the declaration and its consequence', () => {
-      rowActions(0)[1].click();
-      fixture.detectChanges();
-
-      expect(dialog()).not.toBeNull();
-      expect(host().querySelector('.confirm-dialog__message')?.textContent).toContain('Street');
-      expect(host().querySelector('.confirm-dialog__message')?.textContent).toContain(
-        'every value recorded against it',
-      );
-    });
-
-    it('emits nothing merely by asking', () => {
-      rowActions(0)[1].click();
-      fixture.detectChanges();
-
-      expect(removed).toEqual([]);
-    });
-
-    it('emits the declaration once removal is confirmed', () => {
-      rowActions(1)[1].click();
-      fixture.detectChanges();
-
-      dialogButtons()[1].click();
-      fixture.detectChanges();
-
-      expect(removed.length).toBe(1);
-      expect(removed[0].propertyDefinitionId).toBe(5);
-    });
-
-    it('closes the dialog once removal is confirmed', () => {
-      rowActions(0)[1].click();
-      fixture.detectChanges();
-      dialogButtons()[1].click();
-      fixture.detectChanges();
-
-      expect(dialog()).toBeNull();
-    });
-
-    it('emits nothing when the operator declines', () => {
-      rowActions(0)[1].click();
-      fixture.detectChanges();
-
-      dialogButtons()[0].click();
-      fixture.detectChanges();
-
-      expect(removed).toEqual([]);
-      expect(dialog()).toBeNull();
-    });
-
-    it('emits at most once even if the confirmation is somehow repeated', () => {
-      rowActions(0)[1].click();
-      fixture.detectChanges();
-
-      const internals = component as unknown as { onRemovalConfirmed(): void };
-      internals.onRemovalConfirmed();
-      internals.onRemovalConfirmed();
-      fixture.detectChanges();
-
-      expect(removed.length).toBe(1);
-    });
-
-    it('abandons the confirmation when the declaration disappears from the catalogue', () => {
-      rowActions(0)[1].click();
-      fixture.detectChanges();
-
-      setInput('definitions', [defn({ propertyDefinitionId: 5 })]);
-
-      expect(dialog()).toBeNull();
+      expect(query('app-error-banner [role="alert"]').length).toBeGreaterThan(0);
+      expect(text()).toContain(PAGE_TITLE);
     });
   });
 });

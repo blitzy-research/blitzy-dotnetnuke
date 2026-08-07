@@ -1,51 +1,170 @@
-// Component stylesheet for the role-membership screen, served by the route
-// /roles/:roleId/users.
+// =============================================================================
+//  role-assignment.component.scss — "Manage Users in Role", /roles/:roleId/users
+// =============================================================================
 //
-// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
-// component's own content attribute, so a class name that drifts does not error - it
-// silently matches nothing and the screen renders unstyled. The template must therefore
-// emit exactly this vocabulary:
+//  THE IMPORT DEPTH IS FOUR, AND IT IS COMPUTED RATHER THAN COPIED
+//  --------------------------------------------------------------
+//  From src/app/features/role/role-assignment/, `../../../` reaches app/ — and
+//  styles/ is not inside app/. It is a SIBLING of app/, one level higher, at
+//  src/styles/. So the Sass target sits exactly one level further out than the
+//  TypeScript target: the paired .ts reaches core/ and shared/ with three, this file
+//  reaches styles/ with four. Three would resolve to the non-existent
+//  src/app/styles/mixins and fail the build with "Can't find stylesheet to import."
+//  Not inferred: _mixins.scss carries a verified load-path table in its own header
+//  and lists src/app/features/<f>/<screen>/ against four, reserving three for
+//  layout/ and shared/directives/. All three sibling screens here use four. There is
+//  no alias to fall back on — angular.json declares no stylePreprocessorOptions
+//  includePaths and tsconfig.json no baseUrl or paths — so relative is the only route.
 //
-//     .role-assignment__module-action
-//     .role-assignment__unresolved
-//     .role-assignment__form
-//     .role-assignment__fields
-//     .role-assignment__lookup
-//     .role-assignment__matches
-//     .role-assignment__match
-//     .role-assignment__match-action
-//     .role-assignment__no-matches
-//     .role-assignment__date
-//     .role-assignment__notify
-//     .role-assignment__notify-control
-//     .role-assignment__commands
-//     .role-assignment__submit
-//     .role-assignment__memberships
-//     .role-assignment__row-command
-//     .role-assignment__user-link
+//  ONE `@use`, AND TOKENS ARE DELIBERATELY NOT AMONG THEM
+//  -----------------------------------------------------
+//  _tokens.scss exports no Sass member at all and emits a single document-root block
+//  of 66 custom properties, so loading it here would import nothing while copying all
+//  66 declarations into this component's own sheet against a 4 kB budget. Custom
+//  properties are global CSS and inherit through the DOM, so every value below is
+//  reached with `var()` and costs nothing. _mixins.scss emits zero CSS, and both of
+//  its members used here — the `breakpoint()` function and the `respond-above()`
+//  mixin — are genuinely consumed. Sass module scope is per file: a `@use` in
+//  src/styles.scss would not reach here and `@forward` cannot make anything ambient.
 //
-// THERE IS NO `.role-assignment` BLOCK CLASS, deliberately. The template emits no wrapper
-// element of its own - the page header, the error banner, the form and the memberships
-// table are all direct children of the component host - so the host IS the layout
-// container and owns the vertical rhythm. A block class here would either be dead or would
-// require inventing an element for it to sit on.
+//  WHAT THIS FILE OWNS
+//  -------------------
+//  PLACEMENT: the two independently-toggled regions, the flow of the projected lookup
+//  and its match list, the relative width of the date controls, the notify row, the
+//  command row's alignment, the separator between form and listing, and the responsive
+//  behaviour of all of it.
 //
-// The surface is deliberately flat, and focus indication is deliberately absent: the
-// global reset applies the shared focus-ring mixin to every anchor, button, input, select
-// and textarea, so the design system owns focus and this file only places components.
+//  WHAT IT MUST NOT RESTATE — each of these is already resolved elsewhere, and a
+//  second declaration would be duplication rather than fidelity:
+//    * the label-beside-control arrangement and its measured proportion. The shared
+//      field wrapper owns it, as a grid whose label track is the measured 150px held
+//      in a token and whose control track takes the remainder as a fraction, switched
+//      on at 'md' and stacked below. It is reached here only indirectly, by aligning
+//      the command row to those same two tracks.
+//    * the lookup's maximum measure — the shared lookup's own host rule already caps
+//      it at the 'sm' step above 'md'. The previous revision restated that verbatim.
+//    * control and button chrome, typography and disabled state. The global form
+//      vocabulary owns them and ITS VALUES ARE THE MEASUREMENTS: its `button` rule
+//      resolves the 11px normal weight measured on the legacy command-button class,
+//      its `label` rule the 11px bold brand colour measured on the sub-head class,
+//      and its bordered-control rule the 12px step measured on the text-box class.
+//    * focus indication. The reset and the form vocabulary both apply the shared
+//      focus-ring mixin to `a`, `button`, `input`, `select`, `textarea` and anything
+//      with a non-negative tab index. Every interactive element here is one of those,
+//      so the ring is already visible on all of them and nothing below suppresses an
+//      outline. The mixin is idempotent, so re-including it five times would add
+//      bytes and change nothing.
+//    * the label, help and error slots; the grid with its caption, header cells,
+//      loading affordance and empty state; the dialogue chrome, focus trap and Escape
+//      handling; the page title. Those belong to shared components and are reached
+//      only through their own inputs. No selector below crosses into one and
+//      encapsulation is never disabled.
+//
+//  MEASURED METRICS ARE CARRIED AS RATIOS AND TOKENS, NEVER AS PIXELS
+//  -----------------------------------------------------------------
+//  From Website/admin/Security/securityroles.ascx — note the lower-case name, the
+//  folder mixes casing — and Website/Portals/_default/default.css, both read-only
+//  references left byte-identical by this work:
+//    * the add form was a HORIZONTAL BAND: a label row at L13-L21 above a control row
+//      at L22-L43 in four columns — account cell fluid at `width="100%"`, two date
+//      cells fixed at `width="110"`, action cell at `width="160"`, `width="10"`
+//      spacers between. Reproducing the band was costed and REJECTED on arithmetic:
+//      the shared wrapper's label track is up to 150px with a 1rem column gap, so a
+//      one-fraction date column in a realistic content width leaves the date control
+//      about 44px. It structurally fights the shared component. The fields therefore
+//      stack in one column — the arrangement that wrapper's own grid is built for —
+//      and the band survives as the command row's alignment to the control track.
+//    * the account text box was `width="150"` (L24) and each date box `width="80"`
+//      (L31, L36). Neither figure is reproduced; the RELATIONSHIP is.
+//    * three tables, at L4, L8 and L56, all carrying the identical
+//      `summary="Security Roles Design Table"`. Two were pure layout and become grid
+//      and flex here; only the third was a real grid and it belongs to the shared
+//      table component. No table is styled below.
+//    * that grid declared `gridlines="None"` with no alternating-item style, no footer
+//      style, no pager style and no paging or sorting, so there is no zebra striping
+//      and no pager treatment to reproduce — and none is written. Nor is the legacy
+//      alternating-item rule's red text, which was a defect.
+//    * `class="Settings"` (L4) and `cssclass="WorkPanel"` (L7, L56) have NO definition
+//      in default.css or portal.css, so the two regions owe no measured appearance.
+//      The only measured separators are the rules at L55 and L89 and the 15px spacer
+//      row at L52.
+//    * THE TYPE RELATIONSHIP IS PRESERVED. Body and label text were 11px (the legacy
+//      normal and sub-head classes, default.css L92-L97 and L74-L80) while controls
+//      and error text were 12px (text-box and error classes, L123-L128 and L113-L120).
+//      Controls render one step ABOVE body text, never below. On the ramp that is
+//      --font-size-md for body and label and --font-size-lg for controls and error
+//      text; the form vocabulary already resolves the control step, so it arrives by
+//      inheritance and is restated below only for error-grade text authored here.
+//    * the legacy normal class declares no colour and inherits, and the reset sets no
+//      colour on `body` either, so base text colour is inherited throughout and
+//      `currentColor` is the idiom — the answer to gap 1 below.
+//
+//  NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+//  -------------------------------------------
+//  default.css and portal.css contain zero media queries, zero border radii and zero
+//  box shadows, so every responsive rule below is a deliberate refinement rather than
+//  a translation. Legacy spacing was ad hoc — 2px, 5px, 10px, 15px, 25px, with no 4px
+//  step anywhere — so the spacing scale is a net addition and its approximations are
+//  named at the point of use. The in-place match list is a further net addition: the
+//  legacy screen resolved an account with a full postback against a drop-down holding
+//  every account in the tenant, and had no incremental match affordance at all.
+//
+//  GAPS AND LIMITATIONS — reported here, never closed with a literal
+//  ----------------------------------------------------------------
+//  1. No base text-colour token exists. Text colour is inherited, as above.
+//  2. No disabled-text token exists; the vocabulary substitutes the muted colour and
+//     the shared field wrapper records that substitution.
+//  3. No duration or motion token exists, the mixin surface exports no reduced-motion
+//     guard, and a raw media query is barred here. So no transition or animation is
+//     written at all, and a `prefers-reduced-motion` guard CANNOT be authored from
+//     this file. Reported, not written.
+//  4. The shared lookup renders a label of its own while the template also wraps it in
+//     the shared field wrapper, so one control carries two labels. Reaching the inner
+//     label would require piercing encapsulation, which is forbidden.
+//  5. The shared field wrapper publishes an inline host-class variant authored for
+//     exactly the lone check box this screen ends with, but only the template can
+//     apply a host class, so the notify field does not benefit from it here.
+// =============================================================================
 
 @use '../../../../styles/mixins' as mx;
 
 // -----------------------------------------------------------------------------
-//  ROOT - THE HOST
+//  ROOT — THE HOST IS THE LAYOUT CONTAINER
 // -----------------------------------------------------------------------------
-// A custom element defaults to `display: inline` and would not contain its block-level
-// children correctly, so a box-generating display is required here regardless of layout.
-// Body type is declared here and inherited by every region below rather than restated per
-// rule: without it the browser falls back to its own serif default for every label, match
-// row and help string on the screen.
+// There is deliberately no block class. The template emits no wrapper of its own —
+// page header, error banner, add form and memberships region are all direct children
+// of the host — so the host IS the container and owns the rhythm between them. A block
+// class would need an element invented for it to sit on.
+//
+// A custom element has no intrinsic display and would default to inline, which cannot
+// contain block-level children, so a box-generating display is required whatever the
+// layout. Grid is chosen because `gap` cannot be collapsed by a stray margin the way
+// sibling margins can.
+//
+// THE SINGLE COLUMN IS DECLARED, NOT LEFT IMPLICIT, AND THAT IS A BUG FIX RATHER THAN
+// A FLOURISH. An implicit grid column is sized `auto`, whose MINIMUM is the widest
+// item's min-content; and a grid item spanning an `auto`-minimum track takes its own
+// automatic minimum size from its content too. The shared grid inside the memberships
+// region sets its table a minimum measure, so that measure became a floor the whole
+// column could not go below, and at a handset width every sibling — page header, error
+// banner, form, fields, lookup — was stretched to it and the document scrolled
+// sideways by 268px with the lookup's own search control pushed off screen. Measured
+// in a real browser at 390px before and after.
+//
+// Naming the column as the vocabulary's fluid track fixes it at the root: that track's
+// minimum is zero rather than `auto`, which both stops the track growing to min-content
+// AND resolves every item's automatic minimum size to zero, so the region can be
+// narrower than the table it contains and the shared grid's own horizontal scroller
+// does the scrolling — which is what that scroller is for. At a definite container
+// width the track resolves identically to the implicit one, so nothing moves on a
+// desktop; only the narrow case changes.
+//
+// Body typography is declared once here and inherited by every region below.
+// --font-size-md is the measured 11px body step; controls resolve one step above it,
+// at --font-size-lg, through the global form vocabulary.
 :host {
   display: grid;
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-4);
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
@@ -53,151 +172,315 @@
 }
 
 // -----------------------------------------------------------------------------
-//  THE ASSIGNMENT FORM
+//  THE ONE MODULE ACTION, PROJECTED INTO THE PAGE HEADER
 // -----------------------------------------------------------------------------
-.role-assignment__form,
+// The legacy screen exposed exactly one module action, pointing at the return address,
+// and the template renders it as an anchor because it navigates. Its ARRANGEMENT
+// belongs to the shared header, whose action region is already a wrapping flex row,
+// and its INK belongs to the reset, whose anchor rules resolve the measured
+// command-button link treatment for every anchor in the workspace. Neither is
+// restated; the previous revision re-declared the brand colour the reset had already
+// applied. What is left is the one thing neither can know — that this label is a
+// single short word that must not break across two lines inside a wrapping row it
+// shares with the title.
+.role-assignment__module-action {
+  white-space: nowrap;
+}
+
+// -----------------------------------------------------------------------------
+//  THE UNRESOLVED-ROLE MESSAGE
+// -----------------------------------------------------------------------------
+// Rendered in place of the entire screen when the role in the address cannot be
+// resolved, so it is a failure notice rather than a muted aside, and it takes the
+// measured error treatment: the legacy error class was 12px bold, which is
+// --font-size-lg at --font-weight-bold. THE WEIGHT IS LOAD-BEARING, not decoration —
+// it is what keeps the state legible to a reader who perceives no colour, since the
+// legacy class conveyed failure through red text alone.
+//
+// The ink is the vocabulary's accessible danger token rather than the measured pure
+// red. That substitution is the token file's own decision, recorded there with the
+// contrast measurement, and is consumed rather than re-decided here.
+//
+// `margin: 0` because the paragraph is a grid item of the host, and the browser's own
+// block margin would stack on the host's gap to produce a rhythm neither value
+// describes. The measure is capped so a standing sentence does not run the full width
+// of a wide display, using a named step resolved through the shared function — which
+// its own documentation sanctions for exactly this use.
+.role-assignment__unresolved {
+  max-inline-size: mx.breakpoint('md');
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-danger-text);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  REGION ONE — THE ASSIGNMENT FORM
+// -----------------------------------------------------------------------------
+// The legacy screen toggled two panels independently and the template preserves that
+// by rendering the form and the listing as separate siblings, so each region declares
+// its own internal rhythm and neither depends on the other being present.
+//
+// The form separates its three blocks — field group, notify choice, command row — at
+// the same step the host uses between regions, because they are peer blocks rather
+// than a tighter cluster. The field group is one step closer, so the fields read as a
+// set.
+.role-assignment__form {
+  display: grid;
+  gap: var(--space-4);
+}
+
 .role-assignment__fields {
   display: grid;
   gap: var(--space-3);
 }
 
 // -----------------------------------------------------------------------------
-//  ACCOUNT LOOKUP AND ITS MATCHES
+//  THE ACCOUNT LOOKUP AND ITS MATCHES
 // -----------------------------------------------------------------------------
-// The match list is rendered IN PLACE rather than as a floating layer. A layer would need
-// a stacking context, a dismissal rule, a scroll trap and a focus contract of its own,
-// none of which the closed shared-component set provides, and the screen has room to show
-// the matches inline.
-.role-assignment__lookup {
-  display: block;
-  max-inline-size: mx.breakpoint('sm');
+// These three are SIBLINGS INSIDE THE SHARED FIELD WRAPPER'S CONTROL SLOT, which is a
+// wrapping flex row with a gap — an arrangement that exists so a legacy field holding
+// several controls side by side still reflows. That is exactly wrong for a stacked
+// disclosure: without an explicit basis the match list and the no-matches notice would
+// ride up beside the lookup whenever a line had room, and the layout would change
+// shape with the length of a name. A full-measure basis puts each on its own line at
+// every width, and the zero minimum lets each still shrink inside the row rather than
+// forcing an overflow. The full measure resolves to the vocabulary's own size token,
+// which is what that token exists for.
+//
+// The lookup's maximum measure is NOT declared here: the shared lookup's host rule
+// already caps it, and restating it would be a second definition of one value.
+.role-assignment__lookup,
+.role-assignment__matches,
+.role-assignment__no-matches {
+  flex-basis: var(--size-full);
+  min-inline-size: 0;
 }
 
+// The match list is rendered IN PLACE rather than as a floating layer. A layer would
+// need a stacking context, a dismissal rule, a scroll trap and a focus contract of its
+// own, none of which the closed shared component set provides, and the screen has room
+// to show the matches inline.
+//
+// The reset zeroes no list geometry and sets a square marker on every list ITEM, so
+// the browser's leading pad is cleared here and the marker is cleared on the item
+// below. Clearing the marker on the list instead is a silent failure: the reset's rule
+// targets the item, so the declaration would not reach it, and the bullets would still
+// render against a clean build.
 .role-assignment__matches {
   display: grid;
   gap: var(--space-1);
-  max-inline-size: mx.breakpoint('sm');
   padding: 0;
   margin: 0;
+}
+
+// Each item holds exactly one control — a toggle button whose own text IS the account
+// name. There is no separate command to push to the far edge, so the item is a single
+// full-width row and nothing here spaces two children apart.
+//
+// The item is left UNDECORATED deliberately. The global form vocabulary already paints
+// every button with a surface fill, a brand border, the small radius and padding, so a
+// filled, rounded item wrapping a filled, bordered, rounded button would draw the same
+// affordance twice. The item's only jobs are to stop the button stretching to the full
+// column and to clear the marker.
+.role-assignment__match {
+  display: grid;
+  justify-items: start;
   list-style: none;
 }
 
-// Each match is a name and the command that selects or clears it. `space-between` puts the
-// command at the far edge so the commands form a column the eye can follow, and baseline
-// alignment keeps the command on the first line of a name that has wrapped.
-.role-assignment__match {
-  display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
-  justify-content: space-between;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
-  background-color: var(--color-surface);
+// A long display name has to wrap inside the button rather than push the row wider than
+// the field; and a button centres its text by default, so a wrapped name would sit
+// ragged about its own centre without an explicit start alignment.
+.role-assignment__match-action {
+  max-inline-size: var(--size-full);
+  overflow-wrap: break-word;
+  text-align: start;
 }
 
-// The selected match is the one whose command reports `aria-pressed="true"`, so the visual
-// state is taken from that attribute rather than from a class the template would have to
-// keep in step with it. Selection is therefore impossible to render inconsistently with
-// what a screen reader announces.
+// The selected match is the one whose control reports a pressed state, so the treatment
+// keys off that attribute rather than off a class the template would have to keep in
+// step with it — selection is then impossible to render inconsistently with what a
+// screen reader announces. TWO affordances, not one: the weight carries the state for a
+// reader who perceives no colour, and the tint is the vocabulary's selected token,
+// which is the measured selected-row colour of the legacy grid. State is never conveyed
+// by colour alone.
 .role-assignment__match-action[aria-pressed='true'] {
   font-weight: var(--font-weight-bold);
+  background-color: var(--color-selected);
 }
 
-// Two standing messages, both muted: one reports that a search found nobody, the other
-// that the role in the address could not be resolved.
-.role-assignment__no-matches,
-.role-assignment__unresolved {
+// A search that matched nobody says so; the legacy screen did not — it looked the
+// account up by name and, on no match, simply blanked the box with no message at all.
+// The notice is muted because it is an aside rather than a failure, but it is NOT
+// shrunk below the body step: the muted ink already sits at the lower end of what the
+// vocabulary records as readable, and reducing the size too would compound that.
+.role-assignment__no-matches {
+  margin: 0;
   color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
 }
 
 // -----------------------------------------------------------------------------
-//  MEMBERSHIP BOUNDS AND THE NOTIFY CHOICE
+//  THE MEMBERSHIP BOUNDS
 // -----------------------------------------------------------------------------
-// A date control is a short value, so it is narrowed rather than stretched: a box sized
-// for a sentence invites one.
+// The measured relationship, preserved as a relationship: the legacy account text box
+// was 150px and each date box 80px, so a date control is the NARROW one. Neither
+// figure is reproduced. The cap here is the vocabulary's label-track width and the
+// lookup beside it keeps the shared component's own 'sm'-step cap, so the date is
+// narrower than the lookup BY CONSTRUCTION rather than by a pair of tuned numbers.
+//
+// That token is also the smallest cap that still admits a native date control's own
+// calendar affordance — which the legacy screen supplied as a separate scripted pop-up
+// link and which is now part of the control itself. Anything tighter would clip it.
+//
+// Typography is not declared: the form vocabulary resolves the measured 12px control
+// step on every bordered input, so the one-step-above-body relationship is inherited.
 .role-assignment__date {
-  max-inline-size: mx.breakpoint('sm');
+  max-inline-size: var(--field-label-inline-size);
 }
 
-// A lone check box: the shared form field supplies its label, so the slot only has to stop
-// the control stretching to the full column width.
+// -----------------------------------------------------------------------------
+//  THE NOTIFY CHOICE
+// -----------------------------------------------------------------------------
+// The legacy screen placed this after the closing panel tag, outside the add form, and
+// passed it to both operations; the template keeps that reading order while moving the
+// control inside the form element, which is what puts it in the form's control scope.
+// The block is a grid so the wrapped field's own trailing rhythm stays inside it rather
+// than collapsing out and compounding the form's gap, and the field is held to its
+// content width rather than stretched across the form.
 .role-assignment__notify {
-  display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
+  display: grid;
+  justify-items: start;
 }
 
+// A check box is the one control the global bordered-input rule deliberately excludes,
+// so it carries its intrinsic size and nothing else. Inside the wrapping flex control
+// slot the default flexibility would let it shrink below that intrinsic size, leaving a
+// target too small to hit; pinning it removes the possibility.
 .role-assignment__notify-control {
   flex: none;
 }
 
 // -----------------------------------------------------------------------------
-//  COMMANDS
+//  THE COMMAND ROW — AND THE ONE RESPONSIVE DECISION THIS FILE OWNS
 // -----------------------------------------------------------------------------
-// A real gap rather than literal spacing characters, so the separation survives
-// white-space collapsing, and wrapping is intrinsic so the last command stays reachable at
-// every width.
+// A real gap rather than the spacer cells and non-breaking spaces the legacy markup
+// used, so the separation survives white-space collapsing; and wrapping is intrinsic,
+// so the command stays reachable at every width without a query.
+//
+// THE ALIGNMENT IS THE MEASURED BAND, RECOVERED. The legacy action sat inside the
+// control band, level with the controls and never beneath the labels. Above 'md' the
+// shared field wrapper switches its fields to a two-track grid — a label track of the
+// measured 150px and a fluid remainder, parted by a 1rem column gap — so an action row
+// flush to the leading edge lands under the LABEL column and reads as belonging to it.
+// Indenting by exactly that track plus that gap puts the command under the controls it
+// submits, and it is composed from the same two tokens the wrapper's tracks are built
+// from, so retuning either moves both and the two cannot drift apart.
+//
+// Below the step the wrapper stacks labels above controls, there is no control column
+// to align to, and the indent is simply absent — the collapse to a single column,
+// authored mobile-first with the wide arrangement layered on top, and expressed
+// through the shared breakpoint mixin rather than a query written here.
 .role-assignment__commands {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
+
+  @include mx.respond-above('md') {
+    padding-inline-start: calc(var(--field-label-inline-size) + var(--space-4));
+  }
 }
 
+// The submit is the only validating affordance on the screen, exactly as the legacy
+// markup declared, and the only emphasis it carries is weight.
+//
+// MIGRATION: a net addition with a stated substitution. The measured legacy
+// command-button class is 11px at NORMAL weight, which the form vocabulary already
+// resolves, and the legacy screen distinguished this particular action by hanging an
+// icon on it. That icon is not carried across — the workspace ships no static raster
+// beyond the favicon — so the bold step substitutes for it, using the same weight
+// token the vocabulary already spends on emphasis elsewhere. The distinction survives
+// without introducing a second colour, and the disabled state remains the global one.
 .role-assignment__submit {
   font-weight: var(--font-weight-bold);
 }
 
-// The removal command sits in a grid cell, so it must not stretch that cell: `inline-flex`
-// keeps it to its own content width whatever the column does.
-.role-assignment__row-command {
-  display: inline-flex;
-  align-items: center;
-}
-
-.role-assignment__user-link {
-  color: var(--color-primary);
-}
-
-// The cancel link sits in the page header's action slot, so its ARRANGEMENT belongs to that
-// shared component. What is declared here is only the one thing the shared component cannot
-// know: that this particular action is a link back out of the screen rather than a command
-// within it.
-.role-assignment__module-action {
-  color: var(--color-primary);
-}
-
 // -----------------------------------------------------------------------------
-//  MEMBERSHIPS REGION
+//  REGION TWO — THE MEMBERSHIPS LISTING
 // -----------------------------------------------------------------------------
-// The region wraps the shared data table, which owns every row, cell, caption and pager rule
-// of its own, so this block declares PLACEMENT ONLY.
+// The region wraps the shared grid and the shared pager, both of which own every row,
+// cell, caption, header and control rule of their own, so this block declares
+// PLACEMENT ONLY: the space between the grid and the pager beneath it, and the
+// region's separation from the form above.
 //
-// Nothing is declared for the region's `aria-busy` state, deliberately. The sighted
-// equivalent of that announcement is the shared table's own loading affordance, which the
-// template drives from the same signal through `[loading]`, so a rule here would be a second
-// treatment for one state - and the token vocabulary declares no opacity or busy-surface
-// value a rule could resolve to without hardcoding one. Recorded as a design-system gap
-// rather than closed with a literal.
+// THE LEADING RULE IS MEASURED. The legacy screen drew a horizontal rule immediately
+// before this panel and left a 15px spacer row above that, and those are the only
+// measured separators on the entire screen — the two panel classes it named have no
+// definition in either legacy stylesheet, so nothing else here is owed. The rule is
+// reproduced as a leading hairline from the same three tokens the reset resolves the
+// rule element itself to, so the two renderings of one legacy affordance cannot
+// diverge. The inset approximates the measured 15px at the nearest step on the spacing
+// scale, the legacy sheet having had no 4px step to match.
+//
+// MIGRATION: the legacy trailing rule after the panel is a documented reduction. It
+// closed a panel that sat mid-document; here the region ends the flow and the shared
+// grid draws its own bounding border, so a second hairline immediately beneath one
+// would read as a stray line rather than as a boundary.
+//
+// Nothing is declared for the region's busy state, deliberately. The sighted
+// equivalent of that announcement is the shared grid's own loading affordance, driven
+// from the same signal through its `loading` input, so a rule here would be a second
+// treatment for one state — and the vocabulary declares no opacity or busy-surface
+// value such a rule could resolve to without inventing a literal. Recorded as a
+// design-system gap rather than closed with one.
+// The column is named here for the same reason it is named on the host, and BOTH are
+// required: this region is itself a grid, so it is the second link in the chain between
+// the table's minimum measure and the viewport. Leaving either one implicit lets the
+// floor through and the sideways scroll returns.
 .role-assignment__memberships {
   display: grid;
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-2);
+  padding-block-start: var(--space-4);
+  border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
 }
 
-// =============================================================================
-//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
-// =============================================================================
+// -----------------------------------------------------------------------------
+//  THE TWO PROJECTED GRID CELLS
+// -----------------------------------------------------------------------------
+// Both rules are DEFENSIVE rather than decorative, and both answer one fact about the
+// shared grid: it lays its table out on a fixed algorithm over a minimum measure, so a
+// column's width is decided by the table and not by its content, and a cell value that
+// cannot break will overflow rather than widen it.
 //
-// MIGRATION: the legacy screen (`Website/admin/Security/SecurityRoles.ascx`) was one layout
-// table holding the two selectors, the two date boxes and the grid in an undifferentiated
-// run of rows, with non-breaking spaces for separation. None of that is structure, so the
-// separation becomes CSS gap and only the memberships grid survives as a real table,
-// delegated to the shared data table.
+// The removal command therefore keeps to its own content width — it sits in a grid
+// cell and must not stretch it — and its single-word label must not break across two
+// lines inside a narrow column. Its chrome, hover, active and disabled treatments are
+// the global button rule's; its accessible name and per-row visibility are the
+// template's.
 //
-// MIGRATION: the spacing and radius scales every value above resolves to are NET ADDITIONS -
-// the legacy design is square-cornered and has no spacing system. The in-place match list is a
-// net addition too: the legacy screen resolved a lookup with a full postback and had no
-// incremental match affordance at all. Neither alters any behaviour of the assignment itself,
-// and both are recorded with the rest in MIGRATION_NOTES.md.
-// =============================================================================
+// A NOTE FOR WHOEVER READS THE COMPUTED VALUE AND THINKS THIS IS WRONG: measured in a
+// browser, this button computes `display: flex`, not the `inline-flex` authored below.
+// That is correct and is not to be "fixed". The shared grid wraps its action cell's
+// content in its own inline flex box, so this button is a flex ITEM, and the display
+// spec blockifies an inline-level display on a flex item. The rendered result is
+// identical, and the authored value is the one that stays right if the shared grid ever
+// stops wrapping the cell.
+.role-assignment__row-command {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  white-space: nowrap;
+}
+
+// An account's display name is externally supplied and unbounded — it is the value the
+// legacy formatter concatenated into markup unencoded — so it is the cell most likely
+// to exceed its column. Breaking within the word keeps it inside the row instead of
+// pushing a horizontal scroll onto the whole grid. Its ink, its underline on hover and
+// its focus ring are the reset's, applied to every anchor in the workspace, and are
+// not restated.
+.role-assignment__user-link {
+  overflow-wrap: break-word;
+}

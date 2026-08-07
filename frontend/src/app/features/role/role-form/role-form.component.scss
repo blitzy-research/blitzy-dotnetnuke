@@ -34,8 +34,56 @@
 // The surface is deliberately flat, and focus indication is deliberately absent: the
 // global reset applies the shared focus-ring mixin to every anchor, button, input, select,
 // textarea and summary, so the design system owns focus and this file only places things.
-
+// _reset.scss resolves that list at L263-L271 and states outright that no rule in it removes
+// an outline, so nothing below needs to re-apply the ring and nothing below may suppress it.
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DO. Three concerns that look like they belong to a
+// form stylesheet are owned elsewhere and are consumed rather than restated:
+//
+//   * the label-to-control ratio        -> form-field, :host(.form-field--inline)
+//   * the multi-line field's shape      -> form-field, :host(.form-field--multiline)
+//   * the read-only control's chrome    -> form-field + _forms.scss (:disabled, [readonly])
+//
+// and every element-level rule for label, input, select, textarea, button, fieldset and
+// legend belongs to _forms.scss. Restating any of them here would either be dead weight or
+// would start a specificity argument with the file that owns the answer.
+//
+// ONLY MIXINS ARE LOADED. _tokens.scss is deliberately NOT loaded: it emits a real `:root`
+// block, so `@use`-ing it from a component would copy the entire token vocabulary into THIS
+// component's stylesheet - emitted CSS that would count against the 4 kB `anyComponentStyle`
+// budget once per component and would duplicate the vocabulary across the bundle. Custom
+// properties do not need a Sass import to be visible: they inherit through the document from
+// the `:root` the single global stylesheet establishes, so `var(--x)` below resolves at run
+// time. Sass module scope only governs Sass-level names, and the only Sass-level names this
+// file needs are the mixins. _mixins.scss emits no CSS at all, so loading it costs nothing.
 @use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  MEASURES
+// -----------------------------------------------------------------------------
+// MIGRATION: the legacy control widths were an artefact of the layout tables. A table cell
+// has no intrinsic sizing, so every control in
+// `Website/admin/Security/editroles.ascx` carried an explicit pixel width: `Width="325"` on
+// the four full-width controls (`txtRoleName` L27, `txtDescription` L39, `txtRSVPLink` L161,
+// `ctlIcon` L169) and `Width="100"` on the five short ones (`txtServiceFee` L89,
+// `txtBillingPeriod` L104, `txtTrialFee` L122, `txtTrialPeriod` L136, `txtRSVPCode` L153),
+// with `Width="100px"` on the two frequency selects (L106-L107, L138-L139) and `Columns="30"`
+// on every text control. In a grid the track supplies the width, so the WIDE step needs no
+// declaration at all - a control fills its column - and only the NARROW step has to be said.
+//
+// The token vocabulary carries no control-width member and the spacing scale stops at
+// --space-8 (2.5rem), so the narrow step is COMPOSED BY ADDING TOKENS rather than by naming a
+// length: 2.5rem + 2.5rem + 1rem = 6rem, against the measured 100px. A deliberate snap to the
+// scale, not a pixel match. This is the same expression, for the same reason, as the sibling
+// admin settings surface that was ported from the same legacy family, because a second form
+// screen has to agree with the first rather than arrive at its own answer.
+//
+// It is deliberately NOT `mx.breakpoint('sm')`. That helper returns a VIEWPORT threshold and
+// the workspace reserves it for prose and panel measures; at 30rem it is three times the
+// measured control width, so on the two-column grid below it would cap nothing and the
+// modifier would be decorative. A compile-time Sass name, so the expression is written once
+// and the emitted CSS is unchanged.
+$control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 
 // -----------------------------------------------------------------------------
 //  ROOT
@@ -43,6 +91,25 @@
 // Body type is declared on the component root and inherited by every region below rather
 // than restated per rule: without it the browser falls back to its own serif default for
 // every legend, label, note and read-only value on the screen.
+//
+// MIGRATION: three overlapping legacy font stacks collapse to one. default.css declares
+// `Tahoma, Arial, Helvetica` 38 times, `Tahoma, Verdana, Arial, Sans-Serif` twice and a bare
+// `Verdana, sans-serif` once - the same intent authored three ways, with the two minority
+// stacks reachable from this screen only by inheritance. --font-family-base is the single
+// consolidated stack, and the visual difference is imperceptible because Tahoma leads two of
+// the three and the fallbacks are the same faces in a different order.
+//
+// MIGRATION: the measured TYPE RELATIONSHIP is preserved, mapped onto named steps rather than
+// transcribed as pixels. The legacy screen set body and label text at 11px (`.Normal`
+// L92-L97, `.SubHead` L74-L80) and its CONTROLS and error text one step LARGER at 12px
+// (`.NormalTextBox` L123-L128, `.NormalRed` L114-L120) - form controls that read bigger than
+// the prose around them. --font-size-md is 0.6875rem and --font-size-lg is 0.75rem, which are
+// those two sizes exactly at the default root size, but as rem they now scale with the
+// reader's own type setting where the legacy pixel values could not. This rule owns the body
+// half of that relationship; _forms.scss owns the control half, resolving input, select and
+// textarea to --font-size-lg, so the one step of separation survives in both files at once.
+// The legacy landscape was chaotic - ten sizes across two unit systems - so the scale is a
+// rationalisation rather than a transcription, and only the RELATIONSHIP is load-bearing.
 .role-form {
   display: grid;
   gap: var(--space-4);
@@ -111,9 +178,43 @@
 // A `legend` is painted by the browser as part of its fieldset's border, so inline padding
 // is what opens the gap in that border. A `summary` is not - it is a flow child - but it
 // takes the same type so the two section headings read alike.
+//
+// This block intentionally OVERRIDES the global `legend` rule in _forms.scss, which sizes a
+// legend at --font-size-md, the same step as a field label. A section caption outranks a field
+// label, so it takes the next step up; and the rule has to exist regardless, because `summary`
+// is not a `legend` and inherits none of that element styling. It is the same declaration
+// block the other two ported form surfaces use for their own captions, which is the point:
+// a section caption is one decision for the whole console, not a per-screen choice.
+//
+// MIGRATION: the measured caption was LARGER and GREYER than this. Both section heads declare
+// `CssClass="Head"` (`editroles.ascx` L11-L12 and L68-L70), and `.Head` resolves to 20px,
+// `font-weight: normal`, `#333333` at default.css L65-L71 - a step the vocabulary can express
+// exactly, as --font-size-xxl is 1.25rem. It is deliberately NOT used. Sizing this one caption
+// at 20px while every other ported form surface sets --font-size-lg would buy a single-screen
+// pixel match at the cost of a console-wide inconsistency, and design-system compliance
+// outranks legacy visual continuity. The weight and colour diverge for the same reason: bold
+// and the brand colour are what the console's captions are, and #333333 is one of the greys
+// _tokens.scss deliberately declines to admit, so there is no token to spend on it.
+//
+// MIGRATION: `IncludeRule="True"` on both section heads (`editroles.ascx` L12 and L69) drew a
+// horizontal rule beneath the caption. The rule is reproduced HERE, as a token-driven bottom
+// border on the caption itself - never an `<hr>`, which is presentation wearing the costume of
+// content, and never an inline style. The paired template states this contract in both of its
+// section comments and this is the declaration that honours it. The separator is a boundary
+// rather than text, so the border colour is the one the vocabulary declares for exactly that.
+//
+// The rule's WIDTH differs between the two sections, and that is inherent rather than
+// overlooked: a legend is sized to its own text inside the fieldset's border gap, so its rule
+// underlines the caption, while a summary is a block-level flow child, so its rule spans the
+// disclosure. Forcing the legend to full width would mean stretching it across the border gap
+// and erasing the section's own top border to do it - trading a real frame for a cosmetic
+// match. Both sections read as "caption, then rule, then fields", which is what the legacy
+// arrangement communicated.
 .role-form__legend,
 .role-form__summary {
   padding-inline: var(--space-1);
+  padding-block-end: var(--space-1);
+  border-block-end: var(--border-width) var(--border-style) var(--color-border);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   color: var(--color-primary);
@@ -132,6 +233,33 @@
 // One column until there is room for two. `minmax(0, 1fr)` rather than `1fr` because a
 // grid track's automatic minimum is its content, and one long unbroken value would
 // otherwise push the second column off the screen.
+//
+// MIGRATION: this grid is a grid OF FIELDS, and it is not the label-to-control ratio. That
+// ratio - the measured `<td class="SubHead" width="150">` label cell against its `width="325"`
+// control cell, twelve times over in `editroles.ascx` - lives one level down, inside each
+// field, and belongs to form-field's `--inline` variant, which resolves it as
+// --grid-track-label beside --grid-track-fluid. The 150px is tokenised there as
+// --field-label-inline-size (9.375rem), and the control column takes the remainder as a
+// fraction rather than the measured 325px so a field fills its container instead of being
+// pinned to a device-pixel count. It is stated here only so that it is clear this file is not
+// the place to look for it, and so that nobody adds a second, competing definition of a
+// measure the vocabulary already carries: two definitions of one shared measure is exactly
+// the drift the shared vocabulary exists to prevent.
+//
+// MIGRATION: the legacy screen was built from THREE nested layout tables, each declaring its
+// purpose in its own markup - `summary="... Design Table"` on the outer table (L6), on
+// `tblBasic` (L13) and on `tblAdvanced` (L71) - sized `width="560"` on the outer cell (L9) and
+// `width="525"` on both inner tables. A table used for arrangement rather than for data is
+// replaced by CSS, so NO `<table>` element is emitted by this screen and no rule here styles
+// one. This screen has no data grid of any kind, so nothing in it relates to the shared data
+// table. The fixed outer and inner widths are dropped rather than translated: the grid derives
+// its measure from the container and the reader's type size, which is what those pixel widths
+// were standing in for.
+//
+// MIGRATION: two columns above the breakpoint is a NET ADDITION - the legacy tables were
+// single-column runs of rows at every width, because the legacy stylesheets declare no media
+// query anywhere. It alters arrangement only; every field remains present, in source order,
+// and bound exactly as before.
 .role-form__grid {
   display: grid;
   gap: var(--space-3);
@@ -148,16 +276,42 @@
 // required marker and the error line. The wrapper exists so this screen can size and
 // arrange a control without reaching into the shared component, which encapsulation would
 // not permit in any case.
+//
+// MIGRATION: the CONTROL CHROME is a net addition, and a large one. `.NormalTextBox`
+// (default.css L123-L128) is the class the legacy admin pages put on every text box, and it
+// declares four things only - font family, 12px, `font-weight: normal`, and nothing else. No
+// border. No padding. No background. No width. Legacy text boxes were drawn entirely by the
+// browser's own default control rendering, and their width came from the markup rather than
+// the stylesheet. Everything that now gives a control a visible boundary, interior space, a
+// surface and a corner radius is new, and all of it belongs to _forms.scss, which owns the
+// element-level rules for input, select and textarea. No rule in this file styles a control by
+// tag name: doing so would duplicate that file and start a specificity argument with it.
+//
+// MIGRATION: a documented FUNCTIONAL REDUCTION, recorded here because this screen is where it
+// is felt. `txtDescription` (L39-L40) was a multi-line box the legacy portal could hand to an
+// HTML editor provider; rich-text editing is out of scope, so a multi-line field is a plain
+// `<textarea>`. Its measured `Height="84px"` and `Columns="30"` are not translated into CSS
+// lengths at all - the template sizes it with the `rows` attribute, which is the intrinsic
+// mechanism for exactly this and scales with the reader's type size where a pixel height would
+// not. form-field's `--multiline` variant owns the resulting shape.
 .role-form__control {
+  box-sizing: border-box;
   display: grid;
   gap: var(--space-1);
   min-inline-size: 0;
 }
 
-// A money amount and a period count are short values. A control sized for a sentence
-// invites one, so these are narrowed rather than stretched across the grid column.
+// A money amount, a period count and a short code are short values. A control sized for a
+// sentence invites one, so these are narrowed rather than stretched across the grid column.
+// Applied to the WRAPPER, so whichever control it holds is capped with it and the control
+// itself needs no width rule - a grid item whose inline size is `auto` already fills its
+// track, which is the very thing the legacy pixel widths existed to force.
+//
+// MIGRATION: this is the measured `Width="100"` of `txtServiceFee` (L89), `txtTrialFee`
+// (L122) and `txtRSVPCode` (L153), expressed as the composed narrow step declared above
+// rather than as a pixel count.
 .role-form__control--narrow {
-  max-inline-size: mx.breakpoint('sm');
+  max-inline-size: $control-narrow;
 }
 
 // A lone check box has no text of its own inside the slot - the shared field supplies the
@@ -180,16 +334,61 @@
 
 // Both members of the pair share the remaining space from a zero basis, so neither is
 // sized by its own content: a select whose widest option is long would otherwise crowd out
-// the numeric input beside it.
+// the numeric input beside it. Each is then capped at the same narrow step as a lone short
+// control, so the pair stays a compact unit instead of stretching across the whole column.
+// The zero basis is what keeps them shrinkable below the cap, so the pair still fits a narrow
+// viewport before it has to wrap.
+//
+// MIGRATION: the measured pair is `txtBillingPeriod` `Width="100"` beside
+// `cboBillingFrequency` `Width="100px"` (L104-L107), and `txtTrialPeriod` beside
+// `cboTrialFrequency` on the same pattern (L136-L139). Capping both at the narrow step is
+// what preserves that measured proportion; without the cap the modifier would let two 100px
+// controls fill a track many times their width, which is a different layout wearing the same
+// markup. The select's legacy width carried a `px` suffix where the input's did not - a
+// legacy inconsistency in the same row, reproduced NEITHER way, because both resolve to one
+// step here.
+// `box-sizing` is restated here rather than inherited, and it is LOAD-BEARING - without it the
+// cap above silently does not bind. The global reset establishes `border-box` on the root and
+// has every element inherit it, which works everywhere in the ordinary light DOM. It does NOT
+// survive the boundary of a `details` element: the disclosure's contents are rendered through
+// the browser's own shadow tree, whose internal elements the reset's universal selector cannot
+// match, so they keep the initial `content-box` and the fields slotted inside inherit that
+// instead. Every control in the advanced section is therefore `content-box` unless it says
+// otherwise, which makes `max-inline-size` bound the CONTENT box and lets the padding and
+// border sit outside the limit - measured in a real browser as 102.5px against a 96px cap,
+// because the global control chrome adds 8px of padding either side and a 1px border.
+// Declaring it restores the intent: the cap is a limit on the whole control.
+//
+// The lone narrow wrapper above does not need this - it carries no padding or border of its own,
+// so both box models agree, and it measured at exactly 96px. It is declared on the wrapper set
+// regardless, so the two paths cannot drift and so a later addition of padding cannot quietly
+// reintroduce the same defect.
 .role-form__period,
 .role-form__frequency {
+  box-sizing: border-box;
   flex: var(--flex-fill-from-zero);
+  max-inline-size: $control-narrow;
   min-inline-size: 0;
 }
 
 // An `output` element holding a value the operator may not change. It is muted rather than
 // disabled-looking because it is not a control at all, and it wraps rather than truncates
 // because a clipped role name is worse than a tall row.
+//
+// MIGRATION: the legacy muted state was `.NormalDisabled` (default.css L100-L103), which
+// declares `color: Silver` over the 11px normal body rule. Silver is NOT restored and is not in
+// the vocabulary: it measures 1.82:1 on the page background, which is not readable text by any
+// standard. --color-text-muted is substituted for it, and _tokens.scss records that
+// substitution as the vocabulary's own decision rather than this screen's. A deliberate visible
+// change, and the readability it buys is the entire reason for it.
+//
+// The muting is a REDUNDANT CUE, never the message. This state is carried first by structure
+// and wording: the locked role's name is rendered as an `output` rather than an input, so there
+// is no control to attempt, the whole form group is natively disabled so the state is
+// programmatically determinable, and the template states the reason in a sentence above the
+// fields - wording that is itself a net addition, because the legacy screen disabled its
+// controls silently and left a reader of the grey alone with nothing at all. Colour is never
+// doing this work by itself.
 .role-form__readonly {
   color: var(--color-text-muted);
   overflow-wrap: break-word;
@@ -201,6 +400,38 @@
 // A real gap rather than literal spacing characters, so the separation survives
 // white-space collapsing, and wrapping is intrinsic so the last command stays reachable at
 // every width.
+//
+// MIGRATION: the legacy spacing characters are gone, all of them. This row's commands were
+// separated by literal `&nbsp;` entities at L181, L184 and L187, the billing and trial pairs by
+// `&nbsp;&nbsp;` at L105 and L137, and the sections by a `<br/>` at L67 and by
+// `height="10"` spacer rows at L20, L78 and L82 - 70 `&nbsp;` across the in-scope admin markup
+// in total. Every one is replaced by `gap` or by the vertical rhythm the grids above establish.
+// A spacer is a layout instruction, and layout instructions belong in the stylesheet: a
+// non-breaking space is announced as content by a screen reader, collapses unpredictably, and
+// cannot wrap, which is why the row below can reflow and the legacy row could not.
+//
+// MIGRATION: the legacy commands were TEXT LINKS, not buttons, and that appearance is
+// deliberately not reproduced. All four were `asp:LinkButton` carrying `CssClass="CommandButton"`,
+// and `.CommandButton` (default.css L442-L447) is 11px `font-weight: normal` whose anchor states
+// resolve to underlined `#003366` for `:link` (L450), `:visited` (L456) and `:active` (L468) and
+// underlined `#ff0000` on `:hover` (L462) - an underlined link, not a filled or bordered control.
+// The target renders them as `<button>`, because an element that performs an action rather than
+// navigating must be a button: a link is announced as a link, is activated by Enter but not
+// Space, and offers a context menu of navigation options that mean nothing for "Delete". That
+// makes their appearance _forms.scss's to decide, and it resolves them to a bordered control on
+// the surface tone. Design-system compliance and correct semantics both outrank the measured
+// appearance here, so NO rule in this file resets these buttons toward a link: doing so would
+// contradict the file that owns the affordance, and it would dress an action up as navigation.
+//
+// MIGRATION: `.StandardButton` (default.css L475-L484: `#dddddd` background, `#000000` text, a
+// bare `Verdana, sans-serif` stack) is NOT reproduced. It has zero uses in the in-scope markup,
+// and all three of its colours are among the values _tokens.scss deliberately declines to admit.
+//
+// MIGRATION: a measured legacy inconsistency, reproduced NEITHER way. Three of the four link
+// buttons carry `BorderStyle="none"` while `cmdManage` (L188-L189) omits it, so the legacy screen
+// rendered one command with a border the others did not have. No inline styling is emitted and no
+// special-case class exists for it: all four commands are the same affordance, which is what the
+// markup was evidently trying to say.
 .role-form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -211,7 +442,28 @@
 // A colour change only. A destructive command that also moved or resized would be a
 // different affordance in a different place, which is how a reader mis-clicks the one
 // command that cannot be undone.
-.role-form__command--danger {
+//
+// The TEXT variant of the refusal colour, not the raw one: --color-danger is tuned for a border
+// or an icon and does not clear the contrast threshold for text, whereas this step does on the
+// surface tone _forms.scss gives a button. Only the foreground changes, so the button keeps the
+// border, surface, radius and padding the design system gives every other command and remains
+// recognisably the same kind of control.
+//
+// Colour is a REDUNDANT CUE here too, never the message: the command reads "Delete", and it opens
+// a confirmation dialog that names what will be removed. A reader who cannot distinguish the hue
+// loses nothing, which is the requirement.
+// The hover state is declared EXPLICITLY rather than left to the cascade, and it is not
+// redundant. The global `button:hover` rule sets a colour of its own, so which declaration wins
+// is decided by specificity: that rule is one element plus one pseudo-class, while the resting
+// rule below is one class plus the encapsulation attribute the compiler adds. The component rule
+// happens to outrank it, and a browser measurement confirmed the red survives hover - but only
+// because of an attribute this file never wrote. Naming `:hover` here puts a class, an attribute
+// and a pseudo-class on the winning side, so the destructive command keeps its colour on the
+// strength of what is written rather than on a compiler artefact. Only the foreground is claimed;
+// the surface and border still follow the design system's hover, so the button still reads as the
+// same kind of control being hovered.
+.role-form__command--danger,
+.role-form__command--danger:hover {
   color: var(--color-danger-text);
 }
 
@@ -231,4 +483,47 @@
 // and the two-column collapse is a net addition too, because the legacy stylesheets declare
 // no media query anywhere. All of it is intentional visual refinement that alters no
 // behaviour, and it is recorded with the rest in MIGRATION_NOTES.md.
+//
+// The three scales, each measured before being called an addition:
+//
+//   SPACING   The legacy stylesheet has no spacing system. Its padding and margin values are
+//             ad-hoc - `2px` eight times, `5px` seven times, `10px` four times - and it has no
+//             4px step at all, so the eight-step scale every `gap` and `padding` above resolves
+//             to is genuinely new rather than a re-expression. Where a legacy value had to be
+//             placed on the scale it was rounded to the nearest step; the smallest step is
+//             0.25rem against those measured 2px paddings, which is an approximation and is
+//             named as one.
+//   RADIUS    `border-radius` appears ZERO times in the legacy stylesheet - the design is
+//             square-cornered throughout. --radius-md on the section frame is the only radius
+//             this screen uses, and it is used once.
+//   ELEVATION `box-shadow` appears ZERO times in the legacy stylesheet. This screen adds none:
+//             it has no floating surface, no menu and no dialog of its own, so all three
+//             elevation tokens are deliberately unused here.
+//
+// -----------------------------------------------------------------------------
+//  TOKEN GAPS WORKED AROUND, NAMED EXPLICITLY
+// -----------------------------------------------------------------------------
+// Four things this screen needed that the vocabulary does not carry. None is hardcoded; each is
+// composed from, or substituted by, something the vocabulary does declare.
+//
+//   1. NO CONTROL-WIDTH TOKEN. The narrow step is composed by adding spacing tokens, as set out
+//      at the top of this file. Worked around, and the arithmetic is stated rather than implied.
+//   2. NO PROSE-MEASURE TOKEN. The intro, notice and warning paragraphs are capped with the
+//      `md` breakpoint helper, which is a viewport threshold being read as a measure. The
+//      workspace uses it this way throughout for prose and panels; it is the closest declared
+//      value and it is deliberately not the one used for controls.
+//   3. NO MOTION TOKEN AND NO HOVER-CAPABILITY MIXIN. Nothing in this file transitions, so no
+//      reduced-motion guard is needed and none could be authored here in any case - raw media
+//      queries are barred outside _mixins.scss, which exposes neither a motion member nor a
+//      hover-capability member. The legacy portal animated nothing, so the absence is faithful
+//      as well as compliant.
+//   4. NO NEAR-BLACK TEXT TOKEN AND NO HEADING GREY. The legacy `Black` (32 uses) and the
+//      `#333333` of `.Head` have no token, because _tokens.scss declines to admit them. Nothing
+//      here spends a literal on either: the caption takes --color-primary and body text
+//      inherits, which is recorded against the caption rule above.
+//
+// Two gaps that were ANTICIPATED BUT DO NOT EXIST, recorded so no one works around a token that
+// is in fact available: --border-width IS declared, so the legacy uniform 1px border needed no
+// substitute; and the disabled `Silver` IS resolved, by the --color-text-muted substitution that
+// _tokens.scss owns.
 // =============================================================================

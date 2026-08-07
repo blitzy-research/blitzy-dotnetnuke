@@ -203,7 +203,7 @@ import { Injectable, computed, inject, signal, type OnDestroy } from '@angular/c
 import { Subscription } from 'rxjs';
 
 import { isProblemDetails } from '../models/problem-details.model';
-import { DEFAULT_PAGE_SIZE, emptyPagedResult } from '../models/paged-result.model';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, emptyPagedResult } from '../models/paged-result.model';
 import { ModuleService } from '../services/module.service';
 import { TabService } from '../services/tab.service';
 import { failureCode, summarizeProblem } from '../utils/form-errors.util';
@@ -733,6 +733,7 @@ function buildTabHierarchy(tabs: readonly TabListItem[]): TabHierarchy {
  */
 @Injectable({ providedIn: 'root' })
 export class ModuleStore implements OnDestroy {
+
   private readonly moduleService = inject(ModuleService);
   private readonly tabService = inject(TabService);
 
@@ -777,6 +778,15 @@ export class ModuleStore implements OnDestroy {
    * and releasing every write to do it would be far too broad.
    */
   private exportRequest: Subscription | null = null;
+  /**
+   * The picker-choice read in flight, or null when none is.
+   *
+   * Held separately from {@link ModuleStore.listRequest} because the two reads answer different
+   * questions over the same endpoint: the listing is the paged grid somebody is reading, the choices
+   * are the whole tenant's modules used to populate a picker. Sharing one handle would let a picker
+   * read abandon a grid read that a different screen was waiting on.
+   */
+  private choicesRequest: Subscription | null = null;
 
   /*
    * A container for WRITES, which are deliberately never cancelled to supersede one another.
@@ -854,6 +864,22 @@ export class ModuleStore implements OnDestroy {
 
   /** Whether a listing request is in flight. */
   private readonly _listLoading = signal(false);
+
+  /**
+   * Modules read as CHOICES for a picker, held apart from the browsable listing.
+   *
+   * ⚠ THIS SLICE EXISTS SO THAT A PICKER CANNOT DISTURB A LISTING. A screen that needs every module as
+   *   options wants a different query from a screen that lets an operator page through them: the widest
+   *   page the endpoint allows, unordered, unfiltered. Expressing that by moving
+   *   {@link ModuleStore._query} would rewrite the browsable listing's page size and replace its rows,
+   *   so merely opening a picker would silently resize a sibling listing under its own operator and lose
+   *   the page they were on. The two reads are therefore two slices with two queries and two flags, and
+   *   nothing a picker does is observable on {@link ModuleStore.page}.
+   */
+  private readonly _choices = signal<readonly ModuleListItem[]>([]);
+
+  /** Whether a choices request is in flight. Distinct from the listing's flag, by design. */
+  private readonly _choicesLoading = signal(false);
 
   /** The module currently being read or edited, or `null` when none has been loaded. */
   private readonly _module = signal<ModuleDetail | null>(null);
@@ -985,6 +1011,12 @@ export class ModuleStore implements OnDestroy {
   /** Whether a listing request is in flight. */
   readonly listLoading = this._listLoading.asReadonly();
 
+  /** Every module read as a picker choice. See {@link ModuleStore._choices}. */
+  readonly choices = this._choices.asReadonly();
+
+  /** Whether a choices request is in flight. */
+  readonly choicesLoading = this._choicesLoading.asReadonly();
+
   /** The module currently loaded, or `null`. */
   readonly module = this._module.asReadonly();
 
@@ -1074,6 +1106,7 @@ export class ModuleStore implements OnDestroy {
   readonly busy = computed<boolean>(
     () =>
       this._listLoading() ||
+      this._choicesLoading() ||
       this._moduleLoading() ||
       this._saving() ||
       this._settingsLoading() ||
@@ -1286,6 +1319,7 @@ export class ModuleStore implements OnDestroy {
    *   contracts are theirs.
    */
   loadModules(): void {
+    this.listRequest?.unsubscribe();
     this._listLoading.set(true);
     this.clearFailure();
 
@@ -1303,6 +1337,43 @@ export class ModuleStore implements OnDestroy {
   }
 
   /**
+   * Reads every module the endpoint will return in one call, as CHOICES for a picker.
+   *
+   * ⚠ THIS DOES NOT TOUCH THE BROWSABLE LISTING. Neither {@link ModuleStore.query},
+   *   {@link ModuleStore.filter} nor {@link ModuleStore.page} is read or written here, so a screen that
+   *   opens a picker cannot resize, re-order, re-filter or repaginate a listing a sibling screen is
+   *   showing. That separation is the whole reason this command exists rather than callers moving the
+   *   shared page size themselves.
+   *
+   * The widest page the endpoint accepts is requested, because a picker has no pager to expose and a
+   * default page would hide most of a tenant's modules behind paging the operator cannot reach. The
+   * server answers a larger page size with a field-level refusal, so this is the widest single read
+   * available; a tenant holding more placements than one page is a documented limit of a picker rather
+   * than a silent truncation.
+   *
+   * Only the ITEMS are retained. The paging metadata describes a window this slice does not offer to
+   * move through, so republishing it would invite a pager that could not change anything.
+   */
+  loadChoices(): void {
+    this.choicesRequest?.unsubscribe();
+    this._choicesLoading.set(true);
+    this.clearFailure();
+
+    this.choicesRequest = this.moduleService
+      .listModules({ pageIndex: 0, pageSize: MAX_PAGE_SIZE }, {})
+      .subscribe({
+        next: (page: ModuleListPage) => {
+          this._choices.set(page.items);
+          this._choicesLoading.set(false);
+        },
+        error: (cause: unknown) => {
+          this._choicesLoading.set(false);
+          this.recordFailure('listModules', cause);
+        },
+      });
+  }
+
+  /**
    * Loads a portal's pages and then the modules placed on the selected one.
    *
    * MIGRATION: THIS IS THE SEQUENCING THE TRANSPORT LAYER DELIBERATELY DOES NOT DO. Both services are
@@ -1317,6 +1388,7 @@ export class ModuleStore implements OnDestroy {
    * tenant. Page zero restricts rather than clears.
    */
   loadPortalScope(portalId: number, tabId?: number): void {
+    this.tabsRequest?.unsubscribe();
     this._tabsLoading.set(true);
     this.clearFailure();
 
@@ -1358,6 +1430,7 @@ export class ModuleStore implements OnDestroy {
    * @param portalId The portal whose pages to read.
    */
   loadTabs(portalId: number): void {
+    this.tabsRequest?.unsubscribe();
     this._tabsLoading.set(true);
     this.clearFailure();
 
@@ -1391,6 +1464,7 @@ export class ModuleStore implements OnDestroy {
    * itself be absent and then addresses the module.
    */
   loadModule(moduleId: number, tabModuleId?: number): void {
+    this.moduleRequest?.unsubscribe();
     this._moduleLoading.set(true);
     this.clearFailure();
     this._selectedModuleId.set(moduleId);
@@ -1444,6 +1518,7 @@ export class ModuleStore implements OnDestroy {
    *   companions - and is excluded wholesale.
    */
   loadDefinitions(): void {
+    this.definitionsRequest?.unsubscribe();
     this._definitionsLoading.set(true);
     this.clearFailure();
 
@@ -1486,6 +1561,7 @@ export class ModuleStore implements OnDestroy {
    * is not compared against a bound.
    */
   loadDefinition(moduleDefinitionId: number): void {
+    this.definitionsRequest?.unsubscribe();
     this._definitionsLoading.set(true);
     this.clearFailure();
 
@@ -1512,6 +1588,7 @@ export class ModuleStore implements OnDestroy {
    * rather than a query parameter, and forwarded exactly as supplied.
    */
   loadDesktopDefinitions(desktopModuleId: number): void {
+    this.definitionsRequest?.unsubscribe();
     this._definitionsLoading.set(true);
     this.clearFailure();
 
@@ -1682,6 +1759,7 @@ export class ModuleStore implements OnDestroy {
    * selection.
    */
   loadSettings(moduleId: number, tabModuleId?: number): void {
+    this.settingsRequest?.unsubscribe();
     this._settingsLoading.set(true);
     this.clearFailure();
 
@@ -1989,7 +2067,9 @@ export class ModuleStore implements OnDestroy {
     this._filter.set({});
     this._listLoading.set(false);
 
-    // The selected module and its placement.
+    this._choices.set([]);
+    this._choicesLoading.set(false);
+
     this._module.set(null);
     this._selectedModuleId.set(undefined);
     this._selectedTabModuleId.set(undefined);
@@ -2098,6 +2178,8 @@ export class ModuleStore implements OnDestroy {
     this.desktopDefinitionsRequest = null;
     this.tabsRequest?.unsubscribe();
     this.tabsRequest = null;
+    this.choicesRequest?.unsubscribe();
+    this.choicesRequest = null;
   }
 
   /**
@@ -2276,4 +2358,3 @@ function projectListedRow(row: ModuleListItem, detail: ModuleDetail): ModuleList
     endDate: detail.endDate,
   };
 }
-

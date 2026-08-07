@@ -664,6 +664,7 @@ function withObservedStatus(
  */
 @Injectable({ providedIn: 'root' })
 export class UserStore implements OnDestroy {
+
   private readonly transport = inject(UserService);
 
   /*
