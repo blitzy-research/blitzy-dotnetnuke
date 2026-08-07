@@ -1,0 +1,1601 @@
+/**
+ * Specification for {@link SidebarComponent} — the administration console's single
+ * `navigation` landmark.
+ *
+ * ## What this file is responsible for
+ *
+ * The rail is presentational by construction: it injects nothing, performs no I/O,
+ * declares no provider, defines no route and holds exactly one boolean of state. A
+ * specification for such a component has three jobs, and all three are done here.
+ *
+ * 1. **Pin the rendered contract.** The paired stylesheet compiles against a published
+ *    selector vocabulary — `nav.app-sidebar`, `.app-sidebar--collapsed`,
+ *    `.app-sidebar__toggle`, `.app-sidebar__regions`, `.app-sidebar__group`,
+ *    `.app-sidebar__list`, `.app-sidebar__item`, `.app-sidebar__link` and
+ *    `.app-sidebar__link--active`. Those names are load-bearing rather than
+ *    decorative, so every one of them is asserted. A rename that left the stylesheet
+ *    behind would otherwise ship silently, because a stylesheet whose selectors match
+ *    nothing is not a compile error.
+ * 2. **Pin route integrity.** Every address the rail renders is checked against the
+ *    application's own top-level route table rather than against a list restated here.
+ *    A rail entry that names no route is neither a compile error nor a run-time
+ *    exception — the router resolves it to the wildcard entry — so it would ship as a
+ *    link that quietly goes nowhere. That is the single most likely regression in a
+ *    file of this kind and the only one no other tool catches.
+ * 3. **Pin the accessibility contract**, including the one hazard that is a genuine
+ *    defect rather than a preference: `aria-current="page"` must be unique, and the
+ *    address pair `/modules` and `/modules/import` makes prefix matching produce two
+ *    of them. That collision is reproduced against the real router below, so the
+ *    expectation proves the hazard exists *and* proves the component suppresses it.
+ *
+ * ## Harness
+ *
+ * Karma with Jasmine, driven by `ng test --watch=false --browsers=ChromeHeadless
+ * --code-coverage`. The component is standalone, so it is supplied through `imports`
+ * and never through a module declaration list, and the router is supplied by
+ * `provideRouter` rather than by the deprecated testing module — `RouterLink` and
+ * `RouterLinkActive` both resolve a real `Router`, so a stub would prove nothing about
+ * the addresses actually rendered.
+ *
+ * No HTTP client is configured, and that omission is itself an assertion: a rail that
+ * injected one would fail to construct under this provider set, so every expectation
+ * below only passes because the component reaches for nothing but the router. No
+ * animations provider and no hydration provider are configured either, deliberately —
+ * neither the animations package nor the server-rendering package is installed in this
+ * workspace, and the second absence is load-bearing for the project's security posture
+ * rather than incidental: the sole runtime advisory outstanding against the pinned
+ * framework version is a client-hydration vector, unreachable precisely because no
+ * server-side rendering exists here to reach it.
+ *
+ * ## Determinism
+ *
+ * No clock is read, no random value is drawn, no timer is scheduled and no request is
+ * issued anywhere in this file. Every expectation is a pure function of state this
+ * specification itself established, so a failure here is always a real behavioural
+ * change and never a flake. Where the router is driven, the navigation is awaited and
+ * the fixture is settled explicitly rather than waited on for a duration.
+ *
+ * ## Notation
+ *
+ * Not one negation operator appears anywhere in this file. Presence and state are
+ * compared against `null`, against `false` or against a value with `===`, never by
+ * negating something, and nullable query results are narrowed through {@link present}
+ * rather than being asserted away. The paired template adopts the same discipline and
+ * records the same reason: the codebase's boundaries carry legacy sentinel values where a
+ * truthiness test is a defect, and holding the line uniformly has the further benefit
+ * that no character here can be mistaken for a non-null assertion.
+ */
+
+// MIGRATION: this entire harness is net-new, with no predecessor to mirror. The legacy
+// tree contains ZERO automated tests of any kind — measured as `git ls-files '*.spec.ts'`
+// returning nothing outside the workspace being added, and no test project anywhere in
+// the two legacy trees. Nothing here was ported; every expectation was derived by reading
+// the legacy skin, code-behind and resource files and deciding what the target must
+// preserve. That changes how a reviewer should read the file: there is no reference suite
+// whose coverage this one can be compared against, so each expectation carries its own
+// justification inline.
+
+// MIGRATION: ⚠⚠ THE ASSERTIONS BELOW ENCODE A NET-NEW INFORMATION ARCHITECTURE. There
+// was no left navigation rail in the legacy application, and the evidence is recorded
+// here because the opposite assumption is the natural one. The only complete skin in the
+// checkout, `Website/Portals/_default/Skins/MinimalExtropy/index.ascx` (126 lines), places
+// its menu control at L42-L47 declared `ControlOrientation="Horizontal"`, nested at
+// L38-L41 four containers deep inside the header band — a HORIZONTAL bar between the logo
+// band at L23-L37 and the breadcrumb band at L60-L77. L49 makes the search container a
+// SIBLING of the menu container inside that same bar, so navigation and search shared one
+// horizontal strip, and L109 renders a second horizontal navigation surface as a
+// root-level link list across the footer band.
+//
+// The decisive evidence is L89: `<td valign="top" id="LeftPane" class="LeftPane"
+// runat="server" visible="false">` is one of five hidden cells in the content table at
+// L83-L100, alongside `TopPane` (L85), `ContentPane` (L91), `RightPane` (L93) and
+// `BottomPane` (L97). That left-hand cell was a module CONTENT pane a portal
+// administrator could drop modules into — never a navigation region. So "exactly one
+// navigation landmark, in a vertical rail" is a NEW contract this specification
+// establishes, not a legacy one it preserves.
+
+// MIGRATION: the exactness of the current-page announcement is asserted because a real
+// collision exists, not as a refinement. Link-activity matching is by prefix unless told
+// otherwise, and the module collection address is a strict prefix of the module import
+// address, so on the import screen prefix matching would mark BOTH entries active — two
+// elements each claiming to be the current page. That claim is meaningless unless it is
+// unique, making this an accessibility defect rather than a cosmetic one. The collision is
+// reproduced directly against the router below so the hazard is demonstrated and not
+// merely described.
+
+// MIGRATION: no page-management entry is asserted, and its absence is asserted instead.
+// The legacy page abstraction survives only as a lookup consulted by the module screens:
+// its controller is closed at three read-and-update endpoints with no create and no
+// delete, its client service exposes exactly the matching three calls, and the route table
+// declares no collection address for it. The legacy page-management, page-export,
+// page-import and recycle-bin screens are all out of scope. Worth recording for anyone
+// reading the legacy source: the user-facing legacy term for that concept was always
+// "Page", never the internal one.
+
+// MIGRATION: the label expectations use MEASURED legacy wording, read from the `<value>`
+// elements of the legacy resource files and never from the paired markup attributes,
+// because the legacy screens assigned their titles from resources at run time and the
+// markup is provably stale. Provenance, one per label:
+//   Portal/App_LocalResources/Portals.ascx.resx            L144-L146  ControlTitle_.Text
+//   Users/App_LocalResources/Users.ascx.resx               L147-L149  ControlTitle_.Text
+//   Security/App_LocalResources/Roles.ascx.resx            L69-L71    ControlTitle_.Text
+//   Modules/App_LocalResources/Import.ascx.resx            L57-L59    ControlTitle_importmodule.Text
+//   Users/App_LocalResources/UserSettings.ascx.resx        L120-L122  ControlTitle_usersettings.Text
+//   Users/App_LocalResources/ProfileDefinitions.ascx.resx  L120-L122  ControlTitle_manageprofile.Text
+//   Security/App_LocalResources/EditGroups.ascx.resx       L57-L59    ControlTitle_editgroup.Text
+// Localisation is NOT carried forward — no translation runtime is part of this migration —
+// so the wording is authored directly into the template and the resource files served only
+// as the authority for what that wording should be. The rail is therefore English-only,
+// where the legacy menu could be localised per portal.
+
+// MIGRATION: the module collection's label is the one genuinely NET-NEW string, and the
+// proof is an absence I measured rather than an editorial preference. Every in-scope legacy
+// administration tree names its collection view with the empty-discriminator resource key
+// `ControlTitle_.Text`, and the file counts carrying it are Portal 5, Users 2, Security 1,
+// Tabs 2 — and Modules ZERO. The Modules tree's only title keys are `ControlTitle_module`,
+// `ControlTitle_exportmodule` and `ControlTitle_importmodule`. Modules is the single
+// in-scope tree lacking the collection key, which corroborates that no legacy module-list
+// screen is in scope and so no legacy wording exists to inherit.
+
+// MIGRATION: the plain-text expectation exists because legacy resource text is untrusted
+// markup. Measured across the 37 resource files of the five in-scope administration trees
+// there are 1211 resource entries, of which 75 carry HTML tags — and they carry them
+// XML-escaped, so a search for the unescaped form finds nothing and suggests the text is
+// clean when it is not. One of those files additionally carries two complete script
+// elements. None of that text reaches this rail, and the rule it implies is asserted
+// anyway: interpolation escapes its content, whereas the legacy label controls rendered
+// such values as live markup. The legacy code held the same position where it did render
+// them — `Default.aspx.vb` L232 and `AccessDenied.ascx.vb` L43 both encode before display.
+
+// MIGRATION: permission-driven visibility would be an AFFORDANCE and never
+// enforcement, and this rail applies none — so this specification asserts that it applies
+// none. Authorisation is decided server-side and answered as HTTP 403; on the client,
+// route activation is gated by the router's own authentication and permission guards.
+// Showing the entry points and letting those two authorities refuse is the safer default:
+// hiding an entry the guard would have allowed silently removes a capability, whereas
+// showing one the guard refuses costs a redirect. The legacy application took the same
+// position — `Website/admin/Security/AccessDenied.ascx.vb` performs no permission check of
+// its own: `Page_Load` at L41 tests only the query string at L42, renders the supplied
+// message encoded at L43 and a localised fallback at L45, and BOTH branches use warning
+// severity. Contrast `Website/Default.aspx.vb` L582, which uses error severity for
+// insecure defaults: in the legacy vocabulary denial was a WARNING, never an error.
+
+// MIGRATION: view state round-tripping is gone, so the collapse is asserted through the
+// document and its accessibility attributes rather than through a posted-back field.
+// `Website/Default.aspx` L23 wrapped the entire document in one multipart server form and
+// L26-L27 declared the two hidden inputs that shuttled scroll position and client
+// variables through every postback, so collapsing a legacy rail would have cost a server
+// round trip. Measured in-scope legacy view-state usage is only 4 sites, all of which
+// disappear with the postback lifecycle. The expectations below therefore assert that the
+// rail renders no form and no hidden input at all.
+
+import { HttpClient } from '@angular/common/http';
+import { TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
+import { Router, RouterLink, RouterLinkActive, provideRouter } from '@angular/router';
+
+import { APP_ROUTES, ROOT_REDIRECT_PATH } from '../../app.routes';
+import { SidebarComponent } from './sidebar.component';
+
+import type { Signal } from '@angular/core';
+import type { ComponentFixture } from '@angular/core/testing';
+import type { IsActiveMatchOptions, Route, Routes } from '@angular/router';
+import type { SidebarNavGroup } from './sidebar.component';
+
+/** The accessible name the landmark must carry, so it is distinguishable in a landmark list. */
+const LANDMARK_NAME = 'Administration';
+
+/** The stable identifier the region and the disclosure control must BOTH resolve to. */
+const REGION_ID = 'sidebar-navigation';
+
+/** The disclosure control's accessible name, which must not change with its state. */
+const TOGGLE_NAME = 'Navigation';
+
+/** The wildcard route's path, excluded from address resolution — see {@link routeCovering}. */
+const WILDCARD_PATH = '**';
+
+/** One expected destination: the address rendered, and the text rendered for it. */
+interface ExpectedItem {
+  readonly address: string;
+  readonly label: string;
+}
+
+/** One expected group: its stable key, its heading text, and its destinations in order. */
+interface ExpectedGroup {
+  readonly id: string;
+  readonly label: string;
+  readonly items: readonly ExpectedItem[];
+}
+
+/**
+ * The whole rendered model, in presentation order.
+ *
+ * Held as one table rather than as separate lists of addresses and labels so that the
+ * pairing itself is pinned: a template that rendered every expected address and every
+ * expected label but paired them wrongly would satisfy two independent lists and is
+ * caught by this one.
+ *
+ * Only collection and creation entry points appear, and that is a property of what a
+ * global rail can express rather than an editorial choice: the detail routes are keyed
+ * by record identifiers, and a rail rendered once for the whole application has no
+ * record in hand to supply one.
+ */
+const EXPECTED_GROUPS: readonly ExpectedGroup[] = [
+  {
+    id: 'portal',
+    label: 'Portal',
+    items: [{ address: '/portals', label: 'Portals' }],
+  },
+  {
+    id: 'module',
+    label: 'Module',
+    items: [
+      { address: '/modules', label: 'Modules' },
+      { address: '/modules/import', label: 'Import Module' },
+    ],
+  },
+  {
+    id: 'user',
+    label: 'User',
+    items: [
+      { address: '/users', label: 'User Accounts' },
+      { address: '/settings/membership', label: 'User Settings' },
+      { address: '/settings/profile-definitions', label: 'Manage Profile Properties' },
+    ],
+  },
+  {
+    id: 'role',
+    label: 'Role',
+    items: [
+      { address: '/roles', label: 'Security Roles' },
+      { address: '/role-groups/new', label: 'Edit Role Group' },
+    ],
+  },
+];
+
+/** Every address the rail is expected to render, flattened in presentation order. */
+const EXPECTED_ADDRESSES: readonly string[] = EXPECTED_GROUPS.flatMap(
+  (group: ExpectedGroup): readonly string[] => group.items.map((item: ExpectedItem): string => item.address),
+);
+
+/** Every label the rail is expected to render, flattened in presentation order. */
+const EXPECTED_LABELS: readonly string[] = EXPECTED_GROUPS.flatMap(
+  (group: ExpectedGroup): readonly string[] => group.items.map((item: ExpectedItem): string => item.label),
+);
+
+/**
+ * The three labels whose wording is directly attributable to a legacy resource entry
+ * keyed `ControlTitle_.Text`, asserted separately from the full label list so the
+ * legacy-parity claim is visible as its own expectation.
+ */
+const MEASURED_LEGACY_TITLES: readonly string[] = ['Portals', 'User Accounts', 'Security Roles'];
+
+/** The one label with no legacy resource key behind it, asserted as present and named as net-new. */
+const NET_NEW_LABEL = 'Modules';
+
+/** The module collection and its child, whose prefix relationship is the activity hazard. */
+const MODULE_COLLECTION_ADDRESS = '/modules';
+const MODULE_IMPORT_ADDRESS = '/modules/import';
+
+/**
+ * The authentication address. It IS a declared route and is deliberately NOT a rail
+ * entry: it is where an unauthenticated caller is sent, so offering it as navigation
+ * would invite a signed-in administrator to leave the console. Asserting both halves —
+ * declared, yet unrendered — is what distinguishes a deliberate omission from an
+ * address that simply does not exist.
+ */
+const AUTHENTICATION_ADDRESS = '/login';
+
+/**
+ * Addresses that must resolve to NO declared route and must therefore never be
+ * rendered. Each is a plausible-looking entry a later change might reach for.
+ *
+ * `/tabs` heads the list and is the important one: the page controller is closed at
+ * three read-and-update endpoints, its client service exposes exactly the matching
+ * three calls, there is no page feature folder and no page route. `/permissions` and
+ * `/module-definitions` are read-only lookup catalogues with no screen; `/health` is a
+ * container probe rather than an address in this application; and `/dashboard`,
+ * `/home`, `/logout` and `/profile` are conventions this route table does not adopt.
+ */
+const ADDRESSES_WITH_NO_ROUTE: readonly string[] = [
+  '/tabs',
+  '/permissions',
+  '/module-definitions',
+  '/health',
+  '/dashboard',
+  '/home',
+  '/logout',
+  '/profile',
+];
+
+/**
+ * Legacy user-facing wording for administration areas that are out of scope, asserted
+ * absent from the rendered text.
+ *
+ * MIGRATION: eighteen of the twenty-three legacy administration trees produce no entry
+ * in this rail. Their absence is the intended outcome, not an oversight, and no entry may
+ * be added for one without the backing endpoint and route existing first. The check is on
+ * WORDING rather than on addresses because a later change would reach for the label
+ * before it reached for a route — and because these subsystems have no address to name.
+ *
+ * `pages` leads the list: the legacy page-management tree exists and is deliberately out
+ * of nav scope, and the legacy user-facing term for that concept was always "Page",
+ * never the internal one, so this is the string a reader of the legacy source would try.
+ */
+const EXCLUDED_LEGACY_WORDING: readonly string[] = [
+  'pages',
+  'recycle bin',
+  'file manager',
+  'host settings',
+  'site log',
+  'log viewer',
+  'scheduler',
+  'search admin',
+  'newsletter',
+  'vendors',
+  'skins',
+  'languages',
+  'extensions',
+  'lists',
+  'solutions',
+];
+
+/**
+ * Landmarks that belong to the rail's siblings and must not appear here.
+ *
+ * The shell divides the landmarks between its members with no overlap: the banner
+ * belongs to the header band, the main region and its outlet to the shell itself, and
+ * the contentinfo band to the footer. Emitting a second landmark of any of those kinds
+ * from this component would put two of that kind in the accessibility tree.
+ */
+const FOREIGN_LANDMARKS: readonly string[] = ['header', 'main', 'footer', 'aside'];
+
+/** Elements the rail must never render, each for a reason asserted in its own expectation. */
+const FORBIDDEN_ELEMENTS: readonly string[] = ['form', 'script', 'iframe', 'img', 'input'];
+
+/** The class names the paired stylesheet selects on, every one of which must be rendered. */
+const PUBLISHED_CLASS_NAMES: readonly string[] = [
+  'app-sidebar',
+  'app-sidebar__toggle',
+  'app-sidebar__regions',
+  'app-sidebar__group',
+  'app-sidebar__list',
+  'app-sidebar__item',
+  'app-sidebar__link',
+];
+
+/** The state class the landmark carries only while collapsed. */
+const COLLAPSED_CLASS = 'app-sidebar--collapsed';
+
+/** The class the router applies to the anchor for the address currently showing. */
+const ACTIVE_LINK_CLASS = 'app-sidebar__link--active';
+
+/**
+ * The activity-matching strategy the component publishes, spelled out as the router's
+ * own option object.
+ *
+ * Written in the explicit four-property form rather than as the legacy boolean, because
+ * the boolean overload of the router's activity test is deprecated and the explicit form
+ * documents exactly which of the four comparisons is exact.
+ */
+const EXACT_ADDRESS_MATCH: IsActiveMatchOptions = {
+  paths: 'exact',
+  queryParams: 'exact',
+  fragment: 'ignored',
+  matrixParams: 'ignored',
+};
+
+/**
+ * The strategy the router would use if the component published nothing — the default.
+ *
+ * Used to DEMONSTRATE the hazard rather than to exercise the component: under this
+ * strategy the module collection address is active while its child is showing, which is
+ * precisely the two-current-pages defect the component's exact matching suppresses.
+ */
+const PREFIX_ADDRESS_MATCH: IsActiveMatchOptions = {
+  paths: 'subset',
+  queryParams: 'subset',
+  fragment: 'ignored',
+  matrixParams: 'ignored',
+};
+
+/**
+ * A minimal, componentless route table covering exactly the rail's own addresses.
+ *
+ * Derived from {@link EXPECTED_ADDRESSES} rather than restated, so the table navigated
+ * against cannot drift from the addresses being asserted. Nothing is rendered at any of
+ * these addresses on purpose: the point of navigating is to move the router's current
+ * address so that link activity can be observed, and mounting real destinations would
+ * drag unrelated feature graphs into this specification and make it depend on files it
+ * has no business knowing about.
+ *
+ * ⚠ THE EMPTY `children` ARRAY IS LOAD-BEARING AND MUST NOT BE REMOVED. The router
+ * validates every route on construction and rejects one that declares none of
+ * `component`, `loadComponent`, `redirectTo`, `children` or `loadChildren` — it raises
+ * NG04014 before any navigation is attempted, so the failure appears as an injector
+ * error rather than as a routing failure and is easy to misread. An empty child table
+ * satisfies that requirement while still resolving as a leaf, because a route whose child
+ * table is empty matches when its own segments consume the whole address.
+ */
+const NAVIGABLE_ROUTES: Routes = EXPECTED_ADDRESSES.map(
+  (address: string): Route => ({ path: address.slice(1), children: [] }),
+);
+
+/**
+ * Splits an absolute address into its non-empty path segments.
+ *
+ * @param address An address beginning with a slash, as the rail renders it.
+ * @returns The segments, with empty runs discarded so a trailing slash is harmless.
+ */
+function segmentsOf(address: string): readonly string[] {
+  return address.split('/').filter((segment: string): boolean => segment.length > 0);
+}
+
+/**
+ * Finds the top-level route that covers an address, preferring the longest match.
+ *
+ * ⚠ THE WILDCARD ROUTE IS DELIBERATELY EXCLUDED, and that exclusion is the whole point
+ * of this helper. The wildcard covers every address, so a search that included it would
+ * report success for an address that names no route — which is exactly the silent
+ * failure this specification exists to catch. Excluding it means a rail entry with no
+ * real route behind it finds nothing and fails.
+ *
+ * The longest match is preferred because a multi-segment route and a single-segment
+ * route could both cover the same address, and the router itself resolves to the more
+ * specific declaration.
+ *
+ * @param address The absolute address to resolve.
+ * @returns The covering route, or `null` when the table declares none.
+ */
+function routeCovering(address: string): Route | null {
+  const wanted = segmentsOf(address);
+
+  const candidates = APP_ROUTES.filter((route: Route): boolean => {
+    const declared = segmentsOf(route.path ?? '');
+
+    if (declared.length === 0) {
+      return false;
+    }
+
+    if (route.path === WILDCARD_PATH) {
+      return false;
+    }
+
+    if (declared.length > wanted.length) {
+      return false;
+    }
+
+    return declared.every((segment: string, index: number): boolean => segment === wanted[index]);
+  });
+
+  let best: Route | null = null;
+  let bestLength = 0;
+
+  for (const candidate of candidates) {
+    const length = segmentsOf(candidate.path ?? '').length;
+
+    if (length > bestLength) {
+      best = candidate;
+      bestLength = length;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Narrows a nullable lookup, failing with a message that names what was wanted.
+ *
+ * Preferred over asserting the result away, so that a missing element or a missing
+ * route declaration produces a failure naming what was sought rather than a property
+ * access on `null` several lines later — and so that this file needs no non-null
+ * assertion anywhere.
+ *
+ * Deliberately generic over any value rather than over elements alone, because the
+ * route-integrity expectations narrow a nullable route declaration with exactly the same
+ * discipline they narrow a nullable query result.
+ *
+ * @param found The result of a DOM query or a route lookup.
+ * @param description What the caller was looking for.
+ * @returns The same value, narrowed to non-nullable.
+ */
+function present<T>(found: T | null, description: string): T {
+  if (found === null) {
+    throw new Error(`Expected the navigation rail to have ${description}, but it did not.`);
+  }
+
+  return found;
+}
+
+/**
+ * Asserts that a published signal is a read-only projection.
+ *
+ * Checked structurally, by the ABSENCE of the two mutators a writable signal exposes,
+ * because that is the only thing a consumer can rely on. Attempting a write instead
+ * would need a widening cast to compile, and the cast would weaken exactly the
+ * guarantee being tested.
+ *
+ * @param candidate The published projection.
+ * @param name The member name, for the failure message.
+ */
+function expectReadOnlySignal(candidate: Signal<unknown>, name: string): void {
+  expect(typeof candidate).withContext(`${name} must be a callable signal`).toBe('function');
+  expect('set' in candidate).withContext(`${name} must not publish set()`).toBeFalse();
+  expect('update' in candidate).withContext(`${name} must not publish update()`).toBeFalse();
+}
+
+/** Collapses every run of whitespace to one space and trims, for text comparisons. */
+function normalise(text: string | null): string {
+  return (text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+describe('SidebarComponent', () => {
+  let fixture: ComponentFixture<SidebarComponent>;
+  let component: SidebarComponent;
+
+  /**
+   * Configures the testing module and renders the rail.
+   *
+   * Called explicitly from each group rather than from one shared `beforeEach`, because
+   * the activity group needs a route table it can navigate and the rest deliberately
+   * get none — and a testing module cannot be reconfigured once a component has been
+   * created from it.
+   *
+   * The component is supplied through `imports` because it is standalone; a declaration
+   * list would not compile. `provideRouter` supplies a REAL router rather than a stub,
+   * which is what makes the rendered addresses and the link-activity behaviour below
+   * meaningful. Nothing else is provided: no HTTP client, no animations provider and no
+   * hydration provider, so the rail only constructs at all because it injects none of
+   * them.
+   *
+   * @param routes The route table to configure. Pass an empty table for the default
+   *   case, where the router has nowhere to go and no link can be active.
+   */
+  async function createComponent(routes: Routes): Promise<void> {
+    await TestBed.configureTestingModule({
+      imports: [SidebarComponent],
+      providers: [provideRouter(routes)],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(SidebarComponent);
+    component = fixture.componentInstance;
+
+    fixture.detectChanges();
+  }
+
+  /**
+   * Moves the router to an address and settles the view.
+   *
+   * The navigation is awaited and the fixture is then settled and re-rendered
+   * explicitly. No duration is waited on anywhere, so this cannot become a timing
+   * flake: link activity is recomputed from a router event, and the rail renders under
+   * on-push change detection, so the explicit render is what makes the new state
+   * observable.
+   *
+   * @param address The absolute address to navigate to.
+   */
+  async function navigateTo(address: string): Promise<void> {
+    const router = TestBed.inject(Router);
+
+    await router.navigateByUrl(address);
+    await fixture.whenStable();
+
+    fixture.detectChanges();
+  }
+
+  /**
+   * The component's host element, typed once so that every query below is typed too.
+   *
+   * The fixture publishes its host untyped, which would leave every query result
+   * untyped as well; narrowing here, once, is what lets the accessors declare honest
+   * return types.
+   */
+  function host(): HTMLElement {
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  /** The navigation landmark, queried by BOTH its element type and its published class. */
+  function landmark(): HTMLElement | null {
+    return host().querySelector('nav.app-sidebar');
+  }
+
+  /** The disclosure control, queried by both its element type and its published class. */
+  function toggle(): HTMLElement | null {
+    return host().querySelector('button.app-sidebar__toggle');
+  }
+
+  /** The collapsible region, queried by both its element type and its published class. */
+  function region(): HTMLElement | null {
+    return host().querySelector('div.app-sidebar__regions');
+  }
+
+  /** Every destination anchor, in document order. */
+  function navAnchors(): readonly HTMLAnchorElement[] {
+    return Array.from(host().querySelectorAll<HTMLAnchorElement>('a.app-sidebar__link'));
+  }
+
+  /**
+   * The rendered addresses, read from the `href` attribute.
+   *
+   * The attribute is read rather than the property because the property is resolved
+   * against the document's base address, whereas the attribute carries exactly what the
+   * router link produced — which is the value being asserted.
+   */
+  function renderedAddresses(): readonly string[] {
+    return navAnchors().map((anchor: HTMLAnchorElement): string => anchor.getAttribute('href') ?? '');
+  }
+
+  /** The rendered link text, whitespace-normalised. */
+  function renderedLabels(): readonly string[] {
+    return navAnchors().map((anchor: HTMLAnchorElement): string => normalise(anchor.textContent));
+  }
+
+  /** Every element currently claiming to be the current page. */
+  function currentPageElements(): readonly Element[] {
+    return Array.from(host().querySelectorAll('[aria-current="page"]'));
+  }
+
+  /**
+   * The single anchor rendering a given address.
+   *
+   * @param address The absolute address to look for.
+   * @returns The anchor, or `null` when the rail renders no such address.
+   */
+  function anchorFor(address: string): HTMLAnchorElement | null {
+    const matches = navAnchors().filter(
+      (anchor: HTMLAnchorElement): boolean => anchor.getAttribute('href') === address,
+    );
+
+    if (matches.length === 1) {
+      return matches[0];
+    }
+
+    return null;
+  }
+
+  /** Every `RouterLinkActive` instance the template created, one per destination anchor. */
+  function linkActivityDirectives(): readonly RouterLinkActive[] {
+    return fixture.debugElement
+      .queryAll(By.directive(RouterLinkActive))
+      .map((debugElement): RouterLinkActive => debugElement.injector.get(RouterLinkActive));
+  }
+
+  /** Every `RouterLink` instance the template created, one per destination anchor. */
+  function linkDirectives(): readonly RouterLink[] {
+    return fixture.debugElement
+      .queryAll(By.directive(RouterLink))
+      .map((debugElement): RouterLink => debugElement.injector.get(RouterLink));
+  }
+
+  // Installed before anything is rendered, so construction and the first render are
+  // covered as well as every later interaction. The enforcement is in the shared
+  // `afterEach` below: a presentational layout primitive has nothing to report, and a
+  // diagnostic left behind in one would reach every page of the console.
+  beforeEach(() => {
+    spyOn(console, 'log');
+    spyOn(console, 'info');
+    spyOn(console, 'debug');
+    spyOn(console, 'warn');
+    spyOn(console, 'error');
+  });
+
+  afterEach(() => {
+    expect(console.log).withContext('the navigation rail must not write to the console').not.toHaveBeenCalled();
+    expect(console.info).withContext('the navigation rail must not write to the console').not.toHaveBeenCalled();
+    expect(console.debug).withContext('the navigation rail must not write to the console').not.toHaveBeenCalled();
+    expect(console.warn).withContext('the navigation rail must not warn').not.toHaveBeenCalled();
+    expect(console.error).withContext('the navigation rail must not report an error').not.toHaveBeenCalled();
+  });
+
+  describe('landmark structure', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('renders exactly one navigation landmark', () => {
+      // The headline accessibility contract of the whole folder. The rail is the ONLY
+      // member of the shell that may emit a navigation landmark, and a second one of
+      // that kind would put two in the accessibility tree — a defect rather than a
+      // duplicate, because a landmark list is how a screen-reader user orients.
+      expect(host().querySelectorAll('nav').length).toBe(1);
+    });
+
+    it('emits no landmark that belongs to a sibling band', () => {
+      for (const element of FOREIGN_LANDMARKS) {
+        expect(host().querySelectorAll(element).length)
+          .withContext(`the navigation rail must not emit a <${element}> landmark`)
+          .toBe(0);
+      }
+    });
+
+    it('names the landmark, so it is distinguishable in a landmark list', () => {
+      const nav = present(landmark(), 'a navigation landmark');
+
+      // An unnamed landmark is announced as an anonymous region and cannot be told
+      // apart from any other. The name deliberately does not repeat the word
+      // "navigation", which assistive technology already announces from the element.
+      expect(nav.getAttribute('aria-label')).toBe(LANDMARK_NAME);
+      expect(normalise(nav.getAttribute('aria-label')).length).toBeGreaterThan(0);
+    });
+
+    it('makes the landmark the root of the rendered tree', () => {
+      // Asserted because the paired stylesheet addresses `.app-sidebar` as the rail's
+      // own box, and the shell's layout leaves the width to that box. A wrapper element
+      // introduced above it would leave the stylesheet sizing the wrong element.
+      const nav = present(landmark(), 'a navigation landmark');
+
+      expect(nav.parentElement).toBe(host());
+    });
+
+    it('renders every class name the paired stylesheet selects on', () => {
+      // A stylesheet whose selectors match nothing is not a compile error, so a rename
+      // here would ship as an unstyled rail. Each published hook is asserted by name.
+      for (const className of PUBLISHED_CLASS_NAMES) {
+        expect(host().querySelectorAll(`.${className}`).length)
+          .withContext(`the published hook .${className} is not rendered`)
+          .toBeGreaterThan(0);
+      }
+    });
+
+    it('renders none of the elements a presentational rail has no use for', () => {
+      // MIGRATION: the form and hidden-input expectations are the view-state check. The
+      // legacy document was wrapped in one multipart server form carrying two hidden
+      // round-trip inputs, so collapsing a legacy rail cost a request; here the state is
+      // a signal and nothing is posted. The script and iframe expectations pin the
+      // plain-text rule, and the image expectation pins that the legacy symbol-font and
+      // raster affordances are not reintroduced.
+      for (const element of FORBIDDEN_ELEMENTS) {
+        expect(host().querySelectorAll(element).length)
+          .withContext(`the navigation rail must not render a <${element}>`)
+          .toBe(0);
+      }
+    });
+  });
+
+  describe('route integrity', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('renders exactly the expected destinations, in order', () => {
+      // Order-sensitive on purpose. A set comparison would pass against a rail that
+      // reordered its groups, and the order is the information architecture.
+      expect(renderedAddresses()).toEqual(EXPECTED_ADDRESSES);
+      expect(navAnchors().length).toBe(EXPECTED_ADDRESSES.length);
+    });
+
+    it('resolves every rendered address against the real top-level route table', () => {
+      // ⚠ THE MOST IMPORTANT EXPECTATION IN THIS FILE. A rail entry naming no route is
+      // neither a compile error nor a run-time exception — the router resolves it to the
+      // wildcard entry — so it would ship as a link that quietly goes nowhere. The
+      // resolution is performed against the application's own imported route table
+      // rather than against a list restated here, so it cannot pass by agreeing with a
+      // copy that has drifted, and the wildcard is excluded from the search precisely so
+      // that it cannot rescue an address with no real declaration behind it.
+      for (const address of renderedAddresses()) {
+        expect(routeCovering(address))
+          .withContext(`the rendered address ${address} is covered by no declared route`)
+          .not.toBeNull();
+      }
+    });
+
+    it('delegates a deeper address only to a route that actually loads children', () => {
+      // The module import address carries one segment more than the top-level route that
+      // covers it, so the remaining segment can only resolve inside the lazily loaded
+      // child table. Asserting the delegation exists is what makes the previous
+      // expectation honest about multi-segment addresses: a covering route that loaded
+      // no children could not resolve the extra segment at all.
+      for (const address of renderedAddresses()) {
+        const covering = present(routeCovering(address), `a declared route covering ${address}`);
+        const extraSegments = segmentsOf(address).length - segmentsOf(covering.path ?? '').length;
+
+        if (extraSegments > 0) {
+          expect(typeof covering.loadChildren)
+            .withContext(`${address} needs ${covering.path} to load children, and it does not`)
+            .toBe('function');
+        }
+      }
+    });
+
+    it('agrees with the exported root address constant for the portals destination', () => {
+      // A genuine cross-file contract: the application root redirects to this constant,
+      // and the rail's first destination must be the same address, or the rail would
+      // fail to mark the landing screen as current on arrival.
+      expect(renderedAddresses()[0]).toBe(`/${ROOT_REDIRECT_PATH}`);
+    });
+
+    it('renders no address for the page abstraction', () => {
+      // ⚠ /tabs is the one negative address that is a deliberate scope decision rather
+      // than an oversight, so it is asserted on its own. The page controller is closed
+      // at three read-and-update endpoints with no create and no delete, its client
+      // service exposes exactly the matching three calls, and there is no page feature
+      // folder and no page route. Adding an entry here would produce a link resolving
+      // only to the wildcard.
+      expect(anchorFor('/tabs')).toBeNull();
+      expect(renderedAddresses()).not.toContain('/tabs');
+
+      // Asserted against the table as well as against the rendering, so the claim is
+      // "no such route exists" rather than merely "no such link is drawn".
+      expect(routeCovering('/tabs')).toBeNull();
+    });
+
+    it('renders no address that resolves to no route', () => {
+      for (const address of ADDRESSES_WITH_NO_ROUTE) {
+        expect(renderedAddresses())
+          .withContext(`${address} names no route and must not be rendered`)
+          .not.toContain(address);
+
+        expect(routeCovering(address))
+          .withContext(`${address} unexpectedly became a declared route`)
+          .toBeNull();
+      }
+    });
+
+    it('does not offer the authentication address as navigation', () => {
+      // Both halves matter. The address IS declared — proved below — so its absence from
+      // the rail is a deliberate omission rather than an address that does not exist: it
+      // is where an unauthenticated caller is sent, so offering it as navigation would
+      // invite a signed-in administrator to leave the console.
+      expect(routeCovering(AUTHENTICATION_ADDRESS))
+        .withContext('the authentication address must remain a declared route')
+        .not.toBeNull();
+
+      expect(renderedAddresses()).not.toContain(AUTHENTICATION_ADDRESS);
+    });
+
+    it('renders no parameterised address', () => {
+      // A rail rendered once for the whole application holds no record, so it cannot
+      // supply a route parameter. An address containing a parameter placeholder would
+      // resolve to the literal text of the placeholder.
+      for (const address of renderedAddresses()) {
+        expect(address.includes(':'))
+          .withContext(`${address} carries a route parameter the rail cannot supply`)
+          .toBeFalse();
+      }
+    });
+
+    it('renders every address as absolute', () => {
+      // A relative address would resolve against whichever screen happens to be showing,
+      // so the same rail entry would mean different things on different screens.
+      for (const address of renderedAddresses()) {
+        expect(address.startsWith('/'))
+          .withContext(`${address} must be absolute`)
+          .toBeTrue();
+      }
+    });
+
+    it('renders each address exactly once', () => {
+      const seen = new Set<string>(renderedAddresses());
+
+      expect(seen.size).toBe(renderedAddresses().length);
+    });
+
+    it('renders in-application addresses, never an interface endpoint', () => {
+      // ⚠ A ROUTE AND AN ENDPOINT ARE NOT THE SAME THING, and the membership destination
+      // is exactly where the two invite confusion: the interface serves those settings
+      // under a versioned path nested beneath the users resource, whereas the address a
+      // user navigates to is the flat one asserted above. Pasting an interface path into
+      // a rail entry produces a link that leaves the application, and no compiler or
+      // router would object.
+      for (const address of renderedAddresses()) {
+        expect(address.startsWith('/api'))
+          .withContext(`${address} looks like an interface endpoint rather than a route`)
+          .toBeFalse();
+
+        expect(address.includes('/v1/'))
+          .withContext(`${address} carries an interface version segment`)
+          .toBeFalse();
+
+        expect(address.includes('://'))
+          .withContext(`${address} is an absolute location rather than an in-application address`)
+          .toBeFalse();
+      }
+    });
+
+    it('renders every address through a router link rather than a plain document link', () => {
+      // A plain `href` would take the browser out of the application and discard every
+      // piece of client state, which is the whole benefit the migration is buying.
+      expect(linkDirectives().length).toBe(EXPECTED_ADDRESSES.length);
+    });
+  });
+
+  describe('current-page announcement, with no route table configured', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('claims no current page before any navigation', () => {
+      // The announcement is BOUND rather than written as a fixed attribute, and resolves
+      // to nothing when the address is not the one showing — binding an empty result
+      // removes the attribute outright instead of leaving a stale claim behind.
+      expect(currentPageElements().length).toBe(0);
+    });
+
+    it('applies the active class to no anchor before any navigation', () => {
+      const active = navAnchors().filter((anchor: HTMLAnchorElement): boolean =>
+        anchor.classList.contains(ACTIVE_LINK_CLASS),
+      );
+
+      expect(active.length).toBe(0);
+    });
+
+    it('configures exact matching on every destination, from one shared options object', () => {
+      // ⚠ EXACT MATCHING IS REQUIRED, NOT PREFERRED — see the navigation group below for
+      // the collision that proves it. Asserted per anchor rather than in aggregate,
+      // because a single link left on the default strategy is enough to reintroduce the
+      // defect on one screen.
+      const activity = linkActivityDirectives();
+
+      expect(activity.length).toBe(EXPECTED_ADDRESSES.length);
+
+      for (const directive of activity) {
+        // Identity, not equality. The component publishes ONE stable options instance so
+        // that a template literal is not re-allocated on every evaluation, and identity
+        // is the only assertion that actually proves the sharing.
+        expect(directive.routerLinkActiveOptions)
+          .withContext('every destination must take the shared exact-matching options')
+          .toBe(component.exactMatchOptions);
+      }
+
+      expect(component.exactMatchOptions.exact).toBeTrue();
+    });
+  });
+
+  describe('current-page announcement, driven over a navigable route table', () => {
+    beforeEach(async () => {
+      await createComponent(NAVIGABLE_ROUTES);
+    });
+
+    it('claims exactly one current page on the module collection', async () => {
+      await navigateTo(MODULE_COLLECTION_ADDRESS);
+
+      const claimed = currentPageElements();
+
+      expect(claimed.length).toBe(1);
+      expect(claimed[0]).toBe(present(anchorFor(MODULE_COLLECTION_ADDRESS), 'the module collection anchor'));
+    });
+
+    it('claims exactly one current page on the module import screen', async () => {
+      // ⚠⚠ THIS IS THE EXPECTATION THE WHOLE ACTIVITY CONTRACT EXISTS FOR. The module
+      // collection address is a strict prefix of this one, so under the router's default
+      // matching BOTH anchors would be active here and the document would carry two
+      // elements each claiming to be the current page. That claim is meaningless unless
+      // it is unique, so this is an accessibility defect and not merely cosmetic.
+      await navigateTo(MODULE_IMPORT_ADDRESS);
+
+      const claimed = currentPageElements();
+
+      expect(claimed.length).toBe(1);
+      expect(claimed[0]).toBe(present(anchorFor(MODULE_IMPORT_ADDRESS), 'the module import anchor'));
+
+      const collection = present(anchorFor(MODULE_COLLECTION_ADDRESS), 'the module collection anchor');
+
+      expect(collection.hasAttribute('aria-current')).toBeFalse();
+      expect(collection.classList.contains(ACTIVE_LINK_CLASS)).toBeFalse();
+    });
+
+    it('proves the prefix collision is real, and that exact matching is what suppresses it', async () => {
+      // Demonstrates the hazard against the REAL router rather than describing it. While
+      // the import screen is showing, the collection address is active under the default
+      // subset strategy and inactive under the exact strategy — so the defect is a
+      // property of the address pair, and the component's published options are the only
+      // thing standing between the rail and two current-page claims.
+      await navigateTo(MODULE_IMPORT_ADDRESS);
+
+      const router = TestBed.inject(Router);
+
+      expect(router.isActive(MODULE_COLLECTION_ADDRESS, PREFIX_ADDRESS_MATCH))
+        .withContext('the prefix collision this rail must suppress has disappeared')
+        .toBeTrue();
+
+      expect(router.isActive(MODULE_COLLECTION_ADDRESS, EXACT_ADDRESS_MATCH))
+        .withContext('exact matching must reject the parent address')
+        .toBeFalse();
+
+      expect(router.isActive(MODULE_IMPORT_ADDRESS, EXACT_ADDRESS_MATCH)).toBeTrue();
+    });
+
+    it('never claims more than one current page, at any destination', async () => {
+      // Swept across every address the rail offers, because the module pair is the
+      // collision that exists today and a later addition could introduce another. The
+      // settings pair shares a first segment without either being a prefix of the other,
+      // so it is covered here rather than singled out.
+      for (const address of EXPECTED_ADDRESSES) {
+        await navigateTo(address);
+
+        expect(currentPageElements().length)
+          .withContext(`more than one element claimed to be the current page at ${address}`)
+          .toBe(1);
+
+        expect(present(anchorFor(address), `an anchor for ${address}`).getAttribute('aria-current')).toBe('page');
+      }
+    });
+
+    it('marks exactly one anchor with the active class, at any destination', async () => {
+      // The visual treatment and the announcement are driven from ONE source, so they
+      // cannot disagree — and colour is therefore never the only carrier of which entry
+      // is current. Asserted alongside the announcement so a future change that split
+      // the two sources fails here.
+      for (const address of EXPECTED_ADDRESSES) {
+        await navigateTo(address);
+
+        const active = navAnchors().filter((anchor: HTMLAnchorElement): boolean =>
+          anchor.classList.contains(ACTIVE_LINK_CLASS),
+        );
+
+        expect(active.length)
+          .withContext(`the active class was applied to ${active.length} anchors at ${address}`)
+          .toBe(1);
+
+        expect(active[0]).toBe(present(anchorFor(address), `an anchor for ${address}`));
+      }
+    });
+
+    it('keeps the announcement and the active class on the same anchor', async () => {
+      await navigateTo(MODULE_IMPORT_ADDRESS);
+
+      const claimed = currentPageElements();
+      const active = navAnchors().filter((anchor: HTMLAnchorElement): boolean =>
+        anchor.classList.contains(ACTIVE_LINK_CLASS),
+      );
+
+      expect(claimed.length).toBe(1);
+      expect(active.length).toBe(1);
+      expect(claimed[0]).toBe(active[0]);
+    });
+
+    it('reports activity through the directive as well as through the document', async () => {
+      await navigateTo(MODULE_IMPORT_ADDRESS);
+
+      const active = linkActivityDirectives().filter(
+        (directive: RouterLinkActive): boolean => directive.isActive === true,
+      );
+
+      expect(active.length).toBe(1);
+    });
+  });
+
+  describe('collapse disclosure', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('is a real button that acts on the current document', () => {
+      const control = present(toggle(), 'a disclosure control');
+
+      // A button is what a control that acts on the current document IS, and it is
+      // focusable, keyboard-operable and announced correctly with no attribute added to
+      // make it so. The explicit type matters: a button inside a form defaults to
+      // submitting it, and although this rail renders no form, one could enclose it.
+      expect(control.tagName).toBe('BUTTON');
+      expect(control.getAttribute('type')).toBe('button');
+      expect(control.hasAttribute('href')).toBeFalse();
+    });
+
+    it('carries an accessible name that does not change with its state', () => {
+      const control = present(toggle(), 'a disclosure control');
+
+      expect(normalise(control.textContent)).toBe(TOGGLE_NAME);
+
+      control.click();
+      fixture.detectChanges();
+
+      // A name that rewrote itself on activation would change the control's identity
+      // underneath the user at the moment they were relying on it, and would restate in
+      // words something an attribute built to report it already reports.
+      expect(normalise(present(toggle(), 'a disclosure control').textContent)).toBe(TOGGLE_NAME);
+    });
+
+    it('names the region it operates, and that region exists', () => {
+      const control = present(toggle(), 'a disclosure control');
+      const controls = present(
+        control.getAttribute('aria-controls'),
+        'an aria-controls reference on its disclosure control',
+      );
+
+      expect(controls).toBe(REGION_ID);
+
+      // ⚠ The relationship is only meaningful if the named element is really there.
+      // Assistive technology reports a control pointing at a missing element as a broken
+      // relationship rather than silently ignoring it, which is why the region is HIDDEN
+      // while collapsed and never removed.
+      const named = present(host().querySelector(`#${controls}`), `an element with id ${controls}`);
+
+      expect(named).toBe(present(region(), 'a collapsible region'));
+    });
+
+    it('reads the region identifier the component publishes, in both places', () => {
+      // Both halves of the relationship read the SAME published identifier, so the
+      // control and the region it claims to operate are provably the same element and
+      // cannot drift apart.
+      expect(component.navigationRegionId).toBe(REGION_ID);
+      expect(present(region(), 'a collapsible region').id).toBe(component.navigationRegionId);
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-controls')).toBe(
+        component.navigationRegionId,
+      );
+    });
+
+    it('starts expanded, because navigation is what a user arrives wanting', () => {
+      const control = present(toggle(), 'a disclosure control');
+
+      expect(component.collapsed()).toBeFalse();
+
+      // ⚠ NOTE THE INVERSION. The attribute reports whether the region is SHOWN, whereas
+      // the component's state reports whether the rail is COLLAPSED, so the two are
+      // deliberately opposite. Asserting the literal string rather than a truthiness
+      // check is what catches a template that bound the state through unnegated.
+      expect(control.getAttribute('aria-expanded')).toBe('true');
+      expect(present(region(), 'a collapsible region').hidden).toBeFalse();
+      expect(present(landmark(), 'a navigation landmark').classList.contains(COLLAPSED_CLASS)).toBeFalse();
+    });
+
+    it('flips the disclosure state when activated', () => {
+      present(toggle(), 'a disclosure control').click();
+      fixture.detectChanges();
+
+      expect(component.collapsed()).toBeTrue();
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('false');
+      expect(present(region(), 'a collapsible region').hidden).toBeTrue();
+      expect(present(landmark(), 'a navigation landmark').classList.contains(COLLAPSED_CLASS)).toBeTrue();
+    });
+
+    it('returns to the expanded state when activated again', () => {
+      const control = present(toggle(), 'a disclosure control');
+
+      control.click();
+      fixture.detectChanges();
+      control.click();
+      fixture.detectChanges();
+
+      expect(component.collapsed()).toBeFalse();
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('true');
+      expect(present(region(), 'a collapsible region').hidden).toBeFalse();
+      expect(present(landmark(), 'a navigation landmark').classList.contains(COLLAPSED_CLASS)).toBeFalse();
+    });
+
+    it('derives each transition from the state at that moment', () => {
+      // Three activations must land on collapsed, not on whatever a captured value said.
+      // The published method updates from the current value rather than reading and then
+      // setting, so the transition cannot be based on a value that has since changed.
+      const control = present(toggle(), 'a disclosure control');
+
+      for (let activation = 0; activation < 3; activation += 1) {
+        control.click();
+        fixture.detectChanges();
+      }
+
+      expect(component.collapsed()).toBeTrue();
+    });
+
+    it('keeps the region in the document while collapsed', () => {
+      present(toggle(), 'a disclosure control').click();
+      fixture.detectChanges();
+
+      // Hidden, never removed — otherwise the control above would name an element that
+      // does not exist. Hiding keeps the element addressable while taking it out of the
+      // accessibility tree, so both states are honest.
+      const collapsed = present(region(), 'a collapsible region while collapsed');
+
+      expect(collapsed.hidden).toBeTrue();
+      expect(collapsed.querySelectorAll('a').length).toBe(EXPECTED_ADDRESSES.length);
+    });
+
+    it('really stops presenting the region while collapsed, as the browser computes it', () => {
+      // ⚠⚠ THE ONE CROSS-FILE CONTRACT NOTHING ELSE CATCHES, asserted here because this
+      // suite runs in a real browser and can therefore ask for a computed value rather
+      // than infer one.
+      //
+      // The region collapses through the native hidden property, whose user-agent rule is
+      // a plain `display: none` — and any author-level `display` declaration on that same
+      // element outranks it. A stylesheet that laid the region out unconditionally would
+      // therefore leave a "collapsed" rail still showing every link, with the property
+      // set, the attribute present and the state class applied: every DOM expectation in
+      // this file would pass and the rail would be visibly broken.
+      //
+      // The paired stylesheet avoids that by guarding its layout declaration so it cannot
+      // apply while the element is hidden. This expectation is what holds that guard in
+      // place, and it fails the moment the guard is dropped.
+      const expanded = present(region(), 'a collapsible region');
+
+      // Asserted as the specific value the paired stylesheet declares, not merely as
+      // "something other than none". That is what makes the second half of this
+      // expectation mutation-sensitive: a division defaults to block layout, so if the
+      // scoped stylesheet were not reaching this element at all, the collapsed state
+      // would still compute to none purely from the user-agent rule and the expectation
+      // would pass while proving nothing. Observing the authored value here establishes
+      // that the stylesheet IS live, so the none below can only mean the guard held.
+      expect(window.getComputedStyle(expanded).display)
+        .withContext('the paired stylesheet is not reaching the region while expanded')
+        .toBe('flex');
+
+      present(toggle(), 'a disclosure control').click();
+      fixture.detectChanges();
+
+      expect(window.getComputedStyle(present(region(), 'a collapsible region')).display)
+        .withContext('an author-level display declaration is overriding the native hidden state')
+        .toBe('none');
+    });
+
+    it('leaves the toggle reachable while collapsed', () => {
+      present(toggle(), 'a disclosure control').click();
+      fixture.detectChanges();
+
+      // The control must survive its own action, or the rail could be collapsed once and
+      // never reopened. It also must not be taken out of the tab order.
+      const control = present(toggle(), 'a disclosure control while collapsed');
+
+      expect(control.hasAttribute('disabled')).toBeFalse();
+      expect(control.hasAttribute('hidden')).toBeFalse();
+      expect(control.getAttribute('tabindex')).toBeNull();
+    });
+
+    it('toggles through the published method as well as through the control', () => {
+      component.toggleCollapsed();
+      fixture.detectChanges();
+
+      expect(component.collapsed()).toBeTrue();
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('false');
+    });
+  });
+
+  describe('list semantics and headings', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('renders one genuine list per group', () => {
+      expect(host().querySelectorAll('ul').length).toBe(EXPECTED_GROUPS.length);
+      expect(host().querySelectorAll('li').length).toBe(EXPECTED_ADDRESSES.length);
+
+      // A list announces its length, so a user knows how many destinations there are
+      // before stepping through them. A sequence of anchors in a division does not.
+      expect(host().querySelectorAll('ol').length).toBe(0);
+    });
+
+    it('places every destination anchor inside a list item', () => {
+      for (const anchor of navAnchors()) {
+        const item = present(anchor.closest('li'), `a list item around ${anchor.getAttribute('href')}`);
+
+        expect(item.classList.contains('app-sidebar__item')).toBeTrue();
+        expect(present(item.parentElement, 'a list around each item').tagName).toBe('UL');
+      }
+    });
+
+    it('renders one anchor per list item, and nothing else in it', () => {
+      for (const item of Array.from(host().querySelectorAll('li'))) {
+        const descendants = Array.from(item.querySelectorAll('*'));
+
+        expect(descendants.map((element: Element): string => element.tagName)).toEqual(['A']);
+      }
+    });
+
+    it('renders one genuine heading per group, in the document outline', () => {
+      const headings = Array.from(host().querySelectorAll('h2'));
+
+      expect(headings.length).toBe(EXPECTED_GROUPS.length);
+      expect(headings.map((heading: Element): string => normalise(heading.textContent))).toEqual(
+        EXPECTED_GROUPS.map((group: ExpectedGroup): string => group.label),
+      );
+
+      // A styled division would be invisible to the document outline, so a group heading
+      // could not be navigated to. The level sits one below the page title the shared
+      // page-header component emits inside the main region, which is the only other
+      // heading level in use — so no first-level heading may appear here.
+      expect(host().querySelectorAll('h1').length).toBe(0);
+    });
+
+    it('labels each list by its own heading, through an identifier that resolves', () => {
+      const lists = Array.from(host().querySelectorAll('ul'));
+
+      expect(lists.length).toBe(EXPECTED_GROUPS.length);
+
+      lists.forEach((list: Element, index: number): void => {
+        const labelledBy = present(
+          list.getAttribute('aria-labelledby'),
+          `an aria-labelledby reference on list ${index}`,
+        );
+        const heading = present(host().querySelector(`#${labelledBy}`), `a heading with id ${labelledBy}`);
+
+        expect(heading.tagName).toBe('H2');
+        expect(normalise(heading.textContent)).toBe(EXPECTED_GROUPS[index].label);
+
+        // Namespaced with the published region identifier so it stays unique in the
+        // document even though these values become global identifiers, and derived from
+        // the group's own stable key rather than from its user-visible wording.
+        expect(labelledBy).toBe(`${REGION_ID}-${EXPECTED_GROUPS[index].id}`);
+      });
+    });
+
+    it('keeps every rendered identifier unique', () => {
+      const identified = Array.from(host().querySelectorAll('[id]'));
+      const identifiers = identified.map((element: Element): string => element.id);
+
+      expect(new Set<string>(identifiers).size).toBe(identifiers.length);
+
+      // The region and the four group headings, and nothing else.
+      expect(identifiers.length).toBe(EXPECTED_GROUPS.length + 1);
+    });
+
+    it('renders each group heading immediately before its own list', () => {
+      // The heading is a SIBLING of the list it labels rather than its ancestor, so the
+      // adjacency is what a user without the accessible name relies on, and the paired
+      // stylesheet spaces the two with a flex gap that assumes exactly this order.
+      const children = Array.from(present(region(), 'a collapsible region').children);
+
+      expect(children.length).toBe(EXPECTED_GROUPS.length * 2);
+
+      EXPECTED_GROUPS.forEach((group: ExpectedGroup, index: number): void => {
+        expect(children[index * 2].tagName).withContext(`group ${group.id} heading`).toBe('H2');
+        expect(children[index * 2 + 1].tagName).withContext(`group ${group.id} list`).toBe('UL');
+      });
+    });
+
+    it('renders each group with exactly its own destinations, in order', () => {
+      // The strongest structural expectation in the file: it pins the grouping, the
+      // order, the addresses and the labels TOGETHER. A rail that rendered every expected
+      // address and every expected label but assigned them to the wrong groups would
+      // satisfy each of those lists separately and is caught here.
+      const lists = Array.from(host().querySelectorAll('ul'));
+
+      EXPECTED_GROUPS.forEach((group: ExpectedGroup, index: number): void => {
+        const anchors = Array.from(lists[index].querySelectorAll<HTMLAnchorElement>('a.app-sidebar__link'));
+
+        expect(anchors.map((anchor: HTMLAnchorElement): string => anchor.getAttribute('href') ?? ''))
+          .withContext(`addresses in group ${group.id}`)
+          .toEqual(group.items.map((item: ExpectedItem): string => item.address));
+
+        expect(anchors.map((anchor: HTMLAnchorElement): string => normalise(anchor.textContent)))
+          .withContext(`labels in group ${group.id}`)
+          .toEqual(group.items.map((item: ExpectedItem): string => item.label));
+      });
+    });
+  });
+
+  describe('rendered wording', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('renders exactly the expected labels, in order', () => {
+      expect(renderedLabels()).toEqual(EXPECTED_LABELS);
+    });
+
+    it('renders the measured legacy screen titles verbatim', () => {
+      // MIGRATION: these three are the labels attributable to a legacy resource entry
+      // keyed `ControlTitle_.Text`, so a user of the legacy console recognises the
+      // wording. They are asserted separately from the full list so the legacy-parity
+      // claim is visible as its own expectation and cannot be weakened silently by a
+      // rewording that still satisfies the list above.
+      for (const title of MEASURED_LEGACY_TITLES) {
+        expect(renderedLabels())
+          .withContext(`the measured legacy title "${title}" is no longer rendered`)
+          .toContain(title);
+      }
+    });
+
+    it('renders the one net-new label, which no legacy resource key backs', () => {
+      // MIGRATION: "Modules" is authored rather than ported. Every other in-scope legacy
+      // administration tree carries a `ControlTitle_.Text` entry naming its collection
+      // view — Portal in 5 files, Users in 2, Security in 1, Tabs in 2 — and the Modules
+      // tree carries it in NONE, its only title keys being the module, export and import
+      // ones. Named here so a later reader does not go looking for a key that never
+      // existed.
+      expect(renderedLabels()).toContain(NET_NEW_LABEL);
+    });
+
+    it('renders every label as plain text, never as markup', () => {
+      // MIGRATION: legacy resource text is untrusted markup. Across the 37 resource files
+      // of the five in-scope administration trees there are 1211 entries, 75 of which
+      // carry HTML tags XML-escaped — so a search for the unescaped form finds nothing and
+      // suggests the text is clean when it is not — and one file carries two complete
+      // script elements. Interpolation escapes its content; the legacy label controls
+      // rendered such values as live markup.
+      for (const anchor of navAnchors()) {
+        expect(anchor.children.length)
+          .withContext(`${anchor.getAttribute('href')} rendered element content rather than text`)
+          .toBe(0);
+      }
+
+      // Swept across the whole rendered tree rather than the anchors alone, because a
+      // heading or the disclosure control could carry markup just as easily.
+      const rendered = normalise(host().textContent);
+
+      expect(rendered.includes('<')).withContext('rendered text must contain no markup delimiter').toBeFalse();
+
+      // Both forms are checked, and the text content is the right oracle for BOTH. A
+      // value that arrived carrying a live tag decodes to a plain delimiter in the text,
+      // which the expectation above catches; a value that arrived XML-escaped — the form
+      // 75 of the legacy resource entries actually use — survives interpolation with its
+      // escape intact and appears in the text verbatim, which this one catches. Neither
+      // is caught by looking only for the other.
+      expect(rendered.includes('&lt;'))
+        .withContext('rendered text must contain no escaped markup either')
+        .toBeFalse();
+
+      expect(rendered.includes('&#')).withContext('rendered text must carry no character reference').toBeFalse();
+    });
+
+    it('renders no empty label', () => {
+      for (const label of renderedLabels()) {
+        expect(label.length).toBeGreaterThan(0);
+      }
+
+      expect(normalise(present(landmark(), 'a navigation landmark').textContent).length).toBeGreaterThan(0);
+    });
+
+    it('offers no affordance for an excluded legacy subsystem', () => {
+      // MIGRATION: eighteen of the twenty-three legacy administration trees produce no
+      // entry here, and the five in scope produce all eight. The excluded subsystems are
+      // asserted absent by their legacy user-facing wording, because a later change would
+      // reach for the wording before it reached for a route.
+      const rendered = normalise(host().textContent).toLowerCase();
+
+      for (const excluded of EXCLUDED_LEGACY_WORDING) {
+        expect(rendered)
+          .withContext(`the excluded legacy subsystem "${excluded}" appeared in the rail`)
+          .not.toContain(excluded);
+      }
+    });
+  });
+
+  describe('published contract', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('publishes the collapse state as a read-only projection', () => {
+      // ⚠ Checked by the ABSENCE of the mutators, not by attempting a write: a write
+      // attempt would need a widening cast to compile, and the cast would weaken exactly
+      // the guarantee being tested. The published method is the only way the state
+      // changes, which keeps every transition expressible in one place.
+      expectReadOnlySignal(component.collapsed, 'collapsed');
+    });
+
+    it('publishes the navigation model matching what is rendered', () => {
+      // Cross-checks the published model against the DOM, which is the only place a
+      // divergence would be visible to a user. Asserting the model against itself would
+      // prove nothing.
+      expect(component.navigation.length).toBe(EXPECTED_GROUPS.length);
+
+      const publishedAddresses = component.navigation.flatMap((group: SidebarNavGroup): readonly string[] =>
+        group.items.map((item): string => item.path),
+      );
+
+      expect(publishedAddresses).toEqual(EXPECTED_ADDRESSES);
+      expect(publishedAddresses).toEqual(renderedAddresses());
+
+      const publishedLabels = component.navigation.flatMap((group: SidebarNavGroup): readonly string[] =>
+        group.items.map((item): string => item.label),
+      );
+
+      expect(publishedLabels).toEqual(EXPECTED_LABELS);
+      expect(publishedLabels).toEqual(renderedLabels());
+
+      expect(component.navigation.map((group: SidebarNavGroup): string => group.id)).toEqual(
+        EXPECTED_GROUPS.map((group: ExpectedGroup): string => group.id),
+      );
+    });
+
+    it('publishes the same model instance to every reader', () => {
+      // The model is a compile-time constant, not something resolved per read, so two
+      // reads must be the same object. A model rebuilt on access would defeat the
+      // tracking expressions the template depends on.
+      expect(component.navigation).toBe(component.navigation);
+      expect(component.exactMatchOptions).toBe(component.exactMatchOptions);
+    });
+
+    it('publishes a group key for every group, and keeps them unique', () => {
+      const keys = component.navigation.map((group: SidebarNavGroup): string => group.id);
+
+      expect(new Set<string>(keys).size).toBe(keys.length);
+
+      for (const key of keys) {
+        expect(key.length).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  describe('architectural boundaries', () => {
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('constructs and renders with nothing but the router available', () => {
+      // The provider set for this whole file is one call to `provideRouter`. A rail that
+      // injected a service, a store, an HTTP client or a host-settings reader would fail
+      // to construct here rather than fail subtly later — so every expectation in this
+      // file passing at all is the evidence that the rail is presentational.
+      expect(component).toBeInstanceOf(SidebarComponent);
+      expect(navAnchors().length).toBe(EXPECTED_ADDRESSES.length);
+    });
+
+    it('has no HTTP client available to it, and needs none', () => {
+      // Asserted rather than assumed. No HTTP client is configured, so requesting one
+      // optionally yields nothing — and the rail rendered its full contents regardless,
+      // which is the strongest available proof that it issues no request. Angular
+      // services communicate with the API; a layout primitive does not.
+      expect(TestBed.inject(HttpClient, null, { optional: true })).toBeNull();
+      expect(renderedAddresses()).toEqual(EXPECTED_ADDRESSES);
+    });
+
+    it('declares no provider of its own', () => {
+      // A layout primitive that provided anything would give each of its instances a
+      // private copy and quietly diverge from the rest of the screen. Observable as
+      // identity: the component's own injector resolves the SAME router the application
+      // injector holds, so nothing is shadowed at the component level.
+      expect(fixture.componentRef.injector.get(Router)).toBe(TestBed.inject(Router));
+    });
+
+    it('keeps each instance independent, holding no shared state', () => {
+      // MIGRATION: the collapse state lives in the browser, per instance. The legacy
+      // equivalent was round-tripped through view state, and a module-level variable
+      // here would be the modern version of that same mistake — one rail's collapse
+      // would silently move another's.
+      const second = TestBed.createComponent(SidebarComponent);
+
+      second.detectChanges();
+
+      component.toggleCollapsed();
+      fixture.detectChanges();
+
+      expect(component.collapsed()).toBeTrue();
+      expect(second.componentInstance.collapsed()).toBeFalse();
+
+      second.destroy();
+    });
+
+    it('renders identically for a second independent instance', () => {
+      // The determinism guard. Nothing in the rail reads a clock, draws a random value or
+      // schedules a timer, so two instances rendered in the same run must produce exactly
+      // the same addresses, labels and initial state. A hidden non-deterministic input
+      // would show up here as a difference.
+      const second = TestBed.createComponent(SidebarComponent);
+
+      second.detectChanges();
+
+      const secondHost = second.nativeElement as HTMLElement;
+      const secondAnchors = Array.from(secondHost.querySelectorAll<HTMLAnchorElement>('a.app-sidebar__link'));
+
+      expect(secondAnchors.map((anchor: HTMLAnchorElement): string => anchor.getAttribute('href') ?? '')).toEqual(
+        renderedAddresses(),
+      );
+      expect(secondAnchors.map((anchor: HTMLAnchorElement): string => normalise(anchor.textContent))).toEqual(
+        renderedLabels(),
+      );
+      expect(second.componentInstance.collapsed()).toBe(component.collapsed());
+
+      second.destroy();
+    });
+
+    it('applies no permission gate to any destination', () => {
+      // MIGRATION: hiding a link would be an AFFORDANCE and never enforcement, and this
+      // rail applies none — so the absence is asserted rather than left implicit.
+      // Authorisation is decided server-side and answered as HTTP 403; on the client,
+      // route activation is gated by the router's own guards. Showing the entry points
+      // and letting those two authorities refuse is the safer default, because hiding an
+      // entry the guard would have allowed silently removes a capability whereas showing
+      // one the guard refuses costs a redirect. The legacy access-denied screen took the
+      // same position: it performs no check of its own and reports refusal at warning
+      // severity, a pure display surface.
+      //
+      // The rail imports only the two router directives, so no gating directive can be
+      // present. Asserted as the full set of destinations rendered although this caller
+      // supplied no permission, no session and no claim of any kind, with no destination
+      // offered in a refused-looking state.
+      expect(navAnchors().length).toBe(EXPECTED_ADDRESSES.length);
+      expect(host().querySelectorAll('[aria-disabled]').length).toBe(0);
+      expect(host().querySelectorAll('a[disabled]').length).toBe(0);
+    });
+
+    it('cleans up without error when destroyed', () => {
+      // The link-activity directives each hold a router-event subscription, so a rail
+      // destroyed and recreated — which happens on every full navigation in a shell that
+      // re-projects it — must not leave one behind. A leaked subscription surfaces as a
+      // console error on the next event, which the shared expectation on console output
+      // would then catch.
+      expect((): void => {
+        fixture.destroy();
+      }).not.toThrow();
+    });
+  });
+});

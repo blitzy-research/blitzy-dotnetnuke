@@ -1,7 +1,61 @@
+// ---------------------------------------------------------------------------------------
+// FILE HEADER — WHY THIS FILE HAS NO PREDECESSOR
+//
+// The legacy application shipped with NO AUTOMATED TEST SUITE OF ANY KIND, so nothing here
+// is a port of anything. That was measured against the checkout rather than assumed: the
+// legacy trees hold 634 `.vb` files and not one test or specification file among them, no
+// file contains a test-fixture attribute, a test attribute or an assertion call, and no
+// test-framework reference appears in either legacy solution or in any project file. This
+// specification is therefore net-new coverage.
+//
+// What it covers is the contract that the legacy page discharged at RUN TIME, which is the
+// only sense in which the two reference sources are ancestors of it. Both are
+// REFERENCE-ONLY and neither is edited by this migration:
+//
+//   Website/Default.aspx      (30 lines).  L25,
+//                             `<asp:PlaceHolder ID="SkinPlaceHolder" runat="server" />`,
+//                             was the single injection point for the entire page body.
+//                             `AppComponent` mounting one `<app-shell />` is its
+//                             replacement, so "the root mounts exactly one shell and
+//                             nothing else" is the direct successor to that one-slot
+//                             arrangement — and it is what the `composition` block below
+//                             asserts.
+//
+//   Website/Default.aspx.vb   (700 lines). `Page_Init` (L499) selected a layout and called
+//                             `LoadSkin` (L217-L243) from four separate call sites (L510,
+//                             L518, L537, L549) depending on how tenant resolution had
+//                             gone; `LoadSkin` instantiated whatever it found with
+//                             `CType(LoadControl("~" & SkinPath), Skin)` (L224) and called
+//                             `DataBind()` (L226) — the comment at L225 states outright
+//                             that this executed "any server logic in the skin" — and L590
+//                             added the result to the placeholder. Layout selection was
+//                             therefore a per-request, late-bound, failure-prone step,
+//                             guarded at run time by a caught exception surfaced only to
+//                             administrators (L227-L237).
+//
+// That guard is exactly what this file replaces. A missing or wrong shell is now a COMPILE
+// failure rather than a run-time one, so the residual risk is no longer "can the layout be
+// loaded" but "is the one layout wired up correctly" — one shell, one of each singular
+// landmark, the navigation rail actually projected, and the session the root supplies
+// reaching the chrome. Those are the properties asserted below, and each of them fails
+// SILENTLY in a browser if it regresses, which is why they are worth asserting at all.
+//
+// MIGRATION: this coverage is net-new, not translated. Because there was no legacy suite,
+// there is no legacy expectation to preserve and no test to keep behaviourally equivalent
+// — the migration's behavioural-equivalence obligation is discharged by the production
+// code, and this file's obligation is to state the root's contract precisely enough that a
+// regression cannot pass. Ownership is kept narrow for the same reason: the shell's own
+// internals, the router's route table, the interceptors, the guards and the stores each
+// have their own specification, and this one asserts only what the ROOT contributes —
+// which regions exist ONCE across the whole application, that the rail is projected, and
+// what the root hands the chrome.
+// ---------------------------------------------------------------------------------------
+
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
+import { throwError } from 'rxjs';
 
 import { AppComponent } from './app.component';
 import { AUTH_ENDPOINTS } from './core/config/api-endpoints';
@@ -11,6 +65,31 @@ import { SessionLifecycleService } from './core/state/session-lifecycle.service'
 import { environment } from '../environments/environment';
 
 import type { AuthSession } from './core/models/auth.model';
+
+// MIGRATION: every address asserted below is RELATIVE, and that is a load-bearing property
+// of this workspace rather than a stylistic preference. The workspace's environment
+// arrangement is INVERTED from the framework default: `src/environments/environment.ts` is
+// the PRODUCTION file — it declares production true and a base of `/api/v1` — and it is the
+// development configuration that replaces it with the file carrying an absolute base. The
+// build's `test` target declares NO file replacements at all, so specifications compile
+// against that production file and therefore against the relative base. Two consequences,
+// and both are why an absolute address must never be written into a specification:
+//
+//   * It would be WRONG in production. The container image serves the compiled application
+//     and forwards the API prefix to the API service on the compose network, from the SAME
+//     origin the document was served from. That service name resolves only inside the
+//     compose network, never in a browser, so a client that addressed it by host would fail
+//     for every real caller while passing here.
+//
+//   * It would be UNFALSIFIABLE here. A hard-coded host satisfies itself: the expectation
+//     and the code under test would agree even after the environment's base changed, so the
+//     one regression this file could catch — a relative base quietly becoming absolute —
+//     would pass unnoticed.
+//
+// Consequently no address is spelled out below. The revocation expectation names the
+// endpoint CONSTANT, which is derived from the configured base, and one further assertion
+// checks the resolved request address is same-origin-relative — no scheme, no
+// protocol-relative prefix — which is the property that actually has to hold.
 
 /**
  * A held session, in the shape the token custodian stores.
@@ -172,6 +251,17 @@ describe('AppComponent', () => {
       expect(host().firstElementChild?.tagName.toLowerCase()).toBe('app-shell');
     });
 
+    it('mounts exactly one shell, anywhere in its subtree', () => {
+      // Deliberately a whole-subtree count rather than a first-child check, because the
+      // two fail differently. A second shell added below the first would leave the child
+      // count and the first child untouched and still render a second banner, a second
+      // main region and a second footer — the accessibility defect the landmark
+      // assertions below describe — so the number of shells is asserted directly. This
+      // is also the successor to the legacy page's single-placeholder arrangement
+      // (`Website/Default.aspx` L25): one slot then, one shell now.
+      expect(host().querySelectorAll('app-shell').length).toBe(1);
+    });
+
     it('renders the shell with the grid class, so the layout engages end to end', () => {
       const shell = host().querySelector('app-shell');
 
@@ -331,6 +421,37 @@ describe('AppComponent', () => {
       revocation.flush(null, { status: 204, statusText: 'No Content' });
     });
 
+    it('addresses the API relatively, on the origin that served the application', () => {
+      // The one assertion in this file about an address, and it deliberately asserts a
+      // SHAPE rather than a value. Spelling out a host would make the expectation agree
+      // with itself for ever — see the note above the fixture — whereas these four
+      // properties are exactly what has to hold for the deployed topology to work: the
+      // compiled application is served by a container that forwards the API prefix to the
+      // API service on its own network, so the browser must address the API through the
+      // origin it was served from and nothing else.
+      holdSession();
+      clickSignOut();
+
+      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout);
+      const address: string = revocation.request.url;
+
+      // Rooted at the origin: a path, not a location.
+      expect(address.startsWith('/')).toBeTrue();
+
+      // Not protocol-relative. A leading double slash is a path to the eye and a foreign
+      // origin to a browser, which is the failure mode a naive prefix test misses.
+      expect(address.startsWith('//')).toBeFalse();
+
+      // Carries no scheme, so it cannot name a host at all.
+      expect(/^[a-z][a-z\d+\-.]*:/i.test(address)).toBeFalse();
+
+      // And it is rooted at the base the environment configures rather than at some other
+      // path, which is what ties the request to the prefix the proxy forwards.
+      expect(address.startsWith(environment.apiBaseUrl)).toBeTrue();
+
+      revocation.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
     it('ends the session through the coordinator rather than through the session store', () => {
       // The distinction is the whole reason the coordinator exists. The store's own
       // sign-out discards the credentials and the identity and knows nothing about the
@@ -400,6 +521,52 @@ describe('AppComponent', () => {
       fixture.detectChanges();
 
       expect(navigate).toHaveBeenCalledWith(['/login']);
+      expect(authStore.isAuthenticated()).toBeFalse();
+    });
+
+    it('still reaches the sign-in screen when ending the session throws outright', () => {
+      // The component's OTHER exit, and the only way to reach it. The case above proves a
+      // refused revocation arrives as a completion, so nothing an HTTP backend can be made
+      // to do will exercise the error handler — it exists because the coordinator PUBLISHES
+      // an error exit, and because both the store's discard and the coordinator's slice
+      // clearing run in a teardown block whose throw would propagate to this subscriber.
+      //
+      // Coding to a dependency's published contract rather than to its current
+      // implementation is what keeps this component correct if that absorption is ever
+      // removed, so the contract is what is asserted: whichever of the two exits runs, the
+      // operator ends up at the sign-in screen. An observable cannot both error and
+      // complete, so exactly one of them does.
+      spyOn(session, 'signOut').and.returnValue(throwError(() => new Error('teardown failed')));
+
+      holdSession();
+      clickSignOut();
+
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
+
+      // Nothing was issued, because the coordinator never got as far as the transport. The
+      // `verify()` in the teardown is what proves it.
+      expect(authStore.isSigningOut()).toBeFalse();
+    });
+
+    it('swallows a navigation the router refuses, because the session has ended either way', async () => {
+      // The component navigates without awaiting and discards the rejection deliberately: a
+      // navigation the router declines is not this component's failure to report, and the
+      // credentials are already gone. Asserted because the alternative — letting the
+      // rejection escape — would raise an unhandled error on a path that succeeded from the
+      // operator's point of view, and it would do so while the application is mid-teardown
+      // of its own session.
+      navigate.and.rejectWith(new Error('navigation refused'));
+
+      holdSession();
+      clickSignOut();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+
+      // Lets the rejected navigation settle, so the discard actually happens inside the
+      // specification rather than after it.
+      await fixture.whenStable();
+
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
       expect(authStore.isAuthenticated()).toBeFalse();
     });
 
