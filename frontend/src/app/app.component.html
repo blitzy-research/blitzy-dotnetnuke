@@ -1,11 +1,23 @@
 <!--
-  One element, deliberately.
+  One element and one projected child, deliberately.
 
   The shell owns every fixed region and the router owns everything inside its
   outlet, so there is nothing for the root template to add. The three bindings
   below are the whole of the session seam: the shell FORWARDS them to the banner
   rather than resolving anything itself, so this file is the only place in the
   workspace where the chrome meets the session store.
+
+  The single projected child is the primary navigation rail. The shell publishes
+  its navigation region as a projection slot —
+  `<div class="shell__sidebar"><ng-content /></div>` — and assigns the mounting
+  decision to whichever component mounts `<app-shell>`, precisely so that the
+  shell stays free of any knowledge of what navigation exists. This is that
+  mounting component, so the rail is supplied here. It is standalone, declares no
+  input and emits nothing, so it needs no binding; and because the shell's region
+  writes no landmark of its own, the rail's own labelled `<nav>` is what makes the
+  navigation announceable. Without this one element the region matches the
+  stylesheet's `.shell__sidebar:empty` collapse rule and the application renders
+  with no navigation at all.
 
   `[userName]` is a property binding and must stay one. The shell's input is
   declared `userName?: string` and the component supplies `undefined` when no
@@ -20,4 +32,6 @@
   [userName]="userName()"
   [signingOut]="signingOut()"
   (signOut)="onSignOut()"
-/>
+>
+  <app-sidebar />
+</app-shell>

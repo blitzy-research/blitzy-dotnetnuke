@@ -33,6 +33,43 @@
  * the removal contract asserted below: BOTH identities travel, the confirmation speaks of a placement,
  * and a `204` is followed by a mandatory re-read because only the listing endpoint knows whether the
  * row survived the soft delete.
+ *
+ * ## WHAT IS BEING PRESERVED, AND WHAT IS NET-NEW
+ *
+ * Both halves are stated because a specification that blurs them invites a later reader to "restore"
+ * behaviour that never existed, or to relax an assertion that is the only record of a measured legacy
+ * fact. Each claim below is annotated again, with its legacy line, at the case that asserts it.
+ *
+ * NET-NEW, WITH NO LEGACY ANCESTOR AT ALL:
+ *
+ *   - THE SCREEN ITSELF. `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO. That directory
+ *     holds `export.ascx`, `import.ascx`, `modulesettings.ascx`, their three code-behinds, one icon and
+ *     `App_LocalResources` — and nothing that lists modules. All nine `<table>` elements in
+ *     `modulesettings.ascx` are `summary="… Design Table"` layout tables. So no legacy screen is being
+ *     reproduced, and none is manufactured to pretend otherwise.
+ *   - THE FREE-TEXT FILTER. `Library/Components/Modules/ModuleController.vb:L1032` `GetSearchModules` is
+ *     the search-INDEXING surface, not a user-facing query.
+ *   - EVERY ACCESSIBILITY AFFORDANCE. `Website/admin/Portal/portals.ascx` has no `<caption>`, no
+ *     `summary`, no column scope, and its two command columns at `:L21` and `:L22` carry neither
+ *     `HeaderText` nor alternative text.
+ *   - AND THESE TESTS. THE LEGACY TREE CONTAINS ZERO AUTOMATED TESTS OF ANY KIND — not a unit test, not
+ *     an integration test, not a fixture. There is no legacy suite to port, so every assertion in this
+ *     file is authored against measured legacy SOURCE rather than against a legacy test.
+ *
+ * MEASURED AND PRESERVED EXACTLY:
+ *
+ *   - The confirmation wording, including its space before the question mark
+ *     (`SharedResources.resx` → `DeleteModule.Confirm`).
+ *   - The affirmative and negative words (`Yes.Text`, `No.Text`) and the edit and removal wording
+ *     (`Edit.Text`, `cmdDelete.Text` — there is no `Delete.Text` key in that file).
+ *   - The three visibility words and their implicit ordinals (`ModuleInfo.vb:L30-L34`).
+ *   - A minimum-value date rendering blank (`ModuleSettings.ascx.vb:L152-L157`).
+ *   - A refusal reported at warning severity (`AccessDenied.ascx.vb`).
+ *
+ * ANNOTATED AS A LEGACY DEFECT AND DELIBERATELY NOT FIXED: `ModuleController.vb:L829` documents the
+ * removal as permanent while `:L850` — in the same routine — says `' soft delete the module`. The code
+ * is authoritative and the comment is wrong; Minimal Change Clause item 1 forbids correcting it, so it
+ * is recorded here and the assertions follow the CODE.
  */
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -44,11 +81,37 @@ import { NotificationService } from '../../../core/services/notification.service
 import { ModuleStore } from '../../../core/state/module.store';
 import { ModuleListComponent } from './module-list.component';
 
+import type { Signal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { ModuleListItem } from '../../../core/models/module.model';
-import type { PagedResponse } from '../../../core/models/paged-result.model';
+import type { ApiMeta, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+
+// =====================================================================================================
+// NARROWING WITHOUT AN ESCAPE HATCH
+//
+// No escape hatch is used anywhere in this file: no wildcard type annotation, no compiler-directive
+// comment and no non-null assertion. Where an assertion needs an element that must exist, it is
+// unwrapped through the helper below, which FAILS BY NAME rather than letting `null` travel on into a
+// property read that then reports itself as an unrelated type error somewhere else.
+// =====================================================================================================
+
+/**
+ * Unwraps a required descendant, throwing with the selector when it is absent.
+ *
+ * @param root The element to search within.
+ * @param selector The selector that must match.
+ * @returns The matched element, guaranteed present.
+ * @throws Error when the selector matches nothing.
+ */
+function requireElement(root: Element, selector: string): Element {
+  const found = root.querySelector(selector);
+  if (found === null) {
+    throw new Error(`Expected to find "${selector}" in the rendered template.`);
+  }
+  return found;
+}
 
 // =====================================================================================================
 // ADDRESSES
@@ -484,11 +547,32 @@ describe('ModuleListComponent', () => {
         moduleRow({ moduleId: 2, tabModuleId: 9, visibility: ModuleVisibility.None }),
       ]);
 
+      // MIGRATION: THE ORDINALS ARE IMPLICIT IN THE LEGACY SOURCE AND ARE THEREFORE LOAD-BEARING.
+      //   `Library/Components/Modules/ModuleInfo.vb:L30-L34` is, verbatim,
+      //   `Public Enum VisibilityState / Maximized / Minimized / None / End Enum` — with NO explicit
+      //   values, so 0, 1 and 2 come from declaration order alone and every stored row depends on that
+      //   order never changing. The enumeration was renamed `ModuleVisibility` on the way across and the
+      //   numbers were not touched, which is what this case pins. `Website/App_GlobalResources/
+      //   SharedResources.resx` independently declares `Maximized.Text` = 'Maximized' and
+      //   `None.Text` = 'None', so the wording is measured rather than invented.
       expect(cellsOf(0)).toContain('Maximized');
       expect(cellsOf(1)).toContain('Minimized');
-      // The third member is the word 'None', which is a STATE and not an absence: a module set to it
-      // exists and is placed, it simply draws no container.
+
+      // ⚠ ZERO IS A REAL STATE AND IS THE LEGACY DEFAULT, so the first row must carry a word rather
+      // than an empty cell. A lookup written as `VISIBILITY_LABEL[code] || ''` would pass the two rows
+      // below and fail this one, which is exactly why it is asserted as NON-EMPTY and not merely as
+      // "contains".
+      expect(cellsOf(0).filter((text) => text === 'Maximized'))
+        .withContext('code 0 resolves to a real word, never to an empty cell')
+        .toHaveSize(1);
+
+      // ⚠ THE THIRD MEMBER IS A STATE, NOT AN ABSENCE. A placement set to it exists and is placed; it
+      // simply draws no container chrome. Rendering it blank would tell an operator the value was
+      // missing when the operator themselves chose it.
       expect(cellsOf(2)).toContain('None');
+      expect(cellsOf(2).filter((text) => text === 'None'))
+        .withContext('code 2 renders the real word "None", never an empty cell')
+        .toHaveSize(1);
     });
 
     it('renders an absent date and the legacy marker date as empty cells alike', () => {
@@ -501,6 +585,42 @@ describe('ModuleListComponent', () => {
       expect(cells.filter((text) => text.length === 0).length)
         .withContext('both absences render empty')
         .toBeGreaterThanOrEqual(2);
+
+      // MIGRATION: THE MARKER DATE RENDERS BLANK, WHICH IS EXACTLY WHAT THE LEGACY SCREEN DID.
+      //   `Website/admin/Modules/ModuleSettings.ascx.vb:L152-L154` reads
+      //   `If Not Null.IsNull(objModule.StartDate) Then txtStartDate.Text =
+      //   objModule.StartDate.ToShortDateString / End If`, and `:L155-L157` is the identical pair for
+      //   the end date — the field was LEFT BLANK on the sentinel rather than showing a minimum date.
+      //   `Library/Components/Shared/Null.vb:L66-L68` defines that sentinel as `Date.MinValue`, and it
+      //   still travels on the wire because the API serialises it as a real ISO-8601 string rather than
+      //   omitting the member. So `01/01/0001` must appear NOWHERE on the row, in any locale spelling.
+      const rowText: string = cells.join(' ');
+
+      expect(rowText).withContext('the marker date is never painted').not.toContain('0001');
+      expect(rowText).not.toContain('01/01/0001');
+      expect(rowText).not.toContain('1/1/0001');
+    });
+
+    it('paints a far-future date as the real value it is, rather than blanking it too', () => {
+      // ⚠ THE COMPANION TO THE CASE ABOVE, AND THE ONE THAT STOPS THE BLANKING FROM OVER-REACHING.
+      // A perpetual expiry is ordinary data: the shared pipe tests for `0001-01-01` specifically and
+      // never for an upper bound, so a year-9999 value must survive to the cell. Without this case, a
+      // pipe that blanked "implausible" dates in general would satisfy the sentinel case and silently
+      // erase every perpetual schedule in the tenant.
+      arrive([moduleRow({ startDate: '2024-03-01T00:00:00Z', endDate: '9999-12-31T00:00:00Z' })]);
+
+      const cells: readonly string[] = cellsOf(0);
+      const rowText: string = cells.join(' ');
+
+      // The rendered spelling is the runtime's locale decision and is deliberately NOT asserted; the
+      // YEAR is what proves the value was neither blanked nor rewritten.
+      expect(rowText).withContext('the far-future year survives to the cell').toContain('9999');
+      expect(rowText).withContext('the real start date survives too').toContain('2024');
+
+      // And neither date collapsed into the empty rendering the sentinel gets.
+      expect(cells.filter((text) => text.length === 0).length)
+        .withContext('no schedule cell was blanked')
+        .toBe(0);
     });
 
     it('paints one row per placement when a module is placed on every page', () => {
@@ -599,10 +719,35 @@ describe('ModuleListComponent', () => {
 
       const call = expectList('the filtered read');
 
+      // MIGRATION: THE FREE-TEXT FILTER IS NET-NEW; THE LEGACY HAD NO MODULE SEARCH OF ANY KIND.
+      //   `Library/Components/Modules/ModuleController.vb:L1032` declares
+      //   `Public Function GetSearchModules(ByVal PortalId As Integer) As ArrayList`, which is the
+      //   search-INDEXING surface of the legacy searchable-module contract — it returns the modules that
+      //   SUPPORT search so an indexer can walk them — and is emphatically not a user-facing query.
+      //   Nothing in `Website/admin/Modules/` filtered a module list by text, because there was no
+      //   module list to filter: `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO. So
+      //   this parameter has no legacy contract to preserve and the only thing to pin is that the screen
+      //   adds nothing to what a person typed.
+      //
       // Recorded EXACTLY AS EMITTED: no wildcard appended, no pattern syntax introduced, no escaping
       // applied. Match semantics belong to the server, which is where the legacy call-site pattern
       // decoration moved to.
       expect(call.request.params.get('query')).toBe('news');
+
+      // ⚠ NO PER-CENT SIGN, IN EITHER POSITION. Server-side matching is `LIKE 'text%'` — STARTS-WITH,
+      // with the wildcard appended SERVER-SIDE — so a screen that appended one would ask for
+      // `LIKE 'news%%'`, and one that prepended it would silently convert a starts-with filter into a
+      // contains filter. Both would be a behaviour change no status code reveals. The parameter is
+      // asserted against the raw text and separately against the character itself, because an equality
+      // assertion alone would not say WHY the value must be bare.
+      const sent: string = call.request.params.get('query') ?? '';
+
+      expect(sent).withContext('no wildcard is added by the client').not.toContain('%');
+      expect(sent.length).withContext('the text travels byte-for-byte').toBe('news'.length);
+      // The whole serialised query string is checked too, because a wildcard added by the parameter
+      // builder rather than by the screen would still reach the server.
+      expect(call.request.urlWithParams).not.toContain('%25');
+
       // A changed filter returns to the first page: a coordinate measured against one match set does
       // not address the same rows once the set changes.
       expect(call.request.params.get('pageIndex')).toBe('0');
@@ -719,6 +864,99 @@ describe('ModuleListComponent', () => {
 
       expect(sorted).withContext('exactly one column reports itself sorted').toEqual(['ascending']);
     });
+
+    it('announces the ordering on the ACTIVE column alone, and on no other', () => {
+      arrive();
+
+      const headers: readonly HTMLElement[] = queryAll<HTMLElement>('th.data-table__header');
+      const announced = (): readonly (string | null)[] =>
+        queryAll<HTMLElement>('th.data-table__header').map((cell) => cell.getAttribute('aria-sort'));
+
+      // ⚠ BEFORE ANY COLUMN IS PRESSED, NOTHING CLAIMS TO BE SORTED. A grid in which every sortable
+      // heading reported a direction would convey nothing at all, so the shared table distinguishes
+      // three states and this case pins all three at once:
+      //   * a NON-SORTABLE heading carries NO `aria-sort` attribute — six of the ten columns;
+      //   * a sortable heading that is not the active one carries `none` — four columns here;
+      //   * only the active one carries a direction.
+      expect(announced().filter((value) => value === 'none'))
+        .withContext('the four sortable columns each report themselves unsorted')
+        .toHaveSize(4);
+      expect(announced().filter((value) => value === null))
+        .withContext('the six non-sortable columns carry no ordering state at all')
+        .toHaveSize(6);
+      expect(announced().filter((value) => value === 'ascending' || value === 'descending'))
+        .withContext('and nothing claims a direction before one is chosen')
+        .toHaveSize(0);
+
+      (sortButtons()[0] as HTMLButtonElement).click();
+      fixture.detectChanges();
+      expectList().flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+
+      // ⚠ `sortBy` AND `sortDir` ARE THE SOLE SOURCE OF TRUTH FOR THIS ATTRIBUTE. They are supplied
+      // from the store, so the heading that announces itself sorted is the one the NEXT request would
+      // order by — the announcement and the wire cannot disagree.
+      expect(announced().filter((value) => value === 'ascending')).toHaveSize(1);
+      expect(announced().filter((value) => value === 'descending')).toHaveSize(0);
+      expect(announced().filter((value) => value === 'none'))
+        .withContext('the other three sortable columns fall back to unsorted')
+        .toHaveSize(3);
+      expect(headers).withContext('the column count is unchanged by ordering').toHaveSize(10);
+    });
+
+    it('scopes every heading to its column and names the grid with a real caption', () => {
+      arrive();
+
+      // MIGRATION: THE GRID'S ACCESSIBILITY AFFORDANCES ARE NET-NEW ADDITIONS MADE AT ZERO VISUAL COST,
+      //   AND THIS IS THE CASE THAT PROVES THEY EXIST. Neither measured legacy grid had any of them.
+      //   `Website/admin/Portal/portals.ascx` declares its grid and its columns with NO `<caption>`, NO
+      //   `summary` and no column-scope information whatsoever — `grep -ciE "<caption|scope=|summary="`
+      //   over that file returns ZERO — and its two command columns at `:L21` and `:L22` are
+      //   `dnn:imagecommandcolumn` entries carrying an `ImageUrl` and neither `HeaderText` nor
+      //   alternative text, so both reached assistive technology as unnamed graphics.
+      //   `Website/admin/Users/users.ascx:L35-L39` is worse: an entirely header-less template column
+      //   whose only content is an icon with no alternative text. None of what is asserted below has a
+      //   legacy ancestor, and none of it changes a painted pixel.
+      const headers: readonly HTMLElement[] = queryAll<HTMLElement>('th');
+
+      expect(headers).withContext('ten columns, ten headings').toHaveSize(10);
+
+      // EVERY heading, without exception — including the header-less commands column, which is hidden
+      // from sight but stays named in the accessibility tree.
+      headers.forEach((heading, index) => {
+        expect(heading.getAttribute('scope'))
+          .withContext(`heading ${index} scopes itself to its column`)
+          .toBe('col');
+      });
+
+      // The caption must resolve to a REAL TEXT NODE rather than to an empty element: the shared table
+      // renders the element unconditionally and falls back to its own placeholder wording when nothing
+      // is projected, so an empty caption would leave the grid with a misleading accessible name rather
+      // than with none.
+      const caption: Element = requireElement(host(), 'caption');
+
+      expect((caption.textContent ?? '').trim())
+        .withContext('the caption carries this screen own wording')
+        .toBe(TABLE_CAPTION);
+      expect((caption.textContent ?? '').trim().length)
+        .withContext('and it is a real text node, not an empty element')
+        .toBeGreaterThan(0);
+
+      // Every row command is an icon-free text control, and each carries a non-empty accessible name.
+      // The global register measured for the two that have one is `Website/App_GlobalResources/
+      // SharedResources.resx`: `Edit.Text` = 'Edit' and `cmdDelete.Text` = 'Delete'. There is NO
+      // `Delete.Text` key in that file, which is why the removal wording is taken from `cmdDelete`.
+      const row: Element = requireElement(host(), 'tr.data-table__row');
+
+      Array.from(row.querySelectorAll('a, button')).forEach((command) => {
+        expect((command.getAttribute('aria-label') ?? '').trim().length)
+          .withContext(`the "${(command.textContent ?? '').trim()}" command has an accessible name`)
+          .toBeGreaterThan(0);
+      });
+
+      // And no raster icon stands in for a name anywhere, which is the specific legacy defect above.
+      expect(row.querySelectorAll('img')).withContext('no unnamed graphic commands').toHaveSize(0);
+    });
   });
 
   // ---------------------------------------------------------------------------------------------------
@@ -815,6 +1053,27 @@ describe('ModuleListComponent', () => {
         .withContext('the confirming button is marked destructive')
         .not.toBeNull();
 
+      // MIGRATION: THE REMOVAL IS SOFT AND TWO-TIERED, SO THE WORDING MUST PROMISE NO PERMANENCE.
+      //   `Library/Components/Modules/ModuleController.vb:L837` `DeleteTabModule(TabId, ModuleId)`
+      //   hard-deletes ONLY the per-page reference row (`:L843`), reorders the survivors on that page
+      //   (`:L846`), and then tests whether any OTHER page still references the module (`:L849`). Only
+      //   if none does does it soft-delete, under the source's own verbatim comment at `:L850`,
+      //   `' soft delete the module`, followed by `objModule.TabID = Null.NullInteger` (`:L851`),
+      //   `objModule.IsDeleted = True` (`:L852`) and `UpdateModule(objModule)` (`:L853`). Nothing is
+      //   destroyed outright, so every one of the phrases below would be a FALSE PROMISE about a flag
+      //   flip. This is asserted rather than trusted because the legacy DOCUMENTATION says the opposite:
+      //   `:L829` reads `''' Delete a module reference permanently from the database.`, twenty-one lines
+      //   above the comment that contradicts it. The code is authoritative and the doc comment is a
+      //   legacy defect — Minimal Change Clause item 1 forbids correcting it, so it is annotated here and
+      //   left alone in the legacy tree, and this case makes sure the wrong word never reaches a person.
+      const spoken: string = (query('.confirm-dialog__message')?.textContent ?? '').toLowerCase();
+
+      expect(spoken).withContext('a soft delete is not permanent').not.toContain('permanently');
+      expect(spoken).withContext('and it is not permanent either').not.toContain('permanent');
+      expect(spoken).not.toContain('cannot be undone');
+      expect(spoken).not.toContain('irreversible');
+      expect(spoken).not.toContain('you will not be able to recover');
+
       // Nothing has been sent yet: the dialogue IS the guard.
       httpMock.expectNone(() => true);
       expect(notifications()).toHaveSize(0);
@@ -840,10 +1099,24 @@ describe('ModuleListComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // ⚠ THE RE-READ IS MANDATORY AND IS NOT AN OPTIMISATION. The removal is soft and two-tiered: the
-      // per-page reference row goes, and the module itself is soft-deleted only when no other page
-      // still references it. So after a `204` the row MAY legitimately still belong in the listing, and
-      // only the listing endpoint knows which. An optimistic splice would hide a surviving row.
+      // MIGRATION: THE RE-READ IS MANDATORY AND IS NOT AN OPTIMISATION, BECAUSE THE REMOVAL IS SOFT AND
+      //   TWO-TIERED AND THE ROW MAY LEGITIMATELY SURVIVE IT.
+      //   `Library/Components/Modules/ModuleController.vb:L837` `DeleteTabModule(TabId, ModuleId)`
+      //   hard-deletes only the per-page reference row (`:L843`), reorders the survivors on that page
+      //   (`:L846`), then tests whether any other page still references the module (`:L849`) and ONLY
+      //   THEN soft-deletes it — `:L850` reads verbatim `' soft delete the module`, with `:L851` setting
+      //   the page reference to the absence marker, `:L852` setting `IsDeleted = True` and `:L853`
+      //   persisting it. So a `204` does NOT imply the row disappears: whether it still belongs in the
+      //   listing is the LISTING endpoint's decision, expressed through its inclusion flag, and an
+      //   optimistic local splice would wrongly hide a placement that survived. The fixture below
+      //   answers the re-read with a DIFFERENT surviving placement of the SAME module for exactly that
+      //   reason — a screen that spliced locally would show zero rows here and this case would catch it.
+      //
+      //   The legacy XML doc at `:L829` — `''' Delete a module reference permanently from the
+      //   database.` — contradicts the comment sixteen lines below it. The code is authoritative; the
+      //   doc comment is a legacy defect, annotated and deliberately not fixed. Note too that the
+      //   neighbouring `DeleteModule` at `:L819` IS the hard delete, and is emphatically NOT what this
+      //   screen invokes.
       const reread = expectList('the mandatory re-read');
 
       reread.flush(pageOf([moduleRow({ moduleId: 4, tabModuleId: 12 })]));
@@ -853,6 +1126,44 @@ describe('ModuleListComponent', () => {
       // The message speaks of the PLACEMENT rather than the module, because after a `204` the module
       // itself may well still exist.
       expect(bodyRows()).withContext('the surviving placement is still listed').toHaveSize(1);
+    });
+
+    it('offers no way back, because no endpoint reverses a removal', () => {
+      arrive([moduleRow({ moduleId: 4, tabModuleId: 11 })]);
+
+      requestRemoval();
+      pressDialogue('Delete');
+
+      expectRequest('DELETE', moduleUrl(4)).flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      // MIGRATION: THERE IS NO RESTORE, RECYCLE-BIN, PURGE OR UNDELETE PATH, AND THAT IS AN ABSENCE OF
+      //   ENDPOINT RATHER THAN AN ABSENCE OF AFFORDANCE. `ModuleController.vb` contains no
+      //   `RestoreModule` of any kind, and the target surface exposes nothing that reverses a removal —
+      //   the legacy recycle bin lived under `Website/admin/Tabs/`, which this feature does not replace.
+      //   A soft-removed module simply stops appearing. This is asserted as a NEGATIVE because the
+      //   temptation runs the other way: the soft delete makes a restore look implementable, and a
+      //   screen that offered one would address a route the API does not serve and fail at run time with
+      //   a 404 an operator could not act on.
+      const forbidden: readonly string[] = ['restore', 'recycle-bin', 'recyclebin', 'undelete', 'purge'];
+
+      forbidden.forEach((segment) => {
+        httpMock.expectNone(
+          (candidate) => candidate.url.includes(segment),
+          `no request to any "${segment}" address`,
+        );
+      });
+
+      // Nor is any such control painted, which is the same claim made against the DOM.
+      const rendered: string = host().innerHTML.toLowerCase();
+
+      forbidden.forEach((segment) => {
+        expect(rendered).withContext(`no "${segment}" affordance is offered`).not.toContain(segment);
+      });
+
+      // Only the mandatory re-read is outstanding, and it is a plain listing read — not a reversal.
+      answerList([moduleRow({ moduleId: 4, tabModuleId: 12 })]);
+      httpMock.expectNone(() => true);
     });
 
     it('removes a placement whose identifiers are both zero', () => {
@@ -976,15 +1287,28 @@ describe('ModuleListComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ SEVERITY IS RESOLVED BY THE SHARED UTILITY AND PASSED THROUGH UNCHANGED. It classifies 401,
-      // 403, 404 and 429 as warnings and everything else as an error, on measured legacy evidence.
-      // Re-deriving it on this screen would give one decision two homes that could disagree.
+      // MIGRATION: A REFUSAL OF AUTHORITY IS A WARNING, NOT AN ERROR, AND THE CLASSIFICATION IS MEASURED
+      //   FROM THE LEGACY SCREEN THAT DID THE SAME JOB. `Website/admin/Security/AccessDenied.ascx.vb`
+      //   reported a refusal with `ModuleMessageType.YellowWarning` in BOTH of its branches, never with
+      //   `RedError` — and the legacy severity vocabulary was genuinely three-valued, so choosing the
+      //   warning was a choice rather than the only option available. `form-errors.util.ts:L401-L412`
+      //   reproduces that decision for 401 and 403, and this screen passes the resolved severity through
+      //   UNALTERED: re-deriving it here would give one decision two homes free to disagree.
+      //
+      // ⚠ AND EXACTLY ONE MESSAGE IS RAISED, WHICH IS A CLAIM ABOUT OWNERSHIP. `ModuleStore` injects
+      // only the two transports — it records failures structurally and notifies NOBODY — so the
+      // reporting duty falls to this component alone and there is no double-notification hazard to
+      // guard against. The single-element assertion below is what would catch a notification being
+      // added to the store later: the count, not just the severity, is the contract.
       expect(notifications()).toEqual([
         {
           severity: 'warning',
           message: 'The authenticated caller is not permitted to perform this operation.',
         },
       ]);
+      expect(notifications())
+        .withContext('one event, one message — the store does not report as well')
+        .toHaveSize(1);
 
       // A failure means NO re-read: the listing is unchanged, so re-reading it would be a request with
       // nothing to learn.
@@ -1074,6 +1398,48 @@ describe('ModuleListComponent', () => {
       // with its per-field detail and its reference, and the reporting effect is gated on a removal
       // being outstanding precisely so one event is never reported twice.
       expect(notifications()).toHaveSize(0);
+    });
+
+    it('summarises a per-field refusal without ever announcing it twice', () => {
+      create();
+
+      // ⚠ THE PER-FIELD MAP IS READ WITH AN INDEX EXPRESSION, NEVER WITH A PROPERTY ACCESS. Its keys are
+      // .NET model-state keys — PascalCase, NOT camel-cased on the way out — and the member is declared
+      // as an index signature, which `noPropertyAccessFromIndexSignature` makes a compile error to reach
+      // with a dot. Writing the fixture the same way the production code must read it is what keeps this
+      // case honest about the constraint.
+      const refusal: ProblemDetails = {
+        type: `${FAILURE_TYPE_PREFIX}module.request_invalid`,
+        title: STATUS_TITLE[400] ?? 'Error',
+        status: 400,
+        detail: 'One or more validation errors occurred.',
+        traceId: TRACE_ID,
+        correlationId: CORRELATION_ID,
+        errors: {
+          ModuleTitle: ['The module title is too long.'],
+          PageIndex: ['The page index must not be negative.'],
+        },
+      };
+
+      expect(refusal.errors?.['ModuleTitle']).toEqual(['The module title is too long.']);
+      expect(refusal.errors?.['PageIndex']).toHaveSize(1);
+
+      expectList().flush(refusal, { status: 400, statusText: 'Bad Request' });
+      fixture.detectChanges();
+
+      // The banner owns the whole document — its wording, its per-field summary and its reference — so
+      // the screen renders the refusal in one place and adds nothing to it.
+      expect(textOf('.error-banner__message').join(' ')).toContain(
+        'One or more validation errors occurred.',
+      );
+      expect(host().textContent ?? '')
+        .withContext('the per-field wording reaches the reader')
+        .toContain('The module title is too long.');
+
+      // ⚠ AND NOTHING IS RAISED TRANSIENTLY FOR IT. A listing failure is shown by the banner alone; the
+      // reporting bridge is gated on a REMOVAL being outstanding precisely so one event is never
+      // reported twice, once in a banner a person must dismiss and once in a message that disappears.
+      expect(notifications()).withContext('the banner is the only report').toHaveSize(0);
     });
 
     it('dismisses the banner without sending anything', () => {
@@ -1167,6 +1533,119 @@ describe('ModuleListComponent', () => {
 
       pressDialogue('Cancel');
       httpMock.expectNone(() => true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 9 — WHAT THIS SCREEN DELIBERATELY DOES NOT OFFER
+  //
+  // Negative cases, and they carry real weight here. Every affordance below EXISTS in the legacy
+  // controller and NONE survives into the target surface, so each is a thing a well-meaning change could
+  // plausibly add — and adding one would paint a control whose request the server refuses, which is
+  // strictly worse than offering no control at all.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the affordances that deliberately do not exist', () => {
+    it('offers no reorder, pane, copy, bulk, cache or synchronise control', () => {
+      arrive([
+        moduleRow({ moduleId: 4, tabModuleId: 11, moduleOrder: 1 }),
+        moduleRow({ moduleId: 5, tabModuleId: 12, moduleOrder: 2 }),
+      ]);
+
+      // MIGRATION: SIX LEGACY OPERATIONS HAVE NO ENDPOINT IN THE TARGET AND THEREFORE NO AFFORDANCE HERE.
+      //   Each is named in `Library/Components/Modules/ModuleController.vb` and none is reachable now:
+      //   `MoveModule` (`:L1078`) for pane placement, both `CopyModule` overloads (`:L700` and `:L743`),
+      //   `DeleteAllModules` (`:L795`) for bulk removal, `UpdateModuleOrder` (`:L1160`) and
+      //   `UpdateTabModuleOrder` (`:L1197`) for ordering, and `SynchronizeModule` (`:L614`) for the cache
+      //   flush. The placement position is consequently DISPLAYED AS DATA and is not editable — which is
+      //   itself asserted below, because a numeric column is exactly where an editor would be added.
+      // Asserted against the rendered WORDING rather than against class names, and each needle is chosen
+      // to be unambiguous: bare `pane` is deliberately avoided because it is a substring of the shared
+      // dialogue's own `panel` class, and an assertion that fails for that reason would report the wrong
+      // defect. The structural claims that follow are the stronger half of this case in any event.
+      const rendered: string = host().innerHTML.toLowerCase();
+      const absent: readonly string[] = [
+        'draggable',
+        'reorder',
+        'move up',
+        'move down',
+        'move to',
+        'pane picker',
+        'panename',
+        'copy',
+        'duplicate',
+        'synchron',
+        'clear cache',
+        'select all',
+        'delete all',
+      ];
+
+      absent.forEach((affordance) => {
+        expect(rendered)
+          .withContext(`no "${affordance}" affordance is offered`)
+          .not.toContain(affordance);
+      });
+
+      // No bulk selection, which is what a bulk removal would need first. Not one checkbox, not one
+      // radio, and no row carries a selection state.
+      expect(queryAll('input[type="checkbox"]')).withContext('no bulk selection').toHaveSize(0);
+      expect(queryAll('input[type="radio"]')).toHaveSize(0);
+      expect(queryAll('[draggable="true"]')).withContext('no drag-to-reorder').toHaveSize(0);
+
+      // The position is rendered as text. The ONLY editable control on the screen is the filter, and the
+      // only buttons inside a row are the removals — one per row.
+      expect(queryAll('input')).withContext('one control, and it is the filter').toHaveSize(1);
+      expect(query('input[type="search"]')).not.toBeNull();
+      expect(queryAll('tr.data-table__row button'))
+        .withContext('one removal per row and nothing else')
+        .toHaveSize(2);
+      expect(queryAll('select')).withContext('no pane or page picker').toHaveSize(0);
+
+      // And pressing nothing has sent nothing beyond the arrival read.
+      httpMock.expectNone(() => true);
+    });
+
+    it('publishes its listing state as read-only signals that a consumer cannot write', () => {
+      arrive();
+
+      const store: ModuleStore = TestBed.inject(ModuleStore);
+
+      // ⚠ THE PROOF IS STRUCTURAL RATHER THAN BEHAVIOURAL, AND IT HAS TO BE. A writable signal carries
+      // `set` and `update`; a read-only projection does not. Asserting their ABSENCE is the only check
+      // that cannot be satisfied by a signal that merely happens not to be written today — and it is
+      // made with the `in` operator rather than by casting to a writable type, because such a cast would
+      // assert the very thing under test away.
+      const rows: Signal<readonly ModuleListItem[]> = store.modules;
+      const meta: Signal<ApiMeta> = store.meta;
+
+      expect('set' in rows).withContext('the row projection cannot be replaced').toBeFalse();
+      expect('update' in rows).withContext('nor mutated in place').toBeFalse();
+      expect('set' in meta).withContext('the paging coordinates cannot be replaced').toBeFalse();
+      expect('update' in meta).withContext('nor mutated in place').toBeFalse();
+
+      // Still readable, which is the other half of the contract: closing writes must not close reads.
+      expect(rows()).toHaveSize(1);
+      expect(meta().pageIndex).withContext('the coordinate is the server own').toBe(0);
+    });
+
+    it('sets no request header of its own, because the correlation identifier is the interceptor own', () => {
+      create();
+
+      const call = expectList();
+
+      // ⚠ THE CORRELATION IDENTIFIER IS ATTACHED BY THE SHARED INTERCEPTOR, WHICH IS NOT REGISTERED IN
+      // THIS HARNESS — so its absence here is the expected reading and is precisely what proves the
+      // screen does not write it. A feature that set the header itself would produce it in this
+      // configuration, and every request would then carry two sources of one value free to disagree.
+      expect(call.request.headers.has('X-Correlation-Id'))
+        .withContext('the feature does not write the correlation header')
+        .toBeFalse();
+      expect(call.request.headers.keys().filter((name) => name.toLowerCase() !== 'accept'))
+        .withContext('and sets no other header of its own')
+        .toHaveSize(0);
+
+      call.flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
     });
   });
 

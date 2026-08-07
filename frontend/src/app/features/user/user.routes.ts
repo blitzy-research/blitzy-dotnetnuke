@@ -106,21 +106,6 @@ import type { Routes } from '@angular/router';
 import { permissionGuard } from '../../core/guards/permission.guard';
 
 /**
- * The wording the account-listing address renders in place of a listing.
- *
- * Held as a named constant so a specification can assert the rendered text against the
- * string the route supplies rather than restating it and letting the two drift.
- *
- * Phrased as a statement about the WORKSPACE rather than about the address, which is what
- * distinguishes it from the top-level catch-all sentence. `/users` is a declared, gated,
- * titled address that three existing screens navigate to; it is not an unrecognised one,
- * and telling an operator "no screen at this address" would misdescribe which of the two
- * situations they are in.
- */
-export const ACCOUNT_LISTING_UNAVAILABLE_MESSAGE =
-  'An account listing screen is not part of this administration workspace.';
-
-/**
  * The five child routes mounted beneath `/users`.
  *
  * Named exactly as `app.routes.ts` resolves it — `m.USER_ROUTES` — and exported by name
@@ -131,56 +116,29 @@ export const ACCOUNT_LISTING_UNAVAILABLE_MESSAGE =
 export const USER_ROUTES: Routes = [
   {
     /**
-     * `/users` — the account listing address.
+     * `/users` — the account listing, replacing the `grdUsers` data grid of
+     * `Website/admin/Users/users.ascx` (L22) and its paging control (L83).
      *
-     * ⚠ THIS RESOLVES TO AN EXPLANATION RATHER THAN TO A LISTING, AND THAT IS A RECORDED
-     * SHORTFALL RATHER THAN A DESIGN PREFERENCE.
+     * This address is a live navigation target from three places that already exist: the
+     * account form navigates here after a record is created and again after one is deleted
+     * — the second reproducing the measured legacy redirect at L900 of the code-behind —
+     * and the membership settings screen links here from its header action slot. It is also
+     * the rail's entry for account administration.
      *
-     * `features/user/user-list/user-list.component.ts` exists and declares
-     * `UserListComponent`, but its decorator names `./user-list.component.html` and
-     * `./user-list.component.scss` and NEITHER FILE IS PRESENT. Pointing this route at it
-     * fails the production build outright with
-     * `TS-992008: Could not find template file './user-list.component.html'` — established
-     * by running the build, not by inference. The component compiles today only because
-     * nothing imports it, `tsconfig.app.json` being driven by the import graph from
-     * `src/main.ts`. Authoring that template and stylesheet belongs to the component's own
-     * author, so it is not done from here.
+     * ⚠ Carries no `canActivate` and names no policy: reading the listing is admitted to
+     * any signed-in operator by the parent's session gate, exactly as the sibling role
+     * barrel leaves its own listing ungated and gates only its writes. The mutating
+     * affordances inside the screen are gated by the permission directive, and the server
+     * answers 403 regardless — which is the only authority.
      *
-     * The address still has to resolve, because it is a live navigation target from three
-     * places that already exist: the account form navigates here after a record is created
-     * and again after one is deleted — the second reproducing the measured legacy redirect
-     * at L900 of the code-behind — and the membership settings screen links here from its
-     * header action slot. Leaving it unmatched would fall through to the top-level catch-all
-     * and land an operator outside the gated area on a not-found view, reading as a mistyped
-     * address rather than as a known gap. Redirecting it elsewhere would rewrite
-     * the address bar so nobody could tell they had been sent somewhere else. Resolving it
-     * to the shared empty state invents no screen, keeps the address inside the gated area
-     * with a title of its own, and says plainly what is missing.
-     *
-     * ONE EDIT COMPLETES IT once the two sibling files land: point the lazy import below at
-     * `./user-list/user-list.component`, resolve its exported class instead of the shared
-     * empty state, then delete the `data` entry that follows.
-     *
-     * Carries no `canActivate` and names no policy: reading the listing is admitted to any
-     * signed-in operator by the parent's session gate, exactly as the sibling role barrel
-     * leaves its own listing ungated and gates only its writes.
+     * ⚠ Resolved by NAME, not as a default export: a rename would leave the dynamic import
+     * yielding `undefined` and take the address to the catch-all with no compile error to
+     * report it.
      */
     path: '',
     title: 'User Accounts',
     loadComponent: () =>
-      import('../../shared/components/empty-state/empty-state.component').then(
-        (m) => m.EmptyStateComponent,
-      ),
-
-    /**
-     * Bound to the shared component's `message` input by the router's component-input
-     * binder, which writes route data onto a declared input of the same name — so this key
-     * is load-bearing and must stay spelled as the input is. The component's own default
-     * describes an empty RESULT SET, which is a different statement from a screen that is
-     * not present at all, and this wording is deliberately distinguishable from the
-     * top-level catch-all sentence for the same reason.
-     */
-    data: { message: ACCOUNT_LISTING_UNAVAILABLE_MESSAGE },
+      import('./user-list/user-list.component').then((m) => m.UserListComponent),
   },
   {
     /**

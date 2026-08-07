@@ -1,80 +1,175 @@
-//  user-list.component.scss
-//  User Accounts listing — the screen served by /portals/:portalId/users
+// =============================================================================
+//  user-list.component.scss — the User Accounts listing screen
+// =============================================================================
 //
 //  ROLE
 //  ----
-//  Styles the screen that replaces `Website/admin/Users/users.ascx` and its
-//  code-behind. The heading, its projected action bar, the grid, the pager, the
-//  labelled field, the free-text filter, the confirmation dialog and the failure
-//  banner are all shared components and style themselves; this file styles only the
-//  parts this screen contributes — the header actions, the failure region, the filter
-//  row, the first-letter strip, the row commands and their glyphs, and the electronic
-//  mail cell.
+//  Styles the screen that replaces the Web Forms control pair
+//  `Website/admin/Users/users.ascx` (83 lines) and its code-behind. The heading and
+//  its projected action bar, the record grid, the pager, the labelled field, the
+//  free-text filter, the confirmation dialogue and the failure banner are all shared
+//  components and style themselves. This file styles ONLY what this screen
+//  contributes: the vertical rhythm between its regions, the header-action ink, the
+//  failure region, the filter row, the first-letter strip, the row commands and their
+//  glyphs, and the electronic-mail cell.
 //
-//  It declares no page gutter, no content cap and no section rhythm. Those belong to
-//  the shell: src/styles/_layout.scss owns `.shell__main`, `.layout-container`,
-//  `.content-region` and `.content-region__section`, and re-declaring any of them here
-//  would ADD to them rather than replace them.
+//  WHAT THIS FILE DELIBERATELY DOES NOT STYLE
+//  ------------------------------------------
+//  * Table chrome. `src/styles/_tables.scss` already supplies every global rule for
+//    `table`, `caption`, `thead`, `tbody`, `tfoot`, `tr`, `th`, `td`, `th[scope]`,
+//    the sortable-header hook, the selected-row hook, the empty-row hook and the
+//    horizontal-scroll hook, and the shared grid inherits all of them. Restating one
+//    here would ADD a second definition site free to drift from the first, so none is
+//    restated — not the cell padding, not the top alignment, not the reflow rule.
+//  * Form chrome. `_forms.scss` already supplies `label`, `input`, `select`,
+//    `textarea`, `button`, `fieldset` and `legend` plus the invalid, disabled,
+//    required and help-region hooks. The help affordance in particular belongs to the
+//    shared labelled-field component and is not touched here.
+//  * The internals of any shared component. Every rule below matches either this
+//    component's host or an element written in its own template — including the seven
+//    cell templates, whose elements carry this component's content attribute even
+//    though the shared grid renders them. No rule pierces encapsulation: this file
+//    contains no descendant-piercing pseudo-element, in either its bare or its
+//    host-prefixed form, and no importance flag.
+//  * Horizontal scrolling of the grid. That is ALREADY OWNED twice over — the shared
+//    grid gives its own container an automatic overflow and floors the table at the
+//    shared minimum measure, and the global table partial exposes a scroll hook of
+//    its own. Duplicating it here would be a second, competing definition.
+//  * The page gutter, the content cap and the section rule. Those belong to
+//    `_layout.scss`, which owns the shell's main region and the content container.
 //
 //  ZERO HARDCODED VALUES
+//  ---------------------
 //  Every property value below resolves either to a design token declared in
-//  src/styles/_tokens.scss or to one of the six literals the plan permits — `0`,
-//  `none`, `auto`, `inherit`, `currentColor`, `transparent`. `grid`, `flex`,
-//  `inline-flex`, `wrap`, `start`, `end`, `center`, `none` and `nowrap` name a layout
+//  `src/styles/_tokens.scss` or to one of the six literals the migration plan
+//  permits — `0`, `none`, `auto`, `inherit`, `currentColor`, `transparent`. `grid`,
+//  `flex`, `inline-flex`, `wrap`, `center`, `end`, `start` and `nowrap` name a layout
 //  mechanism rather than a measured design decision and have no token to resolve to.
 //  There is no colour literal, no length literal, no bare numeric weight, no
-//  importance flag, no asset-reference function and no raw media query in this file.
+//  importance flag, no asset-reference function and no raw viewport query in this
+//  file, and no legacy colour value appears even inside a comment: a literal sitting
+//  in a comment is one copy-paste away from becoming a declaration, so legacy values
+//  are named below by their TOKEN or by DESCRIPTION only.
 //
 //  SELECTOR CONTRACT — shared with user-list.component.html
-//  Emulated view encapsulation confines every selector below to this component.
+//  -------------------------------------------------------
+//  The template's vocabulary is CLOSED at thirteen names and every one of them is
+//  answered here, so no region can render unstyled and no selector below can match
+//  nothing:
 //
-//    .user-list__page-action        the three header actions, projected into page-header
-//    .user-list__failure            the failure banner and its retry, stacked
-//    .user-list__failure-retry      that retry command
-//    .user-list__filters            the free-text filter beside the search-axis field
-//    .user-list__search             the shared search control within that row
-//    .user-list__search-field       the labelled field holding the axis selector
-//    .user-list__letters            the first-letter filter strip
-//    .user-list__letter             one entry in that strip
-//    .user-list__row-action         a per-row command
-//    .user-list__row-action--danger the destructive one
-//    .user-list__icon               a command's decorative vector glyph
-//    .user-list__action-label       the text beside that glyph
-//    .user-list__email             the mail-to destination in the address column
+//    .user-list__page-action         the three header actions, projected into the
+//                                    shared page header
+//    .user-list__failure             the failure banner and its retry, stacked
+//    .user-list__failure-retry       that retry command
+//    .user-list__filters             the free-text filter beside the search-axis field
+//    .user-list__search              the shared search control within that row
+//    .user-list__search-field        the labelled field holding the axis selector
+//    .user-list__letters             the first-letter filter strip
+//    .user-list__letter              one entry in that strip
+//    .user-list__row-action          a per-row command
+//    .user-list__row-action--danger  the destructive one
+//    .user-list__action-label        the text beside a command's glyph
+//    .user-list__icon                that command's decorative vector glyph
+//    .user-list__email               the electronic-mail destination in its own cell
 //
-//  The treatments are shared with the role listing deliberately: the two screens
-//  present the same kinds of affordance, and a difference in appearance would imply a
-//  difference in kind that does not exist.
+//  REPORTED GAP — THE COMPOSED ADDRESS CELL HAS NO SELECTOR AND CANNOT HAVE ONE.
+//  The brief asks for a wrapping treatment on the cell that merges six profile
+//  fields. There is no class for it and inventing one would silently match nothing:
+//  that column is a BOUND TEXT column, so its text is rendered by the shared grid
+//  inside the grid's own cell element, which is another component's internal and is
+//  therefore out of bounds here. The treatment the brief asks for is already in
+//  force, from the global table partial's own cell rule, which permits a break inside
+//  an unbroken run precisely so a long value stays inside its column instead of
+//  forcing the table wider. Nothing is added and nothing is needed.
+//
+//  REPORTED GAP — THERE IS NO BASE TEXT COLOUR TOKEN, AND THAT IS BY DESIGN.
+//  The colour vocabulary is closed at eleven members and deliberately holds no base
+//  text entry, because legacy body text declared no colour at all and its rendered
+//  ink simply IS the user agent's default. Wherever this file needs that ink it
+//  INHERITS it or uses `currentColor`; no fallback is hardcoded and no token name is
+//  invented.
+//
+//  PROVENANCE
+//  ----------
+//  The only visual design source for this migration is the legacy portal CSS and the
+//  grid markup that wires it — no design file, frame or URL was supplied — and both
+//  reference stylesheets are read-only inputs that this work never modifies.
+// =============================================================================
 
-// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available here.
+// Sass modules are per-file and are NOT ambient: a load in `src/styles.scss` does not
+// make these members visible here, so this stylesheet loads the partial itself. The
+// path climbs FOUR levels, counted rather than copied — `user-list/` to `user/` to
+// `features/` to `app/` to `src/` — which is the depth the partial's own documented
+// path table gives for a feature screen. A layout or directive stylesheet sits one
+// level shallower and legitimately climbs three; copying that line here would resolve
+// to a directory that does not exist and fail the build outright. The token partial is
+// deliberately NOT loaded: tokens are CSS custom properties that arrive through the
+// global cascade at run time, so importing them would emit the document-root block a
+// second time.
 @use '../../../../styles/mixins' as mx;
 
 // -----------------------------------------------------------------------------
-//  1. HOST
+//  1. THE PAGE STACK
 // -----------------------------------------------------------------------------
-//  The screen is routed into `<router-outlet>` inside the shell's content region, and
-//  that region already carries the rhythm between its children. The host is therefore
-//  a plain block that adds nothing: an unknown element is inline by default, and an
-//  inline host would collapse the block margins of the sections inside it.
+//  This host IS the screen's layout container, which is the contract the paired
+//  template states explicitly: every region is a direct child of it and not one
+//  declares an outer margin of its own. Nothing above it supplies the rhythm either —
+//  the shell's main region carries the page gutter but no flow of its own, the reset
+//  normalises only the document body's margin, and every shared component host is a
+//  plain block with no margin — so if this rule did not own the spacing, the six
+//  regions would butt directly against one another. A custom element is inline by
+//  default and would not contain its block-level children correctly, so a
+//  box-generating flow has to be declared here in any case.
+//
+//  `row-gap` through `gap` rather than margins on the children, so no rule has to be
+//  unwound for the first or last region and no collapsing margin can surprise a later
+//  author. This is the same shape the sibling listings and the sibling screen in this
+//  same feature folder use, so the four record screens share one rhythm instead of
+//  four.
+//
+//  THE SINGLE TRACK IS LOAD-BEARING RATHER THAN DECORATIVE. This screen carries the
+//  widest grid in the application — eleven columns, of which ten carry account facts —
+//  and a grid item's automatic minimum size is its content, so without the shared
+//  fluid track's zero minimum the grid would refuse to shrink and would widen the
+//  page itself, putting a horizontal scrollbar on the whole document instead of on
+//  the region that clips. The track yields completely; the shared grid then scrolls
+//  inside it, which is behaviour it already owns.
+//
+//  Typography is deliberately not restated: the reset sets the base family, size and
+//  line height on the document body and every region here inherits them.
+//
+// MIGRATION: the rhythm itself is a net addition, because the legacy screen expressed
+//  its spacing as markup rather than as style — `users.ascx` L12 held a table row whose
+//  only content was a height attribute, and L82 emitted two line breaks above the
+//  pager. Neither is structure, so neither survives; a spacing token does that work and
+//  no spacer element or line break appears anywhere in the paired template.
 :host {
-  display: block;
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
 }
 
 // -----------------------------------------------------------------------------
 //  2. NAVIGATING AFFORDANCES — the header actions and the mail-to destination
 // -----------------------------------------------------------------------------
-//  MIGRATION: the legacy header actions were image links — `users.ascx` placed
-//  `~/images/add.gif` beside "Add New User" and drew the two settings affordances the
-//  same way. No image asset exists in this workspace to stand in for them, so the
-//  paired template renders text with an inline vector glyph and no rule here
-//  references an external URL.
+//  Both are real links, so both read alike. The underline is kept AT REST, unlike the
+//  chrome links in the shell's bands: these sit within content, where the reset
+//  removes the user agent's own underline, and leaving it removed would make colour
+//  the only cue that a word is a destination — which fails the rule that colour is
+//  never the sole carrier of meaning. Only the ink changes on hover, and it changes
+//  through the shared interaction mixin so the state is guarded behind a
+//  hover-capability query and a touch tap cannot leave a row reading as hovered
+//  indefinitely.
 //
-//  The underline is kept at rest, unlike the chrome links in the shell's bands: these
-//  are links WITHIN content, where _reset.scss's underline is the correct treatment and
-//  removing it would leave colour as the only cue that a word is a destination. Only
-//  the ink changes on hover, and it changes through the shared mixin so the state is
-//  guarded behind a hover-capability query and so this declaration outweighs the
-//  resting rule beside it.
+//  No layout is declared for the header actions: the shared page header already lays
+//  its projected actions out in a row with a gap of its own, and a gap reaches
+//  projected children because it is a property of the container. This rule therefore
+//  contributes ink and nothing else.
+//
+// MIGRATION: the legacy affordances were raster images — the create action was drawn
+//  beside an add glyph and the row commands were image buttons. Exactly one static
+//  binary is in scope for this workspace, so every glyph on this screen is inline
+//  vector art authored in the template and no rule here references an external asset.
 .user-list__page-action,
 .user-list__email {
   color: var(--color-primary);
@@ -85,21 +180,29 @@
   }
 }
 
-//  The address cell. An address is a single token that must not be broken across lines
-//  in the middle, because a wrapped address cannot be read back aloud or copied
-//  reliably; the grid scrolls horizontally from its own minimum measure instead, which
-//  is a behaviour the shared table already owns.
-.user-list__email {
-  white-space: nowrap;
-}
+//  THE ELECTRONIC-MAIL CELL REFLOWS AND IS NOT HELD TO ONE LINE, which is a
+//  correction rather than a preference. The shared grid lays its table out in fixed
+//  mode and floors it at the shared minimum measure, so each of eleven columns
+//  receives an equal share of that floor and a column's width is independent of what
+//  it holds. A stored address is routinely wider than that share, so holding it to a
+//  single line would push it out of its own cell and over its neighbour — the global
+//  table partial says so in as many words, permitting a single-line column only where
+//  a component can also set an explicit width for it, which a consumer of the shared
+//  grid cannot. So no wrapping rule is declared at all: the cell inherits the global
+//  break-inside-a-long-run behaviour, the address stays inside its column, and the
+//  link keeps the ink it takes from the rule above.
 
 // -----------------------------------------------------------------------------
-//  3. INLINE FAILURE SURFACE
+//  3. THE INLINE FAILURE SURFACE
 // -----------------------------------------------------------------------------
-//  The banner derives its own severity, renders the field-error summary and carries the
-//  live region, so this region only stacks it above the retry command. The command is
-//  held at its content width by `start` justification rather than being stretched the
-//  width of the page, which would read as a primary action.
+//  The banner derives its own severity, renders the per-field summary and carries its
+//  own live region, so this region only stacks the retry beneath it. The command is
+//  held at its content width by start justification rather than being stretched the
+//  width of the page, which would read as a primary action for what is a recovery from
+//  a transient fault.
+//
+//  The narrower gap is deliberate: banner and retry are one unit answering one
+//  failure, so they sit closer together than the screen's regions do.
 .user-list__failure {
   display: grid;
   gap: var(--space-2);
@@ -109,15 +212,25 @@
 // -----------------------------------------------------------------------------
 //  4. THE FILTER ROW
 // -----------------------------------------------------------------------------
-//  MIGRATION: replaces the layout row at `users.ascx` L5-L21, whose cells were sized
-//  with width attributes and separated by literal non-breaking spaces. Neither the
-//  attributes nor the spaces are structure, so neither survives — the gaps below do
-//  that work and no non-breaking space appears anywhere in the template.
+// MIGRATION: this replaces a LAYOUT TABLE. `users.ascx` L3-L13 opened the screen with
+//  a fixed-width two-cell table whose first cell carried a width attribute for the
+//  label and whose second held all three search controls, followed by a spacer row.
+//  It carried no summary, no header cell and no caption, so it was spacing and
+//  alignment expressed as markup rather than structure, and none of it survives: the
+//  region is laid out with CSS and only the record grid remains a real table. The
+//  fixed outer width and the label cell's width are not transcribed as lengths — the
+//  row simply fills its track, and the gaps below do the separating.
 //
-//  The row wraps rather than scrolls, so the filter and the axis selector stay
-//  reachable at every width without a media query of its own: a layout that reflows is
-//  preferred to a breakpoint invented for the purpose. `end` alignment keeps the two
-//  controls' baselines together when the labelled field is the taller of the two,
+//  The label cell has no counterpart here at all, and that is the shared search
+//  control's doing rather than an omission: it paints the legacy wording as its own
+//  associated label, so writing a second label beside the control would put two on one
+//  field and read the words twice to a screen reader. Its width is therefore that
+//  component's concern.
+//
+//  The row wraps rather than scrolls, so both controls stay reachable at every width
+//  without a viewport query of its own — a layout that reflows is preferred to a
+//  breakpoint invented for the purpose. End alignment keeps the two controls' lower
+//  edges together when the labelled field is the taller of the two, which it is,
 //  because that field carries a label above its control and the search input does not.
 .user-list__filters {
   display: flex;
@@ -127,61 +240,171 @@
 }
 
 //  The free-text filter takes the fluid share of the row from a zero basis, so a long
-//  placeholder cannot set the width of the whole row, and `min-inline-size: 0` is what
-//  actually permits a flex item to shrink below its intrinsic content width.
+//  placeholder cannot set the width of the whole row, and the explicit zero minimum is
+//  what actually permits a flex item to shrink below its intrinsic content width. Its
+//  own upper bound is the shared control's business and is not restated here.
 .user-list__search {
   flex: var(--flex-fill-from-zero);
   min-inline-size: 0;
 }
 
-//  The labelled field holding the search-axis selector is sized by its content and
-//  capped at the narrowest shared step, so one long profile-property name cannot widen
-//  the row. The cap is read from the breakpoint scale rather than written as a length,
-//  which is the use the mixin partial documents for that function.
+//  THE SEARCH-AXIS FIELD, and the sizing here answers a measured property of the data
+//  rather than a taste. The axis list is an OPEN SET: the two account fields lead it
+//  and then one entry follows for every profile property the tenant has declared, each
+//  labelled with its own raw name when no wording is known for it. So the widest
+//  option is tenant-controlled and unbounded, and a field sized by its content would
+//  let one long property name set the width of the row and push it past the viewport.
+//  It therefore takes a fluid share from a zero basis with an explicit zero minimum,
+//  exactly as the sibling listing's group selector does for the same reason.
+//
+//  The shared labelled field is the one component host in this workspace that carries
+//  a margin of its own. Left in place it would lift this field's lower edge a full step
+//  above the search input's inside an end-aligned row, and add that step again beneath
+//  the row on top of the stack's own gap. Neutralising it here is what keeps the two
+//  controls level and the rhythm single-sourced.
 .user-list__search-field {
-  flex: none;
-  max-inline-size: mx.breakpoint('sm');
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+  margin-block-end: 0;
+
+  // MIGRATION: every viewport query in this file is a NET ADDITION — the legacy
+  // stylesheets declare none at all, in either file, so there is no responsive
+  // behaviour to preserve and no legacy figure to match. The step comes from the
+  // shared breakpoint mixin rather than from a query written here, which is the only
+  // way a breakpoint stays single-sourced.
+  //
+  // Authored mobile-first, which is the direction the mixin documents: below the step
+  // the field simply fills the row it has wrapped onto, and only from the step upward
+  // is it capped, so a wide monitor does not hand a selector more width than it can
+  // use. The cap is READ from the breakpoint scale through the exported lookup rather
+  // than written as a length, so it cannot drift from the scale; calling that lookup
+  // is not a licence to hand-roll the query, which is why the query itself is a mixin.
+  @include mx.respond-above('md') {
+    max-inline-size: mx.breakpoint('sm');
+  }
 }
 
 // -----------------------------------------------------------------------------
-//  5. THE FIRST-LETTER STRIP
+//  5. THE FIRST-LETTER FILTER STRIP
 // -----------------------------------------------------------------------------
-//  Twenty-six letters plus the clearing entry. It wraps, because twenty-seven entries
-//  do not fit on one line at a narrow width and a strip that scrolled would hide the
-//  later letters behind a gesture; wrapping keeps every entry visible and in reading
-//  order at every width, again without a media query.
+//  Twenty-six letters followed by the clearing entry — twenty-seven entries, in the
+//  measured legacy order, the clearing entry last because the legacy list appended it
+//  rather than leading with it.
 //
-//  MIGRATION: the measured legacy affordance is a bare inline text link — `default.css`
-//  L442-L447 declares `.CommandButton` with a font family, an eleven-pixel size and a
-//  normal weight, and nothing else: no padding, no dimension and no minimum. The
-//  entries were separated by a pair of non-breaking spaces and nothing more. That
-//  measurement is preserved rather than silently enlarged, so no minimum target size is
-//  declared here; the paired template flags the pointer-target shortfall for designer
-//  review. Keyboard operation is unaffected — every entry is a real button in document
-//  order with the shared focus ring — so the shortfall is a pointer concern only.
+//  CENTRED ON THE INLINE AXIS, which is the measured legacy placement: the panel that
+//  held this strip declared a horizontal alignment of centre and said nothing else
+//  about where it sat. Distribution is what expresses that on a flex row; cross-axis
+//  alignment would only have levelled the entries within a line and would have left
+//  the strip hugging the leading edge, which is not what the legacy rendered.
+//
+//  It wraps rather than scrolls. Twenty-seven entries do not fit on one line at a
+//  narrow width, and a strip that scrolled would hide the later letters behind a
+//  gesture; wrapping keeps every entry visible and in reading order at every width,
+//  again without a query of its own. The row gap is the narrower step because a
+//  wrapped line of single characters needs less separation than the columns do.
+//
+// MIGRATION: the separator was a pair of non-breaking spaces and nothing else
+//  (`users.ascx` L17). Literal spacing characters are not structure, so the pair does
+//  not survive as markup; the column gap replaces it, resolved to the spacing step
+//  nearest the pair's rendered measure at the legacy type size. That is the general
+//  rule on this screen — every legacy pixel metric, the strip's separators, the filter
+//  row's fixed width, its label-cell width and the grid's cell padding alike, resolves
+//  to a token or to the owner that already declares one, and not one is transcribed as
+//  a length.
 .user-list__letters {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1) var(--space-2);
+  justify-content: center;
   align-items: center;
+  gap: var(--space-1) var(--space-2);
 }
 
-//  One entry. Held to its content on both axes so a single character does not acquire
-//  the button chrome's full resting width, which would turn the strip into a keypad and
-//  change its density — the one thing the measured source is explicit about.
+//  ONE ENTRY, AND IT MUST NOT LOOK LIKE A BUTTON EVEN THOUGH IT IS ONE.
+//
+//  The element is a real button because selecting an entry changes client state and no
+//  address, and an anchor with nowhere to go would be the worse translation. But its
+//  APPEARANCE is settled by measurement: the legacy entry was a bare inline text link
+//  whose class declared a family, a size and a normal weight and NOTHING else — no
+//  padding, no border, no background, no dimension and no minimum — and the anchor
+//  states beside it declared an underline with the brand ink at rest and on visit.
+//  Left with the global button chrome, twenty-seven single characters would each
+//  acquire a filled, bordered, generously padded box and the strip would read as a
+//  keypad rather than as the row of links the legacy rendered. So the box is collapsed
+//  back to the measured one: no fill, no boundary, no padding.
+//
+//  The size and weight are inherited rather than restated, and here that genuinely is
+//  safe — verified by measurement rather than assumed. This strip sits OUTSIDE the grid,
+//  where the ambient step is already the one the legacy class measured and the step the
+//  form vocabulary puts on a button is the same value, so the two agree and a
+//  restatement would only create a second definition site. The row commands further down
+//  need an explicit inheritance for exactly the reason this rule does not: they sit
+//  INSIDE a cell whose type size is stepped down, where the two no longer agree.
+//
+//  Held to its content on the inline axis, and its single character kept on one line,
+//  so an entry cannot stretch to a share of the row.
+//
+// MIGRATION: THE HOVER INK IS NOT THE LEGACY HOVER INK, and this follows a decision
+//  already taken for every button in the workspace rather than being taken here. The
+//  legacy command link turned the error hue on hover; the shared form vocabulary
+//  records that spending the error signal on a benign hover would dilute the one colour
+//  that has to stay unambiguous, and uses the hover ink declared for that role instead.
+//  This entry does the same, which also makes the strip and the header actions above
+//  read as one family. A visible difference from the legacy rendering, and a deliberate
+//  one.
+//
+//  The press state carries no fill either, and that IS parity: the legacy active state
+//  declared an underline and the brand ink and no surface change. The global button
+//  rule's pressed fill is outranked by the resting declarations above, so nothing has to
+//  be undone for it.
 .user-list__letter {
   flex: none;
   white-space: nowrap;
+
+  color: var(--color-primary);
+  text-decoration: underline;
+
+  background-color: transparent;
+  border: none;
+  padding: 0;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+
+  //  THE RING IS RESTATED HERE BECAUSE THE BOX IT MEASURES AGAINST HAS JUST CHANGED.
+  //  The shared focus ring is already applied to every button globally and the mixin is
+  //  documented idempotent and safe to apply again on an individual control, so this
+  //  costs nothing and can never conflict. It is stated at this site deliberately: the
+  //  ring's offset is measured from the border box, the three declarations above
+  //  collapse that box to the glyph itself, and this is also the smallest pointer target
+  //  on the screen — the paired template raises a standing accessibility flag for that
+  //  shortfall, implemented per the measured design source rather than silently
+  //  enlarged. Where the target is smallest the keyboard indicator has to be least
+  //  ambiguous, and restating it here is what makes the indicator's survival of the
+  //  chrome removal an explicit, reviewable fact rather than an inherited accident.
+  @include mx.focus-ring;
 }
 
 // -----------------------------------------------------------------------------
-//  6. ROW COMMANDS — one treatment for every affordance inside the grid
+//  6. THE GLYPH-AND-LABEL COMMANDS
 // -----------------------------------------------------------------------------
-//  The navigating commands and the destructive one read alike because they occupy the
-//  same place and are reached the same way; only the ink of the destructive one differs.
-//  `inline-flex` holds each at its content width inside a cell that may be wider and
-//  lines the glyph up with the label beside it. The buttons take their chrome from
-//  _forms.scss and the anchors their ink from section 2, so neither is restated here.
+//  The three row commands and the retry beside a failure share one internal
+//  arrangement: a glyph, a gap, and a label lined up with it. That much is common, and
+//  it is all that is common — the two groups take DIFFERENT surfaces below, for reasons
+//  each rule states.
+//
+//  Inline-level flow holds each at its content width rather than filling a cell or a
+//  row that may be wider. Measured in a real browser, the computed value at BOTH of
+//  these elements' current positions is the blockified `flex` rather than the authored
+//  `inline-flex`, and that is CSS working as specified rather than something overriding
+//  this rule: a row command's parent is the shared grid's own command group, which is
+//  itself a flex container, and the retry's parent is the failure stack below, which is
+//  a grid container — and a flex or grid item is blockified. Placement is therefore the
+//  parent's to decide in both cases, which is what the shared grid intends, and each
+//  parent content-sizes its items anyway. The authored value is kept rather than
+//  written as `flex` because it is the value that stays correct if either element is
+//  ever placed in ordinary flow, where `flex` would stretch it and `inline-flex` would
+//  not.
 .user-list__row-action,
 .user-list__failure-retry {
   display: inline-flex;
@@ -189,32 +412,145 @@
   align-items: center;
 }
 
-//  A colour change only, and specifically the accessible danger ink rather than the raw
-//  legacy red. A destructive command that also moved or resized would be a different
-//  affordance in a different place, which is how a reader mis-presses the one command
-//  that cannot be undone. Setting ink alone also leaves the boundary and fill shifts
-//  from the global button hover intact, so the control still answers a pointer without
-//  the error colour being animated away.
-.user-list__row-action--danger {
-  color: var(--color-danger-text);
+// MIGRATION: THE ROW COMMANDS CARRY NO SURFACE, WHICH IS THE MEASURED LEGACY
+//  APPEARANCE. All three were image command columns — a bare sixteen-unit glyph each,
+//  with no fill, no boundary and no padding of any kind. Two of the three are anchors
+//  here and so already carry none, but the destructive one has to be a button, because
+//  removing an account changes state and no address; left with the global button
+//  chrome it alone acquired a fill, a hairline boundary, a corner radius and generous
+//  padding, which measured far wider than its two siblings inside a fixed-layout column
+//  and read as a different KIND of affordance from the two commands beside it in the
+//  same cell. Collapsing the surface is what makes the three actually read alike, and
+//  it is the same substitution the filter strip above makes, for the same measured
+//  reason. The retry beside a failure deliberately keeps the global chrome: it is a
+//  net-new surface with no legacy counterpart at all, it stands alone rather than beside
+//  peers, and a recovery command is exactly where a button ought to look like one.
+//
+//  The destructive command is then distinguished by INK ALONE, and specifically the
+//  accessible danger ink rather than the raw legacy error hue, which does not clear the
+//  contrast floor for normal text. Measured against both surfaces this cell can present
+//  — the page background and the alternating row surface — the accessible ink clears AA
+//  on each, so removing the fill costs no contrast. A destructive command that also
+//  moved or resized would be a different affordance in a different place, which is how a
+//  reader mis-presses the one command that cannot be taken back, so nothing but the ink
+//  changes.
+//  THE TYPE SIZE IS INHERITED, AND THIS DECLARATION IS LOAD-BEARING RATHER THAN TIDY.
+//  Measured in a real browser: without it the destructive command set one step LARGER
+//  than the two commands beside it in the same row. The global table conventions step a
+//  cell's type down to the smaller step, which is the migration of the legacy grid
+//  cell's own measured size, and an anchor inherits that. A button does not: the form
+//  vocabulary declares an explicit size on `button`, and an explicit declaration beats
+//  an inherited value however far up the chain it came from. Inheriting closes that gap
+//  and lands the button on the same step as its siblings — so this is a FIDELITY fix as
+//  well as a consistency one, because the step the cell hands down is the legacy grid
+//  cell's own size and the button's explicit step is not. The line height follows for
+//  free, both rules resolving the same ratio.
+.user-list__row-action {
+  color: var(--color-primary);
+  font-size: inherit;
+
+  background-color: transparent;
+  border: none;
+  padding: 0;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+
+  //  Restated for the reason the filter strip records: the ring's offset is measured
+  //  from the border box and the three declarations above collapse that box onto the
+  //  glyph and its label. The mixin is idempotent, so this cannot conflict with the ring
+  //  the form vocabulary already applies to the button or the reset applies to the
+  //  anchors — it makes the indicator's survival of the surface removal explicit.
+  @include mx.focus-ring;
 }
 
-//  MIGRATION: the legacy row affordances were raster images. No image asset exists in
-//  this workspace to stand in for them, so the template draws inline vector art instead
-//  and no rule here references an external URL. The glyph is decorative and marked
-//  `aria-hidden` by the template, it inherits its stroke from `currentColor` so it
-//  tracks the ink of whatever command hosts it — including the danger ink above — it is
-//  sized from the type scale so it tracks the text beside it, and it never shrinks.
+//  The ink is declared on the group above rather than left to the element type on
+//  purpose: an anchor takes the brand ink from the reset and a button takes it from the
+//  form vocabulary, and naming it once here is what guarantees a command reads the same
+//  whichever element it has to be.
+//
+// MIGRATION: THE DESTRUCTIVE COMMAND HOLDS ITS INK THROUGH HOVER, and that is the same
+//  decision the shared form vocabulary records for the inverse case. Its two siblings
+//  shift to the hover ink because they navigate; letting the destructive one do the same
+//  would trade the one colour on this screen that has to stay unambiguous for a benign
+//  pointer cue. The hover declaration is therefore deliberate rather than redundant — it
+//  is what stops the group rule above reaching this element — and the affordance is not
+//  lost, because the anchors' underline and the reset's own hover treatment carry it.
+.user-list__row-action--danger {
+  color: var(--color-danger-text);
+
+  @include mx.hover {
+    color: var(--color-danger-text);
+  }
+}
+
+//  TWO RESIDUALS ARE REPORTED HERE RATHER THAN NEUTRALISED, and the reasoning is recorded
+//  so a later author does not rediscover them and "fix" them locally.
+//
+//  The corner radius the form vocabulary puts on a button SURVIVES the surface collapse
+//  above, because the border shorthand resets width, style, colour and image but not the
+//  radius. It is inert: with a zero-width border and a fully transparent fill there is no
+//  edge and no surface to round, so nothing is painted differently. Its one observable
+//  consequence is that the focus outline follows it and its corners read as very slightly
+//  rounded — which is true of EVERY button in this workspace, including the filter-strip
+//  entries above and the shared controls this screen composes. Clearing it on these two
+//  selectors alone would make this one screen's focus indicator the only square one in
+//  the application without changing a single painted pixel at rest, so it is left to the
+//  vocabulary that declares it.
+//
+//  The text-selection suppression that rule also applies survives for the same reason,
+//  so the destructive command's wording cannot be selected while its two siblings' can.
+//  It is not visual, it is workspace-wide, and on a command label it is arguably the
+//  wanted behaviour — a double press on a command should not select its wording — so it
+//  is likewise left where it is declared.
+
+// MIGRATION: the legacy row affordances were three raster images and this screen draws
+//  inline vector art instead, for the same reason section 2 gives — one static binary is
+//  in scope for this workspace and none of the legacy images is it. The glyph is
+//  decorative and hidden from the accessibility tree by the template, it is stroked in
+//  `currentColor` so it tracks the ink of whatever command hosts it including the danger
+//  ink above, it declares no dimension in markup so this rule sizes it, and it is sized
+//  from the type scale so it tracks the text beside it rather than being pinned to a
+//  device pixel count. It never shrinks: a glyph squeezed to nothing in a narrow column
+//  would leave a command with no visible affordance at all.
 .user-list__icon {
   flex: none;
   inline-size: var(--font-size-md);
   block-size: var(--font-size-md);
 }
 
-//  The label beside that glyph stays visible and unwrapped. Clipping it would leave a
-//  glyph carrying the entire meaning of a command, one of which destroys a record — and
-//  the legacy delete affordance reached assistive technology with no accessible name at
-//  all, which is the one gap on this screen worth closing rather than reproducing.
+//  THE LABEL BESIDE THAT GLYPH, and both rules here answer the same measured fact: this
+//  is the widest grid in the application and the shared table lays itself out in fixed
+//  mode, so each of eleven columns gets an equal share of a floor that does not grow
+//  with content, and the command column is the only one holding three unbreakable
+//  units.
+//
+//  So the label is allowed to REFLOW. A zero minimum is what permits a flex item to
+//  shrink below its content width at all, and breaking inside a long run is what keeps
+//  the command inside its cell instead of over its neighbour — the same policy the
+//  global table partial applies to every cell, and the reason no truncation hook is
+//  offered anywhere: a clipped command label hides which command it is, and one of these
+//  three destroys a record.
+//
+// MIGRATION: BELOW THE TABLET STEP THE LABEL IS WITHDRAWN FROM SIGHT ONLY, and this is
+//  a return toward the measured legacy presentation rather than a departure from it —
+//  the legacy commands were icon-only image buttons with no visible wording at all.
+//  Where every column is at its narrowest, three two-line commands stacked in one cell
+//  cost more than they explain, so the wording is hidden VISUALLY and kept in the
+//  accessibility tree by the shared mixin, which clips rather than removing the box.
+//  Nothing is lost to a screen reader: the template gives all three commands an
+//  accessible name that carries the command AND names the account, so the announcement
+//  is unchanged at every width, and above the step the visible wording returns — that
+//  being the accessibility gain over the legacy screen, kept wherever there is room for
+//  it. Withdrawal below a step rather than addition above it is the direction the mixin
+//  documents for a rule that has to be taken away, and it is the only shape that cannot
+//  half-undo the clipping geometry.
 .user-list__action-label {
-  white-space: nowrap;
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+
+  @include mx.respond-below('md') {
+    @include mx.visually-hidden;
+  }
 }

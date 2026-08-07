@@ -1,30 +1,153 @@
 <!--
-  The shell's five regions, in the exact source order the grid's mobile track list
-  expects: skip, header, sidebar, main, footer. Source order matters even though
-  every child is explicitly placed by `grid-area`, because the skip link must be the
-  first focusable element in the document and because a screen reader in
-  document-order mode follows source order rather than visual order.
+  THE APPLICATION SHELL TEMPLATE
 
-  The class names below are the grid areas published by `src/styles/_layout.scss`.
-  The host itself carries `.shell`, applied by the component's host metadata.
+  Composes the fixed regions of every administration screen around the routed
+  outlet. This is the ONLY template in the workspace that renders an outlet, and the
+  only one that renders the main landmark.
+
+  STRUCTURAL CONTRACT — exactly five element children of the component host, in this
+  order, each carrying the grid area published by `src/styles/_layout.scss`:
+
+    1. the skip link                 area `skip`
+    2. the banner component          area `header`
+    3. the secondary navigation region   area `sidebar`
+    4. the main region               area `main`
+    5. the footer component          area `footer`
+
+  The region classes go on the shell's DIRECT children. The host itself is the grid
+  container — it carries `.shell` from the component's host metadata — so NO wrapper
+  element may be interposed here: a wrapper would sever the parent-child
+  relationship the grid depends on, and every region would stack at full width
+  regardless of viewport. Two of the five children are component hosts that render
+  their real landmark element inside themselves, which is why the region classes
+  carry no element assumption of their own.
+
+  SOURCE ORDER IS TAB ORDER. Every region is placed explicitly by its grid area, so
+  visual position is the stylesheet's decision and is never a reason to reorder this
+  file. Source order is what the Tab key follows and what a screen reader in
+  document-order mode follows, which is why the skip link is first and the footer
+  band is last.
+
+  NO CONTROL FLOW. The composition is static — no condition, no repetition, nothing
+  to track. Speculative structure is out of scope.
 -->
 
-<!-- The skip link. A real anchor, because the `href` is what makes it a tab stop
-     and what makes assistive technology announce it as a link, and the global
-     partial hides it with `:not(:focus-visible)` so it stays in the tab order
-     while invisible.
+<!-- ========================= MIGRATION RECORD =========================
+     Divergences from the legacy page chrome are recorded here rather than silently
+     absorbed. Every line reference below was read from the checkout while authoring
+     this file. The legacy sources are `Website/Default.aspx` (30 lines),
+     `Website/Default.aspx.vb` (700 lines), the only complete skin in the checkout
+     `Website/Portals/_default/Skins/MinimalExtropy/index.ascx` (126 lines), and the
+     per-portal override sheet `Website/Portals/_default/portal.css` (275 lines).
+     ================================================================== -->
 
-     ⚠ THE FRAGMENT IS DELIBERATELY NOT ALLOWED TO RESOLVE. Activation is handled
-     and the default action cancelled, because a fragment-only `href` resolves
-     against the document's BASE url — `<base href="/">` — rather than against the
-     address showing, so from any route below the root it names a different path
-     and letting it resolve performs a full document reload that discards the
-     current screen. That was measured in a real browser against the production
-     bundle. The component documents the observation and the two alternatives that
-     were rejected. -->
-<a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)"
-  >Skip to main content</a
->
+<!-- MIGRATION: run-time dynamic layout selection becomes ONE static, compile-time
+     composition. The legacy chrome was not a component but executable markup chosen
+     per request. `Default.aspx` declared a single server placeholder (L25) and
+     `Default.aspx.vb` filled it: `LoadSkin` (L217-L243) stripped the application
+     path from the configured path (L221-L222), instantiated the control with
+     `LoadControl("~" & SkinPath)` (L224) and then called `DataBind()` (L226) — the
+     comment at L225 states outright that this executes "any server logic in the
+     skin", so the layout was code and not merely markup. L240 let the package
+     override the page doctype, and L590 added the instantiated control to the
+     placeholder. None of that survives: there is no run-time layout selection, no
+     per-portal chrome, no package registry, no theme selector and no dynamic control
+     loading. Skinning, containers and skin objects are all out of scope. This
+     product generation used skins rather than master pages — the checkout contains
+     zero master-page files — so no master-page-to-layout mapping was ever owed. -->
+
+<!-- MIGRATION: view state and the postback form are eliminated. `Default.aspx`
+     wrapped the whole page in one multipart server form (L23, carrying a multipart
+     encoding type, autocomplete disabled and a full-height inline declaration) that
+     contained a diagnostic label (L24) and two hidden inputs — `ScrollTop` (L26) and
+     `__dnnVariable` (L27) — whose only purpose was to carry scroll position and
+     client variables across postbacks. There is no form here, no hidden input and no
+     round trip. Scroll position is restored by the router's own in-memory scrolling,
+     configured once where the router is provided, so this template deliberately
+     implements none of its own. The two per-request client-script registrations the
+     legacy page performed — the script manager (L210) and the shared client script
+     include (L213) — are replaced wholesale by the compiled bundle. -->
+
+<!-- MIGRATION: the table-based pane layout is replaced by a CSS grid. The skin laid
+     its content out with a full-width table (L83-L100) holding five server-side
+     cells: a top pane spanning three columns (L85), left, content and right panes
+     (L89/L91/L93) and a bottom pane spanning three columns (L97) — every one of them
+     `visible="false"` by default and top-aligned, each band wrapped in a
+     three-element sliding-doors idiom (L24-L26, L38-L40, L60-L62, L106-L108), with
+     the float context reset by three clearing elements (L55, L73, L121). All of it
+     is DELETED rather than translated: the grid places the regions, and the clearing
+     elements, the sliding-doors wrappers and the layout table have no counterpart
+     here. That is "delete the workaround, adopt the primitive" applied literally. -->
+
+<!-- MIGRATION: the excluded skin-object vocabulary is deliberately not composed. The
+     skin registered thirteen skin objects (L2-L14: language, logo, navigation,
+     search, text, breadcrumb, user, login, links, and the three legal-notice and
+     copyright objects, plus styles) and opened with an administrative control-panel
+     slot (L17), closing at L126 with a conditional stylesheet served only to
+     browsers older than a 2006-era release. None is ported: the shell composes a
+     banner, a navigation region, a main region and a footer band, and nothing else.
+     The wording carried by the two legal-notice objects (L115-L116) has no target
+     route, so no placeholder link is emitted for it either. -->
+
+<!-- MIGRATION: the document envelope is reallocated, not dropped. The doctype
+     literal (`Default.aspx` L3), the html element's run-time attributes (L4), the
+     TWELVE `<meta` elements (L6-L17), the two stylesheet injection points (L18-L19),
+     the empty script-disabled element (L22), the package doctype override in
+     `SetSkinDoctype` (L255-L258, probing a per-skin doctype document and otherwise
+     defaulting to a 1998-era transitional declaration) and the per-portal favicon —
+     resolved from the portal home directory, cached under a portal-scoped key and
+     injected as a shortcut-icon link by `ManageFavicon` (L410-L427, the link written
+     at L422) — all belonged to the layout at run time. They now belong to the single
+     static document and its static icon asset, which are outside this component.
+     The run-time, cache-backed, ordered stylesheet cascade goes the same way:
+     `ManageStyleSheets` (L355-L408) read a cache entry keyed "CSS" (L360) and
+     appended the host default marked required (L366-L368), the package sheet, the
+     layout-file sheet and finally the per-portal sheet (L402-L406), and it ran TWICE
+     per request straddling the layout injection (L587, then L590, then L593, then
+     the favicon at L596). That becomes one build-time entry point plus
+     component-scoped stylesheets. Naming the reallocation here is what stops a
+     reader hunting for any of it in the shell. -->
+
+<!-- MIGRATION: skin-load diagnostics are not reproduced. A failure was caught
+     (L227-L237), surfaced only to portal or page administrators behind an explicit
+     membership check (L230, whose L231 comment reads "only display the error to
+     administrators"), html-encoded (L232) and logged (L235). That is legacy
+     precedent for not leaking diagnostics to unprivileged callers, and it is
+     honoured here by omission: this template has no error surface, no diagnostic
+     panel and no debug affordance. Failures are reported through the application's
+     own error surface, which is scoped inside the main region. -->
+
+<!-- MIGRATION: the localisation mechanism is not ported. Legacy wording came from
+     resource documents keyed by control identifier and property name — a construct
+     of the retired presentation framework — so wording is authored directly in
+     templates here, with those documents serving only as the authoritative
+     reference for the English text. A translation runtime is out of scope. Note also
+     that legacy resource text is UNTRUSTED: a minority of its values contain
+     escaped markup, including one live third-party script block. Such text is only
+     ever interpolated as plain text, never bound as markup. -->
+
+<!-- MIGRATION: the skip link is a NET ADDITION with no legacy counterpart. The
+     legacy checkout contains no skip link, no accessibility attribute of any kind,
+     no explicit landmark annotation on any page or user control, and no main
+     element — so this is not a translation of anything, and it has no visual cost.
+
+     A real anchor, because the address is what makes it a tab stop and what makes
+     assistive technology announce it as a link. The global layout partial hides it
+     with a negative focus-visible selector rather than by removing it from the
+     layout, so it stays in the tab order while invisible.
+
+     ⚠ THE FRAGMENT IS DELIBERATELY NOT ALLOWED TO RESOLVE. Activation is handled and
+     the default action cancelled, because a fragment-only address resolves against
+     the document's BASE url — the static document declares a root base, which deep
+     links require — rather than against the address showing. From any route below
+     the root it therefore names a DIFFERENT PATH, and letting it resolve performs a
+     full document reload that discards the current screen. That was measured in a
+     real browser against the production bundle, not inferred. The component
+     documents the two alternatives that were rejected: a router link with a fragment
+     navigates without reloading but moves NO focus, which is the one thing this
+     affordance exists to do, and removing the root base would fix the resolution and
+     break deep linking. The address is kept regardless, for the two reasons above. -->
+<a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)">Skip to main content</a>
 
 <app-header
   class="shell__header"
@@ -34,34 +157,74 @@
   (signOut)="onSignOut()"
 />
 
-<!-- The secondary navigation region. It is rendered unconditionally and left empty
-     by default, because the stylesheet collapses it with
-     `.shell__sidebar:empty { display: none }` and the grid's `auto` first column
-     then contributes no width. Content projected into `<app-shell>` lands here, so
-     a navigation surface can be supplied by whichever component mounts the shell
-     without this file changing. The projected content brings its own landmark and
-     its own accessible name; an empty region is removed from the accessibility tree
-     by the stylesheet rather than announced as a nameless landmark, which is why no
-     `<nav>` element is written here. -->
+<!-- MIGRATION: the secondary navigation region is NET-NEW information architecture,
+     and the evidence matters because the opposite assumption is so natural. The only
+     complete skin put its menu at L42-L47 as a navigation control declared with a
+     horizontal orientation, resolved through a swappable provider and configured by
+     ELEVEN separate node-class attributes plus a child-indicator setting, nested
+     four elements deep inside the header band (L38-L41) and sharing that band with
+     the search control (L49) — a horizontal bar, not a vertical rail. A second
+     horizontal navigation surface rendered a root-level link list in the footer band
+     (L109). The decisive evidence is L89: the left pane was a table cell inside the
+     content table, hidden by default, that an administrator could drop modules into
+     — a content pane, never a navigation region — and `portal.css` L24 defines its
+     class with an empty body. So the vertical rail this region exists for
+     corresponds to nothing in the legacy layout; it is a decision of this migration.
+     The legacy menu control itself is not reproduced: the navigation-provider family
+     and the menu control library are both excluded, so there is no provider
+     indirection, no per-node class vocabulary, no fly-out submenu and no child
+     indicator.
+
+     ⚠ THE REGION IS A PROJECTION SLOT, NOT A COMPONENT REFERENCE, AND THAT IS
+     DELIBERATE. The rail is supplied as projected content by whichever component
+     mounts this shell, so the shell holds no knowledge of what navigation exists.
+     Four files independently fix this arrangement: the component's own import list
+     omits the rail and documents why, the layout partial records this exact markup as
+     the intended shape, the rail's own documentation publishes this slot as its
+     mounting contract, and two specifications assert the region renders empty by
+     default. Whoever supplies the rail projects it from the mounting component and
+     updates those expectations in the same change; this file needs no edit for it.
+
+     Consequently the region renders empty today and the stylesheet collapses it with
+     an `:empty` branch, so it contributes no width and is not announced as a
+     nameless landmark. ⚠ KEEP THIS ELEMENT ON ONE LINE: `:empty` matches only when
+     the element has NO child nodes at all, text nodes included, so breaking the tag
+     across lines would defeat the collapse. The region writes no landmark and no
+     accessible name of its own, leaving both to whatever is projected. -->
 <div class="shell__sidebar"><ng-content /></div>
 
-<!-- `tabindex="-1"` makes the region programmatically focusable without adding it
-     to the tab order, which is what lets the skip link actually move focus rather
-     than only scroll. -->
+<!-- MIGRATION: the main landmark is a NET ADDITION. No legacy page emitted one; the
+     legacy content region was the hidden table cell at index.ascx L91, whose class
+     `portal.css` L27 also defines with an empty body. A native element is used
+     rather than a generic element carrying an explicit landmark annotation, for two
+     reasons that agree: the accessibility tree is then correct without a single
+     attribute, and the component stylesheet selects the bare element name.
+
+     `tabindex="-1"` makes the region programmatically focusable WITHOUT adding it to
+     the tab order, which is what lets the skip link actually move focus rather than
+     only scroll the viewport. Without it, some browsers scroll but leave focus
+     behind and the next Tab press returns the user to the banner. -->
 <main [id]="mainRegionId" class="shell__main" tabindex="-1">
   <!-- The application's notification surface, mounted here rather than as a sixth
        shell region for two reasons. It must survive navigation — a queue rendered by
        a routed component would be destroyed by the very navigation an announcement
        so often accompanies — and it must contribute NOTHING while it is empty, which
        a grid region with its own track could not promise. Its own live region is
-       persistent and paints nothing until an entry arrives, so on a quiet screen this
-       element occupies no space at all.
+       persistent and paints nothing until an entry arrives, so on a quiet screen
+       this element occupies no space at all.
 
        It sits ABOVE the outlet so an announcement is the first thing in the main
-       region rather than something to scroll for, and inside `<main>` so it is part
-       of the region the skip link moves focus to. -->
+       region rather than something to scroll for, and INSIDE the main region so it
+       is part of what the skip link moves focus to. -->
   <app-notification-list />
 
+  <!-- MIGRATION: this single outlet replaces the single server placeholder at
+       `Default.aspx` L25 — a one-for-one substitution of the application's sole
+       injection point. Where the legacy page resolved a control and added it
+       imperatively on every request (L590), the router resolves the screen
+       declaratively and lazily. This is the ONLY outlet in the workspace: the root
+       template mounts this shell as its one element and renders no outlet of its
+       own. -->
   <router-outlet />
 </main>
 

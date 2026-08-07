@@ -93,7 +93,7 @@ const EXPECTED: ReadonlyArray<readonly [string, string]> = [
   ['/modules/0', 'ModuleFormComponent'],
   ['/modules/0/settings', 'ModuleSettingsComponent'],
   ['/modules/0/export', 'ModuleExportComponent'],
-  ['/users', 'EmptyStateComponent'],
+  ['/users', 'UserListComponent'],
   ['/users/new', 'UserFormComponent'],
   ['/users/0', 'UserFormComponent'],
   ['/users/0/profile', 'UserProfileComponent'],

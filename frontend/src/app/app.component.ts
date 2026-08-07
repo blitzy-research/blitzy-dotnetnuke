@@ -5,8 +5,75 @@ import { Router } from '@angular/router';
 import { AuthStore } from './core/state/auth.store';
 import { SessionLifecycleService } from './core/state/session-lifecycle.service';
 import { ShellComponent } from './layout/shell/shell.component';
+import { SidebarComponent } from './layout/sidebar/sidebar.component';
 
 import type { Signal } from '@angular/core';
+
+// ---------------------------------------------------------------------------------------
+// FILE HEADER — LEGACY LINEAGE
+//
+// This file is the client-side successor to the single page every legacy request was
+// served through. Two sources, both read from the checkout rather than summarised, and
+// both REFERENCE-ONLY — neither is edited by this migration:
+//
+//   Website/Default.aspx      (30 lines).  The whole document. Line 25,
+//                             `<asp:PlaceHolder ID="SkinPlaceHolder" runat="server" />`,
+//                             was the SINGLE injection point for the entire page body.
+//                             This component, mounting one `<app-shell />`, is its
+//                             replacement — same role, one element, nothing else.
+//
+//   Website/Default.aspx.vb   (700 lines). The code-behind that filled that placeholder.
+//                             `Page_Init` (L499) chose a layout and called `LoadSkin`
+//                             (L217-L243) at four separate call sites (L510, L518, L537,
+//                             L549) depending on how tenant resolution had gone, and
+//                             L590 added whatever came back to the placeholder.
+//
+// Three `// MIGRATION:` notes below record what happened to the responsibilities that
+// arrangement carried — two here at file scope, covering layout loading and the page
+// lifecycle, and a third inside the component metadata, covering dependency registration.
+// They are deliberately the inline form rather than doc prose, because each is a statement
+// about the CODE ADJACENT TO IT rather than about the class as a whole; the class's own doc
+// block carries the two further notes that are genuinely about the class.
+//
+// Also measured, because the opposite assumption is the natural one: the legacy checkout
+// contains ZERO master-page files. This generation of the product composed pages from
+// skins, so there is no master-page-to-layout mapping owed here or anywhere else.
+// ---------------------------------------------------------------------------------------
+
+// MIGRATION: run-time dynamic layout loading is replaced by a static, compile-time shell.
+// `LoadSkin` (Website/Default.aspx.vb:L217-L243) took a path off the active page record,
+// stripped the application path from it (L221-L222), instantiated a user control from
+// whatever it found with `CType(LoadControl("~" & SkinPath), Skin)` (L224) and then called
+// `ctlSkin.DataBind()` — the comment at L225 states outright that this ran "any server
+// logic in the skin", so the LAYOUT ITSELF WAS EXECUTABLE SERVER CODE selected per
+// request. None of that survives. `imports: [ShellComponent]` below is the entire
+// replacement: one class, resolved by the compiler, identical for every request and every
+// tenant. There is no layout registry, no per-portal chrome, no theme lookup and no
+// dynamic control loading, because skinning, containers and skin objects are all out of
+// scope. Its failure mode changes with it — a missing layout was a caught exception
+// surfaced only to administrators behind a role check (L227-L237, L230-L231) and logged;
+// a missing shell is now a BUILD failure, so the class of defect that diagnostic existed
+// for cannot reach a running application at all. That is why this component has no error
+// surface of its own.
+
+// MIGRATION: the Web Forms page lifecycle and its state transport are eliminated outright
+// rather than translated. `Website/Default.aspx` wrapped the whole document in ONE
+// server-side multipart form (L23: `<dnn:Form ENCTYPE="multipart/form-data"
+// autocomplete="off" style="height: 100%">`) carrying two hidden inputs whose only job was
+// to smuggle client state across a postback: `ScrollTop` (L26), read and written through
+// the code-behind's `PageScrollTop` property (L49-L65) and re-applied on load by a body
+// handler wired at L639-L642 (`__dnn_setScrollTop();`), and `__dnnVariable` (L27), the
+// client-variable bag. There is no form below, no hidden input, no view state and no round
+// trip. Correspondingly this class declares NO lifecycle hook — no initialise handler, no
+// view-init handler, no event wiring — because there is no lifecycle left to hook:
+// composition is declarative, and the change-detection strategy declared below means a
+// render happens when a signal the template reads actually changes rather than when the
+// server decides to rebuild the page. Client state now lives in signals — the two members
+// this component exposes are a `computed` and a store-derived read — and scroll position is
+// restored by the router's own in-memory scrolling, configured once in `app.config.ts`.
+// `AJAX.AddScriptManager(Me)` (L210) and `RegisterClientScriptInclude("dnncore",
+// "~/js/dnncore.js")` (L213), which the legacy page re-registered on EVERY request, are
+// both replaced wholesale by the compiled bundle.
 
 /**
  * Where an operator is sent once their session has ended.
@@ -36,9 +103,19 @@ const SIGN_IN_ROUTE = '/login';
  * the shell can be mounted in a specification, or nowhere at all, without the root's
  * contents having to be reasoned about. The paired stylesheet is written to exactly that
  * expectation — its own comment records that "the template mounts a single element" — and
- * it therefore styles only the host box: a block display so that a custom element does
- * not shrink-wrap the shell, and a viewport-height floor so that a route rendering very
- * little still fills the window.
+ * it therefore styles the host box and nothing else: `display: block`, so that a custom
+ * element, which has no user-agent display and would otherwise lay out inline, does not
+ * shrink-wrap the shell.
+ *
+ * ⚠ AND IT DECLARES NOTHING ELSE, WHICH IS A DECISION RATHER THAN AN OMISSION. In
+ * particular it declares NO viewport-height floor, and `app.component.scss` records why in
+ * its own words: full height belongs to exactly one authority — `.shell` in
+ * `styles/_layout.scss`, which sets `min-block-size: 100vh` and then `100dvh` so an engine
+ * that understands the dynamic unit measures the VISUAL viewport. Restating `100vh` on
+ * this host would silently defeat that, because a parent minimum cannot be reduced by a
+ * child: on a mobile browser whose toolbar has retracted the root would stay taller than
+ * the visible area and push a scroll range onto a page that already fits. This host
+ * inherits the behaviour instead, by being a block box the shell fills.
  *
  * WHY THE SESSION IS BOUND HERE AND NOWHERE ELSE
  * ----------------------------------------------
@@ -91,10 +168,37 @@ const SIGN_IN_ROUTE = '/login';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [ShellComponent],
+  // The standalone flag above is not decoration. There is no Angular module anywhere in
+  // this workspace, so the root is bootstrapped as a component and nothing declares it.
+  imports: [ShellComponent, SidebarComponent],
+  // ⚠ `ShellComponent` must be listed even though the template mounts it as a single
+  // element and nothing here reads it. `strictTemplates` is enabled, so an unimported
+  // selector is a COMPILE ERROR in `app.component.html` rather than a silently inert
+  // element — which is the failure mode that would otherwise render a blank page.
+  //
+  // ⚠ `SidebarComponent` is listed for the same reason, and it is listed HERE rather
+  // than in the shell by the shell's own published contract: the shell renders its
+  // navigation region as `<div class="shell__sidebar"><ng-content /></div>` and assigns
+  // the mounting decision to whichever component mounts `<app-shell>`, which is this
+  // one. That keeps the shell free of any knowledge of what navigation exists. The rail
+  // is standalone, declares no input and emits nothing, so projecting it needs no
+  // binding — see the projection in `app.component.html`.
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // MIGRATION: this metadata deliberately registers NOTHING with the injector, and the
+  // absence is load-bearing rather than incidental. Every dependency the application needs
+  // — change detection, the router and its three features, the HTTP client and its
+  // interceptor chain — is declared exactly once, in `appConfig` in `app.config.ts`, which
+  // `src/main.ts` hands whole to `bootstrapApplication`. Registering anything at this level
+  // would open a SECOND injector scope beneath the application's own and give this
+  // component's entire subtree — which is the whole application — a private, divergent copy
+  // of it, so a service intended to be shared would silently exist twice. The legacy
+  // equivalent was configuration-driven indirection resolved per request: eight
+  // request-pipeline modules and six handlers registered in the site configuration, plus a
+  // named entry per subsystem, every one of them late-bound by name and overridable per
+  // deployment. All of it collapses into that single composition root, and this file's one
+  // obligation on the subject is to not reopen it.
 })
 export class AppComponent {
   /** The session store, read for the signed-in identity and the sign-out phase. */

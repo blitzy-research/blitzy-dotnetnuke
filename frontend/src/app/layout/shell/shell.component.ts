@@ -127,25 +127,26 @@ const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
  * ```
  *
  * ⚠ It is NOT imported here, and the omission is deliberate and measured rather
- * than an oversight. Two independent reasons, either of which is sufficient:
+ * than an oversight: the rail's own contract assigns the mounting decision to the
+ * component that mounts the shell, not to the shell. Importing it here would
+ * contradict the published contract of a component this file does not own, and would
+ * give the shell knowledge of what navigation exists — the one thing the projection
+ * slot is there to prevent.
  *
- * 1. The rail's own contract assigns the mounting decision to the component that
- *    mounts the shell, not to the shell. Importing it here would contradict the
- *    published contract of a component this file does not own.
- * 2. At the time of writing, the rail declares a template and a stylesheet that do
- *    not yet exist on disk. Referencing the class pulls it into the compilation
- *    graph, and the build then fails on the unresolved template with a cascading
- *    error reported against this file's import list. That was verified by building,
- *    not inferred. Adding the reference before those two files land would publish a
- *    workspace that does not compile.
+ * The rail IS supplied, by `AppComponent`: `app.component.html` mounts
+ * `<app-shell …><app-sidebar /></app-shell>` and `app.component.ts` lists
+ * `SidebarComponent` in its `imports`. That is the whole of the wiring, and it is
+ * where it belongs — this file needs no edit to participate in it.
  *
- * Consequently the region renders empty today, and the stylesheet collapses it with
- * `.shell__sidebar:empty { display: none }` so an empty region contributes no width
- * and is not announced as a nameless landmark. Two specifications assert that empty
- * default. Whoever supplies the rail must project it from the mounting component and
- * update those expectations in the same change; it is a one-element edit to the
- * mounting template plus a class reference in the mounting component, and this file
- * needs no edit at all.
+ * ⚠ Note for anyone changing the mounting side: if nothing is projected, the region
+ * matches the stylesheet's `.shell__sidebar:empty { display: none }` collapse rule,
+ * so it contributes no width and is not announced as a nameless landmark. That is
+ * the correct behaviour for a shell mounted with no navigation — this component's
+ * own specification still asserts it, mounting the shell directly — but at the
+ * application root it would mean shipping a console with NO navigation at all, and
+ * it would do so SILENTLY: nothing raises, nothing warns, the rail simply never
+ * renders. `app.component.spec.ts` asserts the projection precisely to close that
+ * gap. Do not remove the projection without removing the rail.
  *
  * ## MIGRATION RECORD
  *

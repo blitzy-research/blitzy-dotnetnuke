@@ -289,11 +289,31 @@ describe('AppComponent', () => {
       expect(host().querySelector('span.app-header__user')).toBeNull();
     });
 
-    it('leaves the secondary navigation region empty, so the stylesheet collapses it', () => {
+    it('projects the navigation rail into the secondary region, so it is not collapsed', () => {
+      // The shell publishes this region as a projection slot and assigns the mounting
+      // decision to whichever component mounts `<app-shell>` — this one. The region is
+      // therefore only populated if the root actually projects the rail, and the
+      // stylesheet's `.shell__sidebar:empty` collapse rule means an unprojected rail
+      // fails silently: the application would simply render with no navigation rather
+      // than raise anything. Asserting the rail is present, and present INSIDE the
+      // region, is what closes that gap.
       const region = host().querySelector('div.shell__sidebar');
+      const rail = host().querySelector('app-sidebar');
 
       expect(region).not.toBeNull();
-      expect(region?.children.length).toBe(0);
+      expect(rail).not.toBeNull();
+      expect(region?.children.length).toBe(1);
+      expect(region?.contains(rail as Node)).toBeTrue();
+    });
+
+    it('announces the rail through its own labelled landmark, which the region does not supply', () => {
+      // The shell's region is a bare `div` that deliberately writes no `role` and no
+      // `aria-label`, leaving the landmark to whatever is projected. That contract only
+      // holds if the projected rail brings one.
+      const landmark = host().querySelector('app-sidebar nav');
+
+      expect(landmark).not.toBeNull();
+      expect(landmark?.getAttribute('aria-label')?.trim().length).toBeGreaterThan(0);
     });
   });
 

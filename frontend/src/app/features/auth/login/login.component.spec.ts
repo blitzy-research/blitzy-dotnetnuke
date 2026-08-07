@@ -58,6 +58,81 @@
  * proves the template's `formControlName` bindings, its label associations, its disabled
  * binding and its native return-key submission actually work, none of which a direct call
  * to `submit()` would touch.
+ *
+ * ## The divergences these cases pin
+ *
+ * Migration discipline is to ANNOTATE a deliberate difference rather than absorb it, so each
+ * one is named here and exercised below by the case that proves it. Every entry is a
+ * behavioural claim with a case behind it, not a note.
+ *
+ * MIGRATION: the human-verification challenge is REMOVED. `Login.ascx.vb:L162` gated the
+ * entire handler on `If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)` and was
+ * the only anti-automation control in the legacy sign-in path; its control lives under
+ * `Library/Controls/**`, which this migration excludes wholesale. The compensating control is
+ * the server's rate limiter on the credential endpoints - policy `"auth"`, ten requests a
+ * minute, partitioned by calling address, applied to `/api/v1/auth/*` alone so the health
+ * probe is never throttled - and its refusal is exercised by "reports a rate-limited refusal
+ * calmly" and "issues exactly one request for a rate-limited refusal".
+ *
+ * MIGRATION: `Login.ascx.vb:L187` carries a DEFECT that is recorded and NOT reproduced. It
+ * reads `authenticated = (loginStatus <> UserLoginStatus.LOGIN_FAILURE)`, and because the
+ * branch above it consumes only the not-approved outcome, ordinals 3, 5 and 6 all counted as
+ * authenticated - a locked-out account among them. The correction is SERVER-SIDE: lockout
+ * becomes a 403 and the two insecure-default outcomes are successes carrying an informational
+ * code. Nothing is asserted about that mapping here, because this screen implements none of
+ * it and keys on no numeric ordinal from the network; the claim these cases make is only that
+ * a failure renders AS a failure.
+ *
+ * MIGRATION: `Login.ascx.vb:L123` is not carried forward. It wrote the submitted credential
+ * into an HTML attribute so the box survived a post-back; "leaves the credential in the box
+ * and writes it into no attribute" pins both halves of the replacement.
+ *
+ * MIGRATION: a `verificationcode` query parameter seeds the control's VALUE and never reveals
+ * the field, because the legacy reveal at L109-L116 was gated on a per-request portal setting
+ * an unauthenticated caller cannot read. Pinned by "seeds the verification code WITHOUT
+ * revealing the field".
+ *
+ * MIGRATION: required-ness moved from imperative refusal to declarative validators with its
+ * BEHAVIOUR unchanged, and nothing was tightened while it moved. The credential policy
+ * measured at `Website/release.config:L241-L245` governs creating and changing a password, not
+ * signing in with one, so "accepts a six-character credential" and "applies no length,
+ * pattern or complexity rule" exist to catch a minimum length that crept in.
+ *
+ * MIGRATION: an empty verification code travels as the EMPTY STRING. `Null.vb:L71-L75` has
+ * the body `Return ""`, so the legacy absent-text sentinel IS the empty string and
+ * `Login.ascx.vb:L177` compared against it untrimmed. Pinned by "transmits an empty
+ * verification code as the empty string".
+ *
+ * MIGRATION: localisation is not ported. No translation runtime exists in the pinned
+ * dependency surface, so the resource files are the authority for WORDING only and every
+ * sentence asserted below is compared against the shared form-errors utility's own constant
+ * rather than a copy fossilised here.
+ *
+ * MIGRATION: the five failure sentences live in
+ * `Website/admin/Authentication/App_LocalResources/Login.ascx.resx` (L162, L165, L168, L216,
+ * L222), NOT in the resource file beside the legacy control - that one holds four entries and
+ * none of these. Reading the nearer file would find nothing and invite invented wording.
+ *
+ * MIGRATION: the wording the server may return for a locked account refers to a password
+ * reminder the target does not have, because retrieval is abolished rather than ported.
+ * Composing that sentence belongs to the shared utility, so it is recorded here rather than
+ * patched, and no recovery affordance is asserted into existence.
+ *
+ * MIGRATION: the resource file's account-does-not-exist entry is never rendered by any path.
+ * It is a dead key of an out-of-scope screen and an account-enumeration vector, and
+ * "never renders the dead account-enumeration message" asserts its absence.
+ *
+ * ⚠ A DIVERGENCE THAT CANNOT BE FIXED FROM THIS FOLDER, recorded rather than papered over.
+ * The global error interceptor announces 403, 404, 409, 422, 429 and server faults, so on a
+ * rate-limited or forbidden refusal a person may read BOTH that announcement and this
+ * screen's inline sentence. Suppressing the inline one would break the property that a
+ * refusal is never silent, and the interceptor is another module's. What is assertable here,
+ * and is asserted, is that THIS screen announces nothing itself - see the notification spy.
+ *
+ * D-S4: the shared field's message input accepts a read-only ARRAY, so the messages a server
+ * reports for one control are handed over unreduced. "renders every message the server
+ * reported for one field" pins that, and contradicts a folder-level expectation that a
+ * reduction to a single string was required.
  */
 
 import { provideHttpClient } from '@angular/common/http';
@@ -65,15 +140,37 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
 
+import type { TestRequest } from '@angular/common/http/testing';
 import type { ComponentFixture } from '@angular/core/testing';
 
 import type { CurrentUser, LoginResponse } from '../../../core/models/auth.model';
-import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type {
+  ProblemDetails,
+  ValidationProblemDetails,
+} from '../../../core/models/problem-details.model';
+// A root-provided service, listed here for ONE reason: its single sink is spied so that
+// "this screen announces nothing globally" is an assertion rather than a claim. It is never
+// substituted - the spy calls through - because replacing it would prove nothing about the
+// real one.
+import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
+// Wording is imported from its single owner rather than copied, so a case cannot fossilise a
+// duplicate of a legacy sentence. `isValidationProblemDetails` is imported from HERE and not
+// from the model module: this is the file that declares it, and a second copy would be a
+// second answer to one question.
+import {
+  TOO_MANY_ATTEMPTS,
+  authFailureMessage,
+  isValidationProblemDetails,
+  statusMessage,
+} from '../../../core/utils/form-errors.util';
 import {
   DEFAULT_SIGNED_IN_ROUTE,
+  LOGIN_BOUND_MESSAGES,
   LOGIN_CONTROL_IDS,
+  LOGIN_PASSWORD_MAX_BYTES,
   LOGIN_REQUIRED_MESSAGES,
+  LOGIN_USERNAME_MAX_LENGTH,
   RETURN_URL_QUERY_KEY,
   USERNAME_QUERY_KEY,
   VERIFICATION_CODE_QUERY_KEY,
@@ -116,9 +213,8 @@ const ME_URL = '/api/v1/auth/me';
 // ---------------------------------------------------------------------------
 // THE FAILURE VOCABULARY
 //
-// Every value below is the server's own, taken from `ApiResults` in
-// `backend/src/DnnMigration.Api/ErrorHandling/GlobalExceptionHandler.cs` and from
-// `ValidationProblemDetailsFactory`. A fixture that invented a code or a status would
+// Every value below is the server's own, taken from the API layer's global exception handler
+// and its validation problem-details factory. A fixture that invented a code or a status would
 // describe a response the API cannot send, and the case would then prove nothing.
 // ---------------------------------------------------------------------------
 
@@ -140,8 +236,36 @@ const ACCOUNT_NOT_APPROVED_CODE = 'auth.account_not_approved';
 /** The rate limiter's refusal. 429. */
 const RATE_LIMITED_CODE = 'request.rate_limited';
 
+/** A request the server's own validators refused. 400. */
+const REQUEST_INVALID_CODE = 'request.invalid';
+
 /** An unexpected server fault. 500. */
 const SERVER_FAILURE_CODE = 'server.unexpected_failure';
+
+/**
+ * The media type every refusal below is flushed with.
+ *
+ * RFC 7807's own type rather than plain JSON, because that is what the API answers with and a
+ * fixture that answered otherwise would describe a response it cannot send. It changes nothing
+ * about how the document is read - the testing backend hands the body over as an object - which
+ * is exactly why stating it costs nothing and keeps the fixtures honest.
+ */
+const PROBLEM_MEDIA_TYPE = 'application/problem+json';
+
+/**
+ * The model-state keys the server reports the two credential fields under.
+ *
+ * ⚠ PASCAL-CASED, AND DELIBERATELY NOT CAMEL-CASED. These name model members on the server
+ * rather than members of the serialised body, so the serialiser's camel-casing policy does not
+ * reach them. The first is spelled with an INNER CAPITAL that the component's own key does not
+ * have, which is the point: matching is case-insensitive in the shared utility, and a case that
+ * used the component's exact spelling would never exercise that.
+ *
+ * ⚠ READ WITH BRACKETS EVERYWHERE. `errors` is an index-signature type, so property access is
+ * not even syntactically available under the compiler settings this workspace uses.
+ */
+const SERVER_USERNAME_KEY = 'UserName';
+const SERVER_PASSWORD_KEY = 'Password';
 
 /**
  * The three ladder sentences, verbatim from
@@ -198,6 +322,26 @@ const SUBMITTED_PASSWORD = ' not-a-real-password ';
 
 /** A verification code, for the ladder's second rung. */
 const SUBMITTED_CODE = 'wrong-code';
+
+/**
+ * A six-character value, one character short of the legacy CREATION policy's minimum.
+ *
+ * Named for its LENGTH because its length is the only property under test: the case that uses it
+ * proves a minimum-length rule has not crept onto the sign-in form, where it would lock out every
+ * account whose credential predates the policy. Its length is asserted at the point of use so the
+ * intent cannot drift if the literal is ever edited.
+ */
+const SIX_CHARACTER_VALUE = 'sixchr';
+
+/**
+ * The minimum length the legacy membership provider required, measured at
+ * `Website/release.config:L242` (`minRequiredPasswordLength="7"`).
+ *
+ * ⚠ IT GOVERNS CREATING AND CHANGING A CREDENTIAL, NEVER SIGNING IN WITH ONE, and it is declared
+ * here only so the case below can state what it is one character short of. Nothing on this screen
+ * enforces it, deliberately.
+ */
+const LEGACY_CREATION_MINIMUM_LENGTH = 7;
 
 // ---------------------------------------------------------------------------
 // THE RESPONSE ENVELOPE
@@ -278,6 +422,38 @@ function refusal(code: string, status: number, detail: string): ProblemDetails {
   };
 }
 
+/**
+ * A field-level refusal, in the shape the validation factory emits.
+ *
+ * ⚠ THE ENVELOPE IS CLOSED AT FIVE MEMBERS - the type, the title, the status, the detail and
+ * the error map - plus the two identifiers the factory attaches. There is deliberately no
+ * stack, no exception type, no inner exception and no developer-facing message: a server that
+ * returned any of those would be handing an operator its own internals, and a fixture that
+ * modelled one would invite a reader to render it.
+ *
+ * The map is built with bracket-keyed literals so the Pascal-cased server keys survive exactly,
+ * and it is typed as the validation shape rather than the general one, which is what makes
+ * `errors` a required member the compiler will not let a call site forget.
+ *
+ * @param detail The form-level sentence.
+ * @param errors The per-field messages, keyed as the server keys them.
+ * @returns The document.
+ */
+function validationRefusal(
+  detail: string,
+  errors: Readonly<Record<string, readonly string[]>>,
+): ValidationProblemDetails {
+  return {
+    type: `${FAILURE_TYPE_PREFIX}${REQUEST_INVALID_CODE}`,
+    title: STATUS_TITLE[400] ?? 'Error',
+    status: 400,
+    detail,
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
+    errors,
+  };
+}
+
 describe('LoginComponent', () => {
   /**
    * The screen under test.
@@ -298,6 +474,42 @@ describe('LoginComponent', () => {
   let httpMock: HttpTestingController;
   let store: AuthStore;
   let navigateSpy: jasmine.Spy;
+
+  /**
+   * The global announcement channel's single sink, spied.
+   *
+   * ⚠ THE REAL ROOT SERVICE, CALLED THROUGH - not a double. Substituting it would prove
+   * something about the substitute; spying on the genuine one proves that nothing on this
+   * screen's failure path reaches it. The four convenience methods all funnel through this one
+   * member, so one spy covers every way a message could be raised.
+   *
+   * WHY IT MATTERS RATHER THAN BEING TIDY: a sign-in refusal is rendered INLINE, beside the
+   * field it concerns and above the form, and the global error interceptor deliberately stays
+   * silent on 401 for exactly that reason. A screen that announced as well would report one
+   * refusal twice - and on a rate-limited or forbidden refusal, where the interceptor does
+   * announce, three times.
+   */
+  let notifySpy: jasmine.Spy;
+
+  /**
+   * The router's command-array navigation, spied.
+   *
+   * ⚠ SPIED FOR A REASON THAT WAS DISCOVERED RATHER THAN ASSUMED, and it is worth recording
+   * because the alternative fails in a way that looks like a component defect. The screen removes
+   * the seeded account name and verification code from the browser's address by navigating
+   * relative to the activated route, and the router builds that address from the route's SNAPSHOT
+   * TREE - its children, its path from the root - none of which a minimal double has. Without this
+   * spy the router walks an absent child list and throws, and because the screen's own guard is
+   * `.catch()` on the returned promise it cannot catch a SYNCHRONOUS throw: the remainder of
+   * `ngOnInit` - the initial focus placement - is then skipped, and a case that asserted the
+   * caret's position would fail against a screen that is perfectly correct in the application,
+   * where the route is genuine.
+   *
+   * Spying is therefore the harness telling the truth rather than hiding a fault, and it earns
+   * something as well: the scrub's own arguments become assertable, which is the only way to prove
+   * single-use material really does leave the address.
+   */
+  let relativeNavigateSpy: jasmine.Spy;
 
   /**
    * The query parameters the activated-route double will report.
@@ -323,6 +535,14 @@ describe('LoginComponent', () => {
         provideRouter([]),
         {
           provide: ActivatedRoute,
+          // ⚠ THE ROUTE IS STUBBED RATHER THAN THE PARAMETERS BEING BOUND AS INPUTS, and the
+          // choice follows the component rather than taste. Component input binding is configured
+          // application-wide, so a screen MAY receive a query parameter as an input - but this one
+          // does not: it reads `snapshot.queryParamMap.get(key)`, once, which is the direct
+          // analogue of the legacy `If Page.IsPostBack = False Then` guard. Setting an input would
+          // exercise a path this screen does not use. What is fixed either way is the SPELLING of
+          // the keys, and those are imported from the component rather than retyped here.
+          //
           // A getter rather than a fixed value, so a case can seed `queryParams` after the
           // module is configured and before the component is created. The map itself is the
           // router's own conversion, so it is a genuine `ParamMap`.
@@ -342,7 +562,14 @@ describe('LoginComponent', () => {
 
     // No routes are declared, so a genuine navigation would fail to match. The destination
     // is what these cases assert, not the navigation itself.
-    navigateSpy = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+    const router = TestBed.inject(Router);
+
+    navigateSpy = spyOn(router, 'navigateByUrl').and.resolveTo(true);
+    relativeNavigateSpy = spyOn(router, 'navigate').and.resolveTo(true);
+
+    // Called through rather than stubbed, so the genuine service still behaves exactly as it
+    // would in the application and the spy only observes.
+    notifySpy = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
   });
 
   afterEach(() => {
@@ -370,14 +597,43 @@ describe('LoginComponent', () => {
     fixture.detectChanges();
   }
 
-  /** The rendered element for a selector, or null. */
-  function query(selector: string): HTMLElement | null {
-    return fixture.nativeElement.querySelector(selector) as HTMLElement | null;
+  /** The screen's own host element, by ASSIGNMENT rather than by cast. */
+  function host(): HTMLElement {
+    const element: HTMLElement = fixture.nativeElement;
+
+    return element;
   }
 
-  /** Every rendered element for a selector. */
+  /** The rendered element for a selector, or null. */
+  function query(selector: string): HTMLElement | null {
+    return host().querySelector<HTMLElement>(selector);
+  }
+
+  /**
+   * The rendered element for a selector, or a failure naming what was missing.
+   *
+   * ⚠ NARROWED, NEVER ASSERTED. A document query answers with an element or null, and several
+   * of this screen's elements genuinely may not be rendered - the verification field and the
+   * whole failure region are both behind template conditions. Throwing on absence reports the
+   * selector that was not found, whereas a non-null assertion would compile and then fail
+   * somewhere else with a message about a property of null.
+   *
+   * @param selector The selector to find.
+   * @returns The element.
+   */
+  function queryOrFail<T extends HTMLElement>(selector: string): T {
+    const found = host().querySelector<T>(selector);
+
+    if (found === null) {
+      throw new Error(`Expected to find "${selector}" in the rendered screen`);
+    }
+
+    return found;
+  }
+
+  /** Every rendered element for a selector, in document order. */
   function queryAll(selector: string): readonly HTMLElement[] {
-    return Array.from(fixture.nativeElement.querySelectorAll(selector) as NodeListOf<HTMLElement>);
+    return Array.from(host().querySelectorAll<HTMLElement>(selector));
   }
 
   /** The collapsed text of a selector, or null when it is not rendered. */
@@ -389,16 +645,12 @@ describe('LoginComponent', () => {
 
   /** One of this screen's three controls, by its declared identifier, or null when absent. */
   function control(controlId: string): HTMLInputElement | null {
-    return fixture.nativeElement.querySelector(`#${controlId}`) as HTMLInputElement | null;
+    return host().querySelector<HTMLInputElement>(`#${controlId}`);
   }
 
-  /** One of the three controls, asserted present first so the non-null is earned rather than assumed. */
+  /** One of the three controls, narrowed rather than asserted. */
   function requiredControl(controlId: string): HTMLInputElement {
-    const element = control(controlId);
-
-    expect(element).withContext(`#${controlId} is rendered`).not.toBeNull();
-
-    return element as HTMLInputElement;
+    return queryOrFail<HTMLInputElement>(`#${controlId}`);
   }
 
   /**
@@ -418,11 +670,7 @@ describe('LoginComponent', () => {
 
   /** The submit button. */
   function submitButton(): HTMLButtonElement {
-    const button = query('.login__submit') as HTMLButtonElement | null;
-
-    expect(button).withContext('the submit control is rendered').not.toBeNull();
-
-    return button as HTMLButtonElement;
+    return queryOrFail<HTMLButtonElement>('.login__submit');
   }
 
   /**
@@ -437,10 +685,80 @@ describe('LoginComponent', () => {
     fixture.detectChanges();
   }
 
+  /**
+   * Submits through the form itself rather than through the button.
+   *
+   * This is the path a RETURN KEY takes: the browser raises `submit` on the form, and a real
+   * form with a submit-typed button needs nothing else - which is the PORT of the key capture
+   * `Login.ascx.vb:L101` had to register for a Web Forms button. Driving it this way also
+   * bypasses the disabled attribute, which is what lets the in-flight guard be tested as a
+   * guard rather than as a styling state.
+   */
+  function submitThroughForm(): void {
+    queryOrFail('.login__form').dispatchEvent(new Event('submit'));
+    fixture.detectChanges();
+  }
+
+  /**
+   * The screen's caller-supplied controls and its submit control, in document order.
+   *
+   * ⚠ SCOPED TO THE BOXES AND THE SUBMIT CONTROL DELIBERATELY. A blanket query for every
+   * focusable element would also collect each shared field's own help toggle, which belongs to
+   * that component and would make this a specification of the design system rather than of this
+   * screen's field order.
+   *
+   * @returns Each control's identifier, with the submit control named for what it is.
+   */
+  function controlSequence(): readonly string[] {
+    return queryAll('input, .login__submit').map((element) =>
+      element.id.length > 0 ? element.id : 'submit',
+    );
+  }
+
   /** Fills both credential fields with the fixture values. */
   function fillCredentials(): void {
     type(LOGIN_CONTROL_IDS.username, ACCOUNT_NAME);
     type(LOGIN_CONTROL_IDS.password, SUBMITTED_PASSWORD);
+  }
+
+  /**
+   * Every sign-in request issued so far, taken as a SET so it can be counted.
+   *
+   * ⚠ COUNTED RATHER THAN INFERRED, because "exactly one" is the whole claim in two places: a
+   * refused attempt must not be retried automatically, and a second submission arriving while
+   * one is in flight must not become a second request. The teardown's `verify()` fails an
+   * unconsumed request but cannot say HOW MANY there were, and an expectation for one request
+   * would pass on the first of two.
+   *
+   * ⚠ MATCHING CONSUMES. The matched requests leave the outstanding set, so a caller that wants
+   * to answer one must answer the value returned here rather than asking for it again.
+   *
+   * @returns The matched requests, in the order they were issued.
+   */
+  function matchLoginRequests(): readonly TestRequest[] {
+    return httpMock.match(
+      (candidate) => candidate.method === 'POST' && candidate.url === LOGIN_URL,
+    );
+  }
+
+  /**
+   * Asserts that exactly one sign-in request was issued, and returns it.
+   *
+   * @param context What the count is being claimed about.
+   * @returns The single request, so the caller can answer it.
+   */
+  function expectExactlyOneLoginRequest(context: string): TestRequest {
+    const issued = matchLoginRequests();
+
+    expect(issued.length).withContext(context).toBe(1);
+
+    const only = issued[0];
+
+    if (only === undefined) {
+      throw new Error(`Expected exactly one sign-in request: ${context}`);
+    }
+
+    return only;
   }
 
   /** The one outstanding sign-in request, asserted by method and address. */
@@ -477,11 +795,19 @@ describe('LoginComponent', () => {
     completeIdentityRead();
   }
 
-  /** Answers the outstanding sign-in request with a refusal document. */
+  /**
+   * Answers the outstanding sign-in request with a refusal document.
+   *
+   * Flushed with RFC 7807's own media type, because that is what the API answers with.
+   */
   function refuseSignIn(problem: ProblemDetails): void {
     const status = problem.status ?? 500;
 
-    expectLoginRequest().flush(problem, { status, statusText: STATUS_TITLE[status] ?? 'Error' });
+    expectLoginRequest().flush(problem, {
+      status,
+      statusText: STATUS_TITLE[status] ?? 'Error',
+      headers: { 'Content-Type': PROBLEM_MEDIA_TYPE },
+    });
     fixture.detectChanges();
   }
 
@@ -626,6 +952,103 @@ describe('LoginComponent', () => {
       expect(requiredControl(LOGIN_CONTROL_IDS.username).getAttribute('aria-invalid')).toBeNull();
       expect(requiredControl(LOGIN_CONTROL_IDS.password).getAttribute('aria-invalid')).toBeNull();
     });
+
+    it('places the caret in the account-name box, as the legacy screen did', () => {
+      create();
+
+      // A PORT of `Login.ascx.vb:L126-L130`, which focused the account-name box when it was empty
+      // and the password box otherwise. It costs nothing visually and it is what lets a person
+      // start typing without reaching for the pointer.
+      expect(document.activeElement?.id).toBe(LOGIN_CONTROL_IDS.username);
+    });
+
+    it('renders the two credential boxes and the submit control in that order', () => {
+      create();
+
+      // ⚠ ORDER IS BEHAVIOUR, not decoration: it is the order a person tabs through and the
+      // order a screen reader announces. The legacy rows ran account name, verification code,
+      // challenge, password, submit - the challenge genuinely sat BEFORE the password
+      // (`Login.ascx:L19-L24`) - so with the challenge removed the surviving order is account
+      // name, conditional verification code, password, submit. The conditional member of that
+      // sequence is asserted by the ladder case that reveals it.
+      expect(controlSequence()).toEqual([
+        LOGIN_CONTROL_IDS.username,
+        LOGIN_CONTROL_IDS.password,
+        'submit',
+      ]);
+    });
+
+    it('asks the browser for the right completion behaviour on each box', () => {
+      create();
+
+      const username = requiredControl(LOGIN_CONTROL_IDS.username);
+      const password = requiredControl(LOGIN_CONTROL_IDS.password);
+
+      // MIGRATION: net additions, and two of them are load-bearing rather than cosmetic. A
+      // mobile keyboard that capitalises the first letter of a CASE-SENSITIVE account name
+      // silently produces a credential the server refuses - and the legacy refusal wording
+      // itself warned that passwords are case sensitive, so the trap was already known.
+      expect(username.getAttribute('autocomplete')).toBe('username');
+      expect(username.getAttribute('autocapitalize')).toBe('none');
+      expect(username.getAttribute('spellcheck')).toBe('false');
+
+      // The standard token for this field: it asks the BROWSER's own credential manager to
+      // fill the box. Nothing in the workspace reads, copies, stores or logs the value, and no
+      // web storage of any kind is touched.
+      expect(password.getAttribute('autocomplete')).toBe('current-password');
+    });
+
+    it('points every label at the control it labels, inside its own field', () => {
+      create();
+
+      // Asserted PER FIELD rather than across the screen, because a screen-wide check passes
+      // even when two labels point at each other's controls. The shared field owns the
+      // association; what is proven here is that the identifier it was given is the identifier
+      // the control it wraps actually carries.
+      const fields = queryAll('app-form-field');
+
+      expect(fields.length).withContext('one shared field per rendered control').toBe(2);
+
+      for (const field of fields) {
+        const label = field.querySelector<HTMLLabelElement>('label');
+        const input = field.querySelector<HTMLInputElement>('input');
+
+        expect(label).not.toBeNull();
+        expect(input).not.toBeNull();
+        expect(label?.getAttribute('for'))
+          .withContext('the label names the control beside it')
+          .toBe(input?.id ?? null);
+      }
+    });
+
+    it('declares no rule beyond the two the server itself enforces', () => {
+      create();
+
+      const username = requiredControl(LOGIN_CONTROL_IDS.username);
+      const password = requiredControl(LOGIN_CONTROL_IDS.password);
+
+      // ⚠ NO MINIMUM LENGTH, NO PATTERN AND NO ADDRESS FORMAT ON EITHER BOX. The credential
+      // policy measured at `Website/release.config:L241-L245` - minimum length seven, no
+      // required non-alphanumeric character, no question and answer, no unique address -
+      // governs CREATING and CHANGING a password, never signing in with one. Tightening it
+      // mid-migration would lock out every existing account.
+      for (const box of [username, password]) {
+        expect(box.getAttribute('minlength')).toBeNull();
+        expect(box.getAttribute('pattern')).toBeNull();
+        expect(box.type).not.toBe('email');
+      }
+
+      // The one bound that IS declared, and it reproduces a SERVER bound rather than inventing
+      // a client one. It is emitted as an ATTRIBUTE rather than as a property binding on
+      // purpose: the property form would satisfy the reactive-forms maximum-length directive's
+      // selector and attach a validator this screen never declared, contributing an error key
+      // nothing renders.
+      expect(username.getAttribute('maxlength')).toBe(String(LOGIN_USERNAME_MAX_LENGTH));
+
+      // And it is NOT applied to the credential, whose ceiling is counted in UTF-8 bytes and
+      // cannot be expressed as a character count at all.
+      expect(password.getAttribute('maxlength')).toBeNull();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -633,12 +1056,25 @@ describe('LoginComponent', () => {
   // -------------------------------------------------------------------------
 
   describe('query-parameter seeding', () => {
-    it('seeds the account name, reproducing Login.ascx.vb:L106-L108', () => {
+    it('seeds the account name, reproducing Login.ascx.vb:L106-L108', async () => {
       queryParams = { [USERNAME_QUERY_KEY]: 'seeded-account' };
 
       create();
 
       expect(requiredControl(LOGIN_CONTROL_IDS.username).value).toBe('seeded-account');
+
+      // ⚠ AWAITED, AND THE REASON IS MEASURED RATHER THAN DEFENSIVE. Seeding also scrubs the
+      // address, and that scrub leaves a settled promise outstanding - so the render hook carrying
+      // the focus move is deferred past this render rather than running inside it. Reading the
+      // caret's position immediately finds it still on the document body; awaiting stability is
+      // what lets the deferred hook run. Nothing is slept on and no timer is involved: stability
+      // is the zone reporting that the work it was waiting for has drained.
+      await fixture.whenStable();
+
+      // The caret then lands on the box still to be filled in, which is the other half of
+      // `Login.ascx.vb:L126-L130` and the whole reason a link carrying a seeded account name is
+      // useful at all.
+      expect(document.activeElement?.id).toBe(LOGIN_CONTROL_IDS.password);
     });
 
     it('seeds the verification code WITHOUT revealing the field', () => {
@@ -673,6 +1109,64 @@ describe('LoginComponent', () => {
 
       expect(requiredControl(LOGIN_CONTROL_IDS.username).value).toBe('');
       expect(requiredControl(LOGIN_CONTROL_IDS.password).value).toBe('');
+    });
+
+    it('removes the seeded account name and code from the address, replacing the entry', () => {
+      queryParams = {
+        [USERNAME_QUERY_KEY]: 'seeded-account',
+        [VERIFICATION_CODE_QUERY_KEY]: 'code-from-an-email',
+        [RETURN_URL_QUERY_KEY]: '/users/5',
+      };
+
+      create();
+
+      // ⚠ AN ADDRESS IS NOT A PRIVATE CHANNEL. A query string is kept in the browser's history,
+      // offered by the address bar to whoever next uses the machine, handed to third-party origins
+      // in the referrer of any later request, and is the single most commonly recorded part of a
+      // request in proxy and server logs. A verification code is single-use authentication
+      // material and an account name identifies its holder, so neither belongs in any of those
+      // places one moment longer than it takes to read it.
+      //
+      // MIGRATION: a DELIBERATE DIVERGENCE rather than a port. The legacy screen read these values
+      // during a full page render and had no client-side history to rewrite, so it could not have
+      // done this.
+      expect(relativeNavigateSpy).toHaveBeenCalledTimes(1);
+
+      const [commands, options] = relativeNavigateSpy.calls.mostRecent().args as [
+        readonly unknown[],
+        Readonly<Record<string, unknown>>,
+      ];
+
+      expect(commands).withContext('the address itself is unchanged').toEqual([]);
+
+      const dropped: unknown = options['queryParams'];
+
+      expect(dropped).toEqual({
+        [USERNAME_QUERY_KEY]: null,
+        [VERIFICATION_CODE_QUERY_KEY]: null,
+      });
+
+      // ⚠ MERGED, SO THE RETURN ADDRESS SURVIVES. Dropping every other parameter here would turn a
+      // privacy measure into a redirect defect, because the return address is still needed after a
+      // successful attempt.
+      expect(options['queryParamsHandling']).toBe('merge');
+
+      // ⚠ AND THE ENTRY IS REPLACED, NOT PUSHED. Pushing would leave the original address - material
+      // and all - one press of Back away, and in session history for as long as the tab lives.
+      expect(options['replaceUrl']).toBeTrue();
+
+      // The form keeps what was seeded; only the address is cleaned.
+      expect(requiredControl(LOGIN_CONTROL_IDS.username).value).toBe('seeded-account');
+    });
+
+    it('leaves the address alone when nothing was seeded from it', () => {
+      queryParams = { [RETURN_URL_QUERY_KEY]: '/users/5' };
+
+      create();
+
+      // Nothing sensitive arrived, so there is nothing to remove - and a navigation issued anyway
+      // would replace a history entry for no reason.
+      expect(relativeNavigateSpy).not.toHaveBeenCalled();
     });
 
     it('reads the snapshot once and never re-seeds what a person has typed', () => {
@@ -768,6 +1262,87 @@ describe('LoginComponent', () => {
 
       completeSignIn();
     });
+
+    it('accepts a six-character credential, one short of the creation policy', () => {
+      create();
+
+      // ⚠ SIX CHARACTERS, DELIBERATELY, because the creation policy measured at
+      // `Website/release.config:L242` sets a minimum length of SEVEN. If that rule ever crept
+      // onto this form, six would be refused here and every existing account whose credential
+      // predates the rule would be locked out by a migration that was supposed to preserve
+      // behaviour. The value reaches the server, which remains the only authority on it.
+      expect(SIX_CHARACTER_VALUE.length)
+        .withContext('the fixture is one character short of the creation minimum')
+        .toBe(LEGACY_CREATION_MINIMUM_LENGTH - 1);
+
+      type(LOGIN_CONTROL_IDS.username, ACCOUNT_NAME);
+      type(LOGIN_CONTROL_IDS.password, SIX_CHARACTER_VALUE);
+      submit();
+
+      const request = expectLoginRequest();
+
+      expect(request.request.body).toEqual({
+        username: ACCOUNT_NAME,
+        password: SIX_CHARACTER_VALUE,
+        verificationCode: '',
+      });
+
+      // And nothing is reported beside either box, because nothing is wrong with either.
+      expect(queryAll('.form-field__error').length).toBe(0);
+
+      request.flush(credentialPayload());
+      completeIdentityRead();
+    });
+
+    it('reports the two server bounds in the server’s own words, and sends nothing', () => {
+      create();
+
+      // ⚠ THESE ARE THE ONLY TWO BOUNDS ON THE FORM, and both REPRODUCE a server rule rather
+      // than adding one - the sign-in contract's own validator caps the account name, and the
+      // credential ceiling is counted in UTF-8 bytes by the server. Reproducing the server's
+      // exact sentences is what stops one rule being described two different ways depending on
+      // which layer noticed it first.
+      //
+      // The values are assigned rather than typed by hand, so the browser's own attribute
+      // enforcement cannot silently truncate them before the validator sees them.
+      type(LOGIN_CONTROL_IDS.username, 'a'.repeat(LOGIN_USERNAME_MAX_LENGTH + 1));
+      type(LOGIN_CONTROL_IDS.password, 'b'.repeat(LOGIN_PASSWORD_MAX_BYTES + 1));
+      submit();
+
+      httpMock.expectNone(() => true);
+
+      const messages = queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim());
+
+      expect(messages).toContain(LOGIN_BOUND_MESSAGES.usernameTooLong);
+      expect(messages).toContain(LOGIN_BOUND_MESSAGES.passwordTooLong);
+
+      // ⚠ AND NEITHER BOX IS DESCRIBED AS EMPTY. Each carries more than one rule, so a single
+      // sentence per control would report a full box as blank the moment it grew too long.
+      expect(messages).not.toContain(LOGIN_REQUIRED_MESSAGES.username);
+      expect(messages).not.toContain(LOGIN_REQUIRED_MESSAGES.password);
+    });
+
+    it('refuses an account name of whitespace without trimming it away', () => {
+      create();
+
+      // The server's own emptiness rule rejects a value made only of spaces, whereas the
+      // framework's required rule accepts it - so a box holding three spaces looked complete
+      // and was refused a round trip later. TRIMMING it instead of refusing it would be worse:
+      // the legacy screen passed the box through untouched, so a stored name carrying a
+      // trailing space has to keep it.
+      type(LOGIN_CONTROL_IDS.username, '   ');
+      type(LOGIN_CONTROL_IDS.password, SUBMITTED_PASSWORD);
+      submit();
+
+      httpMock.expectNone(() => true);
+
+      const messages = queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim());
+
+      expect(messages).toContain(LOGIN_REQUIRED_MESSAGES.username);
+
+      // The box still holds exactly what was typed. Nothing rewrote it.
+      expect(requiredControl(LOGIN_CONTROL_IDS.username).value).toBe('   ');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -803,6 +1378,78 @@ describe('LoginComponent', () => {
 
       request.flush(credentialPayload());
       completeIdentityRead();
+    });
+
+    it('transmits an empty verification code as the empty string, present and untouched', () => {
+      create();
+
+      fillCredentials();
+      submit();
+
+      const request = expectLoginRequest();
+      const body: unknown = request.request.body;
+
+      // ⚠ THE SENTINEL IS THE WHOLE POINT OF THIS CASE. `Login.ascx.vb:L177` tells a wrong code
+      // from a missing one with `If txtVerification.Text <> ""`, and the legacy absent-text
+      // sentinel IS the empty string - `Null.vb:L71-L75` has the body `Return ""`, not
+      // `Return Nothing`. An empty code and an absent one were therefore always ONE branch, and
+      // rewriting either into the other here would move that decision boundary silently.
+      //
+      // Typed as unknown and narrowed, because a body is whatever was serialised and claiming
+      // otherwise would be a claim the runtime does not honour.
+      expect(body).not.toBeNull();
+      expect(typeof body).toBe('object');
+
+      if (body === null || typeof body !== 'object') {
+        throw new Error('the sign-in body is an object');
+      }
+
+      const members: Readonly<Record<string, unknown>> = { ...body };
+
+      // Present, and the empty STRING - not null, not undefined, not absent.
+      expect('verificationCode' in members).toBeTrue();
+      expect(members['verificationCode']).toBe('');
+      expect(members['verificationCode']).not.toBeNull();
+      expect(members['verificationCode']).not.toBeUndefined();
+
+      // ⚠ AND THERE IS NO FOURTH MEMBER. The legacy call took EIGHT arguments; five have no
+      // counterpart. The authentication-type literal went with the single bearer-token path, the
+      // tenant key and display name were ambient server values that a body must never carry
+      // because a caller could then name a site it was not addressing, the caller's address is
+      // observed from the connection rather than posted, and the by-reference status argument
+      // became the awaited outcome.
+      expect(Object.keys(members).sort()).toEqual(['password', 'username', 'verificationCode']);
+
+      // ⚠ AND THE CODE IS NOT A QUERY PARAMETER EITHER. It is a member of the request, and the
+      // only query parameter this endpoint takes is the tenant selector.
+      expect(request.request.params.has('verificationCode')).toBeFalse();
+      expect(request.request.params.has('portalId')).toBeFalse();
+
+      request.flush(credentialPayload());
+      completeIdentityRead();
+    });
+
+    it('is submitted by the form itself, which is how the return key reaches it', () => {
+      create();
+
+      fillCredentials();
+
+      // The PORT of `Login.ascx.vb:L101`, which registered a key capture so the return key
+      // submitted a Web Forms button. Dispatching the form's own submission - rather than
+      // faking a key press, which would prove nothing about the native path - is what a return
+      // key does in a real form.
+      submitThroughForm();
+
+      const request = expectExactlyOneLoginRequest(
+        'the native submission issues exactly one request',
+      );
+
+      request.flush(credentialPayload());
+      completeIdentityRead();
+
+      // And it completes, so the native path is wired end to end rather than merely reaching
+      // the network.
+      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE);
     });
 
     it('sends the seeded verification code on the first attempt, before any field is on screen', () => {
@@ -908,7 +1555,7 @@ describe('LoginComponent', () => {
         .toBeNull();
 
       // And nowhere else in the rendered document either.
-      expect((fixture.nativeElement as HTMLElement).outerHTML).not.toContain(
+      expect(host().outerHTML).not.toContain(
         SUBMITTED_PASSWORD.trim(),
       );
     });
@@ -927,6 +1574,18 @@ describe('LoginComponent', () => {
       );
 
       expect(query('.login__failure')).withContext('the failure region is rendered').not.toBeNull();
+
+      // The shared banner is bound unconditionally and renders nothing for a null document, so its
+      // INNER region appearing is what proves a document reached it.
+      expect(query('app-error-banner')).withContext('the banner is on the screen').not.toBeNull();
+      expect(query('.error-banner')).withContext('and it has a document to render').not.toBeNull();
+
+      // ⚠ ANNOUNCED, NOT MERELY DISPLAYED. The banner keeps its live region OUTSIDE its own
+      // condition, so the region exists before the failure does and the insertion is what the
+      // reader hears - a region that appeared together with its content would announce nothing on
+      // some readers.
+      expect(queryOrFail('.error-banner-live').getAttribute('role')).toBe('alert');
+
       expect(textOf('.error-banner__message')).toBe(
         'The account name or credential is not correct.',
       );
@@ -940,6 +1599,81 @@ describe('LoginComponent', () => {
 
       // A refusal is not a navigation.
       expect(navigateSpy).not.toHaveBeenCalled();
+    });
+
+    it('renders the refusal INLINE and announces nothing globally', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
+      );
+
+      // ⚠ THIS IS THE CASE THAT PROTECTS THE WHOLE ARRANGEMENT. The bearer-token interceptor
+      // lists the sign-in endpoint among the anonymous ones, so no credential is attached and no
+      // renewal is attempted - a 401 here is a wrong password, not a lapsed token. The error
+      // interceptor then returns EARLY on exactly 401, deliberately, because a sign-in refusal is
+      // this screen's to explain and announcing it globally as well would report it twice. So the
+      // inline rendering is not one of two reports: it is the ONLY one.
+      expect(query('.login__failure')).withContext('the refusal is rendered here').not.toBeNull();
+
+      // ⚠ AND THIS SCREEN RAISES NOTHING ITSELF. On a 401 the interceptor is silent, so a
+      // notification here would be the second report of one refusal; on the statuses where the
+      // interceptor DOES announce - 403, 404, 409, 422, 429 and server faults - it would be the
+      // third. The real service is spied and called through, so this is a statement about the
+      // genuine channel rather than about a double.
+      expect(notifySpy).withContext('no global announcement from this screen').not.toHaveBeenCalled();
+    });
+
+    it('renders every message the server reported for one field, unreduced', () => {
+      create();
+
+      fillCredentials();
+      submit();
+
+      // ⚠ THE KEYS ARE PASCAL-CASED AND ARE READ WITH BRACKETS. They name model members on the
+      // server rather than members of the serialised body, so the camel-casing policy does not
+      // reach them - and `errors` is an index-signature type, so bracket access is the only form
+      // the compiler allows. The account-name key is spelled with an inner capital the component's
+      // own key does not have, which is exactly what exercises the shared utility's
+      // case-insensitive matching instead of an accidental exact match.
+      const document_ = validationRefusal('The request was refused.', {
+        [SERVER_USERNAME_KEY]: ['The account name is not recognised.'],
+        [SERVER_PASSWORD_KEY]: ['The credential is not correct.', 'Passwords are case sensitive.'],
+      });
+
+      // Narrowed by the shared guard rather than trusted, so the fixture is proven to BE the
+      // validation shape rather than merely resembling it.
+      expect(isValidationProblemDetails(document_))
+        .withContext('the fixture is a genuine field-level refusal')
+        .toBeTrue();
+
+      expect(document_.errors[SERVER_PASSWORD_KEY]?.length)
+        .withContext('two messages on one field, which is the case that matters')
+        .toBe(2);
+
+      refuseSignIn(document_);
+
+      const messages = queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim());
+
+      // D-S4: the shared field's message input accepts a read-only ARRAY, so BOTH sentences for
+      // the credential reach the screen. Reducing to one - which a folder-level expectation
+      // assumed was required - would silently discard a message the person needs to read.
+      expect(messages).toContain('The account name is not recognised.');
+      expect(messages).toContain('The credential is not correct.');
+      expect(messages).toContain('Passwords are case sensitive.');
+
+      // ⚠ AND NOTHING FROM THE SERVER'S INSIDE REACHES THE DOCUMENT. The envelope is closed at
+      // the five standard members plus the two identifiers: no stack, no exception type, no inner
+      // exception, no developer-facing message. This asserts the screen renders none of those
+      // words even by accident.
+      const rendered = host().textContent ?? '';
+
+      for (const forbidden of ['stackTrace', 'at Object.', 'Exception', 'innerException']) {
+        expect(rendered).not.toContain(forbidden);
+      }
+
+      // Still no global announcement, on a status the interceptor would not have covered either.
+      expect(notifySpy).not.toHaveBeenCalled();
     });
 
     it('renders the support reference from the banner, which is the only component holding the document', () => {
@@ -984,6 +1718,53 @@ describe('LoginComponent', () => {
 
       // "Say that calmly and say nothing else": the error-toned sentence is suppressed.
       expect(query('.login__message')).toBeNull();
+
+      // ⚠ DISTINCT FROM EVERY OTHER SENTENCE THIS SCREEN CAN SHOW, which is the point of having
+      // a separate state at all. Compared against the shared utility's own constants rather than
+      // against copies, so a change to either would surface here rather than silently agreeing.
+      expect(RATE_LIMIT_MESSAGE).toBe(TOO_MANY_ATTEMPTS);
+      expect(RATE_LIMIT_MESSAGE).not.toBe(statusMessage(500));
+      expect(authFailureMessage(VERIFICATION_REQUIRED_CODE)).not.toBe(RATE_LIMIT_MESSAGE);
+    });
+
+    it('issues exactly one request for a rate-limited refusal, and never a second on its own', () => {
+      create();
+
+      fillCredentials();
+      submit();
+
+      // ⚠ COUNTED, NOT INFERRED. An expectation for "a" request would pass on the first of two,
+      // and the teardown's verify() cannot say how many there were - so the count is asserted
+      // before the refusal is answered.
+      const request = expectExactlyOneLoginRequest('one attempt, one request');
+
+      request.flush(
+        refusal(
+          RATE_LIMITED_CODE,
+          429,
+          'Too many requests have been submitted. Retry after a short delay.',
+        ),
+        {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { 'Content-Type': PROBLEM_MEDIA_TYPE },
+        },
+      );
+      fixture.detectChanges();
+
+      // ⚠ AND NOTHING IS RE-ATTEMPTED. There is no retry operator, no backoff and no timed
+      // resubmission anywhere on this screen: automatically re-attempting would defeat the very
+      // control that produced the refusal. That control is the compensating measure for the
+      // removed human-verification challenge - the server rate-limits the credential endpoints by
+      // calling address - so retrying here would quietly undo the mitigation.
+      expect(matchLoginRequests().length).withContext('no automatic re-attempt').toBe(0);
+      httpMock.expectNone(() => true);
+
+      // ⚠ AND THIS SCREEN STILL ANNOUNCES NOTHING. The global interceptor DOES announce on 429,
+      // so a notification raised here would be the second report of one refusal. That structural
+      // double-report is recorded in this file's header; what is fixable from this folder, and is
+      // fixed, is that the screen contributes no third one.
+      expect(notifySpy).not.toHaveBeenCalled();
     });
 
     it('reports a server fault with the shared wording when the refusal carried no document', () => {
@@ -1092,6 +1873,89 @@ describe('LoginComponent', () => {
 
       expect(fieldMessages).toContain(VERIFICATION_REQUIRED_MESSAGE);
       expect(textOf('.login__message')).toBe(VERIFICATION_REQUIRED_MESSAGE);
+
+      // Compared against the shared utility's own output rather than a copy of the resource
+      // value, so this case cannot fossilise a duplicate of legacy wording that the utility
+      // later changes.
+      expect(authFailureMessage(VERIFICATION_REQUIRED_CODE)).toBe(VERIFICATION_REQUIRED_MESSAGE);
+    });
+
+    it('announces the revealed field rather than letting it appear silently', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(
+          VERIFICATION_REQUIRED_CODE,
+          401,
+          'This account is awaiting verification. Submit the verification code that was sent to it.',
+        ),
+      );
+
+      const field = queryOrFail(`#${LOGIN_CONTROL_IDS.verificationCode}`);
+      const wrapper = field.closest('app-form-field');
+
+      expect(wrapper).withContext('the revealed control is inside a shared field').not.toBeNull();
+
+      // ⚠ A NEW FIELD THAT APPEARS SILENTLY IS A FIELD A PERSON USING A SCREEN READER NEVER
+      // LEARNS ABOUT. The shared field wraps its messages in a live region, so the sentence that
+      // asks for the code is ANNOUNCED as well as displayed - which costs nothing visually.
+      const liveRegion = wrapper?.querySelector<HTMLElement>('.form-field__errors');
+
+      expect(liveRegion).withContext('the field carries a live region').not.toBeNull();
+      expect(liveRegion?.getAttribute('role')).toBe('alert');
+      expect((liveRegion?.textContent ?? '').trim()).toContain(VERIFICATION_REQUIRED_MESSAGE);
+
+      // And the label travels with it, so what is announced names the box it belongs to.
+      expect((wrapper?.querySelector('label')?.textContent ?? '').trim()).toContain(
+        'Verification Code',
+      );
+
+      // ⚠ AND FOCUS MOVES ONTO THE BOX, which is the second half of announcing it: a screen
+      // reader reads the newly focused control and its label, so the person learns a field has
+      // appeared without any visual change whatsoever. The component defers the move to after the
+      // render that shows the field, because a control behind a template condition is not in the
+      // document at the moment the state revealing it changes - and this assertion is what proves
+      // the deferral actually resolves rather than being dropped.
+      expect(document.activeElement?.id)
+        .withContext('the revealed field takes focus')
+        .toBe(LOGIN_CONTROL_IDS.verificationCode);
+    });
+
+    it('renders the revealed field between the account name and the credential', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(
+          VERIFICATION_REQUIRED_CODE,
+          401,
+          'This account is awaiting verification. Submit the verification code that was sent to it.',
+        ),
+      );
+
+      // ⚠ THE LEGACY ODDITY IS PRESERVED. The legacy rows ran account name, verification code,
+      // challenge, password, submit, so the code genuinely sat BEFORE the password
+      // (`Login.ascx:L12-L31`). With the challenge removed this is the surviving order, and it is
+      // the order a person tabs through - which makes it behaviour rather than layout.
+      expect(controlSequence()).toEqual([
+        LOGIN_CONTROL_IDS.username,
+        LOGIN_CONTROL_IDS.verificationCode,
+        LOGIN_CONTROL_IDS.password,
+        'submit',
+      ]);
+    });
+
+    it('holds the revealed state on the shared store, where navigation cannot lose it', () => {
+      create();
+
+      // ⚠ READ-ONLY, PROVEN WITHOUT A CAST. The screen ALIASES the store's signal rather than
+      // mirroring it into a field of its own, and the signal it aliases cannot be written: a
+      // template or a component that could set it would be able to reveal the field without the
+      // server ever having asked for a code, which is the ladder's one invariant.
+      const revealed = store.verificationRequired;
+
+      expect('set' in revealed).withContext('the ladder state cannot be assigned').toBeFalse();
+      expect('update' in revealed).withContext('nor updated in place').toBeFalse();
+      expect(revealed()).withContext('and it starts closed').toBeFalse();
     });
 
     it('requires the code once the field is on screen, and sends nothing while it is empty', () => {
@@ -1145,7 +2009,11 @@ describe('LoginComponent', () => {
           401,
           'The verification code submitted for this account is not correct.',
         ),
-        { status: 401, statusText: 'Unauthorized' },
+        {
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: { 'Content-Type': PROBLEM_MEDIA_TYPE },
+        },
       );
       fixture.detectChanges();
 
@@ -1158,6 +2026,98 @@ describe('LoginComponent', () => {
       const fieldMessages = queryAll('.form-field__error').map((n) => (n.textContent ?? '').trim());
 
       expect(fieldMessages).toContain(VERIFICATION_CODE_INVALID_MESSAGE);
+      expect(textOf('.login__message')).toBe(VERIFICATION_CODE_INVALID_MESSAGE);
+    });
+
+    it('asks again, and keeps the field, when the server repeats the request for a code', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(
+          VERIFICATION_REQUIRED_CODE,
+          401,
+          'This account is awaiting verification. Submit the verification code that was sent to it.',
+        ),
+      );
+
+      // ⚠ THE RUNG `Login.ascx.vb:L180` DESCRIBES IS REACHED CLIENT-SIDE, NOT OVER THE WIRE, and
+      // that is a measured consequence rather than an omission. The legacy line asked for the code
+      // AGAIN when the field was already on screen and nothing had been typed into it; here the
+      // component's effect attaches a required rule the moment the field is revealed, so an EMPTY
+      // code can no longer leave the screen at all - the case above ("requires the code once the
+      // field is on screen") is that rung, enforced one layer earlier and without a request.
+      //
+      // What the wire CAN still carry is the server repeating its request for a code after a
+      // second attempt, and this is that: the field must stay on screen and the sentence must be
+      // asked again rather than replaced by a wrong-code message.
+      type(LOGIN_CONTROL_IDS.verificationCode, 'a-code-the-server-has-not-approved');
+      submit();
+
+      refuseSignIn(
+        refusal(
+          VERIFICATION_REQUIRED_CODE,
+          401,
+          'This account is awaiting verification. Submit the verification code that was sent to it.',
+        ),
+      );
+
+      expect(control(LOGIN_CONTROL_IDS.verificationCode))
+        .withContext('the field survives a second refusal')
+        .not.toBeNull();
+      expect(textOf('.login__message')).toBe(VERIFICATION_REQUIRED_MESSAGE);
+
+      // ⚠ AND THE REVEALED STATE PERSISTS ACROSS THE SCREEN ITSELF BEING DESTROYED. The signal
+      // lives on the root-provided store precisely so that navigating away and back does not
+      // silently restart the ladder at its first rung - a flag on the component would.
+      fixture.destroy();
+      mounted = null;
+      create();
+
+      expect(control(LOGIN_CONTROL_IDS.verificationCode))
+        .withContext('and survives the screen being rebuilt')
+        .not.toBeNull();
+    });
+
+    it('sends a whitespace-only code exactly as typed, because the legacy comparison was untrimmed', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(
+          VERIFICATION_REQUIRED_CODE,
+          401,
+          'This account is awaiting verification. Submit the verification code that was sent to it.',
+        ),
+      );
+
+      // ⚠ UNTRIMMED, DELIBERATELY. `Login.ascx.vb:L177` compares with `<> ""` and does not trim,
+      // so a code of spaces was NON-EMPTY in legacy terms and produced the wrong-code outcome
+      // rather than the ask-again one. Trimming here would silently reroute that input to the
+      // other rung and change an outcome the migration is required to preserve.
+      type(LOGIN_CONTROL_IDS.verificationCode, ' ');
+      submit();
+
+      const request = expectExactlyOneLoginRequest('the whitespace code is submitted');
+
+      expect(request.request.body).toEqual({
+        username: ACCOUNT_NAME,
+        password: SUBMITTED_PASSWORD,
+        verificationCode: ' ',
+      });
+
+      request.flush(
+        refusal(
+          VERIFICATION_CODE_INVALID_CODE,
+          401,
+          'The verification code submitted for this account is not correct.',
+        ),
+        {
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: { 'Content-Type': PROBLEM_MEDIA_TYPE },
+        },
+      );
+      fixture.detectChanges();
+
       expect(textOf('.login__message')).toBe(VERIFICATION_CODE_INVALID_MESSAGE);
     });
 
@@ -1311,6 +2271,16 @@ describe('LoginComponent', () => {
       expectAccepted('/users/5');
     });
 
+    it('round-trips the address the route guard writes, byte for byte', () => {
+      // ⚠ A NON-DEFAULT TARGET WITH A QUERY AND A ZERO IDENTIFIER, chosen so the assertion cannot
+      // pass by accident: it differs from the fallback address in its path, its query and its
+      // identifier at once. It is also the exact value the route guard's own specification
+      // round-trips, so the two ends of that contract are pinned to one literal - the guard
+      // refuses a protected address with the attempted address preserved whole, and this screen
+      // must hand back what it was given rather than a rebuilt approximation.
+      expectAccepted('/users/0?page=2');
+    });
+
     it('preserves a query string on an internal address', () => {
       expectAccepted('/users?page=2&size=10');
     });
@@ -1358,6 +2328,13 @@ describe('LoginComponent', () => {
     it('refuses a backslash, which some browsers normalise into a second leading slash', () => {
       expectRejected('/\\evil.test/portals', 'a backslash after the slash becomes scheme-relative');
       expectRejected('/portals\\..\\evil', 'a backslash anywhere is refused');
+
+      // ⚠ AND THE PURELY BACKSLASHED FORM, which is the one a reader is most likely to assume is
+      // already covered by the two above. It is refused one step earlier - it does not begin with
+      // a forward slash at all - and stating it is what proves the two rejections COMPOSE rather
+      // than leaving a value that satisfies neither.
+      expectRejected('\\\\evil.test', 'two backslashes are the scheme-relative form on some engines');
+      expectRejected('\\evil.test/portals', 'and one backslash is no more internal than two');
     });
 
     it('refuses a C0 control character, which a browser strips before resolving the address', () => {
@@ -1464,7 +2441,7 @@ describe('LoginComponent', () => {
       // identity - so no endpoint exists for any of them. The resource file of the
       // OUT-OF-SCOPE multi-provider container screen does carry all three captions, which is
       // exactly why their absence is asserted rather than assumed.
-      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      const text = host().textContent ?? '';
 
       expect(text).not.toContain('Remember');
       expect(text).not.toContain('Register');
@@ -1481,7 +2458,7 @@ describe('LoginComponent', () => {
       // it. Its control lives under `Library/Controls/**`, a tree this migration excludes
       // wholesale, so the removal is a documented functional reduction. The compensating
       // control is the server's rate limiter, whose refusal this screen surfaces calmly.
-      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      const text = host().textContent ?? '';
 
       expect(text).not.toContain('Security Code');
       expect(queryAll('img').length).withContext('no challenge image, and no image at all').toBe(0);
@@ -1499,7 +2476,7 @@ describe('LoginComponent', () => {
       // out-of-scope screen AND an account-enumeration vector, because it would disclose
       // whether an account exists - a distinction the legacy sign-in never drew. There is no
       // fourth failure message and no path can reach it.
-      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      const text = host().textContent ?? '';
 
       expect(text).not.toContain('Does Not Exist');
     });
