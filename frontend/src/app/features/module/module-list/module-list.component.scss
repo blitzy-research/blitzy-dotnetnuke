@@ -78,15 +78,32 @@
 // between them is semantic, not visual.
 //
 // MIGRATION: the legacy admin action affordance is retained AS TEXT and is deliberately not
-// promoted to a filled button. A filled-button class existed separately in the legacy
-// stylesheet and the admin action bars did not use it, so promoting these would be an
-// unrequested visual change.
+// promoted to a filled button. The measured legacy admin command is a text style, declared at
+// `Website/Portals/_default/default.css:L442` as family, size and weight only - no background, no
+// border, no padding - and drawn as an UNDERLINED LINK in the brand colour by the anchor rules
+// that follow it at `:L450` (link), `:L456` (visited) and `:L468` (active). A filled-button rule
+// with a grey background and horizontal padding does exist separately in that stylesheet at
+// `:L475-L483`, and it carries exactly ONE reference across the whole of `Website/` - the admin
+// action bars did not use it - so promoting these three affordances to filled buttons would be an
+// unrequested visual change of precisely the kind the Minimal Change Clause forbids.
 //
 // The focus ring is re-included even though the global reset already applies it to every anchor
 // and button. The mixin is documented as idempotent for exactly this reason, and stating it on
 // the affordance keeps the ring correct if the element ever becomes something the reset does not
 // cover - which is what the sibling portal listing does too, so the two screens indicate focus
 // identically.
+//
+// ⚠ `inline-block` IS THE DECLARED INTENT AND IS CURRENTLY BLOCKIFIED AT RUN TIME - measured in a
+// real browser, not assumed. All three affordances carrying this class are flex items today: the
+// two page-level links are projected into the shared page header's action row, which is a flex
+// container, and the failure dismissal sits inside this screen's own status row, which is a flex
+// container declared below. CSS blockifies a flex item, so the computed value observed is `block`
+// and the horizontal separation actually comes from those containers' own `gap`. The declaration
+// is kept rather than deleted because it states the correct intent for a compact text command and
+// becomes load-bearing the moment either parent returns to block flow, and because the sibling
+// portal listing declares it identically - dropping it here alone would make the two screens
+// diverge for no rendered benefit. It is recorded rather than left to mislead a reader into
+// expecting an inline-block box.
 .module-list__action {
   display: inline-block;
   padding-block: var(--space-1);
@@ -125,9 +142,26 @@
 //
 // MIGRATION: the legacy raster command icons have no target equivalent - the only static asset
 // this workspace ships is a favicon - and neither legacy icon carried alternative text, so both
-// reached assistive technology as unnamed graphics. Text closes that gap outright, and the
-// template additionally qualifies each accessible name with the placement's own title because
-// the commands repeat down the column.
+// reached assistive technology as unnamed graphics. Measured at
+// `Website/admin/Portal/portals.ascx:L21` and `:L22`, where the edit and delete commands are image
+// columns pointing at `~/images/edit.gif` and `~/images/delete.gif` with no alternative text and no
+// heading text of any kind. Text closes that gap outright, and the template additionally qualifies
+// each accessible name with the placement's own title because the commands repeat down the column.
+//
+// MIGRATION: THE LEGACY TYPE SIZES WERE INTERNALLY INCONSISTENT AND ARE NORMALISED ONTO THE SHARED
+// RAMP RATHER THAN REPRODUCED. Within the single measured portal grid, the header, item and
+// alternating-row rules at `Website/Portals/_default/default.css:L131-L171` all declare 10px - four
+// such declarations, and they are the ONLY dimensional-looking literals in that whole block - while
+// the Expires column nested inside that same grid reaches the 11px family instead, via
+// `Website/admin/Portal/portals.ascx:L49` and `:L52` pointing at rules declared at
+// `default.css:L92-L97` and `:L106-L111`. The second measured grid,
+// `Website/admin/Users/users.ascx:L24-L26`, uses the 11px family for its header, item AND
+// alternating rows, so the two grids disagree with each other as well as one disagreeing with
+// itself. There is therefore no single legacy size to preserve: the commands take the step below
+// body type from the shared ramp, which lands between the two legacy figures. The inconsistency is
+// recorded here rather than reproduced, and it is NOT presented as a fix - the Minimal Change
+// Clause forbids opportunistically correcting a legacy defect, and normalising onto a design-system
+// ramp is a consequence of adopting the ramp at all.
 .module-list__row-command {
   display: inline-block;
   padding-block: var(--space-1);
@@ -152,19 +186,42 @@
 
 // The destructive command. ⚠ COLOUR IS A REINFORCEMENT AND NEVER THE ONLY SIGNAL: the command
 // reads "Delete", its accessible name names the placement, and it opens a confirmation before
-// anything is removed. The text variant of the danger colour is used at rest because the raw
-// value is tuned for a border or an icon and does not clear the contrast threshold as small
-// text; the raw value is reserved for the hover state, where the contrast requirement is met by
-// the resting colour it replaces.
+// anything is removed.
 //
 // A colour change only. A destructive command that also moved or resized would be a different
 // affordance in a different place, which is how a reader mis-clicks the one command that cannot
 // be undone.
+//
+// ⚠ THE HOVER HOLDS THE RESTING COLOUR STILL, AND MOVING IT IS WHAT BREAKS THE CONTRAST. This
+// text sits a step below body size, so it needs 4.5:1, and the bright danger value measures
+// 4.00:1 on the plain row, 3.45:1 on the alternating surface and 2.61:1 on the selected tint -
+// failing on every row background this grid can paint, and failing worst on the row the operator
+// actually chose. The darker text variant measures 7.20:1, 6.21:1 and 4.70:1 against those same
+// three, so it passes everywhere. `_tokens.scss` states the rule outright where it declares the
+// bright value: danger TEXT resolves to the text variant, and the bright value "must never be
+// used for a text colour again" - it is a border and indicator colour only, which is how every
+// other consumer in the workspace uses it.
+//
+// MIGRATION: THE LEGACY HOVER INK IS DELIBERATELY NOT REPRODUCED, and this is the same corrected
+// defect the global reset already records for every anchor rather than a new opinion.
+// `Website/Portals/_default/default.css:L462` declares the legacy admin command's hover state as
+// an underline over the bright legacy red - and that red is byte-for-byte the value this
+// vocabulary carries as its DANGER colour - so hovering any legacy admin command, destructive or
+// not, turned its text the very colour that meant something had gone wrong. The UNDERLINE is
+// therefore kept as the hover cue and the ink is held still, which has the further merit of
+// remaining visible to a reader who cannot distinguish the two reds from one another at all.
+//
+// ⚠ RE-DECLARED, NOT INHERITED. The rule above sets `color: var(--color-primary-hover)` on
+// `.module-list__row-command:hover`, which carries a pseudo-class this rule's RESTING selector
+// does not and therefore outranks it. Omitting the colour here would consequently not "keep" the
+// danger colour - it would hand the destructive command the ordinary action's blue on hover.
+// Naming it makes the intent true rather than merely stated.
 .module-list__row-command--danger {
   color: var(--color-danger-text);
 
   @include mx.hover {
-    color: var(--color-danger);
+    color: var(--color-danger-text);
+    text-decoration: underline;
   }
 }
 
@@ -172,23 +229,80 @@
 //  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
 // =============================================================================
 //
-// MIGRATION: THIS SCREEN HAS NO LEGACY ANCESTOR, so there is no legacy appearance to preserve
-// and every value here is a design-system value rather than a measured one. What IS carried
-// across is the CONVENTION of the legacy admin grids - a text command bar above a bordered
-// grid, commands as text rather than as filled buttons, and centred headings - taken from
-// `Website/admin/Portal/portals.ascx`, which is also the source of this screen's column order.
-// The rules above are deliberately the same shape as the sibling portal listing's for that
-// reason: two listings that behave differently under hover or focus would read as two
+// MIGRATION: THIS SCREEN HAS NO LEGACY ANCESTOR, so there is no legacy appearance to preserve and
+// every value here is a design-system value rather than a measured one. Measured, not assumed:
+// `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO across that entire directory,
+// which holds only `export.ascx`, `import.ascx`, `modulesettings.ascx`, their three code-behinds,
+// one icon and `App_LocalResources`; `Website/admin/Modules/modulesettings.ascx` contains NINE
+// `<table>` elements and ZERO data grids, every one of those tables being a layout table declared
+// with a design-table summary. What IS carried across is the CONVENTION of the legacy admin grids -
+// commands first, identity next, dates last, commands drawn as text rather than as filled buttons -
+// taken from `Website/admin/Portal/portals.ascx:L13-L19`, which is also the source of this screen's
+// column order. The rules above are deliberately the same shape as the sibling portal listing's for
+// that reason: two listings that behaved differently under hover or focus would read as two
 // different applications.
 //
-// MIGRATION: every spacing value resolves to the shared spacing scale and every rounded corner
-// to the shared radius scale, both of which are NET ADDITIONS - the legacy stylesheets declare
-// no spacing system and the legacy design is square-cornered. The hover treatment is a net
-// addition too, and it is applied through the shared mixin rather than as a bare `:hover` rule:
-// a bare rule stays applied on a touch device until something else is tapped, which on a grid
-// whose selected row is also distinguished by colour is indistinguishable from a state the
-// reader did not choose.
+// MIGRATION: CELL AND COMMAND SPACING IS ENTIRELY NET-NEW, because the legacy grid had no spacing
+// CSS at all to carry forward. The whole legacy grid block at
+// `Website/Portals/_default/default.css:L131-L171` declares ZERO padding, margin, width, height and
+// border properties - it is nothing but background, colour, family, size and weight - and every
+// scrap of the legacy cell spacing came instead from a MARKUP ATTRIBUTE, `CellPadding="2"` at
+// `Website/admin/Portal/portals.ascx:L14`. A presentation value carried in markup has no target
+// equivalent, so the spacing here resolves to the shared 4px spacing scale, which is itself a net
+// addition: the legacy stylesheets declare no spacing system whatsoever. Every rounded corner
+// likewise resolves to the shared radius scale, another net addition - the legacy design is
+// square-cornered, and `border-radius` occurs zero times across every stylesheet under `Website/`.
 //
-// No elevation is introduced: the legacy design is flat, and nothing on this screen needs to
-// read as raised.
+// MIGRATION: THE PAGER SEPARATOR WAS MARKUP AND BECOMES A SPACING TOKEN. The legacy screen spaced
+// its grid off its pager with a literal pair of line breaks - `<br><br>` on its own line at
+// `Website/admin/Portal/portals.ascx:L57`, sitting between the grid's close at `:L56` and the paging
+// control at `:L58`. Layout-by-entity is exactly the practice this migration replaces: the gap is
+// declared once as a design token on the root rule above and applied uniformly between every region
+// of the screen, so no separator element appears anywhere in the template.
+//
+// MIGRATION: THE LEGACY ALTERNATING-ROW DEFECT IS RECORDED AND NOT REPRODUCED. The alternating-row
+// rule at `Website/Portals/_default/default.css:L131-L138` paints white and then sets its text
+// colour to red at `:L134`, and `Website/admin/Portal/portals.ascx:L17` points the portal grid's
+// alternating rows straight at it - so every SECOND row of that grid rendered its text in the same
+// red the stylesheet reserves for validation failure. That is a defect and not a design: a stripe
+// is a positional cue and must not borrow the vocabulary of an error, and colour must never be the
+// sole carrier of meaning. The Minimal Change Clause forbids opportunistically FIXING a discovered
+// legacy defect, and it is not fixed here - it is simply not carried across, because row striping
+// belongs to the shared grid's own presentation and nothing in this file paints a row. The second
+// measured grid did not stripe in red at all (`Website/admin/Users/users.ascx:L26`), so there was
+// no consistent legacy convention to preserve even had one been wanted.
+//
+// MIGRATION: THE SECOND REFERENCE STYLESHEET CONTRIBUTES NOTHING, and it was measured rather than
+// skimmed. `Website/Portals/_default/portal.css` is 275 lines long and 80 of those lines open a
+// rule, yet it contains ZERO declaration lines, ZERO hex colours and ZERO named colours - every
+// single rule body in the file is empty. It is a selector manifest, not a stylesheet, so no value
+// in this file derives from it and none can. The sole visual provenance for this screen is
+// `default.css`.
+//
+// MIGRATION: TOKEN GAPS ARE REPORTED HERE RATHER THAN FILLED LOCALLY, because inventing a value at
+// the point of use is what the zero-hardcoded-values rule exists to prevent. Three are relevant to
+// this screen and all three are absorbed without a literal:
+//   * NO BASE TEXT COLOUR TOKEN exists. This is deliberate upstream, not an omission: legacy body
+//     text declared no colour at all, so the legacy value simply IS the user agent's default. Every
+//     region here inherits it, and nothing declares a resting text colour except the two command
+//     affordances, which are links and carry the brand colour by role.
+//   * NO DISABLED-TEXT TOKEN exists. Nothing on this screen needs one - the template binds no
+//     `disabled` attribute anywhere, by its own documented choice, so a `:disabled` rule here would
+//     be dead CSS and none is written.
+//   * NO DURATION, EASING OR MOTION TOKEN exists, and the shared mixin surface exports no motion
+//     helper. Consequently NOTHING on this screen transitions or animates. That is the correct
+//     outcome rather than a compromise: `transition`, `animation`, `@keyframes` and `transform` each
+//     occur zero times across every stylesheet under `Website/`, so there is no legacy motion to
+//     preserve, and the hover and focus states change colour, underline and outline instantaneously.
+//
+// MIGRATION: THERE IS NO `prefers-reduced-motion` GUARD IN THIS FILE, AND ITS ABSENCE IS REQUIRED
+// RATHER THAN OVERLOOKED. The shared mixin partial is the ONLY file in the workspace permitted to
+// author a media feature query, its exported surface is closed, and it exports no reduced-motion
+// guard - it instructs a consumer needing any other at-rule to report the gap and degrade instead.
+// Design-system compliance outranks the generic accessibility recommendation here, so no raw query
+// is written. The limitation costs nothing in practice for the reason immediately above: this screen
+// declares no motion of any kind, so there is nothing for a reduced-motion guard to withdraw.
+//
+// No elevation is introduced either: the legacy design is flat - `box-shadow` occurs zero times
+// across every stylesheet under `Website/` - and nothing on this screen needs to read as raised.
 // =============================================================================

@@ -1,0 +1,304 @@
+<!--
+  The application's single primary-navigation landmark.
+
+  THIS FILE EMITS EXACTLY ONE LANDMARK, AND IT IS THE ONLY ONE OF ITS KIND
+  The shell composes four members and the landmarks are divided between them with no
+  overlap: the banner belongs to the header component, the main region and its outlet
+  belong to the shell itself, the contentinfo band belongs to the footer component, and
+  primary navigation belongs here. A census of the other four templates confirms none of
+  them declares a navigation landmark, so this one is unclaimed elsewhere and is emitted
+  here once. Emitting a second landmark of any kind in this file would put two of that
+  kind in the accessibility tree, which is a defect rather than a duplicate.
+
+  HOW THIS COMPONENT IS MOUNTED, AND WHY IT MUST NAME ITSELF
+  The shell publishes its navigation region as a projection slot rather than importing
+  this component, and its own template records the consequence: "the projected content
+  brings its own landmark and its own accessible name". That is why the landmark below
+  carries an accessible name of its own — an unnamed landmark is announced as an
+  anonymous region and is indistinguishable in a landmark list. The name is a plain
+  attribute and deliberately does not repeat the word navigation, which assistive
+  technology already announces from the element itself.
+
+  SELECTOR CONTRACT FOR THE PAIRED STYLESHEET
+  The paired stylesheet owns every dimension, colour and spacing value; none appears
+  here, and the collapse is presented rather than implemented by it. The hooks this file
+  guarantees are:
+
+    .app-sidebar                    the landmark, and the flex/grid container
+    .app-sidebar--collapsed         state class on the landmark while collapsed
+    .app-sidebar__toggle            the disclosure control
+    .app-sidebar__regions           the collapsible region carrying the stable id
+    .app-sidebar__group             a group heading
+    .app-sidebar__list              one list per group
+    .app-sidebar__item              one list item per destination
+    .app-sidebar__link              a destination anchor
+    .app-sidebar__link--active      applied by the router to the anchor for the
+                                    address currently showing
+
+  ⚠ THE STYLESHEET MUST NOT DECLARE `display` ON `.app-sidebar__regions`. The region is
+  hidden through the native hidden property, so it collapses correctly with no CSS at
+  all; a `display` declaration on that element would override the property and leave a
+  collapsed rail that still shows its links. Style the state class on the landmark
+  instead, which is exactly what it is published for.
+
+  ⚠ THE REGION IS HIDDEN, NEVER REMOVED, AND THE REASON IS THE CONTROL'S OWN WIRING
+  The disclosure control names the region it operates. Removing that region from the
+  document while collapsed would leave the control pointing at an element that does not
+  exist, which assistive technology reports as a broken relationship rather than
+  silently ignoring — the same hazard the paired component documents for the region
+  identifier it publishes. Hiding keeps the element addressable while taking it out of
+  the accessibility tree, so both states are honest.
+
+  PRESENCE AND STATE ARE TESTED EXPLICITLY, NEVER BY TRUTHINESS OR NEGATION
+  The collapse state is compared against `false` rather than negated. The codebase holds
+  this position at its other boundaries for a substantive reason — the legacy null module
+  encoded an absent integer as minus one while tenant keys seed from minus one and role
+  keys from zero, so a truthy test on a legacy value is a defect — and an explicit
+  comparison is the same discipline applied to a boolean, with the incidental benefit
+  that no character here can be mistaken for a non-null assertion.
+
+  EVERY DYNAMIC VALUE IS PLAIN TEXT
+  Both loops render their text through interpolation, which escapes its content, and
+  nothing in this file writes markup or bypasses a sanitiser. That rule is not
+  precautionary: measured across the 37 resource files of the five in-scope
+  administration trees there are 1211 resource entries, 75 of which carry HTML tags, and
+  they carry them XML-escaped so a search for the unescaped form finds nothing and
+  suggests the text is clean when it is not. One of those files carries two complete
+  script elements. None of that text reaches this rail, and the rule is applied anyway.
+  The legacy code held the same position where it did render such values:
+  `Default.aspx.vb` L232 encodes an exception message before display and
+  `AccessDenied.ascx.vb` L43 encodes a query-string message before display.
+
+  EVERY ADDRESS BELOW WAS VERIFIED AGAINST THE ROUTE TABLE
+  All eight destinations published by the paired component were checked to resolve in
+  `app.routes.ts` and the four feature route barrels. A rail entry naming no route is
+  neither a compile error nor a run-time exception — the router resolves it to the
+  wildcard entry — so it would ship as a link that quietly goes nowhere.
+-->
+
+<!-- MIGRATION: ⚠⚠ A VERTICAL NAVIGATION RAIL IS NET-NEW INFORMATION ARCHITECTURE. THERE
+     WAS NO LEFT NAVIGATION IN THE LEGACY APPLICATION. The evidence is recorded here
+     because the opposite assumption is the natural one and would mislead every later
+     reader. The only complete skin in the checkout,
+     `Website/Portals/_default/Skins/MinimalExtropy/index.ascx` (126 lines), places its
+     menu control at L42-L47 declared `ControlOrientation="Horizontal"`, nested at
+     L38-L41 four containers deep inside the header band — so navigation was a
+     HORIZONTAL BAR sitting between the logo band at L23-L37 and the breadcrumb band at
+     L60-L77. L49 puts the search container as a SIBLING of the menu container inside
+     that same bar, so navigation and search shared one horizontal strip. A second
+     horizontal navigation surface existed as well: L109 renders a root-level link list
+     across the footer band, separated by a decorative pipe.
+
+     The decisive evidence is L89. It declares a hidden table cell inside the content
+     table at L83-L100, alongside the top, content, right and bottom cells at L85, L91,
+     L93 and L97 — all five server-side hidden by default. That left-hand cell was a
+     module CONTENT pane, a place a portal administrator could drop modules into. It was
+     never a navigation region, and no navigation control was ever registered in it.
+     The vertical arrangement below is therefore a decision of this migration, not a
+     legacy structure being preserved. -->
+
+<!-- MIGRATION: the legacy menu implementation is deliberately not reproduced. It was
+     drawn by a swappable navigation provider, selected by name at L42 and configured
+     through ELEVEN separate node-class parameters plus a child-indicator setting, with
+     fly-out submenus. The navigation-provider family and the menu control library are
+     both excluded from this migration, so none of it carries over: no provider
+     indirection, no per-node class vocabulary, no fly-out submenus and no child
+     indicators. The legacy stylesheet's own class families for that menu, for its tree
+     variant and for the superseded tab strip — nine, six and ten selectors
+     respectively, plus one background rule — are likewise not ported; the stylesheet
+     itself marks that whole block as legacy at `default.css` L806. This rail is one
+     flat list per group and the router decides which entry is current. No legacy class
+     name appears anywhere in this file. -->
+
+<!-- MIGRATION: view state, the multipart server form and the hidden round-trip inputs
+     are eliminated outright. `Website/Default.aspx` L23 wrapped the entire document in
+     one server form declared `ENCTYPE="multipart/form-data" autocomplete="off"`, L25
+     held the placeholder the skin was injected into, and L26-L27 declared the two
+     hidden inputs that shuttled scroll position and client variables through every
+     postback. Collapsing this rail therefore cost a server round trip in the legacy
+     application; here it is a signal read, so it costs no request and posts nothing.
+     Scroll restoration is now a router concern, configured once where the router is
+     provided. -->
+
+<!-- MIGRATION: there is no page-management entry in this rail, and none may be added.
+     The legacy page abstraction survives only as a lookup consulted by the module
+     screens: its controller is closed at three read-and-update endpoints with no create
+     and no delete, its client service exposes exactly the matching three calls, and the
+     route table declares no collection address for it. The legacy page-management,
+     page-export, page-import and recycle-bin screens are all out of scope. Worth
+     recording for anyone reading the legacy source: the user-facing legacy term for
+     that concept was always "Page", never the internal one. -->
+
+<!-- MIGRATION: the module collection's label is genuinely net-new, and the proof is an
+     absence I measured rather than an editorial preference. Every in-scope legacy
+     administration tree names its collection view with the empty-discriminator resource
+     key `ControlTitle_.Text`, and the file counts carrying it are Portal 5, Users 2,
+     Security 1, Tabs 2 — and Modules ZERO. The Modules tree's only title keys are
+     `ControlTitle_module`, `ControlTitle_exportmodule` and `ControlTitle_importmodule`.
+     Modules is the single in-scope tree lacking the collection key, which corroborates
+     that no legacy module-list screen is in scope and so no legacy wording exists to
+     inherit. The other seven labels ARE measured legacy wording, read from the `<value>`
+     elements of the resource files and never from the paired markup attributes, because
+     the legacy screens assigned their titles from resources at run time and the markup
+     is provably stale. -->
+
+<!-- MIGRATION: localisation is not carried forward. The legacy screens resolved every
+     one of these strings through a per-control resource file at run time, across those
+     37 resource files. No translation runtime is part of this migration, so the wording
+     is authored directly into this template and the resource files served only as the
+     authority for what the wording should be. The consequence is deliberate and worth
+     stating plainly: this rail is English-only, where the legacy menu could be
+     localised per portal. -->
+
+<!-- MIGRATION: ⚠ the current-page announcement is bound with EXACT address matching,
+     and that is a correctness requirement rather than a refinement. Link-activity
+     matching is by prefix unless told otherwise, and one pair of addresses proves the
+     hazard: the module collection address is a strict prefix of the module import
+     address, so on the import screen prefix matching would mark BOTH entries active —
+     two highlighted links for one location and, because the announcement is driven from
+     the same state, two elements each claiming to be the current page. That claim is
+     meaningless unless it is unique, so this is an accessibility defect and not merely a
+     cosmetic one. The other pairs were checked and do not collide. The matching options
+     are taken from the single stable instance the paired component publishes rather than
+     written as a literal here, because a literal would allocate a new object on every
+     evaluation. -->
+
+<!-- MIGRATION: permission-based link visibility is an AFFORDANCE and never enforcement,
+     and this rail deliberately applies none. Authorisation is decided server-side and
+     answered as HTTP 403; on the client, route activation is gated by the router's own
+     authentication and permission guards. Showing the entry points and letting those two
+     authorities refuse is the safer default: hiding an entry the guard would have allowed
+     silently removes a capability, whereas showing one the guard refuses costs a
+     redirect. The legacy application took the same position — its access-denied screen
+     performs no permission check of its own and is a pure display surface, reporting
+     refusal at warning severity rather than as an error.
+
+     The shared permission directive was evaluated for group-level gating and is NOT
+     adopted, for three independently sufficient reasons, all measured. Its required
+     input is typed to the four-value permission-key vocabulary rather than to
+     authorisation policy names, and those are two different vocabularies — the
+     directive's own documentation identifies conflating them as precisely the confusion
+     its type exists to prevent — so a policy name written there would not compile under
+     strict template checking, and were it to reach run time the directive fails closed
+     on an unrecognised value and every group would disappear permanently. The paired
+     component imports only the two router directives, so the directive is not available
+     in this template at all. And the route table gates just three of these eight
+     addresses, leaving the four collection addresses on authentication alone, so a
+     group-level gate would contradict the guards it is supposed to mirror. The gap is
+     reported rather than papered over: gating this rail needs either a policy-typed
+     input on that directive or a resolved permission-key projection to gate against, and
+     neither exists yet. -->
+
+<!-- MIGRATION: the bulleted list markers are dropped. `default.css` L592-L595 sets
+     `list-style-type: square` on every list item, nesting to disc at L597 and circle at
+     L602; the lists below set no marker, which the paired stylesheet expresses as
+     `list-style: none`. The divergence is real but narrow, because the legacy menu was
+     never a list at all — it was provider-rendered markup — so no legacy list is being
+     restyled here. Recorded so the difference is not mistaken for an oversight. -->
+
+<!-- MIGRATION: the focus ring these controls receive is a NET ADDITION. The legacy
+     stylesheets declare no focus styling whatsoever — a census of `default.css` for
+     focus selectors and outline declarations returns zero — so keyboard users had no
+     visible indication of position anywhere in the legacy chrome. The styling itself
+     belongs to the paired stylesheet's focus-visible rules; this file simply keeps every
+     control natively focusable and adds no attribute that would take one out of the tab
+     order or reorder it. -->
+
+<nav
+  class="app-sidebar"
+  aria-label="Administration"
+  [class.app-sidebar--collapsed]="collapsed()"
+>
+  <!--
+    The disclosure control. A real button, because a button is what a control that acts
+    on the current document is, and because it is focusable, keyboard-operable and
+    announced correctly with no attribute added to make it so. An anchor without a
+    destination would be announced as a link and go nowhere, and a clickable division
+    would be neither focusable nor announced at all.
+
+    Its name is STABLE across both states and the state is carried by `aria-expanded`
+    alone, which is the position the rest of this codebase takes as well. A name that
+    rewrote itself on activation would change the control's identity underneath the user
+    at the moment they were relying on it, and would restate in words something already
+    reported by an attribute built to report it.
+
+    It names the region it operates, so the relationship is programmatic rather than
+    implied by adjacency. Both halves of that relationship read the SAME identifier
+    published by the paired component, so the control and the region it claims to
+    operate are provably the same element and cannot drift apart.
+  -->
+  <!-- MIGRATION: the marker is text, not an icon. The legacy chrome drew its menu
+       indicators from a symbol font and its affordances from raster images referenced by
+       the stylesheet; neither ships with this application, and the only static asset in
+       the workspace is the favicon. Any decorative shape belongs to the paired
+       stylesheet, where the design tokens are in scope; this file contributes the
+       accessible name. -->
+  <button
+    type="button"
+    class="app-sidebar__toggle"
+    [attr.aria-expanded]="collapsed() === false"
+    [attr.aria-controls]="navigationRegionId"
+    (click)="toggleCollapsed()"
+  >
+    Navigation
+  </button>
+
+  <div
+    class="app-sidebar__regions"
+    [id]="navigationRegionId"
+    [hidden]="collapsed()"
+  >
+    <!--
+      One group per preserved domain, each a genuine heading followed by a genuine list.
+      The heading is a real heading element rather than a styled division, so it appears
+      in the document outline and can be navigated to; the level sits one below the page
+      title that the shared page-header component emits inside the main region, which is
+      the only other heading level in use.
+
+      Tracking is by the group's own stable key and by each destination's address, both
+      of which are invariant. Tracking either loop by index would re-associate every row
+      with different data the moment the model changed, and tracking a group by its label
+      would tie identity to user-visible wording.
+
+      The heading identifier is derived once and read twice — as the heading's own
+      identifier and as the list's accessible name — so the association is structural and
+      cannot drift. It is namespaced with the region identifier so that it stays unique in
+      the document even though these values become global identifiers.
+    -->
+    @for (group of navigation; track group.id) {
+      @let groupHeadingId = navigationRegionId + '-' + group.id;
+
+      <h2 class="app-sidebar__group" [id]="groupHeadingId">{{ group.label }}</h2>
+
+      <ul class="app-sidebar__list" [attr.aria-labelledby]="groupHeadingId">
+        @for (item of group.items; track item.path) {
+          <li class="app-sidebar__item">
+            <!--
+              The anchor is a real link to a real address, so it is focusable, announced
+              as a link, and openable in a new tab exactly as a user expects — none of
+              which a click handler on a non-interactive element would give.
+
+              The router applies the active class and the reference below reads the same
+              router state to decide the current-page announcement, so the visual
+              treatment and the announcement are driven by ONE source and cannot
+              disagree. The announcement is bound rather than written as a fixed
+              attribute, and resolves to nothing at all when the address is not the one
+              showing: binding an empty result removes the attribute outright instead of
+              leaving a stale claim behind. Colour is therefore never the only carrier of
+              which entry is current.
+            -->
+            <a
+              class="app-sidebar__link"
+              [routerLink]="item.path"
+              routerLinkActive="app-sidebar__link--active"
+              #linkActivity="routerLinkActive"
+              [routerLinkActiveOptions]="exactMatchOptions"
+              [attr.aria-current]="linkActivity.isActive ? 'page' : null"
+              >{{ item.label }}</a
+            >
+          </li>
+        }
+      </ul>
+    }
+  </div>
+</nav>

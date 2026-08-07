@@ -16,6 +16,7 @@
 //     .portal-list__row-command--danger
 //     .portal-list__aliases
 //     .portal-list__alias
+//     .portal-list__new-context
 //
 // ZERO HARDCODED VALUES. Every declaration resolves to a design token, a shared mixin or
 // one of the permitted keywords - 0, none, auto, inherit, currentColor and transparent.
@@ -39,6 +40,48 @@
 //   rows, that something was wrong when nothing was. Row striping belongs to the shared
 //   table in any case; the point of recording it here is that the omission is deliberate and
 //   measured rather than an oversight.
+//
+// MIGRATION: THE LEGACY SELECTED-ROW TREATMENT IS DEAD CSS AND NO REPLACEMENT IS INVENTED.
+//   Website/Portals/_default/default.css:L164-L170 declares .DataGrid_SelectedItem with
+//   `background-color: Silver` and `color: Blue`, but a search for that class name across
+//   every .ascx and .aspx under Website/ returns ZERO references - this grid never bound a
+//   selected row and neither does its replacement. A selected-row style is therefore absent
+//   here by measurement rather than omitted by accident, and adding one would be inventing a
+//   state the screen does not have.
+//
+// MIGRATION: THERE IS NO LEGACY PAGER STYLING TO PORT. `portals.ascx:L19` declares
+//   `<pagerstyle cssclass="DataGrid_Pager" />`, so the markup names the class - but that
+//   class is defined in NO stylesheet in the repository (zero hits across every *.css). The
+//   legacy pager was therefore unstyled beyond the browser default. The shared pagination
+//   component owns its own appearance, and this file contributes nothing to it.
+//
+// MIGRATION: THE LEGACY TYPE-SIZE INCONSISTENCY IS NORMALISED RATHER THAN REPRODUCED. The
+//   grid vocabulary at default.css:L131-L162 sets every cell to the smaller of the two legacy
+//   body sizes, while the Expires column's own .Normal and .NormalBold at default.css:L92-L111
+//   set the larger one - two different body sizes inside one row of one grid, which is an
+//   inconsistency rather than an intention. Both resolve to the single token size scale, so
+//   the row reads as one row. The inconsistency is recorded here rather than replicated.
+//
+// MIGRATION: THREE OVERLAPPING LEGACY FONT STACKS COLLAPSE INTO ONE TOKEN. The stack measured
+//   for this screen is the one declared at default.css:L444 on the filter strip's own class,
+//   and the legacy stylesheets declare two further near-identical variants of it. All three
+//   resolve to --font-family-base. The rendered difference is imperceptible because the same
+//   first family wins in every one of them; the consolidation is an intentional, documented
+//   refinement rather than a visual change. The family names are cited by line rather than
+//   transcribed, so that no raw font stack appears anywhere in this file even as prose.
+//
+// MIGRATION: SPACING, RADIUS AND ELEVATION ARE NET ADDITIONS, NOT TRANSLATIONS. The legacy
+//   stylesheets have no systematic spacing scale - gaps were ad-hoc pixel values or, as at
+//   `portals.ascx:L8` and `:L57`, literal markup - and they are square-cornered with no
+//   elevation anywhere. The --space-*, --radius-* and elevation scales this file consumes
+//   therefore have no legacy counterpart to be faithful to. They are an intentional visual
+//   refinement that alters no behaviour.
+//
+// MIGRATION: the second of this screen's two source stylesheets contributes nothing.
+//   Website/Portals/_default/portal.css declares .CommandButton and all four of its link
+//   states (:L99-L113) with EMPTY bodies - all 80 of its rule bodies are empty, because it is
+//   a skin-override template rather than a stylesheet. Every measured value behind this file
+//   therefore comes from default.css alone.
 
 @use '../../../../styles/mixins' as mx;
 
@@ -49,6 +92,12 @@
 // than restated per rule. Declaring it here rather than relying on a global base rule keeps
 // the component self-sufficient: without it the browser falls back to its own serif default
 // for every cell, label and command.
+//
+// MIGRATION: THE GRID-TO-PAGER SEPARATOR IS A TOKEN GAP, NOT MARKUP. `portals.ascx:L57` is a
+//   literal `<br><br>` sitting between the closing grid tag at `:L56` and the paging control
+//   at `:L58` - spacing smuggled into the document as content. The row gap below separates
+//   every region of this screen, the table from the pager included, so the measurement lives
+//   in one inspectable token instead of in two empty elements that a screen reader must skip.
 .portal-list {
   display: grid;
   gap: var(--space-4);
@@ -71,7 +120,14 @@
   justify-content: space-between;
 }
 
-// A flex row with a gap rather than the legacy pair of non-breaking spaces between entries.
+// MIGRATION: THE CHIP SEPARATOR IS A FLEXBOX GAP, NOT A PAIR OF NON-BREAKING SPACES.
+//   `portals.ascx:L8` closes each repeated hyperlink with a literal `&nbsp;&nbsp;`, so the
+//   twenty-seven entries were spaced by content rather than by style - unadjustable, invisible
+//   to inspection, and read aloud as text. The token `gap` below replaces both characters. It
+//   also fixes what the legacy approach could not: a non-breaking space cannot break, so the
+//   legacy strip could push its row wider than the viewport, whereas `flex-wrap` lets the
+//   entries reflow onto a second line and the gap applies between rows as well as within them.
+//
 // Spacing is a token declared once here, so it is inspectable and adjustable instead of
 // smuggled into the markup as content.
 //
@@ -145,9 +201,15 @@
 // emitted ONCE here instead of three times, which is what keeps this stylesheet inside the 4 kB
 // component budget; the budget itself is never raised to accommodate duplication.
 //
-// The primary-hover token is used rather than the legacy hover colour. That legacy colour is the
-// very same value the token vocabulary assigns to the danger role, and reuses for error text, so
-// reusing it here would paint an ordinary action in the colour that means "something went wrong".
+// MIGRATION: THE LEGACY HOVER COLOUR IS DELIBERATELY NOT REPRODUCED, AND THE MEASUREMENT IS WHY.
+//   default.css:L449-L461 gives `A.CommandButton` its resting and visited colour - the value the
+//   token vocabulary now calls --color-primary - but default.css:L462-L466 turns `:hover` RED,
+//   and that red is the very same value the vocabulary assigns to the danger role and reuses for
+//   error text. Reproducing it would paint every ordinary action, on mere hover, in the one
+//   colour that means "something went wrong", and would make an ordinary command
+//   indistinguishable from the destructive one beside it. The primary-hover token is used
+//   instead, and the underline the legacy class carried on all four states is retained as the
+//   non-colour half of the cue.
 //
 // POSITION IS LOAD-BEARING. `.portal-list__row-command--danger:hover` has the SAME specificity as
 // `.portal-list__row-command:hover`, so only source order decides between them. This rule must stay
@@ -188,7 +250,6 @@
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-
 }
 
 // -----------------------------------------------------------------------------
@@ -232,8 +293,9 @@
 .portal-list__row-command--danger {
   color: var(--color-danger-text);
 
-  // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text is
-  // 10px, so it needs 4.5:1, and the bright danger token measures 4.00:1 on the plain row, 3.45:1
+  // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text sits
+  // below the large-text threshold, so it needs 4.5:1, and the bright danger token
+  // measures 4.00:1 on the plain row, 3.45:1
   // on the alternating surface and 2.61:1 on the selected tint - failing on every row background,
   // and failing worst on the row the operator has actually selected. The darker text token measures
   // 7.20:1, 6.21:1 and 4.70:1 against those same three, so it passes everywhere.
@@ -273,13 +335,24 @@
 
 // A host name can be long and the column shares its track with nine others, so it is allowed
 // to break inside a word rather than force the table wider than its container.
+//
+// ⚠ THE MARKER RESET MUST BE REPEATED HERE, AND OMITTING IT IS WHAT PAINTED A BULLET ON EVERY
+// ROW. `list-style` on the `<ul>` above is NOT sufficient, which is a specificity fact rather
+// than a preference: `src/styles/_reset.scss:L211-L213` declares `ul li { list-style-type:
+// square; }`, and although `list-style-type` inherits, an INHERITED value always loses to a
+// declaration that matches the element DIRECTLY. `ul li` matches this `<li>` itself, so it beat
+// the `none` inherited from the parent and a black square was drawn beside all twelve host
+// names of every row. Measured in the browser before this rule existed: the `<ul>` computed
+// `list-style-type: none` while each `<li>` computed `square`. The class selector below carries
+// higher specificity than `ul li`, so it wins. The global reset is correct for prose lists and
+// is deliberately NOT edited - this list is layout, not prose, so it opts out here.
 .portal-list__alias {
+  list-style: none;
   overflow-wrap: break-word;
 
   > a {
     color: var(--color-primary);
     text-decoration: none;
-
   }
 }
 

@@ -1,0 +1,241 @@
+//  sidebar.component.scss
+//  Administration navigation rail — the shell's single primary-navigation landmark
+//
+//  ROLE
+//  ----
+//  Styles the one `navigation` landmark of the dnn-migration administration shell.
+//  The rail carries a disclosure control followed by one heading-plus-list group per
+//  preserved domain. This file lays out the rail's OWN contents with Flexbox and
+//  declares its fill, its ink, its type, its gutter and its trailing boundary.
+//
+//  It does NOT place the rail. Placement is a grid concern and belongs to the shell:
+//  src/styles/_layout.scss declares the `.shell__sidebar` region rule, assigns it the
+//  named sidebar area and states that the region rules there are "PLACEMENT ONLY".
+//  That same rule records that it deliberately declares no inline size, because "the
+//  shell's `auto` track measures this region intrinsically, so the width it occupies
+//  is decided by the projected content's own box, in the scoped stylesheet of
+//  whichever component supplies it". This is that stylesheet, and the width is
+//  therefore left INTRINSIC here as well — the rail is as wide as its longest
+//  destination label plus its gutter. No length is invented for it, because the token
+//  vocabulary declares no navigation-rail measure and the legacy source supplies no
+//  width to preserve: `Website/Default.aspx.vb` L89 sized the `LeftPane` cell with
+//  `valign="top"` and no `width` attribute at all.
+//
+//  ZERO HARDCODED VALUES
+//  Every property value below resolves either to a design token declared in
+//  src/styles/_tokens.scss or to one of the six literals the plan permits — `0`,
+//  `none`, `auto`, `inherit`, `currentColor`, `transparent`. `block`, `flex`,
+//  `column`, `none` and `nowrap` name a layout mechanism rather than a measured
+//  design decision and have no token to resolve to. There is no colour literal, no
+//  length literal, no bare numeric weight, no importance flag, no asset-reference
+//  function and no raw media query anywhere in this file.
+//
+//  SELECTOR CONTRACT — shared with sidebar.component.html
+//  Emulated view encapsulation rewrites every selector below with this component's
+//  own content attribute, so all of them are confined to this component: they cannot
+//  reach the shell's other bands and they cannot reach a `<nav>`, `<ul>`, `<a>` or
+//  `<button>` that a feature screen renders inside `<main>`.
+//
+//    <nav class="app-sidebar">                     the navigation landmark
+//        .app-sidebar--collapsed                   state modifier, set from the signal
+//      <button class="app-sidebar__toggle">        the disclosure control
+//      <div class="app-sidebar__regions">          the disclosed region, [hidden] when collapsed
+//        <h2 class="app-sidebar__group">           one group heading per domain
+//        <ul class="app-sidebar__list">            that group's destinations
+//          <li class="app-sidebar__item">
+//            <a class="app-sidebar__link">         a destination
+//              .app-sidebar__link--active          applied by routerLinkActive
+//
+//  A class name that drifts degrades the arrangement of the rail, never the
+//  correctness of its links, its buttons or its focus indication: the behaviour that
+//  is guaranteed by the ELEMENT is attached to the type selector, and only the
+//  structural layout is attached to the class vocabulary.
+//
+//  MIGRATION: this stylesheet is a NET ADDITION IN FULL. There was no component
+//  stylesheet to port, because the legacy rail did not exist as a styleable unit — it
+//  was a skin pane, `<td valign="top" id="LeftPane" class="LeftPane" runat="server">`,
+//  into which the module loader injected whatever a tenant had placed there. The
+//  navigation itself came from the excluded SolpartMenu provider, whose `.MainMenu_*`
+//  class family the migration plan places out of scope (section 0.3.3), so there is no
+//  measured menu treatment to reproduce and none is invented. What the plan does
+//  supply is the token vocabulary seeded from the legacy portal's own measured values,
+//  and every declaration below resolves to it — so the rail reads as part of the same
+//  application as the band above it without claiming a lineage it does not have.
+//
+//  ACCESSIBILITY, at no visual cost
+//  The list markers are suppressed because the destinations are presented as a
+//  navigation list and not as prose, which is a presentation change only — the `<ul>`
+//  and its `<li>` children are retained, so the list and its length are still
+//  announced. The focus ring comes from the shared mixin, which is the one place the
+//  ring is defined, and it is applied to BOTH the disclosure control and every
+//  destination: a census of `default.css` for focus selectors and outline declarations
+//  returns zero, so the legacy chrome gave a keyboard user no visible indication of
+//  position anywhere. The current destination is carried by weight and fill as well as
+//  by ink, so it survives a colour-vision deficiency and a monochrome rendering; the
+//  paired template additionally emits `aria-current="page"` from the same router
+//  state, so the visual treatment and the announcement cannot disagree.
+
+// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available
+// here; a `@use` elsewhere does not.
+@use '../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  1. HOST
+// -----------------------------------------------------------------------------
+//  The shell renders `<div class="shell__sidebar"><ng-content /></div>` and this
+//  component is the projected content, so the host is an ordinary in-flow child of
+//  that region rather than a grid item. An unknown element such as a component host
+//  is inline by default, and an inline host would collapse the rail's block padding,
+//  so `block` is declared. `display: contents` is deliberately NOT used: the rail is
+//  a real box with a fill and a boundary of its own, and removing it from the box
+//  tree would drop both.
+:host {
+  display: block;
+}
+
+// -----------------------------------------------------------------------------
+//  2. THE RAIL
+// -----------------------------------------------------------------------------
+//  Flexbox, not Grid: the rail stacks its two children along one axis, and the shell
+//  around it already owns the two-dimensional placement. No inline size and no block
+//  size are declared — see the header above for why the width is intrinsic — and no
+//  breakpoint branch is needed, because a single column reflows at every width.
+//
+//  The trailing boundary uses the muted ink rather than the border token, matching the
+//  treatment the band above it gives its own lower boundary, so the two chrome edges
+//  read as one system. It is declared on the INLINE end so it separates the rail from
+//  the content beside it in both writing directions.
+.app-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+  border-inline-end: var(--border-width) var(--border-style) var(--color-text-muted);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+}
+
+//  Collapsed. The rail keeps its disclosure control and loses only its groups, so the
+//  control that re-expands it is never the thing that disappears. The gap is what
+//  would otherwise be left behind once the only sibling is gone, so it is removed
+//  rather than left to measure against nothing.
+.app-sidebar--collapsed {
+  gap: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  3. THE DISCLOSURE CONTROL
+// -----------------------------------------------------------------------------
+//  A real `<button>`, taking its chrome from _forms.scss, so this rule adds only the
+//  rail's own arrangement: held to the full inline measure of the rail so the whole
+//  strip is pressable at every width, and its label kept on one line so the control's
+//  height does not change as the rail narrows — a control that reflowed while being
+//  pressed is a control that moves out from under the pointer.
+//
+//  Its name is stable across both states and the state is carried by `aria-expanded`
+//  alone, which is the position the paired template takes; nothing here draws a
+//  rotating marker, because the marker is text and the template owns it.
+.app-sidebar__toggle {
+  inline-size: var(--size-full);
+  white-space: nowrap;
+}
+
+// -----------------------------------------------------------------------------
+//  4. THE DISCLOSED REGION
+// -----------------------------------------------------------------------------
+//  ⚠ THE `:not([hidden])` GUARD IS LOAD-BEARING. The paired template hides this
+//  region with the `hidden` attribute, which works because the user-agent stylesheet
+//  applies `display: none` to it — and a `display` declaration in an author sheet
+//  outweighs that, so an unguarded `display: flex` here would leave the groups on
+//  screen with `aria-expanded="false"` beside them. Attaching the layout to the
+//  not-hidden state is what keeps the attribute authoritative, so the collapsed rail
+//  is genuinely gone from the accessibility tree and from the layout alike rather than
+//  merely announced as gone.
+.app-sidebar__regions:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  5. GROUPS AND LISTS
+// -----------------------------------------------------------------------------
+//  A group heading is a real `<h2>`, so it appears in the document outline. It is
+//  toned down rather than enlarged: it labels a set of destinations and must not
+//  compete with the page title that the shared page-header component emits inside
+//  `<main>`. The margin is zeroed because the rhythm between groups is the region's
+//  gap, and a margin as well would add to it.
+.app-sidebar__group {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+//  The destinations of one group. The markers are suppressed and the user-agent's own
+//  list indent and margin are removed, so the entries align with their heading; the
+//  `<ul>` and `<li>` elements themselves are retained, so the list and its length are
+//  still announced. A margin-block of nought is stated for the same reason as on the
+//  heading: the rhythm is the gap.
+.app-sidebar__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+// -----------------------------------------------------------------------------
+//  6. DESTINATIONS
+// -----------------------------------------------------------------------------
+//  Every anchor in the rail. Attached to the element type rather than to a class so
+//  that the chrome-link treatment holds however the paired template names its classes,
+//  and so that a drifting class name can never silently reinstate the global anchor
+//  hover. Confined to this component by emulated view encapsulation, so it cannot
+//  reach a feature screen's anchors.
+//
+//  The underline is cleared at rest and restored on hover, which is the same
+//  divergence the band above records and for the same reason: _reset.scss would
+//  otherwise underline every chrome destination permanently, which the legacy chrome
+//  demonstrably did not do. The hover goes through the shared mixin so it is guarded
+//  behind a hover-capability query — a touch device cannot enter the state on tap and
+//  then stay in it — and so that it outweighs the resting declaration beside it.
+//
+//  Hover changes INK AND UNDERLINE ONLY and paints no fill. The fill channel is
+//  reserved for the current destination below, so the two states compose instead of
+//  one masking the other; and the only remaining fill token light enough to sit under
+//  this ink is the hint yellow, whose documented role in the vocabulary is a form
+//  highlight and not a navigation hover.
+.app-sidebar__link {
+  display: block;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-primary);
+  text-decoration: none;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+//  The current destination. Declared AFTER the anchor rule so that the current entry
+//  keeps its fill and its weight while the pointer is over it, and carried on two
+//  channels rather than one — fill and weight — so it is legible without colour. The
+//  fill is the selected-row token, which is the same value the data table uses for a
+//  chosen row, so "this is the one you are on" reads alike in the rail and in the grid.
+//  The paired template emits `aria-current="page"` from the same router state that
+//  applies this class, so the treatment and the announcement cannot disagree.
+.app-sidebar__link--active {
+  background-color: var(--color-selected);
+  font-weight: var(--font-weight-bold);
+}

@@ -1,11 +1,14 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { type ComponentRef } from '@angular/core';
+import { reflectComponentType, type ComponentRef } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { FormControl, FormGroup } from '@angular/forms';
+import type { ValidationErrors } from '@angular/forms';
 import { Router, provideRouter } from '@angular/router';
 
 import type { ApiResponse, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import { PasswordFormat, UserCreateStatus } from '../../../core/models/user.model';
 import type {
   CreateUserRequest,
   UpdateUserRequest,
@@ -14,10 +17,17 @@ import type {
 } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
+import { USER_CREATE_MESSAGE, stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
 import {
   AUTHORIZE_MAIL_ADVISORY,
+  CREATE_NOT_YET_ATTEMPTED,
+  CREATE_SUCCEEDED,
+  INVALID_PASSWORD_MESSAGE as COMPONENT_INVALID_PASSWORD_MESSAGE,
   NOTIFY_UNAVAILABLE_ADVISORY,
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_MIN_NON_ALPHANUMERIC,
   UserFormComponent,
+  passwordRulesValidator,
 } from './user-form.component';
 
 /**
@@ -98,8 +108,28 @@ describe('UserFormComponent', () => {
     'The password specified is invalid.  Please specify a valid password.  Passwords must be at ' +
     'least 7 characters in length and contain at least 0 non-alphanumeric characters.';
 
+  /** `UserAuthorized.Text`, measured verbatim in `ManageUsers.ascx.resx`. */
   const USER_AUTHORIZED_MESSAGE = 'User successfully Authorized';
+
+  /** `UserUnAuthorized.Text`, measured verbatim in `ManageUsers.ascx.resx`. */
   const USER_UNAUTHORIZED_MESSAGE = 'User successfully Un-Authorized';
+
+  /**
+   * ⚠ AUTHORED BECAUSE IT WAS ABSENT — NOT measured wording, and it must not be presented as
+   * such.
+   *
+   * `ManageUsers.ascx.vb` L749 raises the resource key `"UserUnLocked"` on a successful release,
+   * but **that key is defined in NO resource file**: it appears in neither
+   * `Website/admin/Users/App_LocalResources/*.resx` nor `Website/App_GlobalResources/*.resx`. The
+   * only unlock-related entry anywhere is `cmdUnLock.Text` = `Unlock Account` in
+   * `Membership.ascx.resx`, which is the BUTTON LABEL and not a success sentence. So the legacy
+   * screen asked for a string that did not exist and DotNetNuke's localisation fell back to
+   * emitting the raw key.
+   *
+   * This sentence is therefore authored to match the wording of its two measured siblings above,
+   * and the gap is recorded rather than dressed up as a measurement. Claiming measured wording
+   * that does not exist would be the worse error.
+   */
   const USER_UNLOCKED_MESSAGE = 'User successfully Unlocked';
   const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their password at next login';
   const USER_UPDATED_MESSAGE = 'User account updated';
@@ -1634,6 +1664,975 @@ describe('UserFormComponent', () => {
       create();
 
       expect(host().textContent ?? '').toContain('All fields marked with a red arrow are required.');
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 8 — THE MEASURED PASSWORD POLICY, PINNED TO ITS EXACT BOUNDARY
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // ⚠⚠ THIS POLICY IS PRESERVED VERBATIM AND MUST NEVER BE TIGHTENED. Measured at
+  // `Website/release.config` L242 `minRequiredPasswordLength="7"` and L243
+  // `minRequiredNonalphanumericCharacters="0"`. Raising either figure during a migration
+  // locks out every existing account whose password satisfied the old rule, which turns a
+  // technology change into an outage. The cases below therefore pin the BOUNDARY rather
+  // than a comfortable interior value: six characters must fail and seven must pass, and a
+  // password with no punctuation at all must pass because ZERO punctuation is required.
+  //
+  // The figures are read from the component's own exported constants rather than repeated
+  // as literals, so a change to the policy cannot pass this suite silently.
+
+  describe('the measured password policy', () => {
+    /**
+     * Reads one group-level validator message without widening anything to `any`.
+     *
+     * `ValidationErrors` is an index signature over `any`, so the value is taken through
+     * `unknown` and narrowed explicitly. `noPropertyAccessFromIndexSignature` additionally
+     * requires the bracket form.
+     */
+    function groupMessage(errors: ValidationErrors | null, key: string): string | null {
+      if (errors === null) {
+        return null;
+      }
+
+      const raw: unknown = errors[key];
+
+      return typeof raw === 'string' ? raw : null;
+    }
+
+    /** A minimal group carrying only the three members the exported validator reads. */
+    function credentialGroup(
+      password: string,
+      confirmPassword: string,
+      randomPassword = false,
+    ): FormGroup {
+      return new FormGroup({
+        password: new FormControl<string>(password, { nonNullable: true }),
+        confirmPassword: new FormControl<string>(confirmPassword, { nonNullable: true }),
+        randomPassword: new FormControl<boolean>(randomPassword, { nonNullable: true }),
+      });
+    }
+
+    it('publishes the two measured figures as SEVEN and ZERO', () => {
+      // The exact values from `Website/release.config` L242 and L243. Asserted against the
+      // component's exported constants, which is what every rule and every rendered sentence
+      // on this screen is derived from.
+      expect(PASSWORD_MIN_LENGTH).withContext('minRequiredPasswordLength').toBe(7);
+      expect(PASSWORD_MIN_NON_ALPHANUMERIC)
+        .withContext('minRequiredNonalphanumericCharacters')
+        .toBe(0);
+    });
+
+    it('refuses one character below the minimum and accepts the minimum exactly', () => {
+      const short = 'a'.repeat(PASSWORD_MIN_LENGTH - 1);
+      const exact = 'a'.repeat(PASSWORD_MIN_LENGTH);
+
+      expect(short.length).toBe(6);
+      expect(exact.length).toBe(7);
+
+      // Below the boundary: refused.
+      expect(groupMessage(passwordRulesValidator(() => true)(credentialGroup(short, short)), 'invalidPassword'))
+        .withContext('six characters is below the measured minimum')
+        .toBe(COMPONENT_INVALID_PASSWORD_MESSAGE);
+
+      // AT the boundary: accepted. `<` and not `<=` is the measured comparison.
+      expect(passwordRulesValidator(() => true)(credentialGroup(exact, exact)))
+        .withContext('seven characters is the measured minimum and passes')
+        .toBeNull();
+    });
+
+    it('accepts a purely alphanumeric credential, because ZERO punctuation is required', () => {
+      // The rule is vacuous as shipped rather than absent, and that distinction matters: it is
+      // a real configuration-driven check whose configured value happens to be zero.
+      const alphanumeric = 'Str0ng7';
+
+      expect(/^[a-zA-Z0-9]+$/.test(alphanumeric))
+        .withContext('the fixture really contains no punctuation')
+        .toBeTrue();
+      expect(passwordRulesValidator(() => true)(credentialGroup(alphanumeric, alphanumeric))).toBeNull();
+    });
+
+    it('reports the mismatch, NOT the policy, when a credential fails both', () => {
+      // ⚠ MEASURED PRECEDENCE, NOT AN IMPLEMENTATION DETAIL. `User.ascx.vb` L152 sets
+      // `PasswordMismatch`, and L156's policy check is GUARDED by
+      // `If createStatus = UserCreateStatus.AddUser` — so once the mismatch has moved the
+      // status off the zero sentinel the policy check cannot run. A value that is both too
+      // short AND mismatched reported the MISMATCH.
+      const errors = passwordRulesValidator(() => true)(credentialGroup('abc', 'abcd'));
+
+      expect(groupMessage(errors, 'passwordMismatch')).toBe(PASSWORD_MISMATCH_MESSAGE);
+      expect(groupMessage(errors, 'invalidPassword'))
+        .withContext('the policy check was short-circuited')
+        .toBeNull();
+    });
+
+    it('applies neither rule once generation is chosen', () => {
+      // `User.ascx.vb` L150 `If Not chkRandom.Checked Then` — generation SKIPS both rules
+      // entirely, because L164 supplied the value instead of the operator. A mismatched,
+      // far-too-short pair is therefore valid.
+      expect(passwordRulesValidator(() => true)(credentialGroup('a', 'zz', true))).toBeNull();
+    });
+
+    it('applies no credential rule at all while editing', () => {
+      // `User.ascx.vb` L148 `If AddUser And ShowPassword Then` — the whole block is
+      // CREATE-ONLY, so in edit mode it cannot gate submission.
+      expect(passwordRulesValidator(() => false)(credentialGroup('a', 'zz'))).toBeNull();
+    });
+
+    it('interpolates both measured figures into the sentence and leaves no raw token behind', () => {
+      // The legacy sentence carried `[PasswordLength]` and `[NoneAlphabet]`, replaced at run
+      // time by a plain `String.Replace` from the membership provider's configuration
+      // (`Library/Components/Users/UserController.vb` L608-L609).
+      //
+      // MIGRATION: the TokenReplace subsystem is OUT OF SCOPE, so the two measured configured
+      // values are interpolated directly from the policy constants. That is precisely what the
+      // legacy substitution produced at run time, and it keeps the sentence honest if either
+      // constant ever changes.
+      expect(COMPONENT_INVALID_PASSWORD_MESSAGE).toContain(`least ${String(PASSWORD_MIN_LENGTH)} characters`);
+      expect(COMPONENT_INVALID_PASSWORD_MESSAGE).toContain(
+        `least ${String(PASSWORD_MIN_NON_ALPHANUMERIC)} non-alphanumeric`,
+      );
+      expect(COMPONENT_INVALID_PASSWORD_MESSAGE).toContain('least 7 characters');
+      expect(COMPONENT_INVALID_PASSWORD_MESSAGE).toContain('least 0 non-alphanumeric');
+
+      // ⚠ NO UNREPLACED TOKEN MAY SURVIVE. An operator seeing `[PasswordLength]` on screen is
+      // reading a template, not a message.
+      expect(COMPONENT_INVALID_PASSWORD_MESSAGE).not.toContain('[PasswordLength]');
+      expect(COMPONENT_INVALID_PASSWORD_MESSAGE).not.toContain('[NoneAlphabet]');
+    });
+
+    it('renders the interpolated sentence, with no raw token reaching the document', () => {
+      create();
+
+      fillCreationForm('Str0ng');
+      press(CREATE_SUBMIT_LABEL);
+
+      const text = host().textContent ?? '';
+
+      expect(text).toContain('least 7 characters');
+      expect(text).toContain('least 0 non-alphanumeric');
+      expect(text).not.toContain('[PasswordLength]');
+      expect(text).not.toContain('[NoneAlphabet]');
+      expect(httpMock.match(() => true)).toHaveSize(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 9 — THE CREATION-OUTCOME VOCABULARY
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // ⚠⚠ SUCCESS IS THIRTEEN AND ZERO IS NEVER SUCCESS. Verified at
+  // `Library/Components/Users/Membership/UserCreateStatus.vb` L24-L41: eighteen members with
+  // EXPLICIT ordinals nought to seventeen, in which `AddUser = 0` is the "nothing recorded
+  // yet" sentinel and `Success = 13`. The legacy detected failure at `User.ascx.vb` L185 by
+  // testing for any value OTHER than the zero sentinel, never by testing for zero.
+  //
+  // Across the three legacy vocabularies `UserValidStatus.VALID = 0`,
+  // `UserLoginStatus.LOGIN_SUCCESS = 1` and `UserCreateStatus.Success = 13`, so an assumption
+  // that zero means success is wrong two times in three. Every case here uses a NAMED member.
+
+  describe('the creation-outcome vocabulary', () => {
+    it('numbers all eighteen members exactly as measured', () => {
+      // Pinned member by member. A silent renumbering — an inserted member, an alphabetical
+      // re-sort, a dropped explicit ordinal — would change the meaning of stored data.
+      expect(UserCreateStatus.AddUser).toBe(0);
+      expect(UserCreateStatus.UsernameAlreadyExists).toBe(1);
+      expect(UserCreateStatus.UserAlreadyRegistered).toBe(2);
+      expect(UserCreateStatus.DuplicateEmail).toBe(3);
+      expect(UserCreateStatus.DuplicateProviderUserKey).toBe(4);
+      expect(UserCreateStatus.DuplicateUserName).toBe(5);
+      expect(UserCreateStatus.InvalidAnswer).toBe(6);
+      expect(UserCreateStatus.InvalidEmail).toBe(7);
+      expect(UserCreateStatus.InvalidPassword).toBe(8);
+      expect(UserCreateStatus.InvalidProviderUserKey).toBe(9);
+      expect(UserCreateStatus.InvalidQuestion).toBe(10);
+      expect(UserCreateStatus.InvalidUserName).toBe(11);
+      expect(UserCreateStatus.ProviderError).toBe(12);
+      expect(UserCreateStatus.Success).toBe(13);
+      expect(UserCreateStatus.UnexpectedError).toBe(14);
+      expect(UserCreateStatus.UserRejected).toBe(15);
+      expect(UserCreateStatus.PasswordMismatch).toBe(16);
+      expect(UserCreateStatus.AddUserToPortal).toBe(17);
+    });
+
+    it('names THIRTEEN as success and ZERO as not-yet-attempted', () => {
+      expect(UserCreateStatus.Success).withContext('Success is thirteen').toBe(13);
+      expect(UserCreateStatus.AddUser).withContext('AddUser is the zero sentinel').toBe(0);
+
+      // The component's own anchors, so nothing on this screen can drift from the vocabulary.
+      expect(CREATE_SUCCEEDED).toBe(UserCreateStatus.Success);
+      expect(CREATE_NOT_YET_ATTEMPTED).toBe(UserCreateStatus.AddUser);
+
+      // ⚠ THE ZERO SENTINEL IS NOT AN OUTCOME. Stated as an inequality because that is the
+      // mistake being guarded against, not as a tautology about two different numbers.
+      expect(CREATE_NOT_YET_ATTEMPTED).not.toBe(CREATE_SUCCEEDED);
+      expect(UserCreateStatus.AddUser).not.toBe(UserCreateStatus.Success);
+    });
+
+    it('keeps the three name-collision members distinct despite sharing one message', () => {
+      // ⚠ THREE MEMBERS, ONE SENTENCE. `UserController.GetUserCreateStatus`
+      // (Library/Components/Users/UserController.vb L598-L626) combined
+      // `UsernameAlreadyExists`, `UserAlreadyRegistered` and `DuplicateUserName` into a single
+      // `Case` arm resolving to the `UserNameExists` wording. Sharing a message is NOT being
+      // the same outcome: merging or aliasing them would lose which one the server reported.
+      const collisions: readonly UserCreateStatus[] = [
+        UserCreateStatus.UsernameAlreadyExists,
+        UserCreateStatus.DuplicateUserName,
+        UserCreateStatus.InvalidUserName,
+      ];
+
+      expect(collisions).toEqual([1, 5, 11]);
+      expect(new Set<UserCreateStatus>(collisions).size)
+        .withContext('three distinct members')
+        .toBe(3);
+      expect(UserCreateStatus.UserAlreadyRegistered).toBe(2);
+
+      // One wording for the three the legacy combined; the fourth is worded separately, exactly
+      // as the legacy `Case` arms divided them.
+      expect(USER_CREATE_MESSAGE['user.create.username_already_exists']).toBe(USER_NAME_EXISTS);
+      expect(USER_CREATE_MESSAGE['user.create.user_already_registered']).toBe(USER_NAME_EXISTS);
+      expect(USER_CREATE_MESSAGE['user.create.duplicate_username']).toBe(USER_NAME_EXISTS);
+      expect(USER_CREATE_MESSAGE['user.create.invalid_username']).not.toBe(USER_NAME_EXISTS);
+    });
+
+    it('collapses all four provider-fault members onto one registration sentence', () => {
+      // `ProviderError` (12), `UnexpectedError` (14), `DuplicateProviderUserKey` (4) and
+      // `InvalidProviderUserKey` (9) all reached the same `Case` arm, and the API reports them
+      // under one code for that reason.
+      const shipped = USER_CREATE_MESSAGE['user.create.provider_error'];
+
+      expect(shipped).toBe(USER_CREATE_MESSAGE['user.create.portal_assignment_failed']);
+      expect(new Set<UserCreateStatus>([
+        UserCreateStatus.ProviderError,
+        UserCreateStatus.UnexpectedError,
+        UserCreateStatus.DuplicateProviderUserKey,
+        UserCreateStatus.InvalidProviderUserKey,
+      ]).size)
+        .withContext('four distinct members behind one sentence')
+        .toBe(4);
+
+      // MIGRATION — DEFECT NOT PRESERVED, AND RECORDED HERE RATHER THAN HIDDEN. The measured
+      // value of `RegError.Text` in `Website/App_GlobalResources/SharedResources.resx` contains
+      // the misspelling "Futher". The shipped vocabulary in
+      // `core/utils/form-errors.util.ts` L1459-L1461 spells it "Further". The Minimal Change
+      // Clause asks for defects to be ANNOTATED rather than corrected, so the divergence is
+      // pinned here: the two strings differ by exactly that one repair and nothing else. That
+      // file belongs to another author, so this suite reports the difference instead of
+      // asserting wording the code does not carry.
+      const measuredRegError =
+        'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
+        'Administrator For Futher Information.';
+
+      expect(shipped)
+        .withContext('the typo was repaired rather than preserved')
+        .not.toBe(measuredRegError);
+      expect(shipped.replace('Further', 'Futher'))
+        .withContext('and the repair is the ONLY difference from the measured value')
+        .toBe(measuredRegError);
+    });
+
+    it('keys success on the HTTP status and never on an outcome ordinal', () => {
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      const write = expectRequest('POST', USERS_URL);
+
+      // ⚠ NO ORDINAL CROSSES THIS BOUNDARY IN EITHER DIRECTION. The request carries the eight
+      // declared members and no status of any kind, so there is nothing for the screen to
+      // misread as a zero-means-success signal.
+      const sent: unknown = write.request.body;
+
+      expect(sent).withContext('a body was sent').not.toBeNull();
+      expect(Object.keys(sent as Record<string, unknown>).sort()).toEqual([
+        'authorize',
+        'confirmPassword',
+        'displayName',
+        'email',
+        'firstName',
+        'lastName',
+        'password',
+        'username',
+      ]);
+
+      // The answer is 201 CREATED and the body is the account, carrying no outcome member.
+      const created: UserDetail = account(9);
+
+      write.flush(envelope(created), { status: 201, statusText: 'Created' });
+      fixture.detectChanges();
+      expectNoListingReRead();
+
+      expect(Object.keys(created)).not.toContain('status');
+      expect(Object.keys(created)).not.toContain('createStatus');
+
+      // Treated as success: the screen left for the listing.
+      expect(navigateSpy).toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('names the three password storage formats rather than numbering them', () => {
+      // Data-model fidelity. `Clear`, `Hashed` and `Encrypted` are persisted discriminators, so
+      // the ordinals are load-bearing data and the members must stay named.
+      expect(PasswordFormat.Clear).toBe(0);
+      expect(PasswordFormat.Hashed).toBe(1);
+      expect(PasswordFormat.Encrypted).toBe(2);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 10 — COMPONENT IDENTITY AND THE SENTINEL DISCIPLINE
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // These are cheap and they catch a class of bug that produces no compilation error and no
+  // run-time exception — only a screen that quietly does the wrong thing.
+
+  describe('the component identity that other files depend on', () => {
+    /**
+     * The compiled declaration, read through the framework's own reflection API.
+     *
+     * ⚠ `fixture.nativeElement` is NOT the answer here, and measurement proved it: the testing
+     * harness mounts a component under a generic `div` host of its own making, so the host tag
+     * reports `div` no matter what the component declares. The selector must therefore be read
+     * from the declaration, which is exactly what `reflectComponentType` is published for.
+     */
+    const mirror = reflectComponentType(UserFormComponent);
+
+    it('is named and selected exactly as the route file imports it', () => {
+      // ⚠ BOTH ARE EXTERNALLY FIXED. `features/user/user.routes.ts` maps BOTH `{ path: 'new' }`
+      // and `{ path: ':userId' }` to
+      // `import('./user-form/user-form.component').then((m) => m.UserFormComponent)`, so a
+      // renamed export takes out the whole `/users/new` plus `/users/:userId` subtree with a
+      // 404 and no other symptom.
+      expect(UserFormComponent.name).toBe('UserFormComponent');
+
+      expect(mirror).withContext('the class really is a component').not.toBeNull();
+      expect(mirror?.selector).withContext('the selector other templates use').toBe('app-user-form');
+      expect(mirror?.isStandalone).withContext('standalone, so it needs no module').toBeTrue();
+    });
+
+    it('declares the input as exactly `userId`, which the router binds by name', () => {
+      // ⚠ `app.config.ts` enables `withComponentInputBinding()`, which matches a route
+      // parameter to an input OF THE SAME NAME. Renaming this to `id` or `userID` breaks the
+      // binding SILENTLY: no compilation error, no exception, just an input that stays
+      // undefined so every visit looks like a create.
+      const bound = (mirror?.inputs ?? []).map((entry) => entry.templateName);
+
+      expect(bound).withContext('the name the router will look for').toContain('userId');
+      expect(bound).not.toContain('id');
+      expect(bound).not.toContain('userID');
+
+      // And it is a signal input, which is what makes a later arrival of the parameter
+      // observable rather than a one-shot construction argument.
+      expect((mirror?.inputs ?? []).find((entry) => entry.templateName === 'userId')?.isSignal)
+        .withContext('a signal input, so a late parameter still lands')
+        .toBeTrue();
+
+      // Proven behaviourally as well as by reflection: setting the input under this exact name
+      // is what moves the screen out of creation mode.
+      create();
+
+      expect(button(CREATE_SUBMIT_LABEL))
+        .withContext('creating before the input is set')
+        .not.toBeUndefined();
+
+      reference.setInput('userId', '42');
+      fixture.detectChanges();
+
+      expectRequest('GET', userUrl(42), 'the input under the bound name took effect').flush(
+        envelope(account(42)),
+      );
+      fixture.detectChanges();
+
+      expect(button(UPDATE_SUBMIT_LABEL)).not.toBeUndefined();
+      expectNoListingReRead();
+    });
+
+    it('declares the checked-change strategy the requirements mandate', () => {
+      // The compiled definition records the declared strategy as one boolean, computed by the
+      // framework as `changeDetection === ChangeDetectionStrategy.OnPush`. Reading it asserts
+      // the DECLARATION, which is what the requirement is about — a behavioural probe cannot
+      // distinguish the two strategies on a view whose every binding is signal-driven, because
+      // a signal read marks the view dirty under either one.
+      const definition: unknown = (UserFormComponent as unknown as Record<string, unknown>)['ɵcmp'];
+
+      expect(typeof definition).withContext('the class was compiled as a component').toBe('object');
+
+      const declared: unknown = (definition as Record<string, unknown>)['onPush'];
+
+      expect(declared).withContext('ChangeDetectionStrategy.OnPush is declared').toBeTrue();
+    });
+  });
+
+  describe('identifiers, tested for presence and never for truth', () => {
+    // ⚠⚠ MEASURED SEEDS, AND THEY COLLIDE WITH THE NULL MARKER.
+    // `Users.UserID IDENTITY (1, 1)` · `Portals.PortalID IDENTITY (-1, 1)` ·
+    // `Roles.RoleID`/`Tabs.TabID`/`Modules.ModuleID IDENTITY (0, 1)`
+    // (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L77, L98,
+    // L115) while `Library/Components/Shared/Null.vb` defines `NullInteger` with a body that is
+    // literally `Return -1`. So `-1` names BOTH the first portal ever created AND "no integer",
+    // and `0` is a legitimate identifier in three of the five tables.
+    //
+    // Consequently no identifier anywhere — not in the component, not in these helpers — is
+    // subjected to a truthiness test, a positive-value test, a comparison against the sentinel
+    // or a coalescing default.
+
+    it('treats MINUS ONE as a real account rather than as an absence', () => {
+      // The null marker's own value, arriving as a route parameter. The screen must read it as
+      // an identifier, because a screen that treated it as "absent" would silently offer to
+      // CREATE an account while the operator believed they were editing one.
+      create('-1');
+
+      expectRequest('GET', userUrl(-1), 'minus one is an address, not an absence').flush(
+        envelope(account(-1)),
+      );
+      fixture.detectChanges();
+
+      expect(button(UPDATE_SUBMIT_LABEL)).withContext('editing, not creating').not.toBeUndefined();
+      expect(button(CREATE_SUBMIT_LABEL)).toBeUndefined();
+      expectNoListingReRead();
+    });
+
+    it('treats ZERO as a real account, which is the defensive half of the rule', () => {
+      // ⚠ ZERO IS NOT NATURALLY OCCURRING FOR THIS TABLE. `Users.UserID` seeds at ONE, so no
+      // real account carries nought and this is a DEFENSIVE test of the discipline rather than
+      // a live scenario. It is implemented anyway, because the sibling tables DO seed at nought
+      // and the screen must not encode an assumption that happens to hold only here.
+      create('0');
+
+      expectRequest('GET', userUrl(0), 'zero is an address, not an absence').flush(
+        envelope(account(0)),
+      );
+      fixture.detectChanges();
+
+      expect(button(UPDATE_SUBMIT_LABEL)).not.toBeUndefined();
+      expectNoListingReRead();
+    });
+
+    it('does not let a non-numeric parameter collapse into an identifier', () => {
+      // ⚠ THE OPTION STRICT ASYMMETRY MADE EXPLICIT. The legacy admin code-behinds compiled
+      // with `<compilation debug="false" strict="false">` (`Website/release.config` L125) — that
+      // is Option Strict OFF — so a late-bound narrowing of a non-numeric string to an integer
+      // would have yielded ZERO without complaint, and the page would have read a real row.
+      // Here the coercion is explicit and it FAILS CLOSED: the screen stays in creation mode and
+      // reads nothing at all.
+      create('not-a-number');
+
+      expect(button(CREATE_SUBMIT_LABEL)).withContext('no identifier was invented').not.toBeUndefined();
+      expect(httpMock.match(() => true)).withContext('and nothing was read').toHaveSize(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 11 — HOW THE TYPED FORM IS CONSTRUCTED
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the typed form, as constructed', () => {
+    it('opens the two create-time switches at their measured states', () => {
+      create();
+
+      // `chkAuthorize checked="True"` at `User.ascx` L21, which the code-behind never overrides.
+      expect(field<HTMLInputElement>(CONTROL_ID.authorize).checked)
+        .withContext('authorise opens checked, as measured')
+        .toBeTrue();
+
+      // ⚠ DEFECT, ANNOTATED AND NOT REPAIRED. The markup declares `chkRandom checked="True"` at
+      // `User.ascx` L35 and the code-behind then assigns `chkRandom.Checked = False` on every
+      // non-postback at `User.ascx.vb` L261. The two contradict each other and the code-behind
+      // wins at run time, so the OBSERVABLE opening state is UNCHECKED. The behaviour is
+      // reproduced; the contradiction is recorded rather than resolved in the markup's favour.
+      expect(field<HTMLInputElement>(CONTROL_ID.randomPassword).checked)
+        .withContext('generation opens UNCHECKED, matching the code-behind and not the markup')
+        .toBeFalse();
+    });
+
+    it('offers the notification switch disabled rather than ticked', () => {
+      create();
+
+      const notify = field<HTMLInputElement>(CONTROL_ID.notify);
+
+      // MIGRATION — DIVERGENCE FROM THE MEASURED MARKUP, WITH ITS CAUSE. `chkNotify` carried
+      // `checked="True"` at `User.ascx` L25, but `CreateUserRequest` declares exactly EIGHT
+      // members — username, firstName, lastName, displayName, email, password, confirmPassword,
+      // authorize — and `notify` is NOT one of them. There is no field on the wire to carry the
+      // choice, so a ticked box would be a false statement about what will happen. The control
+      // is retained and rendered DISABLED and unticked instead.
+      expect(notify.disabled).withContext('no wire field exists to carry the choice').toBeTrue();
+      expect(notify.checked).toBeFalse();
+
+      // ⚠ THE REASON IS NOT PRINTED INLINE, and measurement is what settled that: the shared
+      // field reveals help on demand, reproducing the legacy help BUTTON at
+      // `Website/controls/helpbuttoncontrol.ascx`. So the sentence is absent until the
+      // affordance is operated, and the case that operates it lives with the creation cases
+      // rather than being duplicated here.
+      expect(host().textContent ?? '')
+        .withContext('help is revealed on demand, exactly like every other field')
+        .not.toContain(NOTIFY_UNAVAILABLE_ADVISORY);
+      expect(notify.closest('.form-field')?.querySelector('.form-field__help-toggle'))
+        .withContext('but the affordance that reveals it is offered')
+        .not.toBeNull();
+    });
+
+    it('returns every control to its initial value on a reset, never to null', () => {
+      // ⚠ THIS IS THE `nonNullable` PROOF, AND IT IS DRIVEN THROUGH THE PUBLIC INPUT. A control
+      // built WITHOUT `nonNullable` resets to `null`; a checkbox bound to `null` renders
+      // UNCHECKED. The component resets the form when the resolved identifier becomes
+      // undefined, so withdrawing the input performs a real reset and the switches must come
+      // back at TRUE and FALSE respectively rather than both at null-shaped unchecked.
+      arriveEditing(account(7));
+
+      // Dirty the form so the reset has something to undo.
+      type(CONTROL_ID.firstName, 'Augusta');
+      expect(field<HTMLInputElement>(CONTROL_ID.firstName).value).toBe('Augusta');
+
+      reference.setInput('userId', undefined);
+      fixture.detectChanges();
+
+      expect(field<HTMLInputElement>(CONTROL_ID.authorize).checked)
+        .withContext('a nullable control would have come back unchecked')
+        .toBeTrue();
+      expect(field<HTMLInputElement>(CONTROL_ID.randomPassword).checked).toBeFalse();
+
+      // And the text controls came back at their initial empty string rather than rendering the
+      // word "null", which is what a nullable control interpolates.
+      expect(field<HTMLInputElement>(CONTROL_ID.firstName).value).toBe('');
+      expect(host().textContent ?? '').not.toContain('null');
+      expect(httpMock.match(() => true)).withContext('a reset reads nothing').toHaveSize(0);
+    });
+
+    it('bounds the credential boxes with an attribute and with no length validator', () => {
+      create();
+
+      const password = field<HTMLInputElement>(CONTROL_ID.password);
+      const confirm = field<HTMLInputElement>(CONTROL_ID.confirmPassword);
+
+      // The ceiling reaches the DOM as a real attribute, so over-typing is stopped in the
+      // browser exactly as the legacy `maxlength` stopped it.
+      for (const box of [password, confirm]) {
+        const bound: string | null = box.getAttribute('maxlength');
+
+        expect(bound).withContext('the ceiling is an HTML attribute').not.toBeNull();
+        expect(Number(bound)).toBeGreaterThan(0);
+      }
+
+      // ⚠⚠ AND IT IS NOT A VALIDATOR. The legacy declared no maximum-length VALIDATOR at all —
+      // `Website/admin/Users` contains zero `asp:RequiredFieldValidator` and zero
+      // `asp:RegularExpressionValidator`, and the only validator in this folder is the single
+      // `asp:CustomValidator valPassword` at `User.ascx` L59-L61, declared with NO
+      // `ControlToValidate` and NO `ErrorMessage`. The browser silently TRUNCATED over-long
+      // input rather than reporting an error, so turning the ceiling into a validator would
+      // convert a silent truncation into a visible rejection.
+      //
+      // Proven by behaviour: a credential far longer than the attribute allows still submits,
+      // because nothing validates its length on this side.
+      const overlong = 'A1'.repeat(400);
+
+      fillCreationForm();
+      type(CONTROL_ID.password, overlong);
+      type(CONTROL_ID.confirmPassword, overlong);
+      press(CREATE_SUBMIT_LABEL);
+
+      const write = expectRequest('POST', USERS_URL, 'no client-side length rule blocked it');
+
+      expect(host().textContent ?? '')
+        .withContext('and no length message was rendered')
+        .not.toContain('maxlength');
+
+      write.flush(envelope(account(9)), { status: 201, statusText: 'Created' });
+      fixture.detectChanges();
+      expectNoListingReRead();
+    });
+
+    it('asks a password manager to generate rather than to fill', () => {
+      create();
+
+      // `autocomplete="new-password"` on BOTH boxes: this is an account being created, so a
+      // remembered credential is the wrong offer.
+      expect(field<HTMLInputElement>(CONTROL_ID.password).getAttribute('autocomplete')).toBe(
+        'new-password',
+      );
+      expect(field<HTMLInputElement>(CONTROL_ID.confirmPassword).getAttribute('autocomplete')).toBe(
+        'new-password',
+      );
+    });
+
+    it('projects the selection as a signal a view cannot write to', () => {
+      // The screen reads the account from the store's published selection. That signal is
+      // exposed through `asReadonly()`, so a template or a child cannot write the selection
+      // back — which is what stops a view from becoming a second source of truth.
+      const store = TestBed.inject(UserStore);
+
+      expect('set' in store.selectedUser).withContext('no set on a published signal').toBeFalse();
+      expect('update' in store.selectedUser).toBeFalse();
+      expect('set' in store.failure).toBeFalse();
+      expect('update' in store.failure).toBeFalse();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 12 — THE NULL-DATE SENTINEL RENDERS AS AN EMPTY CELL
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the membership panel and the null-date sentinel', () => {
+    /** The rendered value cells of the read-only membership panel, in document order. */
+    function membershipValues(): readonly string[] {
+      return queryAll<Element>('dd.user-form__membership-value').map((node) =>
+        (node.textContent ?? '').trim(),
+      );
+    }
+
+    it('renders every sentinel date as an empty cell, never as a first-century date', () => {
+      // ⚠ THE SENTINEL SURVIVES ON THE WIRE. `Library/Components/Shared/Null.vb` defines
+      // `NullDate` as `DateTime.MinValue` and `NullString` as the EMPTY STRING rather than as
+      // null, and the API serialises with its ignore condition set to never — so these members
+      // arrive PRESENT AND EMPTY rather than omitted.
+      const sentinel = '0001-01-01T00:00:00';
+
+      arriveEditing(
+        account(7, {
+          createdDate: sentinel,
+          lastLoginDate: sentinel,
+          lastActivityDate: sentinel,
+          lastPasswordChangeDate: sentinel,
+          lastLockoutDate: sentinel,
+        }),
+      );
+
+      const rendered = membershipValues();
+
+      expect(rendered.length).withContext('the panel is painted').toBeGreaterThanOrEqual(5);
+
+      // ⚠ PARITY, NOT AN IMPROVEMENT. The legacy `DisplayDate` already returned the empty string
+      // for the sentinel, so an empty cell is what an operator saw. `01/01/0001` would be a
+      // REGRESSION — a date nobody entered, presented as though somebody had.
+      for (const value of rendered) {
+        expect(value).not.toContain('0001');
+        expect(value).not.toContain('01/01/0001');
+      }
+
+      const text = host().textContent ?? '';
+
+      expect(text).not.toContain('0001-01-01');
+      expect(text).not.toContain('01/01/0001');
+    });
+
+    it('still renders a genuine date, so the blanking is the sentinel and not the panel', () => {
+      // Without this the case above would also pass on a panel that rendered nothing at all.
+      arriveEditing(account(7, { createdDate: '2024-01-05T09:00:00Z', lastLockoutDate: null }));
+
+      expect(membershipValues().some((value) => value.length > 0))
+        .withContext('a real date does reach the panel')
+        .toBeTrue();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 13 — WHAT THIS SCREEN MUST NOT DO
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // Negative assertions, each tied to a measured reason. Several record that a legacy
+  // affordance was BEHAVIOUR-PRESERVINGLY dropped rather than reduced, which is a different
+  // claim from "we left it out" and the distinction is the point.
+
+  describe('what this screen must not do', () => {
+    /** Every attribute value that could name a control, across the whole rendered document. */
+    function controlNames(): readonly string[] {
+      return queryAll<Element>('*').flatMap((node) =>
+        ['id', 'name', 'formcontrolname', 'placeholder', 'aria-label', 'autocomplete']
+          .map((attribute) => node.getAttribute(attribute))
+          .filter((value): value is string => value !== null),
+      );
+    }
+
+    it('offers no security-code affordance', () => {
+      create();
+
+      // The legacy declared `dnn:captchacontrol ctlCaptcha` inside the password table at
+      // `User.ascx` L67. The control is one of the 102 excluded `Library/Controls` files, so
+      // there is nothing to render and no field to post.
+      //
+      // ⚠ AND THE PROTECTION IS NOT SIMPLY GONE. The compensating control lives on the server:
+      // the API rate-limits `/api/v1/auth/*` per client address and answers 429 once the
+      // allowance is spent. A challenge on an administrator's own create form was never the
+      // thing holding automated registration back.
+      //
+      // MIGRATION — DEFECT 8, ANNOTATED. The legacy label for that row read
+      // `text="Password:"` at `User.ascx` L64, which was MASKED at run time because
+      // `plCaptcha.Text` in the local resources reads `Security Code:` and a `dnn:label` with no
+      // explicit resource key falls back on its own control identifier. The mislabelling was
+      // therefore invisible in the running application. It is recorded, not carried.
+      const text = (host().textContent ?? '').toLowerCase();
+
+      expect(text).not.toContain('captcha');
+      expect(text).not.toContain('security code');
+      expect(controlNames().some((value) => value.toLowerCase().includes('captcha'))).toBeFalse();
+      expect(queryAll('img')).withContext('no challenge image').toHaveSize(0);
+    });
+
+    it('offers no password question and no password answer', () => {
+      create();
+
+      // ⚠ THIS IS BEHAVIOUR-PRESERVING, NOT A REDUCTION, AND THE DISTINCTION IS MEASURED. Both
+      // rows carried `visible="false"` at `User.ascx` L52 and L56 and were revealed only when
+      // `MembershipProviderConfig.RequiresQuestionAndAnswer` was true — and
+      // `Website/release.config` L241 sets `requiresQuestionAndAnswer="false"`. The rows
+      // therefore NEVER RENDERED in the measured installation, and the legacy branch that read
+      // them (`User.ascx.vb` L168) was unreachable. Omitting unreachable code changes nothing an
+      // operator could observe. No endpoint carries either value either.
+      const text = (host().textContent ?? '').toLowerCase();
+
+      expect(text).not.toContain('password question');
+      expect(text).not.toContain('password answer');
+
+      const names = controlNames().map((value) => value.toLowerCase());
+
+      expect(names.some((value) => value.includes('question'))).toBeFalse();
+      expect(names.some((value) => value.includes('answer'))).toBeFalse();
+    });
+
+    it('offers no way to retrieve an existing password', () => {
+      arriveEditing(account(7));
+
+      // The legacy membership provider was registered with `enablePasswordRetrieval="true"` and
+      // a reversible password format, which made every stored credential recoverable. The
+      // successor stores a one-way hash, so retrieval is not withheld — it is IMPOSSIBLE.
+      //
+      // ⚠ RESET IS NOT RETRIEVAL and the two must not be conflated: `enablePasswordReset="true"`
+      // IS carried forward, on the sibling credential screen. What is gone is reading a
+      // credential back out.
+      const text = (host().textContent ?? '').toLowerCase();
+
+      expect(text).not.toContain('retrieve');
+      expect(text).not.toContain('recover password');
+      expect(text).not.toContain('send password');
+
+      // No value-bearing credential control exists at all while editing.
+      expect(query(`#${CONTROL_ID.password}`)).toBeNull();
+      expect(query(`#${CONTROL_ID.confirmPassword}`)).toBeNull();
+      expect(queryAll('input[type="password"]')).toHaveSize(0);
+    });
+
+    it('shows no presence indicator and no membership-services tab', () => {
+      arriveEditing(account(7, { isOnline: true }));
+
+      // The users-online subsystem is out of scope and no endpoint reports it, so the member
+      // arrives on the contract and is deliberately not painted. Asserted with the flag SET, so
+      // the case would fail if an indicator were added later.
+      const text = (host().textContent ?? '').toLowerCase();
+
+      expect(text).not.toContain('online');
+      expect(text).not.toContain('on-line');
+
+      // No services, roles or subscriptions tab: there is no
+      // `/users/{id}/services|roles|subscriptions` endpoint to drive one.
+      expect(text).not.toContain('manage services');
+      expect(text).not.toContain('subscription');
+    });
+
+    it('decides nothing from a permission key, and leaves the refusal to the server', () => {
+      arriveEditing(account(7));
+
+      // ⚠ TWO CLOSED VOCABULARIES THAT MUST NOT BE CONFLATED: the authorisation POLICY names and
+      // the persisted PERMISSION KEYS. Neither appears here. The route is already gated, that
+      // gate is ADVISORY, and the server's 403 is authoritative — which is exactly why the
+      // refusal cases route a 403 through the notification channel rather than deciding
+      // anything locally.
+      const markup = host().innerHTML;
+
+      expect(markup).not.toContain('hasPermission');
+      expect(markup).not.toContain('PortalAdministrator');
+
+      const text = host().textContent ?? '';
+
+      expect(text).not.toContain('VIEW');
+      expect(text).not.toContain('EDIT');
+    });
+
+    it('renders no bare zero for an account allowance', () => {
+      // ⚠ ZERO MEANS UNLIMITED AND MINUS ONE MEANS NOT SET for the tenant's account allowance,
+      // so printing either as a number would tell an operator the opposite of the truth. This
+      // screen states the allowance only as the measured refusal sentence, which carries no
+      // figure at all.
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', USERS_URL).flush(
+        problem('user.quota_exceeded', 403, 'The account allowance for this site is spent.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      const text = host().textContent ?? '';
+
+      // The measured sentence is `ExceededUserQuota.Text` from
+      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, which capitalises the
+      // word; the comparison is case-insensitive so it cannot pass on the wrong casing either.
+      expect(text.toLowerCase()).toContain(EXCEEDED_USER_QUOTA_MESSAGE_FRAGMENT.toLowerCase());
+      expect(text).toContain('User Quota');
+
+      // ⚠ AND NO FIGURE. The sentence names the allowance without printing it, so neither
+      // sentinel can be mistaken for a limit.
+      expect(text).not.toMatch(/quota[^.]*(^|\s)(0|-1)(\s|$)/i);
+      expectNoListingReRead();
+    });
+
+    it('lays the screen out without a single table element', () => {
+      arriveEditing(account(7));
+
+      // The legacy `tblAddUser`, `tblPassword` and the `pnlUser` design table were all LAYOUT
+      // tables rather than data grids — `tblPassword` even carried
+      // `summary="Password Management"`, which is a layout summary and not a caption. Layout
+      // tables are replaced by grid styling; a real data grid would still be a table.
+      expect(queryAll('table')).withContext('no layout table survives').toHaveSize(0);
+      expect(queryAll('td')).toHaveSize(0);
+      expect(queryAll('tr')).toHaveSize(0);
+    });
+
+    it('emits no semantic landmark of any kind', () => {
+      arriveEditing(account(7));
+
+      // Each landmark is owned exactly once by the application shell. A second one here would
+      // give a screen-reader user two mains or two navigations to choose between.
+      expect(queryAll('header')).toHaveSize(0);
+      expect(queryAll('main')).toHaveSize(0);
+      expect(queryAll('nav')).toHaveSize(0);
+      expect(queryAll('footer')).toHaveSize(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 14 — THE ANNOUNCING REGION, AND HOW UNTRUSTED WORDING REACHES IT
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the announcing region', () => {
+    it('carries a live region once there is something to announce', () => {
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+
+      expectRequest('PUT', userUrl(7)).flush(
+        problem('validation_failed', 400, 'One or more members are invalid.', {
+          firstName: ['First name is required'],
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      // ⚠ THE REGION BELONGS TO THE SHARED BANNER, AND THIS SUITE ASSERTS ITS PRESENCE RATHER
+      // THAN ADDING A COMPETING ONE. Two live regions announcing the same text is worse than
+      // one, because a screen reader reads both.
+      const live = query<HTMLElement>('[aria-live]');
+
+      expect(live).withContext('the banner mounted with a live region').not.toBeNull();
+      expect(live?.getAttribute('aria-live')).toBe('assertive');
+      expect(query('[role="alert"]')).not.toBeNull();
+      expect(queryAll('[aria-live]')).withContext('exactly one live region').toHaveSize(1);
+      expectNoListingReRead();
+    });
+
+    it('strips the legacy break prefix and announces plain text', () => {
+      // ⚠ MEASURED DEFECT. `User.ascx.vb` L187 built its message as
+      // `"<br/>" + UserController.GetUserCreateStatus(createStatus)`, prepending markup to what
+      // was otherwise a sentence. The prefix is inconsistent across the legacy tree and exists
+      // in both spellings, so the stripping is total rather than keyed to one form. It is owned
+      // by `core/utils/form-errors.util.ts`; this case asserts the OUTCOME.
+      expect(stripLegacyBreakTags('<br/>A sentence.')).toBe('A sentence.');
+      expect(stripLegacyBreakTags('<br>A sentence.')).toBe('A sentence.');
+
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', USERS_URL).flush(
+        problem('user.unknown_reason', 400, '<br/>Something the vocabulary does not word.'),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const text = host().textContent ?? '';
+
+      expect(text).not.toContain('<br');
+      expect(text).not.toContain('&lt;br');
+      expect(queryAll('br')).withContext('no break element was parsed out of a message').toHaveSize(0);
+      expectNoListingReRead();
+    });
+
+    it('escapes hostile wording arriving in a server message', () => {
+      // ⚠ RESOURCE AND SERVER TEXT IS UNTRUSTED MARKUP BY MEASUREMENT — 76 values across the
+      // in-scope resource files contain a raw HTML tag, including a script tag four times. A
+      // message is text and is bound as text; nothing here is bound as trusted markup and no
+      // sanitiser is involved, because the framework's default interpolation already escapes.
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', USERS_URL).flush(
+        problem(
+          'user.unknown_reason',
+          400,
+          '<script>window.__accountFormSentinel = true;</script>Refused.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      expect(queryAll('script')).withContext('no script element was created').toHaveSize(0);
+      expect((window as unknown as Record<string, unknown>)['__accountFormSentinel']).toBeUndefined();
+
+      // The angle brackets survive as TEXT, which is the proof that they were escaped rather
+      // than dropped or executed.
+      expect(host().textContent ?? '').toContain('<script>');
+      expectNoListingReRead();
+    });
+
+    it('preserves the measured double space in the address-conflict sentence', () => {
+      // ⚠ THE DOUBLE SPACE IS IN THE MEASURED VALUE. `EmailError.Text` in
+      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx` reads
+      // "...unique Email Address.  The Email Address you entered..." with TWO spaces after the
+      // full stop, and it is asserted verbatim. Collapsing it would be an unrequested edit to
+      // wording an operator recognises.
+      expect(EMAIL_CONFLICT_MESSAGE).toContain('Email Address.  The Email Address');
+      expect(EMAIL_CONFLICT_MESSAGE).not.toContain('Email Address. The Email Address');
+      expect(EMAIL_CONFLICT_MESSAGE).toBe(
+        'This portal requires a unique Email Address.  The Email Address you entered has ' +
+          'already been used.',
+      );
+    });
+
+    it('enforces no address uniqueness of its own and lets the server refuse', () => {
+      arriveEditing(account(7));
+
+      // ⚠ `requiresUniqueEmail="false"` at `Website/release.config` L244 — the legacy did NOT
+      // enforce uniqueness, so authoring a client-side rule here would be a NEW rule rather
+      // than parity. An address already in use therefore submits cleanly and is refused by the
+      // server, which is the only authority on it.
+      type(CONTROL_ID.email, 'taken@example.test');
+
+      expect(fieldErrors().join(' ')).withContext('nothing was refused locally').not.toContain('already');
+
+      press(UPDATE_SUBMIT_LABEL);
+
+      const write = expectRequest('PUT', userUrl(7), 'the duplicate address was sent');
+
+      write.flush(problem('user.create.duplicate_email', 409, 'That address is already in use.'), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+      fixture.detectChanges();
+
+      // ⚠ AND THE MEASURED SENTENCE IS NOT WHAT REACHES THE OPERATOR ON THIS PATH. The refusal
+      // paragraph that carries it is rendered only while the form is WITHHELD, and the
+      // withholding rule names the permission and not-found statuses alone — so a conflict is
+      // reported by the banner in the server's own words and the form stays usable, which is
+      // the right answer because a duplicate address is corrected right here. The measured
+      // sentence is recorded as UNREACHABLE for a 409 rather than asserted as shown.
+      expect(query('app-error-banner')?.textContent ?? '').toContain(
+        'That address is already in use.',
+      );
+      expect(host().textContent ?? '').not.toContain(EMAIL_CONFLICT_MESSAGE);
+      expect(query(`#${CONTROL_ID.email}`)).withContext('the form stays usable').not.toBeNull();
+      expectNoListingReRead();
     });
   });
 });

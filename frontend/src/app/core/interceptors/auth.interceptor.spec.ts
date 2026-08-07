@@ -422,37 +422,248 @@ function renewalBody(
 }
 
 /**
- * Builds a problem document of the shape the API emits for a failure.
+ * The two extension members this API attaches to every problem document.
  *
- * The five members the API's error contract publishes, so a case that flushes a failure
- * flushes the body a caller would really receive rather than an empty object. The type
- * member carries the specification's own default value for "no more specific problem type
- * than the status code", which keeps this fixture free of any address at all.
+ * `ValidationProblemDetailsFactory` writes both on every refusal. They are not
+ * interchangeable: the correlation identifier is the value the pipeline validated for this
+ * request and the one that appears in the server's log and on the audit trail.
+ */
+const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+
+/**
+ * Builds a problem document of the shape the API ACTUALLY emits for a failure.
  *
- * @param status The HTTP status being reported.
- * @param title The short, reusable summary for that status.
+ * ⚠ THE PROBLEM TYPE IS `urn:dnnmigration:error:<code>`, PRODUCED BY EXACTLY ONE SERVER
+ * METHOD — `ApiResults.BuildProblemType`. An earlier revision of this fixture wrote
+ * `about:blank`, on the reasonable-sounding premise that a specification-default type keeps
+ * the fixture address-free. It does, and it also describes a body this API never sends: every
+ * refusal it produces carries its own URN, and the `about:blank` value appears nowhere in the
+ * server tree. The consequence is not cosmetic — the single-flight behaviour asserted below
+ * exists to serve the error interceptor and the auth store, both of which branch on the type,
+ * so a fixture without one exercised the renewal machinery against a refusal no endpoint can
+ * produce.
+ *
+ * ⚠ AND THE TITLE AND DETAIL ARE THE SERVER'S OWN, not composed here. The title comes from
+ * the per-status vocabulary in `ValidationProblemDetailsFactory` and the detail from the
+ * producing service, so a case that flushes a refusal flushes what a caller would really
+ * receive. `errors` is omitted rather than empty: only the model binder attaches a per-field
+ * map, and it never attaches an empty one.
+ *
+ * @param status The status the server's mapping yields for the code.
+ * @param title The per-status title from the server's own vocabulary.
+ * @param code The failure code, spelled exactly as the server publishes it.
+ * @param detail The authored sentence the producing service placed on the outcome.
  * @returns The problem document to flush.
  */
-function problemDocument(status: number, title: string): Record<string, unknown> {
+function problemDocument(
+  status: number,
+  title: string,
+  code: string,
+  detail: string,
+): Record<string, unknown> {
   return {
-    type: 'about:blank',
+    type: `urn:dnnmigration:error:${code}`,
     title,
     status,
-    detail: `The request was answered with ${String(status)}.`,
-    errors: {},
+    detail,
+    traceId: TRACE_ID,
+    correlationId: CORRELATION_ID,
   };
+}
+
+/**
+ * The server's OWN title, code and sentence for each status these cases flush.
+ *
+ * ⚠ TRANSCRIBED FROM `ValidationProblemDetailsFactory.StatusVocabulary`, NOT COMPOSED HERE. That
+ * dictionary is the one place the API decides what a bare refusal of a given status looks like, and
+ * every entry below is its triple for that status verbatim. An earlier revision of these cases
+ * invented a title — `'Refused'` for five different statuses and `'Server Error'` for the five
+ * hundred — which described a document the API never sends and, worse, made the five statuses in the
+ * matrix indistinguishable from one another in the very case whose subject is telling them apart.
+ *
+ * Held as one table rather than repeated at each call site so a status cannot acquire two different
+ * vocabularies in one file, which is the drift this whole fixture exists to prevent.
+ */
+const STATUS_VOCABULARY: Readonly<
+  Record<number, { readonly title: string; readonly code: string; readonly detail: string }>
+> = Object.freeze({
+  403: {
+    title: 'Forbidden',
+    code: 'auth.not_permitted',
+    detail: 'The authenticated caller is not permitted to perform this operation.',
+  },
+  404: {
+    title: 'Not Found',
+    code: 'resource.not_found',
+    detail: 'The requested resource does not exist.',
+  },
+  409: {
+    title: 'Conflict',
+    code: 'resource.conflict',
+    detail: 'The request conflicts with the current state of the resource.',
+  },
+  422: {
+    title: 'Unprocessable Content',
+    code: 'request.unprocessable',
+    detail: 'The request was understood but could not be processed.',
+  },
+  429: {
+    title: 'Too Many Requests',
+    code: 'request.rate_limited',
+    detail: 'Too many requests have been submitted. Retry after a short delay.',
+  },
+  500: {
+    title: 'Internal Server Error',
+    code: 'server.unexpected_failure',
+    detail: 'An unexpected error occurred while processing the request.',
+  },
+});
+
+/**
+ * Builds the bare refusal the API emits for a status, from that status's own vocabulary.
+ *
+ * @param status The status to build a refusal for; it must appear in {@link STATUS_VOCABULARY}.
+ * @returns The problem document a caller would really receive.
+ */
+function bareProblem(status: number): Record<string, unknown> {
+  const entry = STATUS_VOCABULARY[status];
+
+  if (entry === undefined) {
+    throw new Error(`no server vocabulary is recorded for status ${String(status)}`);
+  }
+
+  return problemDocument(status, entry.title, entry.code, entry.detail);
+}
+
+/**
+ * The status line the platform writes for a status, from that same vocabulary.
+ *
+ * @param status The status to build a status line for.
+ * @returns The `status`/`statusText` pair to flush alongside the document.
+ */
+function bareProblemInit(status: number): { status: number; statusText: string } {
+  const entry = STATUS_VOCABULARY[status];
+
+  if (entry === undefined) {
+    throw new Error(`no server vocabulary is recorded for status ${String(status)}`);
+  }
+
+  return { status, statusText: entry.title };
 }
 
 /** The status line for a refusal, reused by every case that flushes one. */
 const UNAUTHORIZED_INIT = Object.freeze({ status: 401, statusText: 'Unauthorized' });
 
 /**
- * Answers an outstanding request with a 401 carrying a problem document.
+ * The refusal a protected endpoint answers with when the presented token is not accepted.
+ *
+ * ⚠ `auth.unauthenticated` IS THE RIGHT CODE HERE, and choosing it is the whole point of
+ * making this fixture live. This is the 401 produced with no explicit failure code — the
+ * bearer scheme's own challenge — so it carries the status vocabulary's default type and
+ * sentence. It is exactly what a request whose access token has lapsed earns, which is the
+ * condition every single-flight case below is about.
+ */
+const UNAUTHENTICATED_PROBLEM = problemDocument(
+  401,
+  'Unauthorized',
+  'auth.unauthenticated',
+  'Authentication is required to reach this resource.',
+);
+
+/**
+ * The refusal the renewal endpoint answers with when the presented credential is unusable.
+ *
+ * One code covers unknown, consumed and lapsed alike, so a caller cannot use the refusal to
+ * learn which of the three it was.
+ */
+const INVALID_REFRESH_TOKEN_PROBLEM = problemDocument(
+  401,
+  'Unauthorized',
+  'auth.invalid_refresh_token',
+  'The refresh token is not valid.',
+);
+
+/**
+ * A page of portals, as `GET /api/v1/portals` really answers.
+ *
+ * ⚠ THE SUCCESS BODY MATTERS EVEN WHERE THE ASSERTION IS ABOUT A HEADER. An earlier revision
+ * flushed a bare `{}` — and, on the retry cases, an invented `{ ok: true }` — for this
+ * endpoint. Neither is a shape it can produce: the listing is the one endpoint whose body IS
+ * the page envelope, so it always answers `{ items, meta }`. Using a realistic body is what
+ * lets the "the caller receives the success, not the refusal that preceded it" assertion mean
+ * something: comparing against `{ ok: true }` proved only that an invented object survived a
+ * round trip, whereas comparing against the real envelope proves the REPLAYED response is the
+ * one the endpoint would have returned had the token never lapsed.
+ *
+ * The tenant is `-1`, which is the first portal an installation has rather than a marker for
+ * "no portal": `01.00.00.SqlDataProvider:L77` declares `[PortalID] [int] IDENTITY (-1, 1)`.
+ */
+const PORTAL_PAGE_BODY = Object.freeze({
+  items: [
+    {
+      portalId: -1,
+      portalName: 'Baseline Portal',
+      aliases: ['localhost'],
+      users: 3,
+      pages: 7,
+      hostSpace: 0,
+    },
+  ],
+  meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
+});
+
+/**
+ * A page of accounts, as `GET /api/v1/users` really answers.
+ *
+ * Present for the same reason as the portal page: the other protected endpoint these cases
+ * exercise is also a paged listing, and driving it with a body it cannot produce would make
+ * the concurrency assertions rest on a fiction.
+ */
+const USER_PAGE_BODY = Object.freeze({
+  items: [
+    {
+      userId: 0,
+      portalId: -1,
+      username: 'operator',
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      displayName: 'Ada Lovelace',
+      address: null,
+      telephone: null,
+      email: 'operator@example.invalid',
+      createdDate: '2024-01-01T00:00:00.000Z',
+      lastLoginDate: null,
+      isApproved: true,
+      isOnline: false,
+      isSuperUser: false,
+      isLockedOut: false,
+    },
+  ],
+  meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
+});
+
+/**
+ * Answers an outstanding request with the 401 a protected endpoint really produces.
  *
  * @param request The outstanding request to refuse.
  */
 function refuse(request: TestRequest): void {
-  request.flush(problemDocument(401, 'Unauthorized'), UNAUTHORIZED_INIT);
+  request.flush(UNAUTHENTICATED_PROBLEM, UNAUTHORIZED_INIT);
+}
+
+/**
+ * Answers an outstanding renewal with the 401 the renewal endpoint really produces.
+ *
+ * Kept distinct from {@link refuse} because the two refusals are different facts: one says the
+ * access token was not accepted and is recoverable by renewal, the other says the renewal
+ * credential itself is gone and the session is over. Flushing the same body for both would
+ * blur exactly the distinction the single-flight machinery turns on.
+ *
+ * @param request The outstanding renewal request to refuse.
+ */
+function refuseRenewal(request: TestRequest): void {
+  request.flush(INVALID_REFRESH_TOKEN_PROBLEM, UNAUTHORIZED_INIT);
 }
 
 /**
@@ -592,7 +803,7 @@ describe('authInterceptor', () => {
         .withContext('the scheme is exactly "Bearer" and one space')
         .toBe(`Bearer ${FAKE_ACCESS_TOKEN}`);
 
-      request.flush({});
+      request.flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -612,7 +823,7 @@ describe('authInterceptor', () => {
         .withContext('and nothing resembling a token is present under any value')
         .toBeNull();
 
-      request.flush({});
+      request.flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -635,7 +846,7 @@ describe('authInterceptor', () => {
         .withContext('a caller that set one had a reason')
         .toBe(`Bearer ${CALLER_SUPPLIED_TOKEN}`);
 
-      request.flush({});
+      request.flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -654,7 +865,7 @@ describe('authInterceptor', () => {
         `Bearer ${FAKE_ACCESS_TOKEN}`,
       );
 
-      request.flush({});
+      request.flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -670,7 +881,7 @@ describe('authInterceptor', () => {
         `Bearer ${FAKE_ACCESS_TOKEN}`,
       );
 
-      request.flush({});
+      request.flush(PORTAL_PAGE_BODY);
       await pending;
     });
   });
@@ -693,7 +904,11 @@ describe('authInterceptor', () => {
       const request = httpMock.expectOne(url);
       expect(request.request.headers.has(AUTHORIZATION_HEADER)).withContext(why).toBeFalse();
 
-      request.flush({});
+      // These addresses are deliberately NOT this API — that is the whole point of the case —
+      // so there is no endpoint contract to honour and no realistic envelope to borrow. The
+      // response is answered as an empty body, which is what a foreign host's own reply shape
+      // must not be presumed to be.
+      request.flush(null);
       await pending;
     }
 
@@ -774,7 +989,15 @@ describe('authInterceptor', () => {
           .withContext(`${url} authenticates its own payload, not a bearer token`)
           .toBeFalse();
 
-        request.flush({});
+        // Answered with THIS endpoint's own success: the two credential exchanges answer 200
+        // carrying a token pair, and the revocation answers 204 with no body at all. Driving
+        // all three with one invented body would have stated a contract none of them has.
+        if (url === LOGOUT_URL) {
+          request.flush(null, { status: 204, statusText: 'No Content' });
+        } else {
+          request.flush(renewalBody(FAKE_ROTATED_ACCESS_TOKEN, FAKE_ROTATED_REFRESH_TOKEN));
+        }
+
         await pending;
       });
     }
@@ -858,7 +1081,10 @@ describe('authInterceptor', () => {
     it('renews ONCE and retries ONCE, presenting the rotated token', async () => {
       tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
 
-      const pending = firstValueFrom(http.get<{ readonly ok: boolean }>(PROTECTED_URL));
+      // Typed as the listing's own paged envelope, so the "the caller receives the success"
+      // assertion below compares against the shape the endpoint really returns rather than
+      // against an invented marker object.
+      const pending = firstValueFrom(http.get<typeof PORTAL_PAGE_BODY>(PROTECTED_URL));
 
       const first = httpMock.expectOne(PROTECTED_URL);
       expect(first.request.headers.get(AUTHORIZATION_HEADER))
@@ -892,11 +1118,11 @@ describe('authInterceptor', () => {
       expect(retry.request.method)
         .withContext('and is the same operation, not a different one')
         .toBe('GET');
-      retry.flush({ ok: true });
+      retry.flush(PORTAL_PAGE_BODY);
 
       expect(await pending)
         .withContext('the caller receives the success, not the refusal that preceded it')
-        .toEqual({ ok: true });
+        .toEqual(PORTAL_PAGE_BODY);
 
       // The rotated pair replaced the consumed one exactly once. Storing only the access
       // token would leave the consumed renewal credential in place, and presenting it again
@@ -997,7 +1223,7 @@ describe('authInterceptor', () => {
 
         httpMock
           .expectOne(PROTECTED_URL)
-          .flush(problemDocument(status, 'Refused'), { status, statusText: 'Refused' });
+          .flush(bareProblem(status), bareProblemInit(status));
 
         expect(httpStatusOf(await reasonFor(pending)))
           .withContext(`a ${status} reaches the caller as itself`)
@@ -1031,7 +1257,7 @@ describe('authInterceptor', () => {
 
       httpMock
         .expectOne(PROTECTED_URL)
-        .flush(problemDocument(409, 'Conflict'), { status: 409, statusText: 'Conflict' });
+        .flush(bareProblem(409), bareProblemInit(409));
 
       expect(httpStatusOf(await reasonFor(pending)))
         .withContext('the caller hears the status the server actually sent')
@@ -1078,7 +1304,7 @@ describe('authInterceptor', () => {
       const pending = firstValueFrom(http.get(PROTECTED_URL));
 
       refuse(httpMock.expectOne(PROTECTED_URL));
-      refuse(httpMock.expectOne(REFRESH_URL));
+      refuseRenewal(httpMock.expectOne(REFRESH_URL));
 
       // The ORIGINAL refusal is reported, not the renewal's. Reporting the renewal failure
       // would replace "your request was not authorised" with an unrelated message about a
@@ -1111,7 +1337,15 @@ describe('authInterceptor', () => {
       refuse(httpMock.expectOne(PROTECTED_URL));
       httpMock
         .expectOne(REFRESH_URL)
-        .flush(problemDocument(403, 'Forbidden'), { status: 403, statusText: 'Forbidden' });
+        .flush(
+          problemDocument(
+            403,
+            'Forbidden',
+            'auth.not_permitted',
+            'The authenticated caller is not permitted to perform this operation.',
+          ),
+          { status: 403, statusText: 'Forbidden' },
+        );
 
       expect(httpStatusOf(await reasonFor(pending)))
         .withContext('the ORIGINAL 401 is reported, not the renewal 403')
@@ -1198,13 +1432,13 @@ describe('authInterceptor', () => {
       expect(firstRetry.request.headers.get(AUTHORIZATION_HEADER)).toBe(
         `Bearer ${FAKE_ROTATED_ACCESS_TOKEN}`,
       );
-      firstRetry.flush({});
+      firstRetry.flush(PORTAL_PAGE_BODY);
 
       const secondRetry = httpMock.expectOne(OTHER_PROTECTED_URL);
       expect(secondRetry.request.headers.get(AUTHORIZATION_HEADER)).toBe(
         `Bearer ${FAKE_ROTATED_ACCESS_TOKEN}`,
       );
-      secondRetry.flush({});
+      secondRetry.flush(USER_PAGE_BODY);
 
       await Promise.all([first, second]);
 
@@ -1350,7 +1584,7 @@ describe('authInterceptor', () => {
       const pending = firstValueFrom(http.get(PROTECTED_URL));
 
       refuse(httpMock.expectOne(PROTECTED_URL));
-      refuse(httpMock.expectOne(REFRESH_URL));
+      refuseRenewal(httpMock.expectOne(REFRESH_URL));
 
       expect(httpStatusOf(await reasonFor(pending)))
         .withContext('the caller still hears about their own request')
@@ -1658,7 +1892,7 @@ describe('authInterceptor', () => {
 
       httpMock
         .expectOne(PROTECTED_URL)
-        .flush(problemDocument(500, 'Server Error'), { status: 500, statusText: 'Server Error' });
+        .flush(bareProblem(500), bareProblemInit(500));
 
       expect(httpStatusOf(await reasonFor(pending))).toBe(500);
 
@@ -1752,7 +1986,7 @@ describe('authInterceptor', () => {
 
       httpMock
         .expectOne(PROTECTED_URL)
-        .flush(problemDocument(403, 'Forbidden'), { status: 403, statusText: 'Forbidden' });
+        .flush(bareProblem(403), bareProblemInit(403));
 
       expect(httpStatusOf(await reasonFor(pending))).toBe(403);
 
@@ -1782,13 +2016,18 @@ describe('authInterceptor', () => {
     //   backoff here, no attempt counter and no reading of a retry hint — the document is
     //   presented to the operator and the decision is theirs.
     // - 500 is a server fault and says nothing about the caller identity.
-    const nonAuthStatuses: readonly { readonly status: number; readonly title: string }[] = [
-      { status: 403, title: 'Forbidden' },
-      { status: 429, title: 'Too Many Requests' },
-      { status: 500, title: 'Internal Server Error' },
-    ];
+    //
+    // Each entry carries the code and sentence the SERVER pairs with that status, taken from
+    // the per-status vocabulary in `ValidationProblemDetailsFactory`: `auth.not_permitted` for
+    // 403, `request.rate_limited` for 429 and `server.unexpected_failure` for 500. A fixture
+    // that named no code could not have distinguished "the interceptor ignores the body" from
+    // "the interceptor never saw a body worth reading".
+    // The three statuses are named here; their titles, codes and sentences are READ FROM
+    // STATUS_VOCABULARY rather than restated, so this case and the recovered-path matrix above
+    // cannot end up asserting two different documents for the same status.
+    const nonAuthStatuses: readonly number[] = [403, 429, 500];
 
-    for (const { status, title } of nonAuthStatuses) {
+    for (const status of nonAuthStatuses) {
       it(`passes a ${String(status)} through without renewing or retrying`, async () => {
         tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
 
@@ -1796,11 +2035,16 @@ describe('authInterceptor', () => {
 
         httpMock
           .expectOne(PROTECTED_URL)
-          .flush(problemDocument(status, title), { status, statusText: title });
+          .flush(bareProblem(status), bareProblemInit(status));
 
-        expect(httpStatusOf(await reasonFor(pending)))
+        const reason = await reasonFor(pending);
+
+        expect(httpStatusOf(reason))
           .withContext('the status reaches the caller unchanged')
           .toBe(status);
+        expect(reason instanceof HttpErrorResponse ? reason.error : null)
+          .withContext('and so does the document, untouched, for the error interceptor to read')
+          .toEqual(bareProblem(status));
 
         httpMock.expectNone(REFRESH_URL);
         httpMock.expectNone(PROTECTED_URL);
@@ -1865,7 +2109,7 @@ describe('authInterceptor', () => {
         .withContext('the stale token is presented and the server decides')
         .toBe(`Bearer ${FAKE_ACCESS_TOKEN}`);
 
-      request.flush({});
+      request.flush(PORTAL_PAGE_BODY);
       await pending;
 
       httpMock.expectNone(REFRESH_URL);
@@ -1882,7 +2126,7 @@ describe('authInterceptor', () => {
 
       refuse(httpMock.expectOne(PROTECTED_URL));
       completeRenewal();
-      httpMock.expectOne(PROTECTED_URL).flush({});
+      httpMock.expectOne(PROTECTED_URL).flush(PORTAL_PAGE_BODY);
 
       await pending;
 
@@ -1933,7 +2177,7 @@ describe('authInterceptor', () => {
         .withContext('both attempts are one logical operation and must be joinable as one')
         .toBe(originalCorrelationId);
 
-      retry.flush({});
+      retry.flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -1970,7 +2214,7 @@ describe('authInterceptor', () => {
       expect(identityCorrelationId).not.toBe(originalCorrelationId);
       identity.flush({ data: FAKE_USER, meta: null } satisfies SuccessEnvelope<CurrentUser>);
 
-      httpMock.expectOne(PROTECTED_URL).flush({});
+      httpMock.expectOne(PROTECTED_URL).flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -1998,7 +2242,7 @@ describe('authInterceptor', () => {
         .withContext('the caller identifier survives the retry it did not ask for')
         .toBe(supplied);
 
-      retry.flush({});
+      retry.flush(PORTAL_PAGE_BODY);
       await pending;
     });
 
@@ -2016,7 +2260,7 @@ describe('authInterceptor', () => {
         `Bearer ${FAKE_ACCESS_TOKEN}`,
       );
       expect(protectedRequest.request.headers.has(CORRELATION_ID_HEADER)).toBeTrue();
-      protectedRequest.flush({});
+      protectedRequest.flush(PORTAL_PAGE_BODY);
 
       const anonymousRequest = httpMock.expectOne(LOGIN_URL);
       expect(anonymousRequest.request.headers.has(AUTHORIZATION_HEADER))
@@ -2025,7 +2269,8 @@ describe('authInterceptor', () => {
       expect(anonymousRequest.request.headers.has(CORRELATION_ID_HEADER))
         .withContext('but it is still traceable')
         .toBeTrue();
-      anonymousRequest.flush({});
+      // The sign-in endpoint answers 200 with a token pair, not with a page of portals.
+      anonymousRequest.flush(renewalBody(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
 
       await Promise.all([protectedCall, anonymousCall]);
     });

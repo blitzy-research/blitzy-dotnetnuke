@@ -3,8 +3,13 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 
-import type { ApiResponse, PagedResponse } from '../../../core/models/paged-result.model';
-import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  type ApiResponse,
+  type PagedResponse,
+} from '../../../core/models/paged-result.model';
+import type { ProblemDetails, ProblemDetailsErrors } from '../../../core/models/problem-details.model';
 import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
@@ -12,6 +17,28 @@ import { MembershipSettingsComponent } from './membership-settings.component';
 
 /**
  * Specification for the tenant's account-administration policy screen.
+ *
+ * PROVENANCE, stated plainly because it bears on how much these cases are worth: the legacy
+ * tree contains NO automated tests of any kind — not for this screen, not for anything — so
+ * there is no predecessor harness to port and nothing here is a translation of an existing
+ * assertion. Every case below was authored from measured legacy behaviour: the markup and
+ * code-behind of `Website/admin/Users/UserSettings.ascx`, the eighty-four-entry resource file
+ * beside it, the default-filling routine at `Library/Components/Users/UserModuleBase.vb`, and
+ * the sentinel table at `Library/Components/Shared/Null.vb`.
+ *
+ * This file is also a COMPILE GATE and not only a behaviour proof. `tsconfig.app.json` names
+ * `src/main.ts` alone and type-checks by import graph, while `tsconfig.spec.json` includes
+ * every specification by pattern. Until some other consumer imports this screen, this file is
+ * the only route by which the component AND its template are type-checked at all, so a
+ * trivial specification here would let real type errors ship unseen.
+ *
+ * VERIFIED TESTING API, recorded rather than guessed at: on the installed
+ * `@angular/core@19.2.25`, `TestBed.flushEffects()` EXISTS (declared in
+ * `@angular/core/testing/index.d.ts`) and `TestBed.tick()` does NOT — the only `tick` is the
+ * `fakeAsync` helper. Neither is called below, and deliberately: the component's effects are
+ * flushed by `fixture.detectChanges()`, every derived slice it renders is a `computed()` read,
+ * and `HttpTestingController` is synchronous, so no timer and no manual effect flush is
+ * involved anywhere in this file.
  *
  * This screen edits ONE record with twenty-three members and no identifier, which makes its
  * failure modes unusual enough to name up front. Every case below exists because getting one
@@ -44,6 +71,68 @@ import { MembershipSettingsComponent } from './membership-settings.component';
  * wrote one stored setting at a time for whichever editor reported itself dirty (L172) and
  * coerced every value to text on the way (L174). Both behaviours are gone; the cases below
  * assert the replacement rather than the original.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * WHAT THIS SPECIFICATION DELIBERATELY DOES NOT COVER
+ * ---------------------------------------------------------------------------------------------
+ *
+ * MIGRATION — ⭐ THE MATERIAL CORRECTION TO THE TRANSFORMATION PLAN, restated here so the scope
+ * of this file is auditable rather than merely asserted. The plan maps this screen to THREE
+ * legacy controls and TWO OF THE THREE ARE WRONG:
+ *
+ *   * `Website/admin/Users/Membership.ascx` is twenty-eight lines and is a read-only PER-ACCOUNT
+ *     panel, not a tenant policy screen. Its editor carries `editmode="View"` and its four
+ *     command buttons — authorise, unauthorise, unlock and force a password change, every one of
+ *     them declared `causesvalidation="False"` — act on ONE account. The decisive proof is
+ *     `Website/admin/Users/manageusers.ascx` L59-L63, which hosts `dnn:user ctlUser` and
+ *     `dnn:membership ctlMembership` SIDE BY SIDE inside a single account row: the membership
+ *     panel is part of the account detail screen. Those nine per-account membership fields and
+ *     four actions therefore belong to the ACCOUNT FORM, and NOT ONE CASE BELOW ASSERTS THEM.
+ *   * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role subscription — an
+ *     invitation-code box, a subscribe command and a seven-column services grid carrying a trial
+ *     command. Role subscription, invitation codes, trials and billing have NO ENDPOINT in this
+ *     API at all, so there is nothing for a screen to call and NO CASE BELOW COVERS THEM.
+ *
+ * Parity is therefore measured against `UserSettings.ascx` ALONE, and the correction is reported
+ * rather than absorbed silently.
+ *
+ * MIGRATION: the legacy save started a BACKGROUND THREAD that rewrote every account's display
+ * name whenever the display-name format changed (`UserSettings.ascx.vb` L175-L182). Nothing here
+ * attempts it and no case asserts it: it is a bulk write across a whole tenant, which belongs
+ * behind an endpoint rather than in a browser that can be closed halfway through, and no endpoint
+ * exists for it. Reported as a possible gap on the server side rather than quietly dropped.
+ *
+ * MIGRATION: the legacy handler cleared the settings CACHE itself (`UserSettings.ascx.vb` L189).
+ * Cache lifetime is the server's business in the target, nothing is cached in the browser, and no
+ * case below asserts a client-side cache — because there is none to assert.
+ *
+ * MIGRATION: the legacy screen hid TWELVE of these fields when it was reached through the host
+ * menu rather than a tenant's own (`UserSettings.ascx.vb` L87-L100). That rule is NOT reproduced
+ * and no case tests it: host-level administration is out of scope, this screen is reached only as
+ * a tenant administrator, and in that context the legacy screen showed everything. The
+ * "everything is shown" half IS asserted, by the case that seats all twenty-three controls.
+ *
+ * MIGRATION: the two legacy CAPTCHA toggles went with the excluded challenge control and have no
+ * member on this contract. The compensating control is server-side and stronger — the sign-in
+ * endpoints are governed by a rate-limiting policy that partitions by client address — and it is
+ * NOT exercised here, because this screen makes no authentication call at all. Inventing a
+ * rate-limit case for a screen that cannot provoke one would be theatre; the 429 case below
+ * exists only because the shared banner must classify a refusal correctly whatever produced it.
+ *
+ * MIGRATION: the screen injects the account STORE rather than the transport service, and that
+ * shapes this file directly. The store owns the page size the account listing also reads, so a
+ * successful write is three requests rather than one and every write case below answers all
+ * three. Nothing is substituted for the store, so the whole chain — screen, store, transport,
+ * client — is exercised for real and the address assertions mean what they say.
+ *
+ * MIGRATION — DRIFT IN BOTH DIRECTIONS, reported rather than hidden. REVERSE DRIFT: the ten
+ * membership-provider fields and the two password-aging fields existed on the legacy screen and
+ * have no member on this contract, so no control can exist for them; their absence is asserted
+ * below rather than assumed. FORWARD DRIFT: none. Every one of the twenty-three controls this
+ * screen renders traces to a legacy resource entry, so no control was invented for a contract
+ * member with no legacy label — which is why every label assertion below quotes recovered legacy
+ * wording rather than authored wording, with the two exceptions the paired class marks as
+ * authored (the subtitle and the success sentence, neither of which the legacy screen had).
  */
 describe('MembershipSettingsComponent', () => {
   let fixture: ComponentFixture<MembershipSettingsComponent>;
@@ -58,9 +147,42 @@ describe('MembershipSettingsComponent', () => {
   //
   // Written out as relative literals rather than composed from the endpoint table, so that a
   // change to that table shows up here as a failure instead of being silently agreed with.
+  //
+  // ⚠ THE ADDRESS IS RELATIVE AND MUST STAY RELATIVE. The `test` target declares no file
+  // replacements, so a specification compiles against the PRODUCTION configuration, whose base
+  // address is the relative `/api/v1` — the proxy in front of the container maps `/api/` onto
+  // the API service, so the browser reaches it through the origin that served the application.
+  // An absolute host would resolve only inside the container network and would fail from a
+  // browser, which is why no case below names one.
+  //
+  // ⚠ THE SPA ROUTE AND THE API ADDRESS ARE DIFFERENT STRINGS AND MUST NOT BE CONFLATED. This
+  // screen is reached at `/settings/membership`; the policy lives at `/api/v1/users/settings`.
+  // Asserting the exact address — `users/` segment included — is what stops a later refactor
+  // from routing the request at the screen's own path and producing a 404 that no compiler can
+  // see. `expectOne` on the exact string also catches a doubled `/api/v1/api/v1/...` prefix,
+  // which is the other failure this literal exists to trap.
+  //
+  // MIGRATION: the transformation plan for THIS file names the address
+  // `/api/v1/users/settings/membership`. THAT ADDRESS DOES NOT EXIST, and the plan's own
+  // instruction — confirm the exact address from the endpoint table and the transport service —
+  // is what settles it. `core/config/api-endpoints.ts` composes `users.membershipSettings()`
+  // from the accounts segment and the settings segment and nothing else; `core/services/
+  // user.service.ts` reads and writes through exactly that; and the API declares the pair as
+  // `HttpGet("settings")` and `HttpPut("settings")` on the accounts controller. There is no
+  // `membership` segment anywhere on the wire. The real address is asserted below and the
+  // discrepancy is reported rather than absorbed.
 
   const SETTINGS_URL = '/api/v1/users/settings';
   const USERS_URL = '/api/v1/users';
+
+  /**
+   * The health probe, asserted NEVER to be called from a screen.
+   *
+   * It sits at the host root — outside the versioned API prefix — is anonymous, and exists for
+   * the container health check and the compose dependency condition. No component may reach it,
+   * and a screen that did would be probing infrastructure from a browser.
+   */
+  const HEALTH_URL = '/health';
 
   /** Where both commands land. */
   const ACCOUNT_LISTING_PATH = '/users';
@@ -87,10 +209,25 @@ describe('MembershipSettingsComponent', () => {
     'A page identifier may not be negative. Leave the field empty for no redirect.';
   const LENGTH_MESSAGE = 'This setting may not exceed 2000 characters.';
 
-  /** The bounds the server itself applies, mirrored in the browser. */
+  /**
+   * The bounds the server itself applies, mirrored in the browser.
+   *
+   * ⚠ THE CEILING IS IMPORTED, NOT WRITTEN. `MAX_PAGE_SIZE` is the workspace's single home for
+   * it, and a literal here would be a second copy free to disagree with the rule the control
+   * actually enforces. The floor and the text ceiling are declared locally because no shared
+   * constant carries either — stated so the asymmetry reads as deliberate.
+   */
   const MINIMUM_RECORDS_PER_PAGE = 1;
-  const MAXIMUM_RECORDS_PER_PAGE = 100;
+  const MAXIMUM_RECORDS_PER_PAGE = MAX_PAGE_SIZE;
   const MAXIMUM_SETTING_LENGTH = 2000;
+
+  /**
+   * The number of members the policy contract carries, asserted rather than assumed.
+   *
+   * Derived from a live fixture below rather than written as a digit, so a member added to or
+   * removed from the contract cannot leave a stale count passing here.
+   */
+  const POLICY_MEMBER_COUNT = 23;
 
   /**
    * The reason phrase the API publishes as a problem `title`, keyed by status.
@@ -122,7 +259,7 @@ describe('MembershipSettingsComponent', () => {
     code: string,
     status: number,
     detail: string,
-    errors?: Readonly<Record<string, readonly string[]>>,
+    errors?: ProblemDetailsErrors,
   ): ProblemDetails {
     const document: ProblemDetails = {
       type: `urn:dnnmigration:error:${code}`,
@@ -192,13 +329,23 @@ describe('MembershipSettingsComponent', () => {
 
   beforeEach(async () => {
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces
-    // it. Reversing the two leaves the live backend in place and every expectation times out.
+    // it. Reversing the two, or omitting the first, leaves no client for the testing backend to
+    // override and every expectation times out.
+    //
+    // ⚠ NOTHING IS SUBSTITUTED FOR THE STORE, THE TRANSPORT SERVICE OR THE NOTIFICATION
+    // CHANNEL, and that is the single most important decision in this file. All three are
+    // declared `providedIn: 'root'`, and the test harness builds a fresh root injector for every
+    // case, so each case already gets its own policy and its own failure slot without a
+    // provider being listed here. Listing one would add nothing; SUBSTITUTING one would be
+    // worse than nothing — it would make the address assertions vacuous, and the address is the
+    // highest-value thing this file proves. The real chain therefore runs end to end,
+    // screen → store → transport → client, and is driven entirely through the testing backend.
+    //
+    // The component is STANDALONE, so it goes in `imports`. There is no declarations array
+    // anywhere in this file and no module of any kind.
     await TestBed.configureTestingModule({
       imports: [MembershipSettingsComponent],
-      // The store is listed so each case gets its own instance. It is declared
-      // `providedIn: 'root'`, so without this every case would share one policy and one
-      // failure slot, and a case would observe state another had recorded.
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([]), UserStore],
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
     }).compileComponents();
 
     httpMock = TestBed.inject(HttpTestingController);
@@ -243,8 +390,17 @@ describe('MembershipSettingsComponent', () => {
     fixture.detectChanges();
   }
 
+  /**
+   * The rendered host element.
+   *
+   * ⚠ TAKEN BY ASSIGNMENT, NEVER BY A CAST. `fixture.nativeElement` is loosely typed, and
+   * assigning it to a declared `HTMLElement` narrows it without introducing a cast token — which
+   * is what keeps this file free of the escape hatches it forbids itself.
+   */
   function host(): HTMLElement {
-    return fixture.nativeElement as HTMLElement;
+    const element: HTMLElement = fixture.nativeElement;
+
+    return element;
   }
 
   function query<E extends Element>(selector: string): E | null {
@@ -255,13 +411,27 @@ describe('MembershipSettingsComponent', () => {
     return Array.from(host().querySelectorAll<E>(selector));
   }
 
+  /**
+   * The one element matching a selector, or a thrown failure naming what was missing.
+   *
+   * ⚠ THIS HELPER IS WHY NO NON-NULL ASSERTION AND NO CAST APPEARS AFTER A QUERY ANYWHERE BELOW.
+   * `querySelector` is honestly typed as possibly null; narrowing it by asserting it away would
+   * turn a missing element into an opaque "cannot read property of null" several lines later,
+   * whereas throwing here names the selector that was not found.
+   */
+  function queryOrFail<E extends Element>(root: ParentNode, selector: string): E {
+    const found = root.querySelector<E>(selector);
+
+    if (found === null) {
+      throw new Error(`Expected to find "${selector}"`);
+    }
+
+    return found;
+  }
+
   /** A control by its identifier, asserted to exist. */
   function field<E extends HTMLElement>(name: string): E {
-    const element = query<E>(`#membership-setting-${name}`);
-
-    expect(element).withContext(`#membership-setting-${name} is rendered`).not.toBeNull();
-
-    return element as E;
+    return queryOrFail<E>(host(), `#membership-setting-${name}`);
   }
 
   /** Types into a text or numeric control. */
@@ -290,9 +460,12 @@ describe('MembershipSettingsComponent', () => {
   /**
    * Chooses a selector option by its RENDERED LABEL.
    *
-   * ⚠ THE OPTIONS BIND `[value]` HERE, NOT `[ngValue]`, so the DOM value is the integer as
-   * text. The label is used regardless, because a label is what an operator sees and it
-   * survives a reordering of the option list.
+   * ⚠ THE OPTIONS BIND `[ngValue]`, NOT `[value]`, so the DOM value is the framework's own
+   * option identifier — "1: 1" for the integer one — rather than the bare integer. That is why
+   * every assertion on a selector's value below uses containment rather than equality, and why
+   * this helper resolves the option by LABEL and copies whatever identifier it carries: a label
+   * is what an operator sees, and it survives both a reordering of the list and a change in how
+   * the framework spells its identifiers.
    */
   function choose(name: string, label: string): void {
     const control = field<HTMLSelectElement>(name);
@@ -300,9 +473,11 @@ describe('MembershipSettingsComponent', () => {
       (candidate) => (candidate.textContent ?? '').trim() === label,
     );
 
-    expect(option).withContext(`the option labelled "${label}" is offered`).not.toBeUndefined();
+    if (option === undefined) {
+      throw new Error(`Expected the option labelled "${label}" to be offered by ${name}`);
+    }
 
-    control.value = (option as HTMLOptionElement).value;
+    control.value = option.value;
     control.dispatchEvent(new Event('change'));
     fixture.detectChanges();
   }
@@ -318,9 +493,11 @@ describe('MembershipSettingsComponent', () => {
   function press(label: string): void {
     const control = button(label);
 
-    expect(control).withContext(`the "${label}" control is offered`).not.toBeUndefined();
+    if (control === undefined) {
+      throw new Error(`Expected the "${label}" control to be offered`);
+    }
 
-    (control as HTMLButtonElement).click();
+    control.click();
     fixture.detectChanges();
   }
 
@@ -332,6 +509,60 @@ describe('MembershipSettingsComponent', () => {
   /** The messages the shared field component is rendering, in document order. */
   function fieldErrors(): readonly string[] {
     return queryAll<Element>('.form-field__error').map((node) => (node.textContent ?? '').trim());
+  }
+
+  /**
+   * Opens one field's help disclosure.
+   *
+   * ⚠ HELP TEXT IS NOT IN THE DOCUMENT UNTIL THE DISCLOSURE IS OPENED. The shared field guards it
+   * with a condition rather than hiding it with styling, so a case that wants to read help wording
+   * has to operate the toggle first — which is the better test anyway, because it exercises the
+   * disclosure a reader actually uses. The toggle is found by the identifier the shared field
+   * derives from the control's own, rather than by position among the fourteen.
+   *
+   * @param name The control's name.
+   */
+  function openHelp(name: string): void {
+    const wrapper = queryOrFail<HTMLElement>(
+      host(),
+      `#membership-setting-${name}-label`,
+    ).closest('app-form-field');
+
+    if (wrapper === null) {
+      throw new Error(`Expected #membership-setting-${name}-label to sit inside a shared field`);
+    }
+
+    const toggle = queryOrFail<HTMLButtonElement>(wrapper, 'button.form-field__help-toggle');
+
+    expect(toggle.getAttribute('aria-expanded')).withContext('closed before opening').toBe('false');
+
+    toggle.click();
+    fixture.detectChanges();
+
+    expect(toggle.getAttribute('aria-expanded')).withContext('and announces the change').toBe('true');
+  }
+
+  /**
+   * The policy carried by a captured request, narrowed by ASSIGNMENT.
+   *
+   * ⚠ NO CAST IS INVOLVED. A captured request's body is loosely typed, so assigning it to a
+   * declared contract member narrows it without a cast token — and the narrowing is what makes
+   * every body assertion below check a NAMED member rather than an index lookup.
+   */
+  function writtenPolicy(request: ReturnType<HttpTestingController['expectOne']>): MembershipSettings {
+    const body: MembershipSettings = request.request.body;
+
+    return body;
+  }
+
+  /**
+   * The member names a policy object carries, sorted.
+   *
+   * Exists so the twenty-three-member rule is checked against real key sets rather than against
+   * a hand-kept list, and so no dictionary type is written down to do it.
+   */
+  function memberNames(policy: MembershipSettings): readonly string[] {
+    return Object.keys(policy).sort();
   }
 
   /** The announcements requested, newest last. */
@@ -373,7 +604,16 @@ describe('MembershipSettingsComponent', () => {
     it('reads the tenant policy from its own relative address, with no query at all', () => {
       create();
 
-      const read = expectRequest('GET', SETTINGS_URL, 'the policy read');
+      // ⚠ THE EXACT RELATIVE ADDRESS, `users/` SEGMENT INCLUDED. The screen's own route is
+      // `/settings/membership`; the policy is at `/api/v1/users/settings`. Matching the exact
+      // string is what stops the two being conflated, and it is also what catches a doubled
+      // version prefix — `/api/v1/api/v1/users/settings` would not match and this would fail.
+      const read = httpMock.expectOne(SETTINGS_URL, 'the policy read at its exact address');
+
+      expect(read.request.method).toBe('GET');
+      expect(read.request.url).withContext('relative, never an absolute host').toBe(SETTINGS_URL);
+      expect(read.request.url).withContext('no doubled version prefix').not.toContain('/api/v1/api/v1');
+      expect(read.request.urlWithParams).withContext('and nothing appended').toBe(SETTINGS_URL);
 
       // The policy is tenant-wide and the tenant is resolved by the server from the request,
       // so there is nothing to name in the address and nothing to narrow with.
@@ -382,6 +622,19 @@ describe('MembershipSettingsComponent', () => {
 
       read.flush(envelope(settings()));
       fixture.detectChanges();
+    });
+
+    it('never probes the container health endpoint from a screen', () => {
+      arrive();
+
+      // ⚠ THE HEALTH PROBE IS INFRASTRUCTURE, NOT AN API RESOURCE. It sits at the host root,
+      // outside the versioned prefix, and is anonymous precisely so the container health check
+      // and the compose dependency condition can reach it before anybody has signed in. A screen
+      // calling it would be probing the deployment from a browser.
+      expect(httpMock.match(HEALTH_URL)).withContext('no screen calls the health probe').toHaveSize(0);
+      expect(httpMock.match((candidate) => candidate.url.startsWith('/api/v1') === false))
+        .withContext('every request this screen makes is a versioned API call')
+        .toHaveSize(0);
     });
 
     it('announces the wait and withholds the form until the policy has arrived', () => {
@@ -494,7 +747,12 @@ describe('MembershipSettingsComponent', () => {
       expect(field<HTMLInputElement>('columnAddress').checked)
         .withContext('shown by default')
         .toBeTrue();
-      expect(field<HTMLInputElement>('recordsPerPage').value).toBe('10');
+
+      // ⚠ ASSERTED AGAINST THE IMPORTED CONSTANT, NEVER AGAINST A DIGIT. `DEFAULT_PAGE_SIZE` is
+      // the workspace's single home for the page size, and the legacy routine's own default was
+      // the same value — so importing it proves the two still agree, whereas a literal here would
+      // keep passing after the shared constant had moved and the screen had followed it.
+      expect(field<HTMLInputElement>('recordsPerPage').value).toBe(String(DEFAULT_PAGE_SIZE));
       // A valid profile is required at sign-in but NOT at registration. Also measured.
       expect(field<HTMLInputElement>('securityRequireValidProfile').checked).toBeFalse();
       expect(field<HTMLInputElement>('securityRequireValidProfileAtLogin').checked).toBeTrue();
@@ -571,6 +829,31 @@ describe('MembershipSettingsComponent', () => {
       expect(markup).not.toContain('Membership Provider Settings');
       expect(markup).not.toContain('Password Aging Settings');
       expect(markup).not.toContain('web.config');
+
+      // ⚠ THE RESOURCE-WINS RULE, MADE EXECUTABLE IN THE NEGATIVE. The legacy markup wrote its own
+      // section headings — "Provider Settings" and "Password Settings" — while the resource values
+      // the page actually rendered read "Membership Provider Settings" and "Password Aging
+      // Settings". A port that trusted the markup would have shipped two wrong headings. Both
+      // spellings of both headings are asserted absent, so neither the markup wording nor the
+      // resource wording can reappear through a well-meaning re-addition of a dropped section.
+      expect(markup).withContext('nor the markup wording the resource overrode').not.toContain(
+        'Provider Settings',
+      );
+      expect(markup).not.toContain('Password Settings');
+
+      // ⚠⚠ THE TWO LEGACY MISSPELLINGS ARE A DOCUMENTED OMISSION, NOT A CORRECTION. The dropped
+      // password-aging help text reads "(value of 0 measn the password never expires)" and "the
+      // number of days warning the user will recieve that their password is about to expire" —
+      // "measn" and "recieve", both shipped, both of which domain-logic preservation would have
+      // FORBIDDEN correcting had the fields survived. They do not survive: the contract carries no
+      // expiry member, so there is no field for either string to attach to and the question of
+      // preserving them never arises. What is asserted instead is that neither the misspelt nor
+      // the corrected form appears — because a later reader who re-adds the section must re-derive
+      // the wording from the resource file rather than from a tidied copy left behind here.
+      expect(markup).withContext('the misspelt legacy wording is not rendered').not.toContain('measn');
+      expect(markup).not.toContain('recieve');
+      expect(markup).withContext('and neither is a corrected version of it').not.toContain('means the password never expires');
+      expect(markup).not.toContain('will receive that their password');
     });
 
     it('offers exactly one section, open on arrival, whose state is announced', () => {
@@ -602,7 +885,170 @@ describe('MembershipSettingsComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
-  // PROOF 3 — THE ENTRY RULES
+  // PROOF 3 — THE LEGACY SENTINEL VOCABULARY
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // `Library/Components/Shared/Null.vb` gives the legacy codebase a marker for every primitive,
+  // and this contract collides with two of them at once: the marker for a missing integer is
+  // MINUS ONE while the tenant table's identity seeds at minus one, and the marker for a missing
+  // string is the EMPTY STRING rather than a null. The page table's identity seeds at ZERO, so
+  // zero is a real page as well. Every case in this group exists because a translation that read
+  // one of those values as "absent" would look correct and change what a tenant sees.
+
+  describe('the legacy sentinel vocabulary', () => {
+    it('renders an empty text setting as an empty control, never as the word for nothing', () => {
+      // The legacy marker for a missing string is the empty string, and the contract preserves
+      // that: an unset text setting arrives as "" rather than as a null.
+      arrive(settings({ securityEmailValidation: '', securityDisplayNameFormat: '' }));
+
+      expect(field<HTMLTextAreaElement>('securityEmailValidation').value).toBe('');
+      expect(field<HTMLInputElement>('securityDisplayNameFormat').value).toBe('');
+
+      // ⚠ NEITHER CONTROL MAY EVER SHOW THE WORD FOR NOTHING. A screen that let an absent value
+      // reach a control through string interpolation would render "null" or "undefined" as
+      // editable text, and an operator would then save it as a stored setting.
+      const markup = host().textContent ?? '';
+
+      expect(markup).not.toContain('null');
+      expect(markup).not.toContain('undefined');
+    });
+
+    it('refuses a null text setting on the wire rather than rendering it', () => {
+      create();
+
+      // ⚠ THE CONTRACT DECLARES BOTH TEXT MEMBERS NON-NULL and the reader enforces it, so a null
+      // in either is a CONTRACT VIOLATION rather than an "unset" state to be interpreted. That is
+      // what makes empty and null indistinguishable at the control: only one of them can arrive.
+      // The three landing pages are the members that genuinely admit null, and they are asserted
+      // separately below.
+      //
+      // MIGRATION: this is the target's answer to the legacy pair of emptiness tests — the same
+      // codebase compared one screen's message against a literal empty string in one place and
+      // against its own empty-string marker in another, and only the fact that the two were the
+      // same value made both correct. Here there is one representation and it is checked.
+      const read = expectRequest('GET', SETTINGS_URL);
+
+      read.flush({ data: { ...settings(), securityEmailValidation: null }, meta: null });
+      fixture.detectChanges();
+
+      // The violation is raised while interpreting a successful response, so it carries no
+      // problem document and no transport status — which is exactly the case the separate summary
+      // paragraph exists for. The banner is reserved for a document.
+      const paragraph = query('.membership-settings__transport-failure');
+
+      expect(paragraph).withContext('the violation is surfaced').not.toBeNull();
+      expect((paragraph?.textContent ?? '').length).withContext('with a real sentence').toBeGreaterThan(0);
+      expect(query('.error-banner__title')).withContext('and not through the banner').toBeNull();
+
+      // ⚠ AND NOTHING RENDERS THE WORD FOR NOTHING. A screen that accepted the malformed value
+      // would put it in front of an operator as editable text, who would then save it.
+      const markup = host().textContent ?? '';
+
+      expect(markup).not.toContain('null');
+      expect(markup).not.toContain('undefined');
+    });
+
+    it('round-trips all three landing pages unchanged, zero and null alike', () => {
+      // ⚠ ZERO IS A REAL PAGE AND MINUS ONE IS NEVER SENT. The page table's identity seeds at
+      // zero, which is why the server's floor is zero rather than one, and null is the only
+      // expression of "no redirect" on this contract. A round trip is the strongest available
+      // statement of that: whatever the server sent must come back byte for byte.
+      const policy = settings({
+        redirectAfterLogin: 0,
+        redirectAfterRegistration: null,
+        redirectAfterLogout: 7,
+      });
+
+      arrive(policy);
+      submitForm();
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+      const body = writtenPolicy(write);
+
+      expect(body.redirectAfterLogin).withContext('page zero survives as zero').toBe(0);
+      expect(body.redirectAfterRegistration).withContext('no redirect survives as null').toBeNull();
+      expect(body.redirectAfterLogout).withContext('a real page survives unchanged').toBe(7);
+      expect(body.redirectAfterLogin).withContext('never the legacy marker').not.toBe(-1);
+      expect(body.redirectAfterLogout).not.toBe(-1);
+
+      write.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+    });
+
+    it('treats both text settings as opaque, expanding no token and evaluating no expression', () => {
+      // A pattern the server compiles and a template an excluded subsystem expands. Both are
+      // carried, neither is interpreted.
+      const expression = '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$';
+      const format = '[FIRSTNAME] [LASTNAME]';
+
+      arrive(settings({ securityEmailValidation: expression, securityDisplayNameFormat: format }));
+
+      // Carried into the controls verbatim: no trimming, no unescaping, no normalisation.
+      expect(field<HTMLTextAreaElement>('securityEmailValidation').value).toBe(expression);
+      expect(field<HTMLInputElement>('securityDisplayNameFormat').value).toBe(format);
+
+      // ⚠ NO TOKEN EXPANSION. The bracketed tokens are expanded by an excluded subsystem, so the
+      // brackets must still be there — a screen that substituted a name would corrupt the stored
+      // template the moment it was saved back.
+      const markup = host().textContent ?? '';
+
+      expect(field<HTMLInputElement>('securityDisplayNameFormat').value).toContain('[FIRSTNAME]');
+      expect(field<HTMLInputElement>('securityDisplayNameFormat').value).toContain('[LASTNAME]');
+      expect(markup).withContext('no name was substituted for a token').not.toContain('undefined');
+
+      submitForm();
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+      const body = writtenPolicy(write);
+
+      // ⚠ AND NO CLIENT-SIDE EVALUATION. The expression goes back exactly as it came: nothing in
+      // this screen compiles it, executes it or matches anything against it, because evaluating a
+      // tenant-supplied pattern in a browser would hand a stored setting the ability to hang the
+      // page. The only rule applied before the server sees it is a length bound.
+      expect(body.securityEmailValidation).toBe(expression);
+      expect(body.securityDisplayNameFormat).toBe(format);
+
+      write.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+      answerWriteFollowUp(settings({ securityEmailValidation: expression, securityDisplayNameFormat: format }));
+    });
+
+    it('carries no member whose absence needs a sentinel rendering rule', () => {
+      arrive();
+
+      // ⚠ THESE ARE DOCUMENTED OMISSIONS, ASSERTED SO THEY CANNOT BE MISTAKEN FOR OVERSIGHTS.
+      // Three legacy sentinel rules have NO member on this contract to attach to, and a later
+      // reader looking for the tests that enforce them needs to find this case instead:
+      //
+      //   * A PASSWORD EXPIRY OF ZERO MEANING "NEVER EXPIRES" — the rule the legacy help text
+      //     described. The expiry pair belongs to the dropped password-aging section and is
+      //     absent from the contract, so there is no field to render "never expires" in. This is
+      //     REVERSE DRIFT: legacy behaviour with no target member.
+      //   * AN ALLOWANCE OF ZERO MEANING "UNLIMITED" AND MINUS ONE MEANING "NOT SET" — a genuine
+      //     collision the transport service documents at the contract level, but the account
+      //     policy carries no allowance member, so nothing on this screen can express it.
+      //   * A DATE AT ITS MINIMUM MEANING "NO DATE" — the legacy marker for a missing date, which
+      //     must render EMPTY rather than as the first day of year one. This contract carries no
+      //     date member at all, so this screen never formats one.
+      //
+      // The assertions are therefore absence assertions, and the third also guards the rendering:
+      // the minimum-date text must not appear even incidentally.
+      expect(query('#membership-setting-passwordExpiry')).toBeNull();
+      expect(query('#membership-setting-passwordExpiryReminder')).toBeNull();
+      expect(query('#membership-setting-userQuota')).toBeNull();
+      expect(query('input[type="date"]')).withContext('no date is edited here').toBeNull();
+
+      const markup = host().textContent ?? '';
+
+      expect(markup).withContext('no minimum-date sentinel is rendered').not.toContain('01/01/0001');
+      expect(markup).not.toContain('0001-01-01');
+      expect(markup).withContext('and no allowance vocabulary is invented').not.toContain('Unlimited');
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 4 — THE ENTRY RULES
   // ---------------------------------------------------------------------------------------------------
 
   describe('the entry rules', () => {
@@ -630,7 +1076,7 @@ describe('MembershipSettingsComponent', () => {
       expect(httpMock.match(() => true)).withContext('nothing is sent').toHaveSize(0);
     });
 
-    it('refuses a page size below the floor and names the range', () => {
+    it('treats an entered zero as a value out of range, never as an empty field', () => {
       arrive();
 
       type('recordsPerPage', '0');
@@ -639,6 +1085,17 @@ describe('MembershipSettingsComponent', () => {
       // The sentence deliberately reads the way the server's own does: one situation should not
       // be described two different ways depending on which side noticed it.
       expect(fieldErrors()).toContain(PAGE_SIZE_RANGE_MESSAGE);
+
+      // ⚠⚠ THE DISTINCTION THIS CASE EXISTS FOR. Zero is DATA. It is refused because the server
+      // accepts nothing below one for a page size, NOT because it reads as empty — so the message
+      // must be the range message and must NOT be the emptiness message. A screen that tested
+      // truthiness would report the field as unfilled, which is a different and false claim, and
+      // the same mistake elsewhere in this contract would read a false switch or page zero as
+      // "unset". The framework's own emptiness test is a null-and-length test rather than a
+      // truthiness test, which is what lets zero reach the range rule at all.
+      expect(fieldErrors())
+        .withContext('zero is out of range, not absent')
+        .not.toContain(REQUIRED_MESSAGE);
       expect(httpMock.match(() => true)).toHaveSize(0);
     });
 
@@ -699,7 +1156,7 @@ describe('MembershipSettingsComponent', () => {
 
       const write = expectRequest('PUT', SETTINGS_URL);
 
-      expect((write.request.body as MembershipSettings).redirectAfterLogin)
+      expect(writtenPolicy(write).redirectAfterLogin)
         .withContext('page zero travels as zero, never as null')
         .toBe(0);
 
@@ -750,7 +1207,7 @@ describe('MembershipSettingsComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
-  // PROOF 4 — THE WRITE
+  // PROOF 5 — THE WRITE
   // ---------------------------------------------------------------------------------------------------
 
   describe('writing the policy', () => {
@@ -761,21 +1218,36 @@ describe('MembershipSettingsComponent', () => {
       submitForm();
 
       const write = expectRequest('PUT', SETTINGS_URL, 'the policy write');
-      const body = write.request.body as MembershipSettings;
+      const body = writtenPolicy(write);
 
       // ⚠ TWENTY-THREE MEMBERS, EVERY TIME. "Unchanged settings keep their value" is expressed
       // by sending them all, so a zero, a false and an empty string are values being asserted
       // rather than absences to be filtered out.
-      expect(Object.keys(body as unknown as Record<string, unknown>).sort()).toEqual(
-        Object.keys(policy as unknown as Record<string, unknown>).sort(),
-      );
+      //
+      // MIGRATION: this replaces the legacy DIRTY-ONLY PARTIAL SAVE. The legacy handler walked
+      // its editors and wrote only the ones reporting themselves changed
+      // (`Website/admin/Users/UserSettings.ascx.vb` L172), one stored setting at a time. The end
+      // state is identical because every member travels with the value it currently holds — and
+      // that is precisely why no member may ever be dropped for looking empty.
+      // ⚠ THIS IS ALSO THE SPELLING CHECK. The server's naming policy lower-cases the leading
+      // upper-case RUN of a member name, so a name ending in an initialism comes out differently
+      // from one that does not — and a client built on the wrong spelling reads undefined with
+      // nothing failing to reveal it. Comparing the key set the screen SENDS against the key set
+      // the fixture RECEIVED is what makes a spelling drift a failure here rather than a silent
+      // undefined at run time. Every fixture in this file is built from the contract interface, so
+      // a misspelling would not even compile.
+      expect(memberNames(body)).toEqual(memberNames(policy));
+      expect(memberNames(body)).toHaveSize(POLICY_MEMBER_COUNT);
       expect(body).toEqual(policy);
 
-      // Each member is sent as its own type. The legacy handler coerced every value to text on
-      // the way to storage, so a switch was stored as the word for true and a count as digits.
+      // MIGRATION: each member is sent as its OWN TYPE. The legacy handler coerced every value
+      // to text on the way to storage (`Website/admin/Users/UserSettings.ascx.vb` L174), so a
+      // switch was stored as the word for true and a count as its digits. Asserting the wire
+      // types is what stops that coercion creeping back in through a form control's string value.
       expect(typeof body.columnEmail).withContext('a switch is a switch').toBe('boolean');
       expect(typeof body.recordsPerPage).withContext('a count is a number').toBe('number');
       expect(typeof body.displayMode).withContext('a mode is a number').toBe('number');
+      expect(typeof body.securityDisplayNameFormat).withContext('text is text').toBe('string');
 
       write.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
@@ -818,7 +1290,7 @@ describe('MembershipSettingsComponent', () => {
       submitForm();
 
       const write = expectRequest('PUT', SETTINGS_URL);
-      const body = write.request.body as MembershipSettings;
+      const body = writtenPolicy(write);
 
       expect(body.columnEmail).withContext('false is asserted, not omitted').toBeFalse();
       expect(body.columnAddress).toBeFalse();
@@ -831,7 +1303,10 @@ describe('MembershipSettingsComponent', () => {
       expect(body.redirectAfterLogin).withContext('null is "no redirect"').toBeNull();
       expect(body.redirectAfterRegistration).toBeNull();
       expect(body.redirectAfterLogout).toBeNull();
-      expect(Object.keys(body as unknown as Record<string, unknown>)).toHaveSize(23);
+      // Every member is still on the wire. A body assembled by filtering truthiness would be
+      // down to a handful by now, and the server — which binds without eliding a default —
+      // would read the difference as an instruction it was never given.
+      expect(memberNames(body)).toHaveSize(POLICY_MEMBER_COUNT);
 
       write.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
@@ -911,7 +1386,7 @@ describe('MembershipSettingsComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
-  // PROOF 5 — A REFUSED READ OR WRITE
+  // PROOF 6 — A REFUSED READ OR WRITE
   // ---------------------------------------------------------------------------------------------------
 
   describe('a refused read', () => {
@@ -1053,9 +1528,52 @@ describe('MembershipSettingsComponent', () => {
       fixture.detectChanges();
 
       // ⚠ THE SERVER'S KEY IS ITS OWN MODEL-STATE SPELLING, NOT CAMEL-CASED. The shared reader
-      // matches case-insensitively, which is what makes this land on the right control.
+      // matches case-insensitively, which is what makes this land on the right control. The
+      // document's per-field dictionary is read with a BRACKET throughout the workspace — property
+      // access on an index signature is refused by the compiler here — so a key that is not a
+      // valid identifier is reached the same way as one that is.
       expect(fieldErrors()).toContain('That page does not belong to this site.');
       expect(field<HTMLInputElement>('redirectAfterLogin').getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('pins a per-field refusal whose key carries a binder prefix', () => {
+      arrive();
+
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(
+        problem(
+          'user.membership_settings.invalid',
+          400,
+          'The request could not be processed as submitted.',
+          // ⚠ THE BINDER PREFIXES ARE REAL AND MUST BE TOLERATED. A body-bound parameter produces
+          // a JSON-path key, and a parameter named for the request produces a dotted one; neither
+          // prefix is part of the field's name and no form control is ever named with one. Both
+          // forms are exercised in one document, together with a third key in the server's own
+          // casing, because a reader that matched by exact spelling would find none of them and
+          // the messages would vanish with nothing failing to reveal it.
+          {
+            '$.recordsPerPage': ['The page size is not acceptable.'],
+            'request.securityDisplayNameFormat': ['That format cannot be stored.'],
+            SECURITYEMAILVALIDATION: ['That expression could not be compiled.'],
+          },
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const messages = fieldErrors();
+
+      expect(messages).toContain('The page size is not acceptable.');
+      expect(messages).toContain('That format cannot be stored.');
+      expect(messages).toContain('That expression could not be compiled.');
+
+      expect(field<HTMLInputElement>('recordsPerPage').getAttribute('aria-invalid')).toBe('true');
+      expect(field<HTMLInputElement>('securityDisplayNameFormat').getAttribute('aria-invalid')).toBe(
+        'true',
+      );
+      expect(field<HTMLTextAreaElement>('securityEmailValidation').getAttribute('aria-invalid')).toBe(
+        'true',
+      );
     });
 
     it('reads a refusal of authority as a warning rather than an error', () => {
@@ -1103,7 +1621,7 @@ describe('MembershipSettingsComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
-  // PROOF 6 — ABANDONING THE FORM
+  // PROOF 7 — ABANDONING THE FORM
   // ---------------------------------------------------------------------------------------------------
 
   describe('abandoning the form', () => {
@@ -1158,19 +1676,139 @@ describe('MembershipSettingsComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
-  // PROOF 7 — THE RENDERED DOCUMENT
+  // PROOF 8 — THE RENDERED DOCUMENT
   // ---------------------------------------------------------------------------------------------------
 
   describe('the rendered document', () => {
     it('emits no landmark and exactly one heading level below the page title', () => {
       arrive();
 
-      // The shell owns the landmarks; a screen emitting its own would nest one inside another.
-      expect(queryAll('main')).toHaveSize(0);
-      expect(queryAll('nav')).toHaveSize(0);
+      // ⚠ THE SHELL OWNS EACH LANDMARK EXACTLY ONCE. A screen emitting its own would nest a
+      // landmark inside the same landmark and give assistive technology two of something there
+      // must be one of. All four are asserted, not just the two that are easy to forget.
+      expect(queryAll('header')).withContext('the shell owns the banner').toHaveSize(0);
+      expect(queryAll('main')).withContext('the shell owns the main region').toHaveSize(0);
+      expect(queryAll('nav')).withContext('the shell owns navigation').toHaveSize(0);
+      expect(queryAll('footer')).withContext('the shell owns the footer').toHaveSize(0);
       // One section heading, at level two, directly under the page heading with no level skipped.
       expect(queryAll('h2')).toHaveSize(1);
       expect(queryAll('h4')).toHaveSize(0);
+    });
+
+    it('renders no table, because there is no grid on this screen', () => {
+      arrive();
+
+      // MIGRATION: the legacy markup opened with a fixed-width borderless table
+      // (`Website/admin/Users/UserSettings.ascx` L6) which carried no data at all — it was pure
+      // layout, as every table in that generation of markup was. Arrangement is a grid in the
+      // paired stylesheet here, so not one table element is emitted. This screen edits ONE record
+      // and lists nothing, so the shared data table has no business here either.
+      expect(host().querySelectorAll('table')).withContext('no table of any kind').toHaveSize(0);
+      expect(queryAll('app-data-table')).withContext('and no grid component').toHaveSize(0);
+    });
+
+    it('emits none of the legacy spacing content', () => {
+      arrive();
+
+      const markup = host().innerHTML;
+
+      // MIGRATION: the legacy inter-control spacing was CONTENT — seventy literal non-breaking
+      // space entities across the in-scope admin markup, one of them on this screen between the
+      // two commands. Spacing is a token-driven gap in the paired stylesheet, so not one is
+      // reproduced, and no line break element is emitted either: a leading break tag on a
+      // resource string is stripped upstream by the shared failure utility.
+      expect(markup).withContext('no non-breaking space entity').not.toContain('&nbsp;');
+      expect(markup).withContext('no literal non-breaking space character').not.toContain('\u00a0');
+      expect(markup).withContext('no line break element').not.toContain('<br');
+    });
+
+    it('wraps every control in the shared field component, with no bare control anywhere', () => {
+      arrive();
+
+      // ⚠ THE DESIGN-SYSTEM RULE, MADE EXECUTABLE: no bare control appears in a feature template
+      // where the shared field covers the need. Every input, selector and text area on this
+      // screen must sit inside a shared field, which is what guarantees each one has a real label
+      // pointing at it, a place for its help text and a place for its message.
+      const controls = queryAll<HTMLElement>('input, select, textarea');
+
+      expect(controls.length).withContext('every one of the twenty-three controls').toBe(
+        POLICY_MEMBER_COUNT,
+      );
+
+      for (const control of controls) {
+        expect(control.closest('app-form-field'))
+          .withContext(`${control.id} sits inside a shared field`)
+          .not.toBeNull();
+      }
+
+      // The two form commands are the only buttons this screen's own template emits, and they are
+      // commands rather than controls: the shared library is closed at ten members and has no
+      // button member, so there is nothing to wrap them in.
+      const commands = queryAll<HTMLButtonElement>('button').filter(
+        (candidate) => candidate.classList.contains('form-field__help-toggle') === false,
+      );
+
+      expect(commands).withContext('exactly two commands').toHaveSize(2);
+      expect(commands.map((candidate) => (candidate.textContent ?? '').trim())).toEqual([
+        SUBMIT_LABEL,
+        CANCEL_LABEL,
+      ]);
+
+      // ⚠ EVERY OTHER BUTTON BELONGS TO THE SHARED FIELD, and their count is a measured fact
+      // rather than an incidental one. The shared field renders a help disclosure only where help
+      // text was supplied, and the nine listing-column switches supply NONE — each of their legacy
+      // help values was its own label with the trailing colon removed, so a disclosure repeating
+      // the label beside it would add a control to operate and tell a reader nothing. Fourteen
+      // fields carry help; nine do not; the arithmetic is asserted so that reduction cannot be
+      // silently undone.
+      const helpToggles = queryAll('button.form-field__help-toggle');
+
+      expect(helpToggles).withContext('one disclosure per field carrying help').toHaveSize(
+        POLICY_MEMBER_COUNT - 9,
+      );
+
+      for (const toggle of helpToggles) {
+        expect(toggle.getAttribute('aria-expanded'))
+          .withContext('every disclosure announces its state')
+          .toBe('false');
+      }
+    });
+
+    it('groups the nine listing switches under an accessible name of their own', () => {
+      arrive();
+
+      // Nine unrelated switches in a row tell a screen reader nothing about what they have in
+      // common. A field set with a legend is what gives the cluster a name.
+      const group = queryOrFail<HTMLFieldSetElement>(host(), 'fieldset.membership-settings__columns');
+      const legend = queryOrFail<HTMLLegendElement>(group, 'legend');
+
+      expect(legend.textContent?.trim()).withContext('the cluster is named').toBe(COLUMNS_HEADING);
+      expect(group.querySelectorAll('input[type="checkbox"]'))
+        .withContext('all nine switches are inside it')
+        .toHaveSize(9);
+    });
+
+    it('puts the section toggle in the tab order, reversing the legacy defect', () => {
+      arrive();
+
+      const section = queryOrFail<HTMLDetailsElement>(host(), 'details.membership-settings__section');
+      const summary = queryOrFail<HTMLElement>(section, 'summary');
+
+      // MIGRATION: the legacy section toggle was WITHDRAWN FROM THE TAB ORDER with a negative tab
+      // index (`Website/controls/sectionheadcontrol.ascx` L3), so it could be operated by pointer
+      // only and a keyboard user could not collapse a section at all. That defect is deliberately
+      // REVERSED rather than reproduced: a native disclosure summary is in the tab order by
+      // default, is operated by both Enter and Space, and needs no script. Reversing it costs
+      // nothing visually, which is what makes it permissible under the governing precedence order.
+      expect(summary.tabIndex).withContext('reachable by keyboard').not.toBe(-1);
+      expect(summary.getAttribute('tabindex'))
+        .withContext('and never explicitly withdrawn')
+        .not.toBe('-1');
+
+      // The announced state is bound from the element itself, so it cannot drift from the rendered
+      // one. A static attribute would be wrong the moment a reader collapsed the section.
+      expect(summary.getAttribute('aria-expanded')).toBe('true');
+      expect(section.open).toBeTrue();
     });
 
     it('names every one of the twenty-three controls with a real label pointing at it', () => {
@@ -1190,10 +1828,14 @@ describe('MembershipSettingsComponent', () => {
       }
     });
 
-    it('renders the recovered legacy wording verbatim, misspellings and punctuation included', () => {
+    it('renders the recovered legacy wording verbatim, defects and punctuation included', () => {
       arrive();
 
       const markup = host().textContent ?? '';
+
+      // ⚠⚠ DOMAIN-LOGIC PRESERVATION, MADE EXECUTABLE. Every string below is a legacy quirk that a
+      // well-meaning edit would tidy, and tidying any of them would change text an existing
+      // administrator recognises for no behavioural gain. This case is what stands in the way.
 
       // The question mark is the legacy wording. Preserved.
       expect(markup).toContain('Suppress Pager?');
@@ -1202,6 +1844,56 @@ describe('MembershipSettingsComponent', () => {
       expect(markup).toContain('Users per Page');
       expect(markup).toContain('Email Address Validation');
       expect(markup).toContain('Display Name Format');
+      // The heading keeps its legacy plural: "User Accounts Settings", not "User Account Settings".
+      expect(markup).toContain('User Accounts Settings');
+      expect(markup).not.toContain('User Account Settings');
+
+      // ⚠ HELP TEXT IS BEHIND A DISCLOSURE and is therefore not in the document until the
+      // disclosure is opened — the shared field guards it with a condition rather than hiding it
+      // with styling, so there is nothing to read before the toggle is operated. That is asserted
+      // first, because a case that read an always-present node would prove nothing about either.
+      expect(queryAll('.form-field__help')).withContext('nothing revealed yet').toHaveSize(0);
+    });
+
+    it('preserves the one legacy language defect that survives into this screen', () => {
+      arrive();
+
+      // ⚠⚠ THE SHIPPED GRAMMAR IS WRONG AND STAYS WRONG. The sign-in profile requirement's help
+      // text reads "before be logged in" — ungrammatical, and shipped exactly so. Domain-logic
+      // preservation FORBIDS correcting it, and a well-meaning repair is precisely what this case
+      // guards. (The two dropped password-aging misspellings, "measn" and "recieve", are covered by
+      // the closed-section case instead: their fields do not exist here, so the question of
+      // preserving them never arises.)
+      openHelp('securityRequireValidProfileAtLogin');
+
+      const revealed = queryOrFail<HTMLElement>(
+        host(),
+        '#membership-setting-securityRequireValidProfileAtLogin-help',
+      );
+      const text = (revealed.textContent ?? '').trim();
+
+      expect(text).withContext('the shipped grammar is preserved').toContain('before be logged in');
+      expect(text).withContext('and is not silently repaired').not.toContain(
+        'before being logged in',
+      );
+    });
+
+    it('describes the substitution tokens without expanding one', () => {
+      arrive();
+
+      openHelp('securityDisplayNameFormat');
+
+      const revealed = queryOrFail<HTMLElement>(
+        host(),
+        '#membership-setting-securityDisplayNameFormat-help',
+      );
+      const text = (revealed.textContent ?? '').trim();
+
+      // The bracketed tokens are DESCRIBED here and expanded by nobody: token replacement is an
+      // excluded subsystem, so the brackets must survive into the help text as characters.
+      expect(text).toContain('[FIRSTNAME] [LASTNAME]');
+      // And the cross-screen consequence the legacy wording states is carried, not dropped.
+      expect(text).toContain('no longer be editable');
     });
 
     it('offers the three selectors with exactly the options the server accepts', () => {
@@ -1240,14 +1932,24 @@ describe('MembershipSettingsComponent', () => {
         .withContext('carried verbatim as a value')
         .toBe(hostile);
       expect(host().querySelectorAll('img')).withContext('nothing was parsed').toHaveSize(0);
-      expect((window as unknown as Record<string, unknown>)['__dnnSentinel']).toBeUndefined();
+
+      // ⚠ THE DECISIVE HALF OF THIS CASE. Reading the sentinel reflectively — rather than
+      // through a dictionary type this file is not permitted to write — proves the handler never
+      // ran: if the value had been bound as trusted markup, the element would have been parsed,
+      // its handler would have fired, and this would hold true rather than undefined.
+      const sentinel: unknown = Reflect.get(window, '__dnnSentinel');
+
+      expect(sentinel).withContext('no handler ran').toBeUndefined();
+      // No raw-markup binding exists on this screen at all, which is what makes the above
+      // structural rather than incidental.
+      expect(host().innerHTML).not.toContain('<img');
     });
 
     it('keeps the announcing region mounted with nothing to announce', () => {
       arrive();
 
-      // The live region must exist before it has anything to say, or the first message it
-      // carries is not announced at all.
+      // The live region must exist before it carries a message, or the first message put into it
+      // is not announced at all.
       const live = query('.error-banner-live');
 
       expect(live).withContext('the region is mounted').not.toBeNull();
