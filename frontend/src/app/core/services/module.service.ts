@@ -14,7 +14,6 @@ import {
   decodeResponse,
   decodeString,
   envelopeOf,
-  nullable,
   pageOf,
 } from '../utils/decode.util';
 import { moduleListParams, modulePlacementParams } from '../utils/http-params.util';
@@ -43,25 +42,31 @@ import type { Decoder } from '../utils/decode.util';
 /**
  * One decoder per response shape this transport reads, composed once at module scope.
  *
- * Two of them are `nullable`, and that mirrors the contract rather than being defensive: the
- * module-settings read and the single-definition read both publish a null payload for a target
- * the caller may address but the server may not resolve, and the methods that return them are
- * declared `| null` for the same reason.
+ * ⚠ NOT ONE OF THEM IS `nullable`, AND THAT MIRRORS THE CONTRACT RATHER THAN BEING OPTIMISTIC.
+ * Every one of these endpoints answers a successful read with a populated payload or refuses the
+ * read outright; "the target does not resolve" is a `404` problem document and never a `200`
+ * carrying nothing.
+ *
+ * MIGRATION: THE SETTINGS READ, THE PLACEMENT READ, THE PLACEMENT UPDATE AND THE SINGLE-DEFINITION
+ *   READ USED TO ADMIT A SUCCESSFUL `null`, which was a contract the server cannot produce. The
+ *   API translates every value-bearing outcome through one helper, and that helper answers
+ *   `NotFoundProblem()` — an RFC 7807 document with the documented `type`, `title`, `detail` and
+ *   `traceId` members — the moment the outcome's value is null, reserving `200` plus the shared
+ *   envelope for a value that exists. Declaring the absent case as a successful null therefore
+ *   modelled a response no deployment of this API can send, and it did real harm in two
+ *   directions: a store committed the null as a successful empty state, so a screen showed a blank
+ *   record where the operator should have been told the module was gone; and the genuine 404 path
+ *   — the one that actually occurs — was left looking like the unusual case. Refusing an
+ *   undeclared `null` at the boundary is what turns a drifted body into one located failure
+ *   instead of an apparently successful nothing.
  */
 const MODULE_PAGE: Decoder<ModuleListPage> = pageOf(decodeModuleListItem);
 const MODULE_DETAIL_RESPONSE: Decoder<ModuleDetail> = envelopeOf(decodeModuleDetail);
-const NULLABLE_MODULE_DETAIL_RESPONSE: Decoder<ModuleDetail | null> = envelopeOf(
-  nullable(decodeModuleDetail),
-);
-const MODULE_SETTINGS_RESPONSE: Decoder<ModuleSettingsBag | null> = envelopeOf(
-  nullable(decodeModuleSettingsBag),
-);
+const MODULE_SETTINGS_RESPONSE: Decoder<ModuleSettingsBag> = envelopeOf(decodeModuleSettingsBag);
 const MODULE_DEFINITION_LIST_RESPONSE: Decoder<readonly ModuleDefinition[]> = envelopeOf(
   arrayOf(decodeModuleDefinition),
 );
-const NULLABLE_MODULE_DEFINITION_RESPONSE: Decoder<ModuleDefinition | null> = envelopeOf(
-  nullable(decodeModuleDefinition),
-);
+const MODULE_DEFINITION_RESPONSE: Decoder<ModuleDefinition> = envelopeOf(decodeModuleDefinition);
 
 /**
  * Typed transport for the module placement and module definition endpoints.
@@ -242,12 +247,13 @@ export class ModuleService {
    * @param moduleId The module to read. Forwarded exactly as supplied; zero is a real
    * module.
    * @param placement The placement to address, or omitted to address the module.
-   * @returns The placement, or `null` when the response carried none.
+   * @returns The placement. A module the caller cannot resolve arrives as a `404` failure,
+   * never as a successful absence — see the note on the decoders at the head of this file.
    */
   getModule(
     moduleId: number,
     placement?: ModulePlacementSelector | null,
-  ): Observable<ModuleDetail | null> {
+  ): Observable<ModuleDetail> {
     const params: HttpParams = modulePlacementParams(placement);
 
     return this.http
@@ -255,7 +261,7 @@ export class ModuleService {
         params,
         context: presentedInContext(),
       })
-      .pipe(map((body) => decodeResponse(NULLABLE_MODULE_DETAIL_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(MODULE_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -302,17 +308,15 @@ export class ModuleService {
    *
    * @param moduleId The module to replace. Forwarded exactly as supplied.
    * @param request The complete replacement state, transmitted whole.
-   * @returns The updated placement, or `null` when the response carried none.
+   * @returns The updated placement. A `200` always carries the echo; a module that no longer
+   * resolves is a `404` failure rather than a successful empty answer.
    */
-  updateModule(
-    moduleId: number,
-    request: UpdateModuleRequest,
-  ): Observable<ModuleDetail | null> {
+  updateModule(moduleId: number, request: UpdateModuleRequest): Observable<ModuleDetail> {
     return this.http
       .put<unknown>(API_ENDPOINTS.modules.byId(moduleId), request, {
         context: presentedInContext(),
       })
-      .pipe(map((body) => decodeResponse(NULLABLE_MODULE_DETAIL_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(MODULE_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -366,12 +370,13 @@ export class ModuleService {
    * @param moduleId The module whose settings to read. Forwarded exactly as supplied.
    * @param placement The placement whose own settings to include, or omitted for the
    * module-scoped settings alone.
-   * @returns Both settings maps, or `null` when the response carried none.
+   * @returns Both settings maps. A module the caller cannot resolve arrives as a `404`
+   * failure; an empty map is a real answer and is not the same fact.
    */
   getModuleSettings(
     moduleId: number,
     placement?: ModulePlacementSelector | null,
-  ): Observable<ModuleSettingsBag | null> {
+  ): Observable<ModuleSettingsBag> {
     const params: HttpParams = modulePlacementParams(placement);
 
     return this.http
@@ -590,14 +595,15 @@ export class ModuleService {
    * the model.
    *
    * @param moduleDefinitionId The definition to read. Forwarded exactly as supplied.
-   * @returns The definition, or `null` when the response carried none.
+   * @returns The definition. A definition the caller cannot resolve arrives as the `404`
+   * this endpoint documents, never as a successful absence.
    */
-  getModuleDefinition(moduleDefinitionId: number): Observable<ModuleDefinition | null> {
+  getModuleDefinition(moduleDefinitionId: number): Observable<ModuleDefinition> {
     return this.http
       .get<unknown>(API_ENDPOINTS.moduleDefinitions.byId(moduleDefinitionId), {
         context: presentedInContext(),
       })
-      .pipe(map((body) => decodeResponse(NULLABLE_MODULE_DEFINITION_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(MODULE_DEFINITION_RESPONSE, body)));
   }
 
   /**

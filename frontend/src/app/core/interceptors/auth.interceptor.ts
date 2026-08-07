@@ -9,8 +9,14 @@ import { catchError, switchMap, throwError } from 'rxjs';
 import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 
 import { isAnonymousAuthEndpoint, isApiRequest } from '../config/api-endpoints';
-import { AuthService } from '../services/auth.service';
 import { TokenStorageService } from '../services/token-storage.service';
+// MIGRATION: the renewal used to be reached through `core/services/auth.service`, which owned the
+//   in-flight slot, the two-request composition and custody of the stored session. That service is
+//   now a typed transport closed at four operations and holds nothing, so the renewal is reached
+//   through the session's owner instead. Nothing else about this file's relationship to it changes:
+//   it asks for a renewal and is told the outcome, and every recovery decision below is still made
+//   here against the custodian.
+import { AuthStore } from '../state/auth.store';
 import { SessionTeardownService } from '../state/session-teardown.service';
 
 /**
@@ -183,7 +189,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   // This is also what keeps the file free of module-level mutable state and therefore
   // safe under parallel test cases, each of which builds its own root injector.
   const tokenStorage = inject(TokenStorageService);
-  const auth = inject(AuthService);
+  const authStore = inject(AuthStore);
   const router = inject(Router);
   const sessionTeardown = inject(SessionTeardownService);
 
@@ -235,10 +241,10 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
    */
   const requestGeneration = tokenStorage.generation();
 
-  // `catchError` is attached to the FIRST attempt only. The retry below is returned
-  // directly, with no handler of its own, so a 401 on the retry propagates untouched
-  // and cannot re-enter this recovery path. That structure — not a counter and not a
-  // marker header — is what bounds recovery to exactly one retry.
+  // The RECOVERY handler is attached to the FIRST attempt only. The retry below carries a
+  // handler of its own, but a CLOSED one: it neither renews nor re-sends, so it cannot
+  // re-enter this recovery path. That structure — not a counter and not a marker header — is
+  // what bounds recovery to exactly one retry.
   return next(withBearerToken(req, token)).pipe(
     catchError((error: unknown) => {
       // Only an expired or rejected token is recoverable. A 403 means the server knows
@@ -283,13 +289,22 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
         return throwError(() => error);
       }
 
-      // The single-flight guarantee lives in the authentication service, which
-      // coalesces concurrent callers onto one request, stores the rotated pair once,
-      // and discards the session if the server refuses it. A second in-flight slot
-      // here would be a second source of truth for the same fact: signing out clears
-      // the service's slot but could not clear a private one, so a 401 racing a
-      // sign-out would replay a cached renewal and resurrect the session the operator
-      // had just ended. One owner, deliberately.
+      // The single-flight guarantee lives in the SESSION'S OWNER, which coalesces concurrent
+      // callers onto one request and commits the rotated pair once, conditioned on the session
+      // not having moved on. A second in-flight slot here would be a second source of truth for
+      // the same fact: signing out abandons the owner's slot AND advances its session
+      // generation, whereas a private slot here could be advanced by neither — so a 401 racing
+      // a sign-out would replay a cached renewal and resurrect the session the operator had just
+      // ended. One owner, deliberately, and this file holds no state of any kind.
+      //
+      // ⚠ THE PRIMITIVE IS CALLED, NOT THE OWNER'S DELIBERATE RENEWAL COMMAND, and the
+      // distinction is load-bearing rather than incidental. That command discards the session
+      // and records the failure on every refusal, which is right for a caller that ASKED to
+      // renew and is about to be sent to sign in. It is wrong here in both directions: the three
+      // branches below make the terminal decision under conditions this file owns — an older
+      // renewal's refusal must leave a NEWER session completely alone — and a failure recorded
+      // for a renewal the operator never asked for would put a stale message in front of
+      // somebody whose own next action succeeded.
       // ⚠ THE ORDER OF THESE TWO OPERATORS IS THE WHOLE POINT, AND REVERSING IT IS A DEFECT.
       // `catchError` is attached to the RENEWAL, BEFORE the `switchMap` that retries - so it
       // sees a renewal failure and nothing else.
@@ -304,7 +319,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
       //   or a server fault, and the real status never reached the error interceptor that words it.
       //   Catching before the retry restores both: only a genuine renewal failure is terminal, and a
       //   retry failure propagates exactly as the server sent it.
-      return auth.refresh().pipe(
+      return authStore.renewSession().pipe(
         catchError((renewalError: unknown) => {
           // Terminal. The renewal credential the server refused cannot be retried, so the
           // session is over and the operator is routed to sign in again.
@@ -320,7 +335,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
            * ⚠ TEARDOWN IS CONDITIONED ON NO SESSION BEING HELD, which is the one predicate that
            * reads correctly for every way this branch is reachable:
            *
-           *   - THE RENEWAL WAS REFUSED for this session. The authentication service has already
+           *   - THE RENEWAL WAS REFUSED for this session. The session's owner has already
            *     discarded it, so nothing is held and the operator is asked to sign in.
            *   - THE LINEAGE MOVED ON BECAUSE OF A SIGN-OUT. Nothing is held, and navigating to
            *     sign-in is what the operator asked for anyway.
@@ -338,10 +353,11 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
         }),
         // Exactly one retry, and only after a renewal that actually succeeded. The request is
         // re-cloned from the ORIGINAL so the correlation identifier stamped by the outer
-        // interceptor is carried onto the second attempt. The retry is returned BARE: it carries
-        // no handler of its own, so a second refusal propagates untouched with the status the
-        // server actually sent, and cannot re-enter this recovery path. That structure - not a
-        // counter and not a marker header - is what bounds recovery to exactly one retry.
+        // interceptor is carried onto the second attempt. Every refusal of that retry propagates
+        // with the status the server actually sent, and the handler attached to it is CLOSED - it
+        // issues no request and asks for no renewal - so the retry cannot re-enter this recovery
+        // path. That structure, not a counter and not a marker header, is what bounds recovery to
+        // exactly one retry.
         switchMap((session) => {
           /*
            * ⚠ CHECK TWO: IS THE RENEWED SESSION *ACTUALLY THE ONE BEING HELD*?
@@ -352,7 +368,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
            *
            * The test is TOKEN IDENTITY rather than epoch arithmetic, deliberately. Counting
            * transitions here would mean predicting how many the renewal itself caused, which
-           * hard-codes an internal detail of the authentication service into this file. Comparing
+           * hard-codes an internal detail of the session's owner into this file. Comparing
            * the held token against the token this renewal produced needs no prediction and is
            * exhaustive over the ways the lineage can move on: the renewal's store was SUPPRESSED
            * because a newer transition had advanced the epoch past the one it captured, or the
@@ -365,7 +381,71 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
             return throwError(() => error);
           }
 
-          return next(withBearerToken(req, session.accessToken));
+          return next(withBearerToken(req, session.accessToken)).pipe(
+            catchError((retryError: unknown) => {
+              /*
+               * ⚠ CHECK THREE: THE RETRY WAS REFUSED *WITH A FRESHLY RENEWED CREDENTIAL*.
+               *
+               * MIGRATION: the retry used to be returned with no handler at all, and the gap that
+               *   left was the defect this closes. A 401 answering a request that carried a token
+               *   issued MOMENTS earlier propagated to the caller while the rotated session stayed
+               *   fully installed — so the custodian went on reporting an authenticated session,
+               *   the shell went on rendering the account, the route gates went on admitting
+               *   navigations, and every subsequent request presented the same rejected credential
+               *   and was refused in turn. The operator was left on an administration screen where
+               *   nothing worked and nothing explained why, with no path back to signing in except
+               *   reloading the application by hand. Renewal is the only recovery this file has, and
+               *   it has already been spent: a credential the server refuses immediately after
+               *   issuing it cannot be repaired by asking for another one.
+               *
+               * ONLY A 401 IS TERMINAL, and that distinction is the whole reason this handler is
+               * status-specific rather than a catch-all. A 403 means the server knows exactly who
+               * the caller is and is refusing the OPERATION; a 404, a 409, a 422, a 429, a 500 or a
+               * dropped connection say nothing about the credential at all. Ending the session for
+               * any of those would destroy a perfectly valid session because one request failed for
+               * an unrelated reason — which is the same defect, in the same place, that moving the
+               * renewal handler ahead of this retry already fixed once. Every non-401 refusal is
+               * therefore re-thrown exactly as the server sent it.
+               */
+              if (!isUnauthorized(retryError)) {
+                return throwError(() => retryError);
+              }
+
+              /*
+               * ⚠ AND CONDITIONED, EXACTLY AS CHECK TWO WAS, ON TOKEN IDENTITY.
+               *
+               * The retry is a further round trip, so a sign-out or an account switch can land
+               * while it is in the air. The predicate is deliberately the same one asked above,
+               * for the same reason: it is exhaustive over the ways the lineage can move on, and
+               * it needs no prediction of how many transitions anything else caused.
+               *
+               *   - THE SESSION IS STILL THE ONE THAT WAS RETRIED. Terminal: the credential this
+               *     request presented is the credential being held, and the server has just
+               *     refused it. The operator is asked to sign in again.
+               *   - THE OPERATOR SIGNED OUT MEANWHILE. Nothing is held, and the sign-out path has
+               *     already torn the session down and navigated. Tearing down again would be
+               *     harmless but the navigation could contend with the one already under way, and
+               *     the operator is going where they asked to go regardless.
+               *   - A NEWER SIGN-IN REPLACED IT. A healthy session IS held and is left completely
+               *     alone. Ending it here would sign out an operator whose own sign-in had just
+               *     succeeded, on the strength of a refusal belonging to a session that is over.
+               */
+              if (tokenStorage.accessToken() !== session.accessToken) {
+                return throwError(() => retryError);
+              }
+
+              endSession(tokenStorage, router, sessionTeardown);
+
+              /*
+               * THE RETRY'S OWN 401 is re-thrown, not the original. Both are 401s, but this one is
+               * the server's answer to the request that actually carried the renewed credential,
+               * so its problem document is the one that describes what happened. Re-thrown rather
+               * than swallowed because the caller asked for something and did not get it, and the
+               * error interceptor downstream is what words that for a screen.
+               */
+              return throwError(() => retryError);
+            }),
+          );
         }),
       );
     }),

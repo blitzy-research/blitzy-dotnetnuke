@@ -338,8 +338,9 @@ describe('SessionTeardownService', () => {
   it('issues no request of its own', () => {
     teardown.purge();
 
-    // Any request at all would mean the purge had an opinion about the network, which belongs
-    // to `core/services/auth.service.ts`. `match` is used rather than `expectNone` so the
+    // Any request at all would mean the purge had an opinion about the network. Revocation
+    // belongs to the auth store's sign-out command, which issues it through
+    // `core/services/auth.service.ts`. `match` is used rather than `expectNone` so the
     // failure message names what was sent.
     expect(httpMock.match(() => true).map((request) => request.request.url))
       .withContext('purging local state contacts nobody')

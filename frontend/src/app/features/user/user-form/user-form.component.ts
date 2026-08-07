@@ -1572,9 +1572,18 @@ export class UserFormComponent {
   /**
    * Whether the requested account could not be found.
    *
-   * Distinct from a refusal: the read succeeded and reported nothing. The account
-   * contract's reader returns null for that case rather than failing, so there is no
-   * problem document to show and the measured `NoUser` wording is announced instead.
+   * MIGRATION: THIS IS THE READ'S NOT-FOUND REFUSAL, NOT A SUCCESSFUL EMPTY ANSWER. The
+   * projection used to read "the read succeeded and reported nothing", because the account
+   * transport was declared as admitting a successful null. It does not, and the server cannot
+   * send one: every value-bearing outcome is translated through one helper on the API, and that
+   * helper answers a not-found problem document the moment the value is absent. So the state
+   * this projection names — the one the legacy worded as `NoUser` — arrives as a `404` on the
+   * READ, and is recognised as such here.
+   *
+   * Keyed on the read operation alone, deliberately. A `404` from a write means the account went
+   * away underneath an edit, which is a refusal of that edit rather than a screen with no record
+   * to show: the form stays on screen, disabled, carrying the same measured wording through
+   * {@link UserFormComponent.refusalMessage}.
    */
   protected readonly userMissing: Signal<boolean> = computed<boolean>(() => {
     if (this.isCreateMode()) {
@@ -1585,11 +1594,13 @@ export class UserFormComponent {
       return false;
     }
 
-    if (this.store.failure() !== null) {
+    const failure = this.store.failure();
+
+    if (failure === null) {
       return false;
     }
 
-    return this.selectedUser() === null;
+    return failure.operation === 'loadUser' && failure.summary.status === NOT_FOUND_STATUS;
   });
 
   /** Whether the submit action should be offered as available. */
@@ -1807,16 +1818,13 @@ export class UserFormComponent {
       });
     });
 
-    // Announces the measured `NoUser` wording when the read reported nothing.
-    effect(() => {
-      const missing: boolean = this.userMissing();
-
-      untracked(() => {
-        if (missing) {
-          this.notifications.warning(NO_USER_MESSAGE);
-        }
-      });
-    });
+    // MIGRATION: THE SECOND ANNOUNCEMENT OF THE MISSING ACCOUNT IS GONE, and its removal is
+    //   part of the same correction. It existed because the read was believed able to succeed
+    //   carrying nothing, which produced no failure record and therefore nothing for the
+    //   refusal announcer above to say. A missing account is now a `404`, so that announcer
+    //   already words it — through the measured vocabulary and at the warning severity the
+    //   legacy guard sites used — and a second effect here would announce the same sentence
+    //   twice into a shared live region.
   }
 
   // -------------------------------------------------------------------------

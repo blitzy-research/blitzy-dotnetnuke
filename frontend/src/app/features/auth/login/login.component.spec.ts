@@ -95,12 +95,17 @@ const LOGIN_URL = '/api/v1/auth/login';
  * `GET /api/v1/auth/me`. The identity read that COMPLETES a sign-in.
  *
  * ⚠ A COMPLETED SIGN-IN IS TWO REQUESTS, NOT ONE, and every case below has to answer both or
- * the sign-in never completes at all. `auth.service.ts:L311-L323` posts the credentials,
- * maps the envelope to a session, and then `switchMap`s into this read carrying the freshly
- * issued token as an explicit bearer header - storing the session and emitting the identity
- * only once BOTH have answered. A fixture that flushed only the exchange would leave the
- * observable pending, and every consequence of success - the navigation, the withdrawn
+ * the sign-in never completes at all. `AuthStore.login` posts the credentials through the
+ * transport, maps the response to a session, and then `switchMap`s into this read carrying the
+ * freshly issued token as an explicit bearer header - storing the session and emitting the
+ * identity only once BOTH have answered. A fixture that flushed only the exchange would leave
+ * the observable pending, and every consequence of success - the navigation, the withdrawn
  * verification field, the lowered progress indicator - would appear not to happen.
+ *
+ * MIGRATION: the composition used to live on `auth.service.ts`, which performed the second read
+ *   for itself and stored the session. Composing a multi-step flow is not API communication, so
+ *   it moved to the session's owner; the two requests, their order and the hand-set header are
+ *   unchanged, which is why every fixture below is unchanged too.
  *
  * The token travels as an explicit header rather than through the bearer interceptor because
  * the custodian has not been written yet at that moment: the session is stored only after

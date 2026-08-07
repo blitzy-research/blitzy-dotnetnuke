@@ -209,17 +209,25 @@ export class AppComponent {
    * and complete, so exactly one of the two handlers below runs.
    *
    * ⚠ WHAT ACTUALLY REACHES THE ERROR HANDLER IS NOT A FAILED REQUEST, and stating that
-   * precisely matters more than the handler itself. `core/services/auth.service.ts:L455-L456`
-   * absorbs the revocation's own failure with `catchError(() => of(undefined))` — the
-   * server answers 204 whatever it finds and a network fault is treated the same way —
-   * so a refused or unreachable endpoint arrives here as a COMPLETION, and the navigation
-   * below happens through the `complete` handler. The `error` handler covers the remaining
-   * case: a throw from inside the teardown itself, since both the store's discard and the
+   * precisely matters more than the handler itself. {@link AuthStore.logout} absorbs the
+   * revocation's own failure — the server answers 204 whatever it finds, a network fault is
+   * treated the same way, and local sign-out has already happened unconditionally — so a
+   * refused or unreachable endpoint arrives here as a COMPLETION, and the navigation below
+   * happens through the `complete` handler. The `error` handler covers the remaining case: a
+   * throw from inside the teardown itself, since both the store's discard and the
    * coordinator's slice clearing run in a `finalize` whose exception would propagate to
    * this subscriber. It is present because the coordinator PUBLISHES an error exit — its
    * own documentation names "a failed one" as one of three — and coding to a dependency's
    * published contract rather than to its current implementation is what keeps this
-   * component correct if that `catchError` is ever removed.
+   * component correct if that absorption is ever removed.
+   *
+   * MIGRATION: the absorption used to sit one layer lower, on
+   *   `core/services/auth.service.ts`, which discarded the failure as well as absorbing it and
+   *   so reported a clean sign-out while the renewal credential was still live on the server.
+   *   The transport now propagates the refusal and the store absorbs it DELIBERATELY, recording
+   *   it in {@link AuthStore.revocationOutstanding} and announcing it. Nothing about this
+   *   component's two exits changes: a refused revocation still arrives as a completion, which
+   *   is what a person who asked to sign out is owed.
    *
    * THE ERROR IS ABSORBED RATHER THAN SURFACED, and this is the one place in the
    * application where that is the right call. The session has already been discarded by

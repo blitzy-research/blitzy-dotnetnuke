@@ -565,6 +565,50 @@ describe('ModuleService', () => {
     expect(service).toBeInstanceOf(ModuleService);
   });
 
+  /**
+   * Asserts that a `200` carrying a null payload is REFUSED at the boundary.
+   *
+   * ⚠ THE COUNTERPART OF {@link expectResourceNotFound}, AND THE TWO TOGETHER ARE THE WHOLE
+   * CONTRACT. Absence arrives as a status; a success carries a value. There is no third
+   * answer, so a body claiming one is drift and is reported as drift.
+   *
+   * MIGRATION: each of the four single-resource reads used to be specified as TOLERATING this
+   *   body, on the reasoning that an intermediary might send one. Tolerating it is what made
+   *   the defect invisible: the value reached the store as a successful emission, the store
+   *   committed it, and a screen presented a blank record with no failure anywhere to explain
+   *   it. Refusing names the member instead, at the moment the body arrives.
+   *
+   * @param source The call under test, already subscribed through {@link record}.
+   * @param url The url the call addresses.
+   * @param path The member path the violation must name.
+   */
+  function expectNullPayloadRefused(
+    source: Observable<unknown>,
+    url: string,
+    path: string,
+  ): void {
+    const values: unknown[] = [];
+    const failures: unknown[] = [];
+
+    source.subscribe({
+      next: (value: unknown) => values.push(value),
+      error: (failure: unknown) => failures.push(failure),
+    });
+
+    httpMock.expectOne(url).flush({ data: null, meta: null });
+
+    expect(values).withContext('a null payload is not a successful answer').toEqual([]);
+    expect(failures.length).toBe(1);
+
+    const failure: unknown = failures[0];
+    expect(isContractViolation(failure)).toBeTrue();
+
+    if (isContractViolation(failure)) {
+      expect(failure.path).toBe(path);
+      expect(failure.received).withContext('a type name, never the value').toBe('null');
+    }
+  }
+
   // =========================================================================
   // PROOF A - the import route carries NO identifier, and the target travels in
   // the body. Written first because it is one of the two highest-value assertions
@@ -1327,19 +1371,13 @@ describe('ModuleService', () => {
       expectResourceNotFound(recorded);
     });
 
-    it('still tolerates a null payload from a non-conforming intermediary', () => {
-      // DEFENCE IN DEPTH, AND LABELLED AS SUCH. The method's own return type admits null
-      // because a proxy or gateway between the browser and the API can return a document
-      // this application never produced, and a client that dereferenced it blindly would
-      // fail with a type error rather than a diagnosable one. This is NOT the endpoint's
-      // contract - the case above is - and no store or screen specification may treat it as
-      // the normal path.
-      const recorded = record(service.getModule(0));
-
-      httpMock.expectOne('/api/v1/modules/0').flush(envelope(null));
-
-      expect(recorded.values.length).toBe(1);
-      expect(recorded.values[0]).toBeNull();
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      // The method's return type does NOT admit null, because the endpoint cannot answer that
+      // way - the case above is its contract. A proxy, a gateway or a partially rolled-out
+      // server can still send one, and the answer to that is a located refusal rather than a
+      // successful blank: dereferencing it would fail somewhere else entirely, and committing
+      // it would present an empty record as a successful read.
+      expectNullPayloadRefused(service.getModule(0), '/api/v1/modules/0', 'response.data');
     });
 
     it('reads a portal identity of MINUS ONE and of ZERO as the real tenants they are', () => {
@@ -1608,17 +1646,15 @@ describe('ModuleService', () => {
       expectResourceNotFound(recorded);
     });
 
-    it('still tolerates a null payload from a non-conforming intermediary', () => {
-      // Defence in depth, exactly as on the read path and for the same reason. Labelled so
-      // it is not mistaken for the endpoint's contract.
-      const recorded = record(service.updateModule(12, UPDATE_REQUEST));
-
-      httpMock
-        .expectOne('/api/v1/modules/12')
-        .flush({ data: null, meta: null } satisfies ApiResponse<ModuleDetail | null>);
-
-      expect(recorded.values.length).toBe(1);
-      expect(recorded.values[0]).toBeNull();
+    it('refuses a null echo from a non-conforming intermediary', () => {
+      // The echo is refused for a sharper reason than on the read path: a null committed here
+      // would blank the record the operator had just saved, and it would do so while reporting
+      // the save as successful.
+      expectNullPayloadRefused(
+        service.updateModule(12, UPDATE_REQUEST),
+        '/api/v1/modules/12',
+        'response.data',
+      );
     });
 
     it('propagates a 403 on the all-pages rule UNCHANGED, without pre-empting it', () => {
@@ -1800,16 +1836,15 @@ describe('ModuleService', () => {
       expectResourceNotFound(recorded);
     });
 
-    it('still tolerates a null payload from a non-conforming intermediary', () => {
-      // Defence in depth. Note the contrast with the case above it: an EMPTY settings bag is
-      // a legitimate 200 and is asserted separately, whereas a null payload is not something
-      // this API emits at all.
-      const recorded = record(service.getModuleSettings(0));
-
-      httpMock.expectOne('/api/v1/modules/0/settings').flush(envelope(null));
-
-      expect(recorded.values.length).toBe(1);
-      expect(recorded.values[0]).toBeNull();
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      // Note the contrast with the two cases above: an EMPTY settings bag is a legitimate 200
+      // and is asserted separately, a missing module is a 404, and a null payload is neither -
+      // so it is refused rather than presented as a module with no settings.
+      expectNullPayloadRefused(
+        service.getModuleSettings(0),
+        '/api/v1/modules/0/settings',
+        'response.data',
+      );
     });
 
     it('sends no selector when no placement is named', () => {
@@ -2024,16 +2059,12 @@ describe('ModuleService', () => {
       expectResourceNotFound(recorded);
     });
 
-    it('still tolerates a null definition from a non-conforming intermediary', () => {
-      // Defence in depth, labelled so it is not mistaken for the endpoint's contract.
-      const recorded = record(service.getModuleDefinition(4));
-
-      httpMock
-        .expectOne('/api/v1/module-definitions/4')
-        .flush({ data: null, meta: null } satisfies ApiResponse<ModuleDefinition | null>);
-
-      expect(recorded.values.length).toBe(1);
-      expect(recorded.values[0]).toBeNull();
+    it('refuses a null definition from a non-conforming intermediary', () => {
+      expectNullPayloadRefused(
+        service.getModuleDefinition(4),
+        '/api/v1/module-definitions/4',
+        'response.data',
+      );
     });
 
     it('propagates a not-found refusal untranslated', () => {
@@ -2459,16 +2490,17 @@ describe('ModuleService', () => {
       expect(values[0]?.moduleSettings).toEqual({ announcementLength: '', cacheTime: '0' });
     });
 
-    it('admits a null settings payload, because the contract publishes it as nullable', () => {
-      const values: (ModuleSettingsBag | null)[] = [];
-
-      service.getModuleSettings(0).subscribe({
-        next: (bag: ModuleSettingsBag | null) => values.push(bag),
-      });
-
-      httpMock.expectOne('/api/v1/modules/0/settings').flush({ data: null, meta: null });
-
-      expect(values).toEqual([null]);
+    it('refuses a null settings payload, because the contract publishes none', () => {
+      // Both settings maps are present on every successful read, and a module that cannot be
+      // resolved is a 404. A null is neither answer, and admitting it would make "this module
+      // has no settings" indistinguishable from "there is no such module" - the very
+      // distinction the empty-map case above exists to preserve.
+      expectViolationAt(
+        service.getModuleSettings(0),
+        '/api/v1/modules/0/settings',
+        { data: null, meta: null },
+        'response.data',
+      );
     });
 
     it('refuses a definition whose friendly name is absent', () => {

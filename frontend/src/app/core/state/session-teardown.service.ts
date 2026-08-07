@@ -55,8 +55,9 @@
  * - NO TOKEN HANDLING. `core/services/token-storage.service.ts` is the sole custodian and the auth
  *   store already clears it. A second clear here would be a second opinion about who owns the token.
  * - NO AUTH-STORE RESET. That would be the cycle. The auth store calls this, not the reverse.
- * - NO HTTP. Revocation is `core/services/auth.service.ts`'s job. This purges local state only, which
- *   is what lets it run on paths where the network has already failed.
+ * - NO HTTP. Revocation belongs to the auth store's sign-out command, which issues it through
+ *   `core/services/auth.service.ts`. This purges local state only, which is what lets it run on
+ *   paths where the network has already failed.
  */
 import { Injectable, inject } from '@angular/core';
 

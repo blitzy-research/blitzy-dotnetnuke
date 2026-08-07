@@ -203,12 +203,17 @@ export const authGuard: CanActivateFn = (_route, state) => {
    * is resolved rather than punished: one renewal is attempted, and the navigation is
    * admitted if and only if it succeeds.
    *
-   * The renewal is BOUNDED AND SINGLE-FLIGHT because the authentication service owns
-   * both properties — it coalesces concurrent callers onto one request, stores the
-   * rotated pair exactly once, and discards the session when the server refuses. This
-   * gate therefore issues at most one renewal per navigation and never retries: a
-   * refusal is terminal here, exactly as it is in the transport layer. Nothing about
-   * renewal is re-implemented in this file.
+   * The renewal is BOUNDED AND SINGLE-FLIGHT because the SESSION'S OWNER owns both
+   * properties — it coalesces concurrent callers onto one request, stores the rotated
+   * pair exactly once, and discards the session when the server refuses. This gate
+   * therefore issues at most one renewal per navigation and never retries: a refusal is
+   * terminal here, exactly as it is on the refused-request path. Nothing about renewal is
+   * re-implemented in this file.
+   *
+   * MIGRATION: those properties used to belong to `core/services/auth.service.ts`. They
+   *   moved to `core/state/auth.store.ts` when that service was closed to a typed
+   *   transport, and this gate reaches them through the same store it already injects, so
+   *   nothing in this file changed with them.
    */
   const hasSession = authStore.isAuthenticated();
 

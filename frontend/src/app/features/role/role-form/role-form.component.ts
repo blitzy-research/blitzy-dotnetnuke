@@ -73,6 +73,7 @@ import type {
   CreateRoleRequest,
   Role,
   RoleGroup,
+  StoredBillingFrequency,
   UpdateRoleRequest,
 } from '../../../core/models/role.model';
 import { NotificationService } from '../../../core/services/notification.service';
@@ -660,22 +661,35 @@ function formatPeriod(value: number | null | undefined): string {
 }
 
 /**
- * Narrows an incoming frequency to the closed vocabulary, falling back to `'N'`.
+ * Narrows an incoming STORED frequency code to the closed write vocabulary, falling back to `'N'`.
  *
  * The legacy did this by lookup: `cboBillingFrequency.Items.FindByValue(...)` guarded by
  * `If Not … Is Nothing` (`EditRoles.ascx.vb:L149-L152,L157-L160`), so a value with no matching
  * option left the select on its `'N'` default. That behaviour is reproduced exactly.
  *
- * @param value The frequency as the API reported it, possibly absent.
+ * MIGRATION: THE PARAMETER IS THE READ VOCABULARY AND THE RETURN IS THE WRITE VOCABULARY, and
+ *   this function is the crossing point between them. The API carries a stored frequency
+ *   character through losslessly — shipped DotNetNuke data contains two roles whose characters
+ *   fall outside the published six — while a request may only carry one of the six. So a role
+ *   holding an unsupported code opens in this form with its frequency select on `'N'`, exactly as
+ *   the legacy lookup left it, and the operator's own choice is what is sent back. Nothing here
+ *   invents a meaning for an unsupported code, and nothing sends one.
+ *
+ * @param value The frequency as the API reported it, possibly absent, possibly a code outside the
+ * supported six.
  * @returns A code that certainly exists among the options.
  */
-function coerceFrequency(value: BillingFrequency | null | undefined): BillingFrequency {
+function coerceFrequency(value: StoredBillingFrequency | null | undefined): BillingFrequency {
   if (value === null || value === undefined) {
     return NO_FREQUENCY;
   }
-  return BILLING_FREQUENCY_OPTIONS.some((option) => option.value === value)
-    ? value
-    : NO_FREQUENCY;
+
+  // The code is taken FROM THE OPTION LIST rather than passed through, which is what makes the
+  // crossing from the read vocabulary to the write vocabulary a real narrowing instead of an
+  // assertion — and it is also the literal shape of the legacy `Items.FindByValue(...)` lookup.
+  const matched = BILLING_FREQUENCY_OPTIONS.find((option) => option.value === value);
+
+  return matched === undefined ? NO_FREQUENCY : matched.value;
 }
 
 /**

@@ -679,6 +679,52 @@ describe('UserService', () => {
       .toBeNull();
   };
 
+  /**
+   * Asserts that a `200` carrying a null payload is REFUSED at the boundary.
+   *
+   * ⚠ THE COUNTERPART OF THE `404` CASES BESIDE EVERY CALL SITE, AND THE TWO TOGETHER ARE THE
+   * WHOLE CONTRACT: absence arrives as a status, a success carries a value, and there is no
+   * third answer. A body claiming one is drift and is reported as drift, naming the member.
+   *
+   * MIGRATION: the four single-resource reads used to be specified as TOLERATING this body,
+   *   which is exactly what kept the defect out of sight — the null was emitted as a success,
+   *   the store committed it, and a screen showed a blank account, profile, policy or
+   *   declaration with nothing anywhere to explain it.
+   *
+   * The report is checked for personal data for the same reason the malformed-body cases are:
+   * this boundary carries names, addresses and telephone numbers.
+   *
+   * @param source The call under test.
+   * @param path The member path the violation must name.
+   * @param url The url the call addresses.
+   */
+  const expectNullPayloadRefused = (
+    source: Observable<unknown>,
+    url: string,
+    path: string,
+  ): void => {
+    const values: unknown[] = [];
+    const failures: unknown[] = [];
+
+    source.subscribe({
+      next: (value: unknown) => values.push(value),
+      error: (failure: unknown) => failures.push(failure),
+    });
+
+    httpMock.expectOne((request) => request.url === url).flush({ data: null, meta: null });
+
+    expect(values).withContext('a null payload is not a successful answer').toEqual([]);
+    expect(failures.length).toBe(1);
+
+    const failure: unknown = failures[0];
+    expect(isContractViolation(failure)).toBeTrue();
+
+    if (isContractViolation(failure)) {
+      expect(failure.path).toBe(path);
+      expect(failure.received).withContext('a type name, never the value').toBe('null');
+    }
+  };
+
   /** Asserts that no paging, ordering or free-text parameter was emitted. */
   const expectNoPagingParameters = (request: TestRequest): void => {
     for (const name of ['pageIndex', 'pageSize', 'sortBy', 'sortDir', 'query']) {
@@ -843,20 +889,13 @@ describe('UserService', () => {
       expect(observed.failures[0].error).toEqual(RESOURCE_NOT_FOUND);
     });
 
-    it('still tolerates a null payload from a non-conforming intermediary', () => {
-      // DEFENCE IN DEPTH, AND LABELLED AS SUCH. The method's own return type admits null
-      // because a proxy or gateway between the browser and the API can return a document this
-      // application never produced, and coercing it into an empty object here would push a
-      // run-time surprise into whatever read a member off it. This is NOT the endpoint's
-      // contract — the case above is — and no store or screen specification may treat it as
-      // the normal path.
-      const observed = observe(service.getById(4242));
-
-      const request = expectRequest('GET', `${USERS}/4242`);
-      request.flush({ data: null, meta: null } satisfies ApiResponse<UserDetail | null>);
-
-      expect(observed.values).toEqual([null]);
-      expect(observed.completions.length).toBe(1);
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      // The return type does NOT admit null, because the endpoint cannot answer that way — the
+      // case above is its contract. A proxy, a gateway or a partially rolled-out server can
+      // still send one, and the answer is a located refusal rather than a successful blank: an
+      // account record shown as empty is indistinguishable, to the operator, from an account
+      // with nothing in it.
+      expectNullPayloadRefused(service.getById(4242), `${USERS}/4242`, 'response.data');
     });
   });
 
@@ -1190,17 +1229,11 @@ describe('UserService', () => {
       expect(observed.failures[0].status).toBe(404);
     });
 
-    it('still tolerates a null payload from a non-conforming intermediary', () => {
-      // Defence in depth, exactly as on the account read and for the same reason.
-      const observed = observe(service.getMembershipSettings());
-
-      const request = expectRequest('GET', ACCOUNT_POLICY);
-      request.flush({
-        data: null,
-        meta: null,
-      } satisfies ApiResponse<MembershipSettings | null>);
-
-      expect(observed.values).toEqual([null]);
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      // Refused for the same reason as the account read, with one of its own: every screen that
+      // pages a listing reads its page size from this policy, so a null committed as a success
+      // would silently move the listing onto the fallback size with no failure to explain it.
+      expectNullPayloadRefused(service.getMembershipSettings(), ACCOUNT_POLICY, 'response.data');
     });
   });
 
@@ -1406,17 +1439,12 @@ describe('UserService', () => {
       expect(observed.failures[0].status).toBe(404);
     });
 
-    it('still tolerates a null payload from a non-conforming intermediary', () => {
-      // Defence in depth, labelled so it is not mistaken for the endpoint's contract.
-      const observed = observe(service.getProfileDefinition(9999));
-
-      const request = expectRequest('GET', `${PROFILE_DEFINITIONS}/9999`);
-      request.flush({
-        data: null,
-        meta: null,
-      } satisfies ApiResponse<ProfileDefinition | null>);
-
-      expect(observed.values).toEqual([null]);
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      expectNullPayloadRefused(
+        service.getProfileDefinition(9999),
+        `${PROFILE_DEFINITIONS}/9999`,
+        'response.data',
+      );
     });
   });
 
@@ -2337,14 +2365,16 @@ describe('UserService', () => {
       expect(values).toEqual([PROFILE_READ]);
     });
 
-    it('admits a null profile payload, because the contract publishes it as nullable', () => {
-      const values: unknown[] = [];
-
-      service.getProfile(1).subscribe({ next: (profile: unknown) => values.push(profile) });
-
-      httpMock.expectOne(`${USERS}/1/profile`).flush({ data: null, meta: null });
-
-      expect(values).toEqual([null]);
+    it('refuses a null profile payload, because the contract publishes none', () => {
+      // The profile read answers with the profile or refuses with a not-found problem document.
+      // A null is neither, and committing one would present an account as having no profile at
+      // all — which is a different fact from a profile whose values are empty, asserted above.
+      expectViolationAt(
+        service.getProfile(1),
+        `${USERS}/1/profile`,
+        { data: null, meta: null },
+        'response.data',
+      );
     });
 
     it('refuses a declaration catalogue that is not an array', () => {

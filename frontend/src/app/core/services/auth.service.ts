@@ -1,60 +1,76 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Injectable, Signal, inject, signal } from '@angular/core';
-import {
-  Observable,
-  catchError,
-  finalize,
-  map,
-  of,
-  shareReplay,
-  switchMap,
-  tap,
-  throwError,
-} from 'rxjs';
+import { Injectable, inject } from '@angular/core';
+import { Observable, map } from 'rxjs';
 
 import { AUTH_ENDPOINTS } from '../config/api-endpoints';
 import { type LoginPortalSelector, loginParams } from '../utils/http-params.util';
 import {
-  AuthSession,
   CurrentUser,
   LoginRequest,
   LoginResponse,
   RefreshTokenRequest,
-  sessionFromLoginResponse,
+  decodeCurrentUser,
+  decodeLoginResponse,
 } from '../models/auth.model';
-import { ApiResponse } from '../models/paged-result.model';
-import { NotificationService } from './notification.service';
-import { TokenStorageService } from './token-storage.service';
+import { RESPONSE_ROOT, envelopeOf } from '../utils/decode.util';
+
+import type { Decoder } from '../utils/decode.util';
 
 const AUTHORIZATION_HEADER = 'Authorization';
 
 /**
- * Raised when a sign-out could not withdraw its renewal credential on the server.
+ * The two response contracts this transport reads, composed once at module scope.
  *
- * ⚠ DELIBERATELY FREE OF DETAIL. It carries no status code, none of the server's own wording
- * and nothing derived from the credential, because this is a failure report about a credential
- * operation and the person reading it can act on the ADVICE without any of that. What it must
- * do is not lie: the previous behaviour reported a clean sign-out, and the renewal credential
- * was still live.
+ * ⚠ THE DECODERS ARE THE POINT OF THIS FILE, NOT AN ORNAMENT ON IT. `HttpClient` accepts a type
+ * argument and hands back a value asserted to have that shape WITHOUT INSPECTING IT, so
+ * `post<ApiResponse<LoginResponse>>(...)` is a promise the compiler makes on the server's behalf
+ * and cannot keep. On this boundary the unchecked value becomes a bearer credential, a renewal
+ * credential, an expiry instant and an authority list.
+ *
+ * MIGRATION: THESE DECODERS EXISTED AND HAD NO CONSUMER. `auth.model.ts` declared
+ *   `decodeLoginResponse` and `decodeCurrentUser` — the strictest decoders in the workspace,
+ *   written precisely for this boundary — while every method here read `envelope.data` off a
+ *   generic and trusted it. So the intended validation boundary was bypassed for exactly the
+ *   payloads that matter most: a drifted body reached the session store, the shell header and
+ *   the permission list unchecked, `roles` arriving as null would have faulted the first
+ *   `.includes` call somewhere unrelated, and an unparseable expiry would have compared false
+ *   against every clock and made a lapsed session look current. Each call below now requests
+ *   `unknown` and decodes it, so a body this client never declared becomes one located failure
+ *   at the moment it arrives rather than a plausible value travelling onward.
  */
-export const REVOCATION_FAILED_MESSAGE =
-  'You have been signed out on this device, but the server could not confirm that the session ' +
-  'was ended. It will expire on its own; if you are concerned that it may be used, change your ' +
-  'password.';
+const LOGIN_RESPONSE: Decoder<LoginResponse> = envelopeOf(decodeLoginResponse);
+const CURRENT_USER_RESPONSE: Decoder<CurrentUser> = envelopeOf(decodeCurrentUser);
 
 /**
  * Owns the authentication surface: sign in, refresh, sign out, and describe the caller.
  *
- * Deliberately narrow. It performs API communication and updates the stored
- * session, and it holds no screen state, no form state and no business rules —
- * Angular services are restricted to API communication by the migration
- * discipline, and every authorisation decision belongs to the server.
+ * ⚠ A TRANSPORT, AND NOTHING ELSE. Four methods, four addresses, one request each, every
+ * response decoded before it is handed back. It holds NO state of any kind: no session, no
+ * credential, no in-flight slot, no flag and no signal. It reads nothing from storage and
+ * writes nothing to it, it announces nothing to a person, it makes no decision about an
+ * outcome, and it never subscribes to its own observables. Angular services are restricted
+ * to API communication by the migration discipline, and every authorisation decision belongs
+ * to the server.
  *
- * The single-flight refresh is the reason this is a service rather than a helper
- * inside the interceptor. Interceptors are functions, so per-instance state has
- * nowhere to live in them except module scope, and module scope leaks between test
- * cases and between application instances. Holding the in-flight refresh on an
- * injectable keeps it scoped to the injector that created it.
+ * MIGRATION: THIS SERVICE USED TO OWN THE SESSION LIFECYCLE, AND THAT WAS THE DEFECT. It
+ *   cleared and stored the session, captured and compared the session generation, coalesced
+ *   concurrent renewals behind a private in-flight slot, performed a second `auth/me` request
+ *   inside sign-in and renewal, published a revocation-outstanding signal, re-exposed three
+ *   projections of the token custodian, and emitted a notification to the operator. Every one
+ *   of those is a lifecycle concern, `core/state/auth.store.ts` already owned the lifecycle,
+ *   and two owners of one session is the shape from which the hardest defects on this boundary
+ *   come — the resurrection races and duplicate announcements documented in that file were all
+ *   consequences of the split. The whole of it now lives in the store; what is left here is
+ *   what a transport is.
+ *
+ * MIGRATION: SIGN-OUT NO LONGER REPORTS SUCCESS FOR A FAILED REVOCATION. It used to absorb the
+ *   server's refusal with `catchError(() => of(undefined))` and complete, so a `400`, a `429`,
+ *   a `503` or a dropped connection was indistinguishable from a withdrawn credential — while
+ *   the renewal credential stayed live on the server for its full lifetime, which is precisely
+ *   the outcome signing out exists to prevent. The refusal now propagates. Deciding that local
+ *   sign-out completes anyway is a POLICY, and it belongs to the lifecycle owner that can also
+ *   record the outstanding revocation and say so to the operator; a transport cannot make that
+ *   decision without lying about what the server did.
  *
  * ---------------------------------------------------------------------------
  * THE ENDPOINT SURFACE IS CLOSED AT FOUR, and every path is taken from
@@ -248,356 +264,129 @@ export const REVOCATION_FAILED_MESSAGE =
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly http = inject(HttpClient);
-  private readonly tokenStorage = inject(TokenStorageService);
-  private readonly notifications = inject(NotificationService);
 
   /**
-   * The refresh currently in progress, or null when none is.
+   * Exchanges credentials for a token pair and the identity it was issued for.
    *
-   * This is what makes a burst of simultaneous 401 responses produce ONE refresh
-   * call rather than one per failed request. Without it, six parallel list
-   * requests expiring together would each present the same refresh token; the
-   * first would rotate it and the remaining five would present a token that had
-   * already been used, which the server treats as a replay and answers by revoking
-   * the account's entire refresh-token family — signing the person out precisely
-   * because the client tried to keep them signed in.
-   */
-  private refreshInFlight: Observable<AuthSession> | null = null;
-
-  /** Backing state for {@link revocationOutstanding}. Holds a BOOLEAN and never a credential. */
-  private readonly _revocationOutstanding = signal(false);
-
-  /** The signed-in identity, or null. Re-exposed so consumers need one injection. */
-  readonly currentUser = this.tokenStorage.currentUser;
-
-  /** Whether a session is held. */
-  readonly isAuthenticated = this.tokenStorage.isAuthenticated;
-
-  /**
-   * Whether the signed-in account must complete its profile before continuing.
+   * `POST auth/login`, answering `200` with the pair, or refusing: `401` for bad credentials,
+   * `403` for a locked-out or not-approved account, `400` for a malformed submission and `429`
+   * when the credential window is spent. Every refusal is re-thrown exactly as it arrived so the
+   * caller can render the server's problem document, which distinguishes the four.
    *
-   * Re-exposed for the same reason as {@link currentUser}: a consumer of this
-   * service should not need a second injection to read a fact about the session it
-   * just established. {@link login} returns the identity rather than the session, so
-   * without this projection the advisory would have no reader at all.
-   */
-  readonly mustUpdateProfile = this.tokenStorage.mustUpdateProfile;
-
-  /**
-   * Exchanges credentials for a token pair and stores the resulting session.
+   * ⚠ NOTHING IS STORED HERE, AND NOTHING ELSE IS FETCHED HERE. The response is decoded and
+   * returned. Committing it to the session, reading the caller's expanded authority through
+   * {@link AuthService.me}, and deciding what a failed attempt does to a session already held are
+   * all the lifecycle owner's, `core/state/auth.store.ts`.
    *
-   * A failure is re-thrown unchanged so the caller can render the server's problem
-   * document, which distinguishes bad credentials from a locked-out account and
-   * from a password the server refuses to accept as secure. The stored session is
-   * cleared first, so a failed sign-in cannot leave an earlier session in place.
-   *
-   * @param request The credentials, optionally naming the tenant.
-   * @returns The signed-in identity.
+   * @param request The credentials, and the verification code when one was supplied. Transmitted
+   * exactly as given: an empty code travels as an empty string and an omitted one stays omitted,
+   * because the legacy ladder branched on that very distinction.
+   * @param selector The tenant to sign in to, when the arrival host resolves none.
+   * @returns The decoded token pair and the authority-minimised identity it was issued for.
    */
   login(
     request: LoginRequest,
     selector?: LoginPortalSelector | null,
-  ): Observable<CurrentUser> {
-    this.tokenStorage.clear();
-
-    /*
-     * Captured AFTER the clear above, so the epoch this attempt owns is the one the clear
-     * just produced. Capturing before would compare against a value this attempt itself
-     * superseded, and every commit below would be suppressed.
-     *
-     * Sign-in needs the same conditioning as renewal, for the same reason and with a second
-     * scenario of its own — an ACCOUNT SWITCH. Two sign-ins can overlap, whether because an
-     * operator submitted twice or because they signed in as somebody else before the first
-     * attempt settled, and each takes two round trips. Unconditional commits then produce:
-     *
-     *   - the LATE SUCCESS: attempt A's session stored after attempt B's has been
-     *     established, so the operator is silently returned to the account they switched
-     *     away from, holding B's screens;
-     *   - the LATE FAILURE: attempt A's rejection clearing B's live session, signing out an
-     *     operator whose own sign-in succeeded.
-     *
-     * Both are closed by testing the captured epoch before writing. The observable still
-     * emits or throws unchanged in either case, so the caller learns its own outcome; only
-     * the write to shared state is suppressed.
-     */
-    const startedAt = this.tokenStorage.generation();
-
-    // The payload arrives inside the shared success envelope, so it is unwrapped before
-    // anything reads it. Typing the call as the bare payload instead would compile and
-    // then fail at run time in the quietest possible way: every member of the session
-    // would read as undefined, and the stored session would be a shape-correct blank.
+  ): Observable<LoginResponse> {
     return this.http
-      .post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.login, request, {
+      .post<unknown>(AUTH_ENDPOINTS.login, request, {
         // The tenant selector travels as a QUERY parameter, not in the body: the endpoint
         // resolves the tenant from the arrival host and admits `?portalId=` only as the
         // fallback for a host with no alias row. `loginParams` transmits -1 and 0 as data,
         // because `Portals.PortalID` is `IDENTITY(-1,1)` and both name real tenants.
         params: loginParams(selector),
       })
-      .pipe(
-      map((envelope) => sessionFromLoginResponse(envelope.data)),
-      switchMap((session) =>
-        this.loadCurrentUser(session.accessToken).pipe(
-          map((user) => ({ ...session, user })),
-        ),
-      ),
-      tap((session) => {
-        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
-          this.tokenStorage.store(session);
-        }
-      }),
-      map((session) => session.user),
-      catchError((error: unknown) => {
-        // Conditioned for the LATE FAILURE above: an older attempt's rejection must not
-        // discard the session a newer one has already established.
-        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
-          this.tokenStorage.clear();
-        }
-
-        return throwError(() => error);
-      }),
-    );
+      .pipe(map((body) => LOGIN_RESPONSE(body, RESPONSE_ROOT)));
   }
 
   /**
-   * Exchanges the stored refresh token for a new pair, coalescing concurrent
-   * callers onto one request.
+   * Exchanges a renewal credential for a rotated pair.
    *
-   * Fails immediately when no refresh token is held, rather than posting an empty
-   * one: the server would answer 400, and the caller would have to distinguish
-   * that from a genuine rejection. The error is produced lazily inside the returned
-   * observable so that this method never throws synchronously — an interceptor
-   * calling it inside a `catchError` must be able to rely on getting an observable
-   * back.
+   * `POST auth/refresh`, answering `200` with a pair of the same shape sign-in returns — the API
+   * declares no separate renewal response — or refusing with `401`, `400` or `429`.
    *
-   * On failure the session is discarded. A refresh token that the server refuses
-   * cannot be retried, and keeping it would mean re-presenting it on the next
-   * 401 and being refused again.
+   * ⚠ THE CREDENTIAL IS AN ARGUMENT, NOT SOMETHING READ FROM STORAGE. This method neither knows
+   * where the renewal credential is kept nor whether one is held, and it does not coalesce
+   * concurrent callers: presenting one rotating credential twice is a replay the server answers
+   * by revoking the whole family, so exactly one owner must serialise renewals, and that owner is
+   * `core/state/auth.store.ts`. A second in-flight slot here would be a second source of truth
+   * for the same fact — the arrangement in which a renewal begun before a sign-out could store its
+   * pair afterwards and resurrect the session the operator had just ended.
    *
-   * @returns The refreshed session.
+   * @param request The renewal credential to present, in the body shape the API declares.
+   * @returns The decoded rotated pair.
    */
-  refresh(): Observable<AuthSession> {
-    const inFlight = this.refreshInFlight;
-
-    if (inFlight !== null) {
-      return inFlight;
-    }
-
-    const refreshToken = this.tokenStorage.refreshToken();
-
-    if (refreshToken === null || refreshToken.length === 0) {
-      return throwError(() => new Error('No refresh token is held, so the session cannot be renewed.'));
-    }
-
-    const body: RefreshTokenRequest = { refreshToken };
-
-    /*
-     * The epoch this renewal belongs to, captured before the request is issued.
-     *
-     * A renewal takes two round trips, and a sign-out or a sign-in can happen during either
-     * of them. `shareReplay({ refCount: false })` keeps the source subscribed even when every
-     * subscriber has gone, so the renewal WILL arrive and WILL run its operators regardless —
-     * which is what made the unconditional commits below a resurrection: a renewal begun
-     * before a sign-out stored its rotated pair afterwards, handing back a session the
-     * operator had just ended.
-     *
-     * `TokenStorageService.clear()` advances the epoch, so testing it here is what makes such
-     * a renewal inert without cancelling it — the answer is still delivered to whoever is
-     * still waiting, and only the write to shared state is withheld.
-     */
-    const startedAt = this.tokenStorage.generation();
-
-    const request = this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.refresh, body).pipe(
-      map((envelope) => sessionFromLoginResponse(envelope.data)),
-      switchMap((session) =>
-        this.loadCurrentUser(session.accessToken).pipe(
-          map((user) => ({ ...session, user })),
-        ),
-      ),
-      // Storing here rather than at the call site is what guarantees the rotated
-      // refresh token replaces the consumed one exactly once, however many
-      // subscribers are sharing this request.
-      //
-      // Conditioned on the epoch: a renewal that began before a sign-out or a sign-in must
-      // not write its pair over whatever replaced it.
-      tap((session) => {
-        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
-          this.tokenStorage.store(session);
-        }
-      }),
-      catchError((error: unknown) => {
-        // Equally conditioned, and this direction matters just as much: a refused renewal
-        // from a superseded session must not clear the session that superseded it.
-        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
-          this.tokenStorage.clear();
-        }
-
-        return throwError(() => error);
-      }),
-      // Clears the slot on completion, error and unsubscription alike, so a later
-      // 401 starts a fresh refresh rather than replaying this one's outcome
-      // forever. Placed before `shareReplay` so it observes the source, not each
-      // subscriber.
-      // Released by OBJECT IDENTITY, never by epoch. The question this asks is whether the slot
-      // still holds THIS request, which is a question about identity and not about the session.
-      // An epoch test would be wrong in both directions: a renewal that completes after a
-      // sign-out still needs to release its own slot, or the slot stays held by a settled
-      // observable forever and no future renewal can start; while a renewal whose slot has
-      // already been claimed by a successor must not clear it even if the epoch happens to match.
-      finalize(() => {
-        if (this.refreshInFlight === request) {
-          this.refreshInFlight = null;
-        }
-      }),
-      // `refCount: false` keeps the single subscription to the HTTP request alive
-      // even if every current subscriber unsubscribes, so a cancelled request does
-      // not silently abandon the refresh for the subscribers still waiting.
-      shareReplay({ bufferSize: 1, refCount: false }),
-    );
-
-    this.refreshInFlight = request;
-
-    return request;
+  refresh(request: RefreshTokenRequest): Observable<LoginResponse> {
+    return this.http
+      .post<unknown>(AUTH_ENDPOINTS.refresh, request)
+      .pipe(map((body) => LOGIN_RESPONSE(body, RESPONSE_ROOT)));
   }
 
   /**
-   * Asks the server to describe the caller, using the session already held.
+   * Asks the server to withdraw a renewal credential.
    *
-   * This is the fourth and last operation of the authentication surface, and the only
-   * one of the four that requires a bearer token. It is how a client learns its own
-   * roles and granted permission codes, which is why no client needs the
-   * administrative permission-query operations merely to describe itself.
+   * `POST auth/logout`, answering `204` for a credential it found and for one it did not — a
+   * different answer would turn the operation into a probe for which sessions are live, and an
+   * anonymous caller must not be handed that. It can still REFUSE: `400` for a malformed body,
+   * `429` when the revocation window is spent and `503` when the session store cannot be reached.
    *
-   * Deliberately sets NO headers. The bearer token is attached by
+   * ⚠ A REFUSAL PROPAGATES. It used to be absorbed here and reported as completion, which made a
+   * live renewal credential indistinguishable from a withdrawn one. Whether local sign-out
+   * completes regardless is a policy decision, and it is made — together with recording the
+   * outstanding revocation and telling the operator — by the lifecycle owner.
+   *
+   * MIGRATION: sign-out reaches the RENEWAL credential only. An access token already issued
+   * cannot be recalled, so it stays valid until it lapses, which is why that lifetime is short;
+   * the legacy `FormsAuthentication.SignOut` cleared a cookie and took effect at once and has no
+   * stateless counterpart. The body is required and is the same shape renewal uses — there is no
+   * distinct sign-out contract — so posting nothing would be refused before the operation ran.
+   *
+   * @param request The renewal credential to withdraw.
+   * @returns Completion. `204` carries no body, so there is nothing to decode.
+   */
+  logout(request: RefreshTokenRequest): Observable<void> {
+    return this.http.post<void>(AUTH_ENDPOINTS.logout, request);
+  }
+
+  /**
+   * Asks the server to describe the caller.
+   *
+   * `GET auth/me`, the only authorised operation of the four, and the way a client learns its own
+   * roles and granted permission codes — which is why no client needs the administrative
+   * permission-query operations merely to describe itself. Answers `200` with the description,
+   * `401` when identity was not proved, `404` when the token names an account that no longer
+   * resolves, and `429` on its own budget.
+   *
+   * ⚠ THE ANSWER IS NOT ENFORCEMENT. Every authorisation decision is made again on the server for
+   * every request; the permission codes exist so that a screen can avoid offering an action that
+   * would be refused, never so that a client can decide an access question for itself.
+   *
+   * THE OPTIONAL CREDENTIAL IS THE ONE PLACE A BEARER HEADER IS WRITTEN BY HAND, and it exists
+   * for a single caller: the bootstrap read that follows a sign-in or a renewal. At that moment
+   * the rotated token exists only as a local value — it is deliberately not stored until the
+   * identity has been fetched, so that a failed bootstrap cannot leave a half-populated session
+   * behind — and an interceptor reading storage would attach the PREVIOUS token, or none, and on
+   * renewal would treat the resulting refusal as cause for another renewal. Passing the freshly
+   * issued token explicitly is what breaks that recursion, and the interceptor skips a request
+   * that already carries the header.
+   *
+   * Omit the argument once a session is held: the bearer token is then attached by
    * `core/interceptors/auth.interceptor.ts` and the correlation identifier by
-   * `core/interceptors/correlation-id.interceptor.ts`, in that fixed order, and both
-   * are registered once where the HTTP client is provided. Attaching a token here as
-   * well would substitute a value the interceptor is responsible for choosing and
-   * would defeat its ability to recover from a refused request — which is precisely
-   * the difference between this method and {@link loadCurrentUser} below, and the
-   * reason both exist.
+   * `core/interceptors/correlation-id.interceptor.ts`, in that fixed order, and substituting
+   * either by hand would defeat the interceptor's ability to recover from a refused request.
    *
-   * The answer is NOT enforcement. Every authorisation decision is made again on the
-   * server for every request; the permission codes returned here exist so that a
-   * screen can avoid offering an action that would be refused, never so that a client
-   * can decide an access question for itself.
-   *
-   * @returns The caller's identity, roles and granted permission codes.
+   * @param accessToken The freshly issued token to present, for the bootstrap read alone. Omitted
+   * or null for every other caller, which leaves the credential to the interceptor.
+   * @returns The caller's decoded identity, roles and granted permission codes.
    */
-  me(): Observable<CurrentUser> {
-    return this.http
-      .get<ApiResponse<CurrentUser>>(AUTH_ENDPOINTS.me)
-      .pipe(map((envelope) => envelope.data));
-  }
-
-  /**
-   * Reads expanded display authority only from the explicit current-user endpoint.
-   *
-   * Login and refresh responses intentionally carry an authority-minimised identity, and access
-   * tokens carry no role or permission claims. The freshly issued token is attached explicitly so
-   * the general auth interceptor neither substitutes an older token nor recursively refreshes this
-   * bootstrap read.
-   *
-   * This is the ONE place a credential header is written by hand, and it is not an
-   * alternative to {@link me} — it is the same read performed at a moment when the
-   * interceptor cannot serve it. During sign-in and renewal the rotated token exists
-   * only as a local value: it is deliberately not stored until the identity has been
-   * fetched, so that a failed bootstrap cannot leave a half-populated session behind.
-   * An interceptor reading storage at that instant would attach the PREVIOUS token, or
-   * none at all, and on renewal would treat the resulting refusal as cause for another
-   * renewal. Passing the freshly issued token explicitly is what breaks that
-   * recursion. Once a session is held, {@link me} is the correct entry point and this
-   * one must not be reached for.
-   */
-  private loadCurrentUser(accessToken: string): Observable<CurrentUser> {
-    const headers = new HttpHeaders({
-      [AUTHORIZATION_HEADER]: `Bearer ${accessToken}`,
-    });
+  me(accessToken?: string | null): Observable<CurrentUser> {
+    const options =
+      accessToken === undefined || accessToken === null
+        ? {}
+        : { headers: new HttpHeaders({ [AUTHORIZATION_HEADER]: `Bearer ${accessToken}` }) };
 
     return this.http
-      .get<ApiResponse<CurrentUser>>(AUTH_ENDPOINTS.me, { headers })
-      .pipe(map((envelope) => envelope.data));
-  }
-
-  /**
-   * Revokes the stored refresh token and discards the session.
-   *
-   * Local state is cleared whatever the server answers, and the observable
-   * completes successfully even when the call fails. A person who asks to sign out
-   * must end up signed out on this device; leaving the session in place because a
-   * revocation request failed would be the opposite of what they asked for, and
-   * they cannot act on the error in any case.
-   *
-   * MIGRATION: sign-out has no effect on an access token that has already been
-   * issued. A bearer token cannot be recalled, so this revokes the refresh token
-   * and the access token remains valid until it expires — which is why its
-   * lifetime is short. The legacy `FormsAuthentication.SignOut` cleared a cookie
-   * and took effect at once.
-   */
-  /**
-   * Whether the last sign-out failed to withdraw its renewal credential on the server.
-   *
-   * A BOOLEAN, deliberately, and not the failure. The status code, the server's wording and the
-   * credential itself are all withheld: a screen needs only to know that the withdrawal is
-   * unconfirmed in order to say so, and anything richer would put failure detail about a
-   * credential operation into a template or a log. Reset by the next sign-out that succeeds.
-   */
-  readonly revocationOutstanding: Signal<boolean> = this._revocationOutstanding.asReadonly();
-
-  logout(): Observable<void> {
-    const refreshToken = this.tokenStorage.refreshToken();
-
-    this.tokenStorage.clear();
-    this.refreshInFlight = null;
-
-    if (refreshToken === null || refreshToken.length === 0) {
-      return of(undefined);
-    }
-
-    const body: RefreshTokenRequest = { refreshToken };
-
-    // No envelope here, and none is expected. Sign-out answers 204, which HTTP forbids
-    // from carrying a body, so there is nothing to unwrap - see the note on
-    // EmptyApiResponse, which is why that shape has no producer.
-    /*
-     * ⚠ THE STREAM STILL COMPLETES SUCCESSFULLY, AND THAT MUST NOT CHANGE. Local sign-out has
-     * already happened unconditionally above, and the caller navigates away from the signed-in
-     * shell when this completes. Turning a failed withdrawal into an error here would leave
-     * somebody who asked to sign out looking at a screen that behaves as though they had not -
-     * which is why the original absorbed the failure.
-     *
-     * What was wrong was DISCARDING it as well as absorbing it. A 429, a 503 or a dropped
-     * connection means the renewal credential is still live on the server for its full lifetime -
-     * precisely the outcome signing out exists to prevent - and `catchError(() => of(undefined))`
-     * made that indistinguishable from a clean withdrawal. So the failure is now RECORDED and
-     * REPORTED instead of discarded, which is the substance of the defect: not that sign-out
-     * absorbed the failure, but that it claimed success.
-     *
-     * ⚠ NO RETRY IS OFFERED HERE, AND NO CREDENTIAL IS CACHED TO MAKE ONE POSSIBLE. Both are
-     * ruled out by this class's own design rather than overlooked. A client-side retry would need
-     * either a retry folded into this service or the renewal credential copied into a field of it
-     * so a later attempt could re-send it - and this service is deliberately closed against both,
-     * because authentication is where that kind of creep does the most damage and is hardest to
-     * see in a diff. Custody of the credential belongs to TokenStorageService alone.
-     *
-     * What makes that acceptable is the other half of the same fix, on the server: revocation now
-     * draws on a budget of its own rather than the one sign-in attempts spend, so the 429 that
-     * made this failure common - any peer sharing the caller's address exhausting the shared
-     * window by guessing credentials - can no longer be caused by traffic that has nothing to do
-     * with this caller. The report below names the action that genuinely exists for the residue.
-     */
-    return this.http.post<void>(AUTH_ENDPOINTS.logout, body).pipe(
-      map(() => {
-        this._revocationOutstanding.set(false);
-
-        return undefined;
-      }),
-      catchError(() => {
-        this._revocationOutstanding.set(true);
-        this.notifications.warning(REVOCATION_FAILED_MESSAGE);
-
-        return of(undefined);
-      }),
-    );
+      .get<unknown>(AUTH_ENDPOINTS.me, options)
+      .pipe(map((body) => CURRENT_USER_RESPONSE(body, RESPONSE_ROOT)));
   }
 }

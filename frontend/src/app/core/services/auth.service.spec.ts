@@ -1,32 +1,50 @@
 /**
- * Specification for {@link AuthService} — the authentication client whose surface is
- * closed at four operations and which orchestrates nothing.
+ * Specification for {@link AuthService} — the authentication TRANSPORT, whose surface is
+ * closed at four operations, which holds nothing and which orchestrates nothing.
  *
  * The legacy application shipped no automated tests of any kind, so nothing here is a
  * port. Every expectation was authored from two measured sources: the Web Forms sign-in
  * screen this client replaces, cited by line throughout, and the destination wire
  * contract read from the service and model this file exercises.
  *
+ * MIGRATION: THIS FILE USED TO SPECIFY A SESSION LIFECYCLE AS WELL AS A TRANSPORT, and it
+ *   is a great deal shorter for having stopped. The service it describes previously cleared
+ *   and stored sessions through the custodian, held the single-flight renewal slot,
+ *   performed a second describe-caller read inside sign-in and renewal, re-published three
+ *   session signals, and turned a refused revocation into successful completion. All of
+ *   that is session lifecycle rather than API communication, which Minimal Change Clause
+ *   item 5 places outside a service, so it now lives on `core/state/auth.store.ts` and is
+ *   specified by `core/state/auth.store.spec.ts`. Cases about coalescing, epoch races,
+ *   resurrection after a sign-out, the revocation report and the sign-out policy were moved
+ *   there rather than deleted — they are assertions about an owner, and they followed the
+ *   owner. What remains here is the wire contract and the decoding of it.
+ *
  * ## What this specification is FOR
  *
- * The valuable assertions here are the negative ones. Authentication is where
+ * The valuable assertions here are still the negative ones. Authentication is where
  * orchestration creep is most likely — a retry folded into the client, a credential
  * cached in a second place, a status code interpreted locally — and each of those is
- * invisible to a compiler and to a reviewer skimming a diff. Three properties are
+ * invisible to a compiler and to a reviewer skimming a diff. Four properties are
  * therefore proved mechanically rather than trusted:
  *
- * - **Nothing is retried here.** A refused request produces exactly the requests the
- *   operation declares and not one more. Recovering from an expired credential is the
- *   interceptor's responsibility, and no interceptor is installed in this harness, so a
- *   recovery attempt smuggled into the service would show up as an unexpected request.
- * - **No credential is held here.** The service owns no store of its own; the three
- *   session values it publishes are projections of the dedicated custody collaborator,
- *   and its own field surface is pinned so a fourth cannot appear unnoticed.
- * - **Sign-out has no shape of its own.** It transmits the one credential it revokes and
- *   nothing else, using the same body contract renewal uses.
+ * - **One call is one request.** Every operation issues exactly the request it declares
+ *   and not one more. Recovering from an expired credential is the interceptor's
+ *   responsibility and composing a two-request sign-in is the store's; no interceptor is
+ *   installed in this harness and no store is driven, so either smuggled in here would
+ *   show up as an unexpected request.
+ * - **No credential is held here.** The service owns exactly one field, the transport
+ *   itself. It exposes no signal, it reads nothing from the custodian, and the custodian is
+ *   resolved from the same injector purely to prove that it stays empty across every call.
+ * - **No status code is interpreted here.** A refusal — including a refused revocation —
+ *   propagates exactly as the server sent it. That is the substance of one of the findings
+ *   this file now pins: absorbing a failed withdrawal and reporting completion made a live
+ *   renewal credential indistinguishable from a withdrawn one.
+ * - **No response member is taken on trust.** Each payload-bearing operation decodes its
+ *   body, so a drifted or hostile shape is refused at the seam rather than carried into a
+ *   bearer header, a role list or a permission check.
  *
- * `httpMock.verify()` in `afterEach` is what makes all three enforceable: it fails the
- * test if the service issued a request the test did not account for. It is the single
+ * `httpMock.verify()` in `afterEach` is what makes the first three enforceable: it fails
+ * the test if the service issued a request the test did not account for. It is the single
  * most load-bearing line in this file.
  *
  * ## The harness deliberately omits the interceptor chain
@@ -78,7 +96,9 @@
  *   non-alphanumeric requirement, no unique-address requirement — and it is preserved
  *   verbatim on the server. Asserting a client-side rule here would institutionalise a
  *   divergence and refuse accounts the legacy application accepted.
- * - **Navigation, problem-document rendering and credential decoding.** Each belongs to a
+ * - **Session commits, coalescing, epoch races, the revocation report and the sign-out
+ *   policy.** Every one of these belongs to the lifecycle owner and is specified beside it.
+ * - **Navigation, problem-document wording and credential parsing.** Each belongs to a
  *   different unit. Nothing here reads a clock, performs expiry arithmetic or decodes a
  *   credential segment.
  *
@@ -96,11 +116,12 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 
-import type { AuthSession, CurrentUser, LoginRequest, LoginResponse } from '../models/auth.model';
+import type { CurrentUser, LoginResponse } from '../models/auth.model';
+import { isContractViolation } from '../utils/decode.util';
 import { AuthService } from './auth.service';
-// A value import, unlike the type-only import above: the session-lifecycle specifications
-// resolve the real custodian from the injector in order to read the auth epoch and to drive
-// session transitions directly, which is what puts a late result on the wrong side of one.
+// A value import, unlike the type-only import above: the custodian is resolved from the same
+// injector in order to prove that it stays EMPTY across every operation. This service used to
+// write to it, and pinning the absence of those writes is what stops them creeping back.
 import { TokenStorageService } from './token-storage.service';
 
 // ---------------------------------------------------------------------------
@@ -116,7 +137,7 @@ const LOGIN_URL = '/api/v1/auth/login';
 /** `POST` — exchanges a renewal credential for a rotated pair. Anonymous. */
 const REFRESH_URL = '/api/v1/auth/refresh';
 
-/** `POST` — revokes a renewal credential. Anonymous, and answers 204 regardless. */
+/** `POST` — revokes a renewal credential. Anonymous, and answers 204 for what it finds. */
 const LOGOUT_URL = '/api/v1/auth/logout';
 
 /** `GET` — describes the caller. The one operation of the four that needs a credential. */
@@ -208,8 +229,8 @@ function currentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
  * consumer that mistook absent for false.
  */
 function credentialResponse(
-  accessToken: string,
-  refreshToken: string,
+  accessToken: string = FAKE_ACCESS_TOKEN,
+  refreshToken: string = FAKE_RENEWAL_TOKEN,
   overrides: Partial<LoginResponse> = {},
 ): SuccessEnvelope<LoginResponse> {
   return {
@@ -257,6 +278,7 @@ function refusal(status: number, code: string): ProblemDocument {
 describe('AuthService', () => {
   let service: AuthService;
   let httpMock: HttpTestingController;
+  let tokenStorage: TokenStorageService;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -273,6 +295,7 @@ describe('AuthService', () => {
 
     service = TestBed.inject(AuthService);
     httpMock = TestBed.inject(HttpTestingController);
+    tokenStorage = TestBed.inject(TokenStorageService);
   });
 
   afterEach(() => {
@@ -284,66 +307,7 @@ describe('AuthService', () => {
 
   // -------------------------------------------------------------------------
   // HELPERS
-  //
-  // Session state is established ONLY by driving the service's own public surface. The
-  // custody collaborator is never injected here: doing so would let a test set up a state
-  // the service itself has no way to reach, and would couple this specification to a
-  // collaborator that has its own.
   // -------------------------------------------------------------------------
-
-  /**
-   * Answers the identity bootstrap that follows every successful credential response.
-   *
-   * Both sign-in and renewal deliberately perform a second read to describe the caller,
-   * because the credential responses carry an authority-minimised identity and the issued
-   * credential carries no role or permission claims. That second request is part of each
-   * operation's contract, not an accident, so every successful flow below answers it.
-   *
-   * It is also the ONE request in the whole surface that carries a header the service set
-   * by hand, and the reason is structural: during sign-in and renewal the rotated
-   * credential exists only as a local value and is deliberately not stored until the
-   * identity has been fetched, so an interceptor reading storage at that instant would
-   * attach the previous credential or none. The count is asserted rather than the name, so
-   * that a second header appearing here would fail even though the assertion never spells
-   * a header out.
-   */
-  function answerIdentityBootstrap(
-    expectedToken: string,
-    user: CurrentUser = currentUser(),
-  ): void {
-    const request = httpMock.expectOne(ME_URL);
-
-    expect(request.request.method).toBe('GET');
-
-    const headerNames = request.request.headers.keys();
-    expect(headerNames.length)
-      .withContext('the bootstrap read carries exactly one hand-set header and no more')
-      .toBe(1);
-    expect(request.request.headers.get(headerNames[0]))
-      .withContext('it presents the freshly issued credential, not a stored one')
-      .toBe(`Bearer ${expectedToken}`);
-
-    request.flush(identityResponse(user));
-  }
-
-  /**
-   * Drives a complete sign-in so that renewal and sign-out have a session to work from.
-   *
-   * @returns The identity the service emitted.
-   */
-  async function completeSignIn(
-    accessToken: string = FAKE_ACCESS_TOKEN,
-    refreshToken: string = FAKE_RENEWAL_TOKEN,
-  ): Promise<CurrentUser> {
-    const pending = firstValueFrom(
-      service.login({ username: 'admin', password: FAKE_PASSWORD }),
-    );
-
-    httpMock.expectOne(LOGIN_URL).flush(credentialResponse(accessToken, refreshToken));
-    answerIdentityBootstrap(accessToken);
-
-    return pending;
-  }
 
   /** Resolves to the rejection reason, or null when the promise resolved instead. */
   async function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
@@ -353,310 +317,333 @@ describe('AuthService', () => {
     );
   }
 
+  /**
+   * Asserts that a body the contract forbids is REFUSED rather than carried.
+   *
+   * The refusal is checked by kind and by position, not by message: the position is the
+   * durable part of the contract and the wording is not. Paths are stated as the decoder
+   * reports them — rooted at `response`, then the envelope's payload member — so a case
+   * pins WHERE the drift was found and not merely that something was wrong.
+   *
+   * @param pending The in-flight call.
+   * @param path The position the violation must be reported at.
+   */
+  async function expectViolationAt(pending: Promise<unknown>, path: string): Promise<void> {
+    const reason = await rejectionOf(pending);
+
+    expect(isContractViolation(reason))
+      .withContext(`a body violating the contract at ${path} must be refused, not carried`)
+      .toBeTrue();
+    expect((reason as { path: string }).path).toBe(path);
+  }
+
+  /** Asserts that the custodian holds nothing whatsoever. */
+  function expectNothingHeld(): void {
+    expect(tokenStorage.session())
+      .withContext('the transport never commits a session')
+      .toBeNull();
+    expect(tokenStorage.accessToken()).toBeNull();
+    expect(tokenStorage.refreshToken()).toBeNull();
+    expect(tokenStorage.isAuthenticated()).toBeFalse();
+  }
+
   // =========================================================================
-  // THE THREE NEGATIVE PROOFS
+  // THE FOUR NEGATIVE PROOFS
   //
   // Written first because they are what this specification exists for.
   // =========================================================================
 
-  describe('orchestrates no recovery of its own', () => {
-    // Recovering from a refused credential belongs to the interceptor that observes the
-    // refusal, which is not installed in this harness. Every case below therefore proves
-    // that the operation produced exactly the requests it declares and stopped.
+  describe('one call issues one request, and orchestrates nothing', () => {
+    it('performs no second read of its own when credentials are exchanged', async () => {
+      // The DEFINING property of the transport-only shape, and the one that most obviously
+      // regressed before. Sign-in is genuinely two requests, but the SECOND one is composed
+      // by the lifecycle owner: it is that owner which knows the freshly issued token must
+      // be presented by hand and must not be stored until the identity has arrived. Here,
+      // exactly one request is issued, and `verify()` proves it.
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush(credentialResponse());
+      httpMock.expectNone(ME_URL);
+
+      const response = await pending;
+
+      expect(response.accessToken).toBe(FAKE_ACCESS_TOKEN);
+      expectNothingHeld();
+    });
+
+    it('performs no second read of its own when a credential is renewed', async () => {
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
+
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      httpMock.expectNone(ME_URL);
+
+      expect((await pending).refreshToken).toBe(FAKE_RENEWAL_TOKEN_ROTATED);
+      expectNothingHeld();
+    });
 
     it('does not attempt a renewal when sign-in is refused', async () => {
       const pending = firstValueFrom(
         service.login({ username: 'admin', password: FAKE_PASSWORD }),
       );
 
-      httpMock
-        .expectOne(LOGIN_URL)
-        .flush(refusal(401, 'InvalidCredentials'), { status: 401, statusText: 'Unauthorized' });
+      httpMock.expectOne(LOGIN_URL).flush(null, { status: 401, statusText: 'Unauthorized' });
+      httpMock.expectNone(REFRESH_URL);
 
       await expectAsync(pending).toBeRejected();
-
-      // Named explicitly as well as covered by verify(), because the absence of this
-      // request is the property under test rather than a side effect of it.
-      httpMock.expectNone(REFRESH_URL);
-      httpMock.expectNone(ME_URL);
     });
 
     it('does not sign out, or retry, when a renewal is refused', async () => {
-      await completeSignIn();
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
-      const pending = firstValueFrom(service.refresh());
-
-      const requests = httpMock.match(REFRESH_URL);
-      expect(requests.length).withContext('exactly one renewal attempt').toBe(1);
-      requests[0].flush(refusal(401, 'InvalidRefreshToken'), {
-        status: 401,
-        statusText: 'Unauthorized',
-      });
-
-      await expectAsync(pending).toBeRejected();
-
-      // A refused renewal discards the session locally; it does not call the revoke
-      // endpoint to do so, and it does not present the consumed credential again.
+      httpMock.expectOne(REFRESH_URL).flush(null, { status: 401, statusText: 'Unauthorized' });
+      httpMock.expectNone(REFRESH_URL);
       httpMock.expectNone(LOGOUT_URL);
-      httpMock.expectNone(REFRESH_URL);
-    });
-
-    it('does not attempt a renewal when the describe-caller read is refused', async () => {
-      const pending = firstValueFrom(service.me());
-
-      const requests = httpMock.match(ME_URL);
-      expect(requests.length).withContext('exactly one describe-caller read').toBe(1);
-      requests[0].flush(refusal(401, 'TokenExpired'), {
-        status: 401,
-        statusText: 'Unauthorized',
-      });
 
       await expectAsync(pending).toBeRejected();
-
-      httpMock.expectNone(REFRESH_URL);
-      httpMock.expectNone(ME_URL);
     });
 
     it('does not back off or repeat when the rate limiter refuses sign-in', async () => {
-      // 429 is the only place in the entire API that this status occurs, and it is the
-      // named compensating control for the dropped legacy challenge-image guard at
-      // `Login.ascx.vb:L162`. The client's whole responsibility is to let it through: no
-      // delay, no attempt counter, no reading of the standard retry-hint header, and no
-      // second attempt. Anything else would spend the caller's remaining budget on its
-      // own behalf.
+      // The server's fixed-window limiter is the named compensating control for the deleted
+      // challenge-image gate at `Login.ascx.vb:L162`. A client-side back-off would be a
+      // second, weaker limiter and would hide the first one's answer from the caller.
       const pending = firstValueFrom(
         service.login({ username: 'admin', password: FAKE_PASSWORD }),
       );
 
-      const requests = httpMock.match(LOGIN_URL);
-      expect(requests.length).withContext('exactly one attempt').toBe(1);
-      requests[0].flush(refusal(429, 'TooManyRequests'), {
-        status: 429,
-        statusText: 'Too Many Requests',
-      });
-
-      const reason = await rejectionOf(pending);
-
-      expect(reason instanceof HttpErrorResponse).toBeTrue();
-      expect((reason as HttpErrorResponse).status).toBe(429);
-
+      httpMock
+        .expectOne(LOGIN_URL)
+        .flush(refusal(429, 'TooManyAttempts'), { status: 429, statusText: 'Too Many Requests' });
       httpMock.expectNone(LOGIN_URL);
-      httpMock.expectNone(REFRESH_URL);
+
+      expect((await rejectionOf(pending) as HttpErrorResponse).status).toBe(429);
+    });
+
+    it('coalesces nothing, so two renewals are two requests', async () => {
+      // The inverse of the store's guarantee, asserted HERE so the two files together say
+      // where the guarantee lives. A slot in this service would be a second source of truth
+      // for the same fact: signing out abandons the owner's slot and advances its session
+      // generation, and a slot held here could be reached by neither.
+      const first = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
+      const second = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
+
+      const issued = httpMock.match(REFRESH_URL);
+      expect(issued.length)
+        .withContext('no coalescing here: serialising renewals belongs to the session owner')
+        .toBe(2);
+
+      issued[0].flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      issued[1].flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+
+      await first;
+      await second;
     });
   });
 
-  describe('holds no credential store of its own', () => {
-    it('publishes exactly three derived session values and caches no credential', () => {
-      // Custody belongs to the dedicated collaborator, which holds the session in memory
-      // only. Three of the values below are projections of it, re-published so a consumer
-      // needs one injection rather than two — sign-in returns the identity rather than the
-      // session, so without them the server's advisory flags would have no reader at all.
-      //
-      // Pinning the instance field surface is what makes "no credential store of its own"
-      // checkable: a cached identity, a duplicated credential or a bespoke session flag
-      // added later would appear here and fail.
-      //
-      // `revocationOutstanding` and its backing signal report whether the LAST sign-out
-      // managed to withdraw its renewal credential on the server. They are admitted here
-      // deliberately, and they are a BOOLEAN rather than a credential: reporting that a
-      // withdrawal is unconfirmed is the whole point — the previous behaviour reported a
-      // clean sign-out while the credential was still live — and a boolean cannot be
-      // replayed against the server by anything that reads it.
-      expect(Object.keys(service).sort()).toEqual([
-        '_revocationOutstanding',
-        'currentUser',
-        'http',
-        'isAuthenticated',
-        'mustUpdateProfile',
-        'notifications',
-        'refreshInFlight',
-        'revocationOutstanding',
-        'tokenStorage',
-      ]);
+  describe('holds no state of any kind', () => {
+    it('owns exactly one field, and it is the transport', () => {
+      // Enumerating the instance is what makes "holds nothing" mechanical rather than a
+      // review note. A credential cached in a field, a single-flight slot, a revocation flag
+      // or a re-published signal would each appear here and fail this case.
+      expect(Object.keys(service)).toEqual(['http']);
     });
 
-    it('holds no field whose value is a credential', async () => {
-      // ⚠ THE INVARIANT ITSELF, ASSERTED ON VALUES RATHER THAN ON NAMES. The list above pins
-      // the surface, but it cannot say what the surface HOLDS — a field admitted for one
-      // reason could later be assigned a credential without the list changing at all. This
-      // reads every own value after a real sign-in and a failed sign-out, the two moments a
-      // credential is in play, and requires that none of them is either token.
-      await completeSignIn();
+    it('publishes no signal, so nothing reads session state through it', () => {
+      // The three projections this service used to re-expose — whether a session is held,
+      // who the caller is, and whether a profile update is outstanding — were all readings
+      // of the custodian's own signals, re-exported one layer away from their owner. Screens
+      // read them from the lifecycle owner now, and their absence here is asserted rather
+      // than assumed.
+      const surface = service as unknown as Record<string, unknown>;
 
-      const credentials = [FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN];
-
-      const pending = firstValueFrom(service.logout());
-
-      httpMock
-        .expectOne(LOGOUT_URL)
-        .flush({ title: 'Server Error', status: 500 }, { status: 500, statusText: 'Server Error' });
-
-      await pending;
-
-      for (const [name, held] of Object.entries(service)) {
-        if (typeof held === 'string') {
-          expect(credentials).withContext(name).not.toContain(held);
-        }
+      for (const removed of ['isAuthenticated', 'currentUser', 'mustUpdateProfile']) {
+        expect(surface[removed])
+          .withContext(`${removed} belongs to the session's owner, not to a transport`)
+          .toBeUndefined();
       }
     });
 
-    it('reports no session before a sign-in', () => {
-      expect(service.isAuthenticated()).toBeFalse();
-      expect(service.currentUser()).toBeNull();
-      expect(service.mustUpdateProfile()).toBeFalse();
-    });
+    it('leaves the custodian untouched across all four operations', async () => {
+      const signIn = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+      httpMock.expectOne(LOGIN_URL).flush(credentialResponse());
+      await signIn;
+      expectNothingHeld();
 
-    it('reflects the session after a sign-in and abandons it on sign-out', async () => {
-      const user = await completeSignIn();
+      const renewal = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      await renewal;
+      expectNothingHeld();
 
-      expect(service.isAuthenticated()).toBeTrue();
-      expect(service.currentUser()).toEqual(user);
+      const described = firstValueFrom(service.me(FAKE_ACCESS_TOKEN));
+      httpMock.expectOne(ME_URL).flush(identityResponse());
+      await described;
+      expectNothingHeld();
 
-      const signOut = firstValueFrom(service.logout());
+      const signOut = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
       httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
       await signOut;
-
-      expect(service.isAuthenticated())
-        .withContext('the session is gone, so nothing survives the sign-out')
-        .toBeFalse();
-      expect(service.currentUser()).toBeNull();
+      expectNothingHeld();
     });
 
-    it('discards any earlier session synchronously, before a sign-in attempt is answered', async () => {
-      await completeSignIn();
-      expect(service.isAuthenticated()).toBeTrue();
+    it('takes the renewal credential as an argument rather than reading one', async () => {
+      // Both halves matter. The credential is whatever the caller supplied, and NOTHING is
+      // read from the custodian to obtain or to check one — which is why this call succeeds
+      // with no session held at all, and why the body carries the argument verbatim.
+      const pending = firstValueFrom(service.refresh({ refreshToken: 'fake-supplied-credential' }));
 
-      const pending = firstValueFrom(
-        service.login({ username: 'someone-else', password: FAKE_PASSWORD }),
-      );
+      const sent = httpMock.expectOne(REFRESH_URL);
+      expect(sent.request.body).toEqual({ refreshToken: 'fake-supplied-credential' });
 
-      expect(service.isAuthenticated())
-        .withContext('cleared at the point of the call, not on the response')
-        .toBeFalse();
-
-      httpMock
-        .expectOne(LOGIN_URL)
-        .flush(refusal(401, 'InvalidCredentials'), { status: 401, statusText: 'Unauthorized' });
-
-      await expectAsync(pending).toBeRejected();
-
-      expect(service.isAuthenticated())
-        .withContext('a failed sign-in cannot leave the previous session in place')
-        .toBeFalse();
+      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      await pending;
     });
   });
 
-  describe('sign-out has no body shape of its own', () => {
-    it('transmits the renewal credential and nothing else', async () => {
-      await completeSignIn();
+  describe('interprets no status code', () => {
+    it('propagates a refused revocation instead of reporting success', async () => {
+      // ⚠ THE FINDING THIS CASE EXISTS FOR. The previous implementation ended sign-out with
+      // `catchError(() => of(undefined))`, so a 400, a 429, a 503 or a dropped connection
+      // completed successfully and a renewal credential still live on the server was
+      // indistinguishable from a withdrawn one. Whether local sign-out proceeds anyway is a
+      // POLICY, and the lifecycle owner applies it — but it cannot apply a policy to an
+      // outcome it is never told about.
+      for (const status of [400, 429, 503]) {
+        const pending = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
-      const pending = firstValueFrom(service.logout());
+        httpMock
+          .expectOne(LOGOUT_URL)
+          .flush(refusal(status, 'RevocationRefused'), { status, statusText: 'Refused' });
 
-      const request = httpMock.expectOne(LOGOUT_URL);
-      expect(request.request.method).toBe('POST');
+        const reason = await rejectionOf(pending);
 
-      // Exactly the renewal contract's single member. There is no distinct sign-out body
-      // shape in the API's contract set, and asserting the key list rather than a subset
-      // is what proves none was invented: an access credential, an identity, a device
-      // name or an "everywhere" flag added later would all fail here.
-      expect(request.request.body).toEqual({ refreshToken: FAKE_RENEWAL_TOKEN });
-      expect(Object.keys(request.request.body as object)).toEqual(['refreshToken']);
-
-      request.flush(null, { status: 204, statusText: 'No Content' });
-
-      await expectAsync(pending).toBeResolved();
+        expect(reason instanceof HttpErrorResponse)
+          .withContext('the refusal arrives as a refusal, unwrapped and unabsorbed')
+          .toBeTrue();
+        expect((reason as HttpErrorResponse).status).toBe(status);
+      }
     });
 
-    it('takes no argument, so a caller cannot choose which session to end', () => {
-      // A sign-out that accepted a credential would let a caller revoke a session other
-      // than its own. The operation reads the held credential itself instead.
-      expect(service.logout.length).toBe(0);
+    it('propagates a transport-level revocation failure too', async () => {
+      const pending = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
+
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+
+      expect(await rejectionOf(pending))
+        .withContext('an unreachable endpoint is a failure, not a withdrawal')
+        .toBeInstanceOf(HttpErrorResponse);
+    });
+
+    it('retries nothing when revocation is refused', async () => {
+      const pending = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
+
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 503, statusText: 'Service Unavailable' });
+      httpMock.expectNone(LOGOUT_URL);
+
+      await expectAsync(pending).toBeRejected();
     });
   });
 
   // =========================================================================
-  // THE WIRE CONTRACT — four addresses, four verbs, one envelope
+  // THE WIRE CONTRACT, OPERATION BY OPERATION
   // =========================================================================
 
   describe('login', () => {
     it('posts the credentials unmodified to the sign-in address', async () => {
-      const request: LoginRequest = { username: 'admin', password: FAKE_PASSWORD };
+      const request = { username: 'admin', password: FAKE_PASSWORD };
       const pending = firstValueFrom(service.login(request));
 
       const sent = httpMock.expectOne(LOGIN_URL);
       expect(sent.request.method).toBe('POST');
-      expect(sent.request.body)
-        .withContext('passed through exactly as the caller supplied it')
-        .toEqual(request);
+      expect(sent.request.body).toEqual(request);
 
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+      sent.flush(credentialResponse());
       await pending;
     });
 
     it('accepts 200 as the success status, and does not expect a created status', async () => {
-      // Signing in creates no resource and returns no location, so it answers 200. A spec
-      // written against 201 would pass against a server that had it wrong.
+      // A sign-in creates no resource. The API answers 200 with the pair, and a client that
+      // insisted on 201 would reject every successful exchange.
       const pending = firstValueFrom(
         service.login({ username: 'admin', password: FAKE_PASSWORD }),
       );
 
-      httpMock
-        .expectOne(LOGIN_URL)
-        .flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN), {
-          status: 200,
-          statusText: 'OK',
-        });
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+      httpMock.expectOne(LOGIN_URL).flush(credentialResponse(), { status: 200, statusText: 'OK' });
 
-      await expectAsync(pending).toBeResolved();
+      expect((await pending).accessToken).toBe(FAKE_ACCESS_TOKEN);
     });
 
-    it('unwraps the success envelope and emits the described identity', async () => {
-      // The payload arrives as the data member of an envelope. Reading it as a bare payload
-      // would fail in the quietest possible way — every member would be undefined and the
-      // stored session would be a shape-correct blank rather than an error — so the
-      // unwrapping is asserted rather than assumed.
-      const expected = currentUser({ userId: 42, displayName: 'Someone Else' });
-
+    it('unwraps the success envelope and returns the decoded pair', async () => {
       const pending = firstValueFrom(
         service.login({ username: 'admin', password: FAKE_PASSWORD }),
       );
 
-      httpMock
-        .expectOne(LOGIN_URL)
-        .flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN, expected);
+      httpMock.expectOne(LOGIN_URL).flush(credentialResponse());
 
-      expect(await pending).toEqual(expected);
+      const response = await pending;
+
+      // The whole payload, not just the credential: the identity the pair was issued for
+      // travels with it and is the value the lifecycle owner composes its session from.
+      expect(response.refreshToken).toBe(FAKE_RENEWAL_TOKEN);
+      expect(response.expiresAtUtc).toBe(EXPIRES_AT);
+      expect(response.user.username).toBe('admin');
     });
 
     it('sets no headers on the credential exchange itself', async () => {
+      // Anonymous by contract, and the empty header set proves the service added none — no
+      // interceptor is installed in this harness, so nothing else could have.
       const pending = firstValueFrom(
         service.login({ username: 'admin', password: FAKE_PASSWORD }),
       );
 
       const sent = httpMock.expectOne(LOGIN_URL);
+      expect(sent.request.headers.keys()).toEqual([]);
 
-      // Asserting the header list is EMPTY is stronger than naming two headers that must
-      // be absent, and it needs no header name at all: the bearer credential and the
-      // correlation identifier are both attached by interceptors, none of which is
-      // installed here, so anything present would have been set by the service.
-      expect(sent.request.headers.keys())
-        .withContext('the service sets no headers; the interceptor chain owns them')
-        .toEqual([]);
+      sent.flush(credentialResponse());
+      await pending;
+    });
 
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+    it('transmits a tenant selector as a query parameter, not in the body', async () => {
+      // The endpoint resolves the tenant from the arrival host and admits the selector only
+      // as the fallback for a host with no alias row. A body member would be a
+      // tenant-crossing surface; a query parameter is what the API declares.
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }, { portalId: 0 }),
+      );
+
+      const sent = httpMock.expectOne(
+        (candidate) => candidate.url === LOGIN_URL && candidate.params.get('portalId') === '0',
+      );
+      expect(Object.keys(sent.request.body as object).sort()).toEqual(['password', 'username']);
+
+      sent.flush(credentialResponse());
+      await pending;
+    });
+
+    it('sends no selector parameter when none is supplied', async () => {
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      const sent = httpMock.expectOne(LOGIN_URL);
+      expect(sent.request.params.keys()).toEqual([]);
+
+      sent.flush(credentialResponse());
       await pending;
     });
   });
 
   describe('refresh', () => {
-    it('posts the held renewal credential to the renewal address', async () => {
-      await completeSignIn();
-
-      const pending = firstValueFrom(service.refresh());
+    it('posts the supplied renewal credential to the renewal address', async () => {
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
       const sent = httpMock.expectOne(REFRESH_URL);
       expect(sent.request.method).toBe('POST');
@@ -664,438 +651,296 @@ describe('AuthService', () => {
       expect(sent.request.headers.keys()).toEqual([]);
 
       sent.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
       await pending;
     });
 
-    it('emits the renewed session, including the rotated credential pair', async () => {
-      await completeSignIn();
-
-      const pending = firstValueFrom(service.refresh());
+    it('returns the rotated pair, so the consumed credential is replaced', async () => {
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
       httpMock
         .expectOne(REFRESH_URL)
         .flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
 
-      const session: AuthSession = await pending;
-
-      expect(session.accessToken).toBe(FAKE_ACCESS_TOKEN_ROTATED);
-      expect(session.refreshToken).toBe(FAKE_RENEWAL_TOKEN_ROTATED);
-      expect(session.expiresAtUtc)
-        .withContext('the published instant is stored verbatim, never recomputed')
-        .toBe(EXPIRES_AT);
+      const response = await pending;
+      expect(response.accessToken).toBe(FAKE_ACCESS_TOKEN_ROTATED);
+      expect(response.refreshToken).toBe(FAKE_RENEWAL_TOKEN_ROTATED);
     });
 
-    it('takes no argument, so the credential it presents cannot be supplied by a caller', () => {
-      expect(service.refresh.length).toBe(0);
-    });
+    it('answers with the same payload shape sign-in does', async () => {
+      // The API declares no separate renewal response, so one decoder serves both. A second
+      // shape here would be an invention the server does not honour.
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
-    it('issues no request at all when no session is held', async () => {
-      await expectAsync(firstValueFrom(service.refresh())).toBeRejected();
-
-      // An empty credential is not posted for the server to refuse: doing so would answer
-      // 400 and the caller would have to tell that apart from a genuine rejection.
-      httpMock.expectNone(REFRESH_URL);
-    });
-
-    it('returns an observable rather than throwing where it is called', () => {
-      // An interceptor composes this inside an error handler and must always receive an
-      // observable back; a synchronous throw there would escape the pipeline entirely.
-      expect(() => service.refresh()).not.toThrow();
-    });
-
-    it('coalesces concurrent callers onto one renewal', async () => {
-      // The defect this prevents is specific and severe. Several requests expiring together
-      // would each present the same renewal credential; the first would rotate it and the
-      // rest would present a consumed one, which the server treats as a replay and answers
-      // by revoking the whole family — signing the person out precisely because the client
-      // tried to keep them signed in.
-      await completeSignIn();
-
-      const first = firstValueFrom(service.refresh());
-      const second = firstValueFrom(service.refresh());
-      const third = firstValueFrom(service.refresh());
-
-      const requests = httpMock.match(REFRESH_URL);
-      expect(requests.length).withContext('one renewal for three callers').toBe(1);
-
-      requests[0].flush(
-        credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED),
-      );
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
-
-      const sessions = await Promise.all([first, second, third]);
-
-      expect(sessions[0].accessToken).toBe(FAKE_ACCESS_TOKEN_ROTATED);
-      expect(sessions[1]).toBe(sessions[0]);
-      expect(sessions[2]).toBe(sessions[0]);
-    });
-
-    it('presents the rotated credential, not the consumed one, on a later renewal', async () => {
-      await completeSignIn();
-
-      const first = firstValueFrom(service.refresh());
       httpMock
         .expectOne(REFRESH_URL)
-        .flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
-      await first;
+        .flush(
+          credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED, {
+            mustUpdateProfile: true,
+          }),
+        );
 
-      const second = firstValueFrom(service.refresh());
-      const sent = httpMock.expectOne(REFRESH_URL);
-      expect(sent.request.body).toEqual({ refreshToken: FAKE_RENEWAL_TOKEN_ROTATED });
-
-      sent.flush(credentialResponse('fake-access-token-third', 'fake-renewal-token-third'));
-      answerIdentityBootstrap('fake-access-token-third');
-      await second;
-    });
-  });
-
-  /**
-   * The session-lifecycle races.
-   *
-   * Every specification here describes a sequence that a real operator can produce with two
-   * clicks, and every one of them corrupted shared session state before the auth epoch
-   * existed. They are grouped together because they share one mechanism: a captured epoch
-   * compared before any write to the token custodian.
-   *
-   * The shape is always the same — start asynchronous work, perform a session transition
-   * while it is in the air, THEN answer the pending request — because that ordering is what
-   * puts the late result on the wrong side of the transition. `httpMock` makes the ordering
-   * exact rather than probabilistic, which is what makes these tests deterministic where a
-   * timing-based reproduction would be flaky.
-   */
-  describe('session-lifecycle races', () => {
-    /** The epoch counter, read through the same custodian the service writes to. */
-    function generation(): number {
-      return TestBed.inject(TokenStorageService).generation();
-    }
-
-    // ⚠ THE RESURRECTION RACE. A renewal in flight when a sign-out lands used to store its
-    // rotated pair on arrival, handing the operator back a live session - with a fresh
-    // seven-day renewal credential - immediately after they had ended it.
-    it('does not resurrect a signed-out session when a renewal lands afterwards', async () => {
-      await completeSignIn();
-
-      const tokenStorage = TestBed.inject(TokenStorageService);
-      const renewal = rejectionOf(firstValueFrom(service.refresh()));
-      const sent = httpMock.expectOne(REFRESH_URL);
-
-      // The sign-out lands while the renewal is in the air.
-      const signOut = firstValueFrom(service.logout());
-      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
-      await signOut;
-
-      expect(tokenStorage.session())
-        .withContext('sign-out discarded the session')
-        .toBeNull();
-
-      // Only now does the renewal succeed.
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
-      await renewal;
-
-      expect(tokenStorage.session())
-        .withContext('the late renewal must NOT reinstate the session')
-        .toBeNull();
-      expect(tokenStorage.refreshToken())
-        .withContext('and must not leave a live renewal credential behind')
-        .toBeNull();
-    });
-
-    // ⚠ THE MIRROR RACE. A renewal REFUSED after a new sign-in used to clear the new
-    // session - signing an operator out because a credential they no longer held was
-    // rejected.
-    it('does not clear a newer session when an older renewal is refused', async () => {
-      await completeSignIn();
-
-      const tokenStorage = TestBed.inject(TokenStorageService);
-      const renewal = rejectionOf(firstValueFrom(service.refresh()));
-      const sent = httpMock.expectOne(REFRESH_URL);
-
-      // A fresh sign-in establishes a different session while the renewal is in the air.
-      await completeSignIn('fake-access-token-second-session', 'fake-renewal-token-second');
-
-      expect(tokenStorage.accessToken()).toBe('fake-access-token-second-session');
-
-      sent.flush({ title: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
-      await renewal;
-
-      expect(tokenStorage.accessToken())
-        .withContext('the newer session survives the older renewal being refused')
-        .toBe('fake-access-token-second-session');
-      expect(tokenStorage.refreshToken()).toBe('fake-renewal-token-second');
-    });
-
-    // The same mirror race, but where the transition is a sign-out rather than a sign-in.
-    // Here clearing is harmless because nothing is held - what matters is that the outcome
-    // is still "signed out" and the caller still learns the renewal failed.
-    it('reports the renewal failure to its caller even when the session already ended', async () => {
-      await completeSignIn();
-
-      const renewal = rejectionOf(firstValueFrom(service.refresh()));
-      const sent = httpMock.expectOne(REFRESH_URL);
-
-      TestBed.inject(TokenStorageService).clear();
-
-      sent.flush({ title: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
-
-      expect(await renewal)
-        .withContext('suppressing the WRITE must not suppress the ANSWER')
-        .not.toBeNull();
-    });
-
-    // ⚠ THE LATE ACCOUNT SWITCH. Sign-in A landing after sign-in B established its session
-    // used to overwrite B - silently returning the operator to the account they had just
-    // switched away from.
-    it('does not overwrite a newer sign-in with an older one that lands late', async () => {
-      const tokenStorage = TestBed.inject(TokenStorageService);
-
-      // Attempt A is started and its credential exchange answered, but its identity read is
-      // deliberately left pending so the attempt cannot complete yet.
-      const first = rejectionOf(
-        firstValueFrom(service.login({ username: 'first', password: FAKE_PASSWORD })),
-      );
-
-      httpMock
-        .expectOne(LOGIN_URL)
-        .flush(credentialResponse('fake-access-token-a', 'fake-renewal-token-a'));
-
-      const pendingIdentityA = httpMock.expectOne(ME_URL);
-
-      // Attempt B runs to completion in the meantime.
-      await completeSignIn('fake-access-token-b', 'fake-renewal-token-b');
-      expect(tokenStorage.accessToken()).toBe('fake-access-token-b');
-
-      // Only now does A's identity read answer, completing A.
-      pendingIdentityA.flush(identityResponse(currentUser()));
-      await first;
-
-      expect(tokenStorage.accessToken())
-        .withContext("attempt A must not displace attempt B's session")
-        .toBe('fake-access-token-b');
-      expect(tokenStorage.refreshToken()).toBe('fake-renewal-token-b');
-    });
-
-    // ⚠ THE LATE FAILED SWITCH. Sign-in A being REFUSED after sign-in B succeeded used to
-    // clear B - so an operator whose own sign-in worked was signed out by somebody else's
-    // failure, or by their own abandoned first attempt.
-    it('does not clear a newer session when an older sign-in is refused', async () => {
-      const tokenStorage = TestBed.inject(TokenStorageService);
-
-      const first = rejectionOf(
-        firstValueFrom(service.login({ username: 'first', password: FAKE_PASSWORD })),
-      );
-      const pendingLoginA = httpMock.expectOne(LOGIN_URL);
-
-      await completeSignIn('fake-access-token-b', 'fake-renewal-token-b');
-
-      pendingLoginA.flush({ title: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
-      await first;
-
-      expect(tokenStorage.accessToken())
-        .withContext("the refused attempt must not clear the successful attempt's session")
-        .toBe('fake-access-token-b');
-    });
-
-    // The slot-release rule is identity-based rather than epoch-based, and this is why: a
-    // renewal that settles after a sign-out must still release the shared slot, or the slot
-    // stays occupied by a settled observable and no future renewal can ever start.
-    it('frees the shared renewal slot even when the renewal was obsoleted', async () => {
-      await completeSignIn();
-
-      const obsoleted = rejectionOf(firstValueFrom(service.refresh()));
-      const sent = httpMock.expectOne(REFRESH_URL);
-
-      TestBed.inject(TokenStorageService).clear();
-
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
-      await obsoleted;
-
-      // A brand-new session, then a renewal: it must issue a REAL request rather than being
-      // handed the settled outcome of the obsolete one.
-      await completeSignIn('fake-access-token-c', 'fake-renewal-token-c');
-
-      const fresh = firstValueFrom(service.refresh());
-      const second = httpMock.expectOne(REFRESH_URL);
-
-      expect(second.request.body)
-        .withContext('a genuinely new renewal, presenting the current credential')
-        .toEqual({ refreshToken: 'fake-renewal-token-c' });
-
-      second.flush(credentialResponse('fake-access-token-d', 'fake-renewal-token-d'));
-      answerIdentityBootstrap('fake-access-token-d');
-      await fresh;
-    });
-
-    describe('the auth epoch itself', () => {
-      it('advances when a session is stored', async () => {
-        const before = generation();
-
-        await completeSignIn();
-
-        expect(generation()).toBeGreaterThan(before);
-      });
-
-      it('advances on a clear even when no session was held', () => {
-        const tokenStorage = TestBed.inject(TokenStorageService);
-        const before = generation();
-
-        tokenStorage.clear();
-
-        // Load-bearing: two clears in succession must both advance, or work started between
-        // them would observe a matching epoch and commit against an ended session.
-        expect(generation()).toBe(before + 1);
-
-        tokenStorage.clear();
-
-        expect(generation()).toBe(before + 2);
-      });
-
-      it('reports a captured value as current until a transition occurs', () => {
-        const tokenStorage = TestBed.inject(TokenStorageService);
-        const captured = generation();
-
-        expect(tokenStorage.isCurrentGeneration(captured)).toBeTrue();
-
-        tokenStorage.clear();
-
-        expect(tokenStorage.isCurrentGeneration(captured)).toBeFalse();
-      });
+      const response = await pending;
+      expect(Object.keys(response).sort()).toEqual([
+        'accessToken',
+        'expiresAtUtc',
+        'mustChangePassword',
+        'mustUpdateProfile',
+        'passwordExpiring',
+        'refreshToken',
+        'user',
+      ]);
+      expect(response.mustUpdateProfile).toBeTrue();
     });
   });
 
   describe('logout', () => {
-    it('answers 204 with an empty body and still completes', async () => {
-      await completeSignIn();
-
-      const pending = firstValueFrom(service.logout());
-
-      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
-
-      await expectAsync(pending).toBeResolved();
-    });
-
-    it('sets no headers on the revocation', async () => {
-      await completeSignIn();
-
-      const pending = firstValueFrom(service.logout());
+    it('transmits the renewal credential and nothing else', async () => {
+      // Sign-out has NO body shape of its own: the API declares a required body of the same
+      // shape renewal uses. Posting nothing would be refused as malformed before the
+      // operation ran, and inventing a member would be a contract this server does not have.
+      const pending = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
       const sent = httpMock.expectOne(LOGOUT_URL);
+      expect(sent.request.method).toBe('POST');
+      expect(Object.keys(sent.request.body as object)).toEqual(['refreshToken']);
       expect(sent.request.headers.keys()).toEqual([]);
 
       sent.flush(null, { status: 204, statusText: 'No Content' });
       await pending;
     });
 
-    it('completes successfully even when revocation fails, and says so', async () => {
-      // A person who asks to sign out must end up signed out ON THIS DEVICE whatever the
-      // server answers, so the stream still resolves and the session is still gone. What
-      // changed is that the failure is no longer DISCARDED as well as absorbed: a 500, a 503
-      // or a dropped connection means the renewal credential is still live on the server for
-      // its full lifetime, and reporting a clean sign-out in that case was a false claim.
-      await completeSignIn();
-
-      expect(service.revocationOutstanding()).toBeFalse();
-
-      const pending = firstValueFrom(service.logout());
-
-      httpMock
-        .expectOne(LOGOUT_URL)
-        .flush({ title: 'Server Error', status: 500 }, { status: 500, statusText: 'Server Error' });
-
-      await expectAsync(pending).toBeResolved();
-      expect(service.isAuthenticated()).toBeFalse();
-      expect(service.revocationOutstanding())
-        .withContext('an unconfirmed withdrawal must be reported, not hidden')
-        .toBeTrue();
-    });
-
-    it('retries nothing when revocation fails', async () => {
-      // ⚠ RE-ASSERTS A PINNED INVARIANT AGAINST THE OBVIOUS FIX. Reporting a failed
-      // withdrawal invites folding a retry in beside it, and a retry in THIS service is
-      // exactly the orchestration creep this specification exists to catch — it would also
-      // require caching the renewal credential in a field so a later attempt could re-send
-      // it. One refused request must therefore produce one request and not one more.
-      await completeSignIn();
-
-      const pending = firstValueFrom(service.logout());
-
-      httpMock
-        .expectOne(LOGOUT_URL)
-        .flush({ title: 'Too Many Requests', status: 429 }, { status: 429, statusText: 'Too Many Requests' });
-
-      await expectAsync(pending).toBeResolved();
-
-      httpMock.expectNone(LOGOUT_URL);
-      expect(service.revocationOutstanding()).toBeTrue();
-    });
-
-    it('reports a confirmed withdrawal as confirmed', async () => {
-      // The positive control for the flag: it must not latch true for every sign-out.
-      await completeSignIn();
-
-      const pending = firstValueFrom(service.logout());
+    it('answers 204 with an empty body and still completes', async () => {
+      // No envelope is expected and none can arrive: 204 forbids a body, which is why this
+      // is the one operation with nothing to decode.
+      const pending = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
 
       httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
 
-      await pending;
-
-      expect(service.revocationOutstanding()).toBeFalse();
-    });
-
-    it('issues no request when there is no session to end', async () => {
-      await expectAsync(firstValueFrom(service.logout())).toBeResolved();
-
-      httpMock.expectNone(LOGOUT_URL);
+      await expectAsync(pending).toBeResolved();
     });
   });
 
   describe('me', () => {
     it('reads the describe-caller address with no headers of its own', async () => {
-      // This is the one operation of the four that requires a credential, and it still sets
-      // no header: the bearer credential is attached by the interceptor that owns it, so
-      // that a refusal here remains recoverable. Setting one here would substitute a value
-      // the interceptor is responsible for choosing and defeat that recovery.
+      // Once a session is held the bearer credential is attached by the interceptor. The
+      // empty header set is the proof that this call leaves it to do so.
       const pending = firstValueFrom(service.me());
 
       const sent = httpMock.expectOne(ME_URL);
       expect(sent.request.method).toBe('GET');
-      expect(sent.request.headers.keys())
-        .withContext('no credential and no correlation identifier are set here')
-        .toEqual([]);
+      expect(sent.request.headers.keys()).toEqual([]);
 
       sent.flush(identityResponse());
       await pending;
     });
 
-    it('unwraps the envelope and emits the caller description', async () => {
-      const expected = currentUser({
-        roles: ['Administrators', 'Subscribers'],
-        permissions: ['VIEW', 'EDIT'],
-      });
+    it('presents a supplied credential by hand, for the bootstrap read alone', async () => {
+      // The ONE place a credential header is written by hand, and it is not an alternative
+      // to the plain read — it is the same read performed at a moment when the interceptor
+      // cannot serve it, because the rotated token exists only as a local value and is
+      // deliberately not stored until the identity has arrived. The count is asserted as
+      // well as the value, so a second hand-set header would fail here.
+      const pending = firstValueFrom(service.me(FAKE_ACCESS_TOKEN_ROTATED));
 
-      const pending = firstValueFrom(service.me());
-      httpMock.expectOne(ME_URL).flush(identityResponse(expected));
+      const sent = httpMock.expectOne(ME_URL);
+      expect(sent.request.headers.keys().length).toBe(1);
+      expect(sent.request.headers.get('Authorization')).toBe(
+        `Bearer ${FAKE_ACCESS_TOKEN_ROTATED}`,
+      );
 
-      expect(await pending).toEqual(expected);
+      sent.flush(identityResponse());
+      await pending;
     });
 
-    it('does not store a session, because describing a caller establishes none', async () => {
-      const pending = firstValueFrom(service.me());
-      httpMock.expectOne(ME_URL).flush(identityResponse());
-      await pending;
+    it('treats an explicit null credential as no credential', async () => {
+      // The optional argument admits null as well as absent, and the two mean the same
+      // thing here: leave the credential to the interceptor. Emitting `Bearer null` would be
+      // refused on every request.
+      const pending = firstValueFrom(service.me(null));
 
-      expect(service.isAuthenticated())
-        .withContext('a description is not a credential')
-        .toBeFalse();
+      const sent = httpMock.expectOne(ME_URL);
+      expect(sent.request.headers.keys()).toEqual([]);
+
+      sent.flush(identityResponse());
+      await pending;
+    });
+
+    it('unwraps the envelope and returns the decoded caller description', async () => {
+      const pending = firstValueFrom(service.me());
+
+      httpMock
+        .expectOne(ME_URL)
+        .flush(identityResponse(currentUser({ roles: ['Administrators', 'Editors'] })));
+
+      const described = await pending;
+      expect(described.username).toBe('admin');
+      expect(described.roles).toEqual(['Administrators', 'Editors']);
     });
   });
 
   // =========================================================================
-  // REFUSALS PROPAGATE UNTRANSLATED
+  // DECODING — no response member is taken on trust
+  // =========================================================================
+
+  describe('refuses a response that does not match its contract', () => {
+    // ⚠ THE SECOND FINDING THIS FILE PINS. Both decoders existed and neither had a
+    // production consumer: the calls asserted their own response types through the
+    // transport's type argument, which is a promise the compiler makes on the server's
+    // behalf and cannot keep. Same-origin is not the same as in-process — the response
+    // crosses a reverse proxy — and the values concerned become a bearer header, a role
+    // list and a permission check. Each case below flushes a body that type-checks as JSON
+    // and is refused at the seam.
+
+    it('refuses a credential response whose envelope root is missing', async () => {
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush({ meta: null });
+
+      await expectViolationAt(pending, 'response.data');
+    });
+
+    it('refuses a credential response whose payload is null', async () => {
+      // A 200 whose payload is null is not a success the server can produce: its own helper
+      // answers 404 when it has nothing to send. Admitting null here would let a session be
+      // composed from nothing.
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush({ data: null, meta: null });
+
+      await expectViolationAt(pending, 'response.data');
+    });
+
+    it('refuses a blank access token rather than sending an empty bearer header', async () => {
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush({
+        data: { ...credentialResponse().data, accessToken: '' },
+        meta: null,
+      });
+
+      await expectViolationAt(pending, 'response.data.accessToken');
+    });
+
+    it('refuses a blank renewal credential rather than establishing an unrenewable session', async () => {
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
+
+      httpMock.expectOne(REFRESH_URL).flush({
+        data: { ...credentialResponse().data, refreshToken: '   ' },
+        meta: null,
+      });
+
+      await expectViolationAt(pending, 'response.data.refreshToken');
+    });
+
+    it('refuses an unparseable expiry instant rather than storing an invalid date', async () => {
+      // The value is stored as the string it arrived as and handed to a date constructor by
+      // whoever compares it against a clock, so an unparseable string becomes an invalid
+      // date that compares false and makes an expired session look current.
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush({
+        data: { ...credentialResponse().data, expiresAtUtc: 'not-an-instant' },
+        meta: null,
+      });
+
+      await expectViolationAt(pending, 'response.data.expiresAtUtc');
+    });
+
+    it('refuses a stringified advisory flag rather than coercing it', async () => {
+      // Coercing the string `'false'` would raise a blocking password-change requirement
+      // the server never asserted; coercing the other way would drop one it did.
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush({
+        data: { ...credentialResponse().data, mustChangePassword: 'false' },
+        meta: null,
+      });
+
+      await expectViolationAt(pending, 'response.data.mustChangePassword');
+    });
+
+    it('refuses a credential response whose nested identity is malformed', async () => {
+      // The nested position is reported, not just the fact of a violation: the identity
+      // inside a credential response populates the session, the shell header and the
+      // permission lists, so where the drift is matters when it is diagnosed.
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+
+      httpMock.expectOne(LOGIN_URL).flush({
+        data: {
+          ...credentialResponse().data,
+          user: { ...currentUser(), roles: null },
+        },
+        meta: null,
+      });
+
+      await expectViolationAt(pending, 'response.data.user.roles');
+    });
+
+    it('refuses a caller description whose role list is not a list of strings', async () => {
+      const pending = firstValueFrom(service.me());
+
+      httpMock
+        .expectOne(ME_URL)
+        .flush({ data: { ...currentUser(), roles: ['Administrators', 7] }, meta: null });
+
+      await expectViolationAt(pending, 'response.data.roles[1]');
+    });
+
+    it('refuses a caller description whose superuser flag is a string', async () => {
+      // `'false'` is truthy, so an unchecked read here would grant the whole console to a
+      // caller the server described as an ordinary member.
+      const pending = firstValueFrom(service.me());
+
+      httpMock
+        .expectOne(ME_URL)
+        .flush({ data: { ...currentUser(), isSuperUser: 'false' }, meta: null });
+
+      await expectViolationAt(pending, 'response.data.isSuperUser');
+    });
+
+    it('refuses a caller description whose identifier is fractional', async () => {
+      const pending = firstValueFrom(service.me());
+
+      httpMock.expectOne(ME_URL).flush({ data: { ...currentUser(), userId: 7.5 }, meta: null });
+
+      await expectViolationAt(pending, 'response.data.userId');
+    });
+
+    it('refuses a caller description that is not an object at all', async () => {
+      const pending = firstValueFrom(service.me());
+
+      httpMock.expectOne(ME_URL).flush({ data: 'admin', meta: null });
+
+      await expectViolationAt(pending, 'response.data');
+    });
+
+    it('admits an empty display name, because the column defaults to one', async () => {
+      // The counterpart to the refusals above, and it is the reason none of them uses a
+      // non-empty-string rule for this member: `Users.DisplayName` is NOT NULL defaulting to
+      // `''`, so the empty-string encoding of "absent" is a schema constraint here rather
+      // than a data-layer convention. A stricter rule would refuse real accounts.
+      const pending = firstValueFrom(service.me());
+
+      httpMock.expectOne(ME_URL).flush(identityResponse(currentUser({ displayName: '' })));
+
+      expect((await pending).displayName).toBe('');
+    });
+  });
+
+  // =========================================================================
+  // REFUSALS — the server's own answer reaches the caller
   // =========================================================================
 
   describe('refusals', () => {
@@ -1202,8 +1047,7 @@ describe('AuthService', () => {
         .withContext('the member is present, holding an empty string')
         .toContain('verificationCode');
 
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+      sent.flush(credentialResponse());
       await pending;
     });
 
@@ -1215,8 +1059,7 @@ describe('AuthService', () => {
       const sent = httpMock.expectOne(LOGIN_URL);
       expect(Object.keys(sent.request.body as object)).toEqual(['username', 'password']);
 
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+      sent.flush(credentialResponse());
       await pending;
     });
 
@@ -1234,8 +1077,7 @@ describe('AuthService', () => {
         verificationCode: null,
       });
 
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+      sent.flush(credentialResponse());
       await pending;
     });
 
@@ -1254,8 +1096,7 @@ describe('AuthService', () => {
       const sent = httpMock.expectOne(LOGIN_URL);
       expect(Object.keys(sent.request.body as object).sort()).toEqual(['password', 'username']);
 
-      sent.flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
+      sent.flush(credentialResponse());
       await pending;
     });
   });
@@ -1274,6 +1115,7 @@ describe('AuthService', () => {
       // as zero; and `Null.vb:L41-L45` simultaneously defines minus one as the marker for a
       // missing integer. A truthiness test, a positive-value test or a coalescing default
       // would each rewrite a real tenant into a missing one, and nothing would report it.
+      // The decoder is deliberately not range-checked for this reason.
       const pending = firstValueFrom(service.me());
       httpMock.expectOne(ME_URL).flush(identityResponse(currentUser({ portalId: -1 })));
 
@@ -1290,32 +1132,35 @@ describe('AuthService', () => {
     });
 
     it('preserves false advisory flags rather than treating them as absent', async () => {
-      await completeSignIn();
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+      httpMock.expectOne(LOGIN_URL).flush(credentialResponse());
 
-      expect(service.mustUpdateProfile())
-        .withContext('false arrived as itself and is read as itself')
+      const response = await pending;
+
+      expect(response.mustUpdateProfile)
+        .withContext('false arrived as itself and is returned as itself')
         .toBeFalse();
+      expect(response.mustChangePassword).toBeFalse();
+      expect(response.passwordExpiring).toBeFalse();
     });
 
-    it('preserves a true advisory flag through sign-in and through a renewal', async () => {
-      // Why the projection exists at all: sign-in emits the identity rather than the
-      // session, so without a re-published signal the advisory the server computed would
-      // have no reader, and the legacy blocking profile prompt would be lost rather than
-      // deferred. A renewal must not clear an unmet prompt either.
-      const pending = firstValueFrom(
+    it('carries a true advisory flag out of both credential operations', async () => {
+      // The advisory is computed by the server and travels with the pair. Whether an unmet
+      // prompt survives a renewal is the session owner's concern; that it REACHES the owner
+      // from both operations is this file's.
+      const signIn = firstValueFrom(
         service.login({ username: 'admin', password: FAKE_PASSWORD }),
       );
       httpMock
         .expectOne(LOGIN_URL)
-        .flush(
-          credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN, { mustUpdateProfile: true }),
-        );
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN);
-      await pending;
+        .flush(credentialResponse(FAKE_ACCESS_TOKEN, FAKE_RENEWAL_TOKEN, {
+          mustUpdateProfile: true,
+        }));
+      expect((await signIn).mustUpdateProfile).toBeTrue();
 
-      expect(service.mustUpdateProfile()).toBeTrue();
-
-      const renewal = firstValueFrom(service.refresh());
+      const renewal = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
       httpMock
         .expectOne(REFRESH_URL)
         .flush(
@@ -1323,32 +1168,24 @@ describe('AuthService', () => {
             mustUpdateProfile: true,
           }),
         );
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
-      await renewal;
-
-      expect(service.mustUpdateProfile())
-        .withContext('a renewal does not clear an unmet prompt')
-        .toBeTrue();
+      expect((await renewal).mustUpdateProfile).toBeTrue();
     });
 
-    it('stores the published expiry instant as the string it arrived as', async () => {
-      await completeSignIn();
-
-      const renewal = firstValueFrom(service.refresh());
+    it('returns the published expiry instant as the string it arrived as', async () => {
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
       httpMock
         .expectOne(REFRESH_URL)
         .flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
 
-      const session = await renewal;
+      const response = await pending;
 
       // No arithmetic, no clock read, no conversion. How long credentials live is a
       // deployment fact — the access credential's lifetime matches the legacy forms
       // authentication timeout of sixty minutes declared at `Website/release.config:L147` —
       // whereas when THIS one lapses is a fact about this response, and only the latter is
-      // published. The client neither computes nor re-derives it.
-      expect(session.expiresAtUtc).toBe(EXPIRES_AT);
-      expect(typeof session.expiresAtUtc).toBe('string');
+      // carried. The client neither computes nor re-derives it.
+      expect(response.expiresAtUtc).toBe(EXPIRES_AT);
+      expect(typeof response.expiresAtUtc).toBe('string');
     });
   });
 
@@ -1357,7 +1194,7 @@ describe('AuthService', () => {
   // =========================================================================
 
   describe('the endpoint surface is closed at four', () => {
-    it('exposes exactly four operations and one documented private bootstrap', () => {
+    it('exposes exactly four operations and nothing else', () => {
       // Enumerating the prototype is what makes "closed" mechanical rather than a review
       // note. Nothing else under the authentication prefix exists to be called, and each
       // absence is a decision: there is no separate verification operation, because the
@@ -1372,12 +1209,13 @@ describe('AuthService', () => {
       // outside the versioned prefix so a container check can reach it anonymously and
       // without spending a rate-limit budget.
       //
-      // `loadCurrentUser` is compile-time private and therefore still a prototype member at
-      // runtime. It is listed deliberately: it is the identity bootstrap the two credential
-      // operations perform, and it is the single place a header is written by hand.
+      // MIGRATION: a fifth, private member used to appear in this list — the identity
+      //   bootstrap the two credential operations performed for themselves. It is gone
+      //   because the bootstrap is now composed by the session's owner out of the PUBLIC
+      //   describe-caller operation, which takes the freshly issued credential as an
+      //   optional argument. One operation, one endpoint, no private duplicate of it.
       expect(Object.getOwnPropertyNames(AuthService.prototype).sort()).toEqual([
         'constructor',
-        'loadCurrentUser',
         'login',
         'logout',
         'me',
@@ -1394,25 +1232,29 @@ describe('AuthService', () => {
 
     it('addresses only the four declared paths across every operation', async () => {
       // Drives all four operations in one test and lets verify() prove that between them
-      // they touched nothing but the four addresses this file names.
-      await completeSignIn();
+      // they touched nothing but the four addresses this file names — and that each issued
+      // exactly one request.
+      const signIn = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+      httpMock.expectOne(LOGIN_URL).flush(credentialResponse());
+      await signIn;
 
-      const described = firstValueFrom(service.me());
+      const described = firstValueFrom(service.me(FAKE_ACCESS_TOKEN));
       httpMock.expectOne(ME_URL).flush(identityResponse());
       await described;
 
-      const renewal = firstValueFrom(service.refresh());
+      const renewal = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
       httpMock
         .expectOne(REFRESH_URL)
         .flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
-      answerIdentityBootstrap(FAKE_ACCESS_TOKEN_ROTATED);
       await renewal;
 
-      const signOut = firstValueFrom(service.logout());
+      const signOut = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN_ROTATED }));
       httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
       await signOut;
 
-      expect(service.isAuthenticated()).toBeFalse();
+      expectNothingHeld();
     });
   });
 });

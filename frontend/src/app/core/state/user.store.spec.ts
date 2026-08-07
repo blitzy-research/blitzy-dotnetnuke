@@ -1806,16 +1806,23 @@ describe('UserStore', () => {
       expect(store.selectedUserLoading()).toBeFalse();
     });
 
-    it('holds a null answer as null rather than as an empty object', () => {
-      // The server may report that no account matches by answering with nothing in the
-      // envelope, so the nullable answer is the contract rather than defensiveness.
+    it('records a null answer as a failure rather than holding it as an empty account', () => {
+      // MIGRATION: this case used to assert that a `200` carrying nothing was HELD as null, on the
+      //   reading that the envelope was how the server reported "no such account". It is not: the
+      //   read translates its outcome through the shared helper, which answers a not-found problem
+      //   document as soon as the value is absent, so a null payload is drift. The transport refuses
+      //   it at the boundary and this store records the refusal — which is what an operator needs,
+      //   because the previous behaviour rendered a blank account record indistinguishable from an
+      //   account with nothing in it, with no failure anywhere to explain either.
       store.selectUser(999);
 
       expectRequest('GET', `${USERS_URL}/999`).flush(envelope(null));
 
       expect(store.selectedUser()).toBeNull();
+      expect(store.selectedUserLoading()).toBeFalse();
+      expect(store.failure()?.operation).toBe('loadUser');
       expect(store.selectedUserId())
-        .withContext('the selection stands even when the read answered with nothing')
+        .withContext('the selection stands so a retry addresses the account that was asked for')
         .toBe(999);
     });
 

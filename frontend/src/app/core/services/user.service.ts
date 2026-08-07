@@ -95,7 +95,7 @@ import {
   decodeUserDetail,
   decodeUserListItem,
 } from '../models/user.model';
-import { arrayOf, decodeResponse, envelopeOf, nullable, pageOf } from '../utils/decode.util';
+import { arrayOf, decodeResponse, envelopeOf, pageOf } from '../utils/decode.util';
 import { presentedInContext } from './notification.service';
 
 import type { Decoder } from '../utils/decode.util';
@@ -120,27 +120,30 @@ import { userApprovalParams, userListParams } from '../utils/http-params.util';
 /**
  * One decoder per response shape this transport reads, composed once at module scope.
  *
- * Several are `nullable`, and each mirrors its contract rather than being defensive: the
- * account read, the profile read, the membership settings and the single declaration read all
- * publish a null payload for a target the caller may address but the server may not resolve,
- * and the methods returning them are declared `| null` for the same reason.
+ * ⚠ NONE IS `nullable`, AND THAT MIRRORS THE CONTRACT RATHER THAN BEING OPTIMISTIC. Each of
+ * these endpoints answers a successful read with a populated payload, and expresses "the target
+ * does not resolve" as a `404` problem document — never as a `200` carrying nothing.
+ *
+ * MIGRATION: THE ACCOUNT READ, THE PROFILE READ, THE ACCOUNT-POLICY READ AND THE SINGLE
+ *   DECLARATION READ USED TO ADMIT A SUCCESSFUL `null`, which is a response this API cannot
+ *   send. Every value-bearing outcome is translated by one helper on the server, and that helper
+ *   answers `NotFoundProblem()` — a full RFC 7807 document carrying `type`, `title`, `detail` and
+ *   `traceId` — as soon as the outcome's value is null, keeping `200` plus the shared envelope
+ *   for a value that exists. The nullable declaration therefore described a shape no deployment
+ *   produces, and it cost accuracy twice over: an account or a profile that had gone was
+ *   presented as a successfully blank record instead of an announced absence, and the real 404
+ *   path was left looking exceptional. An undeclared `null` is now refused at the boundary, so a
+ *   drifted body becomes one located failure rather than an apparently successful nothing.
  */
 const USER_PAGE: Decoder<PagedUserList> = pageOf(decodeUserListItem);
 const USER_DETAIL_RESPONSE: Decoder<UserDetail> = envelopeOf(decodeUserDetail);
-const NULLABLE_USER_DETAIL_RESPONSE: Decoder<UserDetail | null> = envelopeOf(
-  nullable(decodeUserDetail),
-);
-const NULLABLE_USER_PROFILE_RESPONSE: Decoder<UserProfile | null> = envelopeOf(
-  nullable(decodeUserProfile),
-);
-const NULLABLE_MEMBERSHIP_SETTINGS_RESPONSE: Decoder<MembershipSettings | null> = envelopeOf(
-  nullable(decodeMembershipSettings),
+const USER_PROFILE_RESPONSE: Decoder<UserProfile> = envelopeOf(decodeUserProfile);
+const MEMBERSHIP_SETTINGS_RESPONSE: Decoder<MembershipSettings> = envelopeOf(
+  decodeMembershipSettings,
 );
 const PROFILE_DEFINITION_RESPONSE: Decoder<ProfilePropertyDefinition> = envelopeOf(
   decodeProfilePropertyDefinition,
 );
-const NULLABLE_PROFILE_DEFINITION_RESPONSE: Decoder<ProfilePropertyDefinition | null> =
-  envelopeOf(nullable(decodeProfilePropertyDefinition));
 const PROFILE_DEFINITION_LIST_RESPONSE: Decoder<readonly ProfilePropertyDefinition[]> =
   envelopeOf(arrayOf(decodeProfilePropertyDefinition));
 
@@ -320,11 +323,10 @@ export class UserService {
   /**
    * Reads one account.
    *
-   * Answers null when the identifier names no account in the resolved tenant and the
-   * server chooses to say so in the envelope rather than with a not-found status. The
-   * nullable return is therefore the contract, not defensiveness: a caller must
-   * handle the empty answer, and typing it away would push a run-time surprise into
-   * whatever read a member off it.
+   * An identifier naming no account in the resolved tenant is refused with a not-found
+   * problem document, so a successful answer always carries an account. The absent case
+   * is an error path and is deliberately not modelled as a successful empty answer — see
+   * the note on the decoders at the head of this file for why the server cannot send one.
    *
    * MIGRATION: the identifier is interpolated exactly as supplied and is never
    * inspected first. No request in this file is guarded on an identifier being
@@ -341,12 +343,12 @@ export class UserService {
    * it.
    *
    * @param userId The account to read. Interpolated unchanged.
-   * @returns The account, or null when none matches.
+   * @returns The account. An identifier matching none arrives as a `404` failure.
    */
-  getById(userId: number): Observable<UserDetail | null> {
+  getById(userId: number): Observable<UserDetail> {
     return this.http
       .get<unknown>(API_ENDPOINTS.users.byId(userId), { context: presentedInContext() })
-      .pipe(map((body) => decodeResponse(NULLABLE_USER_DETAIL_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(USER_DETAIL_RESPONSE, body)));
   }
 
   /**
@@ -428,12 +430,12 @@ export class UserService {
    * choice where it made one, and the tenant's default where it did not.
    *
    * @param userId The account whose profile to read. Interpolated unchanged.
-   * @returns The profile, or null when the identifier names no account.
+   * @returns The profile. An identifier naming no account arrives as a `404` failure.
    */
-  getProfile(userId: number): Observable<UserProfile | null> {
+  getProfile(userId: number): Observable<UserProfile> {
     return this.http
       .get<unknown>(API_ENDPOINTS.users.profile(userId), { context: presentedInContext() })
-      .pipe(map((body) => decodeResponse(NULLABLE_USER_PROFILE_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(USER_PROFILE_RESPONSE, body)));
   }
 
   /**
@@ -646,14 +648,15 @@ export class UserService {
    * module setting all along, as the listing's own reader at
    * `Website/admin/Users/Users.ascx.vb` L114-L119 shows.
    *
-   * @returns The policy, or null when the tenant has none recorded.
+   * @returns The policy. A tenant the server cannot resolve is a `404` failure rather than
+   * a successful empty answer; every member of the contract is populated on a `200`.
    */
-  getMembershipSettings(): Observable<MembershipSettings | null> {
+  getMembershipSettings(): Observable<MembershipSettings> {
     return this.http
       .get<unknown>(API_ENDPOINTS.users.membershipSettings(), {
         context: presentedInContext(),
       })
-      .pipe(map((body) => decodeResponse(NULLABLE_MEMBERSHIP_SETTINGS_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(MEMBERSHIP_SETTINGS_RESPONSE, body)));
   }
 
   /**
@@ -764,17 +767,17 @@ export class UserService {
    * @param propertyDefinitionId The declaration to read. Interpolated unchanged, and
    * never inspected first - see {@link getById} for why no identifier in this file is
    * guarded on being truthy or positive.
-   * @returns The declaration, or null when the identifier names none.
+   * @returns The declaration. An identifier naming none arrives as a `404` failure.
    */
   getProfileDefinition(
     propertyDefinitionId: number,
-  ): Observable<ProfilePropertyDefinition | null> {
+  ): Observable<ProfilePropertyDefinition> {
     return this.http
       .get<unknown>(
         API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId),
         { context: presentedInContext() },
       )
-      .pipe(map((body) => decodeResponse(NULLABLE_PROFILE_DEFINITION_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(PROFILE_DEFINITION_RESPONSE, body)));
   }
 
   /**

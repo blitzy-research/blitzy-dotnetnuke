@@ -1739,14 +1739,107 @@ describe('RoleService', () => {
       );
     });
 
-    it('refuses a billing frequency in the wrong case', () => {
-      // ⚠ THE SUBTLEST OF THE THREE. A lower-case `m` is one character, satisfies every type
-      // assertion, and matches no arm of the fee-schedule switch.
+    it('carries a lower-case stored code through verbatim rather than folding its case', () => {
+      // ⚠ THE SUBTLEST CASE IN THE FILE, AND IT IS AN ADMISSION RATHER THAN A REFUSAL.
+      //
+      // MIGRATION: an earlier revision refused a lower-case `m`, on the reasoning that it matches
+      //   no arm of the fee schedule. That reasoning inverted the server's contract. The API's
+      //   persistence read is deliberately CASE-SENSITIVE and its response converter is lossless,
+      //   and the converter's own note records why: the inbound path up-cases what a CALLER sends,
+      //   while up-casing a STORED `'m'` would change how an existing row reads and would rewrite
+      //   its byte on the next update of that row. So a stored `'m'` really does travel, and the
+      //   only honest thing a client can do is carry it as the character it is — refusing it would
+      //   make the role unreadable, and up-casing it here would silently reinterpret stored data.
+      //
+      // What a client may NOT do is send it back: the write vocabulary stays closed, which the
+      // write cases in this file assert separately.
+      const values: unknown[] = [];
+
+      service.getRole(ROLE_ID_ZERO).subscribe({ next: (value: unknown) => values.push(value) });
+
+      httpMock
+        .expectOne(ROLE_ZERO_URL)
+        .flush(envelope({ ...ROLE, billingFrequency: 'm', trialFrequency: 'y' }));
+
+      expect(values.length).toBe(1);
+
+      const role = (values[0] as ApiResponse<Role>).data;
+
+      expect(role.billingFrequency)
+        .withContext('the stored byte, not the upper-case code it resembles')
+        .toBe('m');
+      expect(role.trialFrequency).toBe('y');
+    });
+
+    it('admits the shipped legacy codes that fall outside the published vocabulary', () => {
+      // ⚠ THE CASE THIS WHOLE SPLIT EXISTS FOR, AND IT IS NOT HYPOTHETICAL. Every DotNetNuke
+      // installation ships roles whose stored frequency characters come from the superseded
+      // numeric code set — `01.00.00.SqlDataProvider` L7192 and L7194 — and the API carries them
+      // through unchanged. A decoder closed to the six published codes therefore refused a
+      // perfectly valid response, and one such row made the role unreadable for good: retrying
+      // reproduced the refusal deterministically, because the stored data was the cause.
+      for (const code of ['4', '0']) {
+        const values: unknown[] = [];
+
+        service.getRole(ROLE_ID_ZERO).subscribe({ next: (value: unknown) => values.push(value) });
+
+        httpMock
+          .expectOne(ROLE_ZERO_URL)
+          .flush(envelope({ ...ROLE, billingFrequency: code, trialFrequency: code }));
+
+        expect(values.length).withContext(`the stored code ${code} must be admitted`).toBe(1);
+
+        const role = (values[0] as ApiResponse<Role>).data;
+
+        expect(role.billingFrequency).toBe(code);
+        expect(role.trialFrequency).toBe(code);
+      }
+    });
+
+    it('does not fail a whole page of roles because one row holds a legacy code', () => {
+      // The consequence at the scale that matters. The listing decodes every row, so a refusal
+      // on one row is a refusal of the page: an administrator could not see ANY role because one
+      // legacy row existed. Both rows must arrive, each carrying its own stored character.
+      const values: unknown[] = [];
+
+      service.listRoles(PAGED_REQUEST).subscribe({ next: (value: unknown) => values.push(value) });
+
+      httpMock.expectOne(PAGED_ROLES_URL).flush({
+        items: [
+          { ...ROLE_LIST_ITEM, roleId: 0, billingFrequency: '4' },
+          { ...ROLE_LIST_ITEM, roleId: 1, billingFrequency: 'M' },
+        ],
+        meta: { totalCount: 2, pageIndex: 0, pageSize: PAGED_REQUEST.pageSize, totalPages: 1 },
+      });
+
+      expect(values.length).toBe(1);
+
+      const page = values[0] as PagedResponse<RoleListItem>;
+
+      expect(page.items.length).toBe(2);
+      expect(page.items.map((row) => row.billingFrequency)).toEqual(['4', 'M']);
+    });
+
+    it('refuses a frequency of more than one character even when it starts with a code', () => {
+      // The length is what the contract fixes, because the column is `char(1)`. Accepting a
+      // longer value on its first character would read `"Monthly"` as the month code, which is the
+      // one wrong answer indistinguishable from a right one.
       expectViolationAt(
         service.getRole(ROLE_ID_ZERO),
         ROLE_ZERO_URL,
-        envelope({ ...ROLE, billingFrequency: 'm' }),
+        envelope({ ...ROLE, billingFrequency: 'M onth' }),
         'response.data.billingFrequency',
+      );
+    });
+
+    it('refuses an empty frequency, which is a present member carrying no code', () => {
+      // Distinct from `null`, which is how the contract states "no billing terms" and is admitted
+      // by the case below. An empty string is a member that arrived and said nothing.
+      expectViolationAt(
+        service.getRole(ROLE_ID_ZERO),
+        ROLE_ZERO_URL,
+        envelope({ ...ROLE, trialFrequency: '' }),
+        'response.data.trialFrequency',
       );
     });
 

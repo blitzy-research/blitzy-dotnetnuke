@@ -25,13 +25,19 @@
  * to `http.get(…)`: nothing inspects the body, and the value is trusted purely
  * because a developer wrote a type where a value was expected. That is especially
  * dangerous for this contract, because its most consequential member is a SINGLE
- * CHARACTER. A `billingFrequency` of `"m"`, `"Monthly"` or the number `2` would
- * every one of them read as a `BillingFrequency` to the compiler and then fall
- * through the fee-schedule switch to its default branch, quietly charging a paid
- * role on the wrong cycle. Each contract that is read therefore carries a decoder
- * declared FROM its interface — forgetting a member is a compile error — and the
- * transport refuses a response that does not match. Refusals name the member and
- * the expected type, never the value.
+ * CHARACTER. A `billingFrequency` of `"Monthly"` or the number `2` would read as a
+ * frequency to the compiler and then fall through the fee-schedule switch to its
+ * default branch, quietly charging a paid role on the wrong cycle. Each contract
+ * that is read therefore carries a decoder declared FROM its interface — forgetting
+ * a member is a compile error — and the transport refuses a response that does not
+ * match. Refusals name the member and the expected type, never the value.
+ *
+ * ⚠ WHAT THE FREQUENCY DECODER CHECKS IS THE SHAPE, NOT THE VOCABULARY, and the two
+ * are deliberately different sets in the two directions. A READ admits any single
+ * stored character — see {@link StoredBillingFrequency} for the measured reason,
+ * which is shipped data rather than tolerance — while a WRITE is closed to the six
+ * published codes. A decoder closed to those six refused whole responses that the
+ * API had every right to send.
  *
  * The write contracts carry no decoder: this client composes them, so there is
  * nothing untrusted to check.
@@ -79,6 +85,7 @@
  */
 
 import {
+  ContractViolationError,
   decodeBoolean,
   decodeDateString,
   decodeInteger,
@@ -86,7 +93,6 @@ import {
   decodeString,
   nullable,
   objectOf,
-  oneOf,
   type Decoder,
 } from '../utils/decode.util';
 
@@ -142,11 +148,13 @@ import {
  * numeric codes `'0'` through `'5'` alongside them at L6846, L6855, L6864, L6873,
  * L6882 and L6891.
  *
- * MIGRATION: ONE vocabulary serves BOTH columns, so `trialFrequency` is typed with
- * this same union and there is deliberately no second type for it. A single role
- * row joins the same frequency lookup twice, once per column, in both the early and
- * the terminal schema (`01.00.08.SqlDataProvider` L7032-L7033). The API declares no
- * separate trial type either.
+ * MIGRATION: ONE vocabulary serves BOTH COLUMNS, so `trialFrequency` is typed exactly
+ * as `billingFrequency` is — this union where the value is written, and
+ * {@link StoredBillingFrequency} where it is read — and there is deliberately no
+ * second type for the trial. A single role row joins the same frequency lookup twice,
+ * once per column, in both the early and the terminal schema
+ * (`01.00.08.SqlDataProvider` L7032-L7033). The API declares no separate trial type
+ * either. The split that DOES exist is by DIRECTION rather than by column.
  *
  * MIGRATION: the wire form is the CHARACTER, and pinning that down took measuring
  * rather than reading. The API declares this as a C# enumeration backed by
@@ -163,14 +171,84 @@ import {
  */
 export type BillingFrequency = 'N' | 'O' | 'D' | 'W' | 'M' | 'Y';
 
-/**
- * The six published billing codes, as an array the decoders close over.
- *
- * Spelled out rather than derived, because a union type does not exist at runtime. The
- * codes are load-bearing DATA — `Roles.BillingFrequency` is `char(1)` — so they are
- * preserved verbatim and never translated to a name or an ordinal.
+/*
+ * MIGRATION: THE RUNTIME TABLE OF THE SIX CODES IS GONE FROM THIS MODULE, and its removal is part
+ *   of the read/write split rather than a tidy-up. It existed for one purpose — closing the READ
+ *   decoders over the published vocabulary — and that was the defect: the API sends stored
+ *   characters the six do not contain, so a read closed over them refused valid responses. Reads
+ *   are now checked for shape by {@link decodeStoredFrequency}, and the WRITE vocabulary is
+ *   enforced where a write is actually composed: the role form declares the six as its option
+ *   list, with the caption beside each, and narrows a stored code by looking it up there — which
+ *   is both the crossing point between the two vocabularies and the shape of the legacy
+ *   `Items.FindByValue(...)` lookup it reproduces. A second runtime copy here would have no
+ *   consumer and would be free to drift from the one that does.
  */
-const BILLING_CODES: readonly BillingFrequency[] = ['N', 'O', 'D', 'W', 'M', 'Y'];
+
+/**
+ * A frequency code as the DATABASE HOLDS IT: one character, whatever character that is.
+ *
+ * ⚠ THIS IS THE READ VOCABULARY, AND IT IS DELIBERATELY WIDER THAN THE WRITE VOCABULARY.
+ * {@link BillingFrequency} is what a caller MAY SEND; this is what a caller MAY RECEIVE. The two
+ * are different sets because the API is deliberately asymmetric, and the asymmetry is the
+ * server's own documented behaviour rather than an accident:
+ *
+ * - OUTBOUND, the converter is LOSSLESS. It writes whatever single character the row holds,
+ *   including one no vocabulary declares, precisely so that an unrelated edit cannot rewrite a
+ *   stored byte. Its own note records why: an earlier revision normalised an unrecognised
+ *   stored character on the way out, and that normalisation destroyed the byte on the next
+ *   update of the row.
+ * - INBOUND, the converter is STRICT. It refuses anything that is not one of the six, up-cases
+ *   the character it accepts, and the request validators constrain the same property
+ *   independently — so the closed vocabulary is enforced on the only side where a caller can
+ *   widen it.
+ *
+ * MIGRATION: THE CLOSED UNION USED TO SERVE BOTH DIRECTIONS, AND THAT WAS A LIVE DEFECT RATHER
+ *   THAN A STRICTNESS PREFERENCE. Every DotNetNuke installation ships two roles whose stored
+ *   frequency characters fall OUTSIDE the six — `01.00.00.SqlDataProvider` L7192 and L7194 — and
+ *   the read decoders refused anything else, so one such row failed the decoding of the WHOLE
+ *   response. A single legacy row could therefore make the role listing, and the detail read for
+ *   that role, permanently unavailable in a real migrated database: the screen showed a refusal,
+ *   and retrying reproduced it deterministically because the data itself was the cause.
+ *
+ * WHY THE TYPE IS SPELLED THIS WAY. The union with `string & {}` keeps the six declared codes
+ * visible to a reader and to an editor's completion list while still admitting any string, which
+ * is the honest description of the wire contract: TypeScript cannot express "exactly one
+ * character", so the LENGTH is enforced at run time by {@link decodeStoredFrequency} and the
+ * TYPE records the vocabulary. It also keeps the two directions from being mistaken for each
+ * other — a stored code is not assignable to {@link BillingFrequency}, so anything that means to
+ * send one back must narrow it deliberately, which is exactly the check that was missing.
+ *
+ * A code outside the six carries NO meaning this client may invent. It is rendered as the
+ * character it is, classified as unsupported where a classification is needed, and never
+ * silently mapped onto one of the six.
+ */
+export type StoredBillingFrequency = BillingFrequency | (string & {});
+
+/**
+ * Validates an untrusted value as a stored frequency code.
+ *
+ * Strict about the two things the contract actually promises — that the value is a string and
+ * that it is exactly one character — and deliberately silent about which character it is. That
+ * split is the whole point: a `"Monthly"` or an empty string is drift worth refusing, because the
+ * column is `char(1)` and the converter writes exactly one character; a `"4"` is DATA.
+ *
+ * Case is preserved. The server's inbound path up-cases what a caller sends, but its persistence
+ * read deliberately does not, because the legacy application compared stored codes
+ * case-sensitively and up-casing a stored `'m'` would change how an existing row reads and would
+ * rewrite its byte on the next update. Folding case here would reintroduce exactly that.
+ */
+const decodeStoredFrequency: Decoder<StoredBillingFrequency> = (value, path) => {
+  const text: string = decodeString(value, path);
+
+  if (text.length !== 1) {
+    // Reported as a length violation rather than as an unknown code, because the length is what
+    // the contract fixes: `char(1)` cannot hold `"Monthly"`, and accepting it on its first
+    // character would read it as the month code.
+    throw new ContractViolationError(path, 'a one-character frequency code', text);
+  }
+
+  return text;
+};
 
 /**
  * The temporal state of one user-to-role assignment.
@@ -288,8 +366,15 @@ export interface RoleListItem {
    */
   readonly billingPeriod: number | null;
 
-  /** The billing cycle's unit, or `null` when the role has no billing terms. */
-  readonly billingFrequency: BillingFrequency | null;
+  /**
+   * The billing cycle's unit as STORED, or `null` when the role has no billing terms.
+   *
+   * Typed with {@link StoredBillingFrequency} rather than {@link BillingFrequency} because this
+   * is a READ: the API carries the stored character through losslessly, and the shipped seed data
+   * contains characters outside the published six. See that type for why the two directions
+   * differ.
+   */
+  readonly billingFrequency: StoredBillingFrequency | null;
 
   /** The trial fee, or `null` when the role offers no trial. */
   readonly trialFee: number | null;
@@ -298,13 +383,13 @@ export interface RoleListItem {
   readonly trialPeriod: number | null;
 
   /**
-   * The trial period's unit, or `null`.
+   * The trial period's unit as STORED, or `null`.
    *
-   * Typed with {@link BillingFrequency} because one vocabulary serves both columns.
-   * A code of `N` here means the role offers no trial and the billing terms govern
-   * expiry, which is a different fact from `null`.
+   * Typed with {@link StoredBillingFrequency} because one vocabulary serves both columns and this
+   * is the read side of it. A code of `N` here means the role offers no trial and the billing
+   * terms govern expiry, which is a different fact from `null`.
    */
-  readonly trialFrequency: BillingFrequency | null;
+  readonly trialFrequency: StoredBillingFrequency | null;
 
   /** Whether accounts may subscribe to the role themselves. Never null. */
   readonly isPublic: boolean;
@@ -382,14 +467,19 @@ export interface Role {
   /** The role's description, at most 1000 characters, or `null`. */
   readonly description: string | null;
 
-  /** The billing cycle's unit, or `null` when the role has no billing terms. */
-  readonly billingFrequency: BillingFrequency | null;
+  /**
+   * The billing cycle's unit as STORED, or `null` when the role has no billing terms.
+   *
+   * {@link StoredBillingFrequency}, not {@link BillingFrequency}: a read admits any single stored
+   * character, and the shipped seed data contains two that fall outside the published six.
+   */
+  readonly billingFrequency: StoredBillingFrequency | null;
 
   /** The recurring fee, or `null` when the role carries none. */
   readonly serviceFee: number | null;
 
-  /** The trial period's unit, or `null`. One vocabulary serves both columns. */
-  readonly trialFrequency: BillingFrequency | null;
+  /** The trial period's unit as STORED, or `null`. One vocabulary serves both columns. */
+  readonly trialFrequency: StoredBillingFrequency | null;
 
   /** How many {@link trialFrequency} units the trial spans, or `null`. */
   readonly trialPeriod: number | null;
@@ -770,11 +860,16 @@ export interface UpdateRoleGroupRequest {
 /**
  * Decodes one listed role row.
  *
- * ⚠ THE TWO FREQUENCY MEMBERS ARE REFUSED WHEN THE CODE IS UNRECOGNISED. They are single
- * characters, so `"m"`, `"Monthly"` and the number `2` would all pass a type assertion and
- * then fall through the fee-schedule switch to its default branch — charging a paid role on
- * the wrong cycle, or on none. Refusing is the only outcome that cannot be mistaken for a
- * correct answer.
+ * ⚠ THE TWO FREQUENCY MEMBERS ARE CHECKED FOR SHAPE, NOT FOR MEMBERSHIP OF THE WRITE
+ * VOCABULARY. A non-string and a string of any length other than one are refused, because the
+ * column is `char(1)` and admitting `"Monthly"` on its first character would read it as the
+ * month code. A single character the six do not declare is DATA and is carried through.
+ *
+ * MIGRATION: these two members used to be decoded against the closed write vocabulary, which
+ *   made one shipped legacy row fail the decoding of the whole page — see
+ *   {@link StoredBillingFrequency} for the measured seed rows and why the server sends them.
+ *   Refusing an entire listing because one row holds a character from a superseded numeric code
+ *   set is not strictness; it is a screen that cannot be opened.
  *
  * Every fee and period is nullable because an unpaid role has none, and the fees are decoded
  * as numbers rather than integers: a service fee is a money amount and carries a fraction.
@@ -785,10 +880,10 @@ export const decodeRoleListItem: Decoder<RoleListItem> = objectOf<RoleListItem>(
   description: nullable(decodeString),
   serviceFee: nullable(decodeNumber),
   billingPeriod: nullable(decodeInteger),
-  billingFrequency: nullable(oneOf(BILLING_CODES)),
+  billingFrequency: nullable(decodeStoredFrequency),
   trialFee: nullable(decodeNumber),
   trialPeriod: nullable(decodeInteger),
-  trialFrequency: nullable(oneOf(BILLING_CODES)),
+  trialFrequency: nullable(decodeStoredFrequency),
   isPublic: decodeBoolean,
   autoAssignment: decodeBoolean,
 });
@@ -807,9 +902,9 @@ export const decodeRole: Decoder<Role> = objectOf<Role>({
   roleGroupId: nullable(decodeInteger),
   roleName: decodeString,
   description: nullable(decodeString),
-  billingFrequency: nullable(oneOf(BILLING_CODES)),
+  billingFrequency: nullable(decodeStoredFrequency),
   serviceFee: nullable(decodeNumber),
-  trialFrequency: nullable(oneOf(BILLING_CODES)),
+  trialFrequency: nullable(decodeStoredFrequency),
   trialPeriod: nullable(decodeInteger),
   billingPeriod: nullable(decodeInteger),
   trialFee: nullable(decodeNumber),

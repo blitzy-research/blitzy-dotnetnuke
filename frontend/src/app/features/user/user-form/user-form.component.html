@@ -164,8 +164,8 @@
 
 @if (userMissing()) {
   <!--
-    The read succeeded and reported nothing, so there is no record to edit and no problem
-    document to show. The measured `NoUser.Text` wording is rendered in place of the form.
+    The READ was refused as not-found, so there is no record to edit. The measured
+    `NoUser.Text` wording is rendered in place of the form.
 
     MIGRATION: this reproduces the measured behaviour exactly. `ManageUsers.ascx.vb` L207
     and L221 answer a missing or ineligible account by pairing the warning with
@@ -173,8 +173,13 @@
     — it HIDES them. Offering an empty credential form for an account that does not exist
     would invite an operator to type into something that can never be saved.
 
-    No live region is declared here: the component already announces this wording through
-    the notification channel, and a second announcement would repeat it.
+    MIGRATION: the condition is the read's `404`, not a successful empty payload. The API
+    expresses an absent record with a problem document and never with a `200` carrying
+    nothing, so the state this branch renders is reached from the refusal rather than from a
+    null that could not arrive.
+
+    No live region is declared here: the shared refusal announcer already speaks this
+    wording once, and a second announcement would repeat it.
   -->
   <p>This account doesn't exist</p>
 } @else {

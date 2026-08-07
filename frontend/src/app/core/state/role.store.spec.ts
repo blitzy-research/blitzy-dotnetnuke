@@ -1784,6 +1784,47 @@ describe('RoleStore', () => {
       expect(billingTermsBound('N', 12)).toBe('Unbounded');
     });
 
+    it('reports a stored code outside the supported vocabulary as unsupported', () => {
+      // MIGRATION: THE CLASSIFIER USED TO THROW HERE, and the throw was reachable from shipped
+      //   data rather than from drift. Every DotNetNuke installation seeds roles whose stored
+      //   frequency characters come from the superseded numeric code set, the API carries a stored
+      //   character through losslessly, and the six-arm branch ended in an unreachable-case
+      //   assertion — so describing one of those roles raised an error on a screen that only
+      //   wanted to say what its terms were.
+      //
+      // `Unsupported` is neither of the two answers it could be mistaken for, and that is the
+      // point. `RoleController.vb:L540-L547` has no final arm, so an unrecognised code applied NO
+      // advance and left the expiry exactly as it stood: the terms neither remove an expiry
+      // (`Unbounded`) nor advance one (`Bounded`), so claiming either would assert something the
+      // stored terms do not say.
+      expect(billingTermsBound('4', 12)).toBe('Unsupported');
+      expect(billingTermsBound('0', 1)).toBe('Unsupported');
+
+      // Case is data. A lower-case `m` is a different stored byte from `M`, and it is classified
+      // as unsupported rather than folded onto the month code — the server's persistence read is
+      // case-sensitive for the same reason.
+      expect(billingTermsBound('m', 12)).toBe('Unsupported');
+    });
+
+    it('still lets the absent-integer period win over an unsupported code', () => {
+      // The period short-circuit is tested FIRST in the legacy branch and still is here, so the
+      // widened vocabulary cannot reorder the two.
+      expect(billingTermsBound('4', -1)).toBe('Unbounded');
+    });
+
+    it('classifies the terms of a role whose stored code is unsupported, rather than failing', () => {
+      // The end-to-end form of the same claim: a role carrying a legacy code is read, held and
+      // classified, and the code itself survives on the held role untouched.
+      store.selectRole(7);
+      expectGet(ROLE_SEVEN_URL).flush(
+        envelopeOf(aRole({ roleId: 7, billingFrequency: '4', billingPeriod: 1 })),
+      );
+
+      expect(present(store.selectedRole(), 'the selected role').billingFrequency).toBe('4');
+      expect(store.selectedRoleBillingTerms()).toBe('Unsupported');
+      expect(store.failure()).withContext('a legacy code is data, not a failure').toBeNull();
+    });
+
     it('retains a period of minus one on the role rather than coalescing it', () => {
       store.selectRole(7);
       expectGet(ROLE_SEVEN_URL)
@@ -2915,7 +2956,12 @@ describe('RoleStore', () => {
       // the status union is assignable to the term union. Widening to a plain string is what
       // lets the disjointness be stated as a runtime assertion at all, and the emptiness of
       // the intersection below is the machine-checkable form of the same claim.
-      const termVocabulary: readonly string[] = ['Unbounded', 'Perpetual', 'Bounded'];
+      const termVocabulary: readonly string[] = [
+        'Unbounded',
+        'Perpetual',
+        'Bounded',
+        'Unsupported',
+      ];
       const statusVocabulary: readonly string[] = ROLE_STATUS_VALUES;
       const overlap: readonly string[] = termVocabulary.filter((term) =>
         statusVocabulary.includes(term),

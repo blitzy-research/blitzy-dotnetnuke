@@ -362,10 +362,15 @@ describe('AppComponent', () => {
 
     it('still reaches the sign-in screen when the revocation request fails', () => {
       // A refused or unreachable endpoint arrives as a COMPLETION rather than as an error,
-      // because `auth.service.ts` absorbs it with `catchError(() => of(undefined))` — the
-      // server answers 204 whatever it finds. Either way the session is already gone, and
+      // because `core/state/auth.store.ts` absorbs the refusal DELIBERATELY — local sign-out
+      // has already happened unconditionally, and the store records the failed withdrawal in
+      // its own report rather than discarding it. Either way the session is already gone, and
       // leaving the operator on an administration screen with no credentials would strand
       // them on a view whose every request is about to be refused.
+      //
+      // MIGRATION: the absorption used to sit one layer lower, on `auth.service.ts`, which
+      //   discarded the failure as well and so reported a clean sign-out while the renewal
+      //   credential was still live. This component's two exits are unchanged by the move.
       holdSession();
       clickSignOut();
 

@@ -346,6 +346,24 @@ describe('RoleFormComponent', () => {
    * NOTHING and leaves the control at its default, which is exactly the kind of silent no-op that makes
    * a specification pass while proving nothing. The label is the only stable handle a person also uses.
    */
+  /**
+   * The label of the option a select currently shows.
+   *
+   * Read from the option rather than from the select's `value`, because Angular's value accessor
+   * prefixes the DOM value with the option's index when options are bound as values — so
+   * comparing the raw value would assert an implementation detail of the framework instead of
+   * what the operator sees.
+   *
+   * @param controlId The select to read.
+   * @returns The chosen option's trimmed label.
+   */
+  function chosenLabel(controlId: string): string {
+    const control = field<HTMLSelectElement>(controlId);
+    const chosen: HTMLOptionElement | null = control.options.item(control.selectedIndex);
+
+    return (chosen?.textContent ?? '').trim();
+  }
+
   function choose(controlId: string, label: string): void {
     const control = field<HTMLSelectElement>(controlId);
     const option: HTMLOptionElement | undefined = Array.from(control.options).find(
@@ -497,6 +515,27 @@ describe('RoleFormComponent', () => {
         { severity: 'warning', message: ROLE_NOT_FOUND_MESSAGE },
       ]);
       expect(navigateSpy).toHaveBeenCalledOnceWith([ROLE_LIST_ROUTE]);
+    });
+
+    it('opens a role whose stored frequency is unsupported with the select on its default', () => {
+      // MIGRATION: the record's frequency is what the DATABASE holds, and the API carries a stored
+      //   character through losslessly — shipped DotNetNuke data contains roles whose characters
+      //   come from the superseded numeric code set. The read used to refuse such a role outright,
+      //   so this form could not be opened on it at all. It opens now, and the select falls back to
+      //   the no-term default exactly as the legacy `Items.FindByValue(...)` lookup left it
+      //   (`EditRoles.ascx.vb:L149-L152,L157-L160`) — the operator's own choice is what is sent
+      //   back, and no unsupported code is ever transmitted.
+      editMode(
+        role(7, { serviceFee: 9.99, billingPeriod: 1, billingFrequency: '4', trialFrequency: '0' }),
+      );
+
+      // Asserted through the chosen option's own LABEL, because Angular prefixes a select's DOM
+      // value with the option index when the options are bound as values.
+      expect(chosenLabel(CONTROL_ID.billingFrequency)).toBe('None');
+      expect(chosenLabel(CONTROL_ID.trialFrequency)).toBe('None');
+      expect(notifications())
+        .withContext('an unsupported stored code is data, not a refusal to report')
+        .toEqual([]);
     });
 
     it('hydrates the record into the form, including its grouping', () => {

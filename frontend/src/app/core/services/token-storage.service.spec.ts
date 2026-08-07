@@ -16,15 +16,16 @@ import { TokenStorageService } from './token-storage.service';
  * The unit is the service and nothing else. It performs no HTTP, so no client provider,
  * no testing-transport provider and no request-verifying stub appear below — configuring
  * any of them would advertise a transport dependency this service does not have. The
- * bearer header, renewal on a 401 and refresh orchestration belong to the authentication
- * interceptor's own specification; the sign-in and renewal calls belong to
- * `auth.service.spec.ts`. Neither is exercised here.
+ * bearer header and the decision that a 401 warrants a renewal belong to the authentication
+ * interceptor's own specification; the sign-in and renewal REQUESTS belong to
+ * `auth.service.spec.ts`, and the session commits that pair with them belong to
+ * `core/state/auth.store.spec.ts`. None is exercised here.
  *
  * `sessionFromLoginResponse` is likewise not tested here. It is a pure projection
  * declared in `core/models/auth.model.ts`, so its coverage belongs with that model
- * rather than with this service; `auth.service.ts` routes both sign-in and renewal
- * through it, so `auth.service.spec.ts` exercises it in place. Sessions below are built
- * directly as {@link AuthSession} literals, which is exactly what that projection
+ * rather than with this service; `core/state/auth.store.ts` routes both sign-in and
+ * renewal through it, so `auth.store.spec.ts` exercises it in place. Sessions below are
+ * built directly as {@link AuthSession} literals, which is exactly what that projection
  * produces.
  *
  * ## The load-bearing expectation

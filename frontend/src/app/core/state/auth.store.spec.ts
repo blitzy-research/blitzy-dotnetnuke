@@ -132,8 +132,10 @@ import { firstValueFrom } from 'rxjs';
 import type { CurrentUser, LoginRequest, LoginResponse } from '../models/auth.model';
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
 import { AuthService } from '../services/auth.service';
+import { NotificationService } from '../services/notification.service';
 import { TokenStorageService } from '../services/token-storage.service';
-import { AUTH_STORE_PHASES, AuthStore } from './auth.store';
+import { isContractViolation } from '../utils/decode.util';
+import { AUTH_STORE_PHASES, AuthStore, REVOCATION_FAILED_MESSAGE } from './auth.store';
 import { SessionTeardownService } from './session-teardown.service';
 
 // ---------------------------------------------------------------------------
@@ -551,6 +553,7 @@ describe('AuthStore', () => {
   let tokenStorage: TokenStorageService;
   let auth: AuthService;
   let sessionTeardown: SessionTeardownService;
+  let notifications: NotificationService;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -572,6 +575,7 @@ describe('AuthStore', () => {
     tokenStorage = TestBed.inject(TokenStorageService);
     auth = TestBed.inject(AuthService);
     sessionTeardown = TestBed.inject(SessionTeardownService);
+    notifications = TestBed.inject(NotificationService);
   });
 
   afterEach(() => {
@@ -648,6 +652,22 @@ describe('AuthStore', () => {
     httpMock.expectOne(LOGIN_URL).flush(body, { status, statusText });
 
     await expectAsync(inFlight).toBeRejected();
+  }
+
+  /**
+   * Resolves to the rejection reason, or null when the promise resolved instead.
+   *
+   * Returning the reason rather than asserting inside a callback keeps every expectation in
+   * the body of the case, where a failure is attributed to the case that caused it.
+   *
+   * @param pending The in-flight command.
+   * @returns The rejection reason, or null.
+   */
+  async function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
+    return pending.then(
+      () => null,
+      (reason: unknown) => reason,
+    );
   }
 
   /** Asserts that no request reached any of the four credential paths. */
@@ -1556,11 +1576,17 @@ describe('AuthStore', () => {
   // RENEWAL
   //
   // ⚠ RENEWING AFTER A REFUSED REQUEST IS NOT THIS STORE'S JOB. That policy — deciding
-  // when a renewal is warranted, and coalescing concurrent ones — belongs to
-  // `core/interceptors/auth.interceptor.ts`, which the store references by path and
-  // never imports. No interceptor is registered in this harness, so any renewal seen
-  // below could only have come from the store itself, which is what makes the negative
-  // assertions binding.
+  // WHEN a renewal is warranted, and what a refused one means for the request that
+  // provoked it — belongs to `core/interceptors/auth.interceptor.ts`, which the store
+  // references by path and never imports. No interceptor is registered in this harness, so
+  // any renewal seen below could only have come from the store itself, which is what makes
+  // the negative assertions binding.
+  //
+  // MIGRATION: COALESCING concurrent renewals, by contrast, IS this store's, and moved here
+  //   from `core/services/auth.service.ts`. The thing being coalesced is the session, and
+  //   abandoning an in-flight renewal and advancing the session generation are two halves of
+  //   one act — a slot held by any other owner could be reached by neither. The cases for it
+  //   are in their own group further down, and they came with the responsibility.
   //
   // The store still exposes a renewal COMMAND, so a caller may renew deliberately — a
   // route resolver re-establishing a session after a reload, for instance. That is
@@ -2827,6 +2853,520 @@ describe('AuthStore', () => {
       expect(store.roles()).toEqual([]);
       expect(store.permissions()).toEqual([]);
       expect(store.phase()).toBe('idle');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // COALESCING AND THE SHARED RENEWAL SLOT
+  //
+  // MIGRATION: this whole group arrived with a responsibility rather than being written
+  //   fresh. The slot used to live on `core/services/auth.service.ts`, alongside custody of
+  //   the session it renewed, and these properties were specified beside it there. Minimal
+  //   Change Clause item 5 confines a service to API communication, so the slot moved to the
+  //   session's owner and its specification moved with it.
+  //
+  // WHY A SLOT EXISTS AT ALL. The renewal credential ROTATES ON USE. Six list requests
+  // expiring together would each present the same credential; the first rotates it and the
+  // other five present one that has already been spent, which the server treats as a replay
+  // and answers by revoking the account's whole credential family — signing the operator out
+  // precisely because the client tried to keep them signed in.
+  //
+  // TWO ENTRY POINTS, AND THE DIFFERENCE IS BOOKKEEPING. `renewSession` is the primitive: it
+  // coalesces, commits once, and touches nothing else. `refreshSession` wraps it and adds the
+  // phase claim, the failure record and the discard, which is what a caller that ASKED to
+  // renew needs and what the refused-request path must not have.
+  // -------------------------------------------------------------------------
+  describe('coalescing and the shared renewal slot', () => {
+    it('answers two simultaneous renewals with one request', async () => {
+      await signIn();
+
+      const first = firstValueFrom(store.renewSession());
+      const second = firstValueFrom(store.renewSession());
+
+      // `expectOne` is the assertion: a second request would fail it here, and any request
+      // left unanswered would fail `verify()` afterwards.
+      const renewal = httpMock.expectOne(REFRESH_URL);
+      expect(bodyMemberNames(renewal.request.body)).toEqual(['refreshToken']);
+
+      renewal.flush(credentialPayload({
+          accessToken: FAKE_ACCESS_TOKEN_ROTATED,
+          refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
+        }));
+      answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
+
+      const [one, other] = await Promise.all([first, second]);
+
+      expect(one.accessToken)
+        .withContext('both callers are answered by the single renewal that was issued')
+        .toBe(FAKE_ACCESS_TOKEN_ROTATED);
+      expect(other.accessToken).toBe(FAKE_ACCESS_TOKEN_ROTATED);
+    });
+
+    it('commits the rotated pair exactly once however many callers shared it', async () => {
+      await signIn();
+
+      const store_ = spyOn(tokenStorage, 'store').and.callThrough();
+
+      const first = firstValueFrom(store.renewSession());
+      const second = firstValueFrom(store.renewSession());
+      const third = firstValueFrom(store.renewSession());
+
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(credentialPayload({
+          accessToken: FAKE_ACCESS_TOKEN_ROTATED,
+          refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
+        }));
+      answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
+
+      await Promise.all([first, second, third]);
+
+      expect(store_)
+        .withContext('one renewal, one commit, whatever the subscriber count')
+        .toHaveBeenCalledTimes(1);
+    });
+
+    it('frees the slot once a renewal settles, so a later one is a fresh request', async () => {
+      await signIn();
+
+      const first = firstValueFrom(store.renewSession());
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(credentialPayload({
+          accessToken: FAKE_ACCESS_TOKEN_ROTATED,
+          refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
+        }));
+      answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
+      await first;
+
+      // ⚠ THE SETTLED OBSERVABLE MUST NOT BE REPLAYED. `shareReplay` with no reference
+      // counting keeps a buffered value indefinitely, so a slot that was never released would
+      // hand every future caller the SAME rotated pair — a credential the server has already
+      // spent — for the rest of the application's life.
+      const second = firstValueFrom(store.renewSession());
+      const renewal = httpMock.expectOne(REFRESH_URL);
+
+      expect(renewal.request.body)
+        .withContext('the second renewal presents the rotated credential, not the consumed one')
+        .toEqual({ refreshToken: FAKE_RENEWAL_TOKEN_ROTATED });
+
+      renewal.flush(credentialPayload({
+        accessToken: 'fake-access-token-third',
+        refreshToken: 'fake-renewal-token-third',
+      }));
+      answerIdentityRead('fake-access-token-third');
+
+      expect((await second).accessToken).toBe('fake-access-token-third');
+    });
+
+    it('frees the slot even when the renewal was refused', async () => {
+      await signIn();
+
+      const refused = firstValueFrom(store.renewSession());
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(codelessRefusal(401), { status: 401, statusText: 'Unauthorized' });
+      await expectAsync(refused).toBeRejected();
+
+      // Nothing is held now, so a later renewal has no credential to present — which is
+      // itself the proof that the slot was released rather than replayed: a held slot would
+      // have answered from its buffer instead of failing on the missing credential.
+      await expectAsync(firstValueFrom(store.renewSession())).toBeRejected();
+      httpMock.expectNone(REFRESH_URL);
+    });
+
+    it('surrenders the slot when signing out', async () => {
+      await signIn();
+
+      const abandoned = firstValueFrom(store.renewSession());
+      const inFlight = httpMock.expectOne(REFRESH_URL);
+
+      const signOut = firstValueFrom(store.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
+      await signOut;
+
+      // The abandoned renewal still arrives, because the shared source stays subscribed. Its
+      // commit is epoch-suppressed, and the case below the group proves that; what THIS case
+      // proves is that the slot no longer holds it.
+      inFlight.flush(credentialPayload({
+          accessToken: FAKE_ACCESS_TOKEN_ROTATED,
+          refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
+        }));
+      answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
+      await abandoned;
+
+      expect(store.isAuthenticated())
+        .withContext('a renewal in flight during a sign-out cannot reinstate the session')
+        .toBeFalse();
+
+      // A renewal attempted now finds no credential rather than replaying the abandoned one.
+      await expectAsync(firstValueFrom(store.renewSession())).toBeRejected();
+      httpMock.expectNone(REFRESH_URL);
+    });
+
+    it('surrenders the slot when a different account signs in', async () => {
+      await signIn();
+
+      const abandoned = firstValueFrom(store.renewSession());
+      const inFlight = httpMock.expectOne(REFRESH_URL);
+
+      await signIn(
+        credentialPayload({
+          accessToken: 'fake-access-token-other',
+          refreshToken: 'fake-renewal-token-other',
+          user: currentUser({ userId: 99, username: OTHER_ACCOUNT_NAME }),
+        }),
+        credentials({ username: OTHER_ACCOUNT_NAME }),
+      );
+
+      inFlight.flush(credentialPayload({
+          accessToken: FAKE_ACCESS_TOKEN_ROTATED,
+          refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
+        }));
+      answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
+      await abandoned;
+
+      expect(store.currentUser()?.username)
+        .withContext('the newer account keeps the session the older renewal could not commit to')
+        .toBe(OTHER_ACCOUNT_NAME);
+
+      // Not replayed: the new session's own credential is presented instead.
+      const renewal = firstValueFrom(store.renewSession());
+      const request = httpMock.expectOne(REFRESH_URL);
+      expect(request.request.body).toEqual({ refreshToken: 'fake-renewal-token-other' });
+
+      request.flush(credentialPayload({
+        accessToken: 'fake-access-token-fourth',
+        refreshToken: 'fake-renewal-token-fourth',
+      }));
+      answerIdentityRead('fake-access-token-fourth');
+      await renewal;
+    });
+
+    it('issues no request, and throws nothing synchronously, when no credential is held', async () => {
+      // Posting an empty credential would be answered 400, which a caller could not tell
+      // apart from a genuine rejection of a real one. The failure is produced LAZILY inside
+      // the returned observable, because the refused-request path reaches this inside a
+      // `catchError` and must be able to rely on getting an observable back.
+      const renewal = store.renewSession();
+
+      httpMock.expectNone(REFRESH_URL);
+
+      await expectAsync(firstValueFrom(renewal)).toBeRejected();
+      httpMock.expectNone(REFRESH_URL);
+    });
+
+    it('withholds the commit from a renewal that lands after the session was signed out', async () => {
+      await signIn();
+
+      const abandoned = firstValueFrom(store.renewSession());
+      const inFlight = httpMock.expectOne(REFRESH_URL);
+
+      tokenStorage.clear();
+
+      inFlight.flush(credentialPayload({
+          accessToken: FAKE_ACCESS_TOKEN_ROTATED,
+          refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
+        }));
+      answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
+
+      // The caller is still ANSWERED — only the write to shared state is withheld.
+      expect((await abandoned).accessToken).toBe(FAKE_ACCESS_TOKEN_ROTATED);
+      expect(store.isAuthenticated())
+        .withContext('a superseded renewal does not resurrect the session it renewed')
+        .toBeFalse();
+    });
+
+    it('leaves a newer session alone when an older renewal is refused', async () => {
+      // ⚠ THE SHARPEST CASE IN THIS GROUP, and the reason the primitive exists separately
+      // from the deliberate command: the command discards unconditionally, which here would
+      // sign out an operator whose own sign-in had just succeeded.
+      await signIn();
+
+      const refused = firstValueFrom(store.renewSession());
+      const inFlight = httpMock.expectOne(REFRESH_URL);
+
+      await signIn(
+        credentialPayload({
+          accessToken: 'fake-access-token-other',
+          refreshToken: 'fake-renewal-token-other',
+        }),
+        credentials({ username: OTHER_ACCOUNT_NAME }),
+      );
+
+      inFlight.flush(codelessRefusal(401), { status: 401, statusText: 'Unauthorized' });
+      await expectAsync(refused).toBeRejected();
+
+      expect(store.isAuthenticated())
+        .withContext('the newer session survives an older renewal being refused')
+        .toBeTrue();
+    });
+
+    it('records nothing and claims no phase when the primitive is used', async () => {
+      // The bookkeeping difference between the two entry points, asserted rather than
+      // described. A failure record here would put a stale message in front of an operator
+      // who never asked to renew, and a phase claim would make an unrelated screen report
+      // itself busy.
+      await signIn();
+
+      const refused = firstValueFrom(store.renewSession());
+
+      expect(store.phase())
+        .withContext('the primitive claims no phase')
+        .toBe('idle');
+
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(codelessRefusal(401), { status: 401, statusText: 'Unauthorized' });
+      await expectAsync(refused).toBeRejected();
+
+      expect(store.hasFailure())
+        .withContext('the primitive records no failure')
+        .toBeFalse();
+      expect(store.phase()).toBe('idle');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // REVOCATION REPORTING
+  //
+  // MIGRATION: the sign-out POLICY moved here from `core/services/auth.service.ts`, and it
+  //   arrived corrected. That service ended its revocation with a handler that swallowed the
+  //   failure and completed successfully, so a 400, a 429, a 503 or a dropped connection was
+  //   indistinguishable from a clean withdrawal — a renewal credential still live on the
+  //   server for its full lifetime, reported as ended. Absorbing the failure was never the
+  //   defect: a person who asked to sign out must end up signed out, and erroring here would
+  //   leave them looking at a screen that behaves as though they had not. CLAIMING SUCCESS was
+  //   the defect. The transport now propagates the refusal and this store absorbs it
+  //   DELIBERATELY, recording it and saying so.
+  // -------------------------------------------------------------------------
+  describe('revocation reporting', () => {
+    it('reports no outstanding revocation before anything has been signed out', () => {
+      expect(store.revocationOutstanding()).toBeFalse();
+    });
+
+    it('completes the sign-out and reports the revocation as outstanding when it is refused', async () => {
+      const warning = spyOn(notifications, 'warning').and.callThrough();
+
+      for (const status of [400, 429, 503]) {
+        warning.calls.reset();
+
+        await signIn();
+
+        const signOut = firstValueFrom(store.logout());
+        httpMock
+          .expectOne(LOGOUT_URL)
+          .flush(codelessRefusal(status), { status, statusText: 'Refused' });
+
+        // COMPLETES, because local sign-out already happened and the caller navigates away
+        // from the signed-in shell when it does.
+        await expectAsync(signOut).toBeResolved();
+
+        expect(store.isAuthenticated())
+          .withContext('the operator is signed out on this device whatever the server said')
+          .toBeFalse();
+        expect(store.revocationOutstanding())
+          .withContext(`a ${status} means the credential may still be live, and it is reported`)
+          .toBeTrue();
+        expect(warning)
+          .withContext('and the person is told, once, in words naming what they can do')
+          .toHaveBeenCalledOnceWith(REVOCATION_FAILED_MESSAGE);
+
+        store.reset();
+      }
+    });
+
+    it('reports an unreachable endpoint as an outstanding revocation too', async () => {
+      await signIn();
+
+      const signOut = firstValueFrom(store.logout());
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+
+      await expectAsync(signOut).toBeResolved();
+      expect(store.revocationOutstanding()).toBeTrue();
+    });
+
+    it('reports a confirmed withdrawal as confirmed', async () => {
+      const warning = spyOn(notifications, 'warning').and.callThrough();
+
+      await signIn();
+
+      const signOut = firstValueFrom(store.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
+      await signOut;
+
+      expect(store.revocationOutstanding()).toBeFalse();
+      expect(warning)
+        .withContext('nothing to announce when the server confirmed the withdrawal')
+        .not.toHaveBeenCalled();
+    });
+
+    it('clears an earlier outstanding report once a later sign-out is confirmed', async () => {
+      await signIn();
+
+      const refused = firstValueFrom(store.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 503, statusText: 'Service Unavailable' });
+      await refused;
+      expect(store.revocationOutstanding()).toBeTrue();
+
+      await signIn();
+
+      const confirmed = firstValueFrom(store.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
+      await confirmed;
+
+      expect(store.revocationOutstanding())
+        .withContext('a screen that reported an unconfirmed sign-out stops reporting it')
+        .toBeFalse();
+    });
+
+    it('does not record the refused withdrawal as a session failure', async () => {
+      // The failure record is read by the sign-in screen to explain why a caller is back at
+      // it, and a failed WITHDRAWAL is not a reason they were signed out — they asked to be.
+      // It is reported as its own boolean instead.
+      await signIn();
+
+      const signOut = firstValueFrom(store.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 503, statusText: 'Service Unavailable' });
+      await signOut;
+
+      expect(store.hasFailure()).toBeFalse();
+      expect(store.problem()).toBeNull();
+      expect(store.phase()).toBe('idle');
+    });
+
+    it('announces nothing, and reports nothing outstanding, when there was no credential to withdraw', async () => {
+      const warning = spyOn(notifications, 'warning').and.callThrough();
+
+      const signOut = firstValueFrom(store.logout());
+
+      httpMock.expectNone(LOGOUT_URL);
+      await expectAsync(signOut).toBeResolved();
+
+      expect(store.revocationOutstanding())
+        .withContext('nothing was left live, so there is nothing to warn about')
+        .toBeFalse();
+      expect(warning).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // CONTRACT ENFORCEMENT AT THE COMPOSITION POINT
+  //
+  // MIGRATION: both decoders existed and NEITHER HAD A PRODUCTION CONSUMER. The transport
+  //   asserted its own response types through the type argument, which is a promise the
+  //   compiler makes on the server's behalf and cannot keep. The values concerned become a
+  //   bearer header, the shell's caption, and the role and permission lists a screen uses to
+  //   decide which actions to offer — and the response crosses a reverse proxy, so
+  //   same-origin is not the same as in-process. The transport decodes now, and these cases
+  //   prove the refusal reaches the composition point and leaves nothing half-established.
+  // -------------------------------------------------------------------------
+  describe('refuses a payload that does not match its contract', () => {
+    it('refuses a credential exchange whose access token is blank', async () => {
+      const inFlight = firstValueFrom(store.login(credentials()));
+
+      httpMock.expectOne(LOGIN_URL).flush({
+        data: { ...credentialPayload().data, accessToken: '' },
+        meta: null,
+      });
+
+      expect(isContractViolation(await rejectionOf(inFlight))).toBeTrue();
+
+      // ⚠ AND NO SESSION IS ESTABLISHED. The identity read is never reached, so nothing was
+      // stored, and the sign-in reads as the refusal it was.
+      httpMock.expectNone(ME_URL);
+      expect(store.isAuthenticated()).toBeFalse();
+      expect(store.currentUser()).toBeNull();
+      expect(store.phase()).toBe('idle');
+    });
+
+    it('refuses a credential exchange whose expiry instant cannot be parsed', async () => {
+      const inFlight = firstValueFrom(store.login(credentials()));
+
+      httpMock.expectOne(LOGIN_URL).flush({
+        data: { ...credentialPayload().data, expiresAtUtc: 'whenever' },
+        meta: null,
+      });
+
+      expect(isContractViolation(await rejectionOf(inFlight))).toBeTrue();
+      expect(store.isAuthenticated()).toBeFalse();
+    });
+
+    it('refuses a bootstrap identity whose role list is not a list of strings', async () => {
+      // The SECOND request of the sign-in, and the more dangerous of the two to leave
+      // unchecked: a role list arriving as null would fault the first membership test, and
+      // the session would already have been half-composed.
+      const inFlight = firstValueFrom(store.login(credentials()));
+
+      httpMock.expectOne(LOGIN_URL).flush(credentialPayload());
+      httpMock
+        .expectOne(ME_URL)
+        .flush({ data: { ...currentUser(), roles: null }, meta: null });
+
+      expect(isContractViolation(await rejectionOf(inFlight))).toBeTrue();
+      expect(store.isAuthenticated())
+        .withContext('the credential was never committed, so no half-populated session survives')
+        .toBeFalse();
+      expect(store.roles()).toEqual([]);
+    });
+
+    it('refuses a bootstrap identity whose super-user flag is a string', async () => {
+      // `'false'` is truthy, so an unchecked read would grant the whole console to a caller
+      // the server described as an ordinary member.
+      const inFlight = firstValueFrom(store.login(credentials()));
+
+      httpMock.expectOne(LOGIN_URL).flush(credentialPayload());
+      httpMock
+        .expectOne(ME_URL)
+        .flush({ data: { ...currentUser(), isSuperUser: 'false' }, meta: null });
+
+      expect(isContractViolation(await rejectionOf(inFlight))).toBeTrue();
+      expect(store.isSuperUser()).toBeFalse();
+      expect(store.isAuthenticated()).toBeFalse();
+    });
+
+    it('refuses a renewal whose rotated credential is blank, and discards the session', async () => {
+      await signIn();
+
+      const inFlight = firstValueFrom(store.refreshSession());
+
+      httpMock.expectOne(REFRESH_URL).flush({
+        data: { ...credentialPayload().data, refreshToken: '  ' },
+        meta: null,
+      });
+
+      expect(isContractViolation(await rejectionOf(inFlight))).toBeTrue();
+
+      // A renewal that cannot be trusted is terminal exactly as a refused one is: keeping the
+      // consumed credential would mean presenting it again and being refused again.
+      httpMock.expectNone(ME_URL);
+      expect(store.isAuthenticated()).toBeFalse();
+      expect(store.hasFailure()).toBeTrue();
+    });
+
+    it('refuses a deliberate identity read whose payload is not an object', async () => {
+      await signIn();
+
+      const inFlight = firstValueFrom(store.loadCurrentUser());
+
+      httpMock.expectOne(ME_URL).flush({ data: 'admin', meta: null });
+
+      expect(isContractViolation(await rejectionOf(inFlight))).toBeTrue();
+      expect(store.currentUser()?.username)
+        .withContext('the identity established at sign-in is left as it was')
+        .toBe(ACCOUNT_NAME);
+    });
+
+    it('admits an empty display name, because the column defaults to one', async () => {
+      // The counterpart to the refusals above. `Users.DisplayName` is NOT NULL defaulting to
+      // the empty string, so the empty-string encoding of absence is a schema constraint here
+      // rather than a data-layer convention, and a stricter rule would refuse real accounts.
+      await signIn(credentialPayload({ user: currentUser({ displayName: '' }) }));
+
+      expect(store.currentUser()?.displayName).toBe('');
+      expect(store.isAuthenticated()).toBeTrue();
     });
   });
 });

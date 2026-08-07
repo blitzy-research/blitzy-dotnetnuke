@@ -491,17 +491,34 @@ describe('UserFormComponent', () => {
       expect(links).toContain('/roles');
     });
 
-    it('says so and offers no form when the read reports no such account', () => {
+    it('says so and offers no form when the read is refused as not-found', () => {
       create('7');
 
-      // ⚠ A SUCCESS CARRYING NOTHING IS NOT A FAILURE. The account reader answers null, so there
-      // is no problem document, and the measured wording is announced instead.
-      expectRequest('GET', userUrl(7)).flush(envelope(null));
+      // MIGRATION: this case used to flush a `200` carrying nothing, on the reading that the
+      //   account transport could report absence inside the envelope. It cannot: the API answers
+      //   a not-found problem document as soon as a value-bearing outcome carries no value, so
+      //   the state the legacy worded as `NoUser` arrives as a `404` and is asserted as one here.
+      //   The wording, the hidden form and the single announcement are unchanged, which is the
+      //   point — the presentation the operator sees is the measured one either way.
+      expectRequest('GET', userUrl(7)).flush(
+        problem('resource.not_found', 404, 'The requested resource does not exist.'),
+        { status: 404, statusText: 'Not Found' },
+      );
       fixture.detectChanges();
 
       expect(host().textContent ?? '').toContain(NO_USER_MESSAGE);
       expect(query('form.user-form')).withContext('no form for an account that does not exist').toBeNull();
-      expect(warningSpy).toHaveBeenCalledWith(NO_USER_MESSAGE);
+
+      // ANNOUNCED EXACTLY ONCE, by the shared refusal announcer, at the warning severity the
+      // measured vocabulary gives a lookup outcome. The dedicated effect that used to announce
+      // this state a second time is gone with the successful-null contract that produced it, so
+      // the shared live region carries one sentence rather than two.
+      expect(notifySpy.calls.allArgs().map((args) => [String(args[0]), String(args[1])])).toEqual([
+        ['warning', 'The requested resource does not exist.'],
+      ]);
+      expect(warningSpy)
+        .withContext('no second announcement of the same state')
+        .not.toHaveBeenCalled();
     });
 
     it('withholds the create-only controls while editing and offers them while creating', () => {

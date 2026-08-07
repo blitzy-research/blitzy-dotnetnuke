@@ -193,8 +193,10 @@ import { ActivatedRoute, Router } from '@angular/router';
 import type { LoginRequest } from '../../../core/models/auth.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { LoginPortalSelector } from '../../../core/utils/http-params.util';
-import { REVOCATION_FAILED_MESSAGE } from '../../../core/services/auth.service';
-import { AuthStore } from '../../../core/state/auth.store';
+// MIGRATION: this message moved from `core/services/auth.service` to the store when the store took
+//   ownership of the sign-out policy. The transport now propagates a refused revocation instead of
+//   absorbing it, so the wording belongs beside the state that records the refusal.
+import { AuthStore, REVOCATION_FAILED_MESSAGE } from '../../../core/state/auth.store';
 import {
   TOO_MANY_ATTEMPTS,
   authFailureMessage,

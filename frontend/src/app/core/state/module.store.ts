@@ -1378,6 +1378,14 @@ export class ModuleStore implements OnDestroy {
   /**
    * Reads one module in full and selects it.
    *
+   * MIGRATION: A SUCCESSFUL READ ALWAYS CARRIES A MODULE. The endpoint answers `200` with the
+   *   placement or refuses with a not-found problem document, so the absent case arrives at the
+   *   error handler below and is announced. This handler used to admit a successful `null` and
+   *   commit it, which published a blank record as though the read had succeeded — a state the
+   *   server cannot produce and a screen cannot explain. The slice remains nullable because
+   *   NOTHING SELECTED is a real state of this store; what is gone is the idea that the transport
+   *   can report it.
+   *
    * @param moduleId The module to read. Forwarded exactly as supplied; module zero is real.
    * @param tabModuleId The placement to address, or omitted to use the current selection, which may
    * itself be absent and then addresses the module.
@@ -1391,7 +1399,7 @@ export class ModuleStore implements OnDestroy {
 
     this.moduleRequest?.unsubscribe();
     this.moduleRequest = this.moduleService.getModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
-      next: (detail: ModuleDetail | null) => {
+      next: (detail: ModuleDetail) => {
         // ⚠ TWO INDEPENDENT CHECKS, AND NEITHER IS REDUNDANT.
         //
         // The ticket refuses an answer that is no longer wanted: a newer read started, the slice was
@@ -1405,7 +1413,7 @@ export class ModuleStore implements OnDestroy {
           return;
         }
 
-        if (detail !== null && detail.moduleId !== moduleId) {
+        if (detail.moduleId !== moduleId) {
           this._moduleLoading.set(false);
           this.recordFailure('loadModule', new Error(MISMATCHED_MODULE_MESSAGE));
 
@@ -1483,7 +1491,10 @@ export class ModuleStore implements OnDestroy {
 
     this.definitionRequest?.unsubscribe();
     this.definitionRequest = this.moduleService.getModuleDefinition(moduleDefinitionId).subscribe({
-      next: (definition: ModuleDefinition | null) => {
+      // A successful read carries a definition: the endpoint answers `200` with it or refuses with a
+      // not-found problem document, so an unknown definition reaches the error handler and is
+      // announced rather than being committed as an empty success.
+      next: (definition: ModuleDefinition) => {
         this._definition.set(definition);
         this._definitionsLoading.set(false);
       },
@@ -1577,6 +1588,13 @@ export class ModuleStore implements OnDestroy {
    * row the echoed response corresponds to, so that the local row can be replaced instead of the whole
    * listing being re-read.
    *
+   * MIGRATION: A SUCCESSFUL REPLACEMENT ALWAYS ECHOES THE PLACEMENT, so there is no longer an
+   *   echo-less branch that re-read the listing. The endpoint answers `200` with the updated
+   *   placement or refuses - a module that no longer resolves is a not-found problem document, a
+   *   rule violation a forbidden one - and both reach the error handler below. The removed branch
+   *   was unreachable in practice and actively misleading: it committed `null` over a record the
+   *   operator had just edited, so a successful save could blank the form it was saved from.
+   *
    * @param moduleId The module to replace. Forwarded exactly as supplied.
    * @param request The complete replacement state, transmitted whole. Its `tabId` member identifies the
    * placement being edited and is required for that reason.
@@ -1589,17 +1607,9 @@ export class ModuleStore implements OnDestroy {
 
     this.track(
       this.moduleService.updateModule(moduleId, request).subscribe({
-        next: (detail: ModuleDetail | null) => {
+        next: (detail: ModuleDetail) => {
           this._module.set(detail);
           this._saving.set(false);
-
-          if (detail === null) {
-            // No echo to merge, so the listing is the only source of truth for the row. Re-read rather
-            // than leave a stale row on screen.
-            this.loadModules();
-
-            return;
-          }
 
           this.replaceListedPlacement(detail, tabModuleId);
         },
@@ -1679,7 +1689,10 @@ export class ModuleStore implements OnDestroy {
 
     this.settingsRequest?.unsubscribe();
     this.settingsRequest = this.moduleService.getModuleSettings(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
-      next: (bag: ModuleSettingsBag | null) => {
+      // A successful read carries both maps. An empty map is a real answer - a module with no
+      // settings recorded - and is not the same fact as an unresolvable module, which the endpoint
+      // refuses with a not-found problem document that reaches the error handler below.
+      next: (bag: ModuleSettingsBag) => {
         // ⚠ THE TICKET IS THE ONLY AVAILABLE CHECK HERE, which is precisely why the mechanism cannot be
         // an identifier comparison. A settings bag is operator-authored key-and-value data and carries
         // NO module key of its own, so there is nothing in the response to compare against the module

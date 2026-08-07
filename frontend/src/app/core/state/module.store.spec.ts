@@ -2313,17 +2313,23 @@ describe('ModuleStore', () => {
       expect(store.busy()).toBeFalse();
     });
 
-    it('re-reads the listing when a replacement echoes NO placement back', () => {
+    it('refuses a replacement that echoes NO placement back, leaving the held row alone', () => {
+      // MIGRATION: this case used to assert that an echo-less replacement re-read the listing, on
+      //   the reading that a `200` could carry a null payload. It cannot: the update action
+      //   translates its outcome through the same helper every other value-bearing action uses, and
+      //   that helper answers a not-found problem document the moment the value is absent. So the
+      //   null is drift, the transport refuses it at the boundary, and the refusal is recorded as a
+      //   failure of the save. Committing it instead would have blanked the record the operator had
+      //   just edited WHILE REPORTING THE SAVE AS SUCCESSFUL, which is the defect being closed - and
+      //   the follow-up listing read it triggered would have hidden the drift behind a fresh page.
       loadListWith([listRow({ moduleId: 0, tabModuleId: 5 })]);
 
       store.updateModule(0, updateRequest(), 5);
       expectRequest('PUT', '/api/v1/modules/0').flush(envelope(null));
 
-      // With no echo to merge, the listing is the only source of truth for the row, so it is re-read rather
-      // than left stale on screen.
-      expectRequest('GET', '/api/v1/modules').flush(pagedBody([listRow({ moduleId: 0, tabModuleId: 5 })]));
-
-      expect(store.module()).toBeNull();
+      // No second request: the refusal is terminal, and nothing re-reads the listing behind it.
+      expect(store.saving()).toBeFalse();
+      expect(store.failure()?.operation).toBe('updateModule');
       expect(store.modules().length).toBe(1);
     });
 

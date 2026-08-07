@@ -1874,7 +1874,9 @@ export class UserStore implements OnDestroy {
     this.definitionRequest = this.transport
       .getProfileDefinition(propertyDefinitionId)
       .subscribe({
-        next: (definition: ProfilePropertyDefinition | null) => {
+        // A successful read carries the declaration; an identifier naming none is refused with a
+        // not-found problem document and is recorded as a failure rather than selected as empty.
+        next: (definition: ProfilePropertyDefinition) => {
           this._selectedProfileDefinition.set(definition);
         },
         error: (cause: unknown) => {
@@ -2143,9 +2145,13 @@ export class UserStore implements OnDestroy {
   /**
    * Reads one account in full.
    *
-   * A null answer is the contract rather than defensiveness: the server may report that
-   * no account matches by answering with nothing in the envelope, and a caller must handle
-   * that. It is held as null and never turned into an empty object.
+   * MIGRATION: A SUCCESSFUL READ ALWAYS CARRIES AN ACCOUNT. The endpoint answers `200` with the
+   *   account or refuses with a not-found problem document, so an identifier matching nothing
+   *   reaches the error handler and is announced. This handler used to accept a successful `null`
+   *   and commit it, which showed a blank account record as though the read had succeeded — a
+   *   response the server cannot send and a state a screen cannot explain. The SLICE stays
+   *   nullable, because "no account selected" is a real state of this store; what is gone is the
+   *   idea that the transport reports absence that way.
    *
    * @param userId The account to read.
    */
@@ -2153,7 +2159,7 @@ export class UserStore implements OnDestroy {
     this._selectedUserLoading.set(true);
     this.detailRequest?.unsubscribe();
     this.detailRequest = this.transport.getById(userId).subscribe({
-      next: (held: UserDetail | null) => {
+      next: (held: UserDetail) => {
         this._selectedUser.set(held);
         this._selectedUserLoading.set(false);
       },
@@ -2167,13 +2173,17 @@ export class UserStore implements OnDestroy {
   /**
    * Reads one account's profile.
    *
+   * A successful read carries the profile, declarations included. An identifier naming no
+   * account is a not-found problem document and arrives at the error handler, so no blank
+   * profile is ever committed as a success.
+   *
    * @param userId The account whose profile to read.
    */
   private dispatchProfile(userId: number): void {
     this._profileLoading.set(true);
     this.profileRequest?.unsubscribe();
     this.profileRequest = this.transport.getProfile(userId).subscribe({
-      next: (held: UserProfile | null) => {
+      next: (held: UserProfile) => {
         this._profile.set(held);
         this._profileLoading.set(false);
       },
@@ -2200,7 +2210,10 @@ export class UserStore implements OnDestroy {
     this._membershipSettingsLoading.set(true);
     this.settingsRequest?.unsubscribe();
     this.settingsRequest = this.transport.getMembershipSettings().subscribe({
-      next: (settings: MembershipSettings | null) => {
+      // A successful read carries the whole policy. A tenant the server cannot resolve is a
+      // not-found problem document and lands in the error handler below, where the listing still
+      // follows at the shared fallback size.
+      next: (settings: MembershipSettings) => {
         this._membershipSettings.set(settings);
         this._membershipSettingsLoading.set(false);
 

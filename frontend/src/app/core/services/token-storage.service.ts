@@ -289,8 +289,8 @@ export class TokenStorageService {
    * Discards the held session.
    *
    * Idempotent, so a sign-out racing an expiry does not need to test first. This
-   * clears local state only — revoking the refresh token is a server call, and the
-   * authentication service performs both.
+   * clears local state only — revoking the refresh token is a server call, and
+   * `core/state/auth.store.ts` pairs the two.
    *
    * ⚠ ADVANCES {@link generation} UNCONDITIONALLY, INCLUDING WHEN NO SESSION WAS HELD.
    * That looks redundant and is not. A clear is a deliberate statement that whatever

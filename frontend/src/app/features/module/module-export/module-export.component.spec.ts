@@ -1469,13 +1469,25 @@ describe('ModuleExportComponent', () => {
       ]);
     });
 
-    it('presents a read that found no module, and then refuses to export it', () => {
-      // The read succeeds and carries nothing, which is a different shape of the same problem: there is no
-      // problem document at all, so the sentence comes from the screen rather than from the banner.
+    it('refuses to export a module the read could not produce, without blaming the filename', () => {
+      // MIGRATION: this case used to answer the read with a `200` carrying nothing, on the reading
+      //   that the module transport could report absence inside the envelope. It cannot - the API
+      //   answers a not-found problem document as soon as a value-bearing outcome carries no value -
+      //   so the reachable form of "there is no module to export" is a REFUSED read, and that is what
+      //   is exercised here. The claim being protected is unchanged and is the valuable half: with no
+      //   module read, the confirming action reports the condition the operator cannot repair and
+      //   sends nothing.
       addressModule(String(MODULE_ID));
-      answerModuleRead(null);
+      expectModuleRead().flush(problemOf(404, 'No such module.'), {
+        status: 404,
+        statusText: 'Not Found',
+      });
+      fixture.detectChanges();
 
-      expect(notice()).toBe(EXPECTED_NO_MODULE_MESSAGE);
+      // The refused read is presented structurally, by the banner, and the screen adds no second
+      // weaker report beside it.
+      expect(bannerMessage()).toBe('No such module.');
+      expect(notice()).toBeNull();
 
       // THE ORDER IS PART OF THE CORRECTION. A condition the operator cannot repair outranks one they can, so
       // the missing module is reported instead of the field rule - which would otherwise tell them to supply

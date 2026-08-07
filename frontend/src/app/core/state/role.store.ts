@@ -196,13 +196,13 @@ import type { PagedResponse } from '../models/paged-result.model';
 import type { ApiMeta, PagedResult, SortDirection } from '../models/paged-result.model';
 import type { ProblemDetails } from '../models/problem-details.model';
 import type {
-  BillingFrequency,
   CreateRoleGroupRequest,
   CreateRoleRequest,
   Role,
   RoleAssignmentRequest,
   RoleGroup,
   RoleListItem,
+  StoredBillingFrequency,
   UpdateRoleGroupRequest,
   UpdateRoleRequest,
   UserRole,
@@ -278,8 +278,10 @@ export const DEFAULT_ROLE_GROUP_FILTER: RoleGroupFilter = Object.freeze({
  * this is the compiler's message made to survive into runtime rather than a condition
  * any input can produce. Declaring the parameter `never` is what makes the omission a
  * compile error at the call site; throwing is what stops a silent wrong answer if one
- * ever slips past, which is exactly the failure the legacy branch at
- * `RoleController.vb:L540-L547` had — see {@link billingTermsBound}.
+ * ever slips past — the failure mode the legacy branch at `RoleController.vb:L540-L547`
+ * had, which {@link billingTermsBound} answers with a named classification instead,
+ * because there the missing case is reachable from real stored data rather than from
+ * an omission in this file.
  *
  * @param value The value no branch matched.
  * @returns Never returns; always throws.
@@ -314,7 +316,16 @@ export type BillingTermsBound =
   /** The terms set a perpetual far-future expiry rather than none. */
   | 'Perpetual'
   /** The terms advance the expiry by a period, so the membership lapses. */
-  | 'Bounded';
+  | 'Bounded'
+  /**
+   * The stored code is outside the supported vocabulary, so the terms cannot be classified.
+   *
+   * ⚠ NOT AN ERROR STATE, AND NOT A SYNONYM FOR `Unbounded`. It is the honest reading of a
+   * stored character the six codes do not declare — which shipped DotNetNuke data really
+   * contains — and it is deliberately distinct from both of the answers it could be mistaken
+   * for. See {@link billingTermsBound} for the measured legacy behaviour it describes.
+   */
+  | 'Unsupported';
 
 /**
  * Classifies a role's frequency-and-period pair by whether it bounds the membership.
@@ -339,12 +350,21 @@ export type BillingTermsBound =
  * branch when the period is the absent-integer marker. It does not mean "unset, apply a
  * default", so it is never coalesced away and never made positive.
  *
- * MIGRATION: THE LEGACY BRANCH HAD NO FALLBACK ARM. `:L540-L547` is a six-arm branch
- * with no final catch-all, so an unrecognised code left the expiry at whatever value it
- * already held and reported nothing. This function is exhaustive over the union and
- * ends in {@link assertUnreachable}, so an unrecognised code becomes a loud failure
- * instead of a silent wrong answer. That is a deliberate improvement, not a
- * transliteration.
+ * MIGRATION: THE LEGACY BRANCH HAD NO FALLBACK ARM, AND THIS FUNCTION NAMES WHAT THAT MEANT.
+ * `:L540-L547` is a six-arm branch with no final catch-all, so an unrecognised code applied NO
+ * advance and left the expiry at whatever value it already held — which at that point was the
+ * current instant, or the row's existing expiry clamped up to it. So an unsupported code neither
+ * removes the expiry nor advances it, and reporting it as `Unbounded` or as `Bounded` would each
+ * assert something the terms do not say. It is classified as {@link BillingTermsBound}
+ * `Unsupported` instead.
+ *
+ * MIGRATION: THE PARAMETER IS THE STORED CODE, NOT THE WRITE VOCABULARY. The API carries a
+ * stored frequency character through losslessly and shipped DotNetNuke data contains two roles
+ * whose characters fall outside the published six, so a classifier that could only accept those
+ * six could not be called with real data. An earlier revision was exhaustive over the closed
+ * union and ended in an unreachable-case assertion; that assertion is gone from the frequency
+ * arm because the case is reachable, and pretending otherwise would have turned one legacy row
+ * into a thrown error on a screen that merely wanted to describe it.
  *
  * WHAT THIS FUNCTION DOES NOT DO, and why: it performs NO date arithmetic and returns
  * NO date. The expiry bound is derived server-side from an injected clock, and the
@@ -358,7 +378,7 @@ export type BillingTermsBound =
  * @returns How the terms bound the membership in time.
  */
 export function billingTermsBound(
-  frequency: BillingFrequency | null,
+  frequency: StoredBillingFrequency | null,
   period: number | null,
 ): BillingTermsBound {
   // The absent-period short circuit, ahead of the frequency, exactly as `:L537` orders it.
@@ -383,7 +403,10 @@ export function billingTermsBound(
     case 'Y':
       return 'Bounded';
     default:
-      return assertUnreachable(frequency);
+      // REACHABLE, and reached by shipped data rather than by drift. The code is a real stored
+      // character that the supported vocabulary does not describe, so it is reported as
+      // unsupported and is never folded onto one of the six above.
+      return 'Unsupported';
   }
 }
 

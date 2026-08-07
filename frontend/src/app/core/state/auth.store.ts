@@ -22,7 +22,10 @@
  * - **It holds no token.** Not in a signal, not in a field, not in a log. Custody
  *   belongs to the storage service, which keeps the session in memory only. Every
  *   token-derived fact below is projected from that service's own signals, so there
- *   is exactly one copy of a credential in the application.
+ *   is exactly one copy of a credential in the application. The commands below DO
+ *   hand a freshly issued session to that custodian and clear it again, because
+ *   deciding *when* a session begins and ends is the lifecycle question this file
+ *   owns — but the value passes straight through and is never retained here.
  * - **It does not orchestrate renewal on a refused request.** That policy belongs to
  *   `core/interceptors/auth.interceptor.ts`, which is referenced by path and never
  *   imported. {@link AuthStore.refreshSession} exists so a caller *may* renew
@@ -76,13 +79,20 @@
 
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type { Signal } from '@angular/core';
-import { catchError, defer, finalize, tap, throwError } from 'rxjs';
+import { catchError, defer, finalize, map, of, shareReplay, switchMap, tap, throwError } from 'rxjs';
 import type { Observable } from 'rxjs';
 
-import type { AuthSession, CurrentUser, LoginRequest } from '../models/auth.model';
+import { sessionFromLoginResponse } from '../models/auth.model';
+import type {
+  AuthSession,
+  CurrentUser,
+  LoginRequest,
+  RefreshTokenRequest,
+} from '../models/auth.model';
 import { isProblemDetails } from '../models/problem-details.model';
 import type { ProblemDetails, ProblemDetailsErrors } from '../models/problem-details.model';
 import { AuthService } from '../services/auth.service';
+import { NotificationService } from '../services/notification.service';
 import type { LoginPortalSelector } from '../utils/http-params.util';
 import { TokenStorageService } from '../services/token-storage.service';
 import { SessionTeardownService } from './session-teardown.service';
@@ -122,6 +132,36 @@ export const AUTH_STORE_PHASES = Object.freeze([
 
 /** One of the phases in {@link AUTH_STORE_PHASES}. */
 export type AuthStorePhase = (typeof AUTH_STORE_PHASES)[number];
+
+/**
+ * Raised when a sign-out could not withdraw its renewal credential on the server.
+ *
+ * ⚠ DELIBERATELY FREE OF DETAIL. It carries no status code, none of the server's own wording and
+ * nothing derived from the credential, because this is a failure report about a credential
+ * operation and the person reading it can act on the ADVICE without any of that. What it must do
+ * is not lie: the behaviour this replaced reported a clean sign-out while the renewal credential
+ * was still live.
+ *
+ * MIGRATION: this sentence used to be declared by `core/services/auth.service.ts`, which also
+ *   emitted it. Announcing something to a person is a presentation concern and a transport has no
+ *   business holding one, so the sentence lives with the lifecycle owner that decides local
+ *   sign-out has completed anyway — the one place that knows both what the server answered and
+ *   what was done about it.
+ */
+export const REVOCATION_FAILED_MESSAGE =
+  'You have been signed out on this device, but the server could not confirm that the session ' +
+  'was ended. It will expire on its own; if you are concerned that it may be used, change your ' +
+  'password.';
+
+/**
+ * The failure a renewal reports when no renewal credential is held.
+ *
+ * Produced rather than posting an empty credential, which the server would refuse as a malformed
+ * request and leave the caller unable to tell that refusal from a genuine rejection of a real
+ * credential. It carries no credential and names none.
+ */
+const NO_RENEWAL_CREDENTIAL_MESSAGE =
+  'No refresh token is held, so the session cannot be renewed.';
 
 /**
  * The status the rate limiter refuses a credential request with.
@@ -178,12 +218,54 @@ export class AuthStore {
    */
   private readonly sessionTeardown = inject(SessionTeardownService);
 
+  /**
+   * The transient-message channel, for the one thing this store has to say to a person.
+   *
+   * It says exactly one sentence — {@link REVOCATION_FAILED_MESSAGE} — and only when a sign-out
+   * could not withdraw its credential. Nothing else here announces anything: a failed command
+   * publishes a structured problem document through the projections below, and the screen that owns
+   * the moment decides how to present it. This one is different because the session is already
+   * gone by the time the answer arrives, so no screen is left to read a projection.
+   */
+  private readonly notifications = inject(NotificationService);
+
   // -------------------------------------------------------------------------
   // WRITABLE SLICES — private, without exception
   // -------------------------------------------------------------------------
 
   /** Which command, if any, is in flight. */
   private readonly _phase = signal<AuthStorePhase>('idle');
+
+  /**
+   * The renewal currently in progress, or null when none is.
+   *
+   * ⚠ THE SINGLE-FLIGHT SLOT, AND THERE IS EXACTLY ONE IN THE APPLICATION. It is what makes a
+   * burst of simultaneous `401` responses produce ONE renewal rather than one per refused request.
+   * Without it, six parallel list requests expiring together would each present the same rotating
+   * credential; the first would rotate it and the remaining five would present a credential that
+   * had already been used, which the server treats as a replay and answers by revoking the
+   * account's entire credential family — signing the person out precisely because the client tried
+   * to keep them signed in.
+   *
+   * MIGRATION: THE SLOT USED TO LIVE ON `core/services/auth.service.ts`, alongside custody of the
+   *   session it renewed. It belongs here for a reason the store's own sign-out demonstrates:
+   *   abandoning an in-flight renewal and advancing the session generation are two halves of ONE
+   *   act, and a slot held by another owner could be advanced by neither. The interceptor
+   *   deliberately keeps no slot of its own for the same reason — a private second slot could not
+   *   be cleared by a sign-out, so a refusal racing one would replay a cached renewal and
+   *   resurrect the session the operator had just ended.
+   *
+   * Not a signal: no derived state reads it, and making it reactive would invite exactly that. It
+   * holds an observable, never a credential.
+   */
+  private renewalInFlight: Observable<AuthSession> | null = null;
+
+  /**
+   * Backing state for {@link AuthStore.revocationOutstanding}.
+   *
+   * Holds a BOOLEAN and never a credential, a status code or the server's wording.
+   */
+  private readonly _revocationOutstanding = signal(false);
 
   /**
    * A ticket identifying the command that currently owns {@link _phase}.
@@ -244,9 +326,9 @@ export class AuthStore {
    * Whether the last command failed.
    *
    * Held as its own slice rather than inferred from {@link _problem} and
-   * {@link _failureStatus} being set, because a failure can carry NEITHER. The
-   * authentication service refuses a renewal with a plain error before any request is
-   * made when no refresh token is held, and a transport failure can arrive with no
+   * {@link _failureStatus} being set, because a failure can carry NEITHER.
+   * {@link AuthStore.renewSession} refuses a renewal with a plain error before any request
+   * is made when no refresh token is held, and a transport failure can arrive with no
    * body; in both cases there is no document and no status to record, yet the command
    * unquestionably failed. Inferring failure from the presence of its details would
    * report those cases as success.
@@ -549,15 +631,22 @@ export class AuthStore {
   /**
    * Whether the last sign-out failed to confirm that the session was ended on the server.
    *
-   * Re-published from the authentication client, exactly as the two signals above are
-   * re-published from the custody collaborator, so a screen needs one injection rather than
-   * two. It is a BOOLEAN and carries no credential and no failure detail.
+   * A BOOLEAN, deliberately, and not the failure. The status code, the server's wording and the
+   * credential itself are all withheld: a screen needs only to know that the withdrawal is
+   * unconfirmed in order to say so, and anything richer would put failure detail about a
+   * credential operation into a template or a log. Reset by the next sign-out that succeeds.
    *
    * It exists so the sign-in screen can say so. Sign-out sends the operator there, which makes
    * it the one place the report is certain to be seen, and a warning nothing renders is the
    * same silence it was meant to replace.
+   *
+   * MIGRATION: this was re-published from the authentication client, which both held the flag and
+   *   decided when to raise it. Both halves moved here with the sign-out policy they belong to —
+   *   the transport now propagates the server's refusal, and the decision that local sign-out has
+   *   nevertheless completed, together with the record that revocation is outstanding, is made in
+   *   one place by the owner that made it.
    */
-  readonly revocationOutstanding: Signal<boolean> = this.auth.revocationOutstanding;
+  readonly revocationOutstanding: Signal<boolean> = this._revocationOutstanding.asReadonly();
 
   /** Whether any of the three advisories applies. */
   readonly hasAdvisory: Signal<boolean> = computed(
@@ -768,10 +857,10 @@ export class AuthStore {
    * Ported from `Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb:L160-L197`.
    *
    * The failure is re-thrown unchanged so a caller can still react to it; the state
-   * this store publishes is maintained either way. Token custody is NOT performed
-   * here — the authentication service stores the resulting session with the
-   * memory-only custodian and clears it on failure, so this store never holds, copies
-   * or logs a credential.
+   * this store publishes is maintained either way. Token CUSTODY is not performed here:
+   * the session this composes is handed to the memory-only custodian and cleared again
+   * through that same custodian, so it passes through without being retained, and this
+   * store never holds, copies or logs a credential.
    *
    * MIGRATION: the legacy call took EIGHT arguments (L164), of which the literal
    * authentication-type discriminator `"DNN"` — passed there and again at L191 when
@@ -848,12 +937,12 @@ export class AuthStore {
        * ⚠ THE DOMAIN STORES ARE EMPTIED BEFORE THE ATTEMPT, NOT AFTER IT SUCCEEDS.
        *
        * This is the ACCOUNT-REPLACEMENT path, and it does not pass through
-       * {@link AuthStore.logout}. `AuthService.login()` clears the held session eagerly the
-       * moment it is called, so from here on nothing is signed in — but the portal, user, role
-       * and module stores are root-provided and would still be holding whatever the previous
-       * account had loaded. A sign-in from a screen that already had a session, or one arrived
-       * at with a session still held, would therefore leave the previous operator's tenant
-       * listings, open account record and module export visible to the new one.
+       * {@link AuthStore.logout}. The held session is discarded below before the attempt is
+       * issued, so from here on nothing is signed in — but the portal, user, role and module
+       * stores are root-provided and would still be holding whatever the previous account had
+       * loaded. A sign-in from a screen that already had a session, or one arrived at with a
+       * session still held, would therefore leave the previous operator's tenant listings, open
+       * account record and module export visible to the new one.
        *
        * Before rather than after, for two reasons. Purging only on SUCCESS would leave the
        * previous account's data in memory for the whole duration of a failed attempt, which is
@@ -866,42 +955,93 @@ export class AuthStore {
        */
       this.sessionTeardown.purge();
 
+      /*
+       * ⚠ THE HELD SESSION IS DISCARDED BEFORE THE ATTEMPT IS ISSUED, AND THE EPOCH IS CAPTURED
+       * AFTER THAT DISCARD.
+       *
+       * Discarding first is what stops a REFUSED sign-in leaving an earlier session in place: an
+       * operator who signs in as somebody else and is refused must not be left holding the
+       * previous account's authority. Capturing the epoch after the discard is what makes the
+       * commit below conditional on THIS attempt still being the current one — capturing before
+       * would compare against a value this attempt itself superseded, and every commit would be
+       * suppressed.
+       *
+       * MIGRATION: both statements, and the two-request composition beneath them, used to live in
+       *   `core/services/auth.service.ts`. They are session lifecycle rather than transport, and
+       *   holding them here is what lets one owner reason about the two races below at once.
+       */
+      this.tokenStorage.clear();
+
+      /*
+       * ⚠ AND THE SHARED RENEWAL SLOT IS SURRENDERED WITH IT, for the same reason signing out
+       * surrenders it. A renewal held in the slot belongs to the session this attempt is
+       * replacing; leaving it there would let a refusal arriving mid-sign-in coalesce onto a
+       * renewal of the PREVIOUS account's credentials. Its commit is epoch-suppressed either
+       * way, so nothing is resurrected — but a caller would wait on an answer that can never
+       * be committed instead of starting a renewal that can.
+       */
+      this.renewalInFlight = null;
+
+      const startedAt = this.tokenStorage.generation();
+
       return this.auth.login(request, selector).pipe(
-        tap((user) => {
+        /*
+         * ⚠ SIGN-IN IS TWO REQUESTS, AND THE SECOND ONE IS NOT OPTIONAL.
+         *
+         * The credential exchange answers with an AUTHORITY-MINIMISED identity and the access
+         * token carries no role or permission claims, so the caller's roles and granted
+         * permission codes are read from the describe-caller operation with the freshly issued
+         * token presented explicitly. That token is deliberately NOT stored until the identity has
+         * arrived, so a failed bootstrap cannot leave a half-populated session behind — which is
+         * also why the token is handed to the transport rather than left to the interceptor, which
+         * would attach the PREVIOUS token or none at all.
+         */
+        map((response) => sessionFromLoginResponse(response)),
+        switchMap((session) =>
+          this.auth.me(session.accessToken).pipe(map((user) => ({ ...session, user }))),
+        ),
+        map((session) => {
           /*
-           * ⚠ CONDITIONAL, AND THE CONDITION IS IDENTITY RATHER THAN AN EPOCH COMPARISON.
+           * ⚠ CONDITIONAL, AND THE CONDITION IS THE CAPTURED EPOCH.
            *
-           * An unconditional write here was the mechanism by which a superseded account switch
-           * left the previous account's roles and personal details on screen: attempt A's
-           * identity landing after attempt B had established its session published A's
-           * identity while B's credentials were the ones held — and `currentUser` PREFERS
-           * `_identity` over the session's own copy, so A won the disagreement.
+           * An unconditional commit here is the mechanism by which two overlapping attempts
+           * corrupt one another, in both directions:
            *
-           * An epoch comparison would be awkward here and needlessly coupled. Sign-in advances
-           * the epoch TWICE on the way through — the service clears before its request and
-           * stores after it — so a captured value would have to be compared against a
-           * predicted offset that encodes the service's internals. Object identity answers the
-           * question directly instead: the service builds the session with this very identity
-           * as its `user` member and returns that member, so if the held identity IS this
-           * object then this attempt is the one that established the current session. If the
-           * store was suppressed, or a further sign-in replaced it, the held identity is a
-           * different object and this result is stale.
+           *   - the LATE SUCCESS: attempt A's session stored after attempt B's has been
+           *     established, so the operator is silently returned to the account they switched
+           *     away from, holding B's screens;
+           *   - the LATE FAILURE (in the handler below): attempt A's rejection clearing B's live
+           *     session, signing out an operator whose own sign-in succeeded.
            *
-           * The rest of the success bookkeeping is suppressed with the write, because clearing
-           * a failure or resetting the verification ladder on behalf of a session this attempt
-           * no longer describes would be equally wrong.
+           * The test is read ONCE, before the store, because storing a session advances the epoch
+           * itself — asking again afterwards would answer no for the attempt that had just
+           * legitimately won. The identity stamp and the rest of the success bookkeeping are
+           * suppressed with the commit, because clearing a failure or resetting the verification
+           * ladder on behalf of a session this attempt no longer describes would be equally wrong.
+           *
+           * The observable still emits unchanged in either case, so the caller learns its own
+           * outcome; only the write to shared state is withheld.
            */
-          if (this.tokenStorage.currentUser() !== user) {
-            return;
+          if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+            this.tokenStorage.store(session);
+            this.stampIdentity(session.user);
+            this.clearFailure();
+            // Reset on success, and only on success. The ladder's revealed state is
+            // deliberately NOT reset by a failed attempt.
+            this.resetVerificationLadder();
           }
 
-          this.stampIdentity(user);
-          this.clearFailure();
-          // Reset on success, and only on success. The ladder's revealed state is
-          // deliberately NOT reset by a failed attempt.
-          this.resetVerificationLadder();
+          return session.user;
         }),
         catchError((error: unknown) => {
+          // Conditioned for the LATE FAILURE above: an older attempt's rejection must not discard
+          // the session a newer one has already established. The failure record itself is NOT
+          // conditioned — the caller that submitted this attempt is owed the reason it failed, and
+          // the sign-in screen is where it is read.
+          if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+            this.tokenStorage.clear();
+          }
+
           this.recordFailure(error);
           this.advanceVerificationLadder(submittedCode);
 
@@ -920,13 +1060,36 @@ export class AuthStore {
   }
 
   /**
-   * Renews the session from the stored refresh token.
+   * Renews the session from the stored refresh token, coalescing concurrent callers onto
+   * one request.
    *
    * Exposed so a caller may renew deliberately — a route resolver bootstrapping a
-   * reload, for instance. THE REFUSED-REQUEST RETRY POLICY IS NOT THIS STORE'S: that
-   * belongs to `core/interceptors/auth.interceptor.ts`, which coalesces concurrent
-   * renewals and decides when one is warranted. That module is referenced by path and
-   * never imported, and nothing here re-implements its job.
+   * reload, for instance. THE REFUSED-REQUEST RETRY POLICY IS NOT THIS STORE'S: deciding
+   * that a refusal warrants a renewal, and retrying the request that was refused,
+   * belongs to `core/interceptors/auth.interceptor.ts`. That module is referenced by path
+   * and never imported, and nothing here re-implements its job.
+   *
+   * COALESCING, however, IS this store's, because the thing being coalesced is the
+   * session. Several requests refused at once must produce ONE renewal: the refresh token
+   * rotates on use, so a second renewal presenting the credential the first one consumed
+   * is refused, and that refusal ends a session that was in fact healthy. The slot that
+   * guarantees one renewal lives in {@link AuthStore.renewSession}, which this method wraps.
+   *
+   * ⚠ THE DIFFERENCE BETWEEN THIS METHOD AND {@link AuthStore.renewSession} IS BOOKKEEPING,
+   * AND CHOOSING THE WRONG ONE IS A REAL DEFECT RATHER THAN A STYLE PREFERENCE. This is the
+   * DELIBERATE command: it claims a phase so a busy projection reports the renewal, and on
+   * failure it discards the session and RECORDS the problem, because a caller that asked to
+   * renew — a navigation gate resolving an expired token, for instance — is about to send the
+   * operator to sign in and that screen has to be able to say why. The refused-request path
+   * wants none of that bookkeeping: it makes its own terminal decision, with its own
+   * conditions, and a failure record from a renewal the operator never asked for would put a
+   * stale message in front of somebody whose next action succeeded. That path therefore calls
+   * the primitive directly.
+   *
+   * MIGRATION: the slot, the two-request composition and the epoch conditioning around the
+   *   commit used to live on `core/services/auth.service.ts`. They are session lifecycle,
+   *   not transport, and holding them beside the phase ladder and the failure record is what
+   *   lets one owner reason about all of the races at once.
    *
    * On failure the session is discarded, because a refresh token the server refuses
    * cannot be retried and keeping it would mean presenting it again and being refused
@@ -942,7 +1105,13 @@ export class AuthStore {
 
       this.clearFailure();
 
-      return this.auth.refresh().pipe(
+      /*
+       * The phase ticket, the failure record and the handlers below are PER SUBSCRIBER, while
+       * the request itself is shared. That asymmetry is deliberate: two callers that coalesce
+       * onto one renewal each claim and release their own phase ticket, and each is told the
+       * outcome, but only one request is issued and only one rotated pair is stored.
+       */
+      return this.renewSession().pipe(
         tap(() => {
           this.clearFailure();
         }),
@@ -962,6 +1131,126 @@ export class AuthStore {
         finalize(() => this.releasePhase(ticket)),
       );
     });
+  }
+
+  /**
+   * Renews the session, coalescing concurrent callers onto one request and committing the
+   * rotated pair exactly once — and doing nothing else.
+   *
+   * THE PRIMITIVE BENEATH {@link AuthStore.refreshSession}, and the entry point for the
+   * REFUSED-REQUEST path in `core/interceptors/auth.interceptor.ts`. It claims no phase,
+   * records no failure and discards no session: the only state it touches is the custodian,
+   * and every touch is conditioned on the epoch captured before the request went out. That
+   * narrowness is the point. The interceptor decides for itself whether a refused renewal is
+   * terminal — it has to, because it can also be reached after a sign-out or after a newer
+   * sign-in, and those three cases demand three different answers — so a discard or a failure
+   * record applied here would pre-empt a decision that is not this method's to make.
+   *
+   * MIGRATION: the interceptor used to reach an identical primitive on
+   *   `core/services/auth.service.ts`, which held the slot alongside custody of the session.
+   *   Moving the slot here without exposing the primitive would have forced that path through
+   *   the deliberate command above, which discards unconditionally and records the failure —
+   *   and the interceptor's own specification pins both consequences as defects: an older
+   *   renewal's refusal would have signed out an operator whose newer sign-in had just
+   *   succeeded, and the footprint purge would have run twice for one ended session.
+   *
+   * Fails immediately when no refresh token is held, rather than posting an empty one: the
+   * server would answer 400 and the caller would have to distinguish that from a genuine
+   * rejection. The error is produced lazily inside the returned observable so this method
+   * never throws synchronously — an interceptor reaching it inside a `catchError` must be
+   * able to rely on getting an observable back.
+   *
+   * @returns The renewed session, shared by every caller that arrives while it is in flight.
+   */
+  renewSession(): Observable<AuthSession> {
+    const inFlight = this.renewalInFlight;
+
+    if (inFlight !== null) {
+      return inFlight;
+    }
+
+    const refreshToken = this.tokenStorage.refreshToken();
+
+    if (refreshToken === null || refreshToken.length === 0) {
+      return throwError(() => new Error(NO_RENEWAL_CREDENTIAL_MESSAGE));
+    }
+
+    const body: RefreshTokenRequest = { refreshToken };
+
+    /*
+     * The epoch this renewal belongs to, captured before the request is issued.
+     *
+     * A renewal takes two round trips, and a sign-out or a sign-in can happen during either
+     * of them. `shareReplay({ refCount: false })` keeps the source subscribed even when every
+     * subscriber has gone, so the renewal WILL arrive and WILL run its operators regardless —
+     * which is what made an unconditional commit a resurrection: a renewal begun before a
+     * sign-out stored its rotated pair afterwards, handing back a session the operator had
+     * just ended.
+     *
+     * `TokenStorageService.clear()` advances the epoch, so testing it here is what makes such
+     * a renewal inert without cancelling it — the answer is still delivered to whoever is
+     * still waiting, and only the write to shared state is withheld.
+     */
+    const startedAt = this.tokenStorage.generation();
+
+    const renewal = this.auth.refresh(body).pipe(
+      /*
+       * ⚠ RENEWAL IS TWO REQUESTS, FOR THE SAME REASON SIGN-IN IS.
+       *
+       * The rotated pair arrives with an authority-minimised identity, so the caller's roles and
+       * permission codes are read again with the new access token presented explicitly. The token
+       * is deliberately NOT stored until that read returns: an interceptor reading storage at
+       * this instant would attach the token that was just superseded and treat the resulting
+       * refusal as cause for ANOTHER renewal, which is the recursion the explicit bearer breaks.
+       */
+      map((response) => sessionFromLoginResponse(response)),
+      switchMap((session) =>
+        this.auth.me(session.accessToken).pipe(map((user) => ({ ...session, user }))),
+      ),
+      // Storing here rather than at the call site is what guarantees the rotated refresh
+      // token replaces the consumed one exactly once, however many subscribers are sharing
+      // this request.
+      //
+      // Conditioned on the epoch: a renewal that began before a sign-out or a sign-in must
+      // not write its pair over whatever replaced it.
+      tap((session) => {
+        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+          this.tokenStorage.store(session);
+        }
+      }),
+      catchError((error: unknown) => {
+        // Equally conditioned, and this direction matters just as much: a refused renewal
+        // from a superseded session must not clear the session that superseded it.
+        if (this.tokenStorage.isCurrentGeneration(startedAt)) {
+          this.tokenStorage.clear();
+        }
+
+        return throwError(() => error);
+      }),
+      // Clears the slot on completion, error and unsubscription alike, so a later refusal
+      // starts a fresh renewal rather than replaying this one's outcome forever. Placed before
+      // `shareReplay` so it observes the source, not each subscriber.
+      //
+      // Released by OBJECT IDENTITY, never by epoch. The question this asks is whether the slot
+      // still holds THIS request, which is a question about identity and not about the session.
+      // An epoch test would be wrong in both directions: a renewal that completes after a
+      // sign-out still needs to release its own slot, or the slot stays held by a settled
+      // observable forever and no future renewal can start; while a renewal whose slot has
+      // already been claimed by a successor must not clear it even if the epoch happens to match.
+      finalize(() => {
+        if (this.renewalInFlight === renewal) {
+          this.renewalInFlight = null;
+        }
+      }),
+      // `refCount: false` keeps the single subscription to the HTTP request alive even if
+      // every current subscriber unsubscribes, so a cancelled request does not silently
+      // abandon the renewal for the subscribers still waiting.
+      shareReplay({ bufferSize: 1, refCount: false }),
+    );
+
+    this.renewalInFlight = renewal;
+
+    return renewal;
   }
 
   /**
@@ -987,6 +1276,29 @@ export class AuthStore {
    * revocation request failed would be the opposite of what was asked for, and the caller
    * could not act on the error in any case.
    *
+   * ⚠ THE STREAM COMPLETES SUCCESSFULLY EVEN WHEN THE WITHDRAWAL FAILED, AND A FAILED
+   * WITHDRAWAL IS STILL REPORTED. Both halves matter. The caller navigates away from the
+   * signed-in shell when this completes, so erroring here would leave somebody who asked to
+   * sign out looking at a screen that behaves as though they had not. But a 400, a 429, a 503
+   * or a dropped connection means the renewal credential is still live on the server for its
+   * full lifetime — precisely the outcome signing out exists to prevent — so the failure is
+   * RECORDED in {@link AuthStore.revocationOutstanding} and ANNOUNCED, rather than discarded.
+   * Absorbing the failure was never the defect; claiming success was.
+   *
+   * MIGRATION: the absorption used to happen one layer lower, inside
+   *   `core/services/auth.service.ts`, which returned successful completion for a refused
+   *   revocation and left this store unable to tell the two apart. The transport now
+   *   propagates the real refusal and the policy — local sign-out regardless, plus a report —
+   *   is applied here, where the session and the operator-facing state both live.
+   *
+   * ⚠ NO RETRY IS OFFERED, AND NO CREDENTIAL IS CACHED TO MAKE ONE POSSIBLE. A client-side
+   * retry would mean holding the renewal credential in a field of this store so a later attempt
+   * could re-send it, and custody of that credential belongs to `TokenStorageService` alone.
+   * What makes that acceptable is the other half of the same fix, on the server: revocation
+   * draws on a rate-limit budget of its own rather than the one sign-in attempts spend, so the
+   * 429 that made this failure common can no longer be caused by traffic that has nothing to do
+   * with this caller.
+   *
    * @returns Completion of the revocation attempt. Must be subscribed for the request
    * to be issued.
    */
@@ -1005,26 +1317,67 @@ export class AuthStore {
        * showed its records, and a request issued from any of them still carried its bearer token.
        * On a slow or failing network that window is unbounded.
        *
-       * ⚠ THE TWO STATEMENTS BELOW ARE IN THIS ORDER FOR A REASON, AND SWAPPING THEM SILENTLY
+       * ⚠ THE STATEMENTS BELOW ARE IN THIS ORDER FOR A REASON, AND REORDERING THEM SILENTLY
        * BREAKS REVOCATION.
        *
-       * `AuthService.logout()` does its work EAGERLY when called, not when subscribed: it reads
-       * the held renewal credential, clears the stored session, and returns a cold observable
-       * that already carries that credential in its request body. Calling it first is therefore
-       * what lets it capture the credential while one is still there to capture.
+       * The renewal credential is read FIRST, because discarding the session clears the
+       * custodian that holds it. Reading afterwards would find nothing, take the no-request
+       * branch below, and leave the refresh token live on the server for its full lifetime —
+       * the exact outcome signing out exists to prevent, and a silent one: locally everything
+       * would look correctly signed out.
        *
-       * Discarding this store's own state first would clear the session before the service could
-       * read it. The service would then find no credential, take its no-op branch, and issue NO
-       * REVOCATION REQUEST AT ALL — leaving the refresh token live on the server for its full
-       * seven days, which is the exact outcome signing out exists to prevent. That failure is
-       * silent: locally everything looks correctly signed out.
+       * MIGRATION: the read used to be the transport's, which did it eagerly on call and made the
+       *   ordering here a matter of when `AuthService.logout()` was invoked rather than of when
+       *   the credential was read. The custody question is unchanged; only the layer that asks
+       *   it has moved, and asking it here is what makes the ordering legible.
        */
-      const revocation = this.auth.logout();
+      const refreshToken = this.tokenStorage.refreshToken();
+
+      /*
+       * ⚠ THE SHARED RENEWAL SLOT IS RELEASED AS PART OF SIGNING OUT.
+       *
+       * A renewal held in the slot is a settled or in-flight observable carrying the session
+       * being ended. Leaving it there would let the next refusal — from a request already in
+       * flight, or from a subsequent sign-in's bootstrap — replay THAT renewal and reinstate a
+       * session the operator had just discarded. The epoch conditioning inside the renewal
+       * withholds its commit, but the slot itself must still be surrendered so a genuinely new
+       * renewal can be started later.
+       */
+      this.renewalInFlight = null;
 
       this.discardSession();
       this.clearFailure();
 
-      return revocation.pipe(
+      if (refreshToken === null || refreshToken.length === 0) {
+        // Nothing to withdraw, so nothing is posted: an empty credential would be answered 400
+        // and reported as an outstanding revocation, which would be a false alarm. Local
+        // sign-out has already happened above, which is the part that was asked for.
+        return of(undefined).pipe(finalize(() => this.releasePhase(ticket)));
+      }
+
+      // No envelope here, and none is expected. Sign-out answers 204, which HTTP forbids from
+      // carrying a body, so there is nothing to unwrap.
+      return this.auth.logout({ refreshToken }).pipe(
+        map(() => {
+          // Cleared only by a withdrawal that actually succeeded, so a screen that reported an
+          // unconfirmed sign-out stops reporting it once a later one is confirmed.
+          this._revocationOutstanding.set(false);
+
+          return undefined;
+        }),
+        catchError(() => {
+          /*
+           * The refusal is deliberately NOT recorded through `recordFailure`. That record is
+           * read by the sign-in screen to explain why a caller is back at it, and a failed
+           * WITHDRAWAL is not a reason they were signed out — they asked to be. It is reported
+           * as its own boolean and announced once, in words that name the action that genuinely
+           * exists for the residue.
+           */
+          this._revocationOutstanding.set(true);
+          this.notifications.warning(REVOCATION_FAILED_MESSAGE);
+
+          return of(undefined);
+        }),
         // The discard above already ran, so this exists solely to return the phase to idle —
         // on success, on a revocation failure and on an early unsubscription alike. Ticketed
         // like every other command so a sign-out that is abandoned mid-flight cannot reset a
@@ -1243,11 +1596,11 @@ export class AuthStore {
   /**
    * Discards every trace of the session from local state.
    *
-   * Clearing the custodian is idempotent and is performed here even though the
-   * authentication service clears it too. That is not duplicated storage — this store
-   * holds no token to clear — it is the discard INVARIANT being enforced at the point
-   * that publishes the session, so the projections above cannot outlive the session
-   * they describe whichever path reached this method.
+   * Clearing the custodian is idempotent and is performed here even though the commands
+   * that fail clear it too, conditioned on their own epoch. That is not duplicated
+   * storage — this store holds no token to clear — it is the discard INVARIANT being
+   * enforced at the point that publishes the session, so the projections above cannot
+   * outlive the session they describe whichever path reached this method.
    *
    * ⚠ THE PURGE REACHES BEYOND THIS STORE, and it has to. Discarding the token and the
    * identity projection ends the session's AUTHORITY but not its FOOTPRINT: the portal,

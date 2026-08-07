@@ -1099,6 +1099,28 @@ describe('RoleListComponent', () => {
       expect(host().innerHTML).toContain('&lt;img');
     });
 
+    it('renders a stored frequency code outside the published six exactly as it is stored', () => {
+      // MIGRATION: the listing used to be unopenable in a real migrated database whenever any role
+      //   held one of these codes. The API carries a stored frequency character through losslessly
+      //   and shipped DotNetNuke data seeds two roles with characters from the superseded numeric
+      //   code set, but the read decoder was closed to the six published codes — so one legacy row
+      //   refused the whole page and an administrator saw no roles at all.
+      //
+      // The grid binds the raw field, exactly as the legacy grid did, so the character renders as
+      // itself and is never expanded into a word or mapped onto a supported code.
+      arrive([roleGroup()], [roleRow(0, { billingFrequency: '4', trialFrequency: 'm' })]);
+
+      const cells: readonly string[] = Array.from(
+        (rows()[0] as HTMLTableRowElement).querySelectorAll('td'),
+      ).map((cell) => (cell.textContent ?? '').trim());
+
+      expect(rows()).withContext('the page is rendered rather than refused').toHaveSize(1);
+      expect(cells).toContain('4');
+      expect(cells)
+        .withContext('case is data: a lower-case code is not folded onto the upper-case one')
+        .toContain('m');
+    });
+
     it('renders the absent-money and absent-period markers as empty cells', () => {
       arrive([roleGroup()], [roleRow(0, { serviceFee: null, billingPeriod: null })]);
 
