@@ -1284,6 +1284,110 @@ describe('AuthStore', () => {
       expect(store.hasAdvisory()).toBe(true);
     });
 
+    it('reports the session RESTRICTED for either blocking advisory', async () => {
+      // ⚠ THE DISTINCTION BETWEEN "AN ADVISORY IS PRESENT" AND "THE SERVER WILL REFUSE WORK".
+      // While either of these two holds, the API refuses very nearly every read the console
+      // performs — measured for an outstanding credential change: GET api/v1/users/{id},
+      // .../services, api/v1/users/settings, api/v1/portals and api/v1/modules each answered
+      // 403 auth.remediation_required. So this predicate decides where a caller can go at all,
+      // which is why it mirrors the server's own: AuthenticationRemediationState.IsRequired is
+      // MustChangePassword || MustUpdateProfile.
+      await signIn(credentialPayload({ mustChangePassword: true }));
+      expect(store.sessionRestricted()).toBe(true);
+
+      TestBed.inject(TokenStorageService).clear();
+      await signIn(credentialPayload({ mustUpdateProfile: true }));
+      expect(store.sessionRestricted()).toBe(true);
+    });
+
+    it('does NOT report the session restricted for the informational advisory alone', async () => {
+      // An approaching expiry asks for nothing and blocks nothing. Folding it in would divert
+      // the caller to a remediation screen with nothing to remediate, and the server would then
+      // answer every request on that screen normally — so the diversion would be the client's
+      // invention rather than the server's requirement.
+      await signIn(credentialPayload({ passwordExpiring: true }));
+
+      expect(store.hasAdvisory())
+        .withContext('there IS an advisory, and that is a different question')
+        .toBe(true);
+      expect(store.sessionRestricted()).toBe(false);
+    });
+
+    it('reports no restriction when nobody is signed in', async () => {
+      expect(store.sessionRestricted())
+        .withContext('an unauthenticated caller is stopped by authentication, not by an advisory')
+        .toBe(false);
+
+      await signIn(credentialPayload());
+
+      expect(store.sessionRestricted()).toBe(false);
+    });
+
+    it('clears a satisfied CREDENTIAL advisory without issuing a request', async () => {
+      // ⚠ WHY THIS IS NOT A RENEWAL. `POST api/v1/users/{id}/password` deliberately revokes every
+      // refresh token the account holds, so the token this client is holding is dead the instant
+      // the change succeeds. Renewing with it answers 401, this store treats a refused renewal as
+      // a session that is over and DISCARDS it, and the caller is signed out seconds after doing
+      // exactly what the server demanded — observed end to end in a browser. `expectNone` is what
+      // keeps that regression from returning.
+      await signIn(credentialPayload({ mustChangePassword: true, mustUpdateProfile: true }));
+
+      store.noteCredentialRemediated();
+
+      httpMock.expectNone(REFRESH_URL);
+      expect(store.mustChangePassword()).toBe(false);
+      expect(store.mustUpdateProfile())
+        .withContext('only the SATISFIED advisory is cleared, so the root can move the caller on')
+        .toBe(true);
+      expect(store.sessionRestricted())
+        .withContext('and the session is still restricted by the one that remains')
+        .toBe(true);
+      expect(store.isAuthenticated())
+        .withContext('the session survives: the access token was never revoked, only the renewal')
+        .toBe(true);
+    });
+
+    it('clears a satisfied PROFILE advisory without issuing a request', async () => {
+      await signIn(credentialPayload({ mustUpdateProfile: true }));
+
+      store.noteProfileRemediated();
+
+      httpMock.expectNone(REFRESH_URL);
+      expect(store.mustUpdateProfile()).toBe(false);
+      expect(store.sessionRestricted()).toBe(false);
+      expect(store.isAuthenticated()).toBe(true);
+    });
+
+    it('leaves the identity and the credentials untouched when clearing an advisory', async () => {
+      // The advisory is the only member replaced. Anything else changing here would make this a
+      // session transition in disguise, and a caller mid-journey would lose their identity.
+      await signIn(credentialPayload({ mustChangePassword: true }));
+
+      const before = tokenStorage.session();
+
+      store.noteCredentialRemediated();
+
+      const after = tokenStorage.session();
+
+      expect(after?.accessToken).toBe(before?.accessToken);
+      expect(after?.refreshToken).toBe(before?.refreshToken);
+      expect(after?.expiresAtUtc).toBe(before?.expiresAtUtc);
+      expect(after?.user).toEqual(before?.user);
+      expect(after?.passwordExpiring).toBe(before?.passwordExpiring);
+      expect(store.currentUser()).not.toBeNull();
+    });
+
+    it('does nothing at all when the advisory was never outstanding, or nobody is signed in', () => {
+      // Idempotent and safe to call unconditionally, so a screen does not have to test first.
+      store.noteCredentialRemediated();
+      store.noteProfileRemediated();
+
+      httpMock.expectNone(REFRESH_URL);
+      expect(tokenStorage.session())
+        .withContext('no session is manufactured for a caller who has none')
+        .toBeNull();
+    });
+
     it('retains a false advisory as data rather than reading it as absent', async () => {
       // ⚠ `false` IS DATA. In the legacy null contract the absence test reported true
       // for `false` itself, so a legacy `false` and a legacy "unknown" were

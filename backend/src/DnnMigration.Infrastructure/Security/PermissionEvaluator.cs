@@ -409,11 +409,80 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         ArgumentNullException.ThrowIfNull(roleNames);
         cancellationToken.ThrowIfCancellationRequested();
 
+        List<int> granting = await CollectTabsWithPermissionAsync(
+            tabIds,
+            permissionKey,
+            userId,
+            roleNames,
+            cancellationToken).ConfigureAwait(false);
+
+        return Result<bool>.Success(granting.Count > 0);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<int>>> ListTabsWithPermissionAsync(
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tabIds);
+        ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        List<int> granting = await CollectTabsWithPermissionAsync(
+            tabIds,
+            permissionKey,
+            userId,
+            roleNames,
+            cancellationToken).ConfigureAwait(false);
+
+        return Result<IReadOnlyList<int>>.Success(granting);
+    }
+
+    /// <summary>
+    /// Judges every named page against one permission key and returns the identifiers of those that grant it.
+    /// </summary>
+    /// <param name="tabIds">The pages to judge.</param>
+    /// <param name="permissionKey">The key to test.</param>
+    /// <param name="userId">Account identifier, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="roleNames">The role names the caller holds.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The granting page identifiers, in the order the pages were read.</returns>
+    /// <remarks>
+    /// <para>
+    /// ONE BODY SERVES BOTH PUBLIC MEMBERS, and that is a correctness property rather than a tidiness one.
+    /// The existential member and the plural member document themselves as asking the IDENTICAL question and
+    /// differing only in what they report; implementing them separately would make that a claim maintained by
+    /// hand, and a divergence between them would be a security defect - a page listing offering a target the
+    /// authorisation check would then refuse, or refusing one it would have allowed.
+    /// </para>
+    /// <para>
+    /// The early exit the existential member used to take is not lost, because there was never any I/O to
+    /// save: the page rows, the permission catalogue and the whole grant set are all read BEFORE the loop, and
+    /// the loop is in-memory matching. Visiting every page therefore costs the same reads and a negligible
+    /// amount of additional matching.
+    /// </para>
+    /// </remarks>
+    private async Task<List<int>> CollectTabsWithPermissionAsync(
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken)
+    {
+        var granting = new List<int>();
+
+        ArgumentNullException.ThrowIfNull(tabIds);
+        ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (tabIds.Count == 0)
         {
             // No page can grant anything, so no read is issued. This is an ordinary state rather than an
             // error: a module placed nowhere is administered from nowhere.
-            return Result<bool>.Success(false);
+            return granting;
         }
 
         IReadOnlyList<Tab> pages = await _tabs.GetByIdsAsync(tabIds, cancellationToken).ConfigureAwait(false);
@@ -422,7 +491,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         {
             // Every named page is absent, which is the same closed default the single-page member reports
             // for one absent page.
-            return Result<bool>.Success(false);
+            return granting;
         }
 
         // One principal per distinct owning tenant. Cached so a set of pages sharing a tenant - which is
@@ -440,7 +509,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         {
             // Nothing in the catalogue confers the key being asked about, so no grant could match it and the
             // grant read is not issued at all.
-            return Result<bool>.Success(false);
+            return granting;
         }
 
         IReadOnlyList<TabPermission> grants = await _permissions
@@ -507,14 +576,16 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             }
 
             // Judged with the SAME rule and within the SAME page as the single-page member applies, so deny
-            // precedence stays a within-page decision.
+            // precedence stays a within-page decision. The verdict is COLLECTED rather than returned, which
+            // is the single difference between the two members this body serves: visiting every page costs
+            // no additional read, because every read above was issued for the whole set before the loop.
             if (Holds(matched, permissionKey))
             {
-                return Result<bool>.Success(true);
+                granting.Add(page.TabId);
             }
         }
 
-        return Result<bool>.Success(false);
+        return granting;
     }
 
     /// <summary>Collects the grants on one module that the given caller reaches.</summary>

@@ -2208,7 +2208,8 @@ public class MappingTests
             userId: 1,
             [telephone, city],
             [stored, orphan],
-            defaultVisibility: 2);
+            defaultVisibility: 2,
+            displayVisibilityEnabled: true);
 
         dto.UserId.Should().Be(1);
         dto.Properties.Should().HaveCount(
@@ -2291,7 +2292,7 @@ public class MappingTests
         UserProfileValue first = NewProfileValue("first", null);
         UserProfileValue second = NewProfileValue("second", null);
 
-        UserProfileDto dto = UserMappings.ToProfile(1, [FullDefinition()], [first, second], 2);
+        UserProfileDto dto = UserMappings.ToProfile(1, [FullDefinition()], [first, second], 2, true);
 
         dto.Properties.Should().HaveCount(1);
         dto.Properties[0].PropertyValue.Should().Be("second");
@@ -2303,10 +2304,56 @@ public class MappingTests
     [Fact]
     public void UserToProfile_ProjectsNothingWhenTheTenantDefinesNoProperties()
     {
-        UserProfileDto dto = UserMappings.ToProfile(1, [], [], 2);
+        UserProfileDto dto = UserMappings.ToProfile(1, [], [], 2, true);
 
         dto.UserId.Should().Be(1);
         dto.Properties.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The tenant's visibility-affordance decision is carried through the projection in both states, and is
+    /// not derived from the default visibility that sits beside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two arguments arrive together because they come from one settings read, and they answer different
+    /// questions: the default decides what an unrecorded value is set to, the flag decides whether the
+    /// account holder may change it. A mapper that used one for the other would pass a case that stated only
+    /// the default, so both are varied here against a fixed default.
+    /// </para>
+    /// <para>
+    /// ⚠ THE PROJECTION IS THE ONLY WAY AN ORDINARY ACCOUNT HOLDER CAN LEARN THIS FACT. The settings
+    /// endpoint that also declares it carries <c>PolicyNames.PortalAdministrator</c>, so a caller reading
+    /// their own profile is answered 403 there.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void UserToProfile_CarriesTheTenantsVisibilityAffordanceDecision()
+    {
+        UserProfileDto enabled = UserMappings.ToProfile(
+            1,
+            [FullDefinition()],
+            [NewProfileValue("555-0100", null)],
+            2,
+            true);
+
+        UserProfileDto disabled = UserMappings.ToProfile(
+            1,
+            [FullDefinition()],
+            [NewProfileValue("555-0100", null)],
+            2,
+            false);
+
+        enabled.DisplayVisibilityEnabled.Should().BeTrue();
+        disabled.DisplayVisibilityEnabled.Should().BeFalse();
+
+        // ⚠ THE AFFORDANCE DECISION MUST NOT DISTURB THE VALUES. A recorded value keeps the visibility
+        // it was stored with - `NewProfileValue` stores 1 - whether or not the tenant permits the holder
+        // to change it. Withholding the CONTROL is not the same as rewriting the DATA, and a mapper that
+        // conflated them would silently republish every value at the default.
+        disabled.Properties.Should().OnlyContain(
+            property => property.Visibility == 1,
+            "the recorded value keeps the visibility it was stored with, whatever the affordance decision is");
     }
 
     /// <summary>
@@ -2575,8 +2622,8 @@ public class MappingTests
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(null!, -1, []); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(user, -1, null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDto(null!, 0); });
-        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToProfile(1, null!, [], 0); });
-        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToProfile(1, [], null!, 0); });
+        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToProfile(1, null!, [], 0, true); });
+        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToProfile(1, [], null!, 0, true); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToNewUser(null!); });
         Assert.Throws<ArgumentNullException>(() => UserMappings.ApplyUpdate(null!, new UpdateUserRequest()));
         Assert.Throws<ArgumentNullException>(() => UserMappings.ApplyUpdate(user, null!));
@@ -3781,7 +3828,7 @@ public class MappingTests
         [
             UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null),
             UserMappings.ToDetail(user, -1, ["Administrators"]),
-            UserMappings.ToProfile(user.UserId, [FullDefinition()], [NewProfileValue("555-0100", null)], 2),
+            UserMappings.ToProfile(user.UserId, [FullDefinition()], [NewProfileValue("555-0100", null)], 2, true),
             UserMappings.ToDto(FullDefinition(), 2),
         ];
 
@@ -4237,8 +4284,9 @@ public class MappingTests
         UserMappings.ToDetail(user, -1, ["Administrators"]).Should()
             .BeEquivalentTo(UserMappings.ToDetail(user, -1, ["Administrators"]));
         UserMappings.ToDto(definition, 2).Should().BeEquivalentTo(UserMappings.ToDto(definition, 2));
-        UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2).Should()
-            .BeEquivalentTo(UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2));
+        UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2, true).Should()
+            .BeEquivalentTo(
+                UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2, true));
 
         // The write mappers are pure in the same sense: applied twice they leave the same row, so neither
         // accumulates nor stamps an instant of its own.
@@ -4740,5 +4788,6 @@ public class MappingTests
     /// <param name="stored">The stored value.</param>
     /// <returns>The projected property.</returns>
     private static UserProfileValueDto Answer(UserProfileValue stored)
-        => UserMappings.ToProfile(1, [FullDefinition()], [stored], defaultVisibility: 2).Properties[0];
+        => UserMappings.ToProfile(1, [FullDefinition()], [stored], defaultVisibility: 2, displayVisibilityEnabled: true)
+            .Properties[0];
 }

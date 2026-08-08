@@ -70,6 +70,49 @@ public sealed class UserProfileDto
     public IReadOnlyList<UserProfileValueDto> Properties { get; set; }
         = Array.Empty<UserProfileValueDto>();
 
+    /// <summary>
+    /// Whether the tenant lets an account holder choose who may see each of their own profile values,
+    /// from the <c>Profile_DisplayVisibility</c> tenant setting. Defaults to <see langword="true"/> when
+    /// the tenant has stored nothing, which is the legacy default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THIS IS PUBLISHED HERE BECAUSE THE ONLY OTHER PLACE IT WAS READABLE FROM IS ADMINISTRATOR-ONLY,
+    /// AND THE PEOPLE WHO NEED IT ARE NOT ADMINISTRATORS.</b> The flag decides whether a profile screen
+    /// offers its per-value visibility control, and the legacy rule
+    /// (<c>Profile.ascx.vb</c> L58-L63) is the tenant's policy AND the viewer being the SUBJECT of the
+    /// profile — so the caller who needs the answer is, by construction, an ordinary account holder
+    /// looking at their own profile. It had to be fetched from <c>GET api/v1/users/settings</c>, which
+    /// carries <c>PolicyNames.PortalAdministrator</c>: measured against the running API, an ordinary
+    /// account was answered <c>403 auth.not_permitted</c>, so the control could never be offered to the
+    /// one caller it exists for however the tenant had configured it. The setting was stored, published
+    /// and inert.
+    /// </para>
+    /// <para>
+    /// <b>Widening that endpoint was the alternative and was rejected.</b> It carries twenty-three members
+    /// describing the tenant's whole account policy — display-name format, e-mail validation, redirect
+    /// targets, the users-control mode — none of which an account holder has any business reading. One
+    /// fact travels here instead, on a projection the owner is already entitled to:
+    /// <c>GET api/v1/users/{userId}/profile</c> is declared
+    /// <c>AccountOwnerOrPortalAdministrator</c> and is exempted during mandatory remediation, so the same
+    /// change serves the ordinary owner and the remediating caller.
+    /// </para>
+    /// <para>
+    /// It also REMOVES a request rather than adding one. <c>GetProfileAsync</c> already reads the tenant's
+    /// settings in order to resolve the default visibility that seeds each value, so both facts come from
+    /// one read of one source and cannot disagree.
+    /// </para>
+    /// <para>
+    /// ⚠ THE SECOND HALF OF THE LEGACY RULE IS NOT ENCODED HERE AND MUST NOT BE. This member reports the
+    /// TENANT'S POLICY only. Whether the viewer is the subject of the profile is a fact about the caller,
+    /// not about the profile, and it stays where it can be answered correctly — the client compares the
+    /// route's account against its own identity, and the server enforces the write with its own policy
+    /// regardless. Folding ownership in here would make the value mean different things to the two callers
+    /// the endpoint admits.
+    /// </para>
+    /// </remarks>
+    public bool DisplayVisibilityEnabled { get; set; } = true;
+
     // DELIBERATELY ABSENT: no portal identifier, because the UserProfile table has no PortalID
     // column - values are keyed to a user and a definition, and the portal scope lives on the
     // definition, so publishing it here would invite two copies to disagree. No aggregate row

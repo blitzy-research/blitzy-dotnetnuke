@@ -381,6 +381,130 @@ public sealed class PermissionService : IPermissionService
     /// gap answers false rather than being widened to another role.
     /// </para>
     /// </remarks>
+    /// <inheritdoc />
+    public async Task<Result<bool>> HasAnyTabPermissionInPortalAsync(
+        int portalId,
+        int? userId,
+        PermissionKey permissionKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Enum.IsDefined(permissionKey))
+        {
+            return Result<bool>.Failure(
+                KeyInvalidCode,
+                FormattableString.Invariant($"Permission key {(int)permissionKey} is not defined."));
+        }
+
+        // THE ADMINISTRATION ARM IS ASKED FIRST, AND ITS ORDER IS THE CHEAP-AND-DECISIVE ONE. It reads the
+        // account and the portal row; the grant arm below reads the tenant's whole page set plus the
+        // permission catalogue plus the grant rows. An administrator is admitted without paying for any of
+        // that, and - more importantly - is admitted in an installation whose page grants were never
+        // populated, where the grant arm alone would refuse the one caller entitled to everything.
+        Result<bool> administers = await IsPortalAdministratorAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (administers.IsSuccess && administers.Value)
+        {
+            return Result<bool>.Success(true);
+        }
+
+        CallerIdentity caller = await ResolveCallerAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!caller.Found)
+        {
+            return Result<bool>.Success(false);
+        }
+
+        if (caller.IsSuperUser)
+        {
+            return Result<bool>.Success(true);
+        }
+
+        IReadOnlyList<Tab> pages = await _tabs.GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (pages.Count == 0)
+        {
+            // A tenant with no pages grants nothing to anybody, which is an ordinary state and not a fault.
+            // No grant read is issued for it.
+            return Result<bool>.Success(false);
+        }
+
+        // ONE QUESTION OVER THE WHOLE PAGE SET, never one per page. The set-based member composes its verdict
+        // per page and disjoins, so it answers the identical question at a fixed number of reads - which is
+        // what keeps this decision from scaling with the tenant's page tree on every request that needs it.
+        Result<bool> granted = await _evaluator
+            .HasAnyTabPermissionAsync(
+                pages.Select(page => page.TabId).Distinct().ToList(),
+                permissionKey,
+                userId,
+                caller.RoleNames,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<bool>.Success(VerdictOf(granted));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<int>>> ListTabsWithPermissionAsync(
+        int portalId,
+        int? userId,
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tabIds);
+
+        if (!Enum.IsDefined(permissionKey))
+        {
+            return Result<IReadOnlyList<int>>.Failure(
+                KeyInvalidCode,
+                FormattableString.Invariant($"Permission key {(int)permissionKey} is not defined."));
+        }
+
+        if (tabIds.Count == 0)
+        {
+            return Result<IReadOnlyList<int>>.Success([]);
+        }
+
+        // EVERY NAMED PAGE, for a caller who administers the tenant or the installation. See the contract's
+        // remarks: filtering an administrator by stored grant rows would hide pages from the one caller
+        // entitled to all of them, and in an installation whose grants were never populated it would hide
+        // every page. The order the caller supplied is preserved so the projection this narrows keeps its own
+        // ordering, which for a page listing is the navigation order and is meaningful.
+        Result<bool> administers = await IsPortalAdministratorAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (administers.IsSuccess && administers.Value)
+        {
+            return Result<IReadOnlyList<int>>.Success(tabIds.ToList());
+        }
+
+        CallerIdentity caller = await ResolveCallerAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!caller.Found)
+        {
+            return Result<IReadOnlyList<int>>.Success([]);
+        }
+
+        if (caller.IsSuperUser)
+        {
+            return Result<IReadOnlyList<int>>.Success(tabIds.ToList());
+        }
+
+        Result<IReadOnlyList<int>> granting = await _evaluator
+            .ListTabsWithPermissionAsync(tabIds, permissionKey, userId, caller.RoleNames, cancellationToken)
+            .ConfigureAwait(false);
+
+        // A failed evaluation is a denial rather than a fault to propagate, which is the same reading every
+        // other member here takes of the evaluator: a caller learns nothing from the difference, and the
+        // closed answer is the safe one for a list offered as a set of choices.
+        return Result<IReadOnlyList<int>>.Success(
+            granting.IsSuccess ? granting.Value : []);
+    }
+
     public async Task<Result<bool>> IsPortalAdministratorAsync(
         int portalId,
         int? userId,

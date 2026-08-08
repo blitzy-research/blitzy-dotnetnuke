@@ -15805,3 +15805,423 @@ Notifications persist until they are dismissed, including across in-application 
 notification surface's design and not a leak: it is a single labelled live region with an explicit dismiss
 control on every entry, cleared wholesale only when a session ends, which is what keeps a warning from vanishing
 before it has been read by someone using a screen reader.
+
+## Frontend/API seam corrections — checkpoint B6
+
+Four contract and authorisation defects at the seam between the Angular administration console and the
+API, each of which compiled cleanly on both sides because each half was internally well typed. They are
+recorded together because they share that property: no build, no type and no existing test could have
+caught them, and the only thing that did was reading one side's call against the other side's contract.
+
+### The sort direction had two wire forms, and the request body used the one the API refused
+
+**What was wrong.** `PagedRequest.SortDir` is bound from the query string on every collection endpoint and
+from a JSON body on `POST /api/v1/users/search` — the compensating address an identifying account search
+uses so that personal data does not travel in a request target. The framework's query-string binder
+resolves an enumeration through its type converter, which accepts the MEMBER NAME; the body was bound by
+`System.Text.Json` with no converter registered for the type, which accepts only the numeric
+discriminator. One contract member therefore had two incompatible spellings, and the client — reasonably —
+implemented the one the query string documents. Measured against the running API:
+`{"pageIndex":0,"pageSize":10,"sortDir":"Ascending"}` was answered `400 Bad Request` carrying
+`"$.sortDir": ["The JSON value could not be converted to …SortDirection."]`, while the identical search
+carrying `"sortDir":0` was answered `200 OK`. Any account search that named an ordering was refused
+outright.
+
+**What changed.** `SortDirectionJsonConverter` was added to the central converter policy in
+`backend/src/DnnMigration.Application/Serialization`, so the body now accepts exactly what a query string
+accepts: the member name parsed case-insensitively, numeric text, and a JSON number. The name is what is
+written. The client is unchanged, and its `'Ascending' | 'Descending'` union is now correct for both
+transports.
+
+**Two decisions inside that converter are deliberate and are the sort of thing a later reader would
+otherwise "tidy".** A JSON number is still accepted, so a caller written against the previous behaviour
+keeps working and the change stays purely additive. And an integer outside the declared pair is CARRIED
+rather than refused, so that the rule about which directions exist is stated once: carried, `5` reaches
+`PagedRequestValidator`'s `IsInEnum` rule and is reported as a field-level RFC 7807 failure keyed
+`SortDir` reading "The sort direction must be either Ascending or Descending.", which names the domain
+rule. Refusing it in the converter would answer the same status keyed `$.sortDir` with a serialiser's
+account of the same fact, and membership would then be decided in two places.
+
+**What the two transports do NOT share is the wording of a refusal, and that was measured rather than
+assumed.** Against the running API `?sortDir=5` answers `400` keyed `SortDir` reading "The value '5' is
+invalid." and `?sortDir=asc` answers "The value 'asc' is not valid for SortDir." — both from the
+framework's enum model binder, which stops an undeclared value before any validator runs and whose wording
+no code in this repository controls. The body equivalents are the validator's sentence above and the
+converter's own "'asc' is not a sort direction. Accepted values are …". Every case is a `400` naming the
+same member on both transports, so nothing is admitted on one and refused on the other; only the sentence
+differs, and on the query side it is not ours to change.
+
+### The privacy compensator ignored the one search term an operator is most likely to type
+
+**What was wrong.** Four named account filters — login name, electronic-mail address, and a profile
+property paired with its value — are classified as identifying and moved into a request body, because a
+request target is written to browser history, to every forward and reverse proxy access log and to the
+server's own, none of which is on the wire (CWE-598). The paging contract's own free-text `query` member
+was not classified, and it identifies a person just as squarely: the repository matches it as a
+case-insensitive SUBSTRING across the login name, the display name AND the electronic-mail address, so a
+search by any one of a person's three identifiers succeeds through it. The compensator therefore protected
+the identifiers an operator selects a search MODE for and not the identifier they simply type into the
+box, which is the more likely of the two.
+
+**What changed.** `identifiesAPerson` now inspects five members instead of four.
+
+**The two tests it applies are different, and that asymmetry is the substance of the fix.** The four named
+filters flip the transport on being SUPPLIED AT ALL, because each is present only when a search mode
+naming a person has been chosen — testing their content would flip the address for exactly the one input
+an operator produces by clearing the box. The generic `query` is present on every listing and may
+legitimately be blank, so presence says nothing about anybody and NON-BLANKNESS is the test; switching on
+its mere presence would push the unfiltered administrative listing, which names nobody, off the cacheable
+`GET` for no privacy gain. White space counts as blank, because the server itself reads a whitespace-only
+filter as absent. Using one test for all five breaks one of the two cases, whichever test is chosen.
+
+**The measured consequence of the presence test, so nobody reports it as a defect.** Clearing the search
+box does not leave the search axis: the account listing keeps its chosen mode and sends the named filter
+with nothing in it, so the request stays a `POST` and the unfiltered page is fetched uncacheably. That is
+the deliberate cost of a test that is over-inclusive on purpose — an over-inclusive privacy test can only
+ever move traffic ONTO the body, never off it, which is the safe direction to err in. The blank member is
+normalised to absent by `POST api/v1/users/search` before the service sees it, reproducing the conversion
+the framework's query binder already performs, so both transports answer the identical operation and a
+cleared box is not refused by either. The plain `GET` listing is still what a first, untouched entry to
+the screen uses; only the axis, once engaged, stays engaged. Verified in a browser: the term never reached
+a URL, a query string, the `Referer` header or the address bar across 63 distinct URLs.
+
+**One half of this correction has no screen exercising it yet.** The generic `query` member is inherited
+from the paging contract, and the account listing's store composes its query from the four named filters
+only, so nothing in the console sends `query` today. The rule is still required rather than speculative:
+this module is the sole owner of query-string serialisation, so any caller that later carries `query` is
+classified by it, and the classification is where the defect was. Its coverage is the module's own unit
+specs rather than a runtime path.
+
+### The role-membership probe put an account's login name in a request target
+
+**What was wrong.** Asking whether one account holds one role, and on what terms, was done by narrowing
+the paged membership LISTING with the account's login name in that same free-text filter. The name had to
+be there for the question to be answerable, so every probe wrote it into a query string — beside an
+account search that had already been moved into a request body to avoid precisely that.
+
+**What changed.** The pairing has its own address: `GET /api/v1/roles/{roleId}/users/{userId}`, answering
+`200` with the membership row or `404` when the account holds none. Two opaque numeric identifiers in a
+path disclose nothing about a person, so the request stays a cacheable, idempotent `GET` and needs no
+compensating body. `DELETE` already lived at that address, so the pairing is now readable and deletable at
+one address rather than deletable at one and findable through a filtered collection.
+
+**The `404` is an answer, not a fault, and the client treats it as one.** The legacy screen showed
+"holds nothing" by blanking its two date fields (`Website/admin/Security/SecurityRoles.ascx.vb:L484`), so
+the store reads a `404` from this address as the settled negative answer and records no failure; every
+other status still records one, and the transport itself translates nothing, because only a caller knows
+whether absence is a legitimate outcome of its question.
+
+**A consequence worth stating.** The service reads the role, the account and then the assignment, in that
+order, and the first two reads exist to distinguish an unknown identifier from a genuine "holds nothing".
+Without them the two would be indistinguishable, and only one of the two is something a caller should
+report.
+
+### Mandatory remediation had no journey, only two dead ends
+
+**What was wrong.** An account can be required to change its password or complete its profile before
+doing anything else. The API enforces that seriously: for a session with an outstanding credential
+change, `GET api/v1/users/{id}`, `GET api/v1/users/{id}/services`, `GET api/v1/users/settings`,
+`GET api/v1/portals` and `GET api/v1/modules` were each measured answering `403`
+`auth.remediation_required`. Only `GET api/v1/auth/me`, the sign-out and renewal operations, and the
+remediation endpoint matching the OUTSTANDING advisory stay open.
+
+Two independent defects met in that state. The application root resolved a landing screen purely from
+the caller's authority — the tenant listing for a host, the module listing for a tenant administrator,
+the account's own services for everybody else — so every possible destination was one the server was
+about to refuse. And the password screen, the one screen such a caller is REQUIRED to use, read
+`GET api/v1/users/{id}` for two read-only summary rows, gated its entire populated view on that read
+returning, and disabled its submit button until it did. The caller signed in correctly and was shown a
+heading, a refusal banner and nothing to act on.
+
+**What changed.** The root now resolves remediation before authority, and the password screen no longer
+depends on a read it cannot have: it skips the read, presents the form, omits only the two rows the
+answer would have populated, and keys its submit affordance to the route's account instead.
+
+**Which remediation screen is the SERVER'S rule, not a preference.** `RemediationAuthorizationHandler`
+admits the password endpoints only while the credential advisory is outstanding, and the profile
+endpoints only while the profile advisory is. Naming the wrong one produces a second dead end rather
+than a slower route to the same place — measured: with only the credential outstanding,
+`GET api/v1/users/{id}/profile` answers `403` `auth.not_permitted`, a different refusal from the
+middleware's. So whichever single advisory is outstanding decides the destination.
+
+**When BOTH are outstanding the credential goes first, and that is the only order that terminates.**
+It reproduces the legacy precedence — `UserValidStatus.vb` could report just one outcome and ordered
+`PASSWORDEXPIRED` ahead of `UPDATEPROFILE` — but the operational reason is stronger: the password screen
+clears its own advisory on success, leaves the profile advisory standing and returns to the root, which
+then resolves onward to the profile screen. Profile-first would clear the profile advisory while the
+credential advisory still refused the very profile endpoints meant to clear it.
+
+**No fallback is written for an unresolved identity, because the case cannot arise.** Both advisories
+are read from the held session and `AuthSession.user` is not optional, so an advisory that can be
+reported necessarily carries the account it applies to.
+
+**The third advisory is deliberately excluded.** `passwordExpiring` is informational — the server
+refuses nothing over it — so `AuthStore.sessionRestricted` mirrors the server's own
+`AuthenticationRemediationState.IsRequired`, which reads the other two and not this one. Including it
+would divert a caller to a screen with nothing to remediate.
+
+### Concluding remediation renews nothing, and the reason is a deliberate server behaviour
+
+**This one was wrong first, and only a runtime test found it.** Both remediation screens originally
+concluded by calling `POST api/v1/auth/refresh`, on the reasoning that the advisory lives in the held
+session and only the server can recompute it. That reasoning is sound and the mechanism is
+unusable: `UserService` ends every session the account holds immediately BEFORE replacing a credential,
+on the stated grounds that a credential changed with sessions left exchangeable would not end the
+session the change was performed to end. So the refresh token is revoked by the very operation whose
+success we are reacting to.
+
+It did not fail harmlessly. Observed end to end in a browser: the change succeeded with `204`, the
+renewal answered `401 auth.invalid_refresh_token`, the store treated a refused renewal as a session that
+was over and DISCARDED it, and the caller was signed out and shown "Authentication is required to reach
+this resource." seconds after correctly doing the one thing the server had demanded — while still
+stranded on the password screen. A person would reasonably conclude the change had failed and retry with
+the old password, which no longer works.
+
+**What changed.** `AuthStore.noteCredentialRemediated` and `noteProfileRemediated` clear the satisfied
+advisory on the held session and issue no request at all. The access token is untouched and remains
+valid — measured with roughly fifty minutes of life left, still answering `200` on the account, profile
+and services reads, and confirmed afterwards by token forensics showing the same `jti` and `iat` in use
+after the change as before it. That the session outlives the renewal is documented server-side as the
+irreducible floor for stateless bearer tokens, so continuing to use the access token is the intended
+behaviour rather than a loophole. The consequence, stated plainly: this session now ends when the access
+token expires and the caller signs in again with the credential they have just chosen.
+
+**Why asserting the advisory locally is sound rather than a guess.** The advisory is a NAVIGATION HINT
+and never a gate. The server decides remediation for itself on every request from the account's own
+state — `RestrictedSessionMiddleware` and `RemediationAuthorizationHandler` both evaluate it per request
+— so a client that cleared it wrongly is simply refused, exactly as before. And what is asserted is only
+what the server has just reported: a `204` from the password endpoint means the flag that raised the
+advisory was cleared with the credential, and a `204` from `PUT api/v1/users/{id}/profile` means every
+required property now holds a non-blank value, because that endpoint REFUSES a submission that leaves
+one blank — which is precisely the condition the profile advisory is computed from.
+
+**The same mechanism is used for both advisories even though only one write revokes tokens.** A caller
+can owe both, in which case the credential change came first and has already revoked the refresh token,
+so a renewal on the profile screen would fail for a reason that has nothing to do with the profile. One
+mechanism that works in both orders beats two that each work in one.
+
+**Only the satisfied advisory is cleared.** Clearing both would skip a completion the server still
+requires, and the caller would meet a refusal on the landing screen instead of the screen that clears
+it.
+
+**The suppressed read is a reaction, not a state.** Both screens re-issue the account read they had been
+declining the moment the advisory clears, so the details appear as soon as they are readable. On the
+profile screen the two reads are dispatched by SEPARATE effects for this reason: the profile read has no
+interest in the advisory transition, and folding them together made clearing the advisory re-issue a
+read that was already current.
+
+
+### The per-property visibility affordance was published, stored and permanently inert
+
+`Website/admin/Users/Profile.ascx.vb` L58-L63 decides whether the per-property visibility chooser is
+offered from a conjunction: the tenant's `Profile_DisplayVisibility` setting AND
+`UserModuleBase.IsUser` (L399-L406) — the viewer being the SUBJECT of the profile on screen. Both
+halves matter, and the second one is why the affordance exists at all: visibility is a choice the
+account holder makes about their own data, so the legacy hid the control from an administrator editing
+somebody else's profile however the tenant had configured the setting.
+
+The migrated screen read the tenant half from `GET api/v1/users/settings`. That endpoint carries
+`PolicyNames.PortalAdministrator`. The two halves of the predicate therefore contradicted each other:
+the only caller the affordance is offered to is, by construction, not an administrator, so the read that
+decides whether to offer it was a guaranteed refusal for exactly that caller. Measured against the
+running API, an ordinary account holder reading its own profile was answered
+`403 auth.not_permitted`, the policy stayed unresolved, and the derivation could never return true. The
+setting was stored, published by the settings endpoint, and completely inert on the screen it governs —
+and because the failure mode was an unresolved policy rather than an error, the screen rendered its own
+inertness as though the tenant had switched the control off.
+
+The tenant decision now travels on `GET api/v1/users/{userId}/profile` as `displayVisibilityEnabled`,
+which the subject of the profile is already entitled to read. Three consequences are worth recording:
+
+* It costs no extra round trip. `UserService.GetProfileAsync` already read the same settings source, to
+  resolve the default visibility that seeds an unfilled value, so ONE read now yields both facts and
+  they cannot disagree. The change REMOVES a request from the screen rather than adding one.
+* Widening the settings endpoint was rejected. That endpoint publishes twenty-three members of the
+  tenant's account policy — grid column choices, redirect targets, the display-name format — and
+  handing all of it to an account holder to obtain one boolean would trade a working affordance for a
+  disclosure. The projection carries the one fact that concerns the holder.
+* Only the tenant half moved. Ownership is a fact about the caller rather than about the profile, so the
+  server does not encode it and the screen still supplies it from the signed-in identity. Proven in the
+  browser as a controlled comparison: with `displayVisibilityEnabled` true on BOTH profiles, the same
+  administrator sees two "Visible to" choosers on their own profile and none anywhere in the document on
+  another account's, and neither screen issues the administrator-only settings read.
+
+The client decoder declares the member REQUIRED rather than optional. The API serialises with its ignore
+condition set to never, so the member is always on the wire and an absent one is contract drift.
+Defaulting a missing value to `true` would present the control on a tenant that had switched it off and
+defaulting to `false` would hide it on a tenant that had not, so neither default is safe and the payload
+is refused instead.
+
+`GET api/v1/users/settings` is unchanged and remains administrator-only. It is still the write surface
+for the tenant policy and is still read by the account listing and the membership-settings screen.
+
+### The administrative password reset had no address in the application
+
+`/users/:userId/password` declared `AccountOwner`, reasoning from the credential CHANGE endpoint alone:
+a change presents the credential in force, so only its holder can perform one. That reasoning was sound
+about the endpoint and wrong about the screen, because the screen posts to TWO endpoints —
+`POST {userId}/password` restricted to the account holder, and `POST {userId}/password-reset` restricted
+to a tenant administrator.
+
+Declaring only the narrower of the two policies did not tighten anything. It locked the administrator out
+of the SCREEN, and a refused route is cancelled and redirected — so an operator who followed the account
+record screen's own "Manage User's Password" link, published on a route this same barrel gates on tenant
+administration, was returned to the sign-in screen. The reset endpoint existed, the administrator was
+entitled to it, the application published a link to it, and no address in the application reached it.
+
+The route now declares `AccountOwnerOrPortalAdministrator` — the union of the two endpoint policies —
+and the screen decides per operation. Neither server policy moved: the change endpoint still admits the
+holder alone and the reset endpoint still admits a tenant administrator alone, so an administrator who
+reaches this screen for another account can reset but cannot change, and a holder can change but cannot
+reset.
+
+The per-operation decision is FAIL-CLOSED. The planned operation is a change when the caller is the
+account on screen and a reset otherwise, so a caller who is neither the holder nor an administrator
+resolves to the reset; that combination is withheld, as is a reset while the caller's identity is still
+unresolved. The route's own gate already refuses that caller, so this is defence the router currently
+makes unreachable — pinned anyway, because a gate must answer for every input rather than only for the
+inputs the router happens to deliver, and because depending on the route for it would put the guarantee
+in a file this screen does not own.
+
+Verified end to end in the browser: an administrator reached `/users/4/password` from the account record
+link, was shown the reset-shaped form with no credential-in-force field and a "Reset Password" action,
+confirmed the dialog, and the screen posted `POST /api/v1/users/4/password-reset` answering 204 under the
+administrator's own bearer token. The owner-only change endpoint was never called, and the
+administrator's own session was untouched.
+
+ONE PRESENTATIONAL DIVERGENCE IS LEFT STANDING AND IS RECORDED RATHER THAN FIXED. Widening the route
+made a screen state reachable that no caller could previously reach, and in that state the field set
+holding the two password boxes is still captioned "Change Password" while the action performs a reset,
+with the reset advisory in a second field set beside it. The legacy answer for this caller was structural
+rather than textual: `Password.ascx.vb` L144-L147 hid `pnlChange` outright when password retrieval was
+disabled and the caller was an administrator, and retrieval is deliberately not carried forward here, so
+the legacy showed that caller the reset panel ONLY. The target consolidated the two panels into one pair
+of fields, so it cannot hide the panel the fields live in. Correcting the caption is therefore not a
+one-word change — it also has to resolve the duplicate caption and decide which of the two measured help
+sentences survives — and both captions are direct migrations of the measured `ChangePassword.Text` and
+`ResetPassword.Text` resource keys. It is left alone deliberately: it is presentational, it is not what
+the finding was about, and re-captioning a measured resource mapping on inference would be a larger and
+less defensible change than leaving the divergence documented.
+
+
+### The module screens were reachable by a caller both of their selectors refused
+
+The module create and edit screens each read two supporting endpoints before an operator can do anything
+useful: the module-definition catalogue, which fills the chooser naming WHAT to place, and the tenant's
+page listing, which fills the chooser naming WHERE to place it. Both endpoints carried
+`PolicyNames.PortalAdministrator`.
+
+Neither screen requires portal administration. The create action carries no policy at all — deliberately,
+and its route mirrors that — and the edit route is gated on `ModuleEdit`. So the screens admitted a caller
+that both of their supporting reads then refused. Measured against the running API for an ordinary member:
+
+    GET  /api/v1/module-definitions   -> 403  urn:dnnmigration:error:auth.not_permitted
+    GET  /api/v1/portals/-1/tabs      -> 403  urn:dnnmigration:error:auth.not_permitted
+    POST /api/v1/modules              -> 400  urn:dnnmigration:error:request.invalid
+
+The 400 is the whole finding in one line: the create action parsed that caller's request and objected only
+to its contents, so the caller was entitled to create a module. It simply had no way to name a module
+definition or a target page, because the two lists it must choose from were withheld. The screen rendered,
+both selectors were empty, and nothing on it could be completed.
+
+THE LEGACY AUTHORITY IS EXPLICIT, AND IT DISTINGUISHES THE TWO CHOOSERS. `ModuleSettings.ascx.vb` L191
+admitted this screen to `IsInRoles(AdministratorRoleName)` OR `IsInRoles(ActiveTab.AdministratorRoles)` —
+a PAGE administrator, not a portal administrator alone. L214-L219 then disabled `chkAllTabs`, `chkDefault`,
+`chkAllModules` and `cboTab` for a caller who was not a portal administrator, with the comment that tab
+administrators can only manage their own tab, and L332-L338 re-applied that disabling on postback so a
+disabled control could not be reached by replaying the form. `cboModuleType` — the module-definition
+chooser — is conspicuously NOT among the disabled controls. The legacy therefore let a page administrator
+read the definition catalogue in full, and constrained only the page chooser.
+
+Both endpoints now carry a new `PolicyNames.PortalContentEditor`, and the page listing is NARROWED per
+caller rather than withheld: `TabService.GetTabsAsync` returns only the pages the caller may EDIT, unless
+the caller administers the tenant, in which case it returns every page.
+
+FIVE PROPERTIES OF THE FIX ARE LOAD-BEARING AND ARE RECORDED BECAUSE THEY ARE NOT OBVIOUS FROM THE DIFF.
+
+The new policy rides the EXISTING requirement type. `PermissionScope` gained a third value, `Portal`,
+rather than the codebase gaining a fifth requirement type and a fifth handler. The invariant documented at
+the registration site — four requirement types declared, four requirement handlers registered, and that
+count is the invariant — is therefore untouched. `Portal` is the one scope that reads no item identifier
+from the route, because module placement names no page: the target arrives in the request body, so there
+is nothing in the route to resolve. `ResolveRouteKey` returns null for it deliberately, and the scope is
+decided before any route key is sought.
+
+The scope is not a licence to enumerate. An endpoint carrying `PortalContentEditor` answers a CAPABILITY
+question — may this caller act on any page of this tenant — which is a weaker admission test than portal
+administration. That is precisely why the endpoint must still narrow what it returns, and the page listing
+does. A page administrator is admitted and then shown strictly less than a portal administrator; a caller
+holding no page grant at all is still refused outright.
+
+The narrowing happens AFTER the cache read, and the ordering is the whole correctness argument. The
+per-portal entry is keyed by tenant alone, so narrowing before the write would store one caller's subset
+under a key every caller shares, and the first page administrator to load the screen would silently
+shrink every subsequent caller's list — including a portal administrator's. The cache therefore holds the
+complete tenant set and each caller's projection is computed from it on the way out. An unresolvable
+permission state withholds every row rather than passing them through.
+
+Tenant administration is asked FIRST, before any grant row is consulted. It is the cheaper question, it is
+decisive when true, and it is the only arm that answers correctly in an installation whose page grants were
+never populated — a tenant's administrator administers its pages whether or not a grant row happens to
+name their role. This is not a convenience: verified against the restored baseline, with ZERO rows in
+`Tabs`, `TabPermission` and `Permission`, both a portal administrator and a host account still receive 200
+from both endpoints while an ordinary member receives 403 and an anonymous caller receives 401.
+
+One public member became two over one shared body. `PermissionEvaluator.HasAnyTabPermissionAsync` and the
+new `ListTabsWithPermissionAsync` are both thin wrappers over a single private
+`CollectTabsWithPermissionAsync`, differing only in what they report about the same computation. That is a
+correctness property rather than a tidiness one: if the member deciding ADMISSION and the member deciding
+the PROJECTION could disagree about which pages a caller may act on, the disagreement would be a security
+defect. Sharing the body makes disagreement impossible. The early exit the boolean form used to enjoy
+costs nothing, because every request the computation makes happens before the loop it exits.
+
+NOTHING WAS NARROWED AND NO CAPABILITY WAS WIDENED BEYOND THE SCREEN'S OWN ACTION. Module creation was not
+restricted to portal administration to make the selectors consistent — that would have been the other way
+to close the finding, and it would have removed a capability the legacy granted a page administrator at
+L191. The portal administrator's own view of both endpoints is unchanged, which the browser proof measured
+as a strict superset rather than merely asserting.
+
+Verified end to end in the browser against a seeded page-administration grant. A caller holding one page
+grant and no portal administration reached the module create screen and found both selectors populated —
+the module chooser offering the seeded definition and the page chooser offering the one page that caller
+administers — with both supporting reads answering 200 and no refusal banner anywhere on the screen. A
+portal administrator on the same fixture reached the same screen by the in-application path and saw the
+same module options with a page list containing an ADDITIONAL page the first caller was never shown, and
+was able to select it. Revoking the grant returned the first caller to 403 on both endpoints; replacing it
+with a deny-only grant did the same.
+
+THE CLIENT'S REGISTERED-POLICY UNION DELIBERATELY DOES NOT LIST THIS POLICY, and the specification that
+enumerates it says so. No route declares `PortalContentEditor`: the create screen is ungated by design,
+mirroring its own endpoint, and the edit screen is gated on `ModuleEdit`. Adding the name to the client
+gate would oblige the route guard to resolve a scope for a policy no route can name. The server's policy
+catalogue is a proper superset of the client's, which is the correct relationship — a policy the server
+enforces but no client route declares is a policy the client never has to reason about.
+
+ONE DELIBERATE DIVERGENCE FROM THE LEGACY BEHAVIOUR IS RECORDED RATHER THAN REPRODUCED. Legacy DISABLED
+the page chooser for a page administrator; the target NARROWS it to the pages that caller may act on. The
+legacy behaviour is not reproducible as-is on the create screen, because the legacy had no equivalent
+create screen in scope — module placement was performed through the control panel, and `cboTab` was the
+move-to-page control on the settings screen for a module that already had a home. A disabled chooser on a
+create screen would leave the caller unable to name any target at all, which is the very defect this
+finding is about. Narrowing preserves what the disabling protected, which is that a page administrator
+cannot place or move a module onto a page they do not administer, while leaving the screen usable. It is
+recorded here because it is a behavioural difference and not merely a presentational one.
+
+### A test that passed alone and failed in company was a defect, not a stale expectation
+
+Worth recording for whoever maintains the integration suite. `ListTabs_AsAnOrdinaryMember_ReturnsForbidden`
+began failing in the full run — `Expected Forbidden {403}, but found OK {200}` — while passing in
+isolation. The expectation was not stale. Narrowing the page listing had made the case ORDER-DEPENDENT: the
+suite shares one database with no ordering guarantee, and a sibling case's EDIT grant on the seeded role
+now legitimately admitted this caller, so whether the case passed depended on which cases had run before it.
+
+The expectation was left alone and the missing precondition was supplied instead. A `ClearEditGrantsAsync`
+helper now removes the EDIT grants for the seeded tenant's pages before the case runs, deleting only that
+one permission key and only for that tenant, and the case was renamed
+`ListTabs_AsAnOrdinaryMemberHoldingNoPageGrant_ReturnsForbidden` so its name states the precondition its
+outcome depends on. Two cases were added beside it, one measuring that a caller holding a single grant
+receives that page AND NOT a second ungranted page created for the purpose, and one measuring that a tenant
+administrator receives every page with no grant rows present at all.
+
+The general rule this establishes: in this suite, any case whose outcome depends on stored grant rows must
+establish its own precondition rather than inheriting whatever the previous case left behind.

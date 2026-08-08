@@ -57,6 +57,7 @@ import {
   QUERY_PARAM,
   appendQueryParams,
   emptyQueryParams,
+  identifiesAPerson,
   loginParams,
   moduleListParams,
   modulePlacementParams,
@@ -71,6 +72,7 @@ import {
   toHttpParams,
   userApprovalParams,
   userListParams,
+  userSearchBody,
 } from './http-params.util';
 
 /** Every paging-related parameter name, for proving an unpaged request carries none. */
@@ -589,6 +591,133 @@ describe('http-params.util', () => {
 
     it('returns a fresh instance each time, so no state is shared at import', () => {
       expect(emptyQueryParams()).not.toBe(emptyQueryParams());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHICH TRANSPORT AN ACCOUNT SEARCH TAKES
+  // -------------------------------------------------------------------------
+  // This is the CWE-598 compensator, and its correctness is entirely a property of the
+  // predicate: a value classified as non-identifying travels in the request target, which
+  // is written to browser history, to every proxy access log and to the server's own access
+  // log - all of them at an END of the encrypted channel, so transport security does not
+  // reach them.
+  //
+  // The predicate applies two DIFFERENT tests and the asymmetry is the substance of these
+  // cases. The four NAMED filters are present only when a search mode naming a person has
+  // been chosen, so their mere presence is the signal and testing their content would flip
+  // the transport for the single input an operator produces by clearing the box. The paging
+  // contract's GENERIC `query` is present on every listing and may legitimately be blank, so
+  // presence says nothing and non-blankness is the signal. Using one test for all five
+  // breaks one of the two cases, whichever test is chosen.
+  describe('identifiesAPerson - which searches must leave the request target', () => {
+    it('classifies a listing that names nobody as non-identifying', () => {
+      expect(identifiesAPerson()).toBe(false);
+      expect(identifiesAPerson(null)).toBe(false);
+      expect(identifiesAPerson({})).toBe(false);
+    });
+
+    it('leaves an approval-only restriction on the cacheable GET, in both states', () => {
+      expect(identifiesAPerson({ isApproved: true })).toBe(false);
+      expect(identifiesAPerson({ isApproved: false })).toBe(false);
+    });
+
+    it('classifies each named filter as identifying by PRESENCE, not by content', () => {
+      expect(identifiesAPerson({ userName: 'ada' })).toBe(true);
+      expect(identifiesAPerson({ userName: '' })).toBe(true);
+      expect(identifiesAPerson({ email: 'ada@example.test' })).toBe(true);
+      expect(identifiesAPerson({ email: '' })).toBe(true);
+      expect(identifiesAPerson({ profilePropertyName: 'NationalId' })).toBe(true);
+      expect(identifiesAPerson({ profilePropertyName: '' })).toBe(true);
+      expect(identifiesAPerson({ profilePropertyValue: '0123456789' })).toBe(true);
+      expect(identifiesAPerson({ profilePropertyValue: '' })).toBe(true);
+    });
+
+    it('treats an explicitly null named filter as absent, which a reset control produces', () => {
+      expect(identifiesAPerson({ userName: null })).toBe(false);
+      expect(identifiesAPerson({ email: null })).toBe(false);
+      expect(identifiesAPerson({ profilePropertyName: null, profilePropertyValue: null })).toBe(
+        false,
+      );
+    });
+
+    // The finding this pins: the generic member is matched by the server as a SUBSTRING across
+    // the login name, the display name AND the electronic-mail address, so a search through it
+    // reaches the same rows the named filters reach. It used to be ignored here entirely, so a
+    // query-only search stayed on the GET and put the identifier in the request target.
+    it('classifies a non-blank generic query as identifying', () => {
+      expect(identifiesAPerson({ query: 'ada' })).toBe(true);
+      expect(identifiesAPerson({ query: 'ada@example.test' })).toBe(true);
+      expect(identifiesAPerson({ query: 'Ada Lovelace' })).toBe(true);
+      expect(identifiesAPerson({ query: 'a' })).toBe(true);
+    });
+
+    it('leaves a blank or absent generic query on the cacheable GET', () => {
+      expect(identifiesAPerson({ query: '' })).toBe(false);
+      expect(identifiesAPerson({ query: '   ' })).toBe(false);
+      expect(identifiesAPerson({ query: '\t\n' })).toBe(false);
+      expect(identifiesAPerson({ query: null })).toBe(false);
+      expect(identifiesAPerson({ query: undefined })).toBe(false);
+    });
+
+    it('classifies a search carrying both kinds of term as identifying', () => {
+      expect(identifiesAPerson({ query: 'ada', isApproved: true })).toBe(true);
+      expect(identifiesAPerson({ query: '  ', userName: 'ada' })).toBe(true);
+    });
+  });
+
+  describe('userSearchBody - the body that carries what the target must not', () => {
+    it('carries the paging contract and the filters together, omitting nothing supplied', () => {
+      const body = userSearchBody(
+        { pageIndex: 2, pageSize: 25, sortBy: 'username', sortDir: 'Descending', query: 'ada' },
+        { userName: 'ada', isApproved: false },
+      );
+
+      expect(body).toEqual({
+        pageIndex: 2,
+        pageSize: 25,
+        sortBy: 'username',
+        sortDir: 'Descending',
+        query: 'ada',
+        userName: 'ada',
+        isApproved: false,
+      });
+    });
+
+    // The sort direction is sent as the MEMBER NAME, which is the vocabulary the query string
+    // accepts. The server binds this body with a converter pinned to the same names, so one
+    // contract member has one spelling on both transports; sending the ordinal here instead
+    // would give it two.
+    it('names the sort direction rather than numbering it', () => {
+      expect(userSearchBody({ sortBy: 'username', sortDir: 'Ascending' }).sortDir).toBe('Ascending');
+      expect(userSearchBody({ sortBy: 'username', sortDir: 'Descending' }).sortDir).toBe(
+        'Descending',
+      );
+    });
+
+    it('transmits the paging sentinels a truthiness test would drop', () => {
+      const body = userSearchBody({ pageIndex: 0, pageSize: 10 }, { isApproved: false, email: '' });
+
+      expect(body.pageIndex).toBe(0);
+      expect(body.isApproved).toBe(false);
+      expect(body.email).toBe('');
+    });
+
+    it('omits an absent member rather than stating it as null', () => {
+      const body = userSearchBody({ pageIndex: 0, pageSize: 10 }, { userName: 'ada' });
+
+      expect(Object.keys(body).sort()).toEqual(['pageIndex', 'pageSize', 'userName']);
+      expect('email' in body).toBe(false);
+      expect('profilePropertyName' in body).toBe(false);
+      expect('sortDir' in body).toBe(false);
+    });
+
+    it('accepts an omitted or null filter, which an unfiltered search produces', () => {
+      expect(userSearchBody({ pageIndex: 0, pageSize: 10 })).toEqual({ pageIndex: 0, pageSize: 10 });
+      expect(userSearchBody({ pageIndex: 0, pageSize: 10 }, null)).toEqual({
+        pageIndex: 0,
+        pageSize: 10,
+      });
     });
   });
 

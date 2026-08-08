@@ -73,13 +73,14 @@ import { provideRouter } from '@angular/router';
 import { NotificationService } from '../../../core/services/notification.service';
 import { RoleAssignmentComponent } from './role-assignment.component';
 import { API_ENDPOINTS } from '../../../core/config/api-endpoints';
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../../core/models/paged-result.model';
+import { DEFAULT_PAGE_SIZE } from '../../../core/models/paged-result.model';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
 import { RoleStore } from '../../../core/state/role.store';
 
 import type { WritableSignal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
+import type { HttpRequest } from '@angular/common/http';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { ApiResponse, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
@@ -141,6 +142,16 @@ function membersUrl(roleId: number): string {
 function memberUrl(roleId: number, userId: number): string {
   return `${membersUrl(roleId)}/${userId}`;
 }
+
+/**
+ * The address shape of the keyed membership probe: one role's key, then one account's key.
+ *
+ * Held as a pattern rather than as a literal because the probe is issued for whichever pairing a case
+ * chose, and a helper that had to be told the identifiers would be told them twice — once by the case
+ * and once by the component — with nothing making the two agree. Both keys admit `0` and `-1`, because
+ * the role identity is seeded at zero and no identifier on this path is ever tested for magnitude.
+ */
+const MEMBERSHIP_PROBE_PATH = /^\/api\/v1\/roles\/-?\d+\/users\/-?\d+$/;
 
 
 
@@ -811,12 +822,12 @@ describe('RoleAssignmentComponent', () => {
   /**
    * Answers the membership PAGE read.
    *
-   * ⚠ NARROWED BY THE ABSENCE OF `query`, AND THAT IS NOT A CONVENIENCE. The page read and the keyed
-   * membership probe are issued to the SAME address — the probe is the same listing filtered to one
-   * login name — so a criteria naming only the verb and the address matches both and fails with
-   * "found 2 requests" as soon as a write puts both in flight together. Telling them apart by the
-   * parameter that actually distinguishes them in production is what keeps each case answering the
-   * read it means.
+   * ⚠ NARROWED BY THE ABSENCE OF `query` AS WELL AS BY THE ADDRESS, and the redundancy is deliberate.
+   * The keyed membership probe now addresses the PAIRING — `…/users/{userId}` — so the two reads no
+   * longer share a URL and the address alone tells them apart. The parameter test is retained as a
+   * second, independent guard: it is what would fail loudly if the probe were ever moved back onto
+   * the listing and narrowed by a login name, which is the CWE-598 shape this suite exists to keep
+   * out. The page read itself carries no free-text filter.
    */
   function answerMemberships(
     roleId: number,
@@ -855,20 +866,67 @@ describe('RoleAssignmentComponent', () => {
    *
    * A refused write re-asks nothing, so this is never reached from a failure case.
    *
-   * @param held The memberships the probe finds for the chosen account's login name.
+   * @param held The membership the probe finds for the chosen pairing: one row when the account holds
+   * the role, or empty when it holds nothing — which the endpoint reports as a `404`.
    */
   function answerReprobe(held: readonly UserRole[] = []): void {
-    const probes: readonly TestRequest[] = httpMock.match(
-      (candidate) =>
-        candidate.method === 'GET' &&
-        candidate.url.endsWith('/users') &&
-        candidate.params.get('query') !== null,
-    );
+    const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
     expect(probes).withContext('a settled write re-asks the keyed probe exactly once').toHaveSize(1);
 
-    probes[0].flush(pageOf(held, held.length, 0, MAX_PAGE_SIZE));
+    answerProbe(probes[0], held);
     fixture.detectChanges();
+  }
+
+  /**
+   * Whether an open request is the keyed membership probe.
+   *
+   * ⚠ MATCHED ON THE PAIRING ADDRESS, WHICH IS THE WHOLE POINT OF THE PROBE'S SHAPE. It used to be
+   * matched on the listing address plus a `query` parameter, because the probe WAS the listing
+   * narrowed by the account's login name — and the server matches that filter against the login name
+   * and the display name, so the name had to be in the request target for the question to be
+   * answerable. A request target is kept in browser history and written in full to every proxy and
+   * server access log, none of which is on the wire: CWE-598. Two opaque identifiers in a path
+   * disclose nothing.
+   *
+   * @param candidate An open request.
+   * @returns True when it addresses one account's membership of one role.
+   */
+  function isMembershipProbe(candidate: HttpRequest<unknown>): boolean {
+    return candidate.method === 'GET' && MEMBERSHIP_PROBE_PATH.test(candidate.url);
+  }
+
+  /**
+   * Settles one keyed probe with the membership it finds, or with the refusal that means none.
+   *
+   * ⚠ NO MEMBERSHIP IS A `404`, NOT AN EMPTY SUCCESS. The endpoint answers `200` with the row or
+   * `404` when the account holds nothing, and the store reads that refusal as the negative answer
+   * without recording a failure. Answering an empty success here instead would specify a response
+   * the server cannot send.
+   *
+   * @param probe The open probe.
+   * @param held One membership when the pairing holds one, or empty when it holds nothing.
+   */
+  function answerProbe(probe: TestRequest, held: readonly UserRole[]): void {
+    expect(held.length)
+      .withContext('the probe answers about ONE pairing, so it finds at most one row')
+      .toBeLessThan(2);
+
+    if (held.length === 0) {
+      probe.flush(
+        {
+          type: 'urn:dnnmigration:error:role_assignment.not_found',
+          title: 'Not Found',
+          status: 404,
+          detail: 'The account holds no such membership.',
+        },
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      return;
+    }
+
+    probe.flush(envelope(held[0]));
   }
 
 
@@ -1112,15 +1170,9 @@ describe('RoleAssignmentComponent', () => {
   // ⚠ CHOOSING AN ACCOUNT ASKS EXACTLY ONE QUESTION, AND IT IS A NARROW ONE. The grid holds ONE
   // page, so "does this person already hold the role?" cannot be answered from the rows on screen -
   // the account's row may sit on another page, and answering from the page in hand would relabel the
-  // action according to which page happens to be visible. One keyed probe settles it: the same
-  // listing filtered to the account's login name, matched afterwards by identifier. Releasing an
-  // account asks nothing at all.
-  const probes: readonly TestRequest[] = httpMock.match(
-    (candidate) =>
-      candidate.method === 'GET' &&
-      candidate.url.endsWith('/users') &&
-      candidate.params.get('query') !== null,
-  );
+  // action according to which page happens to be visible. One keyed probe settles it, addressed at
+  // the PAIRING so that no login name reaches a request target. Releasing an account asks nothing.
+  const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
   if (probes.length === 0) {
     expect(held).withContext('releasing an account asks nothing, so it holds nothing here').toHaveSize(0);
@@ -1128,13 +1180,13 @@ describe('RoleAssignmentComponent', () => {
   }
 
   expect(probes).withContext('choosing an account issues exactly one keyed probe').toHaveSize(1);
-  // BOUNDED, and asserted here so every case that chooses an account proves it: one request, at the
-  // widest page the contract allows, and never a walk.
-  expect(probes[0].request.params.get('pageIndex')).toBe('0');
-  expect(probes[0].request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+  // BOUNDED AND IDENTIFYING NOBODY, asserted here so every case that chooses an account proves it:
+  // one request, no query parameter at all, and never a walk.
+  expect(probes[0].request.params.keys()).toEqual([]);
+  expect(probes[0].request.urlWithParams).not.toContain('ada');
 
-  // `held` states which memberships the probe finds for that account's login name.
-  probes[0].flush(pageOf(held, held.length, 0, MAX_PAGE_SIZE));
+  // `held` states whether the pairing holds a membership.
+  answerProbe(probes[0], held);
   fixture.detectChanges();
   }
 
@@ -2124,14 +2176,10 @@ describe('RoleAssignmentComponent', () => {
       // — reading a role's whole membership was withdrawn, so a chosen account's row may sit on a
       // page nobody is looking at — and answering "does this person already hold the role?" from the
       // visible page would relabel the action according to which page happened to be showing. One
-      // keyed probe settles it: the same listing filtered to the account's login name. Releasing a
-      // choice asks nothing, so the empty-prompt path finds no probe outstanding and says so.
-      const probes: readonly TestRequest[] = httpMock.match(
-        (candidate) =>
-          candidate.method === 'GET' &&
-          candidate.url.endsWith('/users') &&
-          candidate.params.get('query') !== null,
-      );
+      // keyed probe settles it, addressed at the PAIRING rather than by narrowing the listing with a
+      // login name. Releasing a choice asks nothing, so the empty-prompt path finds no probe
+      // outstanding and says so.
+      const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
       if (probes.length === 0) {
         expect(held)
@@ -2142,10 +2190,9 @@ describe('RoleAssignmentComponent', () => {
       }
 
       expect(probes).withContext('choosing an account issues exactly one keyed probe').toHaveSize(1);
-      expect(probes[0].request.params.get('pageIndex')).toBe('0');
-      expect(probes[0].request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+      expect(probes[0].request.params.keys()).toEqual([]);
 
-      probes[0].flush(pageOf(held, held.length, 0, MAX_PAGE_SIZE));
+      answerProbe(probes[0], held);
       fixture.detectChanges();
     }
 

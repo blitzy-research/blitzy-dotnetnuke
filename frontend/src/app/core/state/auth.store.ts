@@ -683,6 +683,110 @@ export class AuthStore {
   readonly mustUpdateProfile: Signal<boolean> = this.tokenStorage.mustUpdateProfile;
 
   /**
+   * Whether the server will refuse ordinary work until the caller has remediated the account.
+   *
+   * ⚠ THE BLOCKING PAIR ONLY, AND THE OMISSION OF THE THIRD ADVISORY IS THE POINT.
+   * {@link passwordExpiring} is informational: the server neither refuses anything over it nor
+   * asks for anything, so folding it in here would strand a caller on a remediation screen that
+   * has nothing to remediate. This mirrors the server's own predicate exactly —
+   * `AuthenticationRemediationState.IsRequired` is `MustChangePassword || MustUpdateProfile`
+   * — so that the client's idea of "restricted" cannot drift from the condition the API
+   * actually enforces.
+   *
+   * WHAT THE SERVER DOES WHILE THIS IS TRUE, measured against the running API for a session
+   * carrying an outstanding credential change: `GET api/v1/users/{id}`,
+   * `GET api/v1/users/{id}/services`, `GET api/v1/users/settings`, `GET api/v1/portals` and
+   * `GET api/v1/modules` are each refused `403` with `auth.remediation_required`. Only
+   * `GET api/v1/auth/me`, the sign-out and renewal operations, and the remediation endpoint
+   * matching the OUTSTANDING advisory remain open. So this is not a hint that a caller may
+   * ignore — while it holds, almost every read the console performs is refused.
+   *
+   * ⚠ TRUE HERE IMPLIES A RESOLVED IDENTITY, which is what lets a consumer build an
+   * account-scoped remediation address without a fallback. Both advisories are read from the
+   * held session and `AuthSession.user` is not optional, so a session that can report an
+   * advisory necessarily carries the account it applies to.
+   */
+  readonly sessionRestricted: Signal<boolean> = computed(
+    () => this.mustChangePassword() || this.mustUpdateProfile(),
+  );
+
+  /**
+   * Records that the caller has satisfied the MANDATORY CREDENTIAL CHANGE, clearing that one
+   * advisory on the held session and leaving every other member of it alone.
+   *
+   * ⚠ WHY THIS EXISTS INSTEAD OF A RENEWAL, WHICH WOULD BE THE OBVIOUS CHOICE.
+   * `POST api/v1/users/{id}/password` deliberately revokes EVERY refresh token the account
+   * holds — `UserService` ends the account's sessions immediately before replacing the
+   * credential, on the stated grounds that a credential changed with sessions left
+   * exchangeable would not end the session the change was performed to end. So the refresh
+   * token this client is holding is dead the moment the change succeeds, and asking
+   * `POST api/v1/auth/refresh` to renew with it cannot succeed. It does not merely fail
+   * harmlessly: the renewal answers `401 auth.invalid_refresh_token`, the store treats a
+   * refused renewal as a session that is over and DISCARDS it, and the caller is signed out
+   * moments after correctly doing the one thing the server demanded. Observed end to end in
+   * a browser against the running stack, including the `401` and the sign-out that followed.
+   *
+   * The access token is NOT revoked and remains valid for the rest of its lifetime — measured,
+   * with roughly fifty minutes remaining, still answering `200` on the account, profile and
+   * services reads. That is documented server-side as the irreducible floor for stateless
+   * bearer tokens, so continuing to use it is the intended behaviour rather than a loophole.
+   * Only the renewal is gone, which means this session ends when the access token expires and
+   * the caller signs in again with the credential they have just chosen.
+   *
+   * ⚠ WHY UPDATING THE ADVISORY LOCALLY IS SAFE. This advisory is a NAVIGATION HINT, never a
+   * gate. The server decides remediation for itself on every single request, from the
+   * account's own state — `RestrictedSessionMiddleware` and `RemediationAuthorizationHandler`
+   * both evaluate it per request — so a client that cleared this wrongly would simply be
+   * refused, exactly as it is today. What is asserted here is only what the server has just
+   * reported: a `204` from that endpoint means the credential was replaced and the flag that
+   * raised this advisory was cleared with it.
+   *
+   * A caller holding no session is a no-op rather than an error: there is no advisory to clear
+   * and nothing to assert.
+   */
+  noteCredentialRemediated(): void {
+    const session = this.tokenStorage.session();
+
+    if (session === null || !session.mustChangePassword) {
+      return;
+    }
+
+    // Every other member is carried through unchanged, INCLUDING mustUpdateProfile: an account
+    // can owe both, and clearing the one that has been satisfied is what lets the root redirect
+    // move the caller on to the other rather than back to the screen they have just finished.
+    this.tokenStorage.store({ ...session, mustChangePassword: false });
+  }
+
+  /**
+   * Records that the caller has satisfied the MANDATORY PROFILE COMPLETION, clearing that one
+   * advisory on the held session and leaving every other member of it alone.
+   *
+   * ⚠ ASSERTED LOCALLY FOR THE SAME REASON AS ITS SIBLING, PLUS ONE OF ITS OWN. The general
+   * reason is on {@link noteCredentialRemediated}: this advisory is a navigation hint and never
+   * a gate, so the server re-decides it per request and a client that cleared it wrongly is
+   * simply refused. The reason specific to this one is that `PUT api/v1/users/{id}/profile`
+   * REFUSES a submission that omits any required property or supplies it blank, and that is
+   * precisely the condition the advisory is computed from — so a `204` from it means every
+   * required property now holds a value, which means the advisory is false. The client is not
+   * guessing at the server's judgement; it is reading the answer the server just gave.
+   *
+   * ⚠ AND THIS IS WHY IT DOES NOT RENEW EITHER, even though the profile write revokes nothing.
+   * A caller can owe BOTH advisories, in which case the credential change came first and has
+   * already revoked every refresh token the account holds. A renewal here would then answer
+   * `401` and sign the caller out at the very end of a journey they had completed. One
+   * mechanism that works in both orders is better than two that each work in one.
+   */
+  noteProfileRemediated(): void {
+    const session = this.tokenStorage.session();
+
+    if (session === null || !session.mustUpdateProfile) {
+      return;
+    }
+
+    this.tokenStorage.store({ ...session, mustUpdateProfile: false });
+  }
+
+  /**
    * Whether the last sign-out failed to confirm that the session was ended on the server.
    *
    * A BOOLEAN, deliberately, and not the failure. The status code, the server's wording and the

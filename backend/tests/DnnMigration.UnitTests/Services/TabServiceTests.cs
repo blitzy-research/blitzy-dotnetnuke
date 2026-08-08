@@ -6,6 +6,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -54,36 +55,41 @@ public class TabServiceTests
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var cache = new Mock<ICacheService>().Object;
         var currentUser = new Mock<ICurrentUser>().Object;
+        var permissions = new Mock<IPermissionService>().Object;
         var audit = new Mock<IAuditSink>().Object;
         var caching = new CachingOptions();
 
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
-            _ = new TabService(null!, portals, unitOfWork, cache, currentUser, audit, caching);
+            _ = new TabService(null!, portals, unitOfWork, cache, currentUser, permissions, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new TabService(tabs, null!, unitOfWork, cache, currentUser, audit, caching);
+            _ = new TabService(tabs, null!, unitOfWork, cache, currentUser, permissions, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new TabService(tabs, portals, null!, cache, currentUser, audit, caching);
+            _ = new TabService(tabs, portals, null!, cache, currentUser, permissions, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new TabService(tabs, portals, unitOfWork, null!, currentUser, audit, caching);
+            _ = new TabService(tabs, portals, unitOfWork, null!, currentUser, permissions, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new TabService(tabs, portals, unitOfWork, cache, null!, audit, caching);
+            _ = new TabService(tabs, portals, unitOfWork, cache, null!, permissions, audit, caching);
+        });
+        Assert.Throws<ArgumentNullException>("permissions", () =>
+        {
+            _ = new TabService(tabs, portals, unitOfWork, cache, currentUser, null!, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
-            _ = new TabService(tabs, portals, unitOfWork, cache, currentUser, null!, caching);
+            _ = new TabService(tabs, portals, unitOfWork, cache, currentUser, permissions, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new TabService(tabs, portals, unitOfWork, cache, currentUser, audit, null!);
+            _ = new TabService(tabs, portals, unitOfWork, cache, currentUser, permissions, audit, null!);
         });
     }
 
@@ -335,7 +341,30 @@ public class TabServiceTests
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+
+            // EVERY PAGE IS PERMITTED BY DEFAULT, so the suites below stay about the behaviour they name.
+            // The listing narrows its rows to the pages the caller may act on, and the permission service
+            // answers an administrator with every page it was asked about - which is the caller these suites
+            // describe. Returning the whole set here reproduces that answer, so a case about ordering or
+            // hierarchy is not silently also a case about permissions. The narrowing itself is asserted by
+            // the cases that override this setup explicitly.
+            Permissions
+                .Setup(service => service.ListTabsWithPermissionAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int _,
+                    int? __,
+                    IReadOnlyCollection<int> tabIds,
+                    PermissionKey ___,
+                    CancellationToken ____) =>
+                    Result<IReadOnlyList<int>>.Success(tabIds.ToList()));
+
 
             Audit
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
@@ -374,6 +403,7 @@ public class TabServiceTests
                 UnitOfWork.Object,
                 Cache.Object,
                 CurrentUser.Object,
+                Permissions.Object,
                 Audit.Object,
                 Caching);
         }
@@ -387,6 +417,8 @@ public class TabServiceTests
         public Mock<IUnitOfWork> UnitOfWork { get; }
 
         public Mock<ICacheService> Cache { get; }
+
+        public Mock<IPermissionService> Permissions { get; }
 
         public Mock<ICurrentUser> CurrentUser { get; }
 
@@ -518,6 +550,120 @@ public class TabServiceTests
     }
 
     /// <summary>
+    /// The listing narrows its rows to the pages the caller may act on, and keeps navigation order.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>ModuleSettings.ascx.vb:L214-L219</c> left the page selector populated and ENABLED for a
+    /// caller in the administrators role and DISABLED it for everyone else - "tab administrators can only
+    /// manage their own tab" - re-applying the same rule on postback at <c>L332-L338</c> so a disabled control
+    /// could not be reached by replaying the form. A tab administrator therefore never chose a page from a
+    /// portal-wide list; the page was the one they had arrived on, which was ambient request state this
+    /// solution does not have. Offering that caller the pages it holds EDIT on is the equivalent that survives
+    /// the loss of that ambient state, and it is strictly narrower than the list the legacy rendered.
+    /// </para>
+    /// <para>
+    /// ORDER IS ASSERTED AS WELL AS MEMBERSHIP. A page's position is meaningful only relative to the parent
+    /// that precedes it, so filtering must remove rows without re-ordering the ones that remain. A filter
+    /// implemented by re-querying the permitted identifiers would satisfy a membership assertion and silently
+    /// lose the navigation order.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetTabs_NarrowsTheRowsToThePagesTheCallerMayActOn()
+    {
+        HierarchyHarness harness = HierarchyHarness.WithBranchedPortal();
+
+        // The first root and its grandchild, chosen so the permitted set is NOT a contiguous prefix: a filter
+        // that returned the first N rows would otherwise pass.
+        int[] permitted = [TabId, TabId + 2];
+
+        harness.Permissions
+            .Setup(service => service.ListTabsWithPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<int>>.Success(permitted));
+
+        Result<IReadOnlyList<TabListItemDto>> outcome = await harness.Service
+            .GetTabsAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Select(row => row.TabId).Should().Equal(
+            permitted,
+            "only the permitted pages are offered, in the navigation order the read produced");
+    }
+
+    /// <summary>
+    /// The narrowing happens AFTER the cache is populated, so the cached entry stays caller-independent.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THE ORDERING IS THE CORRECTNESS ARGUMENT, NOT AN OPTIMISATION. The entry is keyed by tenant alone.
+    /// Narrowing before the write would store one caller's permitted subset under a key every caller reads,
+    /// and the next caller - including the tenant's administrator - would be served that subset as though it
+    /// were the tenant's page set. This case is the only thing standing between that and a reviewer's memory:
+    /// it asserts the two values differ, and asserts which of them is the full one.
+    /// </remarks>
+    [Fact]
+    public async Task GetTabs_CachesTheWholeTenantAndNarrowsOnlyWhatItReturns()
+    {
+        HierarchyHarness harness = HierarchyHarness.WithBranchedPortal();
+
+        harness.Permissions
+            .Setup(service => service.ListTabsWithPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<int>>.Success([TabId]));
+
+        Result<IReadOnlyList<TabListItemDto>> outcome = await harness.Service
+            .GetTabsAsync(PortalId, CancellationToken.None);
+
+        outcome.Value.Should().HaveCount(1, "this caller may act on one page");
+
+        harness.Cached.Should().NotBeNull("the listing is cached per tenant");
+        harness.Cached!.Should().HaveCount(
+            harness.AllTabs.Count,
+            "the cached entry is the TENANT's page set, not this caller's permitted subset");
+    }
+
+    /// <summary>
+    /// An unresolvable permission state withholds every row rather than offering them all.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// FAIL-CLOSED, BECAUSE THIS LISTING IS A SET OF CHOICES. A page offered as a placement target that the
+    /// create action would then refuse is worse than no target offered: the caller fills the form and the
+    /// submission is rejected. Failing open would also make an availability problem read as a permission grant.
+    /// </remarks>
+    [Fact]
+    public async Task GetTabs_WithhholdsEveryRowWhenThePermissionStateCannotBeResolved()
+    {
+        HierarchyHarness harness = HierarchyHarness.WithBranchedPortal();
+
+        harness.Permissions
+            .Setup(service => service.ListTabsWithPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<int>>.Failure("permission.unavailable", "unreachable"));
+
+        Result<IReadOnlyList<TabListItemDto>> outcome = await harness.Service
+            .GetTabsAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue("an unresolvable grant state is a refusal, not a fault to propagate");
+        outcome.Value.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// Assembles a page service over a whole in-memory page set, for the traversal assertions.
     /// </summary>
     /// <remarks>
@@ -571,15 +717,68 @@ public class TabServiceTests
                     HomeDirectory = "Portals/0",
                 });
 
+            // The listing refuses an unknown tenant before it reads anything, so a harness whose portal does
+            // not "exist" answers a not-found failure and every listing case would measure that instead of what
+            // it names.
+            Portals.Setup(repository => repository.ExistsAsync(
+                    It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
+
             UnitOfWork.Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(1);
+
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
+            Cache = new Mock<ICacheService>(MockBehavior.Loose);
+
+            // A PASS-THROUGH THAT RECORDS. The real cache would answer from its entry; this one always invokes
+            // the factory and keeps the value the factory produced, which is what lets a case assert WHAT WAS
+            // CACHED as distinct from what was returned. That distinction is the whole point of the ordering
+            // under test: the entry is keyed by tenant alone, so it must hold the tenant's rows and nothing
+            // caller-specific.
+            Cache.Setup(cache => cache.GetOrCreateAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<Func<CancellationToken, Task<IReadOnlyList<TabListItemDto>>>>(),
+                    It.IsAny<TimeSpan>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(async (
+                    string _,
+                    Func<CancellationToken, Task<IReadOnlyList<TabListItemDto>>> factory,
+                    TimeSpan __,
+                    CancellationToken token) =>
+                {
+                    IReadOnlyList<TabListItemDto> produced = await factory(token);
+                    Cached = produced;
+                    return produced;
+                });
+
+            // EVERY PAGE IS PERMITTED BY DEFAULT, so the suites below stay about the behaviour they name.
+            // The listing narrows its rows to the pages the caller may act on, and the permission service
+            // answers an administrator with every page it was asked about - which is the caller these suites
+            // describe. Returning the whole set here reproduces that answer, so a case about ordering or
+            // hierarchy is not silently also a case about permissions. The narrowing itself is asserted by
+            // the cases that override this setup explicitly.
+            Permissions
+                .Setup(service => service.ListTabsWithPermissionAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    int _,
+                    int? __,
+                    IReadOnlyCollection<int> tabIds,
+                    PermissionKey ___,
+                    CancellationToken ____) =>
+                    Result<IReadOnlyList<int>>.Success(tabIds.ToList()));
 
             Service = new TabService(
                 Tabs.Object,
                 Portals.Object,
                 UnitOfWork.Object,
-                new Mock<ICacheService>(MockBehavior.Loose).Object,
+                Cache.Object,
                 new Mock<ICurrentUser>(MockBehavior.Loose).Object,
+                Permissions.Object,
                 new Mock<IAuditSink>(MockBehavior.Loose).Object,
                 new CachingOptions());
         }
@@ -591,6 +790,13 @@ public class TabServiceTests
         internal Mock<IPortalRepository> Portals { get; }
 
         internal Mock<IUnitOfWork> UnitOfWork { get; }
+
+        internal Mock<IPermissionService> Permissions { get; }
+
+        internal Mock<ICacheService> Cache { get; }
+
+        /// <summary>The rows the service handed the cache, or <see langword="null"/> if it cached nothing.</summary>
+        internal IReadOnlyList<TabListItemDto>? Cached { get; private set; }
 
         internal TabService Service { get; }
 

@@ -5,15 +5,24 @@ namespace DnnMigration.Application.Serialization;
 
 /// <summary>
 /// The central <c>System.Text.Json</c> converter policy for the contracts in this assembly: one
-/// explicit converter per enumeration whose external representation is fixed by legacy data.
+/// explicit converter per enumeration whose external representation is pinned rather than incidental.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Why a registration surface exists at all.</b> Two enumerations need a pinned wire form and
-/// both failures are silent — an unregistered converter produces a plausible-looking number instead
-/// of an error — so registering one and forgetting the other is a mistake nothing downstream would
-/// report. Exposing the pair as a single unit makes the composition root's obligation one call it
-/// cannot half-perform, rather than a list it has to keep in step with this folder.
+/// <b>Why a registration surface exists at all.</b> Three enumerations need a pinned wire form and
+/// every one of those failures is silent — an unregistered converter produces a plausible-looking
+/// number instead of an error, or refuses a name a sibling transport accepts — so registering some and
+/// forgetting one is a mistake nothing downstream would report. Exposing the set as a single unit makes
+/// the composition root's obligation one call it cannot half-perform, rather than a list it has to keep
+/// in step with this folder.
+/// </para>
+/// <para>
+/// <b>Two of the three are pinned by legacy DATA and the third by a sibling TRANSPORT.</b>
+/// <c>BillingFrequency</c> and <c>PermissionKey</c> carry forms the schema stores, so their wire
+/// representation is not this codebase's to choose. <c>SortDirection</c> stores nothing: its converter
+/// exists because the same contract member is also bound from a query string, where the framework's type
+/// converter accepts the member NAME, so a body that accepted only the number gave one member two
+/// incompatible spellings. See <see cref="SortDirectionJsonConverter"/> for the measurement.
 /// </para>
 /// <para>
 /// <b>The policy is DEFINED here and APPLIED at the Api edge.</b> Every DTO folder in this assembly
@@ -31,9 +40,11 @@ namespace DnnMigration.Application.Serialization;
 /// <see cref="JsonStringEnumConverter"/> is NOT registered. It would claim every enumeration,
 /// including <c>BillingFrequency</c>, whose legacy wire form is a single character and not its
 /// member name — so correctness would depend on this list being ordered ahead of it, and a
-/// reordering would silently change a wire contract. Registering exactly the types that need pinning
-/// also leaves the remaining enumerations' wire form an explicit decision at the Api boundary rather
-/// than one taken accidentally here.
+/// reordering would silently change a wire contract. It would also refuse an out-of-range number
+/// outright, where <see cref="SortDirectionJsonConverter"/> passes one through on purpose so that the
+/// request validator reports it with the same field-level wording the query-string transport produces.
+/// Registering exactly the types that need pinning also leaves the remaining enumerations' wire form an
+/// explicit decision at the Api boundary rather than one taken accidentally here.
 /// </para>
 /// <para>
 /// <b>Adding twice is harmless.</b> <see cref="AddTo(IList{JsonConverter})"/> skips a converter whose
@@ -57,6 +68,7 @@ public static class DnnJsonConverters
     {
         new BillingFrequencyJsonConverter(),
         new PermissionKeyJsonConverter(),
+        new SortDirectionJsonConverter(),
     });
 
     /// <summary>

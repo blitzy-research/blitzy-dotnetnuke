@@ -355,11 +355,21 @@ export class UserService {
     // the value being matched is arbitrary personal data whose meaning neither side knows, and it
     // may perfectly well be a national identifier or a telephone number.
     //
-    // A listing that names nobody — a page index, a page size, an ordering and at most an approval
-    // state — stays on the `GET`, which keeps it cacheable and idempotent. Both addresses reach the
-    // same server capability under the same authorisation policy and the same paging bounds, and
-    // both answer the same envelope, so the DECODER below is shared and the caller cannot tell which
-    // was used.
+    // ⚠ THE PAGING CONTRACT'S GENERIC `query` COUNTS AS IDENTIFYING TOO, AND OMITTING IT LEFT THE
+    // COMPENSATOR WITH A HOLE. The server matches that member as a SUBSTRING across the login name,
+    // the display name AND the electronic-mail address (`UserRepository.cs` L131-L134), so a search
+    // by any one of a person's three identifiers reaches the same rows the named filters reach —
+    // through a member that used to stay on the `GET` however it was filled in. Moving the four
+    // NAMED filters into a body while leaving that one in the request target protected the
+    // identifiers an operator selects a mode for and not the identifier they simply type, which is
+    // the more likely of the two. The predicate below now classifies it, and the rule it applies to
+    // it differs from the rule it applies to the four for a reason stated there.
+    //
+    // A listing that names nobody — a page index, a page size, an ordering, at most an approval
+    // state, and a blank or absent free-text filter — stays on the `GET`, which keeps it cacheable
+    // and idempotent. Both addresses reach the same server capability under the same authorisation
+    // policy and the same paging bounds, and both answer the same envelope, so the DECODER below is
+    // shared and the caller cannot tell which was used.
     if (identifiesAPerson(query)) {
       return this.http
         .post<unknown>(API_ENDPOINTS.users.search(), userSearchBody(query, query), {

@@ -85,7 +85,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { ChangePasswordRequest, UserDetail } from '../../../core/models/user.model';
@@ -1048,6 +1048,89 @@ describe('UserPasswordComponent', () => {
   //   L300  ChangePassword returned False        -> PasswordResetFailed, else Success
   //
   // The order is counter-intuitive in one place and that place is asserted directly.
+
+  describe('the operation gate the route\u2019s union policy makes necessary', () => {
+    /*
+     * ⚠ WHY A SECOND GATE EXISTS BEHIND AN ALREADY-GUARDED ROUTE. `/users/:userId/password`
+     * declares `AccountOwnerOrPortalAdministrator`, and it must: this screen posts to TWO
+     * endpoints with two different policies - `POST {userId}/password` admits the account holder
+     * alone and `POST {userId}/password-reset` a tenant administrator alone. A previous revision
+     * declared the route ownership-only, reasoning from the change endpoint alone, and the
+     * consequence was not a tightening but a hole: the reset had no address anywhere in the
+     * application, so an administrator had no way to intervene on a locked-out account.
+     *
+     * Admitting a UNION means one of the two admitted callers can arrive at the operation that is
+     * not theirs. The route cannot tell them apart, because which operation is planned depends on
+     * whether the caller IS the account on screen - a fact the route does not evaluate. So the
+     * screen decides, and it decides FAIL-CLOSED: a reset is offered only to a caller whose
+     * identity has resolved AND says they administer the tenant.
+     */
+
+    it('offers the change to the account holder, who needs no administration for it', () => {
+      arriveAsSelf(account(7));
+      fillValidChange();
+
+      expect(buttonLabelled(CHANGE_HEADING)?.disabled)
+        .withContext('the change is chosen BY ownership, so ownership is all it requires')
+        .toBeFalse();
+    });
+
+    it('offers the reset to an administrator acting on another account', () => {
+      arriveAsAdministrator(account(7));
+      enter(CONTROL_ID.newPassword, REPLACEMENT);
+      enter(CONTROL_ID.confirmPassword, REPLACEMENT);
+
+      expect(buttonLabelled(RESET_HEADING)?.disabled)
+        .withContext('the administrator arm of the route reaches the operation it exists for')
+        .toBeFalse();
+    });
+
+    it('withholds the reset from a caller who is neither the holder nor an administrator', () => {
+      /*
+       * ⚠ THE COMBINATION THE ROUTE'S GUARD ALREADY REFUSES, ASSERTED HERE ANYWAY. This case is
+       * unreachable through the guarded route, and that is exactly why it is pinned: the gate must
+       * answer for every input rather than only for the inputs the router happens to deliver, so
+       * that a future route change cannot make the screen offer a credential replacement the
+       * server is certain to refuse. Depending on the router for this would put the whole
+       * guarantee in a file this component does not own.
+       */
+      seatIdentity(4, ['Registered Users']);
+      arrive(account(7));
+      enter(CONTROL_ID.newPassword, REPLACEMENT);
+      enter(CONTROL_ID.confirmPassword, REPLACEMENT);
+
+      expect(buttonLabelled(RESET_HEADING)?.disabled)
+        .withContext('a reset without tenant administration is withheld rather than attempted')
+        .toBeTrue();
+      expect(outstandingRequestCount())
+        .withContext('and nothing is sent')
+        .toBe(0);
+    });
+
+    it('withholds the reset while the caller\u2019s identity is unresolved', () => {
+      // FAIL-CLOSED RATHER THAN OPTIMISTIC. No session is seated, so `administersCurrentPortal`
+      // reads false and the planned operation is a reset - the same withholding as above, reached
+      // for a different reason. Offering an action that comes back refused is worse than offering
+      // it a moment late, and this one replaces a credential.
+      arrive(account(7));
+      enter(CONTROL_ID.newPassword, REPLACEMENT);
+      enter(CONTROL_ID.confirmPassword, REPLACEMENT);
+
+      expect(buttonLabelled(RESET_HEADING)?.disabled)
+        .withContext('an unresolved identity administers nothing')
+        .toBeTrue();
+    });
+
+    it('does not withhold the change from an administrator acting on their own account', () => {
+      // The gate keys on the OPERATION, not on the caller's role, so the administrator who is also
+      // the account holder plans a CHANGE and is offered it - which is what the change endpoint's
+      // own ownership policy admits them to.
+      arriveAsAdministratorOfOwnAccount(account(7));
+      fillValidChange();
+
+      expect(buttonLabelled(CHANGE_HEADING)?.disabled).toBeFalse();
+    });
+  });
 
   describe('the order of the pre-flight rules', () => {
     it('reports the mismatch BEFORE the policy when a value breaks both', () => {
@@ -2176,6 +2259,226 @@ describe('UserPasswordComponent', () => {
         .toBeNull();
       expect(inlineMessages()).toEqual([]);
       expect(announcements()).toEqual([]);
+    });
+  });
+
+  // =========================================================================
+  // K. THE MANDATORY VISIT: WHEN THIS SCREEN IS THE ONLY ONE THE SERVER ALLOWS
+  // =========================================================================
+  //
+  // A caller whose account carries an outstanding credential change is refused nearly
+  // every read the console performs. Measured against the running API for such a
+  // session: `GET api/v1/users/{id}`, `.../services`, `api/v1/users/settings`,
+  // `api/v1/portals` and `api/v1/modules` each answered 403 with
+  // `auth.remediation_required`, while `POST api/v1/users/{id}/password` was reachable.
+  //
+  // So this screen is simultaneously MANDATORY and, as it stood, unusable: it read the
+  // account it was refused, gated its whole populated view on that account, and disabled
+  // its submit affordance until the account arrived. The caller was shown a heading, a
+  // refusal and nothing to act on.
+
+  describe('the mandatory-remediation visit', () => {
+    /** Seats a caller who owes a mandatory credential change on their own account. */
+    function seatRemediatingIdentity(userId: number): void {
+      TestBed.inject(TokenStorageService).store({
+        accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+        expiresAtUtc: '2099-12-31T23:59:59.000Z',
+        refreshToken: 'not-a-real-refresh-token',
+        mustChangePassword: true,
+        mustUpdateProfile: false,
+        passwordExpiring: false,
+        user: {
+          userId,
+          portalId: NULL_INTEGER,
+          portalName: 'Baseline Portal',
+          username: 'caller',
+          displayName: 'The Caller',
+          email: 'caller@example.test',
+          isSuperUser: false,
+          isPortalAdministrator: false,
+          roles: ['Registered Users'],
+          permissions: [],
+        },
+      });
+    }
+
+    /**
+     * Arrives on the screen as a remediating caller.
+     *
+     * Deliberately satisfies NO account read, because the point of the case is that none is
+     * issued. `httpMock.verify()` in teardown is what turns that into an assertion.
+     *
+     * @param userId The account, which is also the caller.
+     */
+    function arriveRemediating(userId = 7): void {
+      seatRemediatingIdentity(userId);
+      fixture.componentRef.setInput('userId', String(userId));
+      fixture.detectChanges();
+    }
+
+    it('issues NO account read, because the API refuses that read in this state', () => {
+      arriveRemediating(7);
+
+      httpMock.expectNone(accountUrl(7));
+    });
+
+    it('offers the credential form even though no account details were read', () => {
+      arriveRemediating(7);
+
+      expect(query(`#${CONTROL_ID.newPassword}`))
+        .withContext('the form is what the screen is FOR, and the write needs no account read')
+        .not.toBeNull();
+      expect(query(`#${CONTROL_ID.confirmPassword}`)).not.toBeNull();
+      expect(query(`#${CONTROL_ID.currentPassword}`))
+        .withContext('a self-service change presents the credential in force')
+        .not.toBeNull();
+    });
+
+    it('omits the two summary rows the refused read would have populated', () => {
+      arriveRemediating(7);
+
+      // Rendering them from an absent account would present the empty string and the
+      // never-changed sentinel as though they were facts about the credential.
+      expect(query('.user-password__summary')).toBeNull();
+    });
+
+    it('leaves the submit affordance available', () => {
+      arriveRemediating(7);
+
+      const submit = host().querySelector('button[type="submit"]');
+
+      expect(submit)
+        .withContext('a mandatory screen must offer the action it exists to perform')
+        .not.toBeNull();
+      expect((submit as HTMLButtonElement).disabled)
+        .withContext('this was permanently true while the affordance waited on a refused read')
+        .toBe(false);
+    });
+
+    it('still withholds the form when a read was issued and did not decode', () => {
+      // ⚠ THE TWO ABSENCES ARE NOT THE SAME AND THIS PINS THE DIFFERENCE. Above, the account
+      // is absent because it was never asked for, and the form is presented. Here a read was
+      // issued and answered with a payload that breaks the contract, so nothing is known about
+      // the account and the form stays withheld. Collapsing the two would present a form over
+      // an account the screen failed to read.
+      arrive(account(7, { lastPasswordChangeDate: undefined }));
+
+      expect(query(`#${CONTROL_ID.newPassword}`)).toBeNull();
+      expect(query('.user-password__summary')).toBeNull();
+    });
+
+    it('clears the advisory locally and returns to the root once the change is written', async () => {
+      // ⚠ WITHOUT THIS THE JOURNEY NEVER ENDS. The advisory is carried in the held session, so
+      // the server stops refusing the moment the credential changes while the client goes on
+      // believing remediation is outstanding — and the root redirect goes on resolving back to
+      // this screen.
+      //
+      // ⚠ AND NO RENEWAL IS ATTEMPTED, WHICH IS THE SUBSTANCE OF THIS CASE. Renewing was tried
+      // first and is unfixably wrong: the change endpoint revokes every refresh token the
+      // account holds, so `POST api/v1/auth/refresh` answers 401, the store treats a refused
+      // renewal as a session that is over, and the caller is signed out seconds after doing
+      // exactly what the server demanded. Observed end to end in a browser. `expectNone` below
+      // is what keeps that regression from returning.
+      const router = TestBed.inject(Router);
+      const navigate = spyOn(router, 'navigateByUrl').and.resolveTo(true);
+
+      arriveRemediating(7);
+      fillValidChange();
+      press(CHANGE_HEADING);
+
+      expectRequest('POST', changeUrl(7), 'the credential change').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      httpMock.expectNone('/api/v1/auth/refresh');
+
+      // ⚠ AND NOW THE DECLINED READ IS ISSUED, which is the other half of the same rule. The
+      // advisory is gone from the held session, so the condition that suppressed the account
+      // read no longer holds and the screen asks for the details it had been refused. The
+      // suppression is a reaction to the server's current answer, not a permanent state.
+      expectRequest('GET', accountUrl(7), 'the read the screen had been declining').flush({
+        data: account(7),
+        meta: null,
+      });
+      fixture.detectChanges();
+
+      expect(query('.user-password__summary'))
+        .withContext('and the two summary rows appear as soon as they are readable')
+        .not.toBeNull();
+
+      // THE ROOT, NOT A SCREEN. Naming a screen here would put the both-advisories-outstanding
+      // precedence in a second place; the root redirect owns that decision alone.
+      expect(navigate)
+        .withContext('the caller is handed to the root, which decides where remediation leads next')
+        .toHaveBeenCalledWith('/');
+    });
+
+    it('leaves a profile completion outstanding when the account owes both', async () => {
+      // Clearing the satisfied advisory and ONLY the satisfied one is what lets the root move the
+      // caller on to the profile screen rather than back to this one. Clearing both would skip a
+      // completion the server still requires, and the caller would meet a refusal on the landing
+      // instead of the screen that clears it.
+      const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+      const storage = TestBed.inject(TokenStorageService);
+
+      seatRemediatingIdentity(7);
+      const held = storage.session();
+      storage.store({ ...held!, mustUpdateProfile: true });
+      fixture.componentRef.setInput('userId', '7');
+      fixture.detectChanges();
+
+      fillValidChange();
+      press(CHANGE_HEADING);
+
+      expectRequest('POST', changeUrl(7), 'the credential change').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      const renewed = storage.session();
+
+      expect(renewed?.mustChangePassword)
+        .withContext('the satisfied advisory is cleared')
+        .toBe(false);
+      expect(renewed?.mustUpdateProfile)
+        .withContext('and the one the caller still owes is untouched')
+        .toBe(true);
+      expect(navigate).toHaveBeenCalledWith('/');
+
+      // The session is still restricted by the remaining advisory, so the account read stays
+      // withheld and nothing further is issued.
+      httpMock.expectNone(accountUrl(7));
+    });
+
+    it('concludes nothing after an ADMINISTRATIVE reset, which clears no advisory of the caller\u2019s own', async () => {
+      // An administrator who owes their own credential change cannot reach this path anyway —
+      // the server's allowance requires the route's account to BE the caller — but the guard is
+      // stated at this end too, because clearing an advisory here would assert something the
+      // server never reported about the administrator's own account.
+      const router = TestBed.inject(Router);
+      const navigate = spyOn(router, 'navigateByUrl').and.resolveTo(true);
+
+      arriveAsAdministrator(account(7));
+      enter(CONTROL_ID.newPassword, REPLACEMENT);
+      enter(CONTROL_ID.confirmPassword, REPLACEMENT);
+      press(RESET_HEADING);
+      answerDialog(RESET_HEADING);
+
+      expectRequest('POST', resetUrl(7), 'the administrative reset').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+      settleAfterWrite(7);
+      await fixture.whenStable();
+
+      httpMock.expectNone('/api/v1/auth/refresh');
+      expect(navigate).not.toHaveBeenCalled();
     });
   });
 });

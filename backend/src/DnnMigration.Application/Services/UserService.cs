@@ -2560,11 +2560,35 @@ public sealed class UserService : IUserService
         IReadOnlyList<UserProfileValue> values =
             await _profiles.GetProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
 
-        int defaultVisibility =
-            await ReadProfileDefaultVisibilityAsync(portalId, cancellationToken).ConfigureAwait(false);
+        // ONE READ FOR BOTH TENANT FACTS, deliberately. The default visibility that seeds an unfilled
+        // value and the flag saying whether the holder may choose a visibility at all are two members of
+        // the same settings source, so reading it once means they cannot disagree and the projection costs
+        // no more than it did when it published only the first of them.
+        //
+        // The second fact is published here because the only other place it was readable from is
+        // administrator-only. GET api/v1/users/settings carries PolicyNames.PortalAdministrator, and the
+        // caller who needs this answer is by construction an ordinary account holder looking at their own
+        // profile - measured, such a caller was answered 403 auth.not_permitted, so the affordance could
+        // never be offered to the one person it exists for. Widening that endpoint would have handed an
+        // account holder the tenant's entire account policy; this hands them the one fact that concerns
+        // them, on a projection they are already entitled to read.
+        MembershipSettingsDto? settings =
+            await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
+
+        // The same fallback the settings reader itself applies, so a tenant that has stored nothing
+        // behaves identically whichever way the values are reached.
+        var fallback = new MembershipSettingsDto();
+        int defaultVisibility = settings?.ProfileDefaultVisibility ?? fallback.ProfileDefaultVisibility;
+        bool displayVisibilityEnabled =
+            settings?.ProfileDisplayVisibility ?? fallback.ProfileDisplayVisibility;
 
         return Result<UserProfileDto?>.Success(
-            UserMappings.ToProfile(userId, definitions, values, defaultVisibility));
+            UserMappings.ToProfile(
+                userId,
+                definitions,
+                values,
+                defaultVisibility,
+                displayVisibilityEnabled));
     }
 
     /// <inheritdoc />

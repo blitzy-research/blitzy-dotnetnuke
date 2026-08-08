@@ -198,8 +198,8 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// The listing is tenant-bound administration, so an ordinary member of the tenant holding a perfectly
-    /// valid token is refused.
+    /// The listing is tenant-bound, so an ordinary member of the tenant holding no page grant at all is
+    /// refused however valid its token is.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -213,15 +213,118 @@ public sealed class TabApiTests
     /// identifier in the route and this route names no page; the tenant it DOES name is what binds it. The
     /// per-page routes remain permission-gated, which the tests further down measure.
     /// </para>
+    /// <para>
+    /// ⚠ THE PRECONDITION IS ESTABLISHED RATHER THAN ASSUMED, and that is not defensive padding. The route now
+    /// carries the tenant-wide content-editor policy, which admits a caller holding EDIT on ANY page of the
+    /// tenant, so "this caller holds no grant" is a statement about stored rows rather than about the caller's
+    /// role. The suites share one database and xUnit gives no ordering guarantee, so a sibling case that grants
+    /// EDIT to the registered role would otherwise decide this one's outcome - the assertion would pass or fail
+    /// according to execution order, which is worse than either answer. Clearing the tenant's EDIT grants first
+    /// makes the refusal attributable to the absent grant and to nothing else.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListTabs_AsAnOrdinaryMember_ReturnsForbidden()
+    public async Task ListTabs_AsAnOrdinaryMemberHoldingNoPageGrant_ReturnsForbidden()
     {
+        await ClearEditGrantsAsync();
+
         using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await member.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// The same member IS served once an edit grant reaches a role it holds, and is served ONLY the pages that
+    /// grant reaches.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ BOTH HALVES IN ONE CASE, BECAUSE EITHER ALONE WOULD BE MISLEADING. Admission without narrowing would
+    /// mean a page administrator could enumerate the tenant's whole navigation hierarchy - the disclosure the
+    /// tenant-administration policy was applied to this route to close. Narrowing without admission would mean
+    /// the capability is still unreachable. The fix is only correct if both hold at once.
+    /// </para>
+    /// <para>
+    /// MIGRATION: <c>ModuleSettings.ascx.vb:L214-L219</c> left the page selector populated and ENABLED for a
+    /// caller in the administrators role and disabled it for everyone else - "tab administrators can only
+    /// manage their own tab" - re-applying the same rule on postback at <c>L332-L338</c> so a disabled control
+    /// could not be reached by replaying the form. A tab administrator therefore never chose from a
+    /// portal-wide list. Offering that caller exactly the pages it holds EDIT on is the equivalent that
+    /// survives the loss of the legacy ambient "active page", and it is strictly narrower than the list the
+    /// legacy rendered-but-disabled.
+    /// </para>
+    /// <para>
+    /// A SECOND PAGE IS CREATED AND LEFT UNGRANTED, so the assertion measures exclusion rather than merely
+    /// counting. A case that granted one page in a tenant with one page would pass on an implementation that
+    /// filtered nothing at all.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_AsAnOrdinaryMemberHoldingOneEditGrant_ReturnsOnlyThatPage()
+    {
+        await ClearEditGrantsAsync();
+
+        int granted = await CreateTabAsync("LGrant" + Suffix());
+        int withheld = await CreateTabAsync("LWithheld" + Suffix());
+
+        await GrantAsync(
+            granted,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        using HttpClient member = await MemberClientAsync();
+
+        using HttpResponseMessage response = await member.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an edit grant on one page is what the module placement capability is built on");
+
+        IReadOnlyList<TabListItemDto> rows = await ReadListAsync(response);
+
+        rows.Select(row => row.TabId).Should().Contain(
+            granted,
+            "the page the grant reaches is a page this caller may place a module on");
+        rows.Select(row => row.TabId).Should().NotContain(
+            withheld,
+            "a page the grant does not reach must not be offered as a placement target");
+    }
+
+    /// <summary>
+    /// A tenant administrator still receives every page, including the ones no grant row names.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// THE ARM THAT WOULD BREAK SILENTLY IF THE NARROWING WERE APPLIED UNIFORMLY. A tenant's administrator
+    /// administers its pages whether or not a grant row happens to name their role, and a DotNetNuke
+    /// installation whose page grants were never populated is an ordinary state - so filtering an administrator
+    /// by stored grants would return an EMPTY listing to the one caller entitled to all of it, and the module
+    /// placement form would lose its target selector for exactly the caller who previously had it. The two
+    /// pages here are deliberately left with no EDIT grant at all after the clear.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_AsATenantAdministrator_ReturnsEveryPageEvenWithNoGrantRows()
+    {
+        await ClearEditGrantsAsync();
+
+        int first = await CreateTabAsync("LAdminA" + Suffix());
+        int second = await CreateTabAsync("LAdminB" + Suffix());
+
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage response = await administrator.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        IReadOnlyList<TabListItemDto> rows = await ReadListAsync(response);
+
+        rows.Select(row => row.TabId).Should().Contain(
+            new[] { first, second },
+            "administration is not expressed as a grant row, so it cannot be filtered by one");
     }
 
     /// <summary>An unknown tenant answers <c>404 Not Found</c>, because the route names the tenant itself.</summary>
@@ -2489,6 +2592,41 @@ public sealed class TabApiTests
                 ["portalId"] = owner,
                 ["tabName"] = tabName,
                 ["parentId"] = parent,
+            });
+    }
+
+    /// <summary>
+    /// Removes every page EDIT grant in the seeded tenant, so a case can state its own starting point.
+    /// </summary>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ REQUIRED BECAUSE THE LISTING'S POLICY IS NOW A TENANT-WIDE CAPABILITY QUESTION. Whether a caller is
+    /// admitted to the page listing depends on whether ANY page of the tenant grants it EDIT, so a case
+    /// asserting a refusal is asserting something about stored rows rather than about the caller's role. The
+    /// suites share one database and xUnit gives no ordering guarantee within a collection, so a grant written
+    /// by a sibling case would otherwise decide such an assertion's outcome by execution order.
+    /// </para>
+    /// <para>
+    /// Only the EDIT key is cleared, and only for pages of the seeded tenant. View grants are left alone
+    /// because they decide nothing here, and other tenants are left alone because the tenant is what the
+    /// listing is anchored to. No case writes a grant and then depends on it surviving another case -
+    /// <see cref="GrantAsync"/> deletes before inserting for the same reason - so clearing is safe.
+    /// </para>
+    /// </remarks>
+    private async Task ClearEditGrantsAsync()
+    {
+        await _fixture.Database.ExecuteAsync(
+            """
+            DELETE tp
+            FROM [dbo].[TabPermission] AS tp
+            INNER JOIN [dbo].[Tabs] AS t ON t.[TabID] = tp.[TabID]
+            WHERE t.[PortalID] = @portalId AND tp.[PermissionID] = @permissionId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["permissionId"] = _fixture.Seed.TabEditPermissionId,
             });
     }
 

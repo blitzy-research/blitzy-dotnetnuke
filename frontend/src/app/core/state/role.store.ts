@@ -187,7 +187,6 @@ import { EMPTY, expand, finalize, map, reduce, switchMap, tap, throwError } from
 
 import {
   DEFAULT_PAGE_SIZE,
-  MAX_PAGE_SIZE,
   emptyPagedResult,
   toPagedResult,
 } from '../models/paged-result.model';
@@ -700,24 +699,6 @@ const NO_ASSIGNMENTS_VIEW: AssignmentsViewState = Object.freeze({ kind: 'none' }
  * The state a store is in once the membership listing that was on screen has gone.
  */
 const ASSIGNMENTS_VIEW_LEFT: AssignmentsViewState = Object.freeze({ kind: 'left' });
-
-/**
- * The page size of the single-account membership probe.
- *
- * ⚠ ONE REQUEST, AND ONE ONLY. The probe narrows the role's memberships by the account's
- * login name, which the listing matches as a case-insensitive substring of either the login
- * name or the display name (`Infrastructure/Repositories/RoleRepository.cs` filters on both),
- * so a name that is a fragment of another can bring back a handful of rows. The largest page
- * the contract allows is therefore asked for, so the one row being looked for cannot fall off
- * the end of the answer in any realistic tenant — and when it is not in the answer the probe
- * reports NO MEMBERSHIP, which is the state the legacy screen showed for an account it had no
- * row for.
- *
- * It is deliberately NOT a walk. A probe that followed further pages would reintroduce the
- * defect it exists to remove: a burst of requests, and every membership of the role retained
- * in memory, to answer a question about ONE account.
- */
-const MEMBERSHIP_PROBE_PAGE_SIZE = MAX_PAGE_SIZE;
 
 /**
  * How many roles one request of the complete-listing walk asks for.
@@ -1918,26 +1899,39 @@ export class RoleStore implements OnDestroy {
    * ⚠ THIS IS THE REPLACEMENT FOR THAT SCAN, AND IT IS WHY THE LISTING NEED NOT BE READ WHOLE.
    * A paged grid holds one window, so a scan of the rows on screen would answer "no membership"
    * for an account whose row happens to sit on another page — a behavioural regression against
-   * the legacy answer. One narrow request settles the question instead: the listing is filtered
-   * by the account's login name, which reduces it to a handful of rows, and the wanted row is
-   * then picked out BY IDENTIFIER. The name is the filter; the identifier is the match. A name
-   * is not an identifier, which is why the identifier decides.
+   * the legacy answer. One exact request settles the question instead:
+   * `GET /api/v1/roles/{roleId}/users/{userId}` addresses the pairing itself, so the answer
+   * cannot depend on where a row falls and no filtering or matching happens on this side at all.
+   *
+   * ⚠ THE ADDRESS IS TWO IDENTIFIERS AND THE PREVIOUS ONE WAS A NAME, WHICH IS THE WHOLE REASON
+   * THIS CHANGED. The probe used to narrow the membership LISTING by the account's login name,
+   * carried in the paging contract's free-text filter — and the server matches that filter
+   * against the login name and the display name, so the name had to be there for the request to
+   * work. A query string is the least private part of a request: it is kept in browser history,
+   * written in full to every forward and reverse proxy's access log and to the server's own, and
+   * forwarded in the referrer of any subsequent navigation. None of those recorders is on the
+   * wire, so transport encryption does not address them; this is CWE-598, and it stood beside an
+   * account search that had already been moved to a request body to avoid exactly it. Two opaque
+   * numeric identifiers in a path identify nobody, so the request stays a cacheable `GET` and
+   * needs no compensating body.
    *
    * The answer lands on {@link RoleStore.probedAssignment} beside the pairing it belongs to on
    * {@link RoleStore.probedAssignmentKey}, and the key is published BEFORE the request so a
    * consumer can see which pairing is being asked about while the answer is outstanding.
    *
-   * MIGRATION: a probe that fails reports NO MEMBERSHIP and records the failure. That is the
-   * state the legacy screen showed whenever its own lookup found no row (`:L484` blanked the
-   * box), and the write behind the screen is an upsert either way — the server settles which of
-   * the two it is. The failure is still recorded, under its own operation name, so a screen can
-   * tell a failed probe from a settled "holds nothing" and never reports it as a failed listing.
+   * ⚠ A `404` IS THE ANSWER "HOLDS NOTHING" AND IS NOT RECORDED AS A FAILURE. The endpoint
+   * answers `200` with the membership or `404` when the account holds none, so the refusal IS
+   * the negative answer — the state the legacy screen showed by blanking its date box (`:L484`)
+   * — and reporting it as a failure would put a banner on an ordinary outcome. Every OTHER
+   * status still records a failure under this command's own operation name, so a screen can tell
+   * a genuinely failed probe from a settled "holds nothing", and neither is ever mistaken for a
+   * failed listing. The write behind the screen is an upsert in either case, so the server
+   * settles which of the two it performs.
    *
    * @param roleId The role to ask about, forwarded exactly as supplied. Role zero is real.
    * @param userId The account to ask about, forwarded exactly as supplied.
-   * @param userName The account's login name, used ONLY as the listing's free-text filter.
    */
-  probeAssignment(roleId: number, userId: number, userName: string): void {
+  probeAssignment(roleId: number, userId: number): void {
     this.assignmentProbeRequest?.unsubscribe();
 
     // The answer in hand is discarded as soon as a different pairing is asked about, rather than
@@ -1949,23 +1943,23 @@ export class RoleStore implements OnDestroy {
     this.clearFailure();
 
     this.assignmentProbeRequest = this.roleService
-      .listUsers(roleId, {
-        pageIndex: 0,
-        pageSize: MEMBERSHIP_PROBE_PAGE_SIZE,
-        query: userName,
-      })
+      .getMembership(roleId, userId)
       .pipe(finalize(() => this._assignmentProbeLoading.set(false)))
       .subscribe({
         next: (response) => {
-          const page: PagedResult<UserRole> = toPagedResult<UserRole>(response);
-          const found: UserRole | undefined = page.items.find((row) => row.userId === userId);
-
-          // `undefined` from `find` is normalised to `null` because absence has ONE spelling in
-          // this module's published contract, not two.
-          this._probedAssignment.set(found ?? null);
+          this._probedAssignment.set(response.data);
         },
         error: (error: unknown) => {
           this._probedAssignment.set(null);
+
+          // Read structurally through the shared helper, which is the same one severity is
+          // derived from. A 404 here means the pairing holds nothing, which is an answer; it is
+          // NOT swallowed for any other status, and it is not swallowed in the transport either,
+          // because only a caller knows whether absence is a legitimate outcome of its question.
+          if (readStatus(error) === 404) {
+            return;
+          }
+
           this.recordFailure('probeAssignment', error);
         },
       });

@@ -8,9 +8,9 @@ import {
   input,
   signal,
   untracked,
-  type OnInit,
   type Signal,
 } from '@angular/core';
+import { Router } from '@angular/router';
 import {
   FormControl,
   FormGroup,
@@ -35,7 +35,7 @@ import {
 import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
-import { UserStore, type UserFailure } from '../../../core/state/user.store';
+import { UserStore, type UserFailure, type UserMutation } from '../../../core/state/user.store';
 import { parseRouteId } from '../../../core/utils/route-id.util';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
@@ -751,7 +751,7 @@ function resolveUserId(raw: string | number | undefined): number | null {
   styleUrl: './user-profile.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class UserProfileComponent implements OnInit {
+export class UserProfileComponent {
   private readonly store = inject(UserStore);
   private readonly notifications = inject(NotificationService);
 
@@ -763,6 +763,21 @@ export class UserProfileComponent implements OnInit {
    * predicate.
    */
   private readonly auth = inject(AuthStore);
+
+  /**
+   * The router, used for exactly one navigation: leaving this screen once a MANDATORY profile
+   * completion has been written. Nothing else here navigates.
+   */
+  private readonly router = inject(Router);
+
+  /**
+   * The identifier of the save whose settling concludes a mandatory profile completion, or zero
+   * when no such save is outstanding.
+   *
+   * Zero is safe as "none of mine": the store's counter pre-increments, so no real write is ever
+   * issued that identifier.
+   */
+  private readonly awaitedSaveId = signal(0);
 
   /**
    * The account whose profile is edited.
@@ -874,9 +889,24 @@ export class UserProfileComponent implements OnInit {
    * affordance for exactly that caller, however the tenant had set the policy.
    *
    * The policy defaults to enabled when the tenant has stored nothing, which is the default the
-   * server publishes (`UserModuleBase.vb` L143-L145), and it is read as FALSE while the policy is
+   * server publishes (`UserModuleBase.vb` L143-L145), and it is read as FALSE while the profile is
    * still unresolved — the conservative posture, since offering a control that then disappears is
    * worse than offering it a moment late.
+   *
+   * ⚠ THE POLICY IS TAKEN FROM THE PROFILE, NOT FROM THE TENANT'S ACCOUNT SETTINGS, AND THAT IS A
+   * FIX RATHER THAN A REARRANGEMENT. It used to be read from `store.membershipSettings()`, which is
+   * fetched from `GET api/v1/users/settings` — an endpoint the server declares
+   * `PolicyNames.PortalAdministrator`. The legacy rule offers this control to the SUBJECT of the
+   * profile, who is by construction not an administrator, so that read was refused for precisely
+   * the caller the affordance exists for: measured against the running API, an ordinary account
+   * holder was answered `403 auth.not_permitted`, the policy stayed null, and this derivation could
+   * never return true however the tenant had configured it. The screen rendered its own inertness.
+   *
+   * The fact now travels on `GET api/v1/users/{userId}/profile`, which the same caller is already
+   * entitled to read and which is also exempted during mandatory remediation — so one change serves
+   * the ordinary owner and the remediating caller, and it REMOVES a request rather than adding one.
+   * The alternative, widening the settings endpoint, would have handed an account holder the
+   * tenant's entire account policy to obtain one boolean.
    *
    * {@link manageVisibility} can force it on for an embedding caller and can never force it off.
    */
@@ -885,12 +915,14 @@ export class UserProfileComponent implements OnInit {
       return true;
     }
 
-    const policy = this.store.membershipSettings();
+    const profile = this.profile();
 
-    // Compared explicitly against true rather than tested for truthiness, because an unresolved
-    // policy is null and must not be read as a stored false - the two mean different things and
-    // only one of them is the tenant's answer.
-    return policy !== null && policy.profileDisplayVisibility && this.isSelf();
+    // Presence is tested EXPLICITLY against null rather than by truthiness: an unresolved profile
+    // and a profile whose policy is off are different facts, and only the second is the tenant's
+    // answer. `displayVisibilityEnabled` is declared `boolean` on the contract and is decoded as a
+    // required member, so reading it directly is exact rather than a truthiness test over a value
+    // that could also be absent.
+    return profile !== null && profile.displayVisibilityEnabled && this.isSelf();
   });
 
   /** The profile as the store holds it. */
@@ -1038,9 +1070,34 @@ export class UserProfileComponent implements OnInit {
   });
 
   constructor() {
-    // A genuine side effect: dispatching the two reads the screen needs. Re-runs when the
-    // route supplies a different account, which is what makes navigating from one profile
-    // to another load the second one.
+    // A genuine side effect: dispatching the account read, which is the HEADING's alone.
+    //
+    // ⚠ A SEPARATE EFFECT FROM THE PROFILE READ BECAUSE IT HAS A DEPENDENCY THE PROFILE READ
+    // DOES NOT, and folding the two together made that dependency re-issue a read that was
+    // already current. GET api/v1/users/{id} is NOT exempted from the remediation refusal -
+    // measured, 403 auth.remediation_required - where GET api/v1/users/{id}/profile is. So this
+    // read is withheld while an advisory is outstanding, and dispatched the moment one clears;
+    // the profile read has no interest in that transition and must not be repeated by it.
+    //
+    // Dispatching it anyway used to put a refusal in the shared failure slot and an error banner
+    // across the one screen the server was requiring the caller to complete. The heading falls
+    // back to its neutral form in that state, which `formatProfileTitle` already resolves for an
+    // absent account.
+    effect(() => {
+      const userId = this.resolvedUserId();
+
+      if (userId === null || this.auth.sessionRestricted()) {
+        return;
+      }
+
+      untracked(() => {
+        this.store.selectUser(userId);
+      });
+    });
+
+    // A genuine side effect: dispatching the profile read, which supplies the FIELDS. Re-runs when
+    // the route supplies a different account, which is what makes navigating from one profile to
+    // another load the second one.
     effect(() => {
       const userId = this.resolvedUserId();
 
@@ -1048,17 +1105,18 @@ export class UserProfileComponent implements OnInit {
         return;
       }
 
-      // UNTRACKED, AND THE SCREEN IS BROKEN WITHOUT IT. Both commands read store slices
-      // on their way to writing them — `selectUser` compares the incoming identifier
-      // against the currently selected one before setting it, and the reads that clear
-      // the failure and raise the loading flag do the same. Performed inside the reactive
+      // UNTRACKED, AND THE SCREEN IS BROKEN WITHOUT IT. The command reads store slices
+      // on its way to writing them — the reads that clear the failure and raise the
+      // loading flag both do, and `selectUser` in the sibling effect above compares the
+      // incoming identifier against the held one. Performed inside the reactive
       // context those reads become dependencies OF THIS EFFECT, and the writes that
       // follow immediately invalidate them, so the effect re-runs and dispatches every
       // request a second time. Reading the route identifier is the only dependency this
       // effect should have, so everything else is executed outside the tracking context.
       untracked(() => {
-        // The account is read for the heading and the profile for the fields.
-        this.store.selectUser(userId);
+        // The profile is read for the fields, and is read unconditionally: it is the one
+        // account-scoped read the API keeps open to a caller owing mandatory remediation,
+        // because this screen is where such a caller clears it.
         this.store.loadProfile(userId);
       });
     });
@@ -1069,23 +1127,31 @@ export class UserProfileComponent implements OnInit {
 
       untracked(() => this.announce(failure === null ? null : failure));
     });
-  }
 
-  /**
-   * Reads the tenant's account policy, which is what decides whether the visibility control is
-   * offered.
-   *
-   * A LIFECYCLE HOOK RATHER THAN AN EFFECT, and once per screen rather than once per account. The
-   * policy is tenant-wide, so it does not change when the route moves from one account to another,
-   * and the account-scoped reads live in the constructor's effect for the opposite reason.
-   *
-   * MIGRATION: `Profile.ascx.vb` L60 read `Profile_DisplayVisibility` inside a property getter, so
-   * it was fetched on every render of every field. It is read once here, and the store's own read
-   * is idempotent, so arriving on this screen from the listing - which has already read the policy
-   * - costs one request that answers from the same endpoint rather than a request per property.
-   */
-  ngOnInit(): void {
-    this.store.loadMembershipSettings();
+    // A genuine side effect: leaving this screen once a MANDATORY profile completion has been
+    // written. Settled through the write's OWN identifier rather than through the shared
+    // failure slot, which is the only way to settle a write in this store - see UserMutation.
+    effect(() => {
+      const awaited: number = this.awaitedSaveId();
+      const settled: UserMutation | null = this.store.mutation();
+
+      if (awaited === 0 || settled === null || settled.id !== awaited) {
+        return;
+      }
+
+      untracked(() => {
+        this.awaitedSaveId.set(0);
+
+        // The operation is asserted as well as the identifier: a successful save re-reads the
+        // profile, and that re-read has its own failure path which must not be mistaken for a
+        // failed save.
+        if (settled.failure !== null && settled.operation === 'saveProfile') {
+          return;
+        }
+
+        this.concludeRemediation();
+      });
+    });
   }
 
   /**
@@ -1333,7 +1399,41 @@ export class UserProfileComponent implements OnInit {
       return;
     }
 
-    this.store.saveProfile(userId, this.toSubmission(userId));
+    const dispatched: number = this.store.saveProfile(userId, this.toSubmission(userId));
+
+    // Only a MANDATORY completion of the caller's OWN profile is awaited. An administrator
+    // editing somebody else's profile has nothing of their own to conclude, and an ordinary
+    // caller editing their own profile stays where they are, which is what the legacy screen
+    // did.
+    if (this.auth.sessionRestricted() && this.isSelf()) {
+      this.awaitedSaveId.set(dispatched);
+    }
+  }
+
+  /**
+   * Concludes a MANDATORY profile completion and hands the caller onward.
+   *
+   * ⚠ WITHOUT THIS THE JOURNEY NEVER ENDS. The advisory the caller has just satisfied is
+   * carried in the HELD SESSION rather than recomputed by the client, so the server stops
+   * requiring the completion the moment the required values are written while this client goes
+   * on believing it is outstanding — and the root redirect goes on resolving back to this
+   * screen.
+   *
+   * ⚠ THE ADVISORY IS CLEARED LOCALLY AND THE SESSION IS DELIBERATELY *NOT* RENEWED, even
+   * though this screen's own write revokes nothing. A caller can owe both advisories, in which
+   * case the credential change came first and has already revoked every refresh token the
+   * account holds, so a renewal here would answer `401` and sign the caller out at the end of a
+   * journey they had just completed. The full reasoning, and why the write's own success makes
+   * the local assertion sound rather than a guess, is on
+   * {@link AuthStore.noteProfileRemediated}.
+   *
+   * The destination is the application ROOT rather than a screen, so the root redirect keeps
+   * sole ownership of where a remediated caller goes next.
+   */
+  private concludeRemediation(): void {
+    this.auth.noteProfileRemediated();
+
+    void this.router.navigateByUrl('/').catch(() => false);
   }
 
   /**

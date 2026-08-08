@@ -170,12 +170,21 @@ public sealed class TabsController : ControllerBase
     /// </remarks>
     // TENANT-BOUND, NOT MERELY AUTHENTICATED. A bare authentication requirement let any bearer token name
     // any portal in the route and enumerate that tenant's whole page hierarchy - titles, parentage and
-    // ordering - which is tenant data even though nothing is mutated. The portal-administrator policy is
-    // anchored to the portal this route names, so an administrator of another tenant is refused. The
+    // ordering - which is tenant data even though nothing is mutated. Both policies this route has carried are
+    // anchored to the portal it names, so an administrator of another tenant is refused either way. The
     // single-page endpoints below stay on the page-scoped permission policies, which were already
     // route-anchored and are the finer-grained answer where a page identifier exists to evaluate.
+    //
+    // ⚠ THE POLICY IS THE TENANT-WIDE CAPABILITY ONE, AND THE PROTECTION IS NOW IN TWO PLACES RATHER THAN
+    // ONE. Tenant administration alone made this listing unreachable for the page administrator the module
+    // create action deliberately admits, so the placement form offered that caller no target page and the
+    // capability could not be exercised. PortalContentEditor admits them - and the service narrows the rows to
+    // the pages the caller may actually place on, which is what stops the wider policy from becoming the
+    // enumeration this comment's first paragraph describes. A caller holding EDIT nowhere is refused by the
+    // policy; a caller holding it somewhere sees only those pages. Neither can read the whole hierarchy unless
+    // they administer the tenant, which is exactly what was true before.
     [HttpGet("portals/{portalId:int}/tabs")]
-    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [Authorize(Policy = PolicyNames.PortalContentEditor)]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<TabListItemDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]

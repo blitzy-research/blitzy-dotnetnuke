@@ -322,6 +322,121 @@ public sealed class UserApiTests
     }
 
     /// <summary>
+    /// The body-bound search accepts the sort direction by MEMBER NAME, which is the vocabulary the query form
+    /// accepts and the only one any client of this API writes.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ONE CONTRACT MEMBER HAD TWO INCOMPATIBLE WIRE FORMS AND NEITHER SIDE COULD SEE IT. <c>SortDir</c> is
+    /// bound from the query string on every collection endpoint, where the framework's type converter accepts
+    /// the member name, and from THIS body, which <c>System.Text.Json</c> bound with no converter registered
+    /// for the type and therefore accepted only the numeric discriminator. The single-page administration
+    /// client wrote the documented name into both, so the compensating search that exists to keep an
+    /// identifier out of the request target was answered <c>400</c> with
+    /// <c>"$.sortDir": ["The JSON value could not be converted to …SortDirection."]</c> while the identical
+    /// query-string listing succeeded. Nothing detected it: both sides are internally well typed, and no test
+    /// had ever sent the member in a body.
+    /// </para>
+    /// <para>
+    /// The body is written as a RAW JSON DOCUMENT rather than by serialising the request type, and that is the
+    /// point of the test. Serialising <c>UserSearchRequest</c> here would apply this assembly's own converter
+    /// policy and so could only ever produce a form the server accepts - which is precisely how the defect
+    /// survived. The literal below is the byte sequence the browser client sends.
+    /// </para>
+    /// <para>
+    /// Both directions are exercised and the two pages are asserted to be REVERSES of each other, so the test
+    /// proves the value was applied rather than merely accepted. A converter that bound every name to
+    /// <c>Ascending</c> would satisfy a status-code assertion and fail this one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_WithTheSortDirectionNamed_AppliesItRatherThanRefusingTheBody()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        PagedEnvelope<UserListItemDto> ascending = await SearchWithRawBodyAsync(
+            client,
+            """{"pageIndex":0,"pageSize":100,"sortBy":"username","sortDir":"Ascending"}""");
+
+        PagedEnvelope<UserListItemDto> descending = await SearchWithRawBodyAsync(
+            client,
+            """{"pageIndex":0,"pageSize":100,"sortBy":"username","sortDir":"Descending"}""");
+
+        ascending.Items.Should().NotBeEmpty();
+        ascending.Items.Select(item => item.Username).Should().BeInAscendingOrder(
+            StringComparer.OrdinalIgnoreCase);
+        descending.Items.Select(item => item.Username).Should().BeInDescendingOrder(
+            StringComparer.OrdinalIgnoreCase);
+
+        descending.Items.Select(item => item.UserId).Should().Equal(
+            ascending.Items.Select(item => item.UserId).Reverse(),
+            "the named direction was applied, not merely tolerated");
+    }
+
+    /// <summary>
+    /// The sort direction is also accepted as the discriminator, so a caller written against the previous
+    /// behaviour is not broken by pinning the name.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The converter admits both spellings deliberately: the query-string binder accepts numeric text as well
+    /// as a name, so refusing the number in a body would have replaced one divergence with another.
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_WithTheSortDirectionAsADiscriminator_IsStillAccepted()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        PagedEnvelope<UserListItemDto> named = await SearchWithRawBodyAsync(
+            client,
+            """{"pageIndex":0,"pageSize":100,"sortBy":"username","sortDir":"Descending"}""");
+
+        PagedEnvelope<UserListItemDto> numbered = await SearchWithRawBodyAsync(
+            client,
+            """{"pageIndex":0,"pageSize":100,"sortBy":"username","sortDir":1}""");
+
+        numbered.Items.Select(item => item.UserId).Should().Equal(
+            named.Items.Select(item => item.UserId),
+            "the two spellings name one direction");
+    }
+
+    /// <summary>
+    /// A direction outside the declared pair is reported by the request validator, in the same field-level shape
+    /// the query form produces, rather than as a deserialisation failure.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is why the converter carries an undeclared integer instead of refusing it. Membership is decided in
+    /// exactly one place - the <c>IsInEnum</c> rule on the paging contract - so one mistake gets one
+    /// explanation whichever transport carried it.
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_WithAnUndeclaredSortDirection_IsReportedByTheValidator()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using var body = new StringContent(
+            """{"pageIndex":0,"pageSize":10,"sortBy":"username","sortDir":5}""",
+            Encoding.UTF8,
+            "application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            body);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Keys.Should().Contain(nameof(PagedRequest.SortDir));
+        problem.Errors[nameof(PagedRequest.SortDir)].Should()
+            .Contain("The sort direction must be either Ascending or Descending.");
+    }
+
+    /// <summary>
     /// Naming a profile property without a value is refused here exactly as it is on the query form, because the
     /// rule belongs to the service rather than to either action.
     /// </summary>
@@ -2772,6 +2887,43 @@ public sealed class UserApiTests
     }
 
     /// <summary>
+    /// Posts a LITERAL JSON document to the body-bound search and returns the page it answered.
+    /// </summary>
+    /// <param name="client">An authenticated client.</param>
+    /// <param name="json">The exact request body to send.</param>
+    /// <returns>The page the search answered.</returns>
+    /// <remarks>
+    /// The body is a raw literal rather than a serialised request object on purpose. Serialising the request
+    /// type would apply this assembly's own converter policy, so the bytes on the wire would be whatever the
+    /// server already accepts and a wire-form mismatch would be untestable - which is exactly how the sort
+    /// direction came to have one spelling in a query string and another in a body.
+    /// </remarks>
+    private static async Task<PagedEnvelope<UserListItemDto>> SearchWithRawBodyAsync(
+        HttpClient client,
+        string json)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(json);
+
+        using var body = new StringContent(json, Encoding.UTF8, "application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            body);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the body the client actually sends must bind: {0}",
+            await response.Content.ReadAsStringAsync());
+
+        PagedEnvelope<UserListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        return page!;
+    }
+
+    /// <summary>
     /// The account-owner policy admits the account holder only WITHIN THE TENANT ITS TOKEN NAMES: the same
     /// account key addressed under another tenant's route is refused on the account detail, the profile read,
     /// the profile write and the credential change alike.
@@ -2924,6 +3076,70 @@ public sealed class UserApiTests
             ApiTestFixture.Json);
 
         credential.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    /// <summary>
+    /// The account holder learns the tenant's per-property visibility decision from its OWN profile, on the
+    /// same request that carries the profile, while the settings endpoint that also declares it refuses them.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE REFUSAL IS ASSERTED IN THE SAME CASE AS THE SUCCESS, AND THAT PAIRING IS THE WHOLE POINT.
+    /// <c>Website/admin/Users/Profile.ascx.vb:L58-L63</c> offered the per-value visibility control when the
+    /// tenant's <c>Profile_DisplayVisibility</c> setting was on AND the viewer was the subject of the
+    /// profile. The migrated screen read that setting from <c>GET api/v1/users/settings</c>, which carries
+    /// <c>PolicyNames.PortalAdministrator</c> - so the second half of the legacy predicate guaranteed the
+    /// first half could never be read. An ordinary holder was answered 403, the policy stayed unresolved,
+    /// and the control was never offered however the tenant had configured it. The setting was stored,
+    /// published and inert.
+    /// </para>
+    /// <para>
+    /// Asserting only that the profile now carries the member would not catch a regression that moved the
+    /// fact back onto the administrator-only endpoint, because such a change would leave this member
+    /// present and merely stale. Asserting the 403 alongside it is what pins the reason the member exists
+    /// here at all.
+    /// </para>
+    /// <para>
+    /// The tenant is left at whatever it has stored rather than being reconfigured, so the assertion is
+    /// that the fact TRAVELS and is a real boolean - not that it holds a particular value, which would make
+    /// this case depend on fixture state it does not own. The stored-both-ways behaviour is pinned by
+    /// <c>GetProfile_PublishesTheTenantsVisibilityAffordanceDecision</c> in the unit suite, where the
+    /// settings source can be controlled directly.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task Profile_AsTheHolder_CarriesTheVisibilityDecisionTheSettingsEndpointRefusesThem()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient holder = await ClientForAccountAsync(created);
+
+        using HttpResponseMessage profile = await holder.GetAsync(
+            ProfileRoute(0, created.UserId));
+
+        profile.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Read from the RAW payload rather than only through the typed envelope, because a
+        // deserialised bool cannot distinguish "the member was absent and defaulted" from "the member
+        // was present and false" - and an absent member is exactly the regression this case guards.
+        using JsonDocument document = JsonDocument.Parse(
+            await profile.Content.ReadAsStringAsync());
+
+        JsonElement data = document.RootElement.GetProperty("data");
+
+        data.TryGetProperty("displayVisibilityEnabled", out JsonElement decision)
+            .Should().BeTrue("the holder has no other way to learn the tenant's decision");
+        decision.ValueKind.Should().BeOneOf(JsonValueKind.True, JsonValueKind.False);
+
+        // The same fact, asked for where the migrated screen used to ask for it.
+        using HttpResponseMessage settings = await holder.GetAsync(MembershipSettingsRoute(0));
+
+        settings.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "which is why the decision has to travel on the profile the holder may read");
     }
 
     /// <summary>Mints a client authenticated as one account, for the self-service paths.</summary>

@@ -516,7 +516,14 @@ const PROFILE_DEFINITION: ProfileDefinition = {
   visibility: 0,
 };
 
-/** One account's profile: the tenant's declared properties with this account's values. */
+/**
+ * One account's profile: the tenant's declared properties with this account's values,
+ * plus the tenant's decision on whether per-property visibility is offered at all.
+ *
+ * That last fact travels on the profile projection because the settings endpoint that
+ * declares it is administrator-only, so an account reading its own profile cannot see
+ * it any other way.
+ */
 const PROFILE_READ: ProfileRead = {
   userId: 1,
   properties: [
@@ -528,6 +535,7 @@ const PROFILE_READ: ProfileRead = {
       definition: PROFILE_DEFINITION,
     },
   ],
+  displayVisibilityEnabled: true,
 };
 
 /**
@@ -909,7 +917,38 @@ describe('UserService', () => {
       expect(observed.completions.length).toBe(1);
     });
 
-    it('emits every ordering and search member the caller supplied, and only those', () => {
+    it('emits every ordering and non-identifying member the caller supplied, and only those', () => {
+      const query: UserListQuery = {
+        pageIndex: 2,
+        pageSize: 25,
+        sortBy: 'Username',
+        sortDir: 'Descending',
+        isApproved: false,
+      };
+
+      observe(service.list(query));
+
+      const request = expectRequest('GET', USERS);
+      expect(request.request.params.keys().sort()).toEqual([
+        'isApproved',
+        'pageIndex',
+        'pageSize',
+        'sortBy',
+        'sortDir',
+      ]);
+      expect(request.request.params.get('sortBy')).toBe('Username');
+      expect(request.request.params.get('sortDir')).toBe('Descending');
+      request.flush(USER_PAGE);
+    });
+
+    it('carries the same members in the body when a generic filter makes the search identifying', () => {
+      // ⚠ THE GENERIC FILTER CHANGES THE TRANSPORT, AND THIS CASE USED TO ASSERT THAT IT DID NOT.
+      // The server matches the paging contract's `query` as a SUBSTRING across the login name, the
+      // display name AND the electronic-mail address, so a search through it reaches the same rows
+      // the named filters reach - which means it identifies a person just as squarely and must not
+      // travel in a request target. Only the four NAMED filters used to be classified, so a
+      // query-only search stayed on the GET and put the identifier in the URL. Every OTHER member
+      // travels unchanged; the address is what moves.
       const query: UserListQuery = {
         pageIndex: 2,
         pageSize: 25,
@@ -921,18 +960,19 @@ describe('UserService', () => {
 
       observe(service.list(query));
 
-      const request = expectRequest('GET', USERS);
-      expect(request.request.params.keys().sort()).toEqual([
-        'isApproved',
-        'pageIndex',
-        'pageSize',
-        'query',
-        'sortBy',
-        'sortDir',
-      ]);
-      expect(request.request.params.get('sortBy')).toBe('Username');
-      expect(request.request.params.get('sortDir')).toBe('Descending');
-      expect(request.request.params.get('query')).toBe('ada');
+      httpMock.expectNone((request) => request.method === 'GET' && request.url === USERS);
+
+      const request = expectSearch();
+
+      expectTargetCarriesNoneOf(request, ['ada']);
+      expect(searchBody(request)).toEqual({
+        pageIndex: 2,
+        pageSize: 25,
+        sortBy: 'Username',
+        sortDir: 'Descending',
+        query: 'ada',
+        isApproved: false,
+      });
       request.flush(USER_PAGE);
     });
 
@@ -2242,13 +2282,47 @@ describe('UserService', () => {
     });
 
     it('leaves a listing that names nobody on the cacheable GET', () => {
-      // The boundary in the other direction. Page coordinates, an ordering and the paging
-      // contract's own filter identify nobody, so moving them into a body would give up caching
-      // and idempotence for no privacy gain at all.
+      // The boundary in the other direction. Page coordinates and an ordering identify nobody, so
+      // moving them into a body would give up caching and idempotence for no privacy gain at all.
       observe(service.list({ pageIndex: 2, pageSize: 25, sortBy: 'Username', sortDir: 'Ascending' }));
 
       httpMock.expectNone((request) => request.method === 'POST' && request.url === USERS_SEARCH);
       expectRequest('GET', USERS).flush(USER_PAGE);
+    });
+
+    // ⚠ THE FIFTH IDENTIFYING MEMBER, AND THE ONE THAT WAS MISSING. `query` belongs to the PAGING
+    // contract rather than to the account filter, so it was not among the four the compensator
+    // classified - yet the server matches it as a case-insensitive SUBSTRING across the login name,
+    // the display name and the electronic-mail address (`UserRepository.cs` L131-L134). Any one of a
+    // person's three identifiers therefore searched successfully through a member that stayed in the
+    // request target, which protected the identifiers an operator selects a mode for and not the one
+    // they simply type - the more likely of the two.
+    const genericSearchTerms = ['ada', 'ada.lovelace', 'ada@example.test', 'Lovelace'] as const;
+
+    for (const term of genericSearchTerms) {
+      it(`keeps the generic filter "${term}" out of the target and puts it in the body`, () => {
+        observe(service.list({ pageIndex: 0, pageSize: 25, query: term }));
+
+        httpMock.expectNone((request) => request.method === 'GET' && request.url === USERS);
+
+        const request = expectSearch();
+
+        expectTargetCarriesNoneOf(request, [term]);
+        expect(searchBody(request)).toEqual({ pageIndex: 0, pageSize: 25, query: term });
+        request.flush(USER_PAGE);
+      });
+    }
+
+    it('leaves a blank or whitespace-only generic filter on the GET, because it restricts nothing', () => {
+      // The server reads a blank filter as absent, so such a value can identify nobody. Switching the
+      // transport on it would move the UNFILTERED administrative listing off the cacheable GET - and
+      // would flip the address on the single input an operator produces by clearing the box.
+      for (const blank of ['', '   ', '\t']) {
+        observe(service.list({ pageIndex: 0, pageSize: 25, query: blank }));
+
+        httpMock.expectNone((request) => request.method === 'POST' && request.url === USERS_SEARCH);
+        expectRequest('GET', USERS).flush(USER_PAGE);
+      }
     });
 
     it('leaves an approval-only restriction on the GET, because a state names nobody', () => {
@@ -3067,7 +3141,7 @@ describe('UserService', () => {
       expectViolationAt(
         service.getProfile(1),
         `${USERS}/1/profile`,
-        { data: { userId: 1, properties: [entry] }, meta: null },
+        { data: { userId: 1, properties: [entry], displayVisibilityEnabled: true }, meta: null },
         'response.data.properties[0].definition.propertyName',
       );
     });
@@ -3082,6 +3156,43 @@ describe('UserService', () => {
       httpMock.expectOne(`${USERS}/1/profile`).flush({ data: PROFILE_READ, meta: null });
 
       expect(values).toEqual([PROFILE_READ]);
+    });
+
+    it('refuses a profile that omits the tenant visibility policy', () => {
+      /*
+       * ⚠ REFUSED RATHER THAN DEFAULTED, AND THE REASON IS THAT NEITHER DEFAULT IS SAFE.
+       * `displayVisibilityEnabled` decides whether the profile screen offers the per-value
+       * visibility control at all. Defaulting an absent member to `true` would present the control
+       * on a tenant that had switched it off; defaulting to `false` would hide it on a tenant that
+       * had not. The API serialises with its ignore condition set to never, so the member is always
+       * on the wire and an absent one is contract drift - which is a fact worth reporting rather
+       * than papering over with a guess.
+       */
+      expectViolationAt(
+        service.getProfile(1),
+        `${USERS}/1/profile`,
+        { data: { userId: 1, properties: [] }, meta: null },
+        'response.data.displayVisibilityEnabled',
+      );
+    });
+
+    it('carries the tenant visibility policy through in both states', () => {
+      // BOTH STATES, because a decoder that dropped the member would satisfy a case asserting only
+      // the `true` one: `undefined` and `true` are not distinguishable by a truthiness test, and
+      // `false` is the state the tenant has to store deliberately.
+      for (const displayVisibilityEnabled of [true, false]) {
+        const values: unknown[] = [];
+
+        service.getProfile(1).subscribe({ next: (profile: unknown) => values.push(profile) });
+
+        httpMock
+          .expectOne(`${USERS}/1/profile`)
+          .flush({ data: { ...PROFILE_READ, displayVisibilityEnabled }, meta: null });
+
+        expect(values)
+          .withContext(`the policy must survive decoding as ${String(displayVisibilityEnabled)}`)
+          .toEqual([{ ...PROFILE_READ, displayVisibilityEnabled }]);
+      }
     });
 
     it('refuses a null profile payload, because the contract publishes none', () => {

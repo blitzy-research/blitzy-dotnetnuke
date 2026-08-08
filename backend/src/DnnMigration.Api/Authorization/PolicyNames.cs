@@ -32,12 +32,30 @@ namespace DnnMigration.Api.Authorization;
 /// registration is described on each.
 /// </para>
 /// <para>
-/// <b>Why four permission policies and four membership policies.</b> Only the view and edit keys are
-/// ever evaluated and only the module and tab scopes can be decided, which bounds the permission
-/// group to two keys across two scopes - the read and write keys are the folder keys, and folder
-/// permissions are not carried across. In each scope the single EDIT key covers create, update and
-/// delete, so no finer-grained mutation policy exists: introducing one would invent a permission the
-/// legacy data never stored and nothing evaluates. The remaining four are not permission keys at all
+/// <b>ONE MEMBER REQUIRES NO ROUTE IDENTIFIER, AND IT IS THE EXCEPTION THAT PROVES THE RULE.</b>
+/// <see cref="PortalContentEditor"/> decides at <c>PermissionScope.Portal</c>, which reads no item
+/// identifier from the route, because the address it gates names no page: a module's target page
+/// arrives in the request body, so there is nothing in the template to resolve. It still fails
+/// closed - it is decided against the tenant the request resolves to and the caller's own grants, and
+/// a caller holding the key nowhere in that tenant is refused - but it is decided against the tenant
+/// rather than against a route value, so the paragraph above does not describe it. It is deliberately
+/// the only such member: an address that CAN name the thing it acts on must be gated on a policy that
+/// reads that name, because a capability question admits strictly more callers than a resource
+/// question, and an endpoint carrying this one stays responsible for narrowing what it returns.
+/// </para>
+/// <para>
+/// <b>Why five permission policies and four membership policies.</b> Only the view and edit keys are
+/// ever evaluated - the read and write keys are the folder keys, and folder permissions are not
+/// carried across - and they are decided at three scopes. Four of the five pair a key with a scope
+/// that names a resource: view and edit at module scope, view and edit at tab scope. In each of those
+/// the single EDIT key covers create, update and delete, so no finer-grained mutation policy exists:
+/// introducing one would invent a permission the legacy data never stored and nothing evaluates. The
+/// fifth, <see cref="PortalContentEditor"/>, pairs the same EDIT key with the portal scope, and it
+/// exists because one address cannot name the resource it acts on: placing a module names its target
+/// page in the request body, so no resource-scoped policy could gate it without refusing every
+/// caller. It is a capability question rather than a resource one, which is why it is one member and
+/// not two - there is no portal-scoped VIEW policy, because no address needs to ask whether a caller
+/// may read something somewhere. The remaining four are not permission keys at all
 /// but membership questions, and they are four rather than one because the resources they gate ask
 /// four genuinely different questions: does the caller administer the portal in the route, is the
 /// caller a host account where no portal is in the route at all, is the caller the account in the
@@ -162,4 +180,39 @@ public static class PolicyNames
     /// portal identifier scopes the administrator arm, so the policy fails closed without either.
     /// </remarks>
     public const string AccountOwnerOrPortalAdministrator = "AccountOwnerOrPortalAdministrator";
+
+    /// <summary>
+    /// Grants an action when the caller administers the resolved tenant, or holds <c>EDIT</c> on at
+    /// least one of its pages. Requires no item identifier in the route.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// FOR THE SUPPORTING READS OF AN OPERATION WHOSE TARGET DOES NOT EXIST YET, which is a category
+    /// none of the policies above can express. <see cref="ModuleEdit"/> and <see cref="TabEdit"/>
+    /// resolve their scope from an item identifier in the route; module CREATION names no page at all,
+    /// because the target page arrives in the request body. A form that cannot be filled without two
+    /// reads has to admit whoever the create action admits, or the capability is unreachable however
+    /// permissive the create action itself is.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is the gate at <c>ModuleSettings.ascx.vb:L191</c> -
+    /// <c>IsInRoles(PortalSettings.AdministratorRoleName)</c> OR
+    /// <c>IsInRoles(PortalSettings.ActiveTab.AdministratorRoles)</c>, the tenant's administrators or the
+    /// roles holding EDIT on the page being administered from. The legacy active page was ambient
+    /// request state this solution does not have, so the second arm generalises to any page the caller
+    /// holds EDIT on: the narrowest faithful reading, admitting exactly the callers who could have
+    /// arrived from some page.
+    /// </para>
+    /// <para>
+    /// ⚠ IT IS NARROWER THAN <see cref="PortalAdministrator"/> FOR NOBODY AND WIDER FOR ONE CALLER, so
+    /// an endpoint moved onto it must narrow what it RETURNS. Admission says the caller holds EDIT
+    /// somewhere in the tenant; it does not say which pages. A page listing offered under this policy
+    /// therefore has to be filtered to the pages the caller may act on, or the policy would turn a
+    /// page-administrator's capability into a licence to enumerate the tenant's whole navigation
+    /// hierarchy - which is precisely the disclosure the tenant-administration policy was applied to
+    /// those routes to close. A caller holding EDIT nowhere is refused outright, so nothing is widened
+    /// for the callers that policy was protecting against.
+    /// </para>
+    /// </remarks>
+    public const string PortalContentEditor = "PortalContentEditor";
 }

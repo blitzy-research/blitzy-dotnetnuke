@@ -376,6 +376,17 @@ public static class ServiceCollectionExtensions
                 // why that matters - its members carry the legacy char(1) codes dbo.Roles.BillingFrequency
                 // and dbo.Roles.TrialFrequency store, so the wire form must stay "M" rather than become
                 // "Month".
+                //
+                // SortDirection is in that set for a different reason, and it is the reason a body-only
+                // wire form is a hazard rather than a detail: PagedRequest.SortDir is bound from the QUERY
+                // STRING on every collection endpoint and from a JSON BODY on POST /api/v1/users/search,
+                // the compensating address an identifying account search uses so that personal data stays
+                // out of the request target. The query binder resolves an enumeration through its type
+                // converter and accepts the member NAME; System.Text.Json with no converter accepts only
+                // the number. One member therefore had two incompatible spellings and every client
+                // implemented the documented one, so the compensating search was answered 400 while the
+                // query-string listing succeeded. The converter pins the body to the name the query string
+                // already accepts.
                 DnnJsonConverters.AddTo(options.JsonSerializerOptions);
 
                 // No blanket enumeration converter is registered, and that is a decision: the remaining

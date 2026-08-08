@@ -242,4 +242,48 @@ public interface IPermissionEvaluator
         int? userId,
         IReadOnlyCollection<string> roleNames,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reports WHICH of the named pages grant one permission key to the caller.
+    /// </summary>
+    /// <param name="tabIds">
+    /// The pages to judge. An empty set is answered with an empty result and no read at all.
+    /// </param>
+    /// <param name="permissionKey">The key to test.</param>
+    /// <param name="userId">Account identifier, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="roleNames">The role names the caller holds.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A successful outcome carrying the identifiers of the granting pages, in the order they were named.
+    /// A caller granted nothing yields an EMPTY list on a SUCCESSFUL outcome, never a failure.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// THE SIBLING OF <see cref="HasAnyTabPermissionAsync"/>, DIFFERING ONLY IN WHAT IT REPORTS. Both judge
+    /// each page exactly as <see cref="HasTabPermissionAsync"/> judges it, so a page that denies the key
+    /// contributes nothing rather than vetoing its neighbours, and both issue the same fixed number of reads
+    /// regardless of how many pages are named. The existential member stops at the first granting page; this
+    /// one visits them all and collects. Neither is a pooled judgement: an allowing page can never cancel a
+    /// denying one, because deny precedence is settled WITHIN a page before the pages are combined.
+    /// </para>
+    /// <para>
+    /// <b>Why the plural answer is offered here when the existential member deliberately withholds it.</b>
+    /// That member's remarks decline to report which page granted the key, because its callers are making one
+    /// authorisation decision and telling them more would invite them to re-derive it. This member exists for
+    /// a different question: NARROWING A PROJECTION. A page listing offered so that a caller can choose a
+    /// placement target must contain the pages that caller may actually place on, and answering that by
+    /// calling the single-page member once per page would restore precisely the per-page cost the existential
+    /// member was introduced to remove.
+    /// </para>
+    /// <para>
+    /// It grants nothing on its own and must not be read as an authorisation decision. It reports grants;
+    /// whether the operation is permitted remains the policy's answer.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<int>>> ListTabsWithPermissionAsync(
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken = default);
 }

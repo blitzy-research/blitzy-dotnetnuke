@@ -89,10 +89,14 @@
  *   * `:userId/profile` declares `AccountOwnerOrPortalAdministrator`, matching
  *     `UsersController.cs:L888` (read) and `:L927` (write). The profile is a resource the
  *     account holder and its tenant's administrator both legitimately reach.
- *   * `:userId/password` declares `AccountOwner`, matching `UsersController.cs:L576`. A
- *     credential CHANGE presents the current credential, so only its holder can perform
- *     one; an administrator who must intervene uses the reset, which is a different
- *     endpoint (`:L627`) carrying tenant administration and recorded as its own act.
+ *   * `:userId/password` declares `AccountOwnerOrPortalAdministrator`, and it is the ONE
+ *     address in this barrel that does not mirror a single endpoint — because its screen
+ *     posts to two. `UsersController.cs:L576` is the credential CHANGE and declares
+ *     `AccountOwner` with no administrator arm, since a change presents the current
+ *     credential; `:L627` is the RESET beside it and declares tenant administration. The
+ *     route therefore declares the UNION of the two, and the screen refuses per operation.
+ *     See the address's own note below for why declaring ownership alone was a defect
+ *     rather than a tightening.
  *
  * MIGRATION: a previous revision declared tenant administration on BOTH self-service
  * children. That was a defect rather than a conservative choice, and it is worth recording
@@ -263,24 +267,34 @@ export const USER_ROUTES: Routes = [
     /**
      * `/users/{userId}/password` — the account's password; the legacy `cmdPassword` tab.
      *
-     * Gated on OWNERSHIP ALONE, with no administrator arm, because that is precisely what
-     * `UsersController.cs:L576` declares for the change endpoint this screen posts to. The
-     * policy catalogue records why the administrator arm is absent rather than overlooked:
-     * admitting one would collapse the change and the reset into a single operation whose
-     * effect depended on which fields were populated, which is the shape that previously
-     * allowed a credential to be overwritten with no proof of entitlement. An administrator
-     * who must intervene uses `POST {userId}/password-reset` (`:L627`), which carries tenant
-     * administration and is recorded as its own act.
+     * ⚠ GATED ON OWNERSHIP **OR** TENANT ADMINISTRATION, BECAUSE THIS SCREEN PERFORMS TWO
+     * OPERATIONS AGAINST TWO ENDPOINTS WITH TWO DIFFERENT POLICIES. An earlier revision
+     * declared ownership alone, reasoning that tenant administration "would admit an operator
+     * to a form whose only endpoint would refuse them". That premise was simply untrue: the
+     * screen posts to `POST {userId}/password` for a self-service change, which
+     * `UsersController.cs:L716` restricts to the account holder, AND to
+     * `POST {userId}/password-reset` for an administrative reset, which `:L767` restricts to a
+     * tenant administrator. The component already chooses between them from `isSelf`.
      *
-     * ⚠ THE POLICY IS DELIBERATELY NARROWER THAN THE OTHER FOUR CHILDREN, so a tenant
-     * administrator is refused HERE and admitted there. That asymmetry is the server's and
-     * is reproduced rather than smoothed over: declaring tenant administration would admit
-     * an operator to a form whose only endpoint would refuse them, and declaring it INSTEAD
-     * of ownership — which a previous revision did — refused the one caller the screen
-     * exists for.
+     * Declaring only the narrower of the two policies therefore locked a tenant administrator
+     * out of the reset entirely — not out of an endpoint, out of the SCREEN: a refused
+     * navigation is cancelled and redirected, so an operator who followed the account edit
+     * screen's own affordance for this address — the "Manage User's Password" link at
+     * `user-form/user-form.component.html` L92, on a route this same barrel gates on tenant
+     * administration — was returned to the sign-in screen instead. The reset endpoint existed,
+     * the administrator was entitled to it, the application published a link to it, and no
+     * address in the application reached it.
      *
-     * The component still derives its own predicate rather than trusting this declaration,
-     * precisely because the gate is advisory and the server is the authority.
+     * ⚠ THE UNION IS NOT A LOOSENING, BECAUSE NEITHER SERVER POLICY MOVES. Each operation is
+     * still authorised by its own endpoint on its own terms: an administrator who reaches this
+     * screen for another account can reset but cannot change, and an account holder can change
+     * but cannot reset. The route admits the union of the two callers; the server keeps the
+     * intersection empty where it should be.
+     *
+     * The component derives its own predicate rather than trusting this declaration, precisely
+     * because the gate is advisory and the server is the authority — and it now also FAILS
+     * CLOSED per operation, so a caller admitted here for one operation is never offered the
+     * other.
      *
      * The component declares its `userId` input as REQUIRED, so this address can never be reached without
      * the parameter; that is why there is no sibling route at `users/password`.
@@ -293,7 +307,7 @@ export const USER_ROUTES: Routes = [
     path: ':userId/password',
     title: 'Manage Password',
     canActivate: [permissionGuard],
-    data: { permission: 'AccountOwner' },
+    data: { permission: 'AccountOwnerOrPortalAdministrator' },
     loadComponent: () =>
       import('./user-password/user-password.component').then((m) => m.UserPasswordComponent),
   },

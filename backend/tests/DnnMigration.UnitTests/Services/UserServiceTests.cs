@@ -4517,6 +4517,90 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// The profile projection publishes the tenant's decision on whether the account holder may choose a
+    /// per-property visibility, in both states, taking the enabled default when the tenant stored nothing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS FACT IS PUBLISHED HERE BECAUSE THE ONLY OTHER PLACE IT COULD BE READ FROM IS
+    /// ADMINISTRATOR-ONLY. <c>GET api/v1/users/settings</c> carries
+    /// <c>PolicyNames.PortalAdministrator</c>, and the caller who needs this answer is by construction an
+    /// ordinary account holder looking at their own profile. Measured against the running API, such a
+    /// caller was answered <c>403 auth.not_permitted</c>, so the per-property visibility affordance could
+    /// never be offered to the one person the legacy rule offers it to
+    /// (<c>Website/admin/Users/Profile.ascx.vb:L58-L63</c>), however the tenant had configured it.
+    /// </para>
+    /// <para>
+    /// BOTH STATES ARE ASSERTED, not only the stored <c>false</c>: a projection that dropped the member
+    /// entirely would satisfy a case asserting only the default, because the DTO's own initialiser is
+    /// <c>true</c>. The stored <c>false</c> is what proves the settings source is actually consulted.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetProfile_PublishesTheTenantsVisibilityAffordanceDecision()
+    {
+        Harness storedOff = Harness.Ready();
+        storedOff.AddMembershipSettingsSource();
+        storedOff.StoreSetting("Profile_DisplayVisibility", "False");
+
+        Result<UserProfileDto?> off = await storedOff.Service
+            .GetProfileAsync(PortalId, UserId, CancellationToken.None);
+
+        off.Value!.DisplayVisibilityEnabled.Should().BeFalse(
+            "the tenant switched the affordance off and the account holder cannot read that anywhere else");
+
+        Harness storedOn = Harness.Ready();
+        storedOn.AddMembershipSettingsSource();
+        storedOn.StoreSetting("Profile_DisplayVisibility", "True");
+
+        Result<UserProfileDto?> on = await storedOn.Service
+            .GetProfileAsync(PortalId, UserId, CancellationToken.None);
+
+        on.Value!.DisplayVisibilityEnabled.Should().BeTrue();
+
+        // NOTHING STORED AT ALL, which is the state most tenants are in. The fallback is the same
+        // MembershipSettingsDto initialiser the settings endpoint itself falls back to, so the two
+        // readers cannot disagree about a tenant that has configured nothing.
+        Harness storedNothing = Harness.Ready();
+
+        Result<UserProfileDto?> unstored = await storedNothing.Service
+            .GetProfileAsync(PortalId, UserId, CancellationToken.None);
+
+        unstored.Value!.DisplayVisibilityEnabled.Should().Be(
+            new MembershipSettingsDto().ProfileDisplayVisibility,
+            "an unconfigured tenant must read the same either way it is asked");
+    }
+
+    /// <summary>
+    /// The visibility affordance decision and the default visibility that seeds an unfilled value are
+    /// independent: one settings member does not stand in for the other.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// They are two members of one settings source and are read together in one round trip, which is why
+    /// this case exists: reading them together makes it cheap to derive one from the other by accident, and
+    /// they answer different questions. <c>Profile_DefaultVisibility</c> decides what an unrecorded value
+    /// is set to; <c>Profile_DisplayVisibility</c> decides whether the holder may change it.
+    /// </remarks>
+    [Fact]
+    public async Task GetProfile_KeepsTheVisibilityAffordanceApartFromTheDefaultVisibility()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Profile_DefaultVisibility", "1");
+        harness.StoreSetting("Profile_DisplayVisibility", "False");
+
+        Result<UserProfileDto?> outcome = await harness.Service
+            .GetProfileAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.Value!.DisplayVisibilityEnabled.Should().BeFalse();
+        outcome.Value.Properties.Should().OnlyContain(
+            property => property.Visibility == 1,
+            "the default visibility is still applied even though the holder may not change it");
+    }
+
+    /// <summary>
     /// Writing a profile requires a payload, and an unknown account is refused.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>

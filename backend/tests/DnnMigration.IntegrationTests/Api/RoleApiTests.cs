@@ -375,6 +375,126 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
+    /// The pairing address answers ONE account's membership of ONE role, and names nobody in the request
+    /// target.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS ADDRESS EXISTS TO KEEP A LOGIN NAME OUT OF A REQUEST TARGET (CWE-598). The single-pairing
+    /// question - does this account hold this role, and on what terms - was previously asked by narrowing
+    /// the membership LISTING with the account's login name in the paging contract's free-text filter,
+    /// which the repository matches against the login name and the display name. So asking it wrote the
+    /// name into the query string: browser history, every forward and reverse proxy access log, and the
+    /// server's own, all of them at an END of the encrypted channel where transport security does not
+    /// reach. The assertion below is over the resolved request URI, so it fails if the name reappears
+    /// there by any route.
+    /// </para>
+    /// <para>
+    /// The <c>404</c> arm is asserted in the same fact rather than separately, because the pair is the
+    /// contract: <c>200</c> with the row when the membership stands and <c>404</c> when it does not, which
+    /// is what lets a client render "holds nothing" without treating it as a fault. The legacy screen
+    /// showed that state by blanking its two date fields (<c>SecurityRoles.ascx.vb:L484</c>).
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task MembershipPairingAddress_AnswersOneMembershipAndNamesNobodyInTheTarget()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        RoleDetailDto role = await CreateRoleAsync(client);
+
+        var pairingRoute = new Uri(
+            $"/api/v1/roles/{Route(role.RoleId)}/users/{Route(_fixture.Seed.MemberUserId)}",
+            UriKind.Relative);
+
+        pairingRoute.OriginalString.Should()
+            .NotContain(IntegrationSeed.MemberUserName, "the request target names nobody");
+
+        // Before the membership exists, the pairing answers the refusal that MEANS "holds nothing".
+        using HttpResponseMessage beforeGrant = await client.GetAsync(pairingRoute);
+
+        beforeGrant.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        using HttpResponseMessage assigned = await client.PostAsJsonAsync(
+            new Uri($"/api/v1/roles/{Route(role.RoleId)}/users", UriKind.Relative),
+            new RoleAssignmentRequest
+            {
+                UserId = _fixture.Seed.MemberUserId,
+                EffectiveDate = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
+                ExpiryDate = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc),
+            },
+            ApiTestFixture.Json);
+
+        assigned.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage read = await client.GetAsync(pairingRoute);
+
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+        read.RequestMessage!.RequestUri!.ToString().Should()
+            .NotContain(IntegrationSeed.MemberUserName, "not even after the client resolved it");
+        read.RequestMessage.RequestUri.Query.Should()
+            .BeEmpty("the pairing is addressed by path alone, so nothing can be logged from a query");
+
+        ApiEnvelope<RoleMembershipDto>? envelope = await read.Content
+            .ReadFromJsonAsync<ApiEnvelope<RoleMembershipDto>>(ApiTestFixture.Json);
+
+        envelope.Should().NotBeNull();
+        envelope!.Data.Should().NotBeNull();
+
+        RoleMembershipDto membership = envelope.Data!;
+
+        membership.UserId.Should().Be(_fixture.Seed.MemberUserId);
+        membership.RoleId.Should().Be(role.RoleId);
+        membership.RoleName.Should().Be(role.RoleName);
+        membership.Username.Should().Be(IntegrationSeed.MemberUserName);
+        membership.UserRoleId.Should().BeGreaterThan(0);
+        membership.EffectiveDate.Should().Be(new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc));
+        membership.ExpiryDate.Should().Be(new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        // The same row the LISTING publishes, so a consumer holds one shape whichever address it used.
+        RoleMembershipDto listed = await ReadSingleMembershipAsync(client, role.RoleId);
+
+        membership.UserRoleId.Should().Be(listed.UserRoleId);
+        membership.DisplayName.Should().Be(listed.DisplayName);
+
+        using HttpResponseMessage removed = await client.DeleteAsync(pairingRoute);
+
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage afterRemoval = await client.GetAsync(pairingRoute);
+
+        afterRemoval.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// The pairing address is closed to a caller who does not administer the resolved tenant, exactly as
+    /// every other operation on this controller is.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task MembershipPairingAddress_RefusesACallerWhoDoesNotAdministerTheTenant()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        RoleDetailDto role = await CreateRoleAsync(administrator);
+
+        var pairingRoute = new Uri(
+            $"/api/v1/roles/{Route(role.RoleId)}/users/{Route(_fixture.Seed.MemberUserId)}",
+            UriKind.Relative);
+
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage refused = await member.GetAsync(pairingRoute);
+
+        refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage unauthenticated = await anonymous.GetAsync(pairingRoute);
+
+        unauthenticated.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
     /// The specified FLAT role-group address serves the whole group action set against the resolved tenant.
     /// </summary>
     /// <returns>A task representing the test.</returns>

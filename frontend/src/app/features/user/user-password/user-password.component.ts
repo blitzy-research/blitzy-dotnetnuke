@@ -101,6 +101,7 @@ import {
 import type { Signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
+import { Router } from '@angular/router';
 
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type {
@@ -647,6 +648,15 @@ export class UserPasswordComponent {
    */
   private readonly notifications = inject(NotificationService);
 
+  /**
+   * The router, used for exactly one navigation: leaving this screen once a MANDATORY
+   * credential change has been made.
+   *
+   * Nothing else on this screen navigates. An ordinary caller changing their own password
+   * stays where they are, which is what the legacy screen did.
+   */
+  private readonly router = inject(Router);
+
   // -------------------------------------------------------------------------
   // THE ROUTE INPUT
   // -------------------------------------------------------------------------
@@ -830,6 +840,31 @@ export class UserPasswordComponent {
    */
   readonly plannedOperation: Signal<ChangePasswordOperation> = computed(() =>
     this.isSelf() ? OPERATION_CHANGE : OPERATION_RESET,
+  );
+
+  /**
+   * Whether the server would authorise the operation this caller resolves to.
+   *
+   * ⚠ THIS EXISTS BECAUSE THE ROUTE NOW ADMITS TWO DIFFERENT CALLERS FOR TWO DIFFERENT
+   * OPERATIONS, and admitting a union means one of them can arrive at the operation that is not
+   * theirs. `/users/{userId}/password` declares `AccountOwnerOrPortalAdministrator`, which it must
+   * in order for a tenant administrator to reach the reset at all — the previous ownership-only
+   * declaration locked them out of the screen entirely. The server did not change and does not
+   * need to: `POST {userId}/password` admits the account holder alone and
+   * `POST {userId}/password-reset` a tenant administrator alone.
+   *
+   * A CHANGE is always permitted here, because the operation is chosen BY ownership: it is
+   * resolved only when the caller is the account on screen, which is exactly what that endpoint
+   * requires. A RESET requires tenant administration, and a caller who is neither the holder nor
+   * an administrator resolves to it — so that is the one combination to withhold.
+   *
+   * Fail-closed rather than optimistic: while the caller's identity is unresolved
+   * `administersCurrentPortal` reads false, so a reset is withheld until the identity says
+   * otherwise. Offering an action that comes back refused is worse than offering it a moment
+   * late, and this is a credential replacement.
+   */
+  readonly operationPermitted: Signal<boolean> = computed(
+    () => this.plannedOperation() === OPERATION_CHANGE || this.isAdmin(),
   );
 
   // ⚠ DECLARED ABOVE THE FORM, AND THE POSITION IS LOAD-BEARING. Class fields initialise in
@@ -1084,6 +1119,39 @@ export class UserPasswordComponent {
    */
   readonly accountUnavailable: Signal<boolean> = computed(
     () => !this.routeUnresolved() && !this.loading() && this.user() === null,
+  );
+
+  /**
+   * Whether the account's details are absent BECAUSE THEY WERE NEVER ASKED FOR.
+   *
+   * A third state, distinct from both of the two above: the route named an account and the
+   * read did not fail, because no read was issued. While the caller owes mandatory
+   * remediation the API refuses `GET api/v1/users/{id}` — measured, `403
+   * auth.remediation_required` — so asking would produce nothing but a refusal banner on
+   * the one screen the server is requiring the caller to use. This screen therefore does
+   * not ask, and says so here rather than letting an absence of details look like a
+   * failure.
+   *
+   * The two summary rows are the only thing that absence costs: the last-changed instant
+   * and the expiry wording are read from the account, and nothing else on the screen is.
+   */
+  readonly accountDetailWithheld: Signal<boolean> = computed(() => this.auth.sessionRestricted());
+
+  /**
+   * Whether the credential form can be presented.
+   *
+   * True once the route names an account AND the screen is not waiting on a read it
+   * actually issued. The write needs the route's key and the caller's own typing; it does
+   * not need the account's details, so their absence-by-design does not withhold the form.
+   *
+   * ⚠ THIS IS WHAT THE TEMPLATE GATES ON, IN PLACE OF THE ACCOUNT ITSELF. Gating the
+   * populated view on `user() !== null` meant a remediating caller saw a heading, a refusal
+   * banner and nothing to act on — the screen rendered its own unusability. The form is
+   * what the screen is FOR, and it is available whenever a well-formed address names an
+   * account to write to.
+   */
+  readonly credentialFormAvailable: Signal<boolean> = computed(
+    () => this.accountKey() !== null && (this.user() !== null || this.accountDetailWithheld()),
   );
 
   // -------------------------------------------------------------------------
@@ -1460,15 +1528,37 @@ export class UserPasswordComponent {
   /**
    * Whether the submit affordance is unavailable.
    *
-   * Unavailable while a write is outstanding and while there is no account to write to.
-   * NOT disabled merely because the form is invalid: a submit that cannot be pressed
+   * Unavailable while a write is outstanding and while the route names no account to write
+   * to. NOT disabled merely because the form is invalid: a submit that cannot be pressed
    * cannot report why, and the legacy screen let the caller submit and then told them what
    * was wrong. Pressing it with an invalid form resolves a message and sends nothing.
+   *
+   * ⚠ THE TEST IS THE ROUTE'S ACCOUNT KEY, NOT THE FETCHED ACCOUNT, AND THAT DISTINCTION
+   * IS A FIX RATHER THAN A SIMPLIFICATION. This used to require `user() !== null`, which
+   * made the affordance depend on a read this screen does not need in order to submit: the
+   * write is addressed by the route's key and carries only credentials, so the fetched
+   * detail contributes nothing to it. That coupling turned the screen off in exactly the
+   * situation where it is MANDATORY. A caller with an outstanding credential change is
+   * refused `GET api/v1/users/{id}` — measured, `403 auth.remediation_required` — so
+   * `user()` stayed null, the affordance stayed disabled, and the one screen the server was
+   * insisting they use was the one screen they could not use. The route key is present
+   * whenever the address is well formed, which is the honest precondition for a write
+   * addressed by that key.
+   *
+   * ⚠ AND IT FAILS CLOSED ON THE OPERATION THE CALLER IS NOT ENTITLED TO. The two operations
+   * this screen performs are authorised separately by the server — a change is restricted to
+   * the account holder, a reset to a tenant administrator — and the route now admits the union
+   * of those two callers so that an administrator can reach the reset at all. Admitting the
+   * union means one of them can arrive at an operation the server will refuse: a caller who is
+   * neither the holder nor an administrator resolves to the RESET operation, because the
+   * operation is chosen by ownership. Offering the action to them would send a credential
+   * replacement that comes back refused. It is withheld instead, and the server remains the
+   * authority either way.
    *
    * @returns Whether to disable the affordance.
    */
   submitDisabled(): boolean {
-    return this.saving() || this.user() === null;
+    return this.saving() || this.accountKey() === null || !this.operationPermitted();
   }
 
   // -------------------------------------------------------------------------
@@ -1498,6 +1588,22 @@ export class UserPasswordComponent {
       if (key === null) {
         // Nothing to read. The unresolved-route state renders instead, and no request is
         // issued for a key that does not exist.
+        return;
+      }
+
+      if (this.accountDetailWithheld()) {
+        // ⚠ THE READ IS SKIPPED WHILE THE CALLER OWES MANDATORY REMEDIATION, AND SKIPPING IT
+        // IS THE FIX. The API refuses GET api/v1/users/{id} outright in that state -
+        // measured, 403 auth.remediation_required - so issuing it could only ever produce a
+        // refusal, and that refusal reached the shared failure slot and put an error banner
+        // across the one screen the server was insisting the caller use. Not asking is both
+        // the correct request count and the correct rendering: the two summary rows the
+        // answer would have populated are the only thing withheld, and the template omits
+        // them rather than showing them empty.
+        //
+        // This is a genuine dependency and not an incidental read. When the advisory clears -
+        // which the successful change below causes - this effect re-runs and issues the read
+        // it previously declined, so the details appear as soon as they are readable.
         return;
       }
 
@@ -1636,6 +1742,41 @@ export class UserPasswordComponent {
     this.form.reset();
     this._submitAttempted.set(false);
     this._resetConfirmOpen.set(false);
+
+    if (this.accountDetailWithheld() && this.isSelf()) {
+      this.concludeRemediation();
+    }
+  }
+
+  /**
+   * Concludes a MANDATORY credential change and hands the caller onward.
+   *
+   * ⚠ WITHOUT THIS THE JOURNEY NEVER ENDS, and that is the whole reason it exists. The
+   * advisory the caller has just satisfied is carried in the HELD SESSION rather than
+   * recomputed by the client, so the server stops refusing the moment the credential changes
+   * while this client goes on believing remediation is outstanding — and the root redirect goes
+   * on resolving back to this screen, indefinitely.
+   *
+   * ⚠ THE ADVISORY IS CLEARED LOCALLY AND THE SESSION IS DELIBERATELY *NOT* RENEWED. Renewing
+   * was the first thing tried here and it is unfixably wrong: the change endpoint revokes every
+   * refresh token the account holds, by design and for a stated reason, so the renewal answers
+   * `401`, the store treats a refused renewal as a session that is over, and the caller is
+   * signed out seconds after correctly doing what the server demanded. Observed end to end in a
+   * browser. The reasoning, and why asserting this locally is sound, is set out in full on
+   * {@link AuthStore.noteCredentialRemediated}.
+   *
+   * THE DESTINATION IS THE APPLICATION ROOT, NOT A SCREEN. Naming a screen here would put the
+   * both-advisories-outstanding precedence in a second place, and the two would drift. The root
+   * redirect owns that decision: it sends a caller who ALSO owes a profile completion to the
+   * profile screen, and everyone else to the landing their authority admits.
+   */
+  private concludeRemediation(): void {
+    this.auth.noteCredentialRemediated();
+
+    // Not awaited, and its rejection absorbed, matching how every other screen in this
+    // application navigates: a navigation the router refuses is not something this screen can
+    // act on, and an unhandled rejection would be reported as an application fault.
+    void this.router.navigateByUrl('/').catch(() => false);
   }
 
   // -------------------------------------------------------------------------

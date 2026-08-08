@@ -984,6 +984,76 @@ public sealed class RolesController : ControllerBase
         return this.Complete(outcome);
     }
 
+    /// <summary>Reads one account's membership of one role.</summary>
+    /// <param name="roleId">Identifier of the role.</param>
+    /// <param name="userId">Identifier of the account.</param>
+    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
+    /// <returns>The membership and the terms it runs on.</returns>
+    /// <response code="200">
+    /// The membership, inside the shared success envelope: the account's key, login name and display
+    /// name, the role's key and name, the assignment's own key, and the two date bounds.
+    /// </response>
+    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
+    /// <response code="403">
+    /// The caller is authenticated but does not administer the portal this request resolves to.
+    /// </response>
+    /// <response code="404">
+    /// No portal or role bears that identifier, the portal has no such account, OR the account holds no
+    /// membership of that role. The last of those is an ordinary answer rather than a fault, and a client
+    /// that asks whether a pairing exists should read it as "holds nothing" rather than surfacing it as a
+    /// failure; the problem type distinguishes it from the three unknown-identifier cases.
+    /// </response>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS ACTION EXISTS TO KEEP A LOGIN NAME OUT OF A REQUEST TARGET (CWE-598), and that is the whole
+    /// reason it is not simply the listing narrowed by one row. The only way to ask "does this account
+    /// hold this role, and on what terms" used to be the paged membership listing filtered by the
+    /// account's login name, which the service matches against the login name and the display name. So
+    /// asking put the name in the query string - browser history, every proxy access log, the server's own
+    /// access log - all of which sit at an END of the encrypted channel where transport security does not
+    /// reach. It stood beside a body-bound account search introduced to avoid exactly that. Two opaque
+    /// numeric identifiers in a path disclose nothing about a person, so no compensating body is needed
+    /// here and a <c>GET</c> stays cacheable and idempotent.
+    /// </para>
+    /// <para>
+    /// Addressed identically to the removal below, which is what makes the resource coherent: the pairing
+    /// has one address, readable and deletable, rather than one address to remove it at and a filtered
+    /// collection to find it in.
+    /// </para>
+    /// <para>
+    /// MIGRATION: replaces the grid scan at <c>SecurityRoles.ascx.vb:L273-L303</c> (<c>GetDates</c>) and
+    /// <c>:L656-L658</c>, which answered two questions - which bounds to show for the chosen account, and
+    /// whether to relabel the action - from rows the unpaged legacy grid already held. A paged grid holds
+    /// one window, so that scan would answer "no membership" for an account whose row sits on another
+    /// page. The legacy screen showed the no-row case by blanking its date fields (<c>:L484</c>), which is
+    /// the <c>404</c> declared above rather than an error.
+    /// </para>
+    /// </remarks>
+    [HttpGet("roles/{roleId:int}/users/{userId:int}")]
+    [ProducesResponseType(typeof(ApiResponse<RoleMembershipDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<RoleMembershipDto?>>> GetUserMembershipAsync(
+        int roleId,
+        int userId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } scopedPortalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result<RoleMembershipDto?> outcome = await _roles
+            .GetRoleMembershipAsync(scopedPortalId, roleId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // A successful outcome carrying no membership is translated to 404 by the shared translator, which
+        // is where "there is no such thing" becomes a status code. Reading the value without testing the
+        // outcome first would throw on a refusal and turn a clean denial into a server fault.
+        return this.Complete(outcome);
+    }
+
     /// <summary>Removes an account's membership of a role.</summary>
     /// <param name="roleId">Identifier of the role the account is being removed from.</param>
     /// <param name="userId">Identifier of the account being removed.</param>

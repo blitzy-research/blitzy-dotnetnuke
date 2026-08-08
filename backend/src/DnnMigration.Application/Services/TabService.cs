@@ -8,6 +8,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 
 namespace DnnMigration.Application.Services;
 
@@ -216,6 +217,15 @@ public sealed class TabService : ITabService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICacheService _cache;
     private readonly ICurrentUser _currentUser;
+
+    /// <summary>
+    /// Answers which of a tenant's pages the current caller may act on.
+    /// </summary>
+    /// <remarks>
+    /// Read ONLY by the listing, and only to narrow what it returns. Nothing here decides admission - that is
+    /// the endpoint's policy - so this is a projection concern rather than an authorisation one.
+    /// </remarks>
+    private readonly IPermissionService _permissions;
     private readonly IAuditSink _audit;
     private readonly CachingOptions _caching;
 
@@ -238,6 +248,10 @@ public sealed class TabService : ITabService
     /// Records the page change under the legacy event name. Package-neutral by construction, which is what
     /// allows a trail to be kept from a project that can name no logging package.
     /// </param>
+    /// <param name="permissions">
+    /// Resolves which pages the current caller may act on, so the listing can be narrowed to them. Read by the
+    /// listing alone and never to decide admission, which remains the endpoint's policy.
+    /// </param>
     /// <param name="caching">
     /// Bound caching configuration. This is a plain settings object rather than a wrapped options
     /// accessor: the application layer deliberately takes no dependency on the options package, and
@@ -249,6 +263,7 @@ public sealed class TabService : ITabService
         IUnitOfWork unitOfWork,
         ICacheService cache,
         ICurrentUser currentUser,
+        IPermissionService permissions,
         IAuditSink audit,
         CachingOptions caching)
     {
@@ -257,6 +272,7 @@ public sealed class TabService : ITabService
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+        _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _audit = audit ?? throw new ArgumentNullException(nameof(audit));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
     }
@@ -297,7 +313,83 @@ public sealed class TabService : ITabService
                 cancellationToken).ConfigureAwait(false)
             : await ReadPortalTabsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        return Result<IReadOnlyList<TabListItemDto>>.Success(rows);
+        // ⚠ FILTERED AFTER THE CACHE READ, NEVER BEFORE IT, AND THE ORDER IS THE WHOLE CORRECTNESS ARGUMENT.
+        // The entry above is keyed by tenant alone, so it must hold the tenant's rows and nothing
+        // caller-specific; narrowing before the write would store one caller's permitted subset under a key
+        // every caller reads, and the next caller would be served that subset as though it were the tenant's
+        // page set. Narrowing here keeps the cached projection caller-independent and pays only an
+        // authorisation read per request.
+        //
+        // MIGRATION: ModuleSettings.ascx.vb:L214-L219 left the page selector fully populated and ENABLED for a
+        // caller in the administrators role, and disabled it for everyone else - "tab administrators can only
+        // manage their own tab", re-applied on postback at L332-L338 so a disabled control could not be
+        // reached by replaying the form. A tab administrator therefore never chose a page from a portal-wide
+        // list; the page was the one they had arrived on, which was ambient request state this solution does
+        // not have. The equivalent that survives the loss of that ambient state is to offer that caller the
+        // pages they hold EDIT on and no others: strictly narrower than the portal-wide list the legacy
+        // rendered-but-disabled, and it cannot be replayed into a page they may not use because the service
+        // decides it rather than the markup.
+        //
+        // An administrator is answered every row, which is the enabled-selector half of the same measurement.
+        IReadOnlyList<int> permitted = await PermittedTabIdsAsync(portalId, rows, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (permitted.Count == rows.Count)
+        {
+            // Nothing was withheld, so the cached instance is returned as it stands rather than copied.
+            return Result<IReadOnlyList<TabListItemDto>>.Success(rows);
+        }
+
+        var allowed = new HashSet<int>(permitted);
+
+        // The navigation order the read produced is preserved: a child's position is meaningful only relative
+        // to the parent that precedes it, so the rows are filtered in place rather than re-ordered.
+        return Result<IReadOnlyList<TabListItemDto>>.Success(
+            rows.Where(row => allowed.Contains(row.TabId)).ToList());
+    }
+
+    /// <summary>
+    /// Resolves which of the listed pages the current caller may act on.
+    /// </summary>
+    /// <param name="portalId">The tenant the pages belong to.</param>
+    /// <param name="rows">The tenant's pages, in navigation order.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The identifiers of the pages the caller may act on.</returns>
+    /// <remarks>
+    /// <para>
+    /// The permission service answers with every named page for a caller who administers the tenant or the
+    /// installation, and with the caller's EDIT-granted pages otherwise, in ONE evaluation over the whole set
+    /// rather than one per page - so this narrowing does not make the listing's cost scale with the tenant's
+    /// page tree.
+    /// </para>
+    /// <para>
+    /// An empty listing needs no question asked of it, and asking one would read the caller's account and the
+    /// portal row to narrow nothing.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<int>> PermittedTabIdsAsync(
+        int portalId,
+        IReadOnlyList<TabListItemDto> rows,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        Result<IReadOnlyList<int>> permitted = await _permissions
+            .ListTabsWithPermissionAsync(
+                portalId,
+                _currentUser.UserId,
+                rows.Select(row => row.TabId).ToList(),
+                PermissionKey.EDIT,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        // A failed evaluation withholds every row rather than offering them all. This listing is offered as a
+        // set of CHOICES, so the closed answer is the safe one: an unresolvable permission state must not
+        // present a placement target the create action would then refuse.
+        return permitted.IsSuccess ? permitted.Value : [];
     }
 
     /// <inheritdoc />

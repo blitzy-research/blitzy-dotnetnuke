@@ -161,13 +161,14 @@ describe('APP_ROUTES', () => {
       // `:moduleId` resolves the same address and silently leaves the input at its default.
       // These four read the value the component actually received.
       //
-      // ⚠ THE CREDENTIAL CASE SEATS THE ACCOUNT HOLDER RATHER THAN THE ADMINISTRATOR, and
-      // that is a property of the route rather than a convenience for the harness.
-      // `/users/:userId/password` declares `AccountOwner`, matching the change endpoint's
-      // own policy, which has NO administrator arm — so the administrator session, whose
-      // account key is 0, is legitimately refused at `/users/7/password` and the harness
-      // receives null. Seating account 7 is what makes this case exercise input binding
-      // instead of accidentally re-asserting the gate.
+      // ⚠ THE CREDENTIAL CASE SEATS THE ACCOUNT THE ADDRESS NAMES, so this case exercises
+      // input binding through the OWNERSHIP arm of the route's policy rather than through
+      // its administrator arm. `/users/:userId/password` declares
+      // `AccountOwnerOrPortalAdministrator` because the screen posts to two endpoints with
+      // two different policies — the owner's change and the administrator's reset — and
+      // seating the named account keeps this case about the bound parameter rather than
+      // about which arm admitted the caller. The arms themselves are asserted in their own
+      // cases below and in the policy-gate describe.
       const cases: ReadonlyArray<readonly [string, string, unknown, AuthSession]> = [
         ['/portals/7/aliases', 'portalId', 7, ADMIN_SESSION],
         ['/modules/7/export', 'moduleId', 7, ADMIN_SESSION],
@@ -189,18 +190,58 @@ describe('APP_ROUTES', () => {
       }
     });
 
-    it('refuses the credential change to anybody but the account it names', async () => {
-      // The complement of the case above, asserted in its own right because it is the
-      // behaviour the route's policy exists for. An administrator — a HOST account here,
-      // the widest identity this suite holds — is still not the account holder, so the
-      // gate cancels the navigation and no component is created.
+    it('admits an administrator to another account\u2019s credential screen, and refuses an unrelated account holder', async () => {
+      /*
+       * ⚠ BOTH ARMS OF THE ROUTE'S POLICY, ASSERTED TOGETHER, BECAUSE AN EARLIER REVISION
+       * GOT THIS EXACTLY BACKWARDS. The route declared `AccountOwner` on the reasoning that
+       * the credential CHANGE endpoint has no administrator arm. It does not — but the
+       * screen posts to TWO endpoints, and the second is the administrator-only reset
+       * (`UsersController.cs` `POST {userId}/password-reset`, `PolicyNames.PortalAdministrator`).
+       * Declaring the route ownership-only left that endpoint with no address anywhere in the
+       * application, so an administrator could not perform the reset the API exists to offer
+       * them. The screen, not the route, decides which of the two operations a caller runs.
+       *
+       * The second half is the part the widening must not cost: an account holder who is
+       * neither the subject nor an administrator is still refused, so the gate cancels the
+       * navigation and no component is created.
+       */
       configure();
       TestBed.inject(TokenStorageService).store(ADMIN_SESSION);
 
-      const harness = await RouterTestingHarness.create();
-      const instance: unknown = await harness.navigateByUrl('/users/7/password');
+      const admitted: unknown = await RouterTestingHarness.create().then((harness) =>
+        harness.navigateByUrl('/users/7/password'),
+      );
 
-      expect(instance).toBeNull();
+      expect(admitted)
+        .withContext('the administrator arm admits the caller, so the reset has an address')
+        .not.toBeNull();
+      expect(TestBed.inject(Router).url).toBe('/users/7/password');
+
+      TestBed.resetTestingModule();
+      configure();
+
+      // A REAL ordinary identity: no super user, no portal administration, no permissions.
+      // `administersCurrentPortal` is `isSuperUser() || holdsPortalAdministration()`, so
+      // clearing both is what makes this session fail the administrator arm.
+      TestBed.inject(TokenStorageService).store({
+        ...ADMIN_SESSION,
+        user: {
+          ...ADMIN_SESSION.user,
+          userId: 4,
+          isSuperUser: false,
+          isPortalAdministrator: false,
+          roles: ['Registered Users'],
+          permissions: [],
+        },
+      });
+
+      const refused: unknown = await RouterTestingHarness.create().then((harness) =>
+        harness.navigateByUrl('/users/7/password'),
+      );
+
+      expect(refused)
+        .withContext('neither the subject nor an administrator, so neither arm admits them')
+        .toBeNull();
       expect(TestBed.inject(Router).url).not.toBe('/users/7/password');
     });
 
@@ -392,14 +433,116 @@ describe('APP_ROUTES', () => {
       expect(await attemptAs(ORDINARY, '/users/1/password')).toBe('/login');
     });
 
-    it('admits a tenant administrator another account\u2019s profile, but never its credential change', async () => {
-      // The two ownership policies differ in exactly one place and it is load-bearing:
-      // `AccountOwnerOrPortalAdministrator` has an administrator arm and `AccountOwner` has
-      // none, because a change presents the current credential. An administrator who must
-      // intervene uses the reset endpoint (`UsersController.cs:L626-L627`) from the
-      // administrative account screen.
+    it('admits a tenant administrator another account\u2019s profile AND its credential screen', async () => {
+      /*
+       * ⚠ THE CREDENTIAL SCREEN CARRIES TWO OPERATIONS, AND THE ROUTE MUST ADMIT THE CALLER
+       * OF EITHER. `POST {userId}/password` declares `AccountOwner` with no administrator arm,
+       * because a change presents the current credential — but the same screen also posts
+       * `POST {userId}/password-reset`, which declares `PolicyNames.PortalAdministrator`
+       * (`UsersController.cs:L626-L627`). An earlier revision declared the route
+       * ownership-only on the strength of the first endpoint alone, which locked the
+       * administrator out of the SCREEN and left the reset unreachable from any address in
+       * the application. The route declares the union; the screen refuses the operation the
+       * caller is not entitled to run.
+       */
       expect(await attemptAs(TENANT_ADMINISTRATOR, '/users/1/profile')).toBe('/users/1/profile');
-      expect(await attemptAs(TENANT_ADMINISTRATOR, '/users/1/password')).toBe('/login');
+      expect(await attemptAs(TENANT_ADMINISTRATOR, '/users/1/password')).toBe(
+        '/users/1/password',
+      );
+    });
+
+    describe('the application root under MANDATORY REMEDIATION', () => {
+      /**
+       * Navigates from the root while holding a session carrying the given advisories.
+       *
+       * Varies the SESSION rather than only the identity, because these advisories are members
+       * of the session and not of the account it names.
+       *
+       * @param advisories The advisory members to raise.
+       * @param user The identity to hold.
+       * @returns The address the root came to rest at.
+       */
+      async function landFrom(
+        advisories: Partial<
+          Pick<AuthSession, 'mustChangePassword' | 'mustUpdateProfile' | 'passwordExpiring'>
+        >,
+        user: Partial<AuthSession['user']>,
+      ): Promise<string> {
+        TestBed.resetTestingModule();
+        configure();
+        TestBed.inject(TokenStorageService).store({
+          ...ADMIN_SESSION,
+          ...advisories,
+          user: { ...ADMIN_SESSION.user, ...user },
+        });
+
+        const harness = await RouterTestingHarness.create('/login');
+
+        await harness.navigateByUrl('/').catch(() => undefined);
+
+        return TestBed.inject(Router).url;
+      }
+
+      it('sends a caller owing a credential change to their own password screen', async () => {
+        // ⚠ THE DEFECT THIS CLOSES WAS A SECOND COMPLETE DEAD END, of the same shape as the
+        // authority one above and reproduced the same way — against the running API rather than
+        // reasoned about. While a credential change is outstanding the API refuses very nearly
+        // everything: `GET api/v1/users/{id}`, `.../services`, `api/v1/users/settings`,
+        // `api/v1/portals` and `api/v1/modules` each answered 403 auth.remediation_required. So
+        // every authority-based landing this redirect can name was unusable, and a caller the
+        // server was actively requiring to change their password was sent somewhere they could
+        // not change it.
+        expect(await landFrom({ mustChangePassword: true }, ORDINARY)).toBe(
+          `/users/${String(ORDINARY.userId)}/password`,
+        );
+      });
+
+      it('sends a caller owing a profile completion to their own profile screen', async () => {
+        expect(await landFrom({ mustUpdateProfile: true }, ORDINARY)).toBe(
+          `/users/${String(ORDINARY.userId)}/profile`,
+        );
+      });
+
+      it('prefers the CREDENTIAL when both advisories are outstanding', async () => {
+        // ⚠ NOT A PREFERENCE — THE ONLY ORDER THAT TERMINATES. RemediationAuthorizationHandler
+        // admits the profile endpoints only while the profile advisory is outstanding and the
+        // password endpoints only while the credential one is, so both screens are reachable
+        // here. But the password screen renews the session on success, which clears the
+        // credential advisory and leaves the profile advisory standing, and the root then
+        // resolves onward to the profile screen. Taking the profile first would clear that
+        // advisory while the credential advisory still refused everything else.
+        //
+        // It also reproduces the legacy precedence: `UserValidStatus.vb` could report only one
+        // outcome at a time and ordered PASSWORDEXPIRED ahead of UPDATEPROFILE.
+        expect(
+          await landFrom({ mustChangePassword: true, mustUpdateProfile: true }, ORDINARY),
+        ).toBe(`/users/${String(ORDINARY.userId)}/password`);
+      });
+
+      it('outranks HOST authority, which would otherwise win', async () => {
+        // The same caller with no advisory lands on the tenant listing — asserted above — so
+        // this case pins the ORDER rather than merely the destination.
+        expect(await landFrom({ mustChangePassword: true }, { isSuperUser: true })).toBe(
+          `/users/${String(ADMIN_SESSION.user.userId)}/password`,
+        );
+      });
+
+      it('outranks TENANT administration, which would otherwise win', async () => {
+        expect(await landFrom({ mustUpdateProfile: true }, TENANT_ADMINISTRATOR)).toBe(
+          `/users/${String(TENANT_ADMINISTRATOR.userId)}/profile`,
+        );
+      });
+
+      it('does NOT divert a caller whose password is merely approaching expiry', async () => {
+        // ⚠ THE THIRD ADVISORY IS INFORMATIONAL AND MUST NOT BE TREATED AS BLOCKING. The server
+        // refuses nothing over it and asks for nothing, so diverting on it would strand a caller
+        // on a remediation screen with nothing to remediate. `AuthStore.sessionRestricted`
+        // mirrors the server's own predicate, which reads the other two and not this one.
+        expect(await landFrom({ passwordExpiring: true }, TENANT_ADMINISTRATOR)).toBe('/modules');
+        expect(await landFrom({ passwordExpiring: true }, ORDINARY)).toBe(
+          `/users/${String(ORDINARY.userId)}/services`,
+        );
+      });
     });
   });
 
@@ -467,9 +610,18 @@ describe('APP_ROUTES', () => {
     });
 
     it('declares only policies the client gate has registered', () => {
-      // ⚠ ALL EIGHT, WHICH IS THE WHOLE SET THE GATE AND THE API REGISTER — not a
-      // convenient subset. `permission.guard.ts` lists exactly these eight and
-      // `Api/Authorization/PolicyNames.cs` declares exactly these eight.
+      // ⚠ ALL EIGHT THE CLIENT GATE REGISTERS — not a convenient subset. `permission.guard.ts` lists
+      // exactly these eight, and every one of them is a policy some route below declares.
+      //
+      // ⚠ THE API DECLARES ONE MORE, AND ITS ABSENCE HERE IS DELIBERATE.
+      // `Api/Authorization/PolicyNames.cs` also declares `PortalContentEditor`, which guards the
+      // SUPPORTING reads of module placement — the definition catalogue and the tenant's page listing.
+      // No route declares it, because the address it supports is the module create screen and that
+      // screen is deliberately ungated: its endpoint carries no policy either, since the target page
+      // arrives in the request body and no route-reading gate can reach it. Adding the name to the
+      // client union would oblige `permission.guard.ts` to resolve a scope for a policy no route can
+      // name, which is exactly the speculative surface the policy catalogue forbids. The set below is
+      // therefore the CLIENT's registered policies, and the server's set is a proper superset of it.
       //
       // A previous revision of this assertion listed only five, and the omission was not
       // inert: it made three legitimate policies fail a specification, which in turn
@@ -550,16 +702,22 @@ describe('APP_ROUTES', () => {
         [MODULE_ROUTES, ':moduleId/export', 'ModuleEdit'],
 
         // UsersController.cs — the collection and record addresses are tenant-scoped; the profile
-        // admits the owner OR an administrator; and the credential change is
-        // `[Authorize(Policy = PolicyNames.AccountOwner)]` with NO administrator arm, which is
-        // measured rather than chosen — a host account is refused another account's password by the
-        // API itself, so widening the gate would only reopen the "screen renders, API refuses"
-        // mismatch it was corrected to remove.
+        // admits the owner OR an administrator.
+        //
+        // ⚠ THE CREDENTIAL ADDRESS IS THE UNION BECAUSE THE SCREEN CARRIES TWO ENDPOINTS, and this
+        // is the one entry in this table that does NOT mirror a single controller action. The change
+        // is `[Authorize(Policy = PolicyNames.AccountOwner)]` with no administrator arm; the reset
+        // beside it is `[Authorize(Policy = PolicyNames.PortalAdministrator)]`. A previous revision
+        // declared ownership alone, reasoning from the change endpoint only, and the consequence was
+        // not a tightening: it left the reset with no address in the application, so an
+        // administrator had no way to intervene on a locked-out account at all. The route declares
+        // the union of the two policies and the screen refuses the operation the caller may not run
+        // — which is where a per-operation decision belongs, since one address serves both.
         [USER_ROUTES, '', 'PortalAdministrator'],
         [USER_ROUTES, 'new', 'PortalAdministrator'],
         [USER_ROUTES, ':userId', 'PortalAdministrator'],
         [USER_ROUTES, ':userId/profile', 'AccountOwnerOrPortalAdministrator'],
-        [USER_ROUTES, ':userId/password', 'AccountOwner'],
+        [USER_ROUTES, ':userId/password', 'AccountOwnerOrPortalAdministrator'],
         // ⚠ THE OTHER `AccountOwner` ADDRESS. All five member-services endpoints declare it with no
         // administrator arm, which is measured rather than chosen: the legacy panel operated on the
         // SIGNED-IN account and its container hid the tab from an administrator outright. Widening

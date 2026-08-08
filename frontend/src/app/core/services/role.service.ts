@@ -41,6 +41,7 @@ import type { Observable } from 'rxjs';
  */
 const ROLE_PAGE: Decoder<PagedResponse<RoleListItem>> = pageOf(decodeRoleListItem);
 const MEMBERSHIP_PAGE: Decoder<PagedResponse<UserRole>> = pageOf(decodeUserRole);
+const MEMBERSHIP_RESPONSE: Decoder<ApiResponse<UserRole>> = responseOf(decodeUserRole);
 const ROLE_RESPONSE: Decoder<ApiResponse<Role>> = responseOf(decodeRole);
 const ROLE_GROUP_RESPONSE: Decoder<ApiResponse<RoleGroup>> = responseOf(decodeRoleGroup);
 const ROLE_GROUP_LIST_RESPONSE: Decoder<ApiResponse<readonly RoleGroup[]>> = responseOf(
@@ -429,6 +430,52 @@ export class RoleService {
         context: presentedInContext(),
       })
       .pipe(map((body) => decodeResponse(MEMBERSHIP_PAGE, body)));
+  }
+
+  /**
+   * `GET /api/v1/roles/{roleId}/users/{userId}` — whether ONE account holds ONE role, and on
+   * what terms.
+   *
+   * ⚠ THIS EXISTS SO THAT A LOGIN NAME NEVER TRAVELS IN A REQUEST TARGET (CWE-598). The same
+   * question used to be asked by narrowing {@link RoleService.listUsers} with the account's
+   * login name as the paging contract's free-text filter, which the server matches against
+   * both the login name and the display name. So asking it wrote the name into the query
+   * string, and a query string is the least private part of a request: it is kept in browser
+   * history, written in full to every forward and reverse proxy's access log and to the
+   * server's own, and forwarded in the referrer of a subsequent navigation. Every one of those
+   * recorders sits at an END of the encrypted channel, so transport security does not address
+   * it. This address carries two opaque numeric identifiers in its path and nothing else, so
+   * it discloses nothing about a person and needs no compensating body — the request stays a
+   * cacheable, idempotent `GET`.
+   *
+   * ⚠ `404` IS THE ORDINARY ANSWER FOR "HOLDS NOTHING", NOT A FAULT. The server answers `200`
+   * with the membership when one exists and `404` when the account holds no membership of that
+   * role — the same status it uses for an unknown role or account, distinguished by the problem
+   * document's type. A caller asking whether a pairing exists must therefore treat the refusal
+   * as an answer rather than surfacing it as a failure; `role.store` does exactly that. This
+   * method itself does NOT swallow it: the transport reports what the server said and the
+   * decision belongs to the caller that has the context to make it.
+   *
+   * The answer is the same membership row the listing returns, decoded with the same row
+   * decoder, so a consumer holds one shape whichever address it came from.
+   *
+   * MIGRATION: replaces the grid scan at `Website/admin/Security/SecurityRoles.ascx.vb`
+   * L273-L303 (`GetDates`) and L656-L658. The legacy grid was UNPAGED, so it answered both of
+   * its questions — which date bounds to show, and whether to relabel the action — from rows it
+   * already held. A paged grid holds one window, so that scan would report "no membership" for
+   * an account whose row happens to sit on another page.
+   *
+   * @param roleId The role to ask about, interpolated exactly as supplied. Role zero is real:
+   * `dbo.Roles.RoleID` is `IDENTITY(0, 1)`.
+   * @param userId The account to ask about, interpolated exactly as supplied.
+   * @returns The membership, in the single-payload envelope.
+   */
+  getMembership(roleId: number, userId: number): Observable<ApiResponse<UserRole>> {
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roles.forCurrentPortal.member({ roleId, userId }), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MEMBERSHIP_RESPONSE, body)));
   }
 
   /**

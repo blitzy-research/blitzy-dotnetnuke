@@ -660,6 +660,55 @@ public interface IRoleService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reads ONE account's membership of ONE role, addressed by both identifiers.
+    /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the portal that owns the role. Authoritative for tenant scoping.
+    /// </param>
+    /// <param name="roleId">Identifier of the role.</param>
+    /// <param name="userId">Identifier of the account.</param>
+    /// <param name="cancellationToken">Token that cancels the operation.</param>
+    /// <returns>
+    /// A successful outcome carrying the membership and the terms it runs on; a successful outcome
+    /// carrying no value when the account holds no membership of that role, which the HTTP boundary
+    /// reports as <c>404</c>; or a failed outcome carrying <c>portal.not_found</c>,
+    /// <c>role.not_found</c> or <c>user.not_found</c>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Why an exact-identifier read exists beside the listing.</b> Its consumer asks a
+    /// one-membership question — does THIS account hold THIS role, and on what terms — and the only
+    /// address available for it was the paged listing narrowed by that listing's free-text filter.
+    /// The server matches that filter against the login name and the display name, so asking the
+    /// question put the account's LOGIN NAME into the request target: written to browser history, to
+    /// every proxy access log and to the server's own access log, each of them at an END of the
+    /// encrypted channel where transport security does not reach. That is CWE-598, and it was the
+    /// more conspicuous for standing beside a body-bound account search introduced to avoid exactly
+    /// it. Two opaque numeric identifiers in a path disclose nothing about a person.
+    /// </para>
+    /// <para>
+    /// <b>Absence is a successful outcome, not a failure.</b> "The account holds nothing" is a real
+    /// and expected answer — the legacy screen showed it by blanking the date fields
+    /// (<c>Website/admin/Security/SecurityRoles.ascx.vb:L484</c>) — whereas an unknown portal, role
+    /// or account is a broken request. The two are distinguished so that a caller can render the
+    /// first without reporting a failure and must report the second.
+    /// </para>
+    /// <para>
+    /// MIGRATION: replaces the grid scan at
+    /// <c>Website/admin/Security/SecurityRoles.ascx.vb:L273-L303</c> (<c>GetDates</c>) and
+    /// <c>:L656-L658</c>. The legacy screen was unpaged, so it answered both of its questions — what
+    /// bounds to show, and whether to relabel the action — by scanning rows it already held. A paged
+    /// grid holds one window, so the scan would answer "no membership" for an account whose row sits
+    /// on another page. This member answers it in one read that cannot depend on where a row falls.
+    /// </para>
+    /// </remarks>
+    Task<Result<RoleMembershipDto?>> GetRoleMembershipAsync(
+        int portalId,
+        int roleId,
+        int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists every role a user holds in a portal.
     /// </summary>
     /// <param name="portalId">

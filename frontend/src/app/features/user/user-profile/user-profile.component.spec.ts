@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { type Type } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
 import { API_ENDPOINTS } from '../../../core/config/api-endpoints';
 import type { ApiResponse } from '../../../core/models/paged-result.model';
@@ -13,7 +13,7 @@ import {
   type UserProfileValue,
 } from '../../../core/models/profile.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
-import type { MembershipSettings, UserDetail } from '../../../core/models/user.model';
+import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { NOT_SPECIFIED_OPTION_TEXT, UserProfileComponent } from './user-profile.component';
@@ -83,13 +83,15 @@ describe('UserProfileComponent', () => {
   const profileDefinitionsUrl: string = API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection();
 
   /**
-   * The tenant's account policy, which this screen reads once per mount.
+   * The tenant's account policy - an address this screen must NEVER reach.
    *
-   * ⚠ READ ON EVERY MOUNT, WHATEVER THE ROUTE SUPPLIES, because the policy decides whether the
-   * per-property visibility control is offered - `Profile.ascx.vb` L59-L63 computed that from
-   * `Profile_DisplayVisibility` AND the viewer being the subject of the profile. It is not
-   * account-scoped, so it is issued before any account is known, which is why the "dispatches
-   * nothing" cases below count ACCOUNT reads rather than all requests.
+   * ⚠ HELD ONLY SO THE CASES CAN PROVE IT IS UNUSED. The screen once read this address to learn
+   * whether the per-property visibility control is offered, because `Profile.ascx.vb` L59-L63
+   * computed that from `Profile_DisplayVisibility`. The server declares `GET api/v1/users/settings`
+   * administrator-only, so the one caller the affordance exists for - the subject of the profile -
+   * was answered 403 and the control was never offered whatever the tenant had configured. The fact
+   * now travels on the profile projection instead, as `displayVisibilityEnabled`, and this constant
+   * remains only as the subject of the case that asserts the request is not issued.
    */
   const membershipSettingsUrl: string = API_ENDPOINTS.users.membershipSettings();
 
@@ -233,40 +235,6 @@ describe('UserProfileComponent', () => {
   };
 
   /**
-   * The tenant's account policy as this screen reads it.
-   *
-   * The one member that matters here is `profileDisplayVisibility`, and it defaults to TRUE because
-   * that is the default the server publishes when the tenant has stored nothing
-   * (`Library/Components/Users/UserModuleBase.vb` L143-L145). Every other member is stated so the
-   * fixture is the shape the contract declares rather than a partial the decoder would refuse.
-   */
-  const POLICY: MembershipSettings = {
-    columnFirstName: false,
-    columnLastName: false,
-    columnDisplayName: true,
-    columnAddress: true,
-    columnTelephone: true,
-    columnEmail: false,
-    columnCreatedDate: true,
-    columnLastLogin: false,
-    columnAuthorized: true,
-    displayMode: 2,
-    displaySuppressPager: false,
-    recordsPerPage: 10,
-    profileDefaultVisibility: 2,
-    profileDisplayVisibility: true,
-    profileManageServices: true,
-    redirectAfterLogin: null,
-    redirectAfterRegistration: null,
-    redirectAfterLogout: null,
-    securityEmailValidation: '',
-    securityRequireValidProfile: false,
-    securityRequireValidProfileAtLogin: true,
-    securityUsersControl: 0,
-    securityDisplayNameFormat: '',
-  };
-
-  /**
    * Answers both reads the screen dispatches and renders the result.
    *
    * The account read is answered as well as the profile read because the screen issues
@@ -276,8 +244,17 @@ describe('UserProfileComponent', () => {
    * @param properties The profile entries to return.
    * @param userId The account being read.
    */
-  function respond(properties: readonly UserProfileValue[], userId: number = USER_ID): void {
-    const profile: UserProfile = { userId, properties };
+  function respond(
+    properties: readonly UserProfileValue[],
+    userId: number = USER_ID,
+    displayVisibilityEnabled = true,
+  ): void {
+    // The tenant's visibility policy travels ON THE PROFILE. It used to be fetched separately from
+    // `GET api/v1/users/settings`, which the server declares administrator-only - so the one caller
+    // the affordance exists for, the subject of the profile, was answered 403 and never saw it.
+    // `true` is the default here because it is the default the server publishes when a tenant has
+    // stored nothing.
+    const profile: UserProfile = { userId, properties, displayVisibilityEnabled };
 
     // `meta` is stated rather than omitted: the envelope declares it as present-and-nullable
     // for every response, paged or not, so a fixture that left it out would not be the shape
@@ -298,10 +275,14 @@ describe('UserProfileComponent', () => {
    * @param properties The profile entries to return.
    * @param userId The identifier to supply, as the route would.
    */
-  function load(properties: readonly UserProfileValue[], userId: number = USER_ID): void {
+  function load(
+    properties: readonly UserProfileValue[],
+    userId: number = USER_ID,
+    displayVisibilityEnabled = true,
+  ): void {
     fixture.componentRef.setInput('userId', String(userId));
     fixture.detectChanges();
-    respond(properties, userId);
+    respond(properties, userId, displayVisibilityEnabled);
   }
 
   /** The host element, typed once so no case repeats the cast. */
@@ -368,27 +349,6 @@ describe('UserProfileComponent', () => {
   });
 
   /**
-   * Answers the account-policy read with a stated policy.
-   *
-   * @param profileDisplayVisibility Whether the tenant offers the per-property visibility control.
-   * @returns Whether a read was outstanding to answer.
-   */
-  function answerPolicy(profileDisplayVisibility: boolean): boolean {
-    const pending = httpMock.match(membershipSettingsUrl);
-
-    for (const request of pending) {
-      request.flush({
-        data: { ...POLICY, profileDisplayVisibility },
-        meta: null,
-      });
-    }
-
-    fixture.detectChanges();
-
-    return pending.length > 0;
-  }
-
-  /**
    * Seats the caller's identity in the stored session.
    *
    * The identity is READ FROM THE STORED SESSION rather than fetched, so seating it is what decides
@@ -426,15 +386,10 @@ describe('UserProfileComponent', () => {
     // The session is cleared so one case's signed-in caller cannot decide another's affordances.
     TestBed.inject(TokenStorageService).clear();
 
-    // The account-policy read is DRAINED rather than asserted here, so that no case has to describe
-    // a read it is not about. The cases that are about it answer it themselves, with a stated
-    // policy, through `answerPolicy` - and because they answer it first, nothing is left for this to
-    // drain. Draining is not the same as ignoring: `verify` below still fails on any OTHER
-    // outstanding request, which is the guarantee every case in this file depends on.
-    for (const pending of httpMock.match(membershipSettingsUrl)) {
-      pending.flush({ data: POLICY, meta: null });
-    }
-
+    // ⚠ NOTHING IS DRAINED HERE ANY MORE. A previous revision drained the tenant account-policy
+    // read, because the screen issued one on every mount whatever the route said. It no longer
+    // issues that request at all - the visibility policy arrives on the profile - so `verify` is
+    // reached with an undrained queue, and any outstanding request whatsoever now fails the case.
     httpMock.verify();
   });
 
@@ -458,14 +413,11 @@ describe('UserProfileComponent', () => {
       // expectation. `expectNone` throws on a match but registers no expectation, and a
       // spec with none silently passes if its subject stops doing anything at all.
       //
-      // ⚠ COUNTS ACCOUNT-SCOPED READS, NOT ALL REQUESTS. The tenant's account policy is read on
-      // every mount and is not account-scoped - it decides whether the visibility control is
-      // offered, which is a property of the tenant and the caller rather than of the account being
-      // edited. Counting it here would make this case assert something it is not about.
-      expect(httpMock.match((request) => request.url !== membershipSettingsUrl).length).toBe(0);
-      expect(httpMock.match(membershipSettingsUrl).length)
-        .withContext('the policy read is issued once, regardless of the route')
-        .toBe(1);
+      // ⚠ EVERY REQUEST IS COUNTED, NOT JUST THE ACCOUNT-SCOPED ONES. An earlier revision had to
+      // exclude the tenant account-policy address here, because the screen read it on every mount
+      // before any account was known. It reads nothing at all until the route supplies an account
+      // now, so the exclusion is gone and the claim is the stronger one.
+      expect(httpMock.match(() => true).length).toBe(0);
     });
   });
 
@@ -539,7 +491,7 @@ describe('UserProfileComponent', () => {
       // 404, which would mean the resource does not exist at all - a different fact, and one the
       // screen renders differently.
       reads[1]?.flush({
-        data: { userId: 0, properties: [] },
+        data: { userId: 0, properties: [], displayVisibilityEnabled: true },
         meta: null,
       } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
@@ -549,9 +501,9 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', 'not-an-id');
       fixture.detectChanges();
 
-      // The tenant's policy read is excluded: it is not account-scoped and is issued whatever the
-      // route says, so it is not evidence that a malformed identifier was dispatched.
-      expect(httpMock.match((request) => request.url !== membershipSettingsUrl).length).toBe(0);
+      // Every request is counted. Nothing this screen dispatches is route-independent, so a
+      // malformed identifier must leave the queue completely empty.
+      expect(httpMock.match(() => true).length).toBe(0);
     });
 
     it('reads the second account when the route moves to it', () => {
@@ -569,7 +521,7 @@ describe('UserProfileComponent', () => {
 
       reads[0]?.flush({ data: account, meta: null });
       reads[1]?.flush({
-        data: { userId: 8, properties: [] },
+        data: { userId: 8, properties: [], displayVisibilityEnabled: true },
         meta: null,
       } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
@@ -1051,7 +1003,7 @@ describe('UserProfileComponent', () => {
       httpMock
         .expectOne(`/api/v1/users/${USER_ID}/profile`)
         .flush({
-          data: { userId: USER_ID, properties: [] },
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
           meta: null,
         } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
@@ -1084,7 +1036,7 @@ describe('UserProfileComponent', () => {
       httpMock
         .expectOne(`/api/v1/users/${USER_ID}/profile`)
         .flush({
-          data: { userId: USER_ID, properties: [] },
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
           meta: null,
         } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
@@ -1141,12 +1093,18 @@ describe('UserProfileComponent', () => {
      * `CType(UserModuleBase.GetSetting(PortalId, "Profile_DisplayVisibility"), Boolean) And IsUser` -
      * the tenant's policy AND the viewer being the subject of the profile
      * (`Library/Components/Users/UserModuleBase.vb` L399-L406). BOTH halves are resolved on the
-     * routed path now: the policy from the account-policy read, the identity from the signed-in
-     * session.
+     * routed path: the policy from `displayVisibilityEnabled` on the profile projection, the
+     * identity from the signed-in session.
      *
-     * ⚠ AN EARLIER REVISION TOOK THE AFFORDANCE FROM AN INPUT ALONE, which no route supplies - so
-     * the routed screen never offered the control whatever the tenant had configured, and the
-     * setting was stored, published and inert. That is the gap these cases close.
+     * ⚠ TWO SUCCESSIVE REVISIONS LEFT THIS AFFORDANCE INERT, AND EACH FAILED DIFFERENTLY.
+     * The first took it from an input alone, which no route supplies, so the routed screen never
+     * offered the control whatever the tenant had configured. The second read the policy from
+     * `GET api/v1/users/settings`, which the server declares administrator-only - so the routed
+     * caller the affordance exists for, the subject of the profile, was answered 403, the read
+     * failed, and the screen rendered its own inertness as though the tenant had switched the policy
+     * off. The policy now arrives on the profile the subject is already permitted to read, which is
+     * why every case below states it as the third argument of `load` rather than answering a
+     * separate request.
      *
      * No signed-in session is established in this fixture, so the identity half is false throughout
      * except where a case says otherwise, which is why the policy being enabled is not on its own
@@ -1156,9 +1114,26 @@ describe('UserProfileComponent', () => {
     it('is not offered while the tenant policy is unresolved, whatever the caller is', () => {
       // The conservative posture: offering a control that then disappears is worse than offering it
       // a moment late, so an unresolved policy reads as "not offered" rather than as a stored false.
-      load([entry(declaration())]);
+      //
+      // ⚠ UNRESOLVED NOW MEANS "THE PROFILE HAS NOT ARRIVED". The policy rides the profile, so the
+      // two facts resolve together and there is no window in which the screen holds one without the
+      // other. The subject's own identity is seated first, so the ONLY reason the control is absent
+      // at the first assertion is that the profile is still outstanding.
+      seatIdentity(USER_ID);
+      fixture.componentRef.setInput('userId', String(USER_ID));
+      fixture.detectChanges();
 
-      expect(host().querySelector('select')).toBeNull();
+      expect(host().querySelector('select'))
+        .withContext('the policy arrives with the profile, so nothing is known of it yet')
+        .toBeNull();
+
+      // The reads are answered rather than left outstanding, both so teardown verifies an empty
+      // queue and so this case proves the resolution as well as the posture before it.
+      respond([entry(declaration())]);
+
+      expect(host().querySelector('select'))
+        .withContext('once the profile arrives the resolved policy is honoured')
+        .not.toBeNull();
     });
 
     it('is not offered to a caller who is not the subject of the profile, even with the policy on', () => {
@@ -1168,8 +1143,7 @@ describe('UserProfileComponent', () => {
        * could otherwise change who can see it without the holder knowing, so the legacy hid the
        * affordance for exactly that caller however the tenant had set the policy.
        */
-      load([entry(declaration())]);
-      answerPolicy(true);
+      load([entry(declaration())], USER_ID, true);
 
       expect(host().querySelector('select'))
         .withContext('no session is signed in here, so the caller is not the subject')
@@ -1177,10 +1151,16 @@ describe('UserProfileComponent', () => {
     });
 
     it('is not offered when the tenant switched the policy off', () => {
-      load([entry(declaration())]);
-      answerPolicy(false);
+      // ⚠ THE SUBJECT'S OWN IDENTITY IS SEATED, so the identity half of the predicate is TRUE and the
+      // stated policy is the only thing withholding the control. Without the session this case would
+      // pass on a screen that ignored the policy entirely, which is how the previous revision's
+      // failure went unnoticed.
+      seatIdentity(USER_ID);
+      load([entry(declaration())], USER_ID, false);
 
-      expect(host().querySelector('select')).toBeNull();
+      expect(host().querySelector('select'))
+        .withContext('the tenant policy alone withholds the control from the subject')
+        .toBeNull();
     });
 
     it('is offered to the subject of the profile when the tenant enabled the policy', () => {
@@ -1188,18 +1168,18 @@ describe('UserProfileComponent', () => {
       // legacy screen rendered the control for: the tenant's policy on, and the signed-in caller
       // being the account whose profile is on screen.
       seatIdentity(USER_ID);
-      load([entry(declaration())]);
-      answerPolicy(true);
+      load([entry(declaration())], USER_ID, true);
 
-      expect(host().querySelector('select')).not.toBeNull();
+      expect(host().querySelector('select'))
+        .withContext('the subject reads the policy from its own profile, needing no admin endpoint')
+        .not.toBeNull();
     });
 
     it('is withheld from a signed-in caller who is a different account', () => {
       // The same policy, a real session, a DIFFERENT account. This is the administrator case, and it
       // is the one the second half of the predicate exists for.
       seatIdentity(USER_ID + 1);
-      load([entry(declaration())]);
-      answerPolicy(true);
+      load([entry(declaration())], USER_ID, true);
 
       expect(host().querySelector('select')).toBeNull();
     });
@@ -1216,36 +1196,80 @@ describe('UserProfileComponent', () => {
       // the affordance on. A false defers to the resolved answer rather than suppressing it, which is
       // what stops an embedding context silently overriding a tenant that enabled the policy.
       fixture.componentRef.setInput('manageVisibility', true);
-      load([entry(declaration())]);
-      answerPolicy(false);
+      load([entry(declaration())], USER_ID, false);
 
       expect(host().querySelector('select'))
         .withContext('the override asserts the affordance even against a policy that is off')
         .not.toBeNull();
     });
 
-    it('reads the account policy once per mount, whatever the route supplies', () => {
-      // ⚠ ONCE, NOT ONCE PER PROPERTY. `Profile.ascx.vb` L60 read the setting inside a property
-      // GETTER, so it was fetched on every render of every field. The policy is tenant-wide and does
-      // not change as the route moves from one account to another, so it is read from the lifecycle
-      // hook rather than from the account-scoped effect.
+    it('costs no request of its own, and never the administrator-only account settings', () => {
+      /*
+       * ⚠ THE REGRESSION THIS CASE EXISTS TO CATCH. `Profile.ascx.vb` L60 read the tenant setting
+       * inside a property GETTER, so it was fetched on every render of every field; a later revision
+       * of this screen read it once per mount from `GET api/v1/users/settings`. That address admits
+       * only portal administrators, so the subject of the profile - the only caller the affordance is
+       * offered to - was answered 403 and the control was never rendered. Naming the address here is
+       * what makes a re-introduction fail rather than degrade silently.
+       */
+      seatIdentity(USER_ID);
       load([entry(declaration()), entry(declaration({ propertyDefinitionId: 88, propertyName: 'City' }))]);
 
-      expect(httpMock.match(membershipSettingsUrl).length).toBe(1);
+      expect(host().querySelector('select'))
+        .withContext('the affordance is offered on the strength of the profile alone')
+        .not.toBeNull();
+      expect(httpMock.match(membershipSettingsUrl).length)
+        .withContext('the administrator-only account settings are not read')
+        .toBe(0);
+
+      fixture.componentRef.setInput('userId', '8');
+      fixture.detectChanges();
+
+      // ⚠ ONE `match` FOR THE WHOLE QUEUE, NOT A FILTERED ONE FOLLOWED BY A TOTAL. `match` REMOVES
+      // what it returns, so a filtered call followed by a broader one would inspect an already
+      // drained queue and pass on an empty result. Matching everything and asserting the addresses
+      // is both correct and the stronger claim: it names what IS dispatched and, by exhausting the
+      // queue, proves nothing else was.
+      const reads = httpMock.match(() => true);
+
+      expect(reads.map((request) => request.request.url))
+        .withContext('the account and its profile, and nothing else - no tenant policy read')
+        .toEqual(['/api/v1/users/8', '/api/v1/users/8/profile']);
+
+      reads[0]?.flush({ data: account, meta: null });
+      reads[1]?.flush({ data: { userId: 8, properties: [], displayVisibilityEnabled: true }, meta: null });
+      fixture.detectChanges();
+    });
+
+    it('withholds the control for the second account when that profile says the policy is off', () => {
+      // ⚠ THE POLICY IS RE-STATED BY EVERY PROFILE, so a route move re-resolves it rather than
+      // carrying the first account's answer forward. The caller here is the subject of the FIRST
+      // account only, so the second account's control is withheld on both halves at once - which is
+      // the correct outcome and the reason the assertion below names the policy it is testing.
+      seatIdentity(USER_ID);
+      load([entry(declaration())], USER_ID, true);
+
+      expect(host().querySelector('select')).not.toBeNull();
 
       fixture.componentRef.setInput('userId', '8');
       fixture.detectChanges();
 
       const reads = httpMock.match((request) => request.url.startsWith('/api/v1/users/8'));
 
-      expect(reads.length).withContext('the account and its profile, and nothing else').toBe(2);
-      expect(httpMock.match(membershipSettingsUrl).length)
-        .withContext('the tenant policy is not re-read for a different account')
-        .toBe(0);
-
       reads[0]?.flush({ data: account, meta: null });
-      reads[1]?.flush({ data: { userId: 8, properties: [] }, meta: null });
+      reads[1]?.flush({
+        data: {
+          userId: 8,
+          properties: [entry(declaration())],
+          displayVisibilityEnabled: false,
+        },
+        meta: null,
+      } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
+
+      expect(host().querySelector('select'))
+        .withContext('the second profile states the policy is off, so the control is withheld')
+        .toBeNull();
     });
 
     it('offers the three legacy choices', () => {
@@ -1654,12 +1678,14 @@ describe('UserProfileComponent', () => {
       // the fields.
       load([entry(declaration())]);
 
-      // The tenant's policy read is answered here rather than excluded, because this case is about
-      // the WHOLE set of addresses this screen uses - so the read is named, answered, and then the
-      // set is asserted empty. That is a stronger claim than excluding it would be.
-      expect(answerPolicy(true))
-        .withContext('the policy is one of the addresses this screen uses')
-        .toBeTrue();
+      // ⚠ THE ADMINISTRATOR-ONLY SETTINGS ADDRESS IS NAMED AND ASSERTED ABSENT. The screen used to
+      // read it for the visibility policy, and the server answers an ordinary account 403 there, so
+      // the read was a guaranteed refusal on the routed path this screen exists to serve. Naming it
+      // is what keeps the regression detectable; asserting the whole queue empty is what proves the
+      // profile and the account are the only two addresses used.
+      expect(httpMock.match(membershipSettingsUrl).length)
+        .withContext('the administrator-only account settings must not be read by this screen')
+        .toBe(0);
 
       expect(httpMock.match(() => true).length)
         .withContext('every dispatched request has already been answered')
@@ -2264,6 +2290,7 @@ describe('UserProfileComponent', () => {
                 lastUpdatedDate: '2024-06-01T12:00:00Z',
               }),
             ],
+            displayVisibilityEnabled: true,
           },
           meta: null,
         } satisfies ApiResponse<UserProfile>);
@@ -2605,9 +2632,9 @@ describe('UserProfileComponent', () => {
         fixture.componentRef.setInput('userId', loose);
         fixture.detectChanges();
 
-        // Account-scoped reads only. The policy read is not account-scoped and would otherwise
-        // register on the first iteration as though a malformed identifier had been dispatched.
-        expect(httpMock.match((request) => request.url !== membershipSettingsUrl).length)
+        // Every request is counted: no read this screen issues is route-independent, so each
+        // malformed form must leave the queue empty.
+        expect(httpMock.match(() => true).length)
           .withContext(`"${loose}" must not be read as an account identifier`)
           .toBe(0);
       }
@@ -2667,7 +2694,7 @@ describe('UserProfileComponent', () => {
       httpMock
         .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
         .flush({
-          data: { userId: USER_ID, properties: [] },
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
           meta: null,
         } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
@@ -2718,10 +2745,176 @@ describe('UserProfileComponent', () => {
       httpMock
         .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
         .flush({
-          data: { userId: USER_ID, properties: [] },
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
           meta: null,
         } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
+    });
+  });
+
+  // =========================================================================
+  // THE MANDATORY VISIT: WHEN THIS SCREEN IS THE ONLY ONE THE SERVER ALLOWS
+  // =========================================================================
+  //
+  // A caller whose account owes a mandatory profile completion is refused nearly every read
+  // the console performs, but NOT this screen's own profile read: the API exempts
+  // `GET api/v1/users/{id}/profile` and `PUT api/v1/users/{id}/profile` precisely so the
+  // advisory can be cleared here. `GET api/v1/users/{id}` is NOT exempted and answers 403
+  // `auth.remediation_required` - measured against the running API.
+
+  describe('the mandatory-remediation visit', () => {
+    /** Seats a caller who owes a mandatory profile completion on their own account. */
+    function seatRemediatingIdentity(userId: number): void {
+      TestBed.inject(TokenStorageService).store({
+        accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+        expiresAtUtc: '2099-12-31T23:59:59.000Z',
+        refreshToken: 'not-a-real-refresh-token',
+        mustChangePassword: false,
+        mustUpdateProfile: true,
+        passwordExpiring: false,
+        user: {
+          userId,
+          portalId: 0,
+          portalName: 'Baseline Portal',
+          username: 'caller',
+          displayName: 'The Caller',
+          email: 'caller@example.test',
+          isSuperUser: false,
+          isPortalAdministrator: false,
+          roles: ['Registered Users'],
+          permissions: [],
+        },
+      });
+    }
+
+    /**
+     * Arrives as a remediating caller and answers ONLY the profile read.
+     *
+     * @param properties The profile entries to return.
+     */
+    function loadRemediating(properties: readonly UserProfileValue[]): void {
+      seatRemediatingIdentity(USER_ID);
+      fixture.componentRef.setInput('userId', String(USER_ID));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne(profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties, displayVisibilityEnabled: true },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+    }
+
+    it('reads the profile but NOT the account, because only one of the two is exempted', () => {
+      loadRemediating([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      // The account read used to be dispatched here too, met a 403, and put an error banner
+      // across the one screen the server was requiring the caller to complete.
+      httpMock.expectNone(`/api/v1/users/${USER_ID}`);
+
+      expect(controls().length)
+        .withContext('and the fields, which are what the screen is for, load normally')
+        .toBe(1);
+    });
+
+    it('clears the advisory locally and returns to the root once the completion is written', async () => {
+      // ⚠ WITHOUT THIS THE JOURNEY NEVER ENDS. The advisory is carried in the held session, so
+      // the server stops requiring the completion the moment the values are written while the
+      // client goes on believing it is outstanding — and the root goes on resolving back here.
+      //
+      // ⚠ AND NO RENEWAL IS ATTEMPTED, WHICH IS THE SUBSTANCE OF THIS CASE. A caller can owe a
+      // credential change as well, in which case that change came first and has already revoked
+      // every refresh token the account holds; a renewal here would answer 401 and sign the
+      // caller out at the end of a journey they had just completed. `expectNone` keeps that
+      // regression from returning. The local assertion is sound because this screen's own write
+      // REFUSES a submission that leaves any required property blank, which is exactly the
+      // condition the advisory is computed from.
+      const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+      const storage = TestBed.inject(TokenStorageService);
+
+      loadRemediating([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne((request) => request.method === 'PUT' && request.url === profileUrl(USER_ID))
+        .flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      // A successful write re-reads the profile, which is why the settled outcome is read from
+      // the write's own identifier rather than from the shared failure slot.
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      httpMock.expectNone('/api/v1/auth/refresh');
+      expect(storage.session()?.mustUpdateProfile)
+        .withContext('the satisfied advisory is cleared on the held session')
+        .toBe(false);
+
+      // ⚠ AND NOW THE WITHHELD ACCOUNT READ IS ISSUED, which is the other half of the same rule:
+      // the suppression is a reaction to the server's current answer, not a permanent state. The
+      // PROFILE read is deliberately NOT repeated here - it was already re-read after the write,
+      // and the two reads are dispatched by separate effects precisely so that clearing the
+      // advisory cannot re-issue one that is already current.
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === `/api/v1/users/${USER_ID}`)
+        .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
+      fixture.detectChanges();
+
+      expect(navigate)
+        .withContext('the root decides where a remediated caller goes, so it is asked')
+        .toHaveBeenCalledWith('/');
+    });
+
+    it('does NOT renew after an ordinary save by a caller who owes nothing', () => {
+      const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+
+      seatIdentity(USER_ID);
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne((request) => request.method === 'PUT' && request.url === profileUrl(USER_ID))
+        .flush(null, { status: 204, statusText: 'No Content' });
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+
+      // An ordinary caller stays where they are, which is what the legacy screen did.
+      httpMock.expectNone('/api/v1/auth/refresh');
+      expect(TestBed.inject(TokenStorageService).session()?.mustUpdateProfile)
+        .withContext('and nothing is asserted about an advisory that was never outstanding')
+        .toBe(false);
+      expect(navigate).not.toHaveBeenCalled();
     });
   });
 

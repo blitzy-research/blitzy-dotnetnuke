@@ -271,19 +271,92 @@ public sealed class ModuleApiTests
         envelope.Data!.Should().BeEmpty();
     }
 
-    /// <summary>Both new definition reads are administrator-only.</summary>
+    /// <summary>
+    /// Every definition read is refused to a caller who may place a module NOWHERE in the tenant.
+    /// </summary>
     /// <param name="path">The address to attempt.</param>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE CONDITION IS "NO PAGE GRANT", NOT "NO ADMINISTRATOR ROLE", and the difference is the whole point
+    /// of the policy change these three addresses now carry. The catalogue backs the module-type selector on
+    /// the placement form, and the create action deliberately carries no policy at all because
+    /// <c>ModuleSettings.ascx.vb:L191</c> admitted the tenant's administrator OR an administrator of the page
+    /// being edited. Tenant administration on the catalogue therefore refused a caller the create action
+    /// admits, in the way hardest to notice: the form opened and its type selector was empty.
+    /// </para>
+    /// <para>
+    /// The precondition is CLEARED rather than assumed, because the suites share one database with no ordering
+    /// guarantee: a sibling case granting EDIT to the registered role would otherwise decide this one's
+    /// outcome by execution order.
+    /// </para>
+    /// </remarks>
     [Theory]
+    [InlineData("/api/v1/module-definitions")]
     [InlineData("/api/v1/module-definitions/1")]
     [InlineData("/api/v1/module-definitions/desktop-modules/1")]
-    public async Task ModuleDefinitionReads_AsMemberWithoutAdministratorRole_ReturnForbidden(string path)
+    public async Task ModuleDefinitionReads_AsMemberHoldingNoPageGrant_ReturnForbidden(string path)
     {
+        await ClearTenantEditGrantsAsync();
+
         using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// The catalogue IS served to a caller holding an edit grant on one page - the caller the create action
+    /// admits and the placement form exists for.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE POSITIVE HALF OF THE POLICY, AND THE ONE THAT FAILED BEFORE. Asserting only the refusal above could
+    /// not distinguish "the grant is consulted" from "the catalogue is simply closed to everybody but an
+    /// administrator" - which is exactly the state that made the create capability reachable and unusable.
+    /// </para>
+    /// <para>
+    /// MIGRATION: <c>ModuleSettings.ascx.vb:L214-L219</c> disabled four controls for a caller outside the
+    /// administrators role - <c>chkAllTabs</c>, <c>chkDefault</c>, <c>chkAllModules</c> and <c>cboTab</c> - and
+    /// <c>cboModuleType</c>, the selector this catalogue backs, is conspicuously NOT among them. A page
+    /// administrator picked a module type; what they could not do was promote the module across the tenant's
+    /// pages, which is a restriction on the page listing rather than on this one.
+    /// </para>
+    /// <para>
+    /// The grant is removed in a <c>finally</c> because it is tenant-wide state other suites read.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListModuleDefinitions_AsMemberHoldingOnePageEditGrant_ReturnsOk()
+    {
+        await ClearTenantEditGrantsAsync();
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        try
+        {
+            using HttpClient client = await MemberClientAsync();
+
+            using HttpResponseMessage response = await client.GetAsync(
+                new Uri("/api/v1/module-definitions", UriKind.Relative));
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "a caller who may place a module on a page must be able to read what a module can be");
+        }
+        finally
+        {
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+        }
     }
 
     /// <summary>
@@ -3701,6 +3774,33 @@ public sealed class ModuleApiTests
                 ["permissionId"] = permissionId,
                 ["roleId"] = roleId,
                 ["allowAccess"] = allowAccess,
+            });
+    }
+
+    /// <summary>
+    /// Removes every page EDIT grant in the seeded tenant, so a case can state its own starting point.
+    /// </summary>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// ⚠ REQUIRED BECAUSE THE DEFINITION CATALOGUE'S POLICY IS A TENANT-WIDE CAPABILITY QUESTION. Admission
+    /// depends on whether ANY page of the tenant grants the caller EDIT, so a case asserting a refusal is
+    /// asserting something about stored rows rather than about the caller's role. The suites share one database
+    /// and xUnit gives no ordering guarantee within a collection. Only the EDIT key and only the seeded
+    /// tenant's pages are touched; no case writes a grant and then depends on it surviving another case.
+    /// </remarks>
+    private async Task ClearTenantEditGrantsAsync()
+    {
+        await _fixture.Database.ExecuteAsync(
+            """
+            DELETE tp
+            FROM [dbo].[TabPermission] AS tp
+            INNER JOIN [dbo].[Tabs] AS t ON t.[TabID] = tp.[TabID]
+            WHERE t.[PortalID] = @portalId AND tp.[PermissionID] = @permissionId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["permissionId"] = _fixture.Seed.TabEditPermissionId,
             });
     }
 

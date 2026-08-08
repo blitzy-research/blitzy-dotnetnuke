@@ -230,7 +230,7 @@ import {
   billingTermsBound,
 } from './role.store';
 
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../models/paged-result.model';
+import { DEFAULT_PAGE_SIZE } from '../models/paged-result.model';
 
 import type { TestRequest } from '@angular/common/http/testing';
 import type { Signal } from '@angular/core';
@@ -1994,19 +1994,29 @@ describe('RoleStore', () => {
   // -------------------------------------------------------------------------
 
   describe('the keyed membership probe answers about ONE pairing, in ONE request', () => {
-    it('filters the listing by the login name and matches the row by identifier', () => {
-      store.probeAssignment(7, 42, 'host');
+    // ⚠ THE ADDRESS IS THE FINDING. The probe used to narrow the membership LISTING by the
+    // account's login name, carried in the paging contract's free-text filter — and the server
+    // matches that filter against the login name and the display name, so the name had to be
+    // there for the request to work at all. A query string is written to browser history, to
+    // every proxy access log and to the server's own, all of them at an END of the encrypted
+    // channel, so transport security does not reach them: CWE-598. The pairing has its own
+    // address, so the two identifiers travel in the PATH and no name travels anywhere.
+    it('addresses the pairing itself, naming nobody in the request target', () => {
+      store.probeAssignment(7, 42);
 
-      const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
+      const request = expectGet(ROLE_SEVEN_MEMBER_URL);
 
-      // ⚠ THE NAME IS THE FILTER; THE IDENTIFIER IS THE MATCH. The listing matches the free-text
-      // filter as a case-insensitive substring of either the login name or the display name, so a
-      // name that is a fragment of another brings back neighbours. The wanted row is picked out
-      // afterwards by identity, because a name is not an identifier.
-      expect(request.request.params.get('query')).toBe('host');
-      // BOUNDED: one request, at the widest page the contract allows, and never a walk.
-      expect(request.request.params.get('pageIndex')).toBe('0');
-      expect(request.request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+      expect(request.request.params.keys())
+        .withContext('no query parameter at all, so nothing identifying can be in the target')
+        .toEqual([]);
+      expect(request.request.urlWithParams).toBe(ROLE_SEVEN_MEMBER_URL);
+      expect(request.request.urlWithParams).not.toContain('host');
+
+      // The listing is deliberately NOT read: the probe asks a different question and one request
+      // answers it, so no page of other people's memberships is fetched to learn about one account.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
 
       // The pairing being asked about is published BEFORE the answer lands, so a screen can see
       // which question is outstanding.
@@ -2015,13 +2025,7 @@ describe('RoleStore', () => {
 
       const wanted = anAssignment({ userRoleId: 9, userId: 42 });
 
-      request.flush(
-        pageOf([anAssignment({ userRoleId: 8, userId: 43, username: 'hostess' }), wanted], 2),
-      );
-
-      httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
-      );
+      request.flush(envelopeOf(wanted));
 
       expect(store.probedAssignment()).toEqual(wanted);
       expect(store.assignmentProbeLoading()).toBeFalse();
@@ -2030,22 +2034,32 @@ describe('RoleStore', () => {
       expect(store.assignmentItems()).toEqual([]);
     });
 
-    it('reports NO MEMBERSHIP when the filtered page holds no row for the account', () => {
+    it('reads a settled NO MEMBERSHIP from the refusal, without recording a failure', () => {
       // Role zero and account zero, because both tables carry a legitimate zero key and a truthiness
       // test on either would make this case pass for the wrong reason.
-      store.probeAssignment(0, 0, 'ada');
+      store.probeAssignment(0, 0);
 
-      expectGet('/api/v1/roles/0/users').flush(pageOf([anAssignment({ userId: 99 })], 1));
+      // The endpoint answers 404 when the account holds no membership of the role. That IS the
+      // negative answer — the state the legacy screen showed by blanking its date box — so it must
+      // not put a banner on the screen.
+      expectGet('/api/v1/roles/0/users/0').flush(
+        aProblem(404, 'role_assignment.not_found', 'The account holds no such membership.'),
+        { status: 404, statusText: 'Not Found' },
+      );
 
       // A settled "holds nothing", told apart from "nothing has been asked" by the key beside it.
       expect(store.probedAssignment()).toBeNull();
       expect(store.probedAssignmentKey()).toEqual({ roleId: 0, userId: 0 });
+      expect(store.failure())
+        .withContext('an ordinary negative answer is not a failure')
+        .toBeNull();
+      expect(store.assignmentProbeLoading()).toBeFalse();
     });
 
     it('records a failed probe under its own operation, never as a failed listing', () => {
-      store.probeAssignment(7, 42, 'host');
+      store.probeAssignment(7, 42);
 
-      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(
+      expectGet(ROLE_SEVEN_MEMBER_URL).flush(
         aProblem(500, 'server.unexpected_failure', 'Something went wrong.'),
         { status: 500, statusText: 'Internal Server Error' },
       );
@@ -2059,28 +2073,42 @@ describe('RoleStore', () => {
       expect(store.assignmentProbeLoading()).toBeFalse();
     });
 
+    it('still records a refusal that is not the negative answer', () => {
+      store.probeAssignment(7, 42);
+
+      // 403 is a caller who may not ask, which is a genuine failure and must be reported. Only the
+      // 404 is an answer, and this is what keeps that exemption from widening into "swallow refusals".
+      expectGet(ROLE_SEVEN_MEMBER_URL).flush(
+        aProblem(403, 'auth.not_permitted', 'The caller does not administer this tenant.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expect(present(store.failure(), 'the recorded failure').operation).toBe('probeAssignment');
+      expect(store.probedAssignment()).toBeNull();
+    });
+
     it('abandons the probe it replaces, so an older answer cannot land on a newer question', () => {
-      store.probeAssignment(7, 42, 'host');
+      store.probeAssignment(7, 42);
 
-      const first = expectGet(ROLE_SEVEN_MEMBERS_URL);
+      const first = expectGet(ROLE_SEVEN_MEMBER_URL);
 
-      store.probeAssignment(7, 43, 'hostess');
+      store.probeAssignment(7, 43);
 
-      const second = expectGet(ROLE_SEVEN_MEMBERS_URL);
+      const second = expectGet('/api/v1/roles/7/users/43');
 
       expect(first.cancelled).withContext('superseded').toBeTrue();
       expect(second.cancelled).withContext('current').toBeFalse();
       expect(store.probedAssignmentKey()).toEqual({ roleId: 7, userId: 43 });
 
-      second.flush(pageOf([anAssignment({ userId: 43 })], 1));
+      second.flush(envelopeOf(anAssignment({ userId: 43 })));
 
       expect(present(store.probedAssignment(), 'the newer answer').userId).toBe(43);
     });
 
     it('forgets the answer and the question together, and abandons a probe in flight', () => {
-      store.probeAssignment(7, 42, 'host');
+      store.probeAssignment(7, 42);
 
-      const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
+      const request = expectGet(ROLE_SEVEN_MEMBER_URL);
 
       store.clearProbedAssignment();
 

@@ -666,44 +666,98 @@ export function userListParams(
 }
 
 /**
- * Whether a filter carries a value that identifies a person, and therefore must not travel
+ * Everything the account listing accepts that could identify the person being looked for:
+ * the four named filters plus the paging contract's own free-text member.
+ *
+ * Composed from the two contracts rather than restated, so a member added to either is
+ * carried here automatically and cannot be forgotten. The paging member is projected in
+ * with `Pick` rather than by widening to the whole of {@link PagedRequestParams}, because
+ * a page coordinate, a page size and an ordering identify nobody and admitting them here
+ * would suggest they were under consideration.
+ */
+export type UserSearchTerms = UserListFilter & Pick<PagedRequestParams, 'query'>;
+
+/**
+ * Whether a search carries a value that identifies a person, and therefore must not travel
  * in a request target.
  *
- * ⚠ THE PREDICATE IS ABSENCE, NOT EMPTINESS, AND THAT IS DELIBERATE. Testing for a
- * NON-EMPTY string would make the transport flip on the content of the term, and it would
- * flip for exactly the one input an operator produces by clearing the box — so the
- * cleared-box case, and only that case, would take a different route from every other
- * keystroke. Absence is the one property of a filter that says nothing about the person
- * being looked for, so it is the only safe thing to switch on.
+ * ⚠ FIVE MEMBERS ARE INSPECTED, AND THEY ARE INSPECTED BY TWO DIFFERENT TESTS. The
+ * difference is not an inconsistency; each test is the one that is correct for its member,
+ * and conflating them would break one of the two cases below.
+ *
+ * ── THE FOUR NAMED FILTERS: ABSENCE, NOT EMPTINESS ──
+ * `userName`, `email`, `profilePropertyName` and `profilePropertyValue` flip the transport
+ * on being SUPPLIED AT ALL. Testing them for non-empty text would make the transport flip
+ * on the content of the term, and it would flip for exactly the one input an operator
+ * produces by clearing the box — so the cleared-box case, and only that case, would take a
+ * different route from every other keystroke. Absence is the one property of a named filter
+ * that says nothing about the person being looked for, so it is the only safe thing to
+ * switch on. Each of the four is present only when a search MODE that names a person has
+ * been chosen, which is what makes absence a meaningful signal here.
  *
  * ⚠ THE SERVER TREATS A BLANK MEMBER AS NO FILTER, WHICH IS WHY SENDING ONE IS SAFE RATHER
  * THAN MERELY TIDY. `POST api/v1/users/search` normalises a blank filter member to absent
  * before the application service sees it, reproducing the conversion the framework's query
  * binder already performs on a blank query value — measured for the empty string and for
  * whitespace alike. So a cleared box answers the unfiltered page through either transport
- * rather than being refused through one of them, and this predicate does not have to know
- * about blankness at all. That parity was a REGRESSION when the body-bound endpoint was
- * introduced without it: clearing the search box posted `{"userName":""}`, met the service's
- * blank-filter rule, and put an error banner on the account listing.
+ * rather than being refused through one of them. That parity was a REGRESSION when the
+ * body-bound endpoint was introduced without it: clearing the search box posted
+ * `{"userName":""}`, met the service's blank-filter rule, and put an error banner on the
+ * account listing.
  *
- * The approval state is deliberately NOT among the four. It is one of two values, holds
+ * ── THE GENERIC FILTER: NON-BLANKNESS ──
+ * ⚠ `query` IS THE PAGING CONTRACT'S MEMBER AND IT IS PRESENT ON EVERY LISTING, WHICH IS
+ * WHY IT CANNOT USE THE ABSENCE TEST. It identifies a person just as squarely as the named
+ * filters do — `UserRepository.cs` L131-L134 matches it as a SUBSTRING across the login
+ * name, the display name AND the electronic-mail address, so a person searched for by any
+ * of their three identifiers matches through it — but it is a member every caller may
+ * legitimately carry with nothing in it. Switching on its mere presence would push the
+ * unfiltered administrative listing, which names nobody, off the cacheable `GET` for no
+ * privacy gain at all. Non-blankness is therefore the correct test for THIS member and
+ * absence is the correct test for the other four, and the asymmetry is what makes both
+ * answers right.
+ *
+ * White space counts as blank, because the server reads a whitespace-only filter as absent
+ * (`PagedRequest.HasQuery` is `!string.IsNullOrWhiteSpace(Query)`), so such a value
+ * restricts nothing and can identify nobody.
+ *
+ * The approval state is deliberately NOT among the five. It is one of two values, holds
  * for a whole population and identifies nobody, so a listing restricted by it alone stays
- * on the cacheable `GET`.
+ * on the cacheable `GET`. So do a page coordinate, a page size and an ordering.
  *
- * @param filter The filter to inspect, or omitted or `null` for an unfiltered listing.
- * @returns True when at least one identifying member was supplied.
+ * @param terms The search to inspect, or omitted or `null` for an unfiltered listing.
+ * @returns True when at least one identifying value was supplied.
  */
-export function identifiesAPerson(filter?: UserListFilter | null): boolean {
-  if (filter === undefined || filter === null) {
+export function identifiesAPerson(terms?: UserSearchTerms | null): boolean {
+  if (terms === undefined || terms === null) {
     return false;
   }
 
   return (
-    filter.userName !== undefined && filter.userName !== null
-    || filter.email !== undefined && filter.email !== null
-    || filter.profilePropertyName !== undefined && filter.profilePropertyName !== null
-    || filter.profilePropertyValue !== undefined && filter.profilePropertyValue !== null
+    terms.userName !== undefined && terms.userName !== null
+    || terms.email !== undefined && terms.email !== null
+    || terms.profilePropertyName !== undefined && terms.profilePropertyName !== null
+    || terms.profilePropertyValue !== undefined && terms.profilePropertyValue !== null
+    || carriesFreeText(terms.query)
   );
+}
+
+/**
+ * Whether the paging contract's free-text member carries something to match on.
+ *
+ * Extracted rather than inlined so the blankness rule is stated once and reads as its own
+ * decision, and so the trimmed comparison cannot be mistaken for the transport being
+ * decided on the term's length.
+ *
+ * @param query The free-text filter, or omitted or `null` when none applies.
+ * @returns True when the member carries at least one non-whitespace character.
+ */
+function carriesFreeText(query: string | null | undefined): boolean {
+  if (query === undefined || query === null) {
+    return false;
+  }
+
+  return query.trim().length > 0;
 }
 
 /**

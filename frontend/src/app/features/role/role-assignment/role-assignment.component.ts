@@ -87,8 +87,9 @@
  * show for the account the operator chose, and whether to relabel the action 'Update User
  * Role' — are answered by a keyed probe instead, `RoleStore.probeAssignment`. A scan of one
  * page would answer "holds nothing" for an account whose row sits on another page, which the
- * legacy screen never did; one narrow request, filtered to the chosen account and matched by
- * identifier, reproduces the legacy answer without materialising the membership.
+ * legacy screen never did; one request addressing the PAIRING itself — role key and account key,
+ * both in the path — reproduces the legacy answer without materialising the membership, and
+ * without putting the account's login name in a request target where it would be logged.
  *
  * The one transport this screen still calls directly is the ACCOUNT CANDIDATE LIST behind
  * whichever account control the tenant asked for, `UserService.list`. That is deliberate and is
@@ -2297,7 +2298,7 @@ export class RoleAssignmentComponent {
     }
 
     this.awaitedPrefillUserId.set(user.userId);
-    this.store.probeAssignment(roleId, user.userId, user.username);
+    this.store.probeAssignment(roleId, user.userId);
   }
 
   /**
@@ -2845,7 +2846,7 @@ export class RoleAssignmentComponent {
       return;
     }
 
-    this.store.probeAssignment(roleId, chosen.userId, chosen.username);
+    this.store.probeAssignment(roleId, chosen.userId);
   }
 
   /**

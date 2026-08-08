@@ -421,7 +421,7 @@ const GROUP_IN_USE_PROBLEM = {
 } as const;
 
 /**
- * The thirteen methods the surface is closed at, in alphabetical order so the comparison below is
+ * The methods the surface is closed at, in alphabetical order so the comparison below is
  * order-independent without needing a set.
  */
 const EXPECTED_METHODS: readonly string[] = [
@@ -430,6 +430,17 @@ const EXPECTED_METHODS: readonly string[] = [
   'createRoleGroup',
   'deleteRole',
   'deleteRoleGroup',
+  /**
+   * ONE ACCOUNT'S MEMBERSHIP OF ONE ROLE, addressed by both identifiers.
+   *
+   * ⚠ IT EXISTS SO THAT A LOGIN NAME NEVER TRAVELS IN A REQUEST TARGET. The same question was
+   * previously asked by narrowing `listUsers` with the account's login name in the paging
+   * contract's free-text filter, which the server matches against the login name and the display
+   * name - so asking it wrote the name into a query string, and a query string is kept in browser
+   * history and written in full to every proxy and server access log. That is CWE-598, and it stood
+   * beside an account search already moved to a request body to avoid exactly it.
+   */
+  'getMembership',
   'getRole',
   'getRoleGroup',
   'listRoleGroups',
@@ -515,13 +526,13 @@ describe('RoleService', () => {
   // THE CLOSED SURFACE
 
   describe('the published surface', () => {
-    it('declares exactly the fourteen expected methods and no fifteenth', () => {
+    it('declares exactly the fifteen expected methods and no sixteenth', () => {
       const declared: string[] = Object.getOwnPropertyNames(RoleService.prototype)
         .filter((name) => name !== 'constructor')
         .sort();
 
       expect(declared)
-        .withContext('the surface is closed at fourteen operations across two resources')
+        .withContext('the surface is closed at fifteen operations across two resources')
         .toEqual([...EXPECTED_METHODS]);
     });
 
@@ -1125,6 +1136,80 @@ describe('RoleService', () => {
       expect(request.request.url).toBe('/api/v1/roles/0/users');
 
       request.flush(pageOf([], 0));
+      await expectAsync(pending).toBeResolved();
+    });
+  });
+
+  describe('getMembership', () => {
+    // ⚠ THE ADDRESS IS THE POINT. This read replaces asking the same question through `listUsers`
+    // narrowed by the account's LOGIN NAME in the paging contract's free-text filter, which the
+    // server matches against the login name and the display name - so the name had to be in the
+    // query string for the request to work. A query string is kept in browser history and written
+    // in full to every forward and reverse proxy access log and to the server's own, none of which
+    // is on the wire, so transport encryption does not address it: CWE-598.
+    it('addresses the pairing itself and emits no query parameter at all', async () => {
+      const pending = firstValueFrom(service.getMembership(ROLE_ID, USER_ID));
+
+      const request = httpMock.expectOne(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_MEMBER_URL,
+      );
+
+      expect(request.request.url).toBe(ROLE_MEMBER_URL);
+      expect(request.request.urlWithParams).toBe(ROLE_MEMBER_URL);
+      expect(request.request.params.keys()).toEqual([]);
+      expect(request.request.body).toBeNull();
+      expect(request.request.urlWithParams).not.toContain(USER_ROLE.username);
+      expect(request.request.urlWithParams).not.toContain(USER_ROLE.displayName);
+
+      request.flush(envelope(USER_ROLE));
+      await expectAsync(pending).toBeResolved();
+    });
+
+    it('returns the single-payload envelope, decoded through the membership row contract', async () => {
+      const body = envelope(USER_ROLE);
+      const pending = firstValueFrom(service.getMembership(ROLE_ID, USER_ID));
+
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === ROLE_MEMBER_URL)
+        .flush(body);
+
+      await expectAsync(pending).toBeResolvedTo(body);
+    });
+
+    it('propagates the refusal that means the account holds no such membership', async () => {
+      // The transport does NOT translate the 404 into a successful absence. Whether "holds nothing"
+      // is an acceptable outcome depends on the question being asked, and only the caller knows
+      // that - `RoleStore.probeAssignment` reads it as the negative answer, and a screen that
+      // required the membership to exist would report it.
+      const pending = firstValueFrom(service.getMembership(ROLE_ID, USER_ID));
+
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === ROLE_MEMBER_URL)
+        .flush(
+          {
+            type: 'urn:dnnmigration:error:role_assignment.not_found',
+            title: 'Not Found',
+            status: 404,
+            detail: 'The account holds no such membership.',
+          },
+          { status: 404, statusText: 'Not Found' },
+        );
+
+      await expectAsync(pending).toBeRejected();
+    });
+
+    it('addresses the pairing whose keys are both zero, because both tables seed there', async () => {
+      // `dbo.Roles.RoleID` is IDENTITY(0, 1), so role zero is real. Neither identifier is tested
+      // for truthiness anywhere on this path.
+      const pending = firstValueFrom(service.getMembership(ROLE_ID_ZERO, 0));
+
+      const request = httpMock.expectOne(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/roles/0/users/0',
+      );
+
+      expect(request.request.url).toBe('/api/v1/roles/0/users/0');
+
+      request.flush(envelope(USER_ROLE));
       await expectAsync(pending).toBeResolved();
     });
   });

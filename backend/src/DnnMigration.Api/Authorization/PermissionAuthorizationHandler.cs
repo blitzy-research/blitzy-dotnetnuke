@@ -154,6 +154,34 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
             return;
         }
 
+        // PORTAL SCOPE IS DECIDED HERE, BEFORE ANY ROUTE KEY IS SOUGHT, because it is the one scope that
+        // names no item. The tenant it is asked about has already been resolved above and already been
+        // reconciled against the token, which is everything this scope needs; falling through to the route-key
+        // resolution below would refuse it for the absence of a key it never had.
+        if (requirement.Scope == PermissionScope.Portal)
+        {
+            Result<bool> capability = await _permissions
+                .HasAnyTabPermissionInPortalAsync(
+                    portalId,
+                    _currentUser.UserId,
+                    requirement.Permission,
+                    httpContext.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (capability.IsSuccess && capability.Value)
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
+            _logger.LogWarning(
+                "A tenant-wide {Permission} capability requirement was refused for portal {PortalId}: the "
+                + "caller neither administers the tenant nor holds the permission on any of its pages.",
+                requirement.Permission,
+                portalId);
+            return;
+        }
+
         if (ResolveRouteKey(requirement.Scope) is not { } routeKey)
         {
             _logger.LogWarning(
@@ -253,6 +281,11 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     {
         PermissionScope.Module => ModuleRouteKey,
         PermissionScope.Tab => TabRouteKey,
+
+        // Deliberately keyless, and reached only if the tenant-wide branch above is ever removed. Answering
+        // null here means such a requirement would be refused rather than evaluated against an invented key,
+        // which is the safe reading of a registration that no longer matches this handler.
+        PermissionScope.Portal => null,
         _ => null
     };
 

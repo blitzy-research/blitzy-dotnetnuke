@@ -322,6 +322,72 @@ public static class RoleMappings
     }
 
     /// <summary>
+    /// Projects one role membership from parts the caller has already resolved, rather than from the
+    /// assignment's navigations.
+    /// </summary>
+    /// <param name="assignment">The assignment to project.</param>
+    /// <param name="role">The role it names.</param>
+    /// <param name="account">The account it names.</param>
+    /// <returns>The membership contract.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when any argument is null.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Why an explicit overload exists.</b> The sibling overload requires both navigations to be
+    /// loaded, which is true of the read behind the membership LISTING - one statement projecting columns
+    /// from all three tables. The single-membership read is a different repository member, and the one
+    /// that answers it composes only the role: it is also on the assignment WRITE path, where an extra
+    /// join would be paid on every enrolment for a projection that path never performs. Passing the
+    /// resolved parts in is what lets the read stay as narrow as its other caller needs while this
+    /// projection stays complete.
+    /// </para>
+    /// <para>
+    /// The three arguments are asserted to describe ONE membership rather than trusted to, because a
+    /// mismatched pairing would publish one account's terms under another's name - the exact disclosure
+    /// the caller of this overload exists to avoid.
+    /// </para>
+    /// <para>
+    /// Every value is copied across with no coercion, for the reasons given on the sibling overload: a
+    /// null date is not turned into a minimum date and a minimum date is not turned into a null.
+    /// </para>
+    /// </remarks>
+    public static RoleMembershipDto ToMembership(UserRole assignment, Role role, User account)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        ArgumentNullException.ThrowIfNull(role);
+        ArgumentNullException.ThrowIfNull(account);
+
+        if (assignment.RoleId != role.RoleId)
+        {
+            throw new ArgumentException(
+                FormattableString.Invariant(
+                    $"Assignment {assignment.UserRoleId} names role {assignment.RoleId}, not {role.RoleId}."),
+                nameof(role));
+        }
+
+        if (assignment.UserId != account.UserId)
+        {
+            throw new ArgumentException(
+                FormattableString.Invariant(
+                    $"Assignment {assignment.UserRoleId} names account {assignment.UserId}, not {account.UserId}."),
+                nameof(account));
+        }
+
+        return new RoleMembershipDto
+        {
+            UserRoleId = assignment.UserRoleId,
+            UserId = assignment.UserId,
+            Username = account.Username,
+            DisplayName = account.DisplayName,
+            RoleId = assignment.RoleId,
+            RoleName = role.RoleName,
+            EffectiveDate = assignment.EffectiveDate,
+            ExpiryDate = assignment.ExpiryDate,
+        };
+    }
+
+    /// <summary>
     /// Builds a new role aggregate from a creation request.
     /// </summary>
     /// <param name="portalId">Identifier of the portal the role belongs to.</param>

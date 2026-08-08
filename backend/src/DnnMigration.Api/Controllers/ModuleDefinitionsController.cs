@@ -106,13 +106,30 @@ namespace DnnMigration.Api.Controllers;
 /// tenant, and why the tenant is taken from the request rather than from a caller-supplied value.
 /// </para>
 /// <para>
-/// <strong>Administrator-gated, and it fails closed.</strong> The class-level policy is
-/// <see cref="PolicyNames.PortalAdministrator"/>, which is the declarative equivalent of the legacy
-/// gate <c>PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName)</c> that guarded the module
-/// administration screens. It is also the only workable policy for this address: the module and page
-/// policies resolve their scope from route data, and this route carries neither a module nor a page
-/// identifier - a definition identifier is not a module identifier - so either of them could only
-/// ever refuse.
+/// <strong>Content-editor gated, and it fails closed.</strong> The class-level policy is
+/// <see cref="PolicyNames.PortalContentEditor"/>: the tenant's administrators, plus any caller holding
+/// EDIT on any one of its pages. It fails closed because a caller holding EDIT nowhere in the tenant is
+/// refused outright, which is every caller the stricter reading was protecting this catalogue from.
+/// </para>
+/// <para>
+/// It is deliberately NOT <see cref="PolicyNames.PortalAdministrator"/>, and the reason is measured
+/// rather than chosen. The legacy gate on the screen this catalogue backs admitted a PAGE administrator
+/// as well as a portal one (<c>ModuleSettings.ascx.vb:L191</c>), and where that screen went on to
+/// disable four controls for a caller outside the administrators role
+/// (<c>ModuleSettings.ascx.vb:L214-L219</c>), the module-type selector this catalogue fills is
+/// conspicuously not among them. Requiring tenant administration here therefore refused a caller the
+/// legacy admitted, and refused them in the way hardest to see - the create action carries no policy at
+/// all, so the caller reached the placement form and was handed an empty selector by a supporting read
+/// they were not permitted to make. The measured detail is recorded at the attribute itself.
+/// </para>
+/// <para>
+/// Neither the module nor the page policy is workable at this address, and that constraint is what
+/// <see cref="PermissionScope.Portal"/> exists to satisfy: both resolve their scope from route data,
+/// and this route carries neither a module nor a page identifier - a definition identifier is not a
+/// module identifier - so either of them could only ever refuse. The portal scope reads no item
+/// identifier from the route at all, which is why it can gate an address like this one. It is not a
+/// licence to enumerate: an endpoint carrying it answers a capability question, so it remains
+/// responsible for narrowing what it returns, and this one already answers per tenant.
 /// </para>
 /// <para>
 /// MIGRATION: the legacy gate answered a refusal with
@@ -136,7 +153,19 @@ namespace DnnMigration.Api.Controllers;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/module-definitions")]
-[Authorize(Policy = PolicyNames.PortalAdministrator)]
+// THE CATALOGUE IS READ BY WHOEVER MAY PLACE A MODULE, NOT ONLY BY THE TENANT'S ADMINISTRATOR, and the
+// distinction is measured rather than chosen. ModuleSettings.ascx.vb:L214-L219 disabled four controls for a
+// caller outside the administrators role - chkAllTabs, chkDefault, chkAllModules and cboTab - and cboModuleType,
+// the module-type selector this catalogue backs, is conspicuously NOT among them. A page administrator picked a
+// module type; what they could not do was promote the module across the tenant's pages.
+//
+// Declaring tenant administration here therefore refused a caller the legacy admitted, and refused them in the
+// way hardest to see: the create ACTION carries no policy at all, deliberately, so a page administrator reached
+// the placement form and was then handed an empty type selector by a supporting read they were not permitted to
+// make. The capability was reachable and unusable. PortalContentEditor admits the callers that action admits -
+// the tenant's administrators, plus anyone holding EDIT on any of its pages - and refuses a caller holding EDIT
+// nowhere, which is every caller tenant administration was protecting this catalogue from.
+[Authorize(Policy = PolicyNames.PortalContentEditor)]
 [Produces("application/json")]
 public sealed class ModuleDefinitionsController : ControllerBase
 {

@@ -94,15 +94,22 @@ public class RoleServiceTests
     private static readonly DateTime PerpetualExpiry = new(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The role contract exposes fourteen asynchronous operations and nothing else, each of which accepts a
+    /// The role contract exposes fifteen asynchronous operations and nothing else, each of which accepts a
     /// cancellation token as its final argument.
     /// </summary>
+    /// <remarks>
+    /// The fifteenth is <c>GetRoleMembershipAsync</c>, which answers one named pairing of a role and an
+    /// account. It reads deliberately alongside <c>ListRoleUsersAsync</c> rather than through it: asking
+    /// the listing whether one account holds a role obliges the caller to put that account's login name in
+    /// a request target, which is written to browser history and to every proxy log the request passes
+    /// through, while two numeric identifiers in a path disclose nothing about anybody (CWE-598).
+    /// </remarks>
     [Fact]
-    public void RoleContract_OffersExactlyFourteenOperations()
+    public void RoleContract_OffersExactlyFifteenOperations()
     {
         MethodInfo[] members = typeof(IRoleService).GetMethods();
 
-        members.Should().HaveCount(14, "the role contract covers roles, their members and their groups");
+        members.Should().HaveCount(15, "the role contract covers roles, their members and their groups");
 
         foreach (MethodInfo member in members)
         {
@@ -2189,6 +2196,141 @@ public class RoleServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
+    }
+
+    /// <summary>
+    /// The exact-identifier membership read answers the pairing itself, with the terms it runs on.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THIS MEMBER EXISTS SO THAT A LOGIN NAME NEVER TRAVELS IN A REQUEST TARGET. The single-pairing
+    /// question was previously asked by narrowing the membership LISTING with the account's login name in
+    /// the paging contract's free-text filter, which the repository matches against the login name and the
+    /// display name - so the name had to be in the query string for the question to be answerable, and a
+    /// query string is written to browser history and to every proxy and server access log, none of which
+    /// is on the wire. That is CWE-598. The assertion below is that the answer is composed WITHOUT the
+    /// listing being read at all, which is what makes the narrower address the only one needed.
+    /// </remarks>
+    [Fact]
+    public async Task GetRoleMembership_AnswersThePairingWithoutReadingTheListing()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+        harness.Member = Member(UserId);
+        harness.ExistingAssignment = Membership(
+            UserId,
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 12, 31, 0, 0, 0, DateTimeKind.Utc));
+
+        Result<RoleMembershipDto?> outcome = await harness.Service
+            .GetRoleMembershipAsync(PortalId, RoleId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        RoleMembershipDto row = outcome.Value.Should().NotBeNull().And.Subject.As<RoleMembershipDto>();
+
+        row.UserId.Should().Be(UserId);
+        row.RoleId.Should().Be(RoleId);
+        row.Username.Should().Be(MemberName);
+        row.DisplayName.Should().Be("Ada Lovelace");
+        row.RoleName.Should().Be(RoleName);
+        row.EffectiveDate.Should().Be(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        row.ExpiryDate.Should().Be(new DateTime(2026, 12, 31, 0, 0, 0, DateTimeKind.Utc));
+
+        harness.Roles.Verify(
+            r => r.ListRoleMembershipsAsync(
+                It.IsAny<int>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// An account that holds no membership of the role is a SUCCESSFUL outcome carrying no value, not a
+    /// failure.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// "Holds nothing" is an answer the caller renders - the legacy screen showed it by blanking its two
+    /// date fields (<c>SecurityRoles.ascx.vb:L484</c>) - whereas an unknown portal, role or account is a
+    /// broken request. Reporting the first as a failure would put an error banner on an ordinary outcome,
+    /// and reporting the second as an empty answer would hide a mistake.
+    /// </remarks>
+    [Fact]
+    public async Task GetRoleMembership_ReportsNoMembershipAsASuccessCarryingNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+        harness.Member = Member(UserId);
+        harness.ExistingAssignment = null;
+
+        Result<RoleMembershipDto?> outcome = await harness.Service
+            .GetRoleMembershipAsync(PortalId, RoleId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Each unknown identifier is reported under its own code, so a caller can tell the three apart from
+    /// each other and all three from "holds nothing".
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetRoleMembership_ReportsEachUnknownIdentifierUnderItsOwnCode()
+    {
+        Harness absentPortal = Harness.Ready();
+        absentPortal.PortalExists = false;
+
+        Result<RoleMembershipDto?> withoutPortal = await absentPortal.Service
+            .GetRoleMembershipAsync(PortalId, RoleId, UserId, CancellationToken.None);
+
+        withoutPortal.IsFailure.Should().BeTrue();
+        withoutPortal.Reason!.Code.Should().Be(PortalNotFoundCode);
+
+        Harness absentRole = Harness.Ready();
+        absentRole.LookupRole = null;
+
+        Result<RoleMembershipDto?> withoutRole = await absentRole.Service
+            .GetRoleMembershipAsync(PortalId, RoleId, UserId, CancellationToken.None);
+
+        withoutRole.IsFailure.Should().BeTrue();
+        withoutRole.Reason!.Code.Should().Be(RoleNotFoundCode);
+
+        Harness absentMember = Harness.Ready();
+        absentMember.LookupRole = StoredRole();
+        absentMember.Member = null;
+
+        Result<RoleMembershipDto?> withoutMember = await absentMember.Service
+            .GetRoleMembershipAsync(PortalId, RoleId, UserId, CancellationToken.None);
+
+        withoutMember.IsFailure.Should().BeTrue();
+        withoutMember.Reason!.Code.Should().Be(UserNotFoundCode);
+    }
+
+    /// <summary>
+    /// A role belonging to another tenant is not readable through this member, so the pairing address
+    /// cannot be used to read across a tenant boundary.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetRoleMembership_RefusesARoleBelongingToAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = new Role { RoleId = RoleId, PortalId = PortalId + 7, RoleName = RoleName };
+        harness.Member = Member(UserId);
+        harness.ExistingAssignment = Membership(UserId);
+
+        Result<RoleMembershipDto?> outcome = await harness.Service
+            .GetRoleMembershipAsync(PortalId, RoleId, UserId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(RoleNotFoundCode);
     }
 
     /// <summary>

@@ -441,6 +441,12 @@ public static class UserMappings
     /// <param name="definitions">The tenant's definitions, already in view order.</param>
     /// <param name="values">The values the account has supplied.</param>
     /// <param name="defaultVisibility">The tenant's default visibility hint.</param>
+    /// <param name="displayVisibilityEnabled">
+    /// Whether the tenant lets an account holder choose who may see each of their own values. Carried
+    /// through to the projection rather than derived from <paramref name="defaultVisibility"/>: the two come
+    /// from different tenant settings and answer different questions - one is which audience a value
+    /// defaults to, the other is whether the audience may be chosen at all.
+    /// </param>
     /// <returns>The profile contract.</returns>
     /// <remarks>
     /// Every definition appears in the result, including one the account has never filled in, which is
@@ -453,7 +459,8 @@ public static class UserMappings
         int userId,
         IReadOnlyList<ProfilePropertyDefinition> definitions,
         IReadOnlyList<UserProfileValue> values,
-        int defaultVisibility)
+        int defaultVisibility,
+        bool displayVisibilityEnabled)
     {
         ArgumentNullException.ThrowIfNull(definitions);
         ArgumentNullException.ThrowIfNull(values);
@@ -511,6 +518,7 @@ public static class UserMappings
         {
             UserId = userId,
             Properties = properties,
+            DisplayVisibilityEnabled = displayVisibilityEnabled,
         };
     }
 

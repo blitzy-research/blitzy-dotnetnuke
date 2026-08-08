@@ -277,9 +277,14 @@ public static class AuthenticationExtensions
         // them. Every requirement a policy declares must have a handler registered for it, and a
         // requirement with no handler never succeeds - the framework reports the policy as failed rather
         // than as misconfigured, so the symptom is a 403 from an endpoint whose caller genuinely holds the
-        // permission. The four permission policies below declare PermissionRequirement, which is a fourth
+        // permission. The five permission policies below all declare PermissionRequirement, which is a fourth
         // requirement type none of the membership handlers answers, so it gets its own handler here. Four
         // requirement types declared, four requirement handlers registered: that count is the invariant.
+        //
+        // The fifth permission policy did NOT disturb that count, and that was the point of expressing it as a
+        // third PermissionScope rather than as a new requirement type. Policies and requirement types are not
+        // in one-to-one correspondence and never were - the account family below is two policies over one type
+        // - so a new decision belongs on an existing requirement whenever an existing handler can reach it.
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
         // A fifth handler that is deliberately not tied to one requirement. It can fail any named policy or
@@ -328,6 +333,18 @@ public static class AuthenticationExtensions
 
             // The two VIEW policies deliberately do NOT require an authenticated caller; the two EDIT
             // policies do. See AddPermissionPolicy for the measured reason.
+            // The tenant-wide capability policy. It rides the SAME PermissionRequirement type as the four
+            // item-scoped policies below, which is why no fifth requirement type and no fifth requirement
+            // handler appear above: the count stated in that comment is still four. What differs is the scope
+            // it names - PermissionScope.Portal reads no item key, because the operations it supports name no
+            // item yet - and the handler decides it from the tenant it has already resolved and reconciled.
+            AddPermissionPolicy(
+                options,
+                PolicyNames.PortalContentEditor,
+                PermissionKey.EDIT,
+                PermissionScope.Portal,
+                requireAuthenticatedUser: true);
+
             AddPermissionPolicy(
                 options,
                 PolicyNames.ModuleView,

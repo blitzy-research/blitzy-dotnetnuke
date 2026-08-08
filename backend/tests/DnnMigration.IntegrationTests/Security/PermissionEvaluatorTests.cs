@@ -4262,13 +4262,23 @@ public sealed class PermissionEvaluatorTests
     /// reducer anywhere", which the previous test enforces where it can actually be broken.
     /// </para>
     /// <para>
-    /// The membership of the set is pinned by name as well as by count. Two of the three are grant
-    /// questions - "may this caller act on this module", "may this caller act on this page" - and those are
-    /// the only two scopes a grant is recorded against. The third is deliberately NOT a grant question:
+    /// The membership of the set is pinned by name as well as by count. Two of the four are grant questions
+    /// about ONE RESOURCE - "may this caller act on this module", "may this caller act on this page" - and
+    /// those are the only two scopes a grant is recorded against. One is deliberately NOT a grant question:
     /// authority over a tenant asks whether the caller is the portal's administrator, which is answered from
     /// the tenant's own designation rather than from any permission row, and which no grant on a single
-    /// resource can stand in for. Naming them keeps a fourth decision from being added silently, and keeps
-    /// the third from being mistaken for a third grant scope.
+    /// resource can stand in for. Naming them keeps a decision from being added silently, and keeps tenant
+    /// authority from being mistaken for a third grant scope.
+    /// </para>
+    /// <para>
+    /// THE FOURTH IS A CAPABILITY QUESTION AND NOT A THIRD GRANT SCOPE, which is the distinction this list
+    /// exists to keep visible. <c>HasAnyTabPermissionInPortalAsync</c> asks whether the caller holds a key
+    /// SOMEWHERE in a tenant, and it is answered by disjoining the page scope that already exists rather than
+    /// by consulting any new kind of grant row. It was added because some operations cannot be scoped to a
+    /// resource at all: module creation names no page, since the target arrives in the request body, so a
+    /// caller has to be admitted to the form before any page identifier exists to scope a permission to.
+    /// Anyone adding a fifth decision here should be able to say which of these three kinds it is - one
+    /// resource, tenant authority, or capability - and if it is none of them it probably does not belong.
     /// </para>
     /// </remarks>
     [Fact]
@@ -4284,10 +4294,12 @@ public sealed class PermissionEvaluatorTests
             {
                 nameof(IPermissionService.HasModulePermissionAsync),
                 nameof(IPermissionService.HasTabPermissionAsync),
+                nameof(IPermissionService.HasAnyTabPermissionInPortalAsync),
                 nameof(IPermissionService.IsPortalAdministratorAsync),
             },
-            "two grant scopes exist - module and page - and tenant authority is a separate question answered "
-            + "from the portal's own administrator designation rather than from a permission row");
+            "two grant scopes exist - module and page - tenant authority is a separate question answered "
+            + "from the portal's own administrator designation rather than from a permission row, and the "
+            + "tenant-wide capability question is the page scope disjoined rather than a third grant scope");
 
         foreach (MethodInfo decision in decisions)
         {
@@ -4331,6 +4343,15 @@ public sealed class PermissionEvaluatorTests
     /// than a second reducer - the precedence rule still lives in exactly one place, which the neighbouring
     /// "no second reducer anywhere" fact is what actually guards.
     /// </para>
+    /// <para>
+    /// THE SEVENTH MEMBER IS THE SAME QUESTION REPORTED DIFFERENTLY, AND IT IS NOT A SECOND REDUCER EITHER.
+    /// <c>ListTabsWithPermissionAsync</c> names which of the given pages grant the key instead of whether any
+    /// of them does; both are implemented over ONE private body in the evaluator, so they cannot reach
+    /// different verdicts about the same page and the precedence rule is still applied in exactly one place.
+    /// It exists to narrow a PROJECTION - a page listing offered as a set of placement choices has to contain
+    /// the pages the caller may actually choose - and answering that by asking the single-page member once per
+    /// page would restore precisely the per-page cost the existential member was introduced to remove.
+    /// </para>
     /// </remarks>
     [Fact]
     public void Contract_TheEvaluatorReportsEveryVerdictThroughAnOutcome()
@@ -4346,16 +4367,17 @@ public sealed class PermissionEvaluatorTests
                 nameof(IPermissionEvaluator.HasModulePermissionAsync),
                 nameof(IPermissionEvaluator.HasTabPermissionAsync),
                 nameof(IPermissionEvaluator.HasAnyTabPermissionAsync),
+                nameof(IPermissionEvaluator.ListTabsWithPermissionAsync),
             },
             "the evaluator decides a portal-wide, a module-scoped and a page-scoped listing, plus the two "
-            + "single-key verdicts and the set-based page verdict, and nothing else belongs on a decision "
-            + "contract");
+            + "single-key verdicts and the two set-based page verdicts - one existential, one enumerating - "
+            + "and nothing else belongs on a decision contract");
 
         members.Should().HaveCount(
-            6,
+            7,
             "the evaluator decides a portal-wide, a module-scoped and a page-scoped listing, plus the two "
-            + "single-key verdicts and the set-based page verdict, and nothing else belongs on a decision "
-            + "contract");
+            + "single-key verdicts and the two set-based page verdicts - one existential, one enumerating - "
+            + "and nothing else belongs on a decision contract");
 
         foreach (MethodInfo member in members)
         {

@@ -399,6 +399,81 @@ public interface IPermissionService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Decides whether a caller holds one permission key ANYWHERE in a tenant's pages.
+    /// </summary>
+    /// <param name="portalId">The tenant whose pages are judged.</param>
+    /// <param name="userId">The caller, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="permissionKey">The key to test.</param>
+    /// <param name="cancellationToken">Token that cancels the reads.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> whose value is the decision. A tenant with no
+    /// pages, an unknown caller and a caller granted nothing all answer <see langword="false"/> rather than
+    /// failing, because each is a legitimate question with a negative answer.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// A CAPABILITY QUESTION, NOT A RESOURCE ONE, and it exists because some operations cannot be scoped to a
+    /// resource that does not exist yet. Module placement is the case: the create action names no page,
+    /// because the target arrives in the request body, so a caller has to be admitted to the FORM before any
+    /// page identifier exists to scope a permission to. This member answers the only honest question available
+    /// at that moment - is this caller capable of the operation somewhere in this tenant.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the tenant-administration arm and the page-grant arm are the two alternatives at
+    /// <c>ModuleSettings.ascx.vb:L191</c>, which admitted
+    /// <c>IsInRoles(PortalSettings.AdministratorRoleName)</c> OR
+    /// <c>IsInRoles(PortalSettings.ActiveTab.AdministratorRoles)</c>. The legacy active page was ambient
+    /// request state this solution does not have, so the second arm generalises from "the page they arrived
+    /// on" to "any page they hold the key on" - the narrowest faithful reading, since it admits exactly the
+    /// callers who could have arrived from SOME page.
+    /// </para>
+    /// <para>
+    /// It answers whether, never where. An endpoint admitted by this decision must still narrow what it
+    /// RETURNS to what the caller may act on, which is what
+    /// <see cref="ListTabsWithPermissionAsync"/> is for.
+    /// </para>
+    /// </remarks>
+    Task<Result<bool>> HasAnyTabPermissionInPortalAsync(
+        int portalId,
+        int? userId,
+        PermissionKey permissionKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reports which of the named pages a caller holds one permission key on.
+    /// </summary>
+    /// <param name="portalId">The tenant the question is asked within.</param>
+    /// <param name="userId">The caller, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="tabIds">The pages to judge. An empty set answers an empty list.</param>
+    /// <param name="permissionKey">The key to test.</param>
+    /// <param name="cancellationToken">Token that cancels the reads.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> carrying the granting page identifiers. A caller
+    /// who administers the tenant, or a host account, is answered with EVERY named page.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// FOR NARROWING A PROJECTION, NOT FOR DECIDING ADMISSION. Its purpose is to let a listing offered as a
+    /// choice contain only the entries the caller may choose, so that the choice cannot be made and then
+    /// refused. Admission remains the policy's answer.
+    /// </para>
+    /// <para>
+    /// THE ADMINISTRATOR ARM RETURNS EVERY NAMED PAGE RATHER THAN THE PAGES WITH EXPLICIT GRANTS, and that
+    /// asymmetry is deliberate. A tenant's administrator administers its pages whether or not a grant row
+    /// happens to name their role, so filtering them by stored grants would hide pages from the one caller
+    /// entitled to all of them - and in an installation whose page grants were never populated it would hide
+    /// every page. The arm is measured: <c>ModuleSettings.ascx.vb:L214-L219</c> disabled the page selector for
+    /// a caller who was NOT in the administrators role, leaving it fully populated and usable for one who was.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<int>>> ListTabsWithPermissionAsync(
+        int portalId,
+        int? userId,
+        IReadOnlyCollection<int> tabIds,
+        PermissionKey permissionKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Decides whether a caller administers one portal.
     /// </summary>
     /// <param name="portalId">The portal whose administration is in question.</param>

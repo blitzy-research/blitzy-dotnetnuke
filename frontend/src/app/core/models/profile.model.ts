@@ -189,6 +189,24 @@ export interface UserProfile {
 
   /** One entry per declared property, in the tenant's declared display order. */
   readonly properties: readonly UserProfileValue[];
+
+  /**
+   * Whether the tenant lets an account holder choose who may see each of their own values.
+   *
+   * ⚠ CARRIED ON THE PROFILE BECAUSE THE ONLY OTHER SOURCE IS ADMINISTRATOR-ONLY, AND THE
+   * PEOPLE WHO NEED IT ARE NOT ADMINISTRATORS. It used to be read from
+   * `GET api/v1/users/settings`, which the server declares `PortalAdministrator`: measured
+   * against the running API, an ordinary account holder opening their OWN profile was answered
+   * `403`, so the per-value visibility control could never be offered to the one caller the
+   * legacy rule offers it to, however the tenant had configured it. The setting was stored,
+   * published and inert.
+   *
+   * ⚠ THIS IS THE TENANT'S POLICY ONLY, AND IS HALF OF THE RULE. `Profile.ascx.vb` L58-L63
+   * required the policy AND the viewer being the SUBJECT of the profile. Ownership is a fact
+   * about the caller rather than about the profile, so the server does not encode it here and
+   * the screen supplies it — see the component's own visibility derivation.
+   */
+  readonly displayVisibilityEnabled: boolean;
 }
 
 /**
@@ -393,4 +411,11 @@ export const decodeUserProfileValue: Decoder<UserProfileValue> = objectOf<UserPr
 export const decodeUserProfile: Decoder<UserProfile> = objectOf<UserProfile>({
   userId: decodeInteger,
   properties: arrayOf(decodeUserProfileValue),
+
+  // REQUIRED rather than optional, for the same reason `properties` is. The API serialises with
+  // its ignore condition set to never, so every declared member is always on the wire and an
+  // absent one is contract drift. Defaulting a missing value to `true` here would present the
+  // control on a tenant that had switched it off, and defaulting to `false` would hide it on a
+  // tenant that had not - so neither default is safe and the answer is to refuse the payload.
+  displayVisibilityEnabled: decodeBoolean,
 });

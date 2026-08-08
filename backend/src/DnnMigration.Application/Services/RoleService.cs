@@ -955,6 +955,63 @@ public sealed class RoleService : IRoleService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Three reads, each one required to distinguish an answer from a broken request: the role proves the
+    /// tenant owns it, the account proves the tenant has it, and the assignment answers the question. The
+    /// role and the account are read FIRST and deliberately, because without them an unknown identifier
+    /// and a genuine "holds nothing" would be indistinguishable — and only one of the two is something a
+    /// caller should report as a failure.
+    /// </para>
+    /// <para>
+    /// The projection is handed the role and the account explicitly rather than taken from the
+    /// assignment's navigations. The single-assignment repository read composes the role and not the
+    /// account, because that read is also on the enrolment write path where a second join would be paid
+    /// for a projection that path never performs.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<RoleMembershipDto?>> GetRoleMembershipAsync(
+        int portalId,
+        int roleId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
+        {
+            return Result<RoleMembershipDto?>.Failure(
+                PortalNotFoundCode,
+                $"No portal bears identifier {portalId}.");
+        }
+
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
+        {
+            return Result<RoleMembershipDto?>.Failure(
+                RoleNotFoundCode,
+                $"Portal {portalId} has no role bearing identifier {roleId}.");
+        }
+
+        User? member = await _users.GetAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
+        if (member is null)
+        {
+            return Result<RoleMembershipDto?>.Failure(
+                UserNotFoundCode,
+                $"Portal {portalId} has no member bearing identifier {userId}.");
+        }
+
+        UserRole? assignment = await _roles
+            .GetUserRoleAsync(portalId, userId, roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // A successful outcome carrying no value. The account exists, the role exists, and the account
+        // simply holds no membership of it - which is the state the legacy screen rendered by blanking
+        // its two date fields (SecurityRoles.ascx.vb L484) rather than by reporting anything.
+        return assignment is null
+            ? Result<RoleMembershipDto?>.Success(null)
+            : Result<RoleMembershipDto?>.Success(RoleMappings.ToMembership(assignment, role, member));
+    }
+
+    /// <inheritdoc />
     public async Task<Result<IReadOnlyList<RoleListItemDto>>> ListUserRolesAsync(
         int portalId,
         int userId,

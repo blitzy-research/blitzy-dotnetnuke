@@ -476,9 +476,16 @@ const definitionFixture = (
   ...overrides,
 });
 
-/** One account's whole profile. */
-const profileFixture = (userId = 7): UserProfile => ({
+/**
+ * One account's whole profile.
+ *
+ * `displayVisibilityEnabled` is the tenant's decision on whether the per-property
+ * visibility affordance is offered; it rides the profile projection because the
+ * settings endpoint that declares it admits only portal administrators.
+ */
+const profileFixture = (userId = 7, displayVisibilityEnabled = true): UserProfile => ({
   userId,
+  displayVisibilityEnabled,
   properties: [
     {
       propertyDefinitionId: 0,

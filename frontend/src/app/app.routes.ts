@@ -59,6 +59,34 @@ export const HOST_LANDING_ROUTE = `/${ROOT_REDIRECT_PATH}`;
 export const TENANT_LANDING_ROUTE = '/modules';
 
 /**
+ * Where a caller with an outstanding MANDATORY CREDENTIAL CHANGE is sent.
+ *
+ * The account's own password screen, which is the only screen such a caller can use: the API
+ * exempts `POST api/v1/users/{id}/password` from the remediation refusal and refuses very
+ * nearly everything else.
+ *
+ * @param userId The signed-in account, which is also the only account this address may name —
+ * the server's allowance requires the route's account to BE the caller.
+ * @returns The absolute address of that account's password screen.
+ */
+export function credentialRemediationRoute(userId: number): string {
+  return `/users/${String(userId)}/password`;
+}
+
+/**
+ * Where a caller with an outstanding MANDATORY PROFILE COMPLETION is sent.
+ *
+ * The account's own profile screen, exempted on the same terms and for the same reason as the
+ * password screen above.
+ *
+ * @param userId The signed-in account, which is also the only account this address may name.
+ * @returns The absolute address of that account's profile screen.
+ */
+export function profileRemediationRoute(userId: number): string {
+  return `/users/${String(userId)}/profile`;
+}
+
+/**
  * Resolves the application root to an address the arriving caller can actually use.
  *
  * ⚠ THIS IS A FUNCTION AND NOT A STRING, AND THE REASON IS A MEASURED DEAD END RATHER
@@ -89,6 +117,13 @@ export const TENANT_LANDING_ROUTE = '/modules';
  *     capturing `/portals` here is precisely what used to bake an unreachable destination
  *     into the sign-in that followed. The address they did not choose is not preserved,
  *     because preserving it is what stranded them.
+ *   * A caller owing MANDATORY REMEDIATION, whatever their authority: the one screen that
+ *     can clear it — {@link credentialRemediationRoute} for an outstanding credential
+ *     change, {@link profileRemediationRoute} for an outstanding profile completion. This
+ *     test comes FIRST, ahead of every authority test below, and the body explains why in
+ *     detail: while an advisory is outstanding the API refuses all three authority-based
+ *     landings, so resolving authority first produced the same class of dead end this
+ *     function was written to remove, for a different reason.
  *   * A host account: {@link HOST_LANDING_ROUTE}, unchanged from the behaviour this
  *     redirect has always had.
  *   * A tenant administrator: {@link TENANT_LANDING_ROUTE}, the first rail entry their
@@ -102,12 +137,17 @@ export const TENANT_LANDING_ROUTE = '/modules';
  *     which preserves the previous behaviour for the one window in which nothing better is
  *     knowable. The policy gate admits while the identity is unresolved — refusing there
  *     would lock out the operators the screens exist for — so this window cannot strand a
- *     caller, and the screen's own read settles what the identity could not.
+ *     caller, and the screen's own read settles what the identity could not. This window
+ *     cannot coincide with mandatory remediation, for the reason the body records: an
+ *     advisory and the account it applies to are read from the same session object.
  *
- * ORDER IS LOAD-BEARING: the host test comes first because `administersCurrentPortal()` is
- * satisfied BY a host account (`core/state/auth.store.ts:L628-L629` reads it as the host
- * flag or tenant administration), so testing tenant administration first would send every
- * host operator to the module listing instead of the tenant listing.
+ * ORDER IS LOAD-BEARING TWICE OVER. Remediation is resolved before authority, because an
+ * advisory makes every authority-based destination unreachable rather than merely
+ * suboptimal. Then among the authority tests the host test comes first, because
+ * `administersCurrentPortal()` is satisfied BY a host account
+ * (`core/state/auth.store.ts:L628-L629` reads it as the host flag or tenant administration),
+ * so testing tenant administration first would send every host operator to the module
+ * listing instead of the tenant listing.
  *
  * The router runs this inside an injection context, which is what makes {@link inject}
  * legal in the body — the same contract the two functional gates in this table rely on.
@@ -123,6 +163,45 @@ export const rootLandingRedirect: RedirectFunction = () => {
     return SIGN_IN_ROUTE;
   }
 
+  const caller = authStore.currentUser();
+
+  // MANDATORY REMEDIATION OUTRANKS AUTHORITY, and it has to: while an advisory is outstanding
+  // the API refuses every authority-based landing this function can name. Measured against the
+  // running API for a session carrying an outstanding credential change, '/portals', '/modules'
+  // and the account's own services screen were each refused 403 auth.remediation_required, so
+  // resolving authority first sent the caller to a screen that could not load and left them
+  // holding a refusal instead of the one screen that would have cleared it.
+  //
+  // ⚠ WHICH REMEDIATION SCREEN IS NOT A PREFERENCE, IT IS THE SERVER'S RULE.
+  // RemediationAuthorizationHandler admits the password endpoints only while the CREDENTIAL
+  // advisory is outstanding and the profile endpoints only while the PROFILE advisory is, so
+  // naming the wrong one produces a second dead end rather than a slower route to the same
+  // place. Measured: with only the credential outstanding, GET api/v1/users/{id}/profile is
+  // refused 403 auth.not_permitted.
+  //
+  // The order below therefore reads: whichever single advisory is outstanding decides the
+  // destination, and when BOTH are outstanding the credential goes first. Credential-first
+  // reproduces the legacy precedence — UserValidStatus.vb ordered PASSWORDEXPIRED ahead of
+  // UPDATEPROFILE, and only one of its values could be reported at a time — and it is also the
+  // only order that terminates: the password screen renews the session on success, which clears
+  // the credential advisory, leaves the profile advisory standing and returns here, which then
+  // resolves to the profile screen. Profile-first would clear the profile advisory while the
+  // credential advisory still refused the profile endpoints that were meant to clear it.
+  //
+  // No fallback is needed for an unresolved identity, and none is written: both advisories are
+  // read from the held session and AuthSession.user is not optional, so an advisory that can be
+  // reported necessarily carries the account it applies to. A null caller here means no session
+  // is held, in which case both advisories read false and neither branch is taken.
+  if (caller !== null) {
+    if (authStore.mustChangePassword()) {
+      return credentialRemediationRoute(caller.userId);
+    }
+
+    if (authStore.mustUpdateProfile()) {
+      return profileRemediationRoute(caller.userId);
+    }
+  }
+
   if (authStore.isSuperUser()) {
     return HOST_LANDING_ROUTE;
   }
@@ -130,8 +209,6 @@ export const rootLandingRedirect: RedirectFunction = () => {
   if (authStore.administersCurrentPortal()) {
     return TENANT_LANDING_ROUTE;
   }
-
-  const caller = authStore.currentUser();
 
   return caller === null ? HOST_LANDING_ROUTE : `/users/${String(caller.userId)}/services`;
 };
