@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
@@ -209,6 +210,301 @@ public sealed class UserApiTests
             new Uri("/api/v1/users", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// The body-bound search answers the same page as the equivalent query, and its request target carries no
+    /// identifying value.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// THIS ENDPOINT EXISTS TO KEEP AN IDENTIFIER OUT OF THE REQUEST TARGET (CWE-598). A login name, an
+    /// electronic-mail address and above all a profile-property name paired with its value are the searching
+    /// operator's evidence about a particular person, and a query string is the least private part of a request:
+    /// it is written to server and proxy access logs in full, kept in browser history, and forwarded in the
+    /// referrer of any subsequent navigation. Transport encryption does not help with any of those, because none
+    /// of them is on the wire. The remedy is to move the filter into the body, which is logged by nothing by
+    /// default.
+    /// <para>
+    /// The two actions answer through the IDENTICAL service call, so the assertion here is equality with the
+    /// query form rather than a second description of what a search returns. If they ever diverge, this fails.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_ByLoginName_AnswersTheSamePageAsTheEquivalentQueryWithoutNamingAnyoneInTheTarget()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        var route = new Uri("/api/v1/users/search", UriKind.Relative);
+
+        route.OriginalString.Should()
+            .NotContain(IntegrationSeed.MemberUserName, "the request target names nobody");
+
+        using HttpResponseMessage searched = await client.PostAsJsonAsync(
+            route,
+            new UserSearchRequest
+            {
+                PageIndex = 0,
+                PageSize = 100,
+                UserName = IntegrationSeed.MemberUserName,
+            },
+            ApiTestFixture.Json);
+
+        searched.StatusCode.Should().Be(HttpStatusCode.OK);
+        searched.RequestMessage!.RequestUri!.ToString().Should()
+            .NotContain(IntegrationSeed.MemberUserName, "not even after the client resolved it");
+
+        PagedEnvelope<UserListItemDto>? page = await searched.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().NotBeEmpty();
+        page.Items.Should().OnlyContain(item => item.Username.Contains(
+            IntegrationSeed.MemberUserName,
+            StringComparison.OrdinalIgnoreCase));
+
+        PagedEnvelope<UserListItemDto> queried = await ListAsync(
+            client,
+            $"pageIndex=0&pageSize=100&userName={IntegrationSeed.MemberUserName}");
+
+        page.Items.Select(item => item.UserId).Should().BeEquivalentTo(
+            queried.Items.Select(item => item.UserId),
+            "the two actions are one service call and must not answer differently");
+        page.Meta.TotalCount.Should().Be(queried.Meta.TotalCount);
+    }
+
+    /// <summary>
+    /// A profile property and its value — the sharpest disclosure of the four filters — travel in the body.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This pair is the reason the endpoint is not merely tidier. The name says which attribute of a person is
+    /// being looked up and the value says what is being looked for, so a single logged line records that an
+    /// operator searched for a particular person by a particular attribute. A tenant is free to declare a
+    /// property holding a national identifier, a date of birth or a home address, so the content of this pair is
+    /// not something the migration can bound.
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_ByProfileProperty_ReturnsOnlyMatchingAccountsAndDisclosesNeitherNameNorValue()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        ProfilePropertyDefinitionDto definition =
+            await CreateProfileDefinitionAsync(client, required: false);
+        UserDetailDto account = await CreateUserAsync(client);
+        string value = $"value-{Suffix()}";
+
+        await InsertProfileValueAsync(account.UserId, definition.PropertyDefinitionId, value);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest
+            {
+                PageIndex = 0,
+                PageSize = 100,
+                ProfilePropertyName = definition.PropertyName,
+                ProfilePropertyValue = value,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string target = response.RequestMessage!.RequestUri!.ToString();
+
+        target.Should().NotContain(definition.PropertyName, "the attribute is not in the target");
+        target.Should().NotContain(value, "and neither is what was looked for");
+
+        PagedEnvelope<UserListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Select(item => item.UserId).Should().Contain(account.UserId);
+    }
+
+    /// <summary>
+    /// Naming a profile property without a value is refused here exactly as it is on the query form, because the
+    /// rule belongs to the service rather than to either action.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task SearchUsers_WithProfilePropertyNameButNoValue_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest { PageIndex = 0, PageSize = 10, ProfilePropertyName = "City" },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// The body-bound search applies the same paging ceiling as the query form, because its validator derives
+    /// from the same base.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Asserted because a caller moving a request from the query string into the body must not discover that a
+    /// larger page is suddenly legal. Two validators that happen to agree today would be free to drift; one base
+    /// class cannot.
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_WithPageSizeAboveTheCeiling_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest
+            {
+                PageIndex = 0,
+                PageSize = PagedRequestValidator<UserSearchRequest>.MaximumPageSize + 1,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// A blank filter in the body means what a blank filter in the query string means: no filter at all.
+    /// </summary>
+    /// <param name="member">The body member to send blank.</param>
+    /// <param name="blank">The blank value to send.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// ⚠ THIS PINS A REGRESSION THAT REACHED A RUNNING BROWSER. The application service treats absence as
+    /// "do not filter" and REFUSES a filter that is present but blank, because an empty prefix matches
+    /// every row and would make a filtered search silently unfiltered. The query-bound listing never
+    /// reaches that rule - the framework's query binder converts a blank query value to null before the
+    /// action sees it, for the empty string and for whitespace alike - so the rule was unreachable over
+    /// HTTP until a body-bound action existed. Once one did, an operator CLEARING the search box on the
+    /// account listing posted <c>{"userName":""}</c> and met a red error banner where the same operation
+    /// through the query string answers 200.
+    /// <para>
+    /// Both blank forms are exercised for each member, because the binder converts both and a fix that
+    /// handled only the empty string would leave whitespace diverging - which is exactly the asymmetry
+    /// this endpoint exists to avoid.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("userName", "")]
+    [InlineData("userName", "   ")]
+    [InlineData("email", "")]
+    [InlineData("email", "   ")]
+    [InlineData("profilePropertyName", "")]
+    [InlineData("profilePropertyName", "   ")]
+    [InlineData("profilePropertyValue", "")]
+    [InlineData("profilePropertyValue", "   ")]
+    public async Task SearchUsers_WithABlankFilter_AnswersAsThoughItWereOmitted(
+        string member,
+        string blank)
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // Sent as raw JSON rather than through the request type, because the point is what an arbitrary
+        // client can put on the wire: a typed fixture would let a future member rename hide the case.
+        using var body = new StringContent(
+            FormattableString.Invariant(
+                $"{{\"pageIndex\":0,\"pageSize\":10,\"{member}\":\"{blank}\"}}"),
+            Encoding.UTF8,
+            "application/json");
+
+        using HttpResponseMessage blankFilter = await client.PostAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            body);
+
+        blankFilter.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a blank {0} names nobody, exactly as a blank query value does",
+            member);
+
+        PagedEnvelope<UserListItemDto>? blankPage = await blankFilter.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        using HttpResponseMessage omitted = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest { PageIndex = 0, PageSize = 10 },
+            ApiTestFixture.Json);
+
+        omitted.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserListItemDto>? omittedPage = await omitted.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        blankPage.Should().NotBeNull();
+        omittedPage.Should().NotBeNull();
+        blankPage!.Meta.TotalCount.Should().Be(
+            omittedPage!.Meta.TotalCount,
+            "and it must answer the same page, not merely avoid refusing");
+        blankPage.Items.Select(item => item.UserId).Should()
+            .BeEquivalentTo(omittedPage.Items.Select(item => item.UserId));
+    }
+
+    /// <summary>
+    /// A filter carrying something to filter BY is still refused when its companion is missing, because
+    /// normalising a blank value did not weaken the combination rule.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The guard on the fix above. Normalising a blank profile-property VALUE to absent means a request
+    /// naming a property with a blank value is now indistinguishable from one naming a property with no
+    /// value at all - and that combination must remain a refusal, exactly as it is through the query
+    /// string. Without this case the previous test could be satisfied by discarding the rule instead of
+    /// by relocating one conversion.
+    /// </remarks>
+    [Fact]
+    public async Task SearchUsers_WithProfilePropertyNameAndABlankValue_IsStillRefused()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using var body = new StringContent(
+            "{\"pageIndex\":0,\"pageSize\":10,\"profilePropertyName\":\"City\",\"profilePropertyValue\":\"\"}",
+            Encoding.UTF8,
+            "application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            body);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "a property named without a value is a refusal however the absence was spelled");
+    }
+
+    /// <summary>The body-bound search requires a bearer token, exactly as the collection does.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task SearchUsers_WithoutCredentials_ReturnsUnauthorized()
+    {
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest { PageIndex = 0, PageSize = 10 },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// The body-bound search is gated on the same policy as the collection, so moving the filter off the target
+    /// widened nothing.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task SearchUsers_AsRegisteredMember_ReturnsForbidden()
+    {
+        using HttpClient client = await _fixture.CreateClientForAsync(
+            IntegrationSeed.MemberUserName,
+            ApiTestFixture.KnownPassword);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest { PageIndex = 0, PageSize = 10 },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     /// <summary>A read answers <c>200 OK</c> and carries the account's role names.</summary>
@@ -2177,8 +2473,19 @@ public sealed class UserApiTests
             ProfileDefaultVisibility = 1,
         };
 
+        // ⚠ 200 WITH A BODY, WHERE EVERY OTHER SETTINGS WRITE ANSWERS 204. This one write can rewrite every
+        // account's display name in the tenant, and the caller cannot predict from the request whether it
+        // did or how many it touched - so the report travels back on the response rather than being lost.
         using HttpResponseMessage written = await client.PutAsJsonAsync(route, desired, ApiTestFixture.Json);
-        written.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        written.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        MembershipSettingsUpdateResultDto? report = await written.Content
+            .ReadEnvelopeAsync<MembershipSettingsUpdateResultDto>();
+
+        report.Should().NotBeNull();
+        report!.DisplayNameFormatChanged.Should().BeFalse(
+            "this write left the display-name format exactly as it was");
+        report.DisplayNamesRewritten.Should().Be(0);
 
         using HttpResponseMessage reread = await client.GetAsync(route);
         reread.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -2285,6 +2592,129 @@ public sealed class UserApiTests
         problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.SecurityUsersControl));
         problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.SecurityDisplayNameFormat));
         problem.Errors.Should().ContainKey(nameof(UpdateMembershipSettingsRequest.SecurityEmailValidation));
+    }
+
+    /// <summary>
+    /// Adopting a display-name format rewrites the tenant's existing accounts, reports how many names it
+    /// changed, and leaves them alone when the same format is submitted again.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: reproduces <c>Website/admin/Users/UserSettings.ascx.vb:L175-L182</c>, which compared the
+    /// submitted format against the stored one and spawned <c>UserController.UpdateDisplayNames</c>
+    /// (<c>Library/Components/Users/UserController.vb:L1259-L1268</c>) when they differed. The legacy sweep
+    /// ran on a background thread and reported nothing; here it is part of the same write and the count comes
+    /// back on the response, which is why this endpoint answers 200 with a body rather than 204. The
+    /// divergence is recorded in MIGRATION_NOTES.md.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task MembershipSettings_AdoptingADisplayNameFormat_RewritesTheTenantsAccounts()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        await EnsureUserAccountsModuleAsync();
+
+        UserDetailDto created = await CreateUserAsync(client);
+        created.DisplayName.Should().StartWith("Integration Account ");
+
+        Uri route = MembershipSettingsRoute(_fixture.Seed.PortalId);
+
+        // A format bearing a random discriminator, so this fact cannot be satisfied by a value another fact
+        // in this suite happened to leave behind.
+        string marker = Suffix();
+        string format = "[LASTNAME], [FIRSTNAME] <" + marker + ">";
+
+        using HttpResponseMessage adopted = await client.PutAsJsonAsync(
+            route,
+            new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = format },
+            ApiTestFixture.Json);
+
+        adopted.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        MembershipSettingsUpdateResultDto? report = await adopted.Content
+            .ReadEnvelopeAsync<MembershipSettingsUpdateResultDto>();
+
+        report.Should().NotBeNull();
+        report!.DisplayNameFormatChanged.Should().BeTrue();
+        report.DisplayNamesRewritten.Should().BeGreaterThan(
+            0,
+            "the tenant holds at least the account this fact created");
+
+        using HttpResponseMessage reread = await client.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, created.UserId));
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserDetailDto rewritten = await ReadDetailAsync(reread);
+        rewritten.DisplayName.Should().Be("Account, Integration <" + marker + ">");
+
+        // Submitting the same format again is not a change, so nothing is swept - which is the legacy
+        // comparison, and what stops an operator saving the settings screen from rewriting the whole tenant.
+        using HttpResponseMessage resubmitted = await client.PutAsJsonAsync(
+            route,
+            new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = format },
+            ApiTestFixture.Json);
+
+        resubmitted.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        MembershipSettingsUpdateResultDto? unchanged = await resubmitted.Content
+            .ReadEnvelopeAsync<MembershipSettingsUpdateResultDto>();
+
+        unchanged!.DisplayNameFormatChanged.Should().BeFalse();
+        unchanged.DisplayNamesRewritten.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Each listed account carries whether the removal operation will accept it, and the two answers agree
+    /// with what the operation actually does.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy grid decided this in markup at
+    /// <c>Website/admin/Users/Users.ascx.vb:L691-L692</c>, hiding the command for the tenant's designated
+    /// administrator. The capability now travels on the row, and this fact pins it to the operation rather
+    /// than to itself: the protected row is offered no command AND is refused when one is issued anyway.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListUsers_PublishesADeletionCapabilityThatMatchesWhatDeletionDoes()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        UserDetailDto ordinary = await CreateUserAsync(client);
+
+        // Both rows are reached by NAME FILTER rather than by reading the unfiltered first page. Every other
+        // fact in this suite adds accounts to the same tenant, so a positional read would become
+        // order-dependent and eventually stop finding what it asserts about.
+        PagedEnvelope<UserListItemDto> members = await ListAsync(
+            client,
+            "userNameFilter=" + Uri.EscapeDataString(ordinary.Username));
+
+        members.Items.Should().ContainSingle(row => row.UserId == ordinary.UserId);
+        members.Items.Single(row => row.UserId == ordinary.UserId)
+            .CanDelete.Should().BeTrue("an ordinary account of the tenant may be removed");
+
+        PagedEnvelope<UserListItemDto> administrators = await ListAsync(
+            client,
+            "userNameFilter=" + Uri.EscapeDataString(IntegrationSeed.AdminUserName));
+
+        UserListItemDto designated = administrators.Items
+            .Should().ContainSingle(row => row.UserId == _fixture.Seed.AdminUserId)
+            .Subject;
+
+        designated.CanDelete.Should().BeFalse(
+            "the tenant designates this account as its administrator");
+
+        // The capability is advisory; the operation is the enforcement. Issuing the command anyway must be
+        // refused, which is what makes the withheld affordance honest rather than merely cosmetic.
+        using HttpResponseMessage refused = await client.DeleteAsync(
+            UserRoute(_fixture.Seed.PortalId, _fixture.Seed.AdminUserId));
+
+        refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage accepted = await client.DeleteAsync(
+            UserRoute(_fixture.Seed.PortalId, ordinary.UserId));
+
+        accepted.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
     /// <summary>Creates an account through the API and returns its representation.</summary>
@@ -3045,6 +3475,583 @@ public sealed class UserApiTests
             removed.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.NotFound);
         }
     }
+
+    // =============================================================================================
+    // MEMBER SERVICES. The self-service subscription surface that replaces
+    // Website/admin/Users/MemberServices.ascx.vb - a catalogue read, subscribe, cancel, trial and the
+    // redemption of a role's invitation code, all five addressed by account and all five gated on
+    // ownership alone.
+    //
+    // Every caller below is the ACCOUNT ITSELF, signed in through the real endpoint with the credential the
+    // test created it with. That is not incidental: the legacy panel operated on the signed-in account and
+    // never on the account its container was managing, so a suite that drove these routes as an
+    // administrator would be exercising an affordance the legacy application did not have and would not
+    // notice if the ownership policy were dropped.
+    // =============================================================================================
+
+    /// <summary>
+    /// The catalogue lists the tenant's public roles with this account's own state, and a subscription
+    /// round-trips through it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// One fact for the whole round trip on purpose: reading the catalogue, subscribing, re-reading it and
+    /// cancelling are one workflow, and asserting them separately would leave the second read's meaning
+    /// depending on a sibling test's side effect.
+    /// </para>
+    /// <para>
+    /// The seeded <c>Subscribers</c> role is public with a zero service fee, which is exactly the shape the
+    /// legacy screen offered a direct subscription for - <c>objRole.IsPublic And objRole.ServiceFee = 0.0</c>
+    /// at <c>MemberServices.ascx.vb:L105</c>.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task MemberServices_ListSubscribeAndCancelRoundTripForTheAccountItself()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+        int serviceRoleId = await InsertPublicServiceRoleAsync();
+
+        try
+        {
+            using (owner)
+            {
+                IReadOnlyList<MemberServiceDto> before = await ReadServicesAsync(owner, userId);
+
+                MemberServiceDto offer = before.Should()
+                    .ContainSingle(row => row.RoleId == serviceRoleId).Subject;
+                offer.IsSubscribed.Should().BeFalse("this service is not auto-assigned at account creation");
+                offer.SubscriptionAction.Should().Be(MemberServiceActions.Subscribe);
+                offer.SubscriptionOffered.Should().BeTrue();
+                offer.SubscriptionRequiresPayment.Should().BeFalse("this public role charges nothing");
+                offer.TrialOffered.Should().BeFalse("a free service has no trial to take");
+
+                // The seeded Subscribers role is public AND auto-assigned, so a freshly created account
+                // already holds it - and the catalogue says so rather than presenting an offer the account
+                // has already taken. That is the whole point of carrying the account's own state on the row.
+                before.Should()
+                    .ContainSingle(row => row.RoleId == _fixture.Seed.SubscribersRoleId).Subject
+                    .Should().Match<MemberServiceDto>(row =>
+                        row.RoleName == IntegrationSeed.SubscribersRoleName
+                        && row.IsSubscribed
+                        && row.SubscriptionAction == MemberServiceActions.Unsubscribe);
+
+                before.Should().NotContain(
+                    row => row.RoleId == _fixture.Seed.AdministratorRoleId,
+                    "the catalogue is the tenant's PUBLIC roles, and the administrator role is not one");
+
+                using HttpResponseMessage subscribed = await owner.PostAsync(
+                    ServiceSubscriptionRoute(userId, serviceRoleId),
+                    content: null);
+
+                subscribed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+                MemberServiceDto held = (await ReadServicesAsync(owner, userId))
+                    .Single(row => row.RoleId == serviceRoleId);
+
+                held.IsSubscribed.Should().BeTrue();
+                held.SubscriptionAction.Should().Be(MemberServiceActions.Unsubscribe);
+                held.IsExpired.Should().BeFalse(
+                    "the role names the never-expires frequency, so the derivation stores no bound");
+
+                (await CountAssignmentsAsync(userId, serviceRoleId))
+                    .Should().Be(1, "the subscription is one assignment row, written by the delegated primitive");
+
+                using HttpResponseMessage cancelled = await owner.DeleteAsync(
+                    ServiceSubscriptionRoute(userId, serviceRoleId));
+
+                cancelled.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+                (await ReadServicesAsync(owner, userId))
+                    .Single(row => row.RoleId == serviceRoleId)
+                    .IsSubscribed.Should().BeFalse("the assignment was withdrawn, not merely expired");
+
+                (await CountAssignmentsAsync(userId, serviceRoleId)).Should().Be(0);
+            }
+        }
+        finally
+        {
+            await RemoveRoleAsync(serviceRoleId);
+        }
+    }
+
+    /// <summary>
+    /// Cancelling a service the account does not hold is reported as absent rather than silently accepted.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The legacy removal returned a bare <c>Boolean</c> and the screen turned <see langword="false"/> into
+    /// one undifferentiated message, so a caller could not tell a subscription it did not hold from one it
+    /// was not allowed to end. The delegated primitive reports a reason instead, which is what lets this
+    /// answer <c>404</c>.
+    /// </remarks>
+    [Fact]
+    public async Task CancelService_ForASubscriptionNotHeld_IsReportedAsAbsent()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+        int serviceRoleId = await InsertPublicServiceRoleAsync();
+
+        try
+        {
+            using (owner)
+            {
+                using HttpResponseMessage response = await owner.DeleteAsync(
+                    ServiceSubscriptionRoute(userId, serviceRoleId));
+
+                response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+                (await response.Content.ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json))!
+                    .Type.Should().Contain("role_assignment.not_found");
+            }
+        }
+        finally
+        {
+            await RemoveRoleAsync(serviceRoleId);
+        }
+    }
+
+    /// <summary>
+    /// The five member-services routes admit NOBODY but the account they name - not an administrator, not a
+    /// host account, and not an anonymous caller.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the security boundary the whole surface rests on, and it is asserted for every one of the five
+    /// addresses rather than for a representative sample: a route added later that inherited mere
+    /// authentication would look identical in the source.
+    /// </para>
+    /// <para>
+    /// The administrator and the host are refused with <c>403</c> rather than admitted, which is a deliberate
+    /// narrowing measured from the legacy container: <c>DisplayServices</c>
+    /// (<c>ManageUsers.ascx.vb:L61-L66</c>) hid the tab whenever the screen was reached through the
+    /// administrative <c>ctl=Edit</c> entry point, and the panel would have acted on the administrator's own
+    /// account in any case. An administrator who must change somebody else's membership uses the role
+    /// resource, which is tenant administration and a separate, reviewable act.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task MemberServices_AdmitNobodyButTheAccountTheyName()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+
+        using (owner)
+        {
+            using HttpClient anonymous = _fixture.CreateAnonymousClient();
+            using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+            using HttpClient host = await _fixture.CreateHostClientAsync();
+
+            foreach ((HttpMethod method, Uri route) in MemberServiceAddresses(userId))
+            {
+                using var anonymousRequest = new HttpRequestMessage(method, route);
+                using HttpResponseMessage unauthenticated = await anonymous.SendAsync(anonymousRequest);
+
+                unauthenticated.StatusCode.Should().Be(
+                    HttpStatusCode.Unauthorized,
+                    "{0} {1} must refuse a caller that has not said who it is",
+                    method,
+                    route);
+
+                foreach (HttpClient other in new[] { administrator, host })
+                {
+                    using var request = new HttpRequestMessage(method, route);
+                    using HttpResponseMessage refused = await other.SendAsync(request);
+
+                    refused.StatusCode.Should().Be(
+                        HttpStatusCode.Forbidden,
+                        "{0} {1} must refuse a caller that is not the account it names",
+                        method,
+                        route);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// An invitation code enrols the account in every role bearing it, published or not, and an unmatched
+    /// code is a request the caller can correct.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The role is created and its code written by direct statement because no endpoint publishes a private
+    /// role with an invitation code as one operation, and because the point of the fact is precisely that an
+    /// UNPUBLISHED role is reachable this way: the legacy handler read
+    /// <c>GetPortalRoles(PortalSettings.PortalId)</c> at <c>MemberServices.ascx.vb:L407</c> and applied
+    /// neither the public test nor the fee test the grid's own commands applied.
+    /// </para>
+    /// <para>
+    /// The empty and unmatched submissions both answer <c>400</c>, and for different reasons that the problem
+    /// type distinguishes: the first is refused by declarative validation, the second by the service. The
+    /// legacy screen answered the first with silence and the second with a fixed sentence.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RedeemServiceCode_EnrolsTheAccountInAnUnpublishedRoleAndRefusesAnUnmatchedCode()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+        string code = "itest-code-" + Suffix();
+
+        int privateRoleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Roles]
+                ([PortalID], [RoleName], [Description], [ServiceFee], [BillingPeriod], [BillingFrequency],
+                 [TrialFee], [TrialPeriod], [TrialFrequency], [IsPublic], [AutoAssignment], [RSVPCode])
+            VALUES (@portalId, @roleName, 'By invitation', 0, 0, 'N', 0, 0, 'N', 0, 0, @code);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["roleName"] = "ITest Founders " + Suffix(),
+                ["code"] = code,
+            });
+
+        try
+        {
+            using (owner)
+            {
+                (await ReadServicesAsync(owner, userId))
+                    .Should().NotContain(
+                        row => row.RoleId == privateRoleId,
+                        "an unpublished role is absent from the catalogue, which is what makes the code the only way in");
+
+                using HttpResponseMessage unmatched = await owner.PostAsJsonAsync(
+                    ServiceRedemptionRoute(userId),
+                    new RedeemServiceCodeRequest { Code = code + "-wrong" },
+                    ApiTestFixture.Json);
+
+                unmatched.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+                (await unmatched.Content.ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json))!
+                    .Type.Should().Contain("code_not_matched");
+
+                using HttpResponseMessage empty = await owner.PostAsJsonAsync(
+                    ServiceRedemptionRoute(userId),
+                    new RedeemServiceCodeRequest { Code = "   " },
+                    ApiTestFixture.Json);
+
+                empty.StatusCode.Should().Be(
+                    HttpStatusCode.BadRequest,
+                    "an empty submission is refused rather than matching every codeless role in the tenant");
+
+                using HttpResponseMessage redeemed = await owner.PostAsJsonAsync(
+                    ServiceRedemptionRoute(userId),
+                    new RedeemServiceCodeRequest { Code = code },
+                    ApiTestFixture.Json);
+
+                redeemed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+                RedeemServiceCodeResultDto result =
+                    (await redeemed.Content.ReadEnvelopeAsync<RedeemServiceCodeResultDto>())!;
+
+                result.Roles.Should().ContainSingle()
+                    .Which.RoleId.Should().Be(privateRoleId);
+
+                (await CountAssignmentsAsync(userId, privateRoleId)).Should().Be(1);
+            }
+        }
+        finally
+        {
+            await RemoveRoleAsync(privateRoleId);
+        }
+    }
+
+    /// <summary>
+    /// A service the tenant does not publish is refused for self-service subscription even when its
+    /// identifier is known.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The first arm of both legacy gates is <c>objRole.IsPublic</c>. The administrator role is the clearest
+    /// case available in the seeded tenant: it exists, its identifier is knowable, and self-service
+    /// subscription to it would be a privilege escalation.
+    /// </remarks>
+    [Fact]
+    public async Task SubscribeToService_RefusesARoleTheTenantDoesNotPublish()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+
+        using (owner)
+        {
+            using HttpResponseMessage response = await owner.PostAsync(
+                ServiceSubscriptionRoute(userId, _fixture.Seed.AdministratorRoleId),
+                content: null);
+
+            response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            (await response.Content.ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json))!
+                .Type.Should().Contain("not_offered_forbidden");
+
+            (await CountAssignmentsAsync(userId, _fixture.Seed.AdministratorRoleId))
+                .Should().Be(0, "a refused subscription must write nothing");
+        }
+    }
+
+    /// <summary>
+    /// A paid service is refused on both directions, and the catalogue says so before the caller tries.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy subscribe and cancel paths BOTH ended in
+    /// <c>Response.Redirect("~/admin/Sales/PayPalSubscription.aspx?…")</c> for a fee-bearing role
+    /// (<c>MemberServices.ascx.vb:L113</c> and <c>:L115</c>, the second appending <c>&amp;cancel=1</c>), and
+    /// AAP 0.2.2.4 excludes sales administration. The row is still LISTED - dropping it would silently erase
+    /// a tenant's paid offering - and the free trial on the same role remains fully performable, because the
+    /// legacy trial gate is the TRIAL fee rather than the service fee.
+    /// </remarks>
+    [Fact]
+    public async Task PaidService_IsListedWithItsTermsButNeitherSubscribedNorCancelledHere()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+
+        int paidRoleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Roles]
+                ([PortalID], [RoleName], [Description], [ServiceFee], [BillingPeriod], [BillingFrequency],
+                 [TrialFee], [TrialPeriod], [TrialFrequency], [IsPublic], [AutoAssignment])
+            VALUES (@portalId, @roleName, 'Paid membership', 12.00, 1, 'M', 0, 14, 'D', 1, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["roleName"] = "ITest Premium " + Suffix(),
+            });
+
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Portals] SET [ProcessorUserID] = @processor WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?>
+            {
+                ["processor"] = "itest-merchant",
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+
+        try
+        {
+            using (owner)
+            {
+                MemberServiceDto row = (await ReadServicesAsync(owner, userId))
+                    .Single(entry => entry.RoleId == paidRoleId);
+
+                row.ServiceFee.Should().Be(12.00m, "the stored fee is published, not suppressed");
+                row.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.Month);
+                row.BillingPeriod.Should().Be(1);
+                row.SubscriptionRequiresPayment.Should().BeTrue();
+                row.SubscriptionOffered.Should().BeTrue("the tenant has a payment processor account");
+                row.TrialOffered.Should().BeTrue("the service fee is non-zero and the trial fee is zero");
+
+                using HttpResponseMessage subscribe = await owner.PostAsync(
+                    ServiceSubscriptionRoute(userId, paidRoleId),
+                    content: null);
+
+                subscribe.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                (await subscribe.Content.ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json))!
+                    .Type.Should().Contain("payment_required_forbidden");
+
+                using HttpResponseMessage cancel = await owner.DeleteAsync(
+                    ServiceSubscriptionRoute(userId, paidRoleId));
+
+                cancel.StatusCode.Should().Be(
+                    HttpStatusCode.Forbidden,
+                    "the legacy cancel path shared the subscribe gate and also went through payment");
+
+                using HttpResponseMessage trial = await owner.PostAsync(
+                    ServiceTrialRoute(userId, paidRoleId),
+                    content: null);
+
+                trial.StatusCode.Should().Be(
+                    HttpStatusCode.NoContent,
+                    "a free trial on a paid service is performable, because its gate is the trial fee");
+
+                MemberServiceDto trialling = (await ReadServicesAsync(owner, userId))
+                    .Single(entry => entry.RoleId == paidRoleId);
+
+                trialling.IsSubscribed.Should().BeTrue();
+                trialling.ExpiryDate.Should().NotBeNull(
+                    "the fourteen-day trial term derives a bound, unlike the never-expires seeded role");
+
+                using HttpResponseMessage secondTrial = await owner.PostAsync(
+                    ServiceTrialRoute(userId, paidRoleId),
+                    content: null);
+
+                secondTrial.StatusCode.Should().Be(
+                    HttpStatusCode.NoContent,
+                    "the trial-used flag is never written, which is the legacy behaviour recorded in the notes");
+            }
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                "UPDATE [dbo].[Portals] SET [ProcessorUserID] = NULL WHERE [PortalID] = @portalId;",
+                new Dictionary<string, object?> { ["portalId"] = _fixture.Seed.PortalId });
+
+            await RemoveRoleAsync(paidRoleId);
+        }
+    }
+
+    /// <summary>
+    /// A free service offers no trial, which is <c>ShowTrial</c>'s own first arm.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <c>If objRole.IsPublic And objRole.ServiceFee = 0.0 Then _ShowTrial = False</c>
+    /// (<c>MemberServices.ascx.vb:L330-L331</c>). There is nothing to trial when there is nothing to pay.
+    /// </remarks>
+    [Fact]
+    public async Task StartServiceTrial_RefusesAFreeServiceThatHasNothingToTrial()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+
+        using (owner)
+        {
+            using HttpResponseMessage response = await owner.PostAsync(
+                ServiceTrialRoute(userId, _fixture.Seed.SubscribersRoleId),
+                content: null);
+
+            response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            (await response.Content.ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json))!
+                .Type.Should().Contain("trial_not_offered_forbidden");
+        }
+    }
+
+    /// <summary>
+    /// Creates an account through the real endpoint and signs in as it, so the caller OWNS the account the
+    /// member-services routes name.
+    /// </summary>
+    /// <returns>The account identifier and a client presenting its own token.</returns>
+    /// <remarks>
+    /// A fresh account rather than the seeded member, because these facts subscribe and unsubscribe and a
+    /// sibling fact reading the seeded member's memberships must not see them. Signing in through the real
+    /// endpoint rather than minting a token is what makes the ownership policy's subject the same value the
+    /// route carries.
+    /// </remarks>
+    private async Task<(int UserId, HttpClient Owner)> CreateOwnedAccountAsync()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+
+        CreateUserRequest request = NewUserRequest();
+
+        using HttpResponseMessage created = await administrator.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        UserDetailDto account = await ReadDetailAsync(created);
+
+        HttpClient owner = await _fixture.CreateClientForAsync(request.Username, request.Password);
+
+        return (account.UserId, owner);
+    }
+
+    /// <summary>
+    /// Inserts a public, free, NOT auto-assigned role into the seeded tenant - a member service an account
+    /// must take up for itself.
+    /// </summary>
+    /// <returns>The role identifier.</returns>
+    /// <remarks>
+    /// A role of its own rather than the seeded <c>Subscribers</c> role, because that one is auto-assigned and
+    /// a freshly created account therefore already holds it: a subscription round trip needs a service whose
+    /// starting state is "not held". Written by direct statement because the role write surface belongs to the
+    /// role resource and reaching it here would make an account fact depend on a sibling resource's endpoint.
+    /// The frequency codes are the never-expires <c>N</c>, matching what portal provisioning gives a tenant's
+    /// own roles, so the derivation stores no bound and the fact does not depend on a clock.
+    /// </remarks>
+    private Task<int> InsertPublicServiceRoleAsync() =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Roles]
+                ([PortalID], [RoleName], [Description], [ServiceFee], [BillingPeriod], [BillingFrequency],
+                 [TrialFee], [TrialPeriod], [TrialFrequency], [IsPublic], [AutoAssignment])
+            VALUES (@portalId, @roleName, 'A member service', 0, 0, 'N', 0, 0, 'N', 1, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["roleName"] = "ITest Service " + Suffix(),
+            });
+
+    /// <summary>
+    /// Removes a role a member-services fact created, together with any assignment it accumulated.
+    /// </summary>
+    /// <param name="roleId">The role identifier.</param>
+    /// <returns>A task representing the removal.</returns>
+    /// <remarks>
+    /// The assignments go first even though the schema cascades, because these facts also assert assignment
+    /// COUNTS and a row left behind by an ordering assumption would be invisible until a sibling fact
+    /// disagreed with it. Every member-services fact that inserts a role removes it, so the tenant's role set
+    /// is the seeded one again afterwards and a listing total elsewhere cannot drift.
+    /// </remarks>
+    private async Task RemoveRoleAsync(int roleId)
+    {
+        await _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[UserRoles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+
+        await _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>Counts the assignment rows joining one account to one role.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <param name="roleId">The role identifier.</param>
+    /// <returns>The row count.</returns>
+    private Task<int> CountAssignmentsAsync(int userId, int roleId) =>
+        _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[UserRoles] WHERE [UserID] = @userId AND [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["userId"] = userId, ["roleId"] = roleId });
+
+    /// <summary>Reads the member-services catalogue for one account.</summary>
+    /// <param name="client">A client owning the account.</param>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>The catalogue the endpoint served.</returns>
+    private async Task<IReadOnlyList<MemberServiceDto>> ReadServicesAsync(HttpClient client, int userId)
+    {
+        using HttpResponseMessage response = await client.GetAsync(ServicesRoute(userId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        return (await response.Content.ReadEnvelopeAsync<List<MemberServiceDto>>())!;
+    }
+
+    /// <summary>The five member-services addresses, each with the method that reaches it.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>The method and route pairs.</returns>
+    private (HttpMethod Method, Uri Route)[] MemberServiceAddresses(int userId) =>
+    [
+        (HttpMethod.Get, ServicesRoute(userId)),
+        (HttpMethod.Post, ServiceSubscriptionRoute(userId, _fixture.Seed.SubscribersRoleId)),
+        (HttpMethod.Delete, ServiceSubscriptionRoute(userId, _fixture.Seed.SubscribersRoleId)),
+        (HttpMethod.Post, ServiceTrialRoute(userId, _fixture.Seed.SubscribersRoleId)),
+        (HttpMethod.Post, ServiceRedemptionRoute(userId)),
+    ];
+
+    /// <summary>Builds the member-services catalogue route for one account.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>A relative route.</returns>
+    private static Uri ServicesRoute(int userId) =>
+        new($"/api/v1/users/{Route(userId)}/services", UriKind.Relative);
+
+    /// <summary>Builds the subscription route for one account and one service.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <param name="roleId">The role the service is expressed as.</param>
+    /// <returns>A relative route.</returns>
+    private static Uri ServiceSubscriptionRoute(int userId, int roleId) =>
+        new($"/api/v1/users/{Route(userId)}/services/{Route(roleId)}/subscription", UriKind.Relative);
+
+    /// <summary>Builds the trial route for one account and one service.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <param name="roleId">The role the service is expressed as.</param>
+    /// <returns>A relative route.</returns>
+    private static Uri ServiceTrialRoute(int userId, int roleId) =>
+        new($"/api/v1/users/{Route(userId)}/services/{Route(roleId)}/trial", UriKind.Relative);
+
+    /// <summary>Builds the invitation-code redemption route for one account.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>A relative route.</returns>
+    private static Uri ServiceRedemptionRoute(int userId) =>
+        new($"/api/v1/users/{Route(userId)}/services/redemptions", UriKind.Relative);
 
     /// <summary>Builds the item route for one account.</summary>
     /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>

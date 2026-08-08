@@ -672,4 +672,53 @@ public sealed class PortalsController : ControllerBase
 
         return this.Complete(outcome);
     }
+
+    /// <summary>Lists the accounts a portal may designate as its administrator.</summary>
+    /// <param name="portalId">The portal identifier, supplied only by the route.</param>
+    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
+    /// <returns>The candidate accounts, which may be empty.</returns>
+    /// <response code="200">The candidates, ordered by the name the selector displays.</response>
+    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
+    /// <response code="403">
+    /// The caller is authenticated but does not administer the portal this request addresses.
+    /// </response>
+    /// <response code="404">No portal bears that identifier.</response>
+    /// <remarks>
+    /// <para>
+    /// Fills the administrator selector on the settings screen, reproducing
+    /// <c>Website/admin/Portal/SiteSettings.ascx.vb:L329-L339</c>. The candidates are the members of the
+    /// portal's own administrator role, and the value each carries is what
+    /// <c>PUT /api/v1/portals/{portalId}/settings</c> stores as the designated administrator.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE PORTAL COMES FROM THE ROUTE, and that is the whole reason this action exists. The
+    /// role resources resolve their tenant from the caller's own context rather than from a path
+    /// segment, so none of them can enumerate the administrators of a portal other than the caller's
+    /// own - which left the settings screen able to display the stored administrator and unable to offer
+    /// a replacement. This nests the read under the portal it concerns, exactly as the settings and
+    /// alias reads beside it do, so the screen can reassign the administrator for whichever portal it
+    /// addresses.
+    /// </para>
+    /// <para>
+    /// Gated on the same policy as the settings resource it serves, because it is a read of that
+    /// screen's own data. It discloses no more than the role-membership screen already discloses to the
+    /// same caller.
+    /// </para>
+    /// </remarks>
+    [HttpGet("{portalId:int}/administrators")]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<PortalAdministratorDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<PortalAdministratorDto>?>>> ListAdministratorsAsync(
+        int portalId,
+        CancellationToken cancellationToken)
+    {
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await _portalService
+            .ListAdministratorCandidatesAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
 }

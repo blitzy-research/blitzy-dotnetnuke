@@ -68,12 +68,15 @@ import {
   inject,
   signal,
   untracked,
+  viewChild,
   type OnInit,
   type Signal,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { UserStore } from '../../../core/state/user.store';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
@@ -82,13 +85,12 @@ import { FormFieldComponent } from '../../../shared/components/form-field/form-f
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
-import { HasPermissionDirective } from '../../../shared/directives/has-permission.directive';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
-import type { UserFailure } from '../../../core/state/user.store';
+import type { UserFailure, UserMutation } from '../../../core/state/user.store';
 import type {
   DataTableCellContext,
   DataTableColumn,
@@ -173,6 +175,24 @@ const USER_DELETE_ERROR_MESSAGE = 'Error Deleting User';
 
 /** `SharedResources.resx` `All.Text`, the unfiltered affordance appended at `Users.ascx.vb` L308. */
 const ALL_FILTER_LABEL = 'All';
+
+/**
+ * The notice shown while the tenant's opening-view policy has issued no query.
+ *
+ * AUTHORED, and there is no legacy wording to recover because the legacy screen showed NONE:
+ * `Users.ascx.vb` L266 excluded the bare marker `"None"` from every branch of `BindData`, so
+ * `grdUsers.DataSource` was assigned `Nothing` and the grid rendered unbound and silent. An
+ * operator arriving on a tenant configured that way — which is every tenant that has configured
+ * nothing, since `UserModuleBase.vb` L126-L130 defaulted the setting to that mode — was shown an
+ * empty grid and left to work out that the accounts were merely unrequested.
+ *
+ * ⚠ THE ALTERNATIVE IS NOT SILENCE, IT IS A FALSEHOOD. Without this notice the shared grid renders
+ * its own empty state, whose wording says nothing was found — and nothing was looked for. It names
+ * both ways forward using the wording those affordances actually carry, so the sentence and the
+ * controls agree.
+ */
+const NO_QUERY_NOTICE =
+  'No accounts have been requested yet. Choose a letter, or select All, to list this site’s accounts.';
 
 /**
  * `Users.ascx.resx` `Filter.Text`, verbatim.
@@ -541,10 +561,7 @@ function toEmailCell(value: string): UserEmailCell {
   imports: [
     // Typed route segments for the two navigating row commands and the three header actions.
     RouterLink,
-    // Gates the mutating affordances on the caller's edit grant. AN AFFORDANCE ONLY: it fails
-    // closed on an absent grant and never substitutes for server authorisation, which answers
-    // 403 and is the only authority.
-    HasPermissionDirective,
+
     // The page heading and its projected action bar.
     PageHeaderComponent,
     // The thirteen-column grid. It renders its OWN progress indicator and its own empty state
@@ -594,6 +611,33 @@ export class UserListComponent implements OnInit {
 
   /** Carries the transient outcome of a reader-initiated removal. */
   private readonly notifications = inject(NotificationService);
+
+  /**
+   * The session projection, read for the caller's identity and its administration fact.
+   *
+   * ⚠ THE RIGHT VOCABULARY FOR THIS QUESTION, AND THE PREVIOUS ONE WAS WRONG. The mutating
+   * affordances were gated on the persisted permission KEY `EDIT`, which is a different
+   * question over different data: the caller's permission keys are a union across the pages
+   * and modules it holds rights on, and no member of that union says whether the caller may
+   * administer accounts. Every address those affordances lead to is declared under the
+   * tenant-administration POLICY, so that is the fact the gate reads — the same fact the route
+   * guard reads, from the same authority.
+   *
+   * Also read for the caller's own account key and host status, which the row-level removal
+   * guard needs: see {@link canRemove}.
+   */
+  private readonly auth = inject(AuthStore);
+
+  /**
+   * The tenant's protected facts, read for ONE of them: the designated administrator account.
+   *
+   * ⚠ NOTHING ON AN ACCOUNT SAYS IT IS THE TENANT'S ADMINISTRATOR. The designation is the
+   * portal-scoped column `Portals.AdministratorId`, and the account listing contract carries
+   * no flag for it, so the guard the legacy screen applied at `Users.ascx.vb:L693-L694` is
+   * unanswerable without the tenant's own record. This store resolves it once per session and
+   * every screen that needs it shares that one read.
+   */
+  private readonly portals = inject(PortalStore);
 
   // -------------------------------------------------------------------------
   // CELL AND COMMAND TEMPLATES
@@ -746,11 +790,35 @@ export class UserListComponent implements OnInit {
   /** The account whose removal is awaiting confirmation, or null when none is. */
   private readonly _pendingRemoval = signal<UserListItem | null>(null);
 
-  /** Whether a removal has been dispatched and its outcome not yet reported. */
-  private readonly awaitingRemoval = signal<boolean>(false);
+  /**
+   * The identifier of the removal this screen dispatched, or zero when none is outstanding.
+   *
+   * ⚠ AN IDENTIFIER AND NOT A BOOLEAN, AND THE DIFFERENCE IS A CORRECTNESS ONE. The store is
+   * provided at the application root and publishes ONE aggregate write flag, so this screen used to
+   * settle its removal by watching that flag fall — which happens when the FIRST write anywhere in
+   * the application finishes. A save on another screen therefore consumed this screen's removal
+   * marker: the outcome of a removal that was still in the air was reported from whatever the shared
+   * failure slot happened to hold, and the refusal that arrived afterwards had no marker left to be
+   * attributed to, so a row the server refused to delete silently stayed with nothing said.
+   *
+   * Zero is safe as "none outstanding" rather than being a sentinel collision: the store
+   * pre-increments its counter, so the first identifier it ever issues is 1.
+   */
+  private readonly awaitedRemovalId = signal<number>(0);
 
   /** The chosen search axis, for the selector to mark its current option. */
   protected readonly searchField = this._searchField.asReadonly();
+
+  /**
+   * The shared search box, so the alphabet strip can call off a pending emission it would otherwise
+   * be overtaken by.
+   *
+   * A view query rather than a bound input, because what is needed is a COMMAND at a moment in time —
+   * see {@link SearchInputComponent.cancelPendingSearch}. Optional because the box is inside no
+   * conditional block today, so it is always present, and asserting that with a required query would
+   * make a future conditional a run-time failure rather than a no-op.
+   */
+  private readonly searchBox = viewChild(SearchInputComponent);
 
   /**
    * The account awaiting removal confirmation, or null when none is.
@@ -760,6 +828,21 @@ export class UserListComponent implements OnInit {
    * its removal from the document is what closing it means.
    */
   protected readonly pendingRemoval = this._pendingRemoval.asReadonly();
+
+  /**
+   * Whether the caller may be offered the tenant-administration affordances.
+   *
+   * Gates the create link and the row-level edit and removal commands — every one of which
+   * addresses a route or an endpoint declared under the tenant-administration policy. Reads
+   * `false` while the caller's identity is unresolved, which is the safe direction for a gate.
+   *
+   * ⚠ THIS IS THE SERVER'S OWN DETERMINATION, re-exposed rather than recomputed. The store's
+   * `administersCurrentPortal` is `isSuperUser` OR the API's `isPortalAdministrator`, and
+   * nothing here inspects a role NAME: `Portals.AdministratorRoleId` is what confers tenant
+   * administration, the designated role is renameable, and a tenant may hold several roles
+   * that administer it.
+   */
+  protected readonly administersPortal: Signal<boolean> = this.auth.administersCurrentPortal;
 
   // -------------------------------------------------------------------------
   // STORE-DERIVED SURFACE
@@ -842,6 +925,17 @@ export class UserListComponent implements OnInit {
 
   /** Whether nothing at all matched, as distinct from having paged past the end. */
   protected readonly isEmptyResult: Signal<boolean> = this.store.isEmptyResult;
+
+  /**
+   * Whether the listing has been asked for nothing at all, as distinct from having matched nothing.
+   *
+   * True when the tenant's `Display_Mode` selects the no-query view — which is also the mode the
+   * legacy applied to an absent setting, so it is the state a newly configured tenant opens in.
+   */
+  protected readonly noQueryIssued: Signal<boolean> = this.store.noQueryIssued;
+
+  /** The notice shown while no query has been issued. */
+  protected readonly noQueryNotice: string = NO_QUERY_NOTICE;
 
   /** Whether the requested page lies beyond a match set that is not itself empty. */
   protected readonly isPastEnd: Signal<boolean> = this.store.isPastEnd;
@@ -1167,6 +1261,64 @@ export class UserListComponent implements OnInit {
     return held.problem;
   });
 
+  /**
+   * The sentence to show when a read of this screen's failed WITHOUT a problem document.
+   *
+   * ⚠ THIS CLOSES A CLASS OF FAILURE THAT WAS COMPLETELY SILENT, AND SILENCE WAS THE WHOLE DEFECT.
+   * The runtime decoders that check each response against its published contract run inside the
+   * service's own mapping, which is DOWNSTREAM of the interceptor's error handling — so a `200`
+   * whose body does not match its contract throws a plain error carrying no document, no status and
+   * no support reference. {@link readFailure} is therefore `null` for it, the banner rendered
+   * nothing, the grid stayed empty because no rows were committed, and no surface on the screen said
+   * why. An operator saw an account listing that had simply stopped having accounts in it.
+   *
+   * The store's own authored summary is used rather than a sentence invented here: the shared
+   * summariser already words a failure with no document, and the store already holds that wording on
+   * the failure it recorded, so this reads it out instead of composing a second vocabulary. The
+   * retry path is the screen's existing search and paging affordances, which re-dispatch the read —
+   * nothing is disabled by a failed read, so they remain reachable.
+   *
+   * Null whenever a document IS present, so the banner shows the server's own explanation in
+   * preference to this and the two can never both speak.
+   */
+  protected readonly readFailureSummary: Signal<string | null> = computed(() => {
+    const held: UserFailure | null = this.store.failure();
+
+    if (held === null || held.problem !== null) {
+      return null;
+    }
+
+    if (
+      held.operation !== 'loadUsers' &&
+      held.operation !== 'loadMembershipSettings' &&
+      held.operation !== 'loadProfileDefinitions'
+    ) {
+      return null;
+    }
+
+    return held.summary.message;
+  });
+
+  /**
+   * Whether this screen has a read failure to present at all.
+   *
+   * ⚠ THIS IS THE GATE, AND IT IS DELIBERATELY NOT "IS THERE A DOCUMENT". The failure surface is
+   * wrapped in a block, and that block used to be opened by {@link readFailure} alone — so a failure
+   * carrying no problem document opened nothing, and the authored summary beside it could never be
+   * reached however correctly it was bound. That is precisely the contract-violating `200` case: the
+   * decoders run downstream of the interceptor, so there is no document to gate on. The gate is
+   * therefore "either surface has something to say", which is the union of the two inputs the block
+   * contains rather than one of them.
+   *
+   * Not derived from `store.failure() !== null`, because the store is provided at the application
+   * root and its slot holds whatever failed most recently ANYWHERE. Both members below are already
+   * confined to this screen's three read operations, so composing them keeps that confinement in one
+   * place instead of restating it a third time.
+   */
+  protected readonly hasReadFailure: Signal<boolean> = computed(
+    () => this.readFailure() !== null || this.readFailureSummary() !== null,
+  );
+
   // -------------------------------------------------------------------------
   // OUTCOME REPORTING
   // -------------------------------------------------------------------------
@@ -1180,26 +1332,73 @@ export class UserListComponent implements OnInit {
    * as a loader re-fires on every unrelated signal change it happens to read.
    *
    * IDEMPOTENT BY CONSTRUCTION. It acts on a TRANSITION rather than on a state: it returns
-   * immediately unless a removal is outstanding and the write has settled, and the first thing it
-   * does once both hold is clear the marker, so a later change to any signal it reads cannot
-   * report the same outcome twice. Clearing the marker inside `untracked` keeps that write out of
-   * the effect's own dependency set, which is what stops it re-triggering itself.
+   * immediately unless the settled write is the one this screen dispatched, and the first thing it
+   * does once that holds is clear the identifier, so a later change to any signal it reads cannot
+   * report the same outcome twice. Clearing it inside `untracked` keeps that write out of the
+   * effect's own dependency set, which is what stops it re-triggering itself.
    *
-   * The operation is matched as well as the presence of a failure, because a SUCCESSFUL removal
-   * triggers a re-read of the listing whose own failure must not be reported as a failed removal.
+   * ⚠ SETTLED ON THE STORE'S PUBLISHED RESULT, NOT ON ITS AGGREGATE FLAG FALLING, AND THE FAILURE IS
+   * TAKEN FROM THAT RESULT. Both halves matter and each closed a different defect. The flag falls when
+   * the first write anywhere in the application finishes, so watching it let an unrelated save settle
+   * this screen's removal. And the shared failure slot is cleared at every dispatch and holds whatever
+   * failed most recently, so reading the outcome from there could report another screen's refusal as
+   * this removal's — or report a refused removal as successful, if anything else dispatched in
+   * between. The result carries the identifier the store handed back and the failure the write itself
+   * recorded, so neither mistake is expressible.
    */
   constructor() {
+    // ⚠ THE CHOSEN AXIS IS RECONCILED AGAINST WHAT IS STILL DECLARED, AND WITHOUT THIS THE SCREEN
+    // LIED ABOUT WHAT IT WAS SEARCHING. The third axis is one entry per tenant-declared profile
+    // property, and the declarations are read into the store independently of this selector: they
+    // arrive after the screen opens, and they change when a property is removed on the neighbouring
+    // profile-declarations screen, which shares the same application-scoped store. The chosen axis was
+    // written only by the selector's own change handler and never revisited, so when the property it
+    // named stopped being declared its `<option>` disappeared — and a `<select>` whose selected value
+    // is no longer among its options FALLS BACK TO THE FIRST OPTION IN THE BROWSER while the component
+    // went on holding the removed name. The operator read "Username" on screen — the label the legacy
+    // resource file gives that axis — and every search they ran queried the deleted property, which the
+    // server answers by refusing or by matching nothing.
+    //
+    // Reset to the ACCOUNT-NAME axis, not to whatever now happens to be first: that is the entry
+    // `Page_Load` L577 added first and therefore the legacy default, and it is the value this
+    // component seeds with, so the reconciliation lands where the screen started.
+    //
+    // An effect rather than a `computed`, because this WRITES the state a person chose. A computed
+    // would have to be read to take effect and would silently discard the choice on every unrelated
+    // recomputation.
     effect(() => {
-      const outstanding: boolean = this.awaitingRemoval();
-      const inFlight: boolean = this.store.saving();
-      const failure: UserFailure | null = this.store.failure();
+      const chosen: string = this._searchField();
+      const declared: readonly string[] = this.store.profilePropertyNames();
 
-      if (outstanding === false || inFlight === true) {
+      untracked(() => {
+        if (chosen === USERNAME_SEARCH_FIELD || chosen === EMAIL_SEARCH_FIELD) {
+          return;
+        }
+
+        if (declared.includes(chosen)) {
+          return;
+        }
+
+        this._searchField.set(USERNAME_SEARCH_FIELD);
+      });
+    });
+
+    effect(() => {
+      const awaited: number = this.awaitedRemovalId();
+      const settled: UserMutation | null = this.store.mutation();
+
+      if (awaited === 0 || settled === null || settled.id !== awaited) {
         return;
       }
 
       untracked(() => {
-        this.awaitingRemoval.set(false);
+        this.awaitedRemovalId.set(0);
+
+        // A successful removal re-reads the listing, and that read has its own failure path. The
+        // operation is asserted so a failed re-read cannot be reported as a failed removal.
+        const failure: UserFailure | null =
+          settled.failure !== null && settled.operation === 'deleteUser' ? settled.failure : null;
+
         this.reportRemovalOutcome(failure);
       });
     });
@@ -1225,16 +1424,16 @@ export class UserListComponent implements OnInit {
    * populated that selector from `ProfileController.GetPropertyDefinitionsByPortal`, and the
    * initialisation command deliberately does not include them.
    *
-   * MIGRATION: `Display_Mode` IS CARRIED BY THE ACCOUNT POLICY BUT IS NOT HONOURED, and the
-   * divergence is stated rather than absorbed. `Page_Init` L494-L506 chose the opening view from
-   * that setting — the unfiltered listing, the first letter of the alphabet strip, or the
-   * bare marker `"None"` — and `UserModuleBase.vb` L126-L130 defaulted it to `DisplayMode.None`,
-   * so a tenant that had configured nothing opened the screen with NO QUERY ISSUED and NO ROWS at
-   * all until the operator acted. The store deliberately promotes that no-query state to the
-   * unfiltered listing when it brings a listing screen up, documents that choice at length, and
-   * owns the decision; overriding it from here would either fire a second request or reintroduce
-   * a screen that opens empty. The no-query state remains reachable through the store's own
-   * reset.
+   * MIGRATION: `Display_Mode` DECIDES WHICH VIEW THIS SCREEN OPENS ON, and the store applies it.
+   * `Page_Init` L494-L506 chose the opening filter from that setting — the unfiltered listing, the
+   * first letter of the alphabet strip, or the bare marker `"None"` — and `BindData` L248-L290
+   * then branched on the filter, with `"None"` matching no branch so that no query was issued at
+   * all. `UserModuleBase.vb` L126-L130 defaulted the setting to that third mode, so a tenant that
+   * has configured nothing opens with no rows until the operator presses a letter or searches.
+   * All three modes are reproduced in the store, which owns the choice because it owns both the
+   * policy read and the listing read and must sequence them; deciding it here would fire a second
+   * request. This screen's part is to present the no-query state honestly rather than as a match
+   * set that came back empty — see {@link noQueryIssued}.
    *
    * The command columns are assembled here rather than in a field initialiser because their
    * content comes from static view queries, which are resolved by the time this runs. Loading
@@ -1245,6 +1444,88 @@ export class UserListComponent implements OnInit {
     this.commandColumns.set(this.buildCommandColumns());
     this.store.initialise();
     this.store.loadProfileDefinitions();
+    this.resolveProtectedFacts();
+  }
+
+  /**
+   * Asks for the tenant's protected facts, which the row-level removal guard needs.
+   *
+   * ⚠ THE CALLER'S OWN TENANT, never a browsed one, and read from the identity rather than from
+   * a route: this screen names no portal segment. The read is idempotent in the store, so
+   * several screens asking on initialisation issue one request between them.
+   *
+   * ⚠ PRESENCE IS TESTED EXPLICITLY. `Portals.PortalID` is `IDENTITY(-1, 1)`, so `-1` and `0`
+   * are both real tenants and a truthiness test would silently skip the request for either.
+   */
+  private resolveProtectedFacts(): void {
+    const portalId: number | undefined = this.auth.currentUser()?.portalId;
+
+    if (portalId === undefined) {
+      return;
+    }
+
+    this.portals.loadCurrentPortalContext(portalId);
+  }
+
+  /**
+   * Whether the removal command may be offered for one account.
+   *
+   * MIGRATION: this is `Website/admin/Users/Users.ascx.vb` L693-L694 reproduced member for
+   * member. The legacy grid hid its delete image on exactly two conditions, joined with
+   * `AndAlso`:
+   *
+   * ```vb
+   * delImage.Visible = Not (user.UserID = PortalSettings.AdministratorId) AndAlso _
+   *                    Not (user.UserID = Me.UserId And user.IsSuperUser)
+   * ```
+   *
+   * The first protects the tenant's DESIGNATED ADMINISTRATOR: removing that account would leave
+   * `Portals.AdministratorId` naming an account that no longer exists. The second stops a
+   * signed-in HOST account deleting ITSELF — and both halves of that clause are load-bearing,
+   * because one host account may legitimately remove another, and an ordinary account removing
+   * itself was never guarded here.
+   *
+   * ⚠ SERVER REFUSAL IS NOT EQUIVALENT BEHAVIOUR, which is why this is reproduced rather than
+   * delegated. Offering a destructive command that will be refused invites the operator to
+   * confirm a deletion, waits, and then reports a failure for something the screen already knew
+   * was impossible — on the two accounts where a mistaken attempt is most alarming.
+   *
+   * ⚠ EVERY COMPARISON IS EXPLICIT EQUALITY AGAINST A RESOLVED KEY. `administratorUserId` reads
+   * `null` both for a tenant with no designation and for an unresolved read, and a truthiness
+   * test would treat a legitimate key on either side as absence. Nothing coalesces to `-1`.
+   *
+   * ⚠ AN UNRESOLVED FACT WITHHOLDS NOTHING, which is the fail-safe direction here. Until the
+   * tenant's record has been read `administratorUserId` is `null`, the first clause protects
+   * nobody, and behaviour is what it was before this guard existed: the command is offered and
+   * the API's refusal governs. Hiding the command until the read completed would instead remove
+   * a capability from every row for the duration of a request.
+   *
+   * @param account The row being rendered.
+   * @returns True when the removal command may be shown for this account.
+   */
+  protected canRemove(account: UserListItem): boolean {
+    // ⚠ THE SERVER'S OWN PER-ROW VERDICT COMES FIRST, AND IT IS THE WIDER OF THE TWO RULES.
+    // `UserListItemDto.canDelete` is published by the endpoint that enforces the removal, and it
+    // withholds EVERY installation administrator rather than only one that is also the caller —
+    // which is what a removal request actually refuses. Two predicates existed here for a while,
+    // this one and a guard on the command handler, and only the handler consulted the flag: so a
+    // row the server would refuse was still RENDERED a destructive command, and the refusal arrived
+    // only after the operator had confirmed the deletion and waited. Both rules are honoured in this
+    // one place, so the template cannot honour one and forget the other.
+    if (!account.canDelete) {
+      return false;
+    }
+
+    const designatedAdministrator: number | null = this.portals.administratorUserId();
+
+    if (designatedAdministrator !== null && designatedAdministrator === account.userId) {
+      return false;
+    }
+
+    const caller: number | undefined = this.auth.currentUser()?.userId;
+    const callerIsThisAccount: boolean = caller !== undefined && caller === account.userId;
+
+    return (callerIsThisAccount && account.isSuperUser) === false;
   }
 
   // -------------------------------------------------------------------------
@@ -1317,13 +1598,95 @@ export class UserListComponent implements OnInit {
    * @param affordance A single letter, or the unfiltered affordance's own wording.
    */
   protected onFilterSelected(affordance: string): void {
+    // ⚠ THE BOX'S PENDING EMISSION IS CALLED OFF FIRST, AND THE ORDER MATTERS. Both affordances
+    // filter the same listing, and the box emits on a delay — so an operator who typed "bl" and then
+    // pressed "C" a moment later used to get a query for C, followed by the delay elapsing and a
+    // query for "bl": the newer intent silently replaced by the older one, with the strip showing C
+    // over a listing of B. Nothing this screen could do prevented it, because the pending emission
+    // lived inside the shared control's own stream; it now publishes a command for exactly this.
+    //
+    // The affordance is ADOPTED into the box as well as cancelling it, for the unfiltered case as
+    // much as for a letter: the box then shows what is actually being filtered on rather than a term
+    // that is no longer in force, and adopting is emit-free so it cannot re-dispatch what this method
+    // is about to dispatch itself.
     if (affordance === ALL_FILTER_LABEL) {
+      this.searchBox()?.cancelPendingSearch('');
       this.store.showAllAccounts();
 
       return;
     }
 
+    this.searchBox()?.cancelPendingSearch(affordance);
     this.dispatchSearch(affordance);
+  }
+
+  /**
+   * The query parameters that carry one row's account to the role listing.
+   *
+   * ⚠ THE ACCOUNT MUST NOT BE DROPPED, which is what this exists to prevent. The command used to
+   * navigate to the bare role listing address, so the row it was pressed on was discarded and the
+   * operator arrived at every role in the tenant. The legacy command carried the account —
+   * `Users.ascx.vb:L542` built `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)` — and the
+   * screen it reached was keyed by either a role or an account.
+   *
+   * A QUERY PARAMETER rather than a path segment, because the target's route set is closed and
+   * contains no per-account membership address. This adds nothing to it. It also matches how the
+   * legacy carried the value, which was itself a query argument.
+   *
+   * The identifier is passed through UNTOUCHED — not coerced, not guarded, not compared against a
+   * bound. An account identifier of nought is an ordinary account, so any positivity test here
+   * would silently strip the context for exactly one row.
+   *
+   * A per-row object rather than a single constant, so nothing on this class holds a value that
+   * belongs to one row.
+   *
+   * @param row The account whose roles to show.
+   * @returns The parameters to append to the role listing address.
+   */
+  protected manageRolesQueryParams(row: UserListItem): Record<string, number> {
+    return { userId: row.userId };
+  }
+
+  /**
+   * Whether one strip entry is the one currently applied.
+   *
+   * ⚠ THIS CLOSES A GAP THIS SCREEN USED TO REPORT RATHER THAN FIX. The template previously
+   * carried a note saying the applied entry could not be announced because "the letter in force
+   * lives inside the store's search discriminator and is not re-published on the screen's
+   * surface", and declined to emit `aria-pressed` rather than invent a state. The right answer
+   * was to publish the predicate here, which is what the sibling portal listing already does —
+   * so the gap was a missing three lines on this class, not a limit of the store.
+   *
+   * The strip's two kinds of entry are answered from the same discriminator:
+   *
+   *   - the clearing entry is applied when the search is the unfiltered listing, which is what
+   *     {@link UserListComponent.onFilterSelected} dispatches for it;
+   *   - a letter is applied when the search is a sign-in-name prefix whose text is exactly that
+   *     letter. Compared case-INSENSITIVELY, because the strip renders upper case while a
+   *     caller may have typed the same prefix in lower case through the free-text field and
+   *     landed in an identical search — the strip should then show itself as applied rather than
+   *     disagreeing with the listing it is describing.
+   *
+   * Every other search state — an electronic-mail prefix, a profile-property prefix, a
+   * multi-character sign-in prefix, or no query at all — leaves EVERY entry unpressed, which is
+   * the truthful answer: none of them is what the strip offers.
+   *
+   * A plain method rather than a computed signal because it takes an argument. The signal it
+   * reads registers normally, so the binding re-evaluates whenever the search changes.
+   *
+   * @param affordance The strip entry to test, as rendered.
+   * @returns True when that entry describes the search in force.
+   */
+  protected isFilterApplied(affordance: string): boolean {
+    const search = this.store.search();
+
+    if (affordance === ALL_FILTER_LABEL) {
+      return search.mode === 'all';
+    }
+
+    return (
+      search.mode === 'username' && search.text.toUpperCase() === affordance.toUpperCase()
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1375,14 +1738,21 @@ export class UserListComponent implements OnInit {
    * name that the prompt had none of. The wording is the legacy wording, resolved through the
    * three-level fall-through to the shared global resources.
    *
-   * ⚠ THE COMMAND IS OFFERED FOR EVERY ROW, AND THAT IS A KNOWN PARITY GAP RATHER THAN A CHOICE.
+   * ⚠ THE COMMAND IS WITHHELD FROM A PROTECTED ROW, and the row itself says which rows those are.
    * `grdUsers_ItemDataBound` L681-L705 hid the command when the account was the tenant's designated
-   * administrator, and when it was BOTH the signed-in caller's own account AND an installation
-   * administrator. Neither fact is reachable from here: the row contract carries the
-   * installation-administrator flag, but the tenant's administrator identifier and the signed-in
-   * caller's own identifier live in the authentication store, and a feature may not import another
-   * feature's state. The gap is reported rather than worked around, and it is an AFFORDANCE gap
-   * only — the server is authoritative and refuses a removal it will not perform.
+   * administrator, and when it was both the signed-in caller's own account and an installation
+   * administrator. Neither fact was reachable from this feature — the tenant's administrator
+   * identifier is not on the account row and the caller's own identifier lives in the authentication
+   * store, which a feature may not import — so the capability is now published ON THE ROW by the
+   * server that enforces it, as {@link UserListItem.canDelete}. The predicate is the server's rule
+   * rather than the legacy markup's: every installation administrator is withheld, not only one that
+   * is also the caller, because that is what a removal request actually refuses. The widening is
+   * recorded in MIGRATION_NOTES.md.
+   *
+   * The flag is ADVISORY and this method still guards on it, because a template is not a security
+   * boundary: the server re-checks and answers `403` regardless of what was rendered. Guarding here
+   * is what stops a stale row — one read before an administrator was designated — from dispatching a
+   * request that can only fail.
    *
    * The legacy authorisation check is deliberately NOT re-implemented. `UserModuleBase.vb` L466-L505
    * performed one inside a property getter, complete with a database round trip at L481 and a
@@ -1391,6 +1761,10 @@ export class UserListComponent implements OnInit {
    * @param account The account the reader asked to remove.
    */
   protected requestRemoval(account: UserListItem): void {
+    if (!account.canDelete) {
+      return;
+    }
+
     this._pendingRemoval.set(account);
   }
 
@@ -1419,12 +1793,14 @@ export class UserListComponent implements OnInit {
 
     this._pendingRemoval.set(null);
 
-    if (this.store.saving() === true) {
+    // ⚠ GUARDED ON THIS SCREEN'S OWN OUTSTANDING REMOVAL, NOT ON THE STORE BEING BUSY. Guarding on
+    // the aggregate refused a legitimate removal whenever any unrelated screen happened to be
+    // writing, which is a refusal the operator can neither see nor explain.
+    if (this.awaitedRemovalId() !== 0) {
       return;
     }
 
-    this.awaitingRemoval.set(true);
-    this.store.deleteUser(account.userId);
+    this.awaitedRemovalId.set(this.store.deleteUser(account.userId));
   }
 
   /**

@@ -85,15 +85,28 @@
  * `Library/Components/Security/Roles/RoleController.vb` · `RoleInfo.vb` ·
  * `Website/admin/Security/Roles.ascx.vb` · `Website/release.config`.
  */
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Router, provideRouter } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { RoleStore } from '../../../core/state/role.store';
 import { RoleFormComponent } from './role-form.component';
 
+/**
+ * The tenant the doubled identity reports.
+ *
+ * `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant a schema creates carries -1 — which is
+ * also the legacy absent-integer marker. Using it here proves the tenant request is issued for a real
+ * key rather than skipped by a truthiness test.
+ */
+const TENANT_ID = -1;
+
+import type { WritableSignal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
@@ -572,6 +585,11 @@ function emptyRolePage(): WirePage<RoleListItem> {
 describe('RoleFormComponent', () => {
   let fixture: ComponentFixture<RoleFormComponent>;
   let httpMock: HttpTestingController;
+  let administratorRole: WritableSignal<number | null>;
+  let registeredRole: WritableSignal<number | null>;
+  let processorConfigured: WritableSignal<boolean>;
+  let tenantResolved: WritableSignal<boolean>;
+  let loadCurrentPortalContext: jasmine.Spy;
   let notifySpy: jasmine.Spy;
   let navigateSpy: jasmine.Spy;
 
@@ -584,6 +602,32 @@ describe('RoleFormComponent', () => {
     //
     // The component is STANDALONE, so it goes in `imports`. No testing module wrapper is used: the
     // provider functions are the whole of the wiring.
+    /*
+     * THE TENANT'S PROTECTED ROLE KEYS AND ITS PROCESSOR STATE, HELD IN SIGNALS THE CASES CAN MOVE.
+     *
+     * ⚠ THESE USED TO BE THREE COMPONENT INPUTS, AND THE CHANGE IS THE POINT. They were declared as
+     * optional inputs on the reasoning that "a portal-settings call is outside this screen's endpoint
+     * boundary", and NOTHING in the application ever supplied one — so the three guards
+     * `EditRoles.ascx.vb:L174-L182` declared shipped permanently disarmed, and the form offered
+     * Update and Delete on the two roles that hold a tenant together. The facts are now read from the
+     * portal store, which is CORE state every feature may inject.
+     *
+     * Each key opens ABSENT and the tenant opens UNRESOLVED, so the ordinary cases below describe a
+     * screen whose tenant record has not arrived — which is the fail-safe direction: the form stays
+     * editable and the API's refusal governs, exactly the behaviour that shipped.
+     */
+    administratorRole = signal<number | null>(null);
+    registeredRole = signal<number | null>(null);
+    processorConfigured = signal<boolean>(false);
+    tenantResolved = signal<boolean>(false);
+
+    /*
+     * The request for those facts, spied rather than served: the real portal store would add a tenant
+     * read to every case in this file, and the spy records which tenant was asked for and whether it
+     * was asked at all.
+     */
+    loadCurrentPortalContext = jasmine.createSpy('loadCurrentPortalContext');
+
     await TestBed.configureTestingModule({
       imports: [RoleFormComponent],
       providers: [
@@ -591,6 +635,19 @@ describe('RoleFormComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         RoleStore,
+        // The identity, doubled for ONE fact: which tenant the caller belongs to. Read from the
+        // caller rather than from a route, because this screen addresses a role and names no portal.
+        { provide: AuthStore, useValue: { currentUser: signal({ portalId: TENANT_ID }) } },
+        {
+          provide: PortalStore,
+          useValue: {
+            administratorRoleId: administratorRole,
+            registeredRoleId: registeredRole,
+            paymentProcessorConfigured: processorConfigured,
+            contextResolved: tenantResolved,
+            loadCurrentPortalContext,
+          },
+        },
       ],
     }).compileComponents();
 
@@ -839,23 +896,34 @@ describe('RoleFormComponent', () => {
    * @param context The portal-scoped facts to supply, and the groups to answer with.
    */
   function editMode(subject: Role, context: EditContext = {}): void {
-    fixture = TestBed.createComponent(RoleFormComponent);
+    // ⚠ THE TENANT CONTEXT IS PUT IN THE STORE, NOT PASSED IN. It used to arrive as three optional
+    // inputs that nothing in the application supplied; it is now read from the portal store, so a
+    // case that wants a guard armed writes the fact into the doubled signal BEFORE the component
+    // reads it — which is before the first change detection, since every consumer is a `computed`.
+    //
+    // Supplying ANY of the three marks the tenant RESOLVED, because in production the three arrive
+    // together on one record and the processor warning is withheld until that record lands.
+    if (
+      context.administratorRoleId !== undefined ||
+      context.registeredRoleId !== undefined ||
+      context.paymentProcessorConfigured !== undefined
+    ) {
+      tenantResolved.set(true);
+    }
 
     if (context.administratorRoleId !== undefined) {
-      fixture.componentRef.setInput('administratorRoleId', context.administratorRoleId);
+      administratorRole.set(context.administratorRoleId);
     }
 
     if (context.registeredRoleId !== undefined) {
-      fixture.componentRef.setInput('registeredRoleId', context.registeredRoleId);
+      registeredRole.set(context.registeredRoleId);
     }
 
     if (context.paymentProcessorConfigured !== undefined) {
-      fixture.componentRef.setInput(
-        'paymentProcessorConfigured',
-        context.paymentProcessorConfigured,
-      );
+      processorConfigured.set(context.paymentProcessorConfigured);
     }
 
+    fixture = TestBed.createComponent(RoleFormComponent);
     fixture.componentRef.setInput('roleId', String(subject.roleId));
     fixture.detectChanges();
 
@@ -2374,13 +2442,28 @@ describe('RoleFormComponent', () => {
       expect(textArea().disabled).toBeFalse();
     });
 
-    it('stays editable when NO portal-scoped identifier is supplied, and defers to the API', () => {
-      // This is the state of the running application: the identifiers are unobtainable from this
-      // screen's endpoints, so the guard cannot fire and the server decides. Its refusal is a warning.
+    it('ASKS FOR THE TENANT\u2019S OWN RECORD on arrival, for the caller\u2019s tenant', () => {
+      // ⚠ THE FACTS ARE READ, NOT AWAITED FROM A CALLER. They were three optional inputs that nothing
+      // in the application supplied — no route, no parent template — so the guards below shipped
+      // permanently disarmed. The tenant comes from the caller's identity because this screen names no
+      // portal, and the key is passed through untouched: `Portals.PortalID` is `IDENTITY(-1, 1)`, so
+      // -1 and 0 are both real tenants and a truthiness test would skip the request for either.
+      editMode(role(7));
+
+      expect(loadCurrentPortalContext).toHaveBeenCalledWith(TENANT_ID);
+      expect(loadCurrentPortalContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays editable while the tenant record is still OUTSTANDING, and defers to the API', () => {
+      // ⚠ THE FAIL-SAFE DIRECTION, AND IT IS DELIBERATE. Until the record arrives each key is absent,
+      // every comparison is false and the form behaves exactly as it did before the guard existed:
+      // the command is offered and the server decides, its refusal surfacing as a warning. Locking the
+      // form until the read completed would instead take a capability away from EVERY role for the
+      // duration of a request.
       editMode(role(0, { roleName: 'Administrators' }));
 
       expect(command(SUBMIT_LABEL))
-        .withContext('no discriminator exists on the role itself, so nothing is guessed')
+        .withContext('nothing on the role itself discriminates it, so nothing is guessed')
         .not.toBeUndefined();
 
       press(SUBMIT_LABEL);
@@ -2395,6 +2478,159 @@ describe('RoleFormComponent', () => {
         severity: 'warning',
         message: 'That role is maintained by the portal.',
       });
+    });
+
+    it('ARMS the guard as the tenant record arrives, without the screen being remounted', () => {
+      // The record arrives after the form is already on screen, which is the ordinary sequence: the
+      // request is issued on construction and answers a moment later. Every consumer is a `computed`
+      // over the store's signals, so the transition needs no reload and no second visit.
+      editMode(role(0, { roleName: 'Administrators' }));
+
+      expect(command(SUBMIT_LABEL))
+        .withContext('offered while the tenant is unread')
+        .not.toBeUndefined();
+
+      administratorRole.set(0);
+      tenantResolved.set(true);
+      fixture.detectChanges();
+
+      expect(command(SUBMIT_LABEL))
+        .withContext('withdrawn the moment the tenant names this role as its administrator role')
+        .toBeUndefined();
+      expect(command(DELETE_LABEL)).toBeUndefined();
+    });
+
+    it('protects the role keyed NOUGHT, which the identity seed makes a real role', () => {
+      // ⚠ `Roles.RoleID` is `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L114`), so the administrator
+      // role of a freshly created tenant genuinely carries nought — and a guard that tested either
+      // side for truthiness would leave exactly that role unprotected.
+      editMode(role(0, { roleName: 'Administrators' }), { administratorRoleId: 0 });
+
+      expect(command(SUBMIT_LABEL)).toBeUndefined();
+      expect(command(DELETE_LABEL)).toBeUndefined();
+    });
+
+    it('protects only the two roles the TENANT names, and no other', () => {
+      // The keys are the tenant's, not a hardcoded pair and not a role name. A role that is neither
+      // is fully editable even when both keys are known.
+      editMode(role(7, { roleName: 'Subscribers' }), {
+        administratorRoleId: 0,
+        registeredRoleId: 1,
+      });
+
+      expect(command(SUBMIT_LABEL)).not.toBeUndefined();
+      expect(command(DELETE_LABEL)).not.toBeUndefined();
+    });
+  });
+
+  // ===================================================================================================
+  // THE NAME IS TIDIED BEFORE IT IS JUDGED
+  //
+  // The role name used to be trimmed on its way INTO THE REQUEST, which meant the value that was
+  // validated and the value that was sent were different strings. `roleName` carries `required` and
+  // `maxLength` and nothing else, so a whitespace-only entry is a non-empty string that satisfies both
+  // — and was then trimmed to the EMPTY STRING on its way out. `CreateRoleRequestValidator` declares
+  // `NotEmpty`, which treats a whitespace-only string as empty, so the server refused what the screen
+  // had just declared valid and the operator was shown a server rejection for a field the form had
+  // raised no complaint about.
+  // ===================================================================================================
+
+  describe('tidying the role name before judging it', () => {
+    it('REFUSES a whitespace-only name rather than posting an empty one', () => {
+      createMode();
+      fillRoleName('   ');
+
+      press(SUBMIT_LABEL);
+
+      // ⚠ NOTHING IS SENT. This is the assertion the defect failed: a `POST` went out carrying
+      // `roleName: ""`. The backend verification in teardown fails on any unconsumed request, so a
+      // creation issued here would be caught twice over.
+      httpMock.expectNone(() => true);
+
+      // And the requirement is reported, beside a field the operator did fill in — they typed
+      // something, so they are owed an explanation of why it amounts to nothing.
+      expect(messagesFor(CONTROL_ID.roleName))
+        .withContext('the form complains rather than deferring to the server')
+        .not.toEqual([]);
+    });
+
+    it('TIDIES a padded name into the control, so what is shown is what is sent', () => {
+      createMode();
+      fillRoleName('  Subscribers  ');
+
+      press(SUBMIT_LABEL);
+
+      expect(submittedCreate().roleName).toBe('Subscribers');
+
+      // The control agrees with the payload, so nobody is left looking at an entry that differs from
+      // the one that was accepted.
+      expect(input(CONTROL_ID.roleName).value).toBe('Subscribers');
+    });
+
+    it('still ACCEPTS a name that tidying merely shortens, which must not regress', () => {
+      // ⚠ THE BOUNDARY. A guard that refused everything tidying touched would refuse the case above,
+      // so this pins that tidying to a NON-EMPTY value is unaffected by the re-judgement.
+      createMode();
+      fillRoleName('Subscribers ');
+
+      press(SUBMIT_LABEL);
+
+      expect(submittedCreate().roleName).toBe('Subscribers');
+      expect(messagesFor(CONTROL_ID.roleName)).toEqual([]);
+    });
+
+    it('lets a corrected name through immediately, so the refusal does not latch', () => {
+      createMode();
+      fillRoleName('\u00a0');
+      press(SUBMIT_LABEL);
+
+      httpMock.expectNone(() => true);
+
+      // The operator reads the message and types a real name. Nothing else is re-entered.
+      fillRoleName('Subscribers');
+      press(SUBMIT_LABEL);
+
+      expect(submittedCreate().roleName).toBe('Subscribers');
+    });
+
+    it('leaves the DESCRIPTION to its own rule, which collapses a blank one to nothing', () => {
+      // ⚠ ONLY THE NAME IS TIDIED INTO ITS CONTROL, and the description is why that distinction is
+      // worth stating rather than generalising. It reaches a NULLABLE member through `textOrNull`,
+      // whose rule is different in kind: a blank entry becomes `null` rather than being refused,
+      // because "no description" is a legitimate answer where "no name" is not. That rule stays where
+      // it is, on the way into the request, and nothing about it is re-judged.
+      createMode();
+      fillRoleName('Subscribers');
+      type(CONTROL_ID.description, '  padded  ');
+
+      press(SUBMIT_LABEL);
+
+      expect(submittedCreate().description)
+        .withContext('the nullable member takes its own rule, not the name\u2019s')
+        .toBe('padded');
+    });
+
+    it('sends NO description at all for a whitespace-only one, rather than refusing the form', () => {
+      // The counterpart, and the reason the two rules must not be merged: a blank description is
+      // accepted as an absence, whereas a blank NAME is refused outright.
+      createMode();
+      fillRoleName('Subscribers');
+      type(CONTROL_ID.description, '   ');
+
+      press(SUBMIT_LABEL);
+
+      expect(submittedCreate().description).toBeNull();
+    });
+
+    it('does not mark a pristine form dirty by tidying a name that needs none', () => {
+      // `setValue` is skipped outright when the value is already trimmed, so no unnecessary write can
+      // move the form's state. Proved by consequence: the creation goes out unchanged.
+      createMode();
+      fillRoleName('Subscribers');
+
+      press(SUBMIT_LABEL);
+
+      expect(submittedCreate().roleName).toBe('Subscribers');
     });
   });
 
@@ -2814,6 +3050,13 @@ describe('RoleFormComponent', () => {
       // rather than passed through any markup binding, because resource text is untrusted: this very
       // admin tree holds an entry carrying a live remote script block. The source typo in "fee-base" is
       // preserved, because the wording is the site's own.
+      //
+      // ⚠ THE TENANT RECORD IS RESOLVED HERE, WITH NO PROCESSOR, WHICH IS THE STATE THAT WARNS. The
+      // screen used to have no way of knowing either fact — the input nothing supplied defaulted to
+      // "unconfigured" — so the warning was permanently on screen. It is now read, and the one
+      // deliberate departure from the legacy expression is recorded in the case below.
+      tenantResolved.set(true);
+      processorConfigured.set(false);
       createMode();
 
       const emphasis: Element = queryOrFail<Element>(host(), '.role-form__warning strong');
@@ -2822,7 +3065,29 @@ describe('RoleFormComponent', () => {
       expect(documentText()).toContain('fee-base roles/services');
     });
 
-    it('hides the processor warning once a caller can report a configured processor', () => {
+    it('WITHHOLDS the processor warning until the tenant record resolves', () => {
+      // ⚠ THE ONE DELIBERATE DEPARTURE FROM `EditRoles.ascx.vb:L104-L109`, and it is recorded rather
+      // than absorbed. The legacy's first clause, `objPortalInfo Is Nothing`, warned when the portal
+      // could not be read AT ALL — so an unread portal produced the same warning as a portal with no
+      // processor. Telling an administrator to configure a payment processor on the strength of a
+      // request that has not answered is an assertion rather than a default, so the warning waits.
+      //
+      // Nothing is supplied, so the tenant stays unresolved: the state every visit began in while the
+      // fact was an input nobody passed.
+      createMode();
+
+      expect(host().querySelector('.role-form__warning'))
+        .withContext('no claim is made about a tenant nobody has read')
+        .toBeNull();
+
+      // Once the record lands with no processor, the reproduction is exact.
+      tenantResolved.set(true);
+      fixture.detectChanges();
+
+      expect(host().querySelector('.role-form__warning')).not.toBeNull();
+    });
+
+    it('hides the processor warning once the tenant reports a configured processor', () => {
       editMode(role(7), { paymentProcessorConfigured: true });
 
       expect(host().querySelector('.role-form__warning')).toBeNull();
@@ -2853,6 +3118,129 @@ describe('RoleFormComponent', () => {
   // ===================================================================================================
   // BEYOND THE THIRTEEN — THE REMAINING CONTRACT MEMBERS AND THE DROPPED AFFORDANCES
   // ===================================================================================================
+
+  // ---------------------------------------------------------------------------------------------------
+  // AREA 14 — WHOSE WRITE SETTLED, AND WHO CLASSIFIES A REFUSAL
+  //
+  // Two corrections are pinned here, and each closed a defect that only appears when something else in
+  // the application is writing at the same time or when a status other than the common ones arrives.
+  //
+  // WRITE IDENTITY. The shared store published ONE boolean for "a write is in flight" and ONE failure
+  // slot. This screen watched the boolean fall and then read the slot, so an unrelated role write
+  // settling elsewhere released this screen's submit lock, drained its outstanding state and could hand
+  // it somebody else's refusal to report. The store now issues an identifier per write and publishes
+  // the settled outcome under it, and this screen acts only on the identifier it was given.
+  //
+  // SEVERITY OWNERSHIP. This screen carried its own status-to-severity table, which disagreed with the
+  // shared one at two statuses: 404 (this screen said warning, the shared table says warning — but the
+  // local table reached that answer for its own reasons) and 429, where the local table said error
+  // while the shared table deliberately says info, because nothing was rejected on its merits. The
+  // local table is gone; the shared classification is consumed and only the WORDING is overridden.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('AREA 14 — write identity and severity ownership', () => {
+    it('stays held when an unrelated role write settles first', () => {
+      createMode();
+      fillRoleName();
+
+      press(SUBMIT_LABEL);
+
+      const creation: TestRequest = expectRequest('POST', ROLES_URL, 'the creation');
+
+      expect(command(SUBMIT_LABEL)?.disabled).withContext('held while ours is open').toBeTrue();
+
+      // A sibling screen's write, dispatched straight at the shared store and settled while ours is
+      // still in the air.
+      const store: RoleStore = TestBed.inject(RoleStore);
+
+      store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
+      expectRequest('POST', ROLE_GROUPS_URL, 'the sibling write').flush(
+        envelope(roleGroup(3)),
+        { status: 201, statusText: 'Created' },
+      );
+      expectRequest('GET', ROLE_GROUPS_URL, 'the sibling re-read').flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+
+      expect(command(SUBMIT_LABEL)?.disabled)
+        .withContext('another screen\u2019s write must not release our submit lock')
+        .toBeTrue();
+      expect(announcements())
+        .withContext('and must not be reported as the outcome of ours')
+        .toEqual([]);
+
+      creation.flush(envelope(role()), { status: 201, statusText: 'Created' });
+      answerListingReread();
+
+      expect(announcements()).toContain({ severity: 'success', message: ROLE_CREATED_MESSAGE });
+    });
+
+    it('does not report an unrelated write\u2019s refusal as its own outcome', () => {
+      // ⚠ THE SHARED FAILURE SLOT HOLDS THE SIBLING'S REFUSAL at the moment our write succeeds. The
+      // outcome travels ON the settled result instead, so ours is reported as the success it was.
+      createMode();
+      fillRoleName();
+
+      press(SUBMIT_LABEL);
+
+      const creation: TestRequest = expectRequest('POST', ROLES_URL, 'the creation');
+      const store: RoleStore = TestBed.inject(RoleStore);
+
+      store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
+      expectRequest('POST', ROLE_GROUPS_URL, 'the sibling write').flush(
+        problem(409, 'role_group.duplicate_name', { detail: 'That group already exists.' }),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      creation.flush(envelope(role()), { status: 201, statusText: 'Created' });
+      answerListingReread();
+
+      expect(announcements())
+        .withContext('exactly one announcement, and it is ours')
+        .toEqual([{ severity: 'success', message: ROLE_CREATED_MESSAGE }]);
+    });
+
+    it('presents a rate-limit refusal at the shared classification, not at its own', () => {
+      // ⚠ THE DISAGREEMENT THIS CLOSES. The local table resolved every status other than 404 to
+      // `error`, so a 429 was announced as a failure on this screen while the shared classifier calls
+      // it `info` — nothing was rejected on its merits, the caller is simply early. Two surfaces on one
+      // screen disagreed about the same response.
+      createMode();
+      fillRoleName();
+
+      press(SUBMIT_LABEL);
+
+      expectRequest('POST', ROLES_URL, 'the creation').flush(
+        problem(429, 'rate_limited', { detail: 'Too many attempts. Try again shortly.' }),
+        { status: 429, statusText: 'Too Many Requests' },
+      );
+      fixture.detectChanges();
+
+      expect(lastAnnouncement()).toEqual({
+        severity: 'info',
+        message: 'Too many attempts. Try again shortly.',
+      });
+    });
+
+    it('presents a missing role at the shared classification, which agrees with the legacy', () => {
+      // 404 is the one status the local table already got right, and it must keep being right for the
+      // shared reason rather than for a local one.
+      editMode(role(7));
+
+      press(SUBMIT_LABEL);
+
+      expectRequest('PUT', roleUrl(7), 'the update').flush(
+        problem(404, 'role.not_found', { detail: 'That role no longer exists.' }),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+
+      expect(lastAnnouncement()).toEqual({
+        severity: 'warning',
+        message: 'That role no longer exists.',
+      });
+    });
+  });
 
   describe('the remaining members and the dropped affordances', () => {
     it('round-trips the reservation code and the icon path, which both contracts declare', () => {
@@ -2931,4 +3319,3 @@ describe('RoleFormComponent', () => {
     });
   });
 });
-

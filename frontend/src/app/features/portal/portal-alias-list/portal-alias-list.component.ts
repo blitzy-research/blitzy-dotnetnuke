@@ -211,9 +211,13 @@
 //  issued to `""`.
 //
 //  MIGRATION: rate limiting does not apply to these endpoints, so this screen
-//  models no throttled state and no retry-after handling. The limiter is
-//  registered against the authentication routes alone, so `429` cannot arise
-//  from a portal-alias request.
+//  models no throttled state and no retry-after handling. The limiter is global
+//  and classifies each request from endpoint metadata - the
+//  `[CredentialEndpoint]` marker - falling back to a whole credential path
+//  segment on a body-carrying method; the alias actions carry no marker and no
+//  such segment, so `429` cannot arise from a portal-alias request. The
+//  exemption is per action rather than per area: `POST /api/v1/portals` IS
+//  marked.
 //
 // =============================================================================
 //  MIGRATION INDEX - SEVENTEEN DELIBERATE DIFFERENCES, EACH CITED AND EACH
@@ -362,6 +366,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   Input,
   TemplateRef,
   ViewChild,
@@ -370,6 +375,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 
 import type { OnInit } from '@angular/core';
@@ -1404,6 +1410,17 @@ export class PortalAliasListComponent implements OnInit {
   /** The announcement queue. Used for outcomes, never for field-level failures. */
   private readonly notifications = inject(NotificationService);
 
+  /**
+   * Binds this screen's write subscriptions to its own lifetime.
+   *
+   * The store is provided at the root and therefore outlives this screen, so an outcome
+   * ticket left subscribed across a teardown would run this screen's continuation — closing
+   * a form that no longer exists and announcing a success into a route the operator has
+   * left. The reference is passed explicitly because these subscriptions are opened from
+   * event handlers, where no ambient injection context exists.
+   */
+  private readonly destroyRef = inject(DestroyRef);
+
   // ---------------------------------------------------------------------------
   //  ROUTE INPUT
   // ---------------------------------------------------------------------------
@@ -2120,9 +2137,12 @@ export class PortalAliasListComponent implements OnInit {
 
       const request: CreatePortalAliasRequest = { httpAlias: normalised };
 
-      this.store.createAlias(target, request, () => {
-        this.onSaved();
-      });
+      this.store
+        .createAlias(target, request)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe(() => {
+          this.onSaved();
+        });
 
       return;
     }
@@ -2131,9 +2151,12 @@ export class PortalAliasListComponent implements OnInit {
 
     const request: UpdatePortalAliasRequest = { httpAlias: normalised };
 
-    this.store.updateAlias(target, chosen, request, () => {
-      this.onSaved();
-    });
+    this.store
+      .updateAlias(target, chosen, request)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.onSaved();
+      });
   }
 
   /**
@@ -2216,9 +2239,12 @@ export class PortalAliasListComponent implements OnInit {
     this.pending = 'delete';
     this.store.clearFailures();
 
-    this.store.deleteAlias(target, chosen, () => {
-      this.onDeleted();
-    });
+    this.store
+      .deleteAlias(target, chosen)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.onDeleted();
+      });
   }
 
   // ---------------------------------------------------------------------------

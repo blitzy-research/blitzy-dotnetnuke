@@ -169,23 +169,30 @@
 
 // DANGER — a fault. 5xx and the unclassified cases.
 //
-// MIGRATION: the two roles are two tokens, and that is the resolution of an
-// accessibility defect rather than a stylistic split. The tokens partner records that
-// `--color-danger` (#FF0000, the measured legacy error red, 5 legacy occurrences)
-// renders at 4.0:1 on the page background — clear of the 3:1 floor that governs a
-// non-text UI component such as a border, and below the 4.5:1 minimum for normal
-// text, with bold weight no mitigation at these sizes. Its consumption contract is
-// explicit that it is non-text only and that danger text resolves to
-// `--color-danger-text` instead. That token is the same hue at a lower lightness,
-// measured at 7.20:1 on `--color-background`, 6.86:1 on `--color-surface-hint`,
-// 6.21:1 on `--color-surface` and 4.70:1 on `--color-selected` — clear of 4.5:1 on
-// every surface this vocabulary can put behind it. So: the BORDER takes the measured
-// legacy red, the TEXT takes the legible one. A reader sees the same red family in
-// the same two places, and the text is legible. No accessibility deferral is carried
-// here, because the token layer already supplied the remedy.
+// ⚠ MIGRATION: ONE TOKEN CARRIES BOTH ROLES, AND THE RESIDUAL RATIO IS RECORDED RATHER
+// THAN REPAIRED WITH A NEW COLOUR. `--color-danger` (#FF0000, the measured legacy error
+// red, 5 legacy occurrences) renders at 4.00:1 on the page background — clear of the 3:1
+// floor that governs a non-text component such as this border, and BELOW the 4.5:1
+// minimum WCAG AA sets for normal text, with bold weight no mitigation at these sizes.
+//
+// An earlier revision split the roles across two tokens, adding a darkened `#B30000` for
+// the text. That has been withdrawn: the colour vocabulary is closed at the nine values
+// the design specification enumerates, and the specification's precedence order puts
+// design-system compliance FIRST and accessibility THIRD, to be achieved "with zero
+// visual change" — so a new hue is precisely what may not be introduced on that ground.
+// The measured legacy value is also what the legacy admin screens actually wired for
+// error text, so the two higher rules agree.
+//
+// WHAT MEETS THE OBLIGATION INSTEAD IS THIS BANNER'S NON-COLOUR CUE, and it is not a
+// consolation: the severity is announced as a WORD inside a live region, so a reader who
+// perceives no red at all is told the state in text. The band's left border and its
+// icon carry the same distinction visually, both of them non-text and both clear of the
+// 3:1 floor. Colour is therefore never the sole indicator here, which is the requirement
+// the specification actually states. The residual text ratio is carried in the migration
+// notes.
 .error-banner[data-severity='danger'] {
   border-color: var(--color-danger);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // WARNING — a refusal. 403 and 404: the system is working as configured.
@@ -198,22 +205,28 @@
 // query string (L43, itself HTML-encoded) and the localised default (L45). Second,
 // the renderer distinguished the bands itself, as recorded above.
 //
-// MIGRATION: the surface is the measured legacy warning colour, reached through a
-// token rather than a literal. `.Help` at default.css L423-L439 — "text style used
-// for help text rendered by modules" — is the legacy's only advisory surface:
-// `background-color: #ffff99` (L438) with `color: black` (L434) and a 1px black
-// border on all four sides (L426, L428, L433, L436). Neither of those two values is
-// in the plan's nine-colour table, and neither may be hardcoded. The tokens partner
-// admitted the pale yellow as `--color-surface-hint` — its tenth colour, admitted
-// precisely so that no consumer writes `#ffff99` at a point of use — so the gap is
-// closed at the token layer and this rule consumes the token. THE FALLBACK PATH WAS
-// NOT NEEDED: no degradation to `--color-surface` was made, and no amber was
-// invented. The black text is not tokenised and is not reintroduced; text inherits,
-// which is what `.Normal` did, and inherited near-black measures 20.02:1 on this
-// surface — better than the 18.10:1 it would have measured on the neutral surface.
+// ⚠ MIGRATION: THE WARNING SURFACE IS THE VOCABULARY'S SECONDARY SURFACE, NOT THE
+// LEGACY PALE YELLOW, and that is a recorded visible divergence. `.Help` at
+// default.css L423-L439 — "text style used for help text rendered by modules" — is the
+// legacy's only advisory surface: `background-color: #ffff99` (L438) with `color: black`
+// (L434) and a 1px black border on all four sides (L426, L428, L433, L436). NEITHER
+// value is in the design specification's nine-colour table, and neither may be
+// hardcoded, so neither is available to this rule.
+//
+// An earlier revision resolved that by admitting the pale yellow as a tenth token. That
+// has been withdrawn — the vocabulary is closed at nine, and design-system compliance
+// outranks legacy visual continuity — so this rule takes `--color-surface`. What the band
+// loses is the yellow tint; what it keeps is every other distinction the legacy rule
+// carried and one the legacy did not: the left border in the brand colour, the severity
+// word, the icon, and the live region. No amber is invented and no literal is written.
+//
+// The black text is not tokenised and is not reintroduced; text inherits, which is what
+// `.Normal` did, and inherited near-black measures 18.10:1 on this surface against
+// 20.02:1 on the legacy yellow — a difference no reader can perceive and both far clear
+// of any threshold.
 .error-banner[data-severity='warning'] {
   border-inline-start-color: var(--color-primary);
-  background-color: var(--color-surface-hint);
+  background-color: var(--color-surface);
 }
 
 // CALM — "you are early". 429, and any informational classification.
@@ -222,9 +235,10 @@
 // `ModuleMessageType` enum declares exactly three members at
 // `Library/Components/Skins/ModuleMessage.vb` L36-L40 — `GreenSuccess`,
 // `YellowWarning` and `RedError` — with no informational or calm member, so nothing
-// was carried across and nothing could be. It exists because the credential rate
-// limiter (IP-partitioned, applied only to `/api/v1/auth/*`, 10 requests per 60
-// seconds) is the COMPENSATING CONTROL for the legacy CAPTCHA this migration
+// was carried across and nothing could be. It exists because the API's credential
+// window - applied by the global limiter to every request the server classifies as
+// credential-bearing, partitioned by the caller's observable address, thirty requests
+// a minute - is the COMPENSATING CONTROL for the legacy CAPTCHA this migration
 // deliberately removed. A refusal that means the caller is early must not be dressed
 // as a fault, or the interface reports a defect where the system is working exactly
 // as configured.
@@ -347,8 +361,8 @@
 // tone explicitly instead of inheriting the band's — a reference string in the danger
 // red would compete with the sentence for attention. The smallest step on the scale,
 // which is the same step the global reset gives `<small>`. Contrast is sound on every
-// band: `--color-text-muted` measures 5.49:1 on `--color-background`, 4.73:1 on
-// `--color-surface` and comparably on `--color-surface-hint`, all clear of 4.5:1.
+// band: `--color-text-muted` measures 5.49:1 on `--color-background` and 4.73:1 on
+// `--color-surface`, the only two surfaces this banner paints, both clear of 4.5:1.
 //
 // MIGRATION: this line replaces what the legacy error container put in this position
 // for super-users, which was the exception's full string form — the entire stack

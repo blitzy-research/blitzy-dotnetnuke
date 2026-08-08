@@ -77,6 +77,17 @@ const IMPORT_URL = '/api/v1/modules/import';
 /** Where both the completion and the abandonment go. */
 const MODULE_LIST_ROUTE = '/modules';
 
+/**
+ * The most event-loop turns any wait in this suite will yield for.
+ *
+ * A CEILING AND NOT A MEASUREMENT. It exists so that a condition which never becomes true fails as an
+ * assertion in the caller rather than hanging the whole suite; it is deliberately far above anything a
+ * document read needs, because a turn costs a `whenStable()` and a posted message and nothing else. What
+ * actually decides when a wait ends is the predicate the caller supplies - see the note on `settle`, and
+ * the flake that a count relied upon as a synchronisation primitive produced twice.
+ */
+const SETTLE_TURN_CEILING = 256;
+
 /** The widest page the picker asks for, so its reach is not silently limited to the default page. */
 const CHOICE_PAGE_SIZE = '100';
 
@@ -227,6 +238,15 @@ const SCRIPT_BEARING_DOCUMENT =
  * reach the server - and the server is the only thing entitled to refuse it, because the structure
  * rule lives there.
  */
+/**
+ * A second, DISTINGUISHABLE document, for the cases that replace one choice with another mid-read.
+ *
+ * Its content differs from {@link BENIGN_DOCUMENT} so that a body assertion can say WHICH document was
+ * sent rather than merely that something was. A fixture that reused the same content could not tell a
+ * correct dispatch of the second from a stale dispatch of the first.
+ */
+const SECOND_DOCUMENT = '<documents><document><title>Handbook</title></document></documents>';
+
 const MALFORMED_DOCUMENT = '<announcements><announcement><title>unclosed';
 
 /**
@@ -539,8 +559,17 @@ describe('ModuleImportComponent', () => {
   let notifySpy: jasmine.Spy;
   let navigateSpy: jasmine.Spy;
 
+  /**
+   * The transfer request the harness took from the backend while waiting for it, awaiting a case.
+   *
+   * Held outside any single case so `beforeEach` can clear it and `afterEach` can refuse one that was
+   * never asked for. See {@link transferOutstanding} for why it has to be taken rather than peeked at.
+   */
+  let capturedTransfer: TestRequest | null = null;
+
   beforeEach(async () => {
     mounted = null;
+    capturedTransfer = null;
 
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it. The
     // store is pinned to this injector so no specification shares its instance.
@@ -566,7 +595,21 @@ describe('ModuleImportComponent', () => {
       mounted = null;
     }
 
+    // A transfer taken from the backend by {@link transferOutstanding} is no longer visible to `verify`,
+    // so the guarantee `verify` gave for it is restored here: a request that was captured and then never
+    // asserted on is a case that submitted and never checked what it sent, which is exactly what `verify`
+    // used to catch. A CANCELLED one is fine - destroying the fixture above releases an in-flight request.
+    const abandoned: TestRequest | null = capturedTransfer;
+
+    capturedTransfer = null;
+
     httpMock.verify();
+
+    if (abandoned !== null && !abandoned.cancelled) {
+      throw new Error(
+        'a transfer request was awaited by the harness but never asserted on; call expectImport()',
+      );
+    }
   });
 
   // ---------------------------------------------------------------------------------------------------
@@ -688,26 +731,72 @@ describe('ModuleImportComponent', () => {
    * tolerant rather than exact: it settles as soon as the work is done and costs nothing when it already
    * was.
    *
-   * ⚠⚠ THE TURN COUNT IS A BOUND, NOT A MEASUREMENT, AND IT MUST STAY GENEROUS. A blob read completes
-   * in however many event-loop turns the browser needs, and that number is not a property of this
-   * screen - it rises with whatever else is contending for the loop. At four turns this helper passed
-   * in isolation and failed roughly once per full-suite run: with several thousand specs sharing one
-   * Karma page the read had not landed by the fourth turn, the case that happened to be running found
-   * no request, and Jasmine's randomised ordering moved the victim from run to run. A fixed count
-   * tuned against an idle machine is not a synchronisation primitive.
+   * ⚠⚠ THE TURN COUNT IS A CEILING, NOT A MEASUREMENT, AND IT IS NOT WHAT SYNCHRONISES ANYTHING. A blob
+   * read completes in however many event-loop turns the browser needs, and that number is not a property
+   * of this screen - it rises with whatever else is contending for the loop. At four turns this helper
+   * passed in isolation and failed roughly once per full-suite run; at thirty-two it still failed once in
+   * six runs of the whole suite, with a case finding no request and thereby "proving" that nothing was
+   * sent - the exact opposite of the truth. A count tuned against any particular machine is not a
+   * synchronisation primitive, however generous it is, so the count is no longer relied upon to be one.
    *
-   * Each turn is one `whenStable()` plus one already-elapsed timeout, so an unnecessary turn costs
-   * essentially nothing and the loop exits as soon as the work is done regardless. The bound is
-   * therefore set well above anything a read needs rather than close to it. Do NOT lower it, and do
-   * not replace it with a fake clock: the point of this suite is that it reads a REAL file.
+   * WHAT SYNCHRONISES IS THE PREDICATE. A caller that knows what it is waiting for passes `until`, and
+   * the loop stops the instant that holds however many turns it took - so the wait is as long as the
+   * machine needs rather than as long as somebody guessed. The ceiling exists only so a predicate that
+   * never holds fails as an assertion in the caller instead of hanging the suite, and it is set far above
+   * anything a read needs. A caller with nothing to wait for - a REJECTED read, which settles as a
+   * microtask - passes no predicate and simply burns the turns, which costs a `whenStable()` and a posted
+   * message each and is measured in microseconds.
+   *
+   * Do NOT lower the ceiling, do not make the ceiling the mechanism again, and do not replace any of it
+   * with a fake clock or a timer: the point of this suite is that it reads a REAL file, and wall-clock
+   * time is the one input a specification cannot control.
+   *
+   * @param turns The most turns to yield for.
+   * @param until Stops as soon as this holds. Omit when there is nothing to wait for.
    */
-  async function settle(turns = 32): Promise<void> {
+  async function settle(turns = SETTLE_TURN_CEILING, until?: () => boolean): Promise<void> {
     for (let turn = 0; turn < turns; turn += 1) {
+      if (until?.() === true) {
+        break;
+      }
+
       await fixture.whenStable();
       await yieldMacrotask();
     }
 
     fixture.detectChanges();
+  }
+
+  /**
+   * Whether the screen has dispatched its transfer, TAKING it from the backend when it has.
+   *
+   * ⚠⚠ THERE IS NO NON-CONSUMING WAY TO ASK, SO THIS TAKES AND HOLDS INSTEAD OF PEEKING. Every
+   * inspection the testing backend offers is built on `match`, which REMOVES what it returns - including
+   * `expectNone`, whose implementation matches first and then throws on what it found. A probe written
+   * with either therefore takes the transfer out from under the case that is about to assert on it, which
+   * is worse than the flake it was meant to cure: the first attempt here used `expectNone` and turned one
+   * intermittent failure into thirty-six certain ones.
+   *
+   * So the request is captured, {@link expectImport} hands the captured one back, and `afterEach` refuses
+   * a capture nobody asked for - which is the one safety the backend's own `verify` can no longer provide
+   * for it.
+   */
+  function transferOutstanding(): boolean {
+    if (capturedTransfer !== null) {
+      return true;
+    }
+
+    const found = httpMock.match(
+      (candidate) => candidate.method === 'POST' && candidate.url === IMPORT_URL,
+    );
+
+    if (found.length > 1) {
+      throw new Error(`expected at most one transfer request, found ${found.length}`);
+    }
+
+    capturedTransfer = found.at(0) ?? null;
+
+    return capturedTransfer !== null;
   }
 
   /**
@@ -733,7 +822,12 @@ describe('ModuleImportComponent', () => {
   async function submit(): Promise<void> {
     actionLabelled(IMPORT_ACTION_LABEL).click();
 
-    await settle();
+    // ⚠ WAITS FOR THE TRANSFER RATHER THAN FOR A NUMBER OF TURNS. A submit that passes the screen's own
+    // checks reads the document and then dispatches, and how long that read takes is a property of the
+    // machine; see {@link settle} for the flake a fixed count produced. A submit the screen REFUSES
+    // dispatches nothing, so the predicate never holds and the ceiling is reached - which is the correct
+    // outcome for those cases and the same cost they already paid.
+    await settle(SETTLE_TURN_CEILING, transferOutstanding);
   }
 
   /** The submit control, looked up by its rendered wording. */
@@ -830,8 +924,22 @@ describe('ModuleImportComponent', () => {
     return requireElement<HTMLElement>(root(), '.error-banner-live');
   }
 
-  /** The one outstanding transfer request. */
+  /**
+   * The one outstanding transfer request.
+   *
+   * Prefers the one {@link transferOutstanding} captured while waiting for it, and falls back to asking
+   * the backend for cases that reach here without having waited. Call sites are unchanged either way,
+   * which is the point: the synchronisation lives in the harness rather than in every case.
+   */
   function expectImport(): TestRequest {
+    const held: TestRequest | null = capturedTransfer;
+
+    if (held !== null) {
+      capturedTransfer = null;
+
+      return held;
+    }
+
     return expectRequest('POST', IMPORT_URL, 'the transfer');
   }
 
@@ -854,6 +962,108 @@ describe('ModuleImportComponent', () => {
 
       expect(visibleText(requireElement(root(), 'h1'))).toBe(IMPORT_TITLE);
       httpMock.expectNone(() => true);
+    });
+
+    it('offers every placement, following the pages rather than stopping at the first', () => {
+      // ⚠ THE M-1 REGRESSION AT THE SCREEN. The picker previously showed only the first page of
+      // placements, so a module beyond the hundredth could not be chosen and nothing said so. The
+      // store now walks every page; this case proves the screen actually receives the whole set.
+      create();
+
+      const first = expectRequest('GET', MODULES_URL, 'the first page of the picker listing');
+
+      expect(first.request.params.get('pageIndex')).toBe('0');
+      first.flush({
+        items: [listRow({ moduleId: 0, moduleTitle: 'Announcements' })],
+        meta: { totalCount: 2, pageIndex: 0, pageSize: 100, totalPages: 2 },
+      });
+      fixture.detectChanges();
+
+      const second = expectRequest('GET', MODULES_URL, 'the second page of the picker listing');
+
+      expect(second.request.params.get('pageIndex'))
+        .withContext('the walk continues past the first window')
+        .toBe('1');
+      second.flush({
+        items: [listRow({ moduleId: 501, moduleTitle: 'Far Module' })],
+        meta: { totalCount: 2, pageIndex: 1, pageSize: 100, totalPages: 2 },
+      });
+      fixture.detectChanges();
+
+      const options = Array.from(requiredControl<HTMLSelectElement>('module-import-module').options);
+
+      expect(options.map((option) => visibleText(option))).toEqual([
+        'Announcements',
+        'Far Module',
+      ]);
+    });
+
+    it('states how large the choice set is, so its completeness is visible', () => {
+      create();
+
+      expectRequest('GET', MODULES_URL).flush({
+        // Three PLACEMENTS of two distinct modules: the picker collapses to one option per module, so
+        // the two figures legitimately differ and both are reported.
+        items: [
+          listRow({ moduleId: 0, tabId: 0, moduleTitle: 'Announcements' }),
+          listRow({ moduleId: 0, tabId: 1, moduleTitle: 'Announcements' }),
+          listRow({ moduleId: 1, tabId: 0, moduleTitle: 'Links' }),
+        ],
+        meta: { totalCount: 3, pageIndex: 0, pageSize: 100, totalPages: 1 },
+      });
+      fixture.detectChanges();
+
+      const summary = query('.module-import__choice-summary');
+
+      expect(summary).withContext('the size of the set is stated').not.toBeNull();
+      expect(visibleText(requireElement(root(), '.module-import__choice-summary'))).toBe(
+        'Choosing among 2 modules across 3 placements.',
+      );
+
+      // ⚠ NOT A LIVE REGION. It is standing context about the control, not a change worth
+      // interrupting a reader for, and it must not compete with the real refusal surface.
+      expect(summary?.hasAttribute('role')).toBeFalse();
+      expect(summary?.hasAttribute('aria-live')).toBeFalse();
+    });
+
+    it('states the simpler sentence when every module has exactly one placement', () => {
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      expect(visibleText(requireElement(root(), '.module-import__choice-summary'))).toBe(
+        'Choosing among 1 module.',
+      );
+    });
+
+    it('states no size at all when there is nothing to choose among', () => {
+      arrive([]);
+
+      expect(query('.module-import__choice-summary'))
+        .withContext('a count of zero beside a picker that is not there would be noise')
+        .toBeNull();
+    });
+
+    it('offers no picker at all when the choice set could not be read completely', () => {
+      // ⚠ THE OTHER HALF OF THE CONTRACT. The store refuses rather than truncating, so the screen must
+      // present the refusal instead of a partial picker an operator would trust.
+      create();
+
+      expectRequest('GET', MODULES_URL).flush({
+        items: [listRow({ moduleId: 0 })],
+        meta: { totalCount: 90, pageIndex: 0, pageSize: 100, totalPages: 1 },
+      });
+      fixture.detectChanges();
+
+      expectRequest('GET', MODULES_URL).flush({
+        items: [],
+        meta: { totalCount: 90, pageIndex: 1, pageSize: 100, totalPages: 1 },
+      });
+      fixture.detectChanges();
+
+      expect(query('#module-import-module'))
+        .withContext('no partial picker is offered')
+        .toBeNull();
+      expect(query('.module-import__choice-summary')).toBeNull();
+      expect(visibleText(requireElement(root(), 'app-empty-state'))).toContain(NO_MODULES_MESSAGE);
     });
 
     it('offers a choice for every listed module', () => {
@@ -1211,6 +1421,298 @@ describe('ModuleImportComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
+  // PROOF 4b — THE AWAITED READ IS A SUSPENSION POINT, AND THE FORM STAYS LIVE ACROSS IT
+  //
+  // `submit` captures the document and the target module, then AWAITS the document's text. That await is a
+  // real suspension point at which the operator remains free to use the form, so by the time the
+  // continuation resumes the visible selection may name a different document, a different target, or both,
+  // while the captured locals still hold the old pair. The screen used to check only that it had not been
+  // destroyed and then dispatched the captured pair regardless.
+  //
+  // The result is a cross-record write executed with full authority: the request carries the OLD document's
+  // content under the OLD module's identifier, the form on screen says something else, and the success
+  // notification that follows appears to confirm the import the operator can actually see. Every individual
+  // request is well-formed, so nothing server-side catches it and the audit trail records a legitimate
+  // import into a module the operator never chose.
+  //
+  // Every case below therefore presses the action WITHOUT settling, mutates the form while the read is
+  // outstanding, and only then lets the read land — which is the one interleaving that can produce the
+  // defect and the reason `submit()` (which presses and settles together) is not used here.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('when the form changes mid-read', () => {
+    /** Presses the action and returns WITHOUT settling, leaving the document read outstanding. */
+    function beginSubmit(): void {
+      actionLabelled(IMPORT_ACTION_LABEL).click();
+      fixture.detectChanges();
+    }
+
+    it('sends NOTHING when the document is replaced while the first is being read', async () => {
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT, 'first.xml'));
+
+      beginSubmit();
+
+      // The operator changes their mind while the read is in flight. The attempt in progress is now for a
+      // document they are no longer looking at.
+      chooseDocument(documentFile(SECOND_DOCUMENT, 'second.xml'));
+
+      await settle();
+
+      // ⚠ THE FIRST DOCUMENT MUST NOT BE SENT. Before the fix this dispatched `first.xml`'s content while
+      // the field displayed `second.xml`.
+      httpMock.expectNone(() => true);
+
+      // Nothing is announced either: an abandoned attempt is not a failure, and the state the operator
+      // changed to is already on screen.
+      expect(notifySpy).not.toHaveBeenCalled();
+      expect(navigateSpy).not.toHaveBeenCalled();
+    });
+
+    it('sends the SECOND document when it is submitted after the switch', async () => {
+      // The other half of the property: abandoning the stale attempt must not leave the screen unable to
+      // send the new one. A guard that latched would be as broken as no guard at all.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT, 'first.xml'));
+
+      beginSubmit();
+
+      chooseDocument(documentFile(SECOND_DOCUMENT, 'second.xml'));
+
+      await settle();
+
+      httpMock.expectNone(() => true);
+
+      await submit();
+
+      const call = expectImport();
+
+      expect(call.request.body).toEqual({
+        moduleId: 0,
+        content: SECOND_DOCUMENT,
+        folder: null,
+        fileName: 'second.xml',
+      });
+
+      call.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+    });
+
+    it('sends NOTHING when the TARGET MODULE is changed while the document is being read', async () => {
+      // ⚠ THE SHARPEST FORM OF THE DEFECT. The captured target becomes the request's `moduleId`, so an
+      // attempt allowed to complete here would load the document into the module the operator had just
+      // navigated AWAY from — a write to a record they did not choose, reported as a success.
+      arrive([
+        listRow({ moduleId: 0, tabModuleId: 1, moduleTitle: 'Announcements' }),
+        listRow({ moduleId: 5, tabModuleId: 2, moduleTitle: 'Documents' }),
+      ]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT));
+
+      beginSubmit();
+
+      chooseModule('Documents');
+
+      await settle();
+
+      httpMock.expectNone(() => true);
+      expect(notifySpy).not.toHaveBeenCalled();
+    });
+
+    it('sends NOTHING when the SAME document is re-picked mid-read, which only the ticket can catch', async () => {
+      // ⚠ THE CASE A VALUE COMPARISON CANNOT SEE, and the reason the guard is not a comparison alone. A
+      // re-pick is a NEWER INTENT even when it names the same path: each selection yields a distinct `File`
+      // handle, so reference identity does catch this one — but a comparison on name and size, which is the
+      // tempting simplification, would find the two identical and admit the stale attempt. The ticket
+      // refuses it on the grounds that actually matter: the operator acted again.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT, 'same-name.xml'));
+
+      beginSubmit();
+
+      chooseDocument(documentFile(BENIGN_DOCUMENT, 'same-name.xml'));
+
+      await settle();
+
+      httpMock.expectNone(() => true);
+      expect(notifySpy).not.toHaveBeenCalled();
+    });
+
+    it('re-selecting the SAME module mid-read also abandons the attempt', async () => {
+      // The module's committed value is unchanged by this, so the value comparison cannot see it either.
+      // The change handler runs, the ticket is invalidated, and the attempt is abandoned — which is correct:
+      // the operator interacted with the target field while a transfer was being prepared, and the only
+      // safe reading of that is that the prepared attempt is stale.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT));
+
+      beginSubmit();
+
+      chooseModule('Announcements');
+
+      await settle();
+
+      httpMock.expectNone(() => true);
+    });
+  });
+
+  describe('re-entering the action while it is already running', () => {
+    it('issues ONE transfer when the action is pressed twice before the read lands', async () => {
+      // ⚠ THE DISABLED BUTTON IS NOT THE GUARD. It is a rendered affordance, and this handler is reachable
+      // without it — the form's submit event fires on the Enter key from within either field, and a
+      // re-entrant call arriving before change detection has repainted the button finds it still enabled.
+      // Two concurrent attempts would each read the document and each dispatch, so the server would receive
+      // the same import twice and the second success would navigate away from a screen whose first request
+      // was still outstanding.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT));
+
+      const action = actionLabelled(IMPORT_ACTION_LABEL);
+
+      action.click();
+      action.click();
+
+      await settle();
+
+      // Exactly one request, asserted by consuming one and then proving the queue is empty.
+      const call = expectImport();
+
+      httpMock.expectNone(() => true);
+
+      call.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(notifySpy).toHaveBeenCalledOnceWith('success', IMPORT_SUCCEEDED_MESSAGE);
+    });
+
+    it('a refused re-entry changes NOTHING on screen', async () => {
+      // The re-entry guard returns before touching any state, which is why this holds: were it placed after
+      // the flag resets, a refused press would clear the message from the attempt still running and the
+      // operator would watch their own error disappear for no reason they could observe.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(unreadableFile());
+
+      await submit();
+
+      expect(notifySpy).toHaveBeenCalledWith('error', FILE_UNREADABLE_MESSAGE, null);
+
+      const messagesAfterFailure = fieldMessages();
+
+      notifySpy.calls.reset();
+
+      // A second press while the store is NOT busy is a genuine new attempt, so this one is admitted and
+      // fails the same way — which is the behaviour the "lets a second attempt succeed" case relies on.
+      await submit();
+
+      expect(notifySpy).toHaveBeenCalledWith('error', FILE_UNREADABLE_MESSAGE, null);
+      expect(fieldMessages()).toEqual(messagesAfterFailure);
+      httpMock.expectNone(() => true);
+    });
+
+    it('locks BOTH pickers while a transfer is outstanding, and releases them when it settles', async () => {
+      // The affordance half of the fix. Refusing a stale dispatch is correctness; removing the ability to
+      // make the edit is what stops the edit being offered in the first place, because an operator who can
+      // still change the fields has every reason to expect the change to take effect.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT));
+
+      const modulePicker = requiredControl<HTMLSelectElement>('module-import-module');
+      const filePicker = requiredControl<HTMLInputElement>('module-import-file');
+
+      expect(modulePicker.disabled).withContext('idle, so both are usable').toBeFalse();
+      expect(filePicker.disabled).toBeFalse();
+
+      await submit();
+
+      const call = expectImport();
+
+      fixture.detectChanges();
+
+      // The request is outstanding, so the store reports the transfer in flight and both fields are locked.
+      expect(modulePicker.disabled).withContext('a transfer is outstanding').toBeTrue();
+      expect(filePicker.disabled).toBeTrue();
+
+      call.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+    });
+
+    it('leaves the two choices INTACT through a lock-and-release cycle', async () => {
+      // ⚠ WHY THE BINDING IS `attr.disabled` AND NOT `disabled`, PROVED BY CONSEQUENCE RATHER THAN BY
+      // INSPECTION. A reactive form treats a DISABLED control as absent — excluded from `form.value` and
+      // from the group's validity — and the screen's own gate reads exactly that before deciding to
+      // dispatch. Locking through the form directive would therefore entangle an affordance with the
+      // validity decision, and Angular warns that the two mechanisms are being mixed. Setting the DOM
+      // attribute instead leaves the control's state untouched.
+      //
+      // Asserted through what an operator can actually observe: a failed transfer releases the lock, and
+      // pressing the action again re-sends THE SAME two choices with nothing re-picked. If the lock had
+      // disturbed the form, this second attempt would have had nothing to send.
+      arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
+
+      chooseModule('Announcements');
+      chooseDocument(documentFile(BENIGN_DOCUMENT, 'handbook.xml'));
+
+      await submit();
+
+      const refused = expectImport();
+
+      fixture.detectChanges();
+
+      expect(requiredControl<HTMLSelectElement>('module-import-module').disabled)
+        .withContext('locked while the transfer is outstanding')
+        .toBeTrue();
+
+      refused.flush(problem('module.rejected', 400, 'The document was rejected.'), {
+        status: 400,
+        statusText: 'Bad Request',
+      });
+      fixture.detectChanges();
+
+      // The lock is released with the transfer, so the operator can act again.
+      expect(requiredControl<HTMLSelectElement>('module-import-module').disabled)
+        .withContext('released once it settled')
+        .toBeFalse();
+      expect(requiredControl<HTMLInputElement>('module-import-file').disabled).toBeFalse();
+
+      // Nothing is re-chosen here. The form still holds both values, so the same request goes again.
+      await submit();
+
+      const retried = expectImport();
+
+      expect(retried.request.body)
+        .withContext('both choices survived the lock intact')
+        .toEqual({
+          moduleId: 0,
+          content: BENIGN_DOCUMENT,
+          folder: null,
+          fileName: 'handbook.xml',
+        });
+
+      retried.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
   // PROOF 5 — OUTCOMES
   // ---------------------------------------------------------------------------------------------------
 
@@ -1475,6 +1977,63 @@ describe('ModuleImportComponent', () => {
 
       expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
       httpMock.expectNone(() => true);
+    });
+
+    it('releases the picker read it started, so the store stops reporting itself busy', () => {
+      /*
+       * ⚠ THE LEASE THIS SCREEN HOLDS ON A ROOT-SCOPED SLICE.
+       *
+       * The store is provided at the application root, so it OUTLIVES this component, and the
+       * picker-choice read is started by this screen and wanted by nothing else. Before the lease
+       * existed, destroying the screen left that read outstanding, with three consequences — none of
+       * them observable HERE, which is precisely why this case is needed: the store's busy projection
+       * stayed true, disabling affordances on whatever screen replaced this one; a late refusal
+       * landed in the failure slot addressed to a screen that had gone; and the request went on being
+       * paid for with nobody to receive it.
+       */
+      const store = TestBed.inject(ModuleStore);
+
+      // Created but NOT answered: `create()` mounts the screen, whose constructor issues the picker
+      // read, and this case deliberately leaves that read in flight rather than flushing it.
+      create();
+
+      const pending = expectRequest('GET', MODULES_URL, 'the picker listing');
+
+      expect(store.choicesLoading()).toBeTrue();
+      expect(store.busy()).toBeTrue();
+
+      fixture.destroy();
+      mounted = null;
+
+      expect(pending.cancelled)
+        .withContext('the picker read is abandoned, not merely ignored')
+        .toBeTrue();
+      expect(store.choicesLoading()).toBeFalse();
+      expect(store.busy())
+        .withContext('a destroyed screen must not hold the store busy')
+        .toBeFalse();
+    });
+
+    it('releases only the picker slice, leaving a sibling read alone', () => {
+      // The lease must be narrow. Releasing everything would abandon reads other screens are
+      // waiting on, which is why the component calls the slice-scoped command rather than the
+      // store-wide cancellation that belongs to session teardown.
+      const store = TestBed.inject(ModuleStore);
+
+      arrive();
+
+      store.loadDefinitions();
+
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions', 'a sibling read');
+
+      fixture.destroy();
+      mounted = null;
+
+      expect(catalogue.cancelled)
+        .withContext('a sibling slice must survive this screen going away')
+        .toBeFalse();
+
+      catalogue.flush({ data: [], meta: null });
     });
   });
 
@@ -2582,7 +3141,13 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
         isAuthenticated: fixedSignal(true),
         currentUser: fixedSignal<CurrentUser | null>(administrator),
         isSuperUser: fixedSignal(true),
-        roles: fixedSignal<readonly string[]>(['Administrators']),
+
+        // The gate reads tenant administration through THIS projection — the server's own
+        // determination, combined with the host flag — and reads no role name at all. Mirrors
+        // the real store's computation over the identity above rather than restating a verdict.
+        administersCurrentPortal: fixedSignal(
+          administrator.isSuperUser || administrator.isPortalAdministrator,
+        ),
       };
 
       await TestBed.configureTestingModule({

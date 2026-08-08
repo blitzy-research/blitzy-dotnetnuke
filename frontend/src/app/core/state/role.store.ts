@@ -183,14 +183,13 @@
  */
 
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { EMPTY, expand, finalize, forkJoin, map, of, reduce, switchMap, tap } from 'rxjs';
+import { EMPTY, expand, finalize, map, reduce, switchMap, tap, throwError } from 'rxjs';
 
 import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   emptyPagedResult,
   toPagedResult,
-  unpagedResult,
 } from '../models/paged-result.model';
 import { isProblemDetails } from '../models/problem-details.model';
 import { RoleService } from '../services/role.service';
@@ -434,6 +433,8 @@ export type RoleStoreOperation =
   | 'updateRole'
   | 'deleteRole'
   | 'loadAssignments'
+  | 'loadRolesHeldByUser'
+  | 'probeAssignment'
   | 'assignUser'
   | 'removeAssignment'
   | 'createRoleGroup'
@@ -518,6 +519,68 @@ export interface RoleStoreFailure {
   readonly conflict: ConflictCode | null;
 }
 
+/**
+ * One settled write, identified so that the screen which started it can recognise it.
+ *
+ * ## The defect this closes
+ *
+ * This store is provided at the application root, so the role listing, the role form and the
+ * membership screen all share ONE instance and their writes overlap freely. Before this type
+ * existed, a screen settled its own write by watching a single boolean fall — and a boolean says
+ * only "something is writing", never "yours is". Three concrete failures followed, and none of
+ * them produced an error anywhere:
+ *
+ * - The role form announced success and NAVIGATED AWAY the moment any unrelated role write
+ *   settled. Its own save was still outstanding, so the operator was told it had worked and
+ *   moved off the screen before the server had answered — and if the server then refused, there
+ *   was no longer a form to report the refusal on.
+ * - The form paired that with the SHARED failure slot: if the unrelated write had failed, the
+ *   form reported that other failure as its own.
+ * - The membership screen released its enrolment lock on the same signal, so a second enrolment
+ *   could be submitted while the first was still in the air.
+ *
+ * ## How a caller uses it
+ *
+ * Every write command returns a number. A caller that cares about the outcome keeps it and acts
+ * only on a published result whose {@link RoleMutation.id} matches:
+ *
+ * ```ts
+ * private readonly awaited = signal<number>(0);
+ *
+ * save(): void {
+ *   this.awaited.set(this.store.updateRole(roleId, request));
+ * }
+ *
+ * // in an effect
+ * const settled = this.store.mutation();
+ * if (settled === null || settled.id !== this.awaited()) {
+ *   return;                       // somebody else's write
+ * }
+ * ```
+ *
+ * The comparison is a strict equality on a number that is never 0 for a real write, so a caller
+ * whose marker is still at its zero initialiser matches nothing — the same "the first ticket is 1,
+ * and 0 matches nothing" discipline `core/utils/operation-generation.util.ts` applies to reads.
+ */
+export interface RoleMutation {
+  /** The identifier the write command returned to its caller. */
+  readonly id: number;
+
+  /** Which command settled. Kept so a caller can assert the kind as well as the identity. */
+  readonly operation: RoleStoreOperation;
+
+  /**
+   * The refusal this particular write met, or `null` when it succeeded.
+   *
+   * ⚠ CARRIED HERE RATHER THAN READ FROM THE SHARED SLOT. {@link RoleStore.failure} holds the most
+   * recent failure of any command and is cleared by the next dispatch, so a caller reading it after
+   * its own write settled could find a concurrent write's refusal, or find nothing where its own
+   * refusal had been a moment earlier. This member is the failure of THIS write and of no other.
+   */
+  readonly failure: RoleStoreFailure | null;
+}
+
+
 // ---------------------------------------------------------------------------
 // PAGE COORDINATES
 // ---------------------------------------------------------------------------
@@ -569,31 +632,92 @@ const INITIAL_PAGE_COORDINATE: RolePageCoordinate = Object.freeze({
 });
 
 /**
- * How much of a role's membership the assignment slice currently holds.
+ * Which account's membership of which role one probe answered.
  *
- * `'page'` is one window of the listing, located by {@link RoleStore.assignmentsPage} and
- * moved with {@link RoleStore.setAssignmentsPage}. `'complete'` is EVERY membership of the
- * role in one set, which the membership screen needs because its legacy grid was unpaged
- * (`Website/admin/Security/securityroles.ascx:L56` declares no pager) and it renders the
- * whole set at once.
+ * The probe in {@link RoleStore.probeAssignment} answers a question about ONE pairing, so
+ * its answer is only meaningful beside the pairing it was asked about. Publishing the two
+ * together is what lets a screen tell "this account holds no membership" from "the answer
+ * in hand belongs to a different account", which are different states and read differently
+ * to an operator.
  *
- * The scope is REMEMBERED rather than passed per call, and that is the point of the type.
- * Both assignment writes re-read the listing themselves — see {@link RoleStore.assignUser}
- * and {@link RoleStore.removeAssignment} — so a caller that asked for the complete set and
- * then wrote would otherwise have the whole set silently replaced by the first page. The
- * recorded scope makes every re-read reproduce what the caller actually asked for.
+ * Both members are plain identifiers and both may legitimately be `0` or negative: the role
+ * table is seeded `IDENTITY(0, 1)`, so role zero is a portal's first role.
  */
-type AssignmentReadScope = 'page' | 'complete';
+export interface AssignmentProbeKey {
+  /** The role the probe asked about. */
+  readonly roleId: number;
+
+  /** The account the probe asked about. */
+  readonly userId: number;
+}
 
 /**
- * The largest number of assignment pages a complete read will follow.
+ * Whether a membership listing is on screen, and for which role.
  *
- * A guard against a mis-reported page count, not a business limit: the total is read from
- * the server's own metadata, and were that wrong an uncapped loop would turn one screen
- * into unbounded traffic. At {@link MAX_PAGE_SIZE} rows a page this covers a hundred
- * thousand memberships of a single role, which is far beyond what any tenant holds.
+ * Distinct from {@link RoleStore.assignmentsRoleId}, and the distinction is the whole reason the
+ * type exists. That member labels the ROWS IN HAND — it answers "whose memberships are these",
+ * which stays answerable long after the screen that asked for them has gone, because the rows are
+ * still those of that role until something replaces them. This type answers a different question:
+ * "is anybody looking, and at what".
+ *
+ * Conflating the two was a defect, and a reachable one. The rows' label is only ever MOVED, never
+ * vacated: a screen that leaves does not blank the grid on its way out, so the label still named the
+ * role after the operator had returned to the role listing. A settled write asking "is my role still
+ * on screen" was answered from that stale label and told yes, and re-read a listing nobody was
+ * looking at — which is not merely a wasted round trip, because the re-read clears the shared
+ * failure slot and would erase a message the LISTING screen was showing. Runtime validation
+ * reproduced it three times out of three on the ordinary operator path, one role's memberships to
+ * another, because the role listing is the unavoidable stop in between.
+ *
+ * The three states are exhaustive and each carries a different answer for that question:
+ *
+ * - `none` — no membership listing has been on screen since the last reset. A settled write ADOPTS
+ *   the role it wrote to, because there is no set to overwrite and no heading to mis-label. This is
+ *   the published contract of both membership writes and the only thing that makes a write
+ *   observable at all on a fresh store.
+ * - `open` — a listing is on screen for `roleId`. A settled write refreshes it when the role
+ *   matches, and is refused when it does not.
+ * - `left` — a listing WAS on screen and has gone. A settled write refreshes nothing: there is no
+ *   grid to update, and the rows in hand are stale by definition.
+ *
+ * `left` is reachable only from `open`, and only for the role that was open, so a screen tearing
+ * down cannot cancel a replacement that has already announced itself.
  */
-const MAX_ASSIGNMENT_PAGES = 1000;
+type AssignmentsViewState =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'open'; readonly roleId: number }
+  | { readonly kind: 'left' };
+
+/**
+ * The state a store with no membership listing on screen begins in.
+ *
+ * Named rather than written inline so the initial value and {@link RoleStore.reset} cannot drift
+ * apart, which would leave a reset store in `left` and silently suppress the adoption contract.
+ */
+const NO_ASSIGNMENTS_VIEW: AssignmentsViewState = Object.freeze({ kind: 'none' });
+
+/**
+ * The state a store is in once the membership listing that was on screen has gone.
+ */
+const ASSIGNMENTS_VIEW_LEFT: AssignmentsViewState = Object.freeze({ kind: 'left' });
+
+/**
+ * The page size of the single-account membership probe.
+ *
+ * ⚠ ONE REQUEST, AND ONE ONLY. The probe narrows the role's memberships by the account's
+ * login name, which the listing matches as a case-insensitive substring of either the login
+ * name or the display name (`Infrastructure/Repositories/RoleRepository.cs` filters on both),
+ * so a name that is a fragment of another can bring back a handful of rows. The largest page
+ * the contract allows is therefore asked for, so the one row being looked for cannot fall off
+ * the end of the answer in any realistic tenant — and when it is not in the answer the probe
+ * reports NO MEMBERSHIP, which is the state the legacy screen showed for an account it had no
+ * row for.
+ *
+ * It is deliberately NOT a walk. A probe that followed further pages would reintroduce the
+ * defect it exists to remove: a burst of requests, and every membership of the role retained
+ * in memory, to answer a question about ONE account.
+ */
+const MEMBERSHIP_PROBE_PAGE_SIZE = MAX_PAGE_SIZE;
 
 /**
  * How many roles one request of the complete-listing walk asks for.
@@ -626,7 +750,7 @@ export const ROLES_FETCH_PAGE_SIZE = 100;
  * SERVER stated rather than the number of records gathered, so a truncated walk is visible
  * as a total larger than the row count rather than passing as a complete answer.
  */
-const MAXIMUM_ROLE_PAGES = 2000;
+export const MAXIMUM_ROLE_PAGES = 2000;
 
 /**
  * The coordinate the ROLE listing starts at.
@@ -644,6 +768,37 @@ const INITIAL_ROLES_COORDINATE: RolePageCoordinate = Object.freeze({
   sortDir: null,
   query: null,
 });
+
+/**
+ * The sentence announcing a membership read that could not be completed.
+ *
+ * AUTHORED WORDING, and recorded as such: the legacy screen had no equivalent outcome to
+ * borrow from, because it read the whole membership in one unpaged call
+ * (`Website/admin/Security/SecurityRoles.ascx.vb:L204`) and so could neither truncate nor
+ * report a truncation. It is written for the decision the operator is about to make —
+ * whether to add or remove a membership — so it says plainly that the list is partial and
+ * gives both counts rather than a vague apology.
+ *
+ * Both numbers are stated because either alone is useless: the rows in hand tell the
+ * operator what they can act on, and the server's total tells them how much is missing.
+ *
+ * Plain text with no markup, because every consumer renders a failure summary as text —
+ * the legacy resource files carry live HTML in dozens of values and the workspace's rule is
+ * that no failure wording is ever bound as raw markup.
+ *
+ * @param gathered The envelope the walk assembled, carrying the server's own total.
+ * @returns One sentence naming the shortfall in both directions.
+ */
+function assignmentShortfallMessage(gathered: PagedResult<UserRole>): string {
+  const held: string = String(gathered.items.length);
+  const total: string = String(gathered.meta.totalCount);
+
+  return (
+    `Only ${held} of ${total} memberships could be read for this role, ` +
+    'so the list below is incomplete. Narrow the role or try again before adding or ' +
+    'removing a membership.'
+  );
+}
 
 /**
  * Recovers the server's RFC 7807 document from whatever the HTTP layer threw.
@@ -779,6 +934,9 @@ export class RoleStore implements OnDestroy {
   /** The role listing read, whether the complete walk or a single request within it. */
   private rolesRequest: Subscription | null = null;
 
+  /** The handle for the roles-held-by-one-account read. Its own, so it cancels independently. */
+  private heldRolesRequest: Subscription | null = null;
+
   /** The role-group listing read. */
   private roleGroupsRequest: Subscription | null = null;
 
@@ -787,6 +945,16 @@ export class RoleStore implements OnDestroy {
 
   /** The assignment listing read. */
   private assignmentsRequest: Subscription | null = null;
+
+  /**
+   * The single-account membership probe.
+   *
+   * Held apart from {@link RoleStore.assignmentsRequest} because the two answer different
+   * questions over the same address: the listing is the page a screen is showing, the probe is
+   * "does this one account hold this role, and on what terms". Sharing one handle would let a
+   * probe abandon the page read the grid is waiting on, and the reverse.
+   */
+  private assignmentProbeRequest: Subscription | null = null;
 
   /**
    * Every write in flight.
@@ -835,6 +1003,17 @@ export class RoleStore implements OnDestroy {
   private readonly _assignmentsRoleId = signal<number | null>(null);
 
   /**
+   * Whether a membership listing is on screen, and for which role.
+   *
+   * Maintained by the screen itself through {@link RoleStore.openAssignmentsView} and
+   * {@link RoleStore.closeAssignmentsView}, because the screen is the only thing that knows when it
+   * arrives and when it goes. Read only by {@link RoleStore.refreshAssignmentsIfCurrent}; see
+   * {@link AssignmentsViewState} for why this cannot be inferred from
+   * {@link RoleStore.assignmentsRoleId}.
+   */
+  private readonly _assignmentsView = signal<AssignmentsViewState>(NO_ASSIGNMENTS_VIEW);
+
+  /**
    * The ordering, filter and request size the role listing was last read with.
    *
    * Its page index is permanently nought, because the role listing is read WHOLE — see
@@ -847,20 +1026,94 @@ export class RoleStore implements OnDestroy {
   private readonly _assignmentsPage = signal<RolePageCoordinate>(INITIAL_PAGE_COORDINATE);
 
   /**
-   * How much of the membership the assignment slice was last asked for.
+   * The membership one probe found, or `null` when the probe found none.
    *
-   * See {@link AssignmentReadScope} for why it is remembered rather than passed per read.
+   * `null` is a real answer — "the account the key names holds no membership of the role the
+   * key names" — and is distinguished from "no probe has answered" by
+   * {@link RoleStore._probedAssignmentKey} being `null` instead.
    */
-  private readonly _assignmentsScope = signal<AssignmentReadScope>('page');
+  private readonly _probedAssignment = signal<UserRole | null>(null);
+
+  /** The pairing {@link RoleStore._probedAssignment} answers for, or `null` when none has. */
+  private readonly _probedAssignmentKey = signal<AssignmentProbeKey | null>(null);
 
   private readonly _rolesLoading = signal<boolean>(false);
+
+  /**
+   * The roles ONE ACCOUNT holds, when the listing has been narrowed to an account.
+   *
+   * ⚠ HELD APART FROM {@link RoleStore._roles}, NOT WRITTEN OVER IT. The browsable listing is
+   * paged, ordered and filterable and a screen may be showing it; this is an unpaged answer to a
+   * different question. Writing one into the other would make opening an account's memberships
+   * silently replace a sibling listing's rows and discard the page it was on — the same defect the
+   * module store's picker slice exists to avoid.
+   *
+   * `null` means NO ANSWER FOR THE CURRENT SUBJECT — either because no account is the subject at
+   * all, or because the subject has just changed and the new account's read has not answered yet.
+   * It is distinct from an account that holds no role, which is an EMPTY ARRAY and a successful
+   * answer.
+   *
+   * ⚠ THE SECOND MEANING IS WHY THIS SLICE IS DISCARDED WHEN THE SUBJECT CHANGES. Holding the
+   * previous account's answer while the next account's read was outstanding let a consumer read a
+   * non-null collection alongside the NEW subject key and present one person's memberships — or a
+   * count of them — under another person's name. A consumer cannot be relied on to notice that
+   * window, so the window is closed here instead. See {@link RoleStore.loadRolesHeldByUser}.
+   */
+  private readonly _rolesHeldByUser = signal<readonly RoleListItem[] | null>(null);
+
+  /**
+   * Which account {@link RoleStore._rolesHeldByUser} describes, or `undefined` when none.
+   *
+   * Recorded so a screen can tell whether the collection in hand is the one it is showing, rather
+   * than assuming the answer it is looking at answers the account it asked about.
+   */
+  private readonly _heldRolesUserId = signal<number | undefined>(undefined);
+
+  /** Whether the roles-held-by-one-account read is in flight. */
+  private readonly _heldRolesLoading = signal<boolean>(false);
   private readonly _roleGroupsLoading = signal<boolean>(false);
   private readonly _selectedRoleLoading = signal<boolean>(false);
   private readonly _assignmentsLoading = signal<boolean>(false);
-  private readonly _saving = signal<boolean>(false);
+
+  /**
+   * How many writes are outstanding.
+   *
+   * ⚠ A COUNT RATHER THAN A FLAG, and the difference is a correctness one. This store is provided at
+   * the application root, so several screens share it and their writes overlap. A boolean set true at
+   * each dispatch and false at each settlement is simply WRONG under overlap: two writes start, the
+   * first settles, the flag falls, and the second is reported as finished while it is still in the
+   * air. A count is right for any number of concurrent writes and degenerates to the flag's behaviour
+   * for one.
+   *
+   * Decremented with a floor at zero so that a settlement arriving twice - which `finalize` cannot
+   * produce, but a future refactor could - cannot drive the count negative and leave `saving`
+   * permanently false.
+   */
+  private readonly _pendingWrites = signal<number>(0);
+
+  /**
+   * The most recently settled write, identified.
+   *
+   * ⚠ THIS, NOT THE COUNT, IS WHAT A SCREEN SETTLES ON. See {@link RoleStore.mutation}.
+   */
+  private readonly _mutation = signal<RoleMutation | null>(null);
+
+  /**
+   * The identifier issued to the last write dispatched.
+   *
+   * A plain counter rather than a signal: nothing observes it, and it is read only to produce the
+   * next value. Pre-incremented, so the first identifier ever issued is 1 and 0 is a value no write
+   * holds - which lets a consumer use 0 as "no write of mine is outstanding" without a nullable
+   * field.
+   */
+  private nextMutationId = 0;
+
+  /** Whether the single-account membership probe is in flight. */
+  private readonly _assignmentProbeLoading = signal<boolean>(false);
 
   /** The last failure, or `null` when the last command succeeded. */
   private readonly _failure = signal<RoleStoreFailure | null>(null);
+
 
   // -------------------------------------------------------------------------
   // READ-ONLY PROJECTIONS
@@ -891,23 +1144,70 @@ export class RoleStore implements OnDestroy {
   readonly assignmentsPage = this._assignmentsPage.asReadonly();
 
   /**
-   * Whether the held assignments are one page or the whole membership.
+   * The membership the last probe found, or `null` when it found none.
    *
-   * Published so a screen can tell whether the pager it is bound to has anything to move
-   * through: under `'complete'` the set is whole and the metadata reports a single page.
+   * Read it BESIDE {@link RoleStore.probedAssignmentKey}: an answer is only about the pairing
+   * that key names, so a consumer confirms the key matches the pairing it cares about before
+   * acting on the answer. See {@link RoleStore.probeAssignment}.
    */
-  readonly assignmentsScope = this._assignmentsScope.asReadonly();
+  readonly probedAssignment = this._probedAssignment.asReadonly();
+
+  /** The pairing {@link RoleStore.probedAssignment} answers for, or `null` when none has. */
+  readonly probedAssignmentKey = this._probedAssignmentKey.asReadonly();
 
   readonly rolesLoading = this._rolesLoading.asReadonly();
+
+  /** The roles one account holds, or `null` when no account is the subject. */
+  readonly rolesHeldByUser = this._rolesHeldByUser.asReadonly();
+
+  /** Which account {@link RoleStore.rolesHeldByUser} describes, or `undefined`. */
+  readonly heldRolesUserId = this._heldRolesUserId.asReadonly();
+
+  /** Whether the roles-held-by-one-account read is in flight. */
+  readonly heldRolesLoading = this._heldRolesLoading.asReadonly();
   readonly roleGroupsLoading = this._roleGroupsLoading.asReadonly();
   readonly selectedRoleLoading = this._selectedRoleLoading.asReadonly();
   readonly assignmentsLoading = this._assignmentsLoading.asReadonly();
 
-  /** Whether a write is in flight. */
-  readonly saving = this._saving.asReadonly();
+  /** Whether the single-account membership probe is in flight. */
+  readonly assignmentProbeLoading = this._assignmentProbeLoading.asReadonly();
+
+  /**
+   * Whether ANY write is in flight, anywhere in the application.
+   *
+   * ⚠ AN AGGREGATE, AND IT MUST NOT BE USED TO SETTLE A PARTICULAR WRITE. It is derived from the
+   * pending-write count, so it is now accurate under overlap - it stays true until the LAST
+   * outstanding write settles rather than until the first one does - but accurate is not the same as
+   * specific. It answers "is the store writing", which is the right question for disabling a submit
+   * affordance and the wrong question for "did MY save succeed".
+   *
+   * MIGRATION: waiting for this to fall was exactly how the role screens used to settle their own
+   * writes, and it was a defect in two directions. The form announced success and navigated away when
+   * an unrelated write elsewhere finished, before its own had; and the membership screen released its
+   * assignment lock on the same signal, so a second enrolment could be submitted while the first was
+   * still outstanding. Both now settle on {@link RoleStore.mutation}.
+   */
+  readonly saving = computed<boolean>(() => this._pendingWrites() > 0);
+
+  /**
+   * The most recently settled write, carrying the identifier its caller was given.
+   *
+   * ⚠ THE ONLY CORRECT WAY TO SETTLE A WRITE. Every write command returns a number, and a caller that
+   * cares about the outcome keeps it and compares it against `mutation()?.id`. A published result
+   * whose identifier is not the caller's belongs to somebody else and must be ignored - which is a
+   * total test, needing no knowledge of which other screens exist or what they are doing.
+   *
+   * The failure travels ON THE RESULT rather than being read from {@link RoleStore.failure}, and that
+   * is the second half of the same fix: the failure slot is shared and a concurrent write clears it at
+   * dispatch, so a caller reading it could find another write's refusal, or find nothing where its own
+   * refusal had been. `failure` remains the right thing for a banner to BIND to; it is not the right
+   * thing to DECIDE with.
+   */
+  readonly mutation = this._mutation.asReadonly();
 
   /** The last failure, or `null`. */
   readonly failure = this._failure.asReadonly();
+
 
   // -------------------------------------------------------------------------
   // DERIVED PROJECTIONS
@@ -929,10 +1229,12 @@ export class RoleStore implements OnDestroy {
   readonly busy = computed<boolean>(
     () =>
       this._rolesLoading() ||
+      this._heldRolesLoading() ||
       this._roleGroupsLoading() ||
       this._selectedRoleLoading() ||
       this._assignmentsLoading() ||
-      this._saving(),
+      this._assignmentProbeLoading() ||
+      this.saving(),
   );
 
   /**
@@ -1191,20 +1493,28 @@ export class RoleStore implements OnDestroy {
    * @param operation The command that failed.
    * @param error Whatever the observable's failure path delivered.
    */
-  private recordFailure(operation: RoleStoreOperation, error: unknown): void {
+  private recordFailure(operation: RoleStoreOperation, error: unknown): RoleStoreFailure {
     const problem: ProblemDetails | null = readProblem(error);
     const status: number | null = readStatus(error);
     const described: ProblemDetails | null =
       problem ?? (status === null ? null : { status });
     const code: string | null = failureCode(problem);
 
-    this._failure.set({
+    const failure: RoleStoreFailure = {
       operation,
       status,
       summary: summarizeProblem(described),
       problem,
       conflict: isConflictCode(code) ? code : null,
-    });
+    };
+
+    this._failure.set(failure);
+
+    // ⚠ RETURNED AS WELL AS PUBLISHED, so a write can carry its OWN failure on its own settled
+    // result. The published slot is shared and the next dispatch clears it, so a write that had to
+    // re-read this slot at settlement time could find a concurrent write's refusal or find nothing
+    // at all. Handing the record straight back removes the second read.
+    return failure;
   }
 
   /**
@@ -1357,6 +1667,83 @@ export class RoleStore implements OnDestroy {
   }
 
   /**
+   * Reads the roles ONE ACCOUNT holds, making that account the subject of the listing.
+   *
+   * MIGRATION: THIS RESTORES A PER-ACCOUNT VIEW THE TARGET HAD LOST. The legacy account listing's
+   * roles command navigated to a per-account screen — `Users.ascx.vb:L542` built
+   * `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD")` — and the screen it reached served TWO
+   * MODES from one page, keyed by either a role or an account (`SecurityRoles.ascx.vb:L413-L418`).
+   * The target's role listing had only the role-keyed mode, so the command discarded the row's
+   * account and landed on the unnarrowed listing: an operator who asked "what does this person
+   * hold" was shown every role in the tenant instead, with the account they had chosen nowhere on
+   * screen.
+   *
+   * ⚠ THE ANSWER LANDS IN ITS OWN SLICE and never in {@link RoleStore.roles}. The browsable
+   * listing is paged, ordered and filterable, and a screen may be showing it; this is an unpaged
+   * answer to a different question. See {@link RoleStore._rolesHeldByUser}.
+   *
+   * The read is UNPAGED because the server declares it so. No page coordinate is sent and none is
+   * published, so no pager can be built over the result.
+   *
+   * @param userId The account whose roles to read. Forwarded exactly as supplied — an account
+   * identifier of nought is a real account.
+   */
+  loadRolesHeldByUser(userId: number): void {
+    this.heldRolesRequest?.unsubscribe();
+    this._heldRolesLoading.set(true);
+    this.clearFailure();
+
+    // ⚠ A CHANGE OF SUBJECT DISCARDS THE PREVIOUS ANSWER, and this is the whole reason the two
+    // slices are written together here. The account is recorded at DISPATCH rather than on arrival,
+    // so a screen can tell which account is being waited for and not merely which one was last
+    // answered — but that alone left a window in which the recorded subject was the NEW account
+    // while the collection still described the OLD one. A consumer comparing the two found them in
+    // agreement and rendered the previous account's memberships, and its count, under the new
+    // account's name: a wrong answer presented as a right one, for the duration of a request.
+    //
+    // Re-reading the SAME account keeps its answer, so a refresh does not blank the screen it is
+    // refreshing. Only a genuine change of subject discards.
+    if (this._heldRolesUserId() !== userId) {
+      this._rolesHeldByUser.set(null);
+    }
+
+    this._heldRolesUserId.set(userId);
+
+    this.heldRolesRequest = this.roleService
+      .listRolesHeldByUser(userId)
+      .pipe(finalize(() => this._heldRolesLoading.set(false)))
+      .subscribe({
+        // An empty payload is a successful answer meaning the account holds no role. It is NOT the
+        // same fact as no account being the subject, which is the null the slice opens in.
+        next: (response) => {
+          this._rolesHeldByUser.set(response.data);
+        },
+        error: (error: unknown) => {
+          // The narrowing is abandoned on failure, so the screen falls back to the unnarrowed
+          // listing beside the reported failure rather than showing an empty membership set that
+          // would read as "this account holds nothing".
+          this._rolesHeldByUser.set(null);
+          this._heldRolesUserId.set(undefined);
+          this.recordFailure('loadRolesHeldByUser', error);
+        },
+      });
+  }
+
+  /**
+   * Stops treating any account as the subject, returning to the unnarrowed listing.
+   *
+   * Cancels a read in flight as well as discarding the answer, because a response arriving after
+   * the narrowing was cleared would re-narrow the listing with no command to explain it.
+   */
+  clearRolesHeldByUser(): void {
+    this.heldRolesRequest?.unsubscribe();
+    this.heldRolesRequest = null;
+    this._rolesHeldByUser.set(null);
+    this._heldRolesUserId.set(undefined);
+    this._heldRolesLoading.set(false);
+  }
+
+  /**
    * Reads one role in full and holds it as the selection.
    *
    * Legacy: the edit screen `Website/admin/Security/EditRoles.ascx.vb`, which read the
@@ -1390,18 +1777,38 @@ export class RoleStore implements OnDestroy {
   }
 
   /**
-   * Reads the current page of assignments for one role.
+   * Reads ONE PAGE of assignments for one role.
    *
    * Legacy: `Website/admin/Security/SecurityRoles.ascx.vb`, which listed the accounts
    * holding a role together with the effective and expiry bounds of each assignment.
    * Those bounds are absolute instants on the wire and are held exactly as received; this
    * module neither reconstructs them from a local offset nor derives them.
    *
+   * ⚠ EXACTLY ONE REQUEST PER READ, AND THE PAGE IS THE UNIT. The endpoint counts and windows
+   * per request, so the page in hand plus the total on its metadata is everything a pager
+   * needs, and {@link RoleStore.setAssignmentsPage} reaches every other page. An earlier
+   * revision instead read page zero and then fetched every page the metadata reported,
+   * together, and joined them: one screen became a burst of concurrent requests, the whole
+   * membership of a role was retained in memory, and every assignment write repeated the walk.
+   * That is why this method exists in one shape only. Completeness is delivered by the pager,
+   * which keeps every membership addressable — the legacy grid declared no pager
+   * (`Website/admin/Security/securityroles.ascx:L56`), so a role small enough to have fitted in
+   * it renders with no pager at all and looks exactly as it did.
+   *
+   * MIGRATION: a change of addressed role returns the coordinate to the FIRST page. The page
+   * an operator was standing on belongs to the role they were looking at; carrying its index
+   * onto a different role would request a window that role may not have and present an empty
+   * grid for a role that has members. Nothing is clamped or corrected here — see the paging
+   * note on {@link RoleStore.setAssignmentsPage}; a fresh address simply gets a fresh
+   * coordinate.
+   *
    * @param roleId The role whose assignments to read.
    */
   loadAssignments(roleId: number): void {
-    this.assignmentsRequest?.unsubscribe();
-
+    // The in-flight read is released by {@link RoleStore.dispatchAssignments}, which has to own
+    // that release anyway because the corrective read needs it too. Releasing it here as well
+    // would be a second unsubscribe of the same handle for no gain.
+    //
     // ⚠ A CHANGE OF ROLE DISCARDS THE ROWS IN HAND, AND DOES SO NOW RATHER THAN ON ARRIVAL. The
     // addressed role is published immediately, so leaving the previous role's memberships in place
     // would publish them UNDER THE NEW ROLE for as long as the read takes - a consumer that checks
@@ -1410,142 +1817,324 @@ export class RoleStore implements OnDestroy {
     // refresh after a write does not blank the grid it is refreshing.
     if (this._assignmentsRoleId() !== roleId) {
       this._assignments.set(emptyPagedResult<UserRole>());
+      this._assignmentsPage.set(INITIAL_PAGE_COORDINATE);
     }
 
     this._assignmentsRoleId.set(roleId);
-    this._assignmentsScope.set('page');
-    this._assignmentsLoading.set(true);
+
     this.clearFailure();
 
-    this.assignmentsRequest = this.roleService
-      .listUsers(roleId, this._assignmentsPage())
-      .pipe(finalize(() => this._assignmentsLoading.set(false)))
+    this.dispatchAssignments(roleId);
+  }
+
+  /**
+   * Issues one page read for a role's memberships, correcting a coordinate left past the end.
+   *
+   * ⚠ WHY A CORRECTION IS NEEDED AT ALL, AND WHY ONLY HERE. A REMOVAL CAN STRAND THE OPERATOR.
+   * Take the only member of the last page away and the coordinate they are standing on stops
+   * existing: the write's re-read asks for it again, the server answers an empty page whose
+   * metadata still reports the true total, and the grid renders nothing. Worse, the pager is
+   * drawn on `pageSize < totalCount` — eleven members at ten a page becomes ten at ten a page,
+   * that predicate turns false, and the pager is WITHDRAWN. The operator is left on a blank
+   * grid with no affordance back to the rows that are still there. An unpaged grid could not
+   * reach that state, which is why the correction arrived with the paging and belongs with it.
+   *
+   * ⚠ THIS IS NOT A REINTERPRETATION OF WHAT A CALLER ASKED FOR, and the distinction is the
+   * whole reason it is safe. {@link RoleStore.setAssignmentsPage} still sends the index it was
+   * given, untouched — an index past the last page is a real state of the world and the server
+   * is entitled to answer it. What is acted on here is the SERVER'S OWN ANSWER: an empty window
+   * beyond a positive total is the server saying the coordinate no longer names anything.
+   *
+   * The correction is BOUNDED BY CONSTRUCTION. The corrective read is issued with correction
+   * withheld, so a listing that keeps shrinking underneath the screen costs at most one extra
+   * request per read and can never loop. The step-back target comes from the server's own
+   * reported page count, never from arithmetic over the rows in hand.
+   *
+   * @param roleId The role to read, forwarded exactly as supplied. Role zero is real.
+   * @param correctionAllowed Whether a past-the-end answer may issue one corrective read.
+   * `false` on the corrective read itself, which is what makes the recursion terminate.
+   */
+  private dispatchAssignments(roleId: number, correctionAllowed = true): void {
+    this.assignmentsRequest?.unsubscribe();
+    this._assignmentsLoading.set(true);
+
+    // The loading flag is lowered EXPLICITLY rather than through `finalize`, because a
+    // corrective read is dispatched from inside the first read's `next` and a finaliser runs
+    // after it — so the first read's teardown would lower the flag while its own correction was
+    // still in flight, and the grid would report itself at rest with a request outstanding.
+    this.assignmentsRequest = this.roleService.listUsers(roleId, this._assignmentsPage()).subscribe({
+      next: (response) => {
+        // The record type is named explicitly: the framing decoder validates FRAMING only and
+        // is generic in the record, so nothing infers it once the page is held in a local
+        // rather than passed straight into the slice's setter.
+        const page: PagedResult<UserRole> = toPagedResult<UserRole>(response);
+        const requestedPageIndex: number = this._assignmentsPage().pageIndex;
+
+        // Every clause is load-bearing. A positive total is what separates "this window is
+        // past the end" from "this role has no members", which is a legitimate empty answer
+        // and must not provoke a second request. A first-page request is never past the end,
+        // whatever the total. And the server's page count must actually fall short of the
+        // index asked for, so a server reporting a window that does exist is believed.
+        const lastExistingPageIndex = page.meta.totalPages - 1;
+        const pastTheEnd =
+          correctionAllowed &&
+          page.items.length === 0 &&
+          page.meta.totalCount > 0 &&
+          requestedPageIndex > 0 &&
+          lastExistingPageIndex < requestedPageIndex;
+
+        if (pastTheEnd) {
+          this._assignmentsPage.update((coordinate) => ({
+            ...coordinate,
+            // Never negative: this arm is only reached with a positive total, so the server
+            // reported at least one page. The floor is stated rather than assumed because the
+            // alternative is a negative index on the wire.
+            pageIndex: lastExistingPageIndex > 0 ? lastExistingPageIndex : 0,
+          }));
+
+          this.dispatchAssignments(roleId, false);
+          return;
+        }
+
+        this._assignments.set(page);
+        this._assignmentsLoading.set(false);
+      },
+      error: (error: unknown) => {
+        this._assignmentsLoading.set(false);
+        this.recordFailure('loadAssignments', error);
+      },
+    });
+  }
+
+  /**
+   * Asks whether ONE account holds one role, and on what terms.
+   *
+   * Legacy: `SecurityRoles.ascx.vb:L273-L303` (`GetDates`) and `:L656-L658`, which answered
+   * two questions from the grid it had already bound — what bounds to show for the chosen
+   * account, and whether to relabel the action 'Update User Role'. That grid held the WHOLE
+   * membership, because the legacy screen was unpaged, so scanning it answered both questions
+   * for any member of the role.
+   *
+   * ⚠ THIS IS THE REPLACEMENT FOR THAT SCAN, AND IT IS WHY THE LISTING NEED NOT BE READ WHOLE.
+   * A paged grid holds one window, so a scan of the rows on screen would answer "no membership"
+   * for an account whose row happens to sit on another page — a behavioural regression against
+   * the legacy answer. One narrow request settles the question instead: the listing is filtered
+   * by the account's login name, which reduces it to a handful of rows, and the wanted row is
+   * then picked out BY IDENTIFIER. The name is the filter; the identifier is the match. A name
+   * is not an identifier, which is why the identifier decides.
+   *
+   * The answer lands on {@link RoleStore.probedAssignment} beside the pairing it belongs to on
+   * {@link RoleStore.probedAssignmentKey}, and the key is published BEFORE the request so a
+   * consumer can see which pairing is being asked about while the answer is outstanding.
+   *
+   * MIGRATION: a probe that fails reports NO MEMBERSHIP and records the failure. That is the
+   * state the legacy screen showed whenever its own lookup found no row (`:L484` blanked the
+   * box), and the write behind the screen is an upsert either way — the server settles which of
+   * the two it is. The failure is still recorded, under its own operation name, so a screen can
+   * tell a failed probe from a settled "holds nothing" and never reports it as a failed listing.
+   *
+   * @param roleId The role to ask about, forwarded exactly as supplied. Role zero is real.
+   * @param userId The account to ask about, forwarded exactly as supplied.
+   * @param userName The account's login name, used ONLY as the listing's free-text filter.
+   */
+  probeAssignment(roleId: number, userId: number, userName: string): void {
+    this.assignmentProbeRequest?.unsubscribe();
+
+    // The answer in hand is discarded as soon as a different pairing is asked about, rather than
+    // on arrival, so a consumer gated on the key cannot briefly read one account's membership
+    // under another account's name.
+    this._probedAssignment.set(null);
+    this._probedAssignmentKey.set({ roleId, userId });
+    this._assignmentProbeLoading.set(true);
+    this.clearFailure();
+
+    this.assignmentProbeRequest = this.roleService
+      .listUsers(roleId, {
+        pageIndex: 0,
+        pageSize: MEMBERSHIP_PROBE_PAGE_SIZE,
+        query: userName,
+      })
+      .pipe(finalize(() => this._assignmentProbeLoading.set(false)))
       .subscribe({
         next: (response) => {
-          this._assignments.set(toPagedResult(response));
+          const page: PagedResult<UserRole> = toPagedResult<UserRole>(response);
+          const found: UserRole | undefined = page.items.find((row) => row.userId === userId);
+
+          // `undefined` from `find` is normalised to `null` because absence has ONE spelling in
+          // this module's published contract, not two.
+          this._probedAssignment.set(found ?? null);
         },
         error: (error: unknown) => {
-          this.recordFailure('loadAssignments', error);
+          this._probedAssignment.set(null);
+          this.recordFailure('probeAssignment', error);
         },
       });
   }
 
   /**
-   * Reads EVERY membership of one role, following each page the server reports.
+   * Forgets the probe's answer without contacting the server.
    *
-   * Legacy: the membership grid at `Website/admin/Security/securityroles.ascx:L56`, which
-   * declared no pager at all and bound the whole membership
-   * (`SecurityRoles.ascx.vb:L204`). The screen that replaces it renders the same whole set,
-   * so it needs the whole set — a first page would silently hide memberships from an
-   * operator deciding whether to add or remove one.
-   *
-   * The first page is requested at {@link MAX_PAGE_SIZE}, the largest the contract permits,
-   * and any further pages the server's metadata reports are fetched together and appended in
-   * page order. The follow-on count is capped by {@link MAX_ASSIGNMENT_PAGES}.
-   *
-   * What lands in the slice is an UNPAGED envelope built by {@link unpagedResult}: the total
-   * is the number of rows actually held and the page count is one, because one set now holds
-   * everything. That is deliberately not the server's paged metadata — republishing "page 0
-   * of 3" beside a set that holds all three pages would misdescribe what is held, and a
-   * pager bound to it would offer moves that cannot change anything.
-   *
-   * The scope is recorded, so the re-read each assignment write performs reproduces the
-   * complete set rather than collapsing it to the first page. See
-   * {@link AssignmentReadScope}.
-   *
-   * ⚠ THE HANDLE IS SHARED WITH THE PAGED READ. Both write the same slice, so dispatching
-   * either one abandons whatever the other had in flight — which is what stops a slower
-   * paged response from overwriting a complete set, or the reverse.
-   *
-   * @param roleId The role whose whole membership to read.
+   * The key is cleared alongside it, so the state becomes "no probe has answered" rather than
+   * "the pairing holds nothing" — which is the distinction {@link AssignmentProbeKey} exists
+   * for.
    */
-  loadAllAssignments(roleId: number): void {
-    this.assignmentsRequest?.unsubscribe();
-
-    // ⚠ A CHANGE OF ROLE DISCARDS THE ROWS IN HAND, AND DOES SO NOW RATHER THAN ON ARRIVAL. The
-    // addressed role is published immediately, so leaving the previous role's memberships in place
-    // would publish them UNDER THE NEW ROLE for as long as the read takes - a consumer that checks
-    // {@link RoleStore.assignmentsRoleId} before rendering, which is the correct check, would be
-    // told the rows belong to a role they do not. A RE-READ of the same role keeps its rows, so a
-    // refresh after a write does not blank the grid it is refreshing.
-    if (this._assignmentsRoleId() !== roleId) {
-      this._assignments.set(emptyPagedResult<UserRole>());
-    }
-
-    this._assignmentsRoleId.set(roleId);
-    this._assignmentsScope.set('complete');
-    this._assignmentsLoading.set(true);
-    this.clearFailure();
-
-    this.assignmentsRequest = this.roleService
-      .listUsers(roleId, { pageIndex: 0, pageSize: MAX_PAGE_SIZE })
-      .pipe(
-        switchMap((response) => this.followAssignmentPages(roleId, toPagedResult(response))),
-        finalize(() => this._assignmentsLoading.set(false)),
-      )
-      .subscribe({
-        next: (rows) => {
-          this._assignments.set(unpagedResult(rows));
-        },
-        error: (error: unknown) => {
-          this.recordFailure('loadAssignments', error);
-        },
-      });
+  clearProbedAssignment(): void {
+    this.assignmentProbeRequest?.unsubscribe();
+    this.assignmentProbeRequest = null;
+    this._assignmentProbeLoading.set(false);
+    this._probedAssignment.set(null);
+    this._probedAssignmentKey.set(null);
   }
 
   /**
-   * Fetches every assignment page after the first and appends them in page order.
+   * Re-reads a role's assignments unless some OTHER role is the one in scope.
    *
-   * Emits the first page's rows unchanged when the server reports no further page, which is
-   * the ordinary case and costs no extra request.
+   * ## The defect this closes
    *
-   * @param roleId The role being read.
-   * @param first The first page, already normalised.
-   * @returns Every membership across every reported page, in page order.
+   * Both assignment writes used to re-read UNCONDITIONALLY, and one of them additionally moved the
+   * scope onto the role it was writing before doing so. Because this store is provided at the
+   * application root, that produced a cross-role republication with no error anywhere:
+   *
+   *     membership screen opens role A, enrols an account       -> write A dispatched
+   *     operator navigates to role B; the screen re-reads       -> read B dispatched
+   *     write A settles                                         -> scope FORCED back to A,
+   *                                                                read B CANCELLED,
+   *                                                                read A dispatched
+   *     read A lands                                            -> role A's members rendered
+   *                                                                under role B's heading
+   *
+   * The consequences compound rather than stopping at a stale grid. The membership rows carry named
+   * accounts, so one role's membership was disclosed under another role's name; and the removal
+   * affordance on each row submits with the ROUTE's role key, so removing a row the operator could
+   * see would have stripped an account from role B that only ever belonged to role A. Cancelling
+   * read B is what made it silent — a cancelled read delivers neither a value nor an error.
+   *
+   * ## Two questions, asked separately
+   *
+   * The question is not "is this the newest read" — that is the read handle's job and it already
+   * supersedes correctly — but "would refreshing this role write into something that is not mine".
+   * Two independent facts answer it, and the first version of this guard asked only one of them.
+   *
+   * WHO IS LOOKING is {@link RoleStore._assignmentsView}, maintained by the screen itself. WHOSE
+   * ROWS ARE HELD is {@link RoleStore.assignmentsRoleId}. They are not interchangeable: the rows'
+   * label is only ever moved to another role, never vacated, because a departing screen does not
+   * blank the grid on its way out. So after the operator returns to the role listing the label still
+   * names the role they left, and a guard reading only the label is told the screen is still there.
+   * That was the defect, and runtime validation reproduced it three times out of three on the
+   * ordinary operator path. See {@link AssignmentsViewState}.
+   *
+   * The three refusals are in the body, each against the fact that justifies it. Two cases refresh:
+   *
+   * - a listing for THIS role is on screen — the ordinary path, where the operator is looking at the
+   *   very grid the write changed and must see the change;
+   * - nothing has been on screen at all, with no rows held — nobody is looking, so there is no set to
+   *   overwrite and no heading to render rows under. Refreshing here ADOPTS the role, which is the
+   *   published contract of both writes: a caller that enrols an account and then reads
+   *   {@link RoleStore.assignmentItems} sees the enrolment, and {@link RoleStore.assignmentsRoleId}
+   *   names the role it belongs to. Suppressing this case would leave the write with no observable
+   *   effect whatsoever on a fresh store.
+   *
+   * A blanket equality test — refresh only when the scope ALREADY names this role — was tried first.
+   * It closed the cross-role hazard but broke that contract, and the four specifications pinning the
+   * contract failed as one. It is recorded because the mistake is easy to repeat: the cross-role
+   * hazard is created by MOVING an occupied scope or by a screen that has LEFT, never by filling an
+   * empty one.
+   *
+   * @param roleId The role the settled write addressed.
    */
-  private followAssignmentPages(
-    roleId: number,
-    first: PagedResult<UserRole>,
-  ): Observable<readonly UserRole[]> {
-    const reported = Math.min(first.meta.totalPages, MAX_ASSIGNMENT_PAGES);
-    const followers: number[] = [];
+  private refreshAssignmentsIfCurrent(roleId: number): void {
+    const view: AssignmentsViewState = this._assignmentsView();
 
-    for (let pageIndex = 1; pageIndex < reported; pageIndex += 1) {
-      followers.push(pageIndex);
-    }
-
-    if (followers.length === 0) {
-      return of(first.items);
-    }
-
-    const pageReads: readonly Observable<PagedResponse<UserRole>>[] = followers.map((pageIndex) =>
-      this.roleService.listUsers(roleId, { pageIndex, pageSize: MAX_PAGE_SIZE }),
-    );
-
-    return forkJoin(pageReads).pipe(
-      map((pages): readonly UserRole[] => [
-        ...first.items,
-        ...pages.flatMap((page) => toPagedResult<UserRole>(page).items),
-      ]),
-    );
-  }
-
-  /**
-   * Re-reads the assignments of one role at the scope last asked for.
-   *
-   * The single re-read path for both assignment writes and for
-   * {@link RoleStore.reloadAssignments}, so neither can narrow a complete set to its first
-   * page by accident.
-   *
-   * @param roleId The role to re-read.
-   */
-  private redispatchAssignments(roleId: number): void {
-    if (this._assignmentsScope() === 'complete') {
-      this.loadAllAssignments(roleId);
+    // ⚠ (1) THE SCREEN THAT ASKED HAS GONE. Runtime validation caught this case, and it is the one
+    // the scope test below cannot see: leaving a membership listing does not blank the rows, so the
+    // scope still names the role afterwards and agreed with the write. Reproduced three times out of
+    // three by enrolling an account and returning to the role listing before the write settled — the
+    // ordinary path from one role's memberships to another's, since the listing is the stop between
+    // them. There is no grid left to refresh, and the re-read would clear the shared failure slot
+    // beneath whichever screen replaced it.
+    if (view.kind === 'left') {
       return;
     }
 
+    // (2) A DIFFERENT ROLE IS ON SCREEN. Distinct from (3) rather than implied by it: a listing that
+    // has announced itself but whose first read has not yet dispatched leaves the scope empty, and
+    // (3) would read that emptiness as "nobody is looking" and adopt the written role underneath it.
+    if (view.kind === 'open' && view.roleId !== roleId) {
+      return;
+    }
+
+    // (3) THE ROWS IN HAND BELONG TO A DIFFERENT ROLE. Refreshing would force the scope back, cancel
+    // the read of the role actually being held, and republish this role's named members under the
+    // other role's heading — silently, because a cancelled read delivers neither a value nor an
+    // error. Kept as its own clause because it is answerable without any screen at all, which is how
+    // a caller driving the store directly is protected.
+    //
+    // ⚠ COMPARED WITH STRICT INEQUALITY, AND ABSENCE IS TESTED EXPLICITLY. Role keys are
+    // `IDENTITY(0, 1)`, so role 0 is a real role — the Administrators role of a fresh tenant — and a
+    // truthiness test would read it as "nothing in scope" and take the adoption branch on a scope
+    // that is genuinely occupied, reintroducing the defect for exactly one role.
+    const inScope: number | null = this._assignmentsRoleId();
+
+    if (inScope !== null && inScope !== roleId) {
+      return;
+    }
+
+    // ⚠ THE PAGE IN HAND IS RE-READ, NOT THE FIRST PAGE. `loadAssignments` keeps the coordinate
+    // for a role it is already showing, so an enrolment or a removal refreshes the window the
+    // operator is standing on rather than throwing them back to page one. The whole-set re-read this
+    // used to perform is gone with the walk itself: reading every page of a role's membership on
+    // every write retained the entire set and repeated the read for each one, and the shared pager
+    // now reaches the pages this window does not hold.
     this.loadAssignments(roleId);
+  }
+
+  /**
+   * Declares that a membership listing for one role is now on screen.
+   *
+   * Called by the membership screen as soon as it knows which role it addresses, and again with the
+   * new role when one instance is reused across a change of route parameter. Announcing the
+   * replacement is all that is needed in that case — there is no matching close, because the screen
+   * never left.
+   *
+   * Only {@link RoleStore.refreshAssignmentsIfCurrent} consumes this. Nothing rendered depends on
+   * it, and it deliberately does not touch the rows, the scope, the failure slot or any read: it
+   * records who is looking, and answering that question must not itself change what is being looked
+   * at.
+   *
+   * @param roleId The role the listing on screen addresses.
+   */
+  openAssignmentsView(roleId: number): void {
+    this._assignmentsView.set({ kind: 'open', roleId });
+  }
+
+  /**
+   * Declares that the membership listing for one role has gone.
+   *
+   * Called from the screen's destruction hook. After this, a membership write that settles late
+   * refreshes nothing — which is the point: the grid it would have refreshed no longer exists, and
+   * the re-read would clear the shared failure slot underneath whichever screen replaced it.
+   *
+   * ⚠ THE ROLE IS PASSED AND CHECKED, rather than the state simply being cleared. A screen tears
+   * itself down, and a replacement announces itself, in an order this store does not control. Were
+   * the close unconditional, a replacement that had already called
+   * {@link RoleStore.openAssignmentsView} would be un-announced by its predecessor's teardown, and
+   * the replacement's own legitimate refresh would then be refused. Checking the role makes the
+   * close idempotent and order-independent.
+   *
+   * Leaves `none` alone as well, so a screen that never resolved a role — and therefore never
+   * announced one — cannot put the store into `left` and suppress the adoption contract for
+   * everything that follows.
+   *
+   * @param roleId The role the departing listing addressed.
+   */
+  closeAssignmentsView(roleId: number): void {
+    const view = this._assignmentsView();
+
+    if (view.kind !== 'open' || view.roleId !== roleId) {
+      return;
+    }
+
+    this._assignmentsView.set(ASSIGNMENTS_VIEW_LEFT);
   }
 
   /**
@@ -1561,7 +2150,7 @@ export class RoleStore implements OnDestroy {
       return;
     }
 
-    this.redispatchAssignments(roleId);
+    this.loadAssignments(roleId);
   }
 
   // -------------------------------------------------------------------------
@@ -1633,6 +2222,16 @@ export class RoleStore implements OnDestroy {
   /**
    * Moves the assignment listing to a page and re-reads it.
    *
+   * The index is stored and sent EXACTLY as supplied. Nothing here clamps it against the
+   * total, corrects it or reinterprets it: records can be removed between a page being
+   * requested and rendered, so an index past the last page is a real state of the world
+   * rather than a caller's mistake, and the server answers it with an empty page whose
+   * metadata still reports the true total. The shared pager only ever emits an index inside
+   * the range it was told about, so the arithmetic has one home and it is not this one.
+   *
+   * The read it dispatches cancels whichever page read was in flight, so clicking through the
+   * pager cannot leave an earlier page's answer to land on top of a later one.
+   *
    * @param pageIndex The page to move to, counted from zero.
    */
   setAssignmentsPage(pageIndex: number): void {
@@ -1656,24 +2255,28 @@ export class RoleStore implements OnDestroy {
    *
    * @param request The role to create.
    */
-  createRole(request: CreateRoleRequest): void {
-    this._saving.set(true);
+  createRole(request: CreateRoleRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .createRole(request)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'createRole', failure)))
         .subscribe({
           next: (response) => {
             this._selectedRole.set(response.data);
             this.loadRoles();
           },
           error: (error: unknown) => {
-            this.recordFailure('createRole', error);
+            failure = this.recordFailure('createRole', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1694,14 +2297,16 @@ export class RoleStore implements OnDestroy {
    * @param roleId The role to update, forwarded exactly as supplied.
    * @param request The new values.
    */
-  updateRole(roleId: number, request: UpdateRoleRequest): void {
-    this._saving.set(true);
+  updateRole(roleId: number, request: UpdateRoleRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .updateRole(roleId, request)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'updateRole', failure)))
         .subscribe({
           next: (response) => {
             const updated: Role = response.data;
@@ -1716,10 +2321,12 @@ export class RoleStore implements OnDestroy {
             this.loadRoles();
           },
           error: (error: unknown) => {
-            this.recordFailure('updateRole', error);
+            failure = this.recordFailure('updateRole', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1735,14 +2342,16 @@ export class RoleStore implements OnDestroy {
    *
    * @param roleId The role to delete, forwarded exactly as supplied.
    */
-  deleteRole(roleId: number): void {
-    this._saving.set(true);
+  deleteRole(roleId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .deleteRole(roleId)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'deleteRole', failure)))
         .subscribe({
           next: () => {
             const selected = this._selectedRole();
@@ -1754,10 +2363,12 @@ export class RoleStore implements OnDestroy {
             this.loadRoles();
           },
           error: (error: unknown) => {
-            this.recordFailure('deleteRole', error);
+            failure = this.recordFailure('deleteRole', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -1784,27 +2395,31 @@ export class RoleStore implements OnDestroy {
    * @param roleId The role to assign into.
    * @param request The account and the requested bounds.
    */
-  assignUser(roleId: number, request: RoleAssignmentRequest): void {
-    this._saving.set(true);
+  assignUser(roleId: number, request: RoleAssignmentRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .assignUser(roleId, request)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'assignUser', failure)))
         .subscribe({
           next: () => {
-            this._assignmentsRoleId.set(roleId);
-            // ⚠ RE-READ AT THE SCOPE THAT WAS ASKED FOR, never at the paged one. The membership
-            // screen asks for the listing WHOLE, and a paged re-read here would silently shrink the
-            // grid to its first page the moment an enrolment succeeded.
-            this.redispatchAssignments(roleId);
+            // ⚠ NOT REFRESHED WHILE A DIFFERENT ROLE IS THE ONE IN SCOPE. See
+            // {@link RoleStore.refreshAssignmentsIfCurrent} for the cross-role republication this
+            // test prevents; the previous code re-read unconditionally, and additionally MOVED the
+            // scope to this role first, which made the test it needed impossible to write.
+            this.refreshAssignmentsIfCurrent(roleId);
           },
           error: (error: unknown) => {
-            this.recordFailure('assignUser', error);
+            failure = this.recordFailure('assignUser', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1840,28 +2455,32 @@ export class RoleStore implements OnDestroy {
    * @param roleId The role to remove from.
    * @param userId The account to remove.
    */
-  removeAssignment(roleId: number, userId: number): void {
-    this._saving.set(true);
+  removeAssignment(roleId: number, userId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .removeUser(roleId, userId)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'removeAssignment', failure)))
         .subscribe({
           next: () => {
             // Deliberately a re-read and not a removal. See the note above: the row may
             // still exist, expired as of yesterday, and an empty success cannot say.
             //
-            // At the scope that was asked for, for the same reason as the enrolment write: a paged
-            // re-read would shrink a whole listing to its first page.
-            this.redispatchAssignments(roleId);
+            // And not while a DIFFERENT role is the one in scope, for the reason recorded on
+            // {@link RoleStore.refreshAssignmentsIfCurrent}.
+            this.refreshAssignmentsIfCurrent(roleId);
           },
           error: (error: unknown) => {
-            this.recordFailure('removeAssignment', error);
+            failure = this.recordFailure('removeAssignment', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -1876,23 +2495,27 @@ export class RoleStore implements OnDestroy {
    *
    * @param request The group to create.
    */
-  createRoleGroup(request: CreateRoleGroupRequest): void {
-    this._saving.set(true);
+  createRoleGroup(request: CreateRoleGroupRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .createRoleGroup(request)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'createRoleGroup', failure)))
         .subscribe({
           next: () => {
             this.loadRoleGroups();
           },
           error: (error: unknown) => {
-            this.recordFailure('createRoleGroup', error);
+            failure = this.recordFailure('createRoleGroup', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1907,14 +2530,16 @@ export class RoleStore implements OnDestroy {
    * @param roleGroupId The group to update, forwarded exactly as supplied.
    * @param request The new values.
    */
-  updateRoleGroup(roleGroupId: number, request: UpdateRoleGroupRequest): void {
-    this._saving.set(true);
+  updateRoleGroup(roleGroupId: number, request: UpdateRoleGroupRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .updateRoleGroup(roleGroupId, request)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'updateRoleGroup', failure)))
         .subscribe({
           next: (response) => {
             const updated: RoleGroup = response.data;
@@ -1924,10 +2549,12 @@ export class RoleStore implements OnDestroy {
             );
           },
           error: (error: unknown) => {
-            this.recordFailure('updateRoleGroup', error);
+            failure = this.recordFailure('updateRoleGroup', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1958,14 +2585,16 @@ export class RoleStore implements OnDestroy {
    *
    * @param roleGroupId The group to delete, forwarded exactly as supplied.
    */
-  deleteRoleGroup(roleGroupId: number): void {
-    this._saving.set(true);
+  deleteRoleGroup(roleGroupId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: RoleStoreFailure | null = null;
+
     this.clearFailure();
 
     this.track(
       this.roleService
         .deleteRoleGroup(roleGroupId)
-        .pipe(finalize(() => this._saving.set(false)))
+        .pipe(finalize(() => this.settleWrite(mutationId, 'deleteRoleGroup', failure)))
         .subscribe({
           next: () => {
             // The legacy reset target is the UNGROUPED intent, per `:L295`.
@@ -1989,10 +2618,12 @@ export class RoleStore implements OnDestroy {
               this.loadRoles();
             }
 
-            this.recordFailure('deleteRoleGroup', error);
+            failure = this.recordFailure('deleteRoleGroup', error);
           },
         }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -2031,27 +2662,40 @@ export class RoleStore implements OnDestroy {
    * ⚠ IN-FLIGHT WORK IS CANCELLED FIRST, reads and writes alike. Without that, a response
    * that was already on the wire when the session ended would land after the reset and
    * repopulate exactly what the reset had cleared — one operator's roles, groups and
-   * assignments becoming visible to the next. `core/state/session.coordinator.ts` calls
-   * this member on every session boundary, so it has to leave nothing listening.
+   * assignments becoming visible to the next. `core/state/session-teardown.service.ts` calls
+   * this member on every session boundary — reached from the bearer interceptor, from the
+   * session store, and from `core/state/session-lifecycle.service.ts` on an explicit
+   * sign-out — so it has to leave nothing listening.
    */
   reset(): void {
     this.cancelReads();
     this.cancelWrites();
 
     this._roles.set(emptyPagedResult<RoleListItem>());
+    // The account-narrowed slice is a tenant-scoped, person-identifying answer, so it is discarded
+    // with everything else: the next operator to sign in must not find the previous one's account
+    // still the subject of the listing.
+    this._rolesHeldByUser.set(null);
+    this._heldRolesUserId.set(undefined);
+    this._heldRolesLoading.set(false);
     this._roleGroups.set([]);
     this._groupFilter.set(DEFAULT_ROLE_GROUP_FILTER);
     this._selectedRole.set(null);
     this._assignments.set(emptyPagedResult<UserRole>());
     this._assignmentsRoleId.set(null);
+    // Back to `none` rather than `left`: the session is over, so no screen from it is owed anything,
+    // and leaving the store in `left` would suppress the adoption contract for the next session.
+    this._assignmentsView.set(NO_ASSIGNMENTS_VIEW);
     this._rolesPage.set(INITIAL_ROLES_COORDINATE);
     this._assignmentsPage.set(INITIAL_PAGE_COORDINATE);
-    this._assignmentsScope.set('page');
+    this._probedAssignment.set(null);
+    this._probedAssignmentKey.set(null);
     this._rolesLoading.set(false);
     this._roleGroupsLoading.set(false);
     this._selectedRoleLoading.set(false);
     this._assignmentsLoading.set(false);
-    this._saving.set(false);
+    this._pendingWrites.set(0);
+    this._mutation.set(null);
     this._failure.set(null);
   }
 
@@ -2086,18 +2730,41 @@ export class RoleStore implements OnDestroy {
    * HOW IT TERMINATES, in three independent ways, so that no server behaviour can leave it
    * spinning:
    *
-   *   1. A SHORT PAGE ends it. A page carrying fewer records than were asked for is the last
-   *      page by definition. This is the condition that normally ends the walk, and it is the
-   *      only one a correct server ever reaches.
-   *   2. THE SERVER'S OWN TOTAL ends it, once as many records have been gathered as the
-   *      server said exist. Belt and braces against a server that padded a final page.
-   *   3. THE PAGE CEILING ends it — see {@link MAXIMUM_ROLE_PAGES}, which no real
+   *   1. THE SERVER'S OWN TOTAL ends it — and it is the ONLY successful ending. Once as many
+   *      records have been gathered as the server said exist, the answer is complete. For a
+   *      self-consistent server this is reached on the last page it actually needed to send, so
+   *      the walk costs no request the data does not warrant, and a tenant whose whole listing
+   *      fits in one page costs exactly one request.
+   *   2. AN EMPTY PAGE ends it by RAISING. The server has nothing further to give while still
+   *      reporting more than it supplied, which is a shortfall it caused; publishing the subset
+   *      would be the silent data loss this walk exists to prevent.
+   *   3. THE PAGE CEILING ends it by RAISING too — see {@link MAXIMUM_ROLE_PAGES}, which no real
    *      installation can approach.
+   *
+   * ⚠ A SHORT PAGE IS DELIBERATELY NOT A TERMINATION CONDITION, and removing it was a fix. An
+   * earlier revision stopped on `items.length < ROLES_FETCH_PAGE_SIZE` on the reasoning that a
+   * short page "is the last page by definition". It is not: it is the last page a CONSISTENT
+   * server sends, and on a consistent server the record-total condition above has already fired
+   * by then, so the test earned nothing. What it did do was terminate the walk early on an
+   * INCONSISTENT server — one row delivered against a reported total of a hundred and
+   * thirty-seven — and publish that one row as the whole listing. The total alone decides
+   * completeness now, and an inconsistent server produces a refusal instead of a plausible
+   * subset.
+   *
+   * ⚠ A CEILING HIT IS A FAILURE AND PUBLISHES NOTHING. An earlier revision let the ceiling end
+   * the walk like the other two conditions and then emitted the rows gathered so far as one
+   * unpaged envelope, on the reasoning that "the bound never hides a shortfall" because the
+   * envelope carried the server's larger total. That reasoning does not survive contact with the
+   * consumer: the screen this feeds has NO PAGER by design — its legacy predecessor had none
+   * either — so nothing on it renders the total, and a caller comparing `meta.totalCount` against
+   * `items.length` is exactly the diligence a store must not require. The walk therefore raises,
+   * the failure is recorded, and an unreadable listing is reported rather than approximated.
    *
    * ⚠ THE TOTAL REPORTED IS THE SERVER'S, NOT THE ROW COUNT. Publishing the number of rows
    * gathered would make a truncated walk indistinguishable from a complete one, which is the
-   * very defect this method exists to remove. Reporting what the server said leaves any
-   * shortfall visible as a total larger than the rows in hand.
+   * very defect this method exists to remove. Reporting what the server said keeps the envelope
+   * honest for a caller that does compare them, and it remains correct now that a genuine
+   * shortfall can no longer be emitted at all.
    *
    * ⚠ NOTHING IS SORTED, FILTERED OR DE-DUPLICATED HERE. The narrowing, the ordering and the
    * free-text filter are the server's, are forwarded on every request of the walk, and the
@@ -2134,33 +2801,70 @@ export class RoleStore implements OnDestroy {
 
         gathered += page.items.length;
 
-        const shortPage: boolean = page.items.length < ROLES_FETCH_PAGE_SIZE;
-        const complete: boolean = gathered >= page.meta.totalCount;
-        const atCeiling: boolean = index + 1 >= MAXIMUM_ROLE_PAGES;
-
         // An empty inner observable is how `expand` is told to stop: it emits nothing and
-        // completes, so the outer stream completes with the pages already emitted.
-        return shortPage || complete || atCeiling ? EMPTY : requestPage(index + 1);
+        // completes, so the outer stream completes with the pages already emitted. This is the
+        // ONLY successful ending, and it means every record the server said exists is in hand.
+        if (gathered >= page.meta.totalCount) {
+          return EMPTY;
+        }
+
+        if (page.items.length === 0) {
+          // The server has nothing further to give yet reports more than was supplied. Raised
+          // rather than published, because publishing would present a subset as the whole
+          // listing on a screen that has no pager to say otherwise.
+          return throwError(
+            () =>
+              new Error(
+                `The role listing could not be read completely: the server reports ` +
+                  `${page.meta.totalCount} roles but supplied ${gathered} and then answered ` +
+                  `with an empty page.`,
+              ),
+          );
+        }
+
+        if (index + 1 >= MAXIMUM_ROLE_PAGES) {
+          // Raised for the same reason, so a truncated walk cannot complete successfully and be
+          // mistaken for the whole listing.
+          return throwError(
+            () =>
+              new Error(
+                `The role listing could not be read completely: the server reports ` +
+                  `${page.meta.totalCount} roles and stopped supplying them after ` +
+                  `${MAXIMUM_ROLE_PAGES} pages (${gathered} gathered).`,
+              ),
+          );
+        }
+
+        return requestPage(index + 1);
       }),
-      reduce<PagedResponse<RoleListItem>, PagedResult<RoleListItem>>(
+      // ⚠ ACCUMULATED IN PLACE RATHER THAN BY RE-SPREADING, for the same reason the assignment
+      // walk is: rebuilding the whole envelope per page makes the join quadratic in the number of
+      // pages. `reduce` emits once, at completion, so the array is never observable mid-build.
+      reduce<PagedResponse<RoleListItem>, { items: RoleListItem[]; totalCount: number }>(
         (accumulated, response) => {
           const page: PagedResult<RoleListItem> = toPagedResult(response);
 
-          return {
-            items: [...accumulated.items, ...page.items],
-            meta: {
-              // The server's total, deliberately: see the note above.
-              totalCount: page.meta.totalCount,
-              // Nought and "one page holding everything" are the coordinates the paging
-              // contract publishes for an unpaged answer, so a consumer cannot tell this
-              // envelope from one the server assembled unpaged.
-              pageIndex: 0,
-              pageSize: accumulated.items.length + page.items.length,
-              totalPages: accumulated.items.length + page.items.length > 0 ? 1 : 0,
-            },
-          };
+          accumulated.items.push(...page.items);
+          // The server's total, deliberately: see the note above.
+          accumulated.totalCount = page.meta.totalCount;
+
+          return accumulated;
         },
-        emptyPagedResult<RoleListItem>(),
+        { items: [], totalCount: 0 },
+      ),
+      map(
+        ({ items, totalCount }): PagedResult<RoleListItem> => ({
+          items,
+          meta: {
+            totalCount,
+            // Nought and "one page holding everything" are the coordinates the paging contract
+            // publishes for an unpaged answer, so a consumer cannot tell this envelope from one
+            // the server assembled unpaged.
+            pageIndex: 0,
+            pageSize: items.length,
+            totalPages: items.length > 0 ? 1 : 0,
+          },
+        }),
       ),
     );
   }
@@ -2193,6 +2897,8 @@ export class RoleStore implements OnDestroy {
    * a flag left raised presents as a screen that is permanently busy.
    */
   private cancelReads(): void {
+    this.heldRolesRequest?.unsubscribe();
+    this.heldRolesRequest = null;
     this.rolesRequest?.unsubscribe();
     this.rolesRequest = null;
     this.roleGroupsRequest?.unsubscribe();
@@ -2201,11 +2907,14 @@ export class RoleStore implements OnDestroy {
     this.selectedRoleRequest = null;
     this.assignmentsRequest?.unsubscribe();
     this.assignmentsRequest = null;
+    this.assignmentProbeRequest?.unsubscribe();
+    this.assignmentProbeRequest = null;
 
     this._rolesLoading.set(false);
     this._roleGroupsLoading.set(false);
     this._selectedRoleLoading.set(false);
     this._assignmentsLoading.set(false);
+    this._assignmentProbeLoading.set(false);
   }
 
   /**
@@ -2221,6 +2930,57 @@ export class RoleStore implements OnDestroy {
     }
 
     this.writeRequests.clear();
-    this._saving.set(false);
+
+    // The count is ZEROED rather than decremented, because releasing a handle does not run the
+    // pipeline's `finalize` for a subscription that was already closed and a per-handle decrement
+    // could therefore leave a residue. Anything that was outstanding is abandoned wholesale here, so
+    // zero is the truth. The last settled result is deliberately NOT cleared: this member is reached
+    // only from teardown and from a reset, and a reset clears it explicitly right after.
+    this._pendingWrites.set(0);
+  }
+
+  /**
+   * Issues the identifier for a write that is starting and records it as outstanding.
+   *
+   * A PRE-increment, so the first identifier ever issued is 1 and 0 is a value no write holds — which
+   * lets a caller use 0 as "no write of mine is outstanding" without a nullable field.
+   *
+   * Call at DISPATCH, beside the request, and return the value to the caller. The count and the
+   * identifier move together and only here, which is what keeps them consistent.
+   *
+   * @returns The identifier to return to the caller and to settle with.
+   */
+  private beginWrite(): number {
+    this.nextMutationId += 1;
+    this._pendingWrites.update((count) => count + 1);
+
+    return this.nextMutationId;
+  }
+
+  /**
+   * Records a write as finished and publishes its outcome under its own identifier.
+   *
+   * Called from `finalize`, which runs on completion, on failure AND on unsubscription — so the count
+   * comes down on every path a write can leave by, and a screen waiting on this identifier is never
+   * left waiting on a write that has already gone.
+   *
+   * ⚠ THE FAILURE IS PASSED IN, not read from the shared slot. `finalize` runs after the error
+   * handler, so the handler hands its own record forward; re-reading {@link RoleStore.failure} here
+   * would find whatever a concurrent write had most recently put there, or nothing if a concurrent
+   * dispatch had just cleared it.
+   *
+   * @param id The identifier {@link RoleStore.beginWrite} issued.
+   * @param operation Which command settled.
+   * @param failure The refusal this write met, or null when it succeeded.
+   */
+  private settleWrite(
+    id: number,
+    operation: RoleStoreOperation,
+    failure: RoleStoreFailure | null,
+  ): void {
+    // Floored at zero so a settlement that somehow arrived twice cannot drive the count negative and
+    // leave `saving` reporting false while a write is still outstanding.
+    this._pendingWrites.update((count) => Math.max(count - 1, 0));
+    this._mutation.set({ id, operation, failure });
   }
 }

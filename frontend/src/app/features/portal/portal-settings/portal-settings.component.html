@@ -580,23 +580,41 @@
             @if (isSectionOpen('other')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('other')">
                 <!--
-                  MIGRATION: the administrator is shown but not reassignable here, and no
-                  endpoint is invented to make it so. The legacy selector listed the members of
-                  the portal's Administrators role; the role reads available to this
-                  application resolve their tenant from the caller's own context rather than
-                  from a path segment, so they cannot enumerate another portal's
-                  administrators. The stored account is displayed and returned unchanged, which
-                  keeps it visible and keeps the portal's administrator intact.
+                  MIGRATION: `cboAdministratorId` from `sitesettings.ascx:L395`, filled at
+                  `SiteSettings.ascx.vb:L331-L336` from the members of the portal's own
+                  administrator role and written as argument nine of the portal update at
+                  `:L775`. This was previously a read-only display, because no read existed that
+                  could enumerate the administrators of the portal the ROUTE names — every role
+                  read resolves its tenant from the caller's own context. That read now exists on
+                  the portal resource, so the legacy affordance is restored rather than
+                  approximated.
+
+                  `[ngValue]` rather than `[value]`, matching the page selectors above: the
+                  control holds a number, and an attribute binding would make every account
+                  identifier a string and break the comparison that selects one.
+
+                  The two states below are ASIDES about the list, not validation messages, so
+                  they sit outside the field's error slot — the same treatment the page selectors
+                  give their own unavailable notice.
                 -->
                 <app-form-field
                   [label]="fieldLabel['administratorId']"
                   [for]="controlId('administratorId')"
                   [help]="fieldHelp['administratorId']"
+                  [error]="messagesFor('administratorId')"
                 >
                   <div class="portal-settings__control portal-settings__control--medium">
-                    <output class="portal-settings__notice" [id]="controlId('administratorId')">{{
-                      administratorId()
-                    }}</output>
+                    <select formControlName="administratorId" [id]="controlId('administratorId')">
+                      @for (option of administratorOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+
+                    @if (administratorsLoading()) {
+                      <p class="portal-settings__notice">{{ administratorsLoadingMessage }}</p>
+                    } @else if (administratorsFailed()) {
+                      <p class="portal-settings__notice">{{ administratorsUnavailableMessage }}</p>
+                    }
                   </div>
                 </app-form-field>
 

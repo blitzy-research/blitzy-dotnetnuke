@@ -66,18 +66,39 @@
   concern: projected content keeps the encapsulation of the component that declares it, so
   the page header supplies only the row and its gap and cannot style what it hosts.
 -->
-<app-page-header [title]="pageTitle">
+<!--
+  MIGRATION: THE HEADING GAINS A SUBTITLE WHEN AN ACCOUNT IS THE SUBJECT. The account listing's roles
+  command carries `?userId=` (see `user-list.component.html`, DL-8), and without a line saying so an
+  operator would be looking at a listing that had silently dropped most of its rows with nothing to
+  explain why. The subtitle names the account and counts its memberships; the affordance beside the
+  create links returns to every role by navigating to this same address WITHOUT the parameter, which
+  is why no extra route and no extra command are needed.
+-->
+<app-page-header [title]="pageTitle" [subtitle]="accountSubtitle()">
   <!--
-    The two CREATE affordances are gated on the edit key; the settings link below is not, because
-    reaching a settings screen is not itself a mutation and the screen refuses its own save.
-    This is an affordance only — the API re-authorises every request and its verdict governs.
+    ⚠ THE TWO CREATE AFFORDANCES ARE GATED ON TENANT ADMINISTRATION, WHICH IS THE POLICY THEIR
+    ROUTES ACTUALLY DECLARE. They were previously gated on the persisted permission KEY `EDIT`,
+    and that was the wrong question over the wrong data: the caller's permission keys are a
+    union across the pages and modules it holds rights on, so no member of that union says
+    whether the caller may create a role or a role group. Both addresses are declared under the
+    tenant-administration policy, so the gate now reads the same server-derived fact the route
+    guard reads — which is what stops the screen offering a link that lands the operator back
+    where they started.
+
+    The settings link is deliberately NOT gated here: it is owned by the account feature and
+    reaching a settings screen is not itself a mutation, so the screen's own guard and its own
+    refusal govern.
+
+    An affordance only, in every case — the API re-authorises every request against stored state
+    and its verdict governs.
   -->
-  <a *hasPermission="'EDIT'" class="role-list__page-action" [routerLink]="addRoleLink">{{
-    addRoleLabel
-  }}</a>
-  <a *hasPermission="'EDIT'" class="role-list__page-action" [routerLink]="addRoleGroupLink">{{
-    addRoleGroupLabel
-  }}</a>
+  @if (narrowedToAccount()) {
+    <a class="role-list__page-action" [routerLink]="showAllRolesLink">{{ showAllRolesLabel }}</a>
+  }
+  @if (administersPortal()) {
+    <a class="role-list__page-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
+    <a class="role-list__page-action" [routerLink]="addRoleGroupLink">{{ addRoleGroupLabel }}</a>
+  }
   <a class="role-list__page-action" [routerLink]="membershipSettingsLink">{{
     membershipSettingsLabel
   }}</a>

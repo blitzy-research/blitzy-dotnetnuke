@@ -101,7 +101,7 @@
 .membership-settings__transport-failure {
   margin: 0;
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // -----------------------------------------------------------------------------
@@ -344,11 +344,13 @@
 // net addition with no fidelity owed, because the legacy text-entry rule declared none of the
 // four. It is `_forms.scss` that supplies them, and this file adds nothing of its own.
 //
-// REPORTED, NOT FIXED. Two claims in this file's own brief were checked against the real sources
-// and do not hold; neither is propagated. The legacy help panel's hint background IS tokenised,
-// as `--color-surface-hint`, rather than being an unresolved gap - though this file has no call
-// for it, since the shared field owns the help panel entirely. And that legacy help rule carries
-// a border on all four sides, not three.
+// REPORTED, NOT FIXED. One claim in this file's own brief was checked against the real source and
+// does not hold; it is not propagated. The legacy help rule carries a border on all FOUR sides,
+// not three. A second claim - that the legacy help panel's pale-yellow ground is an unresolved
+// token gap - is answered rather than corrected: it is not tokenised and deliberately so, the
+// colour vocabulary being closed at the design specification's nine values, so the shared field
+// paints its help panel on `--color-surface`. This file has no call for either value in any case,
+// since the shared field owns the help panel entirely.
 //
 // NO TOKEN GAP AND NO MIXIN GAP WAS FOUND. Every value this file needs was already declared in
 // _tokens.scss and every behaviour it needs was already exported by _mixins.scss, so no literal

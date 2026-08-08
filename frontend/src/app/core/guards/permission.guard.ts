@@ -75,6 +75,7 @@ import { inject } from '@angular/core';
 import { Router } from '@angular/router';
 import type { ActivatedRouteSnapshot, CanActivateFn } from '@angular/router';
 
+import { SIGN_IN_ROUTE } from '../config/app-routes.config';
 import { NotificationService } from '../services/notification.service';
 import { AuthStore } from '../state/auth.store';
 
@@ -113,7 +114,9 @@ import { AuthStore } from '../state/auth.store';
  * - `PortalAdministrator` — administration WITHIN a tenant. The API decides it against
  *   the portal the ROUTE names, falling back to the tenant the caller arrived through
  *   when the route names none (`PortalAdministrationEvaluator.cs:L193-L203`). A host
- *   account satisfies it.
+ *   account satisfies it. The client answers it from the server's OWN published verdict
+ *   and never from a role name — see {@link holdsPortalAdministration} for why the role
+ *   name it once matched was wrong in both directions.
  * - `HostAdministrator` — for operations that address NO SINGLE PORTAL: the portal
  *   collection, portal creation, and aliases addressed by their own global identifier.
  *   ⚠ Not interchangeable with the one above. `PolicyNames.cs:L120-L130` records why the
@@ -151,15 +154,18 @@ export type PermissionPolicy = (typeof PERMISSION_POLICIES)[number];
  */
 const POLICY_DATA_KEY = 'permission';
 
-/**
- * The route an unauthenticated caller is redirected to.
+/*
+ * The sign-in destination is IMPORTED from `core/config/app-routes.config.ts`; see the
+ * import at the head of this file.
  *
- * Deliberately a private copy of the value `core/guards/auth.guard.ts` declares rather
- * than an import of it: that module does not export the constant, and the two gates
- * agreeing by construction matters less than neither gate reaching into the other. A
- * rename on either side is caught by the specifications, which spell the path again.
+ * MIGRATION: a private copy used to stand here, justified on the grounds that the companion
+ * gate "does not export the constant, and the two gates agreeing by construction matters
+ * less than neither gate reaching into the other". The second clause had it backwards. The
+ * two gates AGREEING is the property that matters — a mismatch sends an expired session to
+ * the catch-all instead of to the sign-in screen, silently — and neither gate has to reach
+ * into the other to get it, because the value now lives in a module that reaches into
+ * nothing itself.
  */
-const SIGN_IN_ROUTE = '/login';
 
 /**
  * The query parameter key carrying the address the caller was trying to reach.
@@ -168,18 +174,6 @@ const SIGN_IN_ROUTE = '/login';
  * one key whichever gate turned the caller away.
  */
 const RETURN_URL_KEY = 'returnUrl';
-
-/**
- * The portal administrator role name, spelled exactly as the product creates it.
- *
- * ⚠ PLURAL, AND MATCHED EXACTLY. `Library/Components/Portal/PortalController.vb:L1390`
- * creates it as `CreateRole(PortalId, "Administrators", "Portal Administrators", …)`,
- * so `Administrators` is the role NAME and `Portal Administrators` is merely its
- * description. The legacy comparison is `=` under Visual Basic's default binary
- * comparison, which is case-sensitive, so this is compared with exact string equality
- * and never case-folded.
- */
-const PORTAL_ADMINISTRATOR_ROLE = 'Administrators';
 
 /**
  * The route parameter a module-scoped policy is resolved from.
@@ -429,24 +423,30 @@ function parseIdentifier(value: string): number | null {
 /**
  * Whether the caller holds administration of the tenant, as far as the client can tell.
  *
- * MIGRATION: this reproduces the INTERSECTION of the three legacy tests quoted at the top
- * of this file, and none of their individual quirks. All three refuse a caller who is
+ * ⚠ READ FROM ONE AUTHORITY AND NEVER RE-DERIVED HERE. `AuthStore.administersCurrentPortal`
+ * answers this for the whole application, from the fact the SERVER derived — the tenant's
+ * own `Portals.AdministratorRoleId` designation evaluated against the caller's live role
+ * assignments — plus the host-account arm the enforcing policy also takes.
+ *
+ * A previous revision of this file answered it locally, by testing the caller's role list
+ * for the literal name `Administrators`. That was wrong three times over and it refused
+ * legitimate administrators: the designation is a per-tenant column naming whichever role
+ * confers administration, so it is fixed to no name; the role name is an ordinary updatable
+ * column, so renaming the role stripped every administrator of their access to every route
+ * gated here; and a role of the same name may belong to a different tenant. The role name
+ * no longer appears anywhere in this file, and it must not be reintroduced.
+ *
+ * MIGRATION: the target rule is the INTERSECTION of the three legacy tests quoted at the
+ * top of this file, and none of their individual quirks. All three refuse a caller who is
  * neither a host account nor a portal administrator, so that much is behaviour worth
  * preserving; they then disagree about whether a host account is required, admitted or
- * excluded, and that disagreement is deliberately not reproduced. The host arm is kept
- * because the API keeps it: `PolicyNames.cs:L105-L113` records that a host account
- * satisfies portal administration, and that the legacy condition joining the two tests
- * with `OrElse` — which redirected a host account AWAY from the screen — was defective and
- * is not carried across.
- *
- * The role list is matched with exact string equality and the host flag is read as the
- * plain boolean it is; `false` is DATA here, not absence.
+ * excluded, and that disagreement is deliberately not reproduced.
  *
  * @param authStore The identity projection.
- * @returns True when the caller is a host account or holds the administrator role.
+ * @returns True when the caller is a host account or administers the resolved tenant.
  */
 function holdsPortalAdministration(authStore: AuthStore): boolean {
-  return authStore.isSuperUser() || authStore.roles().includes(PORTAL_ADMINISTRATOR_ROLE);
+  return authStore.administersCurrentPortal();
 }
 
 /**
@@ -694,19 +694,29 @@ export const permissionGuard: CanActivateFn = (route, state) => {
    * lives on {@link isPlainlyRefused} rather than being restated here.
    *
    * ⚠ GATED ON THE IDENTITY ACTUALLY BEING RESOLVED, which prevents a real defect rather
-   * than guarding against a hypothetical one. The store reports a held session from the
-   * token custodian, but derives the account key, the role list and the host-account flag
-   * from a fetched identity that is null until it arrives. Between those two moments a
-   * genuine portal administrator reports an empty role list and a false host-account flag,
-   * and a genuine account holder reports no key at all — so refusing on that evidence would
-   * lock the very operators these screens exist for out of them, and would refuse an account
-   * holder its own credential change. While the identity is unresolved the caller is
+   * than guarding against a hypothetical one. A session can be held while the identity
+   * behind it is not yet known, and on that evidence a genuine administrator reports no
+   * administration and a genuine account holder reports no key at all — so refusing there
+   * would lock the very operators these screens exist for out of them, and would refuse an
+   * account holder its own credential change. While the identity is unresolved the caller is
    * admitted and the server decides, which is the same posture this file takes everywhere
    * else it lacks information.
    *
-   * The store's own permission projection is deliberately NOT consulted: it documents itself
-   * as deciding nothing, and honouring that is what keeps the authoritative verdict in one
-   * place.
+   * ⚠ WHY THE APPLICATION DOES NOT NORMALLY SIT IN THAT WINDOW, recorded because the
+   * alternative reading — that these decisions are routinely taken against a blank identity
+   * — would be alarming and is untrue. Both paths that establish a session are TWO requests:
+   * `AuthStore.login` and the renewal each chain the current-user read onto the credential
+   * exchange and store the EXPANDED identity, precisely because the credential responses
+   * carry an authority-minimised one. So by the time any navigation is gated, the identity in
+   * hand is the server's full answer. The unresolved case remains handled because it is
+   * reachable — an identity read that failed, or one belonging to a superseded session — not
+   * because it is the normal state.
+   *
+   * The store's own permission-KEY projection is deliberately NOT consulted: those four
+   * persisted keys are the other vocabulary, they cannot express a policy, and the store
+   * documents itself as deciding nothing with them. The administration projection read by
+   * {@link holdsPortalAdministration} is a different thing entirely — it is the server's own
+   * verdict on the one question this gate is entitled to ask.
    */
   if (authStore.currentUser() !== null && isPlainlyRefused(declared, scopeId, authStore)) {
     /*

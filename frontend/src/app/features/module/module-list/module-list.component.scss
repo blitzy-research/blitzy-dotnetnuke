@@ -217,10 +217,10 @@
 // danger colour - it would hand the destructive command the ordinary action's blue on hover.
 // Naming it makes the intent true rather than merely stated.
 .module-list__row-command--danger {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 
   @include mx.hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger);
     text-decoration: underline;
   }
 }

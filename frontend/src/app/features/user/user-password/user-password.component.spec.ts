@@ -628,8 +628,20 @@ describe('UserPasswordComponent', () => {
    * screen resolves to. The expiry is a FIXED literal: reading the clock in a
    * specification makes it depend on when it runs, and the session store gates
    * expiry through an explicit call rather than through this field.
+   *
+   * ⚠ ADMINISTRATION IS STATED, NEVER INFERRED FROM THE ROLE LIST. The screen reads the
+   * store's `administersCurrentPortal`, which is the host flag OR the API's own derived
+   * `isPortalAdministrator`, and consults no role name at all — administration is conferred
+   * by `Portals.AdministratorRoleId`, the designated role is renameable, and a role of the
+   * same name may belong to another tenant. The `roles` argument therefore carries the
+   * caller's role names as DATA and decides nothing; a case that needs administration
+   * passes the third argument.
+   *
+   * @param userId The caller's own account key.
+   * @param roles The caller's role names, which decide nothing here.
+   * @param administersPortal Whether the API derives tenant administration for this caller.
    */
-  function seatIdentity(userId: number, roles: readonly string[]): void {
+  function seatIdentity(userId: number, roles: readonly string[], administersPortal = false): void {
     TestBed.inject(TokenStorageService).store({
       accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
       expiresAtUtc: '2099-12-31T23:59:59.000Z',
@@ -645,7 +657,7 @@ describe('UserPasswordComponent', () => {
         displayName: 'The Caller',
         email: 'caller@example.test',
         isSuperUser: false,
-        isPortalAdministrator: false,
+        isPortalAdministrator: administersPortal,
         roles,
         permissions: [],
       },
@@ -679,13 +691,13 @@ describe('UserPasswordComponent', () => {
 
   /** An administrator acting on somebody else's account: the RESET operation. */
   function arriveAsAdministrator(held: UserDetail = account(7)): void {
-    seatIdentity(99, ['Administrators']);
+    seatIdentity(99, ['Administrators'], true);
     arrive(held);
   }
 
   /** An administrator acting on their OWN account: the legacy inconsistency's case. */
   function arriveAsAdministratorOfOwnAccount(held: UserDetail = account(7)): void {
-    seatIdentity(held.userId, ['Administrators']);
+    seatIdentity(held.userId, ['Administrators'], true);
     arrive(held);
   }
 
@@ -1010,7 +1022,7 @@ describe('UserPasswordComponent', () => {
 
       expect(control(CONTROL_ID.currentPassword).value).toBe(CREDENTIAL_IN_FORCE);
 
-      seatIdentity(99, ['Administrators']);
+      seatIdentity(99, ['Administrators'], true);
       fixture.detectChanges();
 
       expect(query(`#${CONTROL_ID.currentPassword}`))
@@ -1539,7 +1551,7 @@ describe('UserPasswordComponent', () => {
       // greater-than-zero test rejects it outright, and a null-coalescing default to -1
       // collides with `NullInteger`, which is itself the seed of `Portals.PortalID` and
       // therefore a legitimate identifier elsewhere in the same database.
-      seatIdentity(99, ['Administrators']);
+      seatIdentity(99, ['Administrators'], true);
       arrive(account(0));
 
       expect(query('app-page-header')).withContext('the screen renders').not.toBeNull();
@@ -1564,7 +1576,7 @@ describe('UserPasswordComponent', () => {
     it('treats the negative integer sentinel as a real address too', () => {
       // -1 is simultaneously `NullInteger` and a legitimate identifier, so it must be
       // addressed rather than read as "absent".
-      seatIdentity(99, ['Administrators']);
+      seatIdentity(99, ['Administrators'], true);
       arrive(account(NULL_INTEGER));
 
       enter(CONTROL_ID.newPassword, REPLACEMENT);

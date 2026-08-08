@@ -36,7 +36,11 @@ public sealed class ValidatorRegistrationTests
         // SIX of the entries are paging contracts. Each listed collection binds its own derived request with
         // its own sortable allowlist, rather than sharing one shape, because sharing made one listing accept
         // an ordering it silently discarded and made another refuse an ordering its service could perform.
-        // The base contract keeps a registration of its own for any endpoint that binds it.
+        // The base contract keeps a registration of its own for any endpoint that binds it. A seventh entry -
+        // the account search - derives from the same base but is not a paging contract in this sense: it is a
+        // FILTER contract that happens to carry paging, and it reuses the account collection's allowlist
+        // rather than declaring one, precisely so that the two ways of addressing one collection cannot
+        // diverge.
         //
         // MIGRATION: two names were WITHDRAWN from this inventory, and their absence is load-bearing.
         // RoleGroupDto and ProfilePropertyDefinitionDto were each bound by both write verbs of their
@@ -57,6 +61,16 @@ public sealed class ValidatorRegistrationTests
                     typeof(CreateUserRequest),
                     typeof(UpdateUserRequest),
                     typeof(ChangePasswordRequest),
+
+                    // The body-bound account search. Added with POST api/v1/users/search, which exists so
+                    // that a login name, an electronic-mail address and above all a profile-property name
+                    // paired with its value stop travelling in a request TARGET, where access logs, browser
+                    // history and referrer headers all record them in full and transport encryption protects
+                    // none of them (CWE-598). Its validator derives from the SAME paging base as the query
+                    // form's, so moving a filter into the body cannot make a larger page or a different
+                    // ordering legal - and naming the request here is what proves the derived registration
+                    // resolved rather than the base one being reached by accident.
+                    typeof(UserSearchRequest),
 
                     // The membership-settings update. A dedicated REQUEST contract, replacing the settings
                     // projection that both the read and the write once bound: the projection carried members
@@ -135,6 +149,15 @@ public sealed class ValidatorRegistrationTests
                     // provide. The same audit reached the role update, the role assignment and the page
                     // update, each of which is already named above.
                     typeof(ModuleSettingsDto),
+
+                    // The service invitation-code redemption. The ONLY member-services operation that binds
+                    // a body at all: the catalogue read is a GET, and the subscribe, cancel and trial
+                    // operations name their subject entirely in the path, so there is nothing on them for a
+                    // validator to judge. This one carries a submitted value, and its emptiness rule is
+                    // load-bearing rather than cosmetic - an absent Roles.RSVPCode reached the legacy
+                    // comparison as the EMPTY STRING (Null.vb:L66-L75), so an empty submission would have
+                    // matched every role in the tenant that carries no code.
+                    typeof(RedeemServiceCodeRequest),
                 },
                 "a bound request without a validator reaches services and persistence without the "
                 + "declarative boundary the API promises, and a validator over a shape no verb binds - a "

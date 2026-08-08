@@ -178,6 +178,7 @@ describe('SessionLifecycleService', () => {
           isOnline: false,
           isSuperUser: false,
           isLockedOut: false,
+          canDelete: true,
         },
       ],
       meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },

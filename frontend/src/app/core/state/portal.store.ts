@@ -110,7 +110,9 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import type { OnDestroy } from '@angular/core';
-import type { Subscription } from 'rxjs';
+import { AsyncSubject } from 'rxjs';
+
+import type { Observable, Subscription } from 'rxjs';
 
 import { emptyPagedResult } from '../models/paged-result.model';
 import { isProblemDetails } from '../models/problem-details.model';
@@ -128,6 +130,7 @@ import type { ApiMeta, SortDirection } from '../models/paged-result.model';
 import type {
   CreatePortalAliasRequest,
   CreatePortalRequest,
+  PortalAdministrator,
   PortalAlias,
   PortalDetail,
   PortalListItem,
@@ -495,7 +498,19 @@ export class PortalStore implements OnDestroy {
 
   private settingsRequest: Subscription | null = null;
 
+  private administratorsRequest: Subscription | null = null;
+
   private aliasRequest: Subscription | null = null;
+
+  /**
+   * The current tenant's protected-facts read.
+   *
+   * A handle of its own rather than a share of {@link detailRequest}, because the two
+   * address different portals and either may be in flight while the other is: an operator
+   * browsing one portal's settings must not cancel the read that tells a role screen which
+   * role its own tenant protects.
+   */
+  private contextRequest: Subscription | null = null;
 
   private readonly writeRequests = new Set<Subscription>();
 
@@ -710,6 +725,30 @@ export class PortalStore implements OnDestroy {
   /** The last settings failure, classified, or `null`. */
   private readonly _settingsFailure = signal<PortalFailure | null>(null);
 
+  /**
+   * The accounts the selected portal may designate as its administrator, or `null` when
+   * they have not been read.
+   *
+   * Held beside the settings projection rather than inside it, because the two are separate
+   * reads of different lifetimes: the projection is what the form is bound to, while this is
+   * the vocabulary one of its fields may choose from, and the portal a screen addresses can
+   * change without the vocabulary needing to be discarded before the new one arrives.
+   *
+   * `null` and an EMPTY LIST are distinct and neither is rewritten into the other. Unread
+   * means the selector cannot be offered yet; empty means the portal genuinely designates no
+   * administrator role, or one with no members, which is a state the screen must render.
+   */
+  private readonly _administrators = signal<readonly PortalAdministrator[] | null>(null);
+
+  /** Which portal the held candidate list belongs to, or `undefined` when none has been read. */
+  private readonly _administratorsPortalId = signal<number | undefined>(undefined);
+
+  /** Whether a candidate read is in flight. */
+  private readonly _administratorsLoading = signal<boolean>(false);
+
+  /** The last candidate-read failure, classified, or `null`. */
+  private readonly _administratorsFailure = signal<PortalFailure | null>(null);
+
   // -------------------------------------------------------------------------
   // ALIASES - DELIBERATELY UNPAGED
   // -------------------------------------------------------------------------
@@ -786,6 +825,32 @@ export class PortalStore implements OnDestroy {
   private readonly _aliasFailure = signal<PortalFailure | null>(null);
 
   // =========================================================================
+  // THE CURRENT TENANT'S PROTECTED FACTS
+  //
+  // A slice of its own, deliberately separate from {@link _selectedPortal}. The selected
+  // portal is whichever record an operator happens to be BROWSING, and it changes as they
+  // move around the portal screens; these are the facts about the tenant the caller is
+  // SIGNED IN TO, which do not change while the session lasts. Sharing one slice would
+  // mean that opening another portal's settings screen silently changed which role a role
+  // screen believed to be protected.
+  // =========================================================================
+
+  /**
+   * The tenant the protected facts describe, or `undefined` before the first read.
+   *
+   * ⚠ `undefined` MEANS UNREAD AND NOTHING ELSE. Portal keys are `IDENTITY(-1, 1)`
+   * (`01.00.00.SqlDataProvider:L77`), so BOTH `-1` and `0` are real tenants and neither may
+   * be read as absence. That is why this is `number | undefined` rather than a sentinel.
+   */
+  private readonly _contextPortalId = signal<number | undefined>(undefined);
+
+  /** The current tenant's own record, or `null` before the first successful read. */
+  private readonly _context = signal<PortalDetail | null>(null);
+
+  /** Whether the protected-facts read is in flight. */
+  private readonly _contextLoading = signal<boolean>(false);
+
+  // =========================================================================
   // PUBLIC STATE - READ-ONLY PROJECTIONS
   //
   // Every one is the `asReadonly()` view of a slice above. Not one writable signal
@@ -837,6 +902,25 @@ export class PortalStore implements OnDestroy {
   /** The last settings failure, classified, or `null`. */
   readonly settingsFailure = this._settingsFailure.asReadonly();
 
+  /**
+   * The accounts the selected portal may designate as its administrator, or `null` when unread.
+   *
+   * ⚠ GATE ON {@link PortalStore.administratorsPortalId} BEFORE OFFERING THESE. The candidate
+   * list belongs to the portal it was read for, and a screen that moved to another portal would
+   * otherwise offer the previous portal's administrators for a moment - long enough to submit one,
+   * which the server would then refuse for a reason the operator could not see.
+   */
+  readonly administrators = this._administrators.asReadonly();
+
+  /** Which portal the held candidate list belongs to, or `undefined` when none has been read. */
+  readonly administratorsPortalId = this._administratorsPortalId.asReadonly();
+
+  /** Whether a candidate read is in flight. */
+  readonly administratorsLoading = this._administratorsLoading.asReadonly();
+
+  /** The last candidate-read failure, classified, or `null`. */
+  readonly administratorsFailure = this._administratorsFailure.asReadonly();
+
   /** Every host name of the portal named by {@link PortalStore.aliasesPortalId}, or `null` when unread. */
   readonly aliases = this._aliases.asReadonly();
 
@@ -854,6 +938,110 @@ export class PortalStore implements OnDestroy {
 
   /** The last alias failure, classified, or `null`. */
   readonly aliasFailure = this._aliasFailure.asReadonly();
+
+  /** Whether the current tenant's protected-facts read is in flight. */
+  readonly contextLoading = this._contextLoading.asReadonly();
+
+  // =========================================================================
+  // THE CURRENT TENANT'S PROTECTED FACTS — DERIVED
+  //
+  // ⚠ WHY THESE EXIST AT ALL. Four screens have to know which role and which account the
+  // product protects before they may offer an action, and NOTHING ON THE RECORD ITSELF
+  // SAYS SO: `RoleInfo.vb` carries no `IsSystem`, `SystemRole` or `IsAdmin` member of any
+  // kind, and neither does the target's `Role` contract. The designations are PORTAL-scoped
+  // columns — `Portals.AdministratorRoleId`, `Portals.RegisteredRoleId`,
+  // `Portals.AdministratorId` — and the only place the API exposes them is the portal
+  // record. Screens that could not read that record expressed the guards as optional inputs
+  // nothing supplied, so protected roles stayed deletable, protected memberships stayed
+  // removable, and a fee warning stayed wrong, until the API refused a request that should
+  // never have been offered.
+  //
+  // ⚠ ADVISORY, NOT ENFORCEMENT. The API refuses a protected write on its own terms and
+  // answers a problem document; these exist so a screen does not OFFER what will be
+  // refused. Every one of them reads `null` or `false` until the record has been read, which
+  // is the fail-safe direction for a guard: an unresolved fact protects nothing extra and
+  // grants nothing extra either — it leaves the API's refusal as the operative rule, exactly
+  // as before.
+  // =========================================================================
+
+  /**
+   * The current tenant's own record, or `null` before the first successful read.
+   *
+   * Exposed whole as well as through the four facts below, because a screen that needs a
+   * fifth column should read it here rather than have another projection added.
+   */
+  readonly currentPortal = this._context.asReadonly();
+
+  /**
+   * Whether the protected facts have been resolved from the server.
+   *
+   * ⚠ A SCREEN GUARDING A PROTECTED FLOW MUST TEST THIS, and not merely test the facts for
+   * absence. `administratorRoleId` reads `null` both when the tenant designates no
+   * administrator role — a real configuration in which nothing is protected — and when the
+   * record has not been read yet. Those are different situations and only this flag
+   * distinguishes them.
+   */
+  readonly contextResolved = computed<boolean>(() => this._context() !== null);
+
+  /**
+   * The account the current tenant designates as its administrator, or `null`.
+   *
+   * `Portals.AdministratorId`. The legacy delete guard on the account listing
+   * (`Users.ascx.vb:L693-L694`) hid the affordance for exactly this account, and the
+   * membership screen (`SecurityRoles.ascx.vb:L523`) refused to remove this account from
+   * the administrator role.
+   *
+   * ⚠ COMPARED BY EQUALITY, NEVER BY TRUTHINESS. `Users.UserID` seeds at 1, but a `null`
+   * here is a tenant with no designation and `0` would be a real key on any table seeded
+   * from zero, so a truthiness test is forbidden on principle as well as in fact.
+   */
+  readonly administratorUserId = computed<number | null>(
+    () => this._context()?.administratorId ?? null,
+  );
+
+  /**
+   * The role the current tenant designates as conferring administration, or `null`.
+   *
+   * `Portals.AdministratorRoleId`. ⚠ ZERO IS A REAL ROLE: `Roles.RoleID` is
+   * `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L114`), and the tenant's Administrators
+   * role is usually role zero precisely because it is created first. Nothing may read it
+   * as absence.
+   */
+  readonly administratorRoleId = computed<number | null>(
+    () => this._context()?.administratorRoleId ?? null,
+  );
+
+  /**
+   * The role every authenticated caller of the current tenant holds, or `null`.
+   *
+   * `Portals.RegisteredRoleId`. The stricter of the two protected roles: it may be neither
+   * updated nor deleted, and its membership screen is meaningless because every account
+   * holds it (`EditRoles.ascx.vb:L174-L182`).
+   */
+  readonly registeredRoleId = computed<number | null>(
+    () => this._context()?.registeredRoleId ?? null,
+  );
+
+  /**
+   * Whether the current tenant has a payment processor configured.
+   *
+   * MIGRATION — DEFECT 5, REPRODUCED RATHER THAN REPAIRED. `EditRoles.ascx.vb:L104-L109`
+   * reads `If (objPortalInfo Is Nothing OrElse String.IsNullOrEmpty(objPortalInfo.ProcessorUserId))`
+   * and then SHOWS the warning, while its own comment says the warning appears when a
+   * processor IS configured. The code is the behaviour and the code is also the sensible
+   * reading — the warning tells an administrator to configure a processor before charging
+   * for a role — so the code is what is reproduced and the contradiction is recorded rather
+   * than tidied away.
+   *
+   * ⚠ MEASURED ON `processorUserId`, NOT ON `paymentProcessor`, because that is the column
+   * the legacy condition reads. A whitespace-only value is treated as configured, exactly as
+   * `String.IsNullOrEmpty` treats it, so no rule is tightened here either.
+   */
+  readonly paymentProcessorConfigured = computed<boolean>(() => {
+    const processorUserId: string | null | undefined = this._context()?.processorUserId;
+
+    return processorUserId !== null && processorUserId !== undefined && processorUserId.length > 0;
+  });
 
   // =========================================================================
   // DERIVED VIEWS
@@ -1040,6 +1228,7 @@ export class PortalStore implements OnDestroy {
       this._listLoading() ||
       this._detailLoading() ||
       this._settingsLoading() ||
+      this._administratorsLoading() ||
       this._aliasLoading(),
   );
 
@@ -1049,6 +1238,7 @@ export class PortalStore implements OnDestroy {
       this._listFailure() !== null ||
       this._detailFailure() !== null ||
       this._settingsFailure() !== null ||
+      this._administratorsFailure() !== null ||
       this._aliasFailure() !== null,
   );
 
@@ -1318,12 +1508,15 @@ export class PortalStore implements OnDestroy {
    *
    * @param request The portal to create, with its first host name and the
    * administrator account to establish alongside it.
-   * @param onCreated Optional continuation, invoked once with the created portal after
-   * the state above has settled. The store never navigates: routing belongs to the
-   * component, so a caller that must move on supplies its own step and this class
-   * imports no router.
+   * @returns A ticket emitting the created portal once, after the state above has settled,
+   * and completing without emitting if the write fails. See
+   * {@link PortalStore.outcomeTicket}. The store never navigates: routing belongs to the
+   * component, so a caller that must move on subscribes and supplies its own step, and this
+   * class imports no router.
    */
-  createPortal(request: CreatePortalRequest, onCreated?: (portal: PortalDetail) => void): void {
+  createPortal(request: CreatePortalRequest): Observable<PortalDetail> {
+    const outcome = PortalStore.outcomeTicket<PortalDetail>();
+
     this._detailLoading.set(true);
     this._detailFailure.set(null);
 
@@ -1340,16 +1533,21 @@ export class PortalStore implements OnDestroy {
           this._detailLoading.set(false);
           this.reloadPortals();
 
-          if (onCreated !== undefined) {
-            onCreated(created);
-          }
+          // Published LAST, so a continuation cannot observe half-settled state.
+          outcome.next(created);
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._detailFailure.set(classifyFailure(cause));
           this._detailLoading.set(false);
+          // Completes empty rather than erroring: the failure already reaches the screen
+          // through the failure slice, and erroring would report it a second time.
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
   }
 
   /**
@@ -1383,13 +1581,12 @@ export class PortalStore implements OnDestroy {
    *
    * @param portalId The portal to write. Must match the identifier on the body.
    * @param request The complete editable state to store.
-   * @param onUpdated Optional continuation, invoked once with the stored portal.
+   * @returns A ticket emitting the stored portal once. See
+   * {@link PortalStore.outcomeTicket}.
    */
-  updatePortal(
-    portalId: number,
-    request: UpdatePortalRequest,
-    onUpdated?: (portal: PortalDetail) => void,
-  ): void {
+  updatePortal(portalId: number, request: UpdatePortalRequest): Observable<PortalDetail> {
+    const outcome = PortalStore.outcomeTicket<PortalDetail>();
+
     this._detailLoading.set(true);
     this._detailFailure.set(null);
 
@@ -1400,16 +1597,18 @@ export class PortalStore implements OnDestroy {
           this._detailLoading.set(false);
           this.reloadPortals();
 
-          if (onUpdated !== undefined) {
-            onUpdated(stored);
-          }
+          outcome.next(stored);
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._detailFailure.set(classifyFailure(cause));
           this._detailLoading.set(false);
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
   }
 
   /**
@@ -1435,9 +1634,14 @@ export class PortalStore implements OnDestroy {
    * once in `core/utils/form-errors.util.ts` and is not restated here.
    *
    * @param portalId The portal to remove. Every integer is meaningful.
-   * @param onDeleted Optional continuation, invoked once after the removal has settled.
+   * @returns A ticket emitting once after the removal has settled. See
+   * {@link PortalStore.outcomeTicket}. A caller with nothing to do afterwards — the listing
+   * screen, whose grid the optimistic edit above has already corrected — may ignore it, and
+   * the state updates still happen.
    */
-  deletePortal(portalId: number, onDeleted?: () => void): void {
+  deletePortal(portalId: number): Observable<void> {
+    const outcome = PortalStore.outcomeTicket<void>();
+
     this._detailLoading.set(true);
     this._detailFailure.set(null);
 
@@ -1457,16 +1661,18 @@ export class PortalStore implements OnDestroy {
           this._detailLoading.set(false);
           this.reloadPortals();
 
-          if (onDeleted !== undefined) {
-            onDeleted();
-          }
+          outcome.next();
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._detailFailure.set(classifyFailure(cause));
           this._detailLoading.set(false);
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
   }
 
   // =========================================================================
@@ -1516,13 +1722,15 @@ export class PortalStore implements OnDestroy {
    *
    * @param portalId The portal to write.
    * @param request The complete settings state to store.
-   * @param onSaved Optional continuation, invoked once with the stored projection.
+   * @returns A ticket emitting the stored projection once. See
+   * {@link PortalStore.outcomeTicket}.
    */
   saveSettings(
     portalId: number,
     request: UpdatePortalSettingsRequest,
-    onSaved?: (settings: PortalSettings) => void,
-  ): void {
+  ): Observable<PortalSettings> {
+    const outcome = PortalStore.outcomeTicket<PortalSettings>();
+
     this._settingsLoading.set(true);
     this._settingsFailure.set(null);
 
@@ -1533,16 +1741,62 @@ export class PortalStore implements OnDestroy {
           this._settingsLoading.set(false);
           this.reloadPortals();
 
-          if (onSaved !== undefined) {
-            onSaved(stored);
-          }
+          outcome.next(stored);
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._settingsFailure.set(classifyFailure(cause));
           this._settingsLoading.set(false);
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
+  }
+
+  /**
+   * Reads the accounts one portal may designate as its administrator.
+   *
+   * MIGRATION: fills the selector the legacy screen built at
+   * `Website/admin/Portal/SiteSettings.ascx.vb:L331-L336` from the members of the portal's own
+   * administrator role. The affordance had no target equivalent at all until this read existed,
+   * because every role read resolves its tenant from the caller's own context rather than from a
+   * path segment and so cannot enumerate the administrators of the portal a settings screen
+   * happens to be addressing.
+   *
+   * The portal is RECORDED alongside the answer rather than inferred from the selection, and the
+   * two are set together on success so a consumer can never read a list belonging to one portal
+   * while believing it belongs to another. The selection is deliberately NOT adopted here — this
+   * read accompanies a settings read that has already established it, and adopting it a second
+   * time would make the order of two independent reads matter.
+   *
+   * An earlier read is cancelled, on the same reasoning as the settings read: a slower earlier
+   * response must not land on top of a faster later one and offer the wrong portal's accounts.
+   *
+   * @param portalId The portal whose eligible administrators to read.
+   */
+  loadAdministrators(portalId: number): void {
+    this.administratorsRequest?.unsubscribe();
+    this._administratorsLoading.set(true);
+    this._administratorsFailure.set(null);
+
+    this.administratorsRequest = this.portalApi.listAdministrators(portalId).subscribe({
+      next: (received: readonly PortalAdministrator[]) => {
+        this._administrators.set(received);
+        this._administratorsPortalId.set(portalId);
+        this._administratorsLoading.set(false);
+      },
+      error: (cause: unknown) => {
+        // The held list is CLEARED rather than kept, and its portal with it. A stale list beside a
+        // recorded failure is the worst of the three states: the screen would offer accounts it
+        // could not vouch for, and the operator would have no reason to distrust them.
+        this._administrators.set(null);
+        this._administratorsPortalId.set(undefined);
+        this._administratorsFailure.set(classifyFailure(cause));
+        this._administratorsLoading.set(false);
+      },
+    });
   }
 
   // =========================================================================
@@ -1680,13 +1934,15 @@ export class PortalStore implements OnDestroy {
    * @param portalId The portal to bind the host name to.
    * @param request The host name to bind. Composed by the form, which owns the
    * stripping of a scheme or a share prefix the legacy screen performed at L209-L215.
-   * @param onCreated Optional continuation, invoked once with the created row.
+   * @returns A ticket emitting the created row once. See
+   * {@link PortalStore.outcomeTicket}.
    */
   createAlias(
     portalId: number,
     request: CreatePortalAliasRequest,
-    onCreated?: (alias: PortalAlias) => void,
-  ): void {
+  ): Observable<PortalAlias> {
+    const outcome = PortalStore.outcomeTicket<PortalAlias>();
+
     this._aliasLoading.set(true);
     this._aliasFailure.set(null);
 
@@ -1700,16 +1956,18 @@ export class PortalStore implements OnDestroy {
           this._selectedAliasId.set(created.portalAliasId);
           this._aliasLoading.set(false);
 
-          if (onCreated !== undefined) {
-            onCreated(created);
-          }
+          outcome.next(created);
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._aliasFailure.set(classifyFailure(cause));
           this._aliasLoading.set(false);
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
   }
 
   /**
@@ -1729,15 +1987,16 @@ export class PortalStore implements OnDestroy {
    * @param portalAliasId The row to change.
    * @param request The host name to store in place of the current one. The owning portal
    * is not re-bound: the contract carries the host name alone.
-   * @param onUpdated Optional continuation, invoked once after the write has been
-   * accepted and the re-read has been issued.
+   * @returns A ticket emitting once after the write has been stored and the collection
+   * re-read. See {@link PortalStore.outcomeTicket}.
    */
   updateAlias(
     portalId: number,
     portalAliasId: number,
     request: UpdatePortalAliasRequest,
-    onUpdated?: () => void,
-  ): void {
+  ): Observable<void> {
+    const outcome = PortalStore.outcomeTicket<void>();
+
     this._aliasLoading.set(true);
     this._aliasFailure.set(null);
 
@@ -1747,16 +2006,18 @@ export class PortalStore implements OnDestroy {
           this._aliasLoading.set(false);
           this.loadAliases(portalId);
 
-          if (onUpdated !== undefined) {
-            onUpdated();
-          }
+          outcome.next();
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._aliasFailure.set(classifyFailure(cause));
           this._aliasLoading.set(false);
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
   }
 
   /**
@@ -1776,9 +2037,12 @@ export class PortalStore implements OnDestroy {
    *
    * @param portalId The portal that owns the row.
    * @param portalAliasId The row to unbind.
-   * @param onDeleted Optional continuation, invoked once after the removal has settled.
+   * @returns A ticket emitting once after the removal has settled. See
+   * {@link PortalStore.outcomeTicket}.
    */
-  deleteAlias(portalId: number, portalAliasId: number, onDeleted?: () => void): void {
+  deleteAlias(portalId: number, portalAliasId: number): Observable<void> {
+    const outcome = PortalStore.outcomeTicket<void>();
+
     this._aliasLoading.set(true);
     this._aliasFailure.set(null);
 
@@ -1798,16 +2062,18 @@ export class PortalStore implements OnDestroy {
 
           this._aliasLoading.set(false);
 
-          if (onDeleted !== undefined) {
-            onDeleted();
-          }
+          outcome.next();
+          outcome.complete();
         },
         error: (cause: unknown) => {
           this._aliasFailure.set(classifyFailure(cause));
           this._aliasLoading.set(false);
+          outcome.complete();
         },
       }),
     );
+
+    return outcome.asObservable();
   }
 
   // =========================================================================
@@ -1821,10 +2087,64 @@ export class PortalStore implements OnDestroy {
    * because dismissing a report of a failure is not the same as undoing whatever the
    * failure interrupted.
    */
+  /**
+   * Reads the protected facts of the tenant the caller is SIGNED IN TO.
+   *
+   * ⚠ IDEMPOTENT BY DESIGN, AND EVERY SCREEN THAT NEEDS THE FACTS CALLS IT. A second call
+   * for a tenant already held returns without a request, and a call made while the read is
+   * in flight does the same, so four screens may each ask on initialisation and exactly one
+   * request is issued. That is what lets a guard be expressed as "ask, then read" without
+   * any screen having to know whether a sibling asked first.
+   *
+   * ⚠ THE ARGUMENT IS THE CALLER'S OWN TENANT, from `CurrentUser.portalId`, and never the
+   * portal a screen happens to be browsing. Passing a browsed portal would make a role
+   * screen protect another tenant's roles.
+   *
+   * ⚠ A FAILURE IS ABSORBED RATHER THAN PUBLISHED, and that is deliberate. These facts are
+   * advisory: the API refuses a protected write on its own terms whatever this client
+   * believes. Routing a refusal into the shared failure slot would put a banner on a screen
+   * whose primary read succeeded, reporting a request the operator never made — so the facts
+   * simply stay unresolved, {@link PortalStore.contextResolved} stays false, and the
+   * screens fall back to exactly the behaviour they had before this slice existed: offer
+   * the action and let the server's refusal govern.
+   *
+   * @param portalId The tenant the caller is signed in to. EVERY integer is meaningful,
+   * minus one and nought included.
+   */
+  loadCurrentPortalContext(portalId: number): void {
+    if (this._contextPortalId() === portalId && (this._context() !== null || this._contextLoading())) {
+      return;
+    }
+
+    // A change of tenant discards the previous tenant's facts NOW rather than on arrival, so
+    // that no screen can read one tenant's protected role while another tenant's key is
+    // published. A re-read of the same tenant keeps what is in hand.
+    if (this._contextPortalId() !== portalId) {
+      this._context.set(null);
+    }
+
+    this._contextPortalId.set(portalId);
+    this.contextRequest?.unsubscribe();
+    this._contextLoading.set(true);
+
+    this.contextRequest = this.portalApi.getById(portalId).subscribe({
+      next: (received: PortalDetail) => {
+        this._context.set(received);
+        this._contextLoading.set(false);
+      },
+      error: () => {
+        // Absorbed. See the note above: an unresolved fact leaves the API's own refusal as
+        // the operative rule, which is strictly better than a banner nobody asked for.
+        this._contextLoading.set(false);
+      },
+    });
+  }
+
   clearFailures(): void {
     this._listFailure.set(null);
     this._detailFailure.set(null);
     this._settingsFailure.set(null);
+    this._administratorsFailure.set(null);
     this._aliasFailure.set(null);
   }
 
@@ -1858,11 +2178,22 @@ export class PortalStore implements OnDestroy {
     this._settings.set(null);
     this._settingsLoading.set(false);
 
+    this._administrators.set(null);
+    this._administratorsPortalId.set(undefined);
+    this._administratorsLoading.set(false);
+
     this._aliases.set(null);
     this._aliasesPortalId.set(undefined);
     this._selectedAliasId.set(undefined);
     this._aliasDetail.set(null);
     this._aliasLoading.set(false);
+
+    // The protected facts go with the rest. They describe the tenant of the session being
+    // discarded, so leaving them would let the next operator's screens protect the previous
+    // operator's roles - and would suppress the fresh read that gets it right.
+    this._contextPortalId.set(undefined);
+    this._context.set(null);
+    this._contextLoading.set(false);
 
     this.clearFailures();
   }
@@ -1963,6 +2294,58 @@ export class PortalStore implements OnDestroy {
     });
   }
 
+  /**
+   * The ticket every write in this class returns, in place of accepting a caller's callback.
+   *
+   * ---------------------------------------------------------------------------------------
+   * WHAT THIS REPLACES, AND WHY IT WAS WORTH REPLACING
+   *
+   * Each of the seven writes here used to take an optional continuation — `onCreated`,
+   * `onUpdated`, `onSaved`, `onDeleted` — and invoke it from inside its response handler.
+   * This store is provided at the root, so it outlives every screen that calls it, and a
+   * callback handed to it is a CLOSURE OVER A COMPONENT: over that component's signals, its
+   * router, its notification service and its `this`. Retaining one makes a root-lived object
+   * hold a destroyed component's scope, and a response arriving after the operator has
+   * navigated away runs that component's continuation anyway — announcing a success into a
+   * screen that is gone and, where the continuation navigates, moving a route the operator
+   * did not ask to move. Nothing about it is observable from the component, which cannot see
+   * the reference, and nothing cancels it, because there is no handle to cancel.
+   *
+   * It was also the ONLY store in this application that did this, so it was a local
+   * inconsistency as well as a leak: every other store reports through its state slices.
+   *
+   * ---------------------------------------------------------------------------------------
+   * WHY AN `AsyncSubject` SPECIFICALLY
+   *
+   * Three properties are needed at once, and this is the one subject that has all three:
+   *
+   *   1. IT EMITS ONLY ON COMPLETION, so a caller cannot observe a half-finished write. The
+   *      value is published after the store's own state updates have run, so a continuation
+   *      always sees settled state.
+   *   2. IT REPLAYS TO A LATE SUBSCRIBER. The caller subscribes after the command returns,
+   *      and a transport that answers synchronously — which is exactly what a test's
+   *      controller does — would already have completed a plain `Subject` by then, silently
+   *      dropping the outcome. An `AsyncSubject` hands the value to whoever subscribes next.
+   *   3. IT EMITS AT MOST ONCE, which is what "one write, one outcome" means. A continuation
+   *      cannot be run twice by a retry or a redelivery.
+   *
+   * ⚠ A FAILURE COMPLETES WITHOUT EMITTING, AND DOES NOT ERROR. Erroring the ticket would
+   * hand callers an unhandled rejection to guard against and would report the same failure
+   * twice, because a failure ALREADY reaches the screen through this store's failure slices
+   * and the failure effects the screens already have. Completing empty means the success
+   * continuation simply does not run — which is the whole of what a caller needs — while the
+   * failure keeps its single existing route to the operator.
+   *
+   * The store still subscribes to the transport itself, so STATE UPDATES REMAIN
+   * UNCONDITIONAL: they happen whether or not anybody is listening to the ticket, and a
+   * caller that ignores the return value loses nothing but its own continuation.
+   *
+   * @returns A fresh, operation-scoped subject for one write.
+   */
+  private static outcomeTicket<T>(): AsyncSubject<T> {
+    return new AsyncSubject<T>();
+  }
+
   /** Cancels every read in flight and forgets its handle. */
   private cancelReads(): void {
     this.listRequest?.unsubscribe();
@@ -1971,8 +2354,12 @@ export class PortalStore implements OnDestroy {
     this.detailRequest = null;
     this.settingsRequest?.unsubscribe();
     this.settingsRequest = null;
+    this.administratorsRequest?.unsubscribe();
+    this.administratorsRequest = null;
     this.aliasRequest?.unsubscribe();
     this.aliasRequest = null;
+    this.contextRequest?.unsubscribe();
+    this.contextRequest = null;
   }
 
   /**

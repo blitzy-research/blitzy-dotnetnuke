@@ -51,6 +51,26 @@ import type { BillingFrequency, RoleGroup, RoleListItem } from '../../../core/mo
 // =====================================================================================================
 
 const ROLES_URL = '/api/v1/roles';
+
+/**
+ * The memberships-of-one-account address, for the account key these cases use.
+ *
+ * Nested under the ACCOUNT, because the answer is one person's memberships rather than one role's
+ * members — `RolesController.cs:839` routes it at `users/{userId:int}/roles`.
+ */
+const USER_ROLES_URL = '/api/v1/users/42/roles';
+
+/** A second account's address, so a switch of subject is provable. */
+const OTHER_USER_ROLES_URL = '/api/v1/users/43/roles';
+
+/** The account keyed nought's address, which no truthiness test may reduce to the bare listing. */
+const USER_ZERO_ROLES_URL = '/api/v1/users/0/roles';
+
+/** The account key these cases narrow to. */
+const ACCOUNT_ID = 42;
+
+/** A second account key. */
+const OTHER_ACCOUNT_ID = 43;
 const ROLE_GROUPS_URL = '/api/v1/role-groups';
 
 function roleGroupUrl(roleGroupId: number): string {
@@ -200,14 +220,15 @@ const ON_PUSH_FIELD = 'onPush';
  * Whether a component type was compiled with `OnPush` change detection.
  *
  * ⚠ WHY THIS IS READ STRUCTURALLY RATHER THAN OBSERVED. The usual demonstration is to move an
- * `@Input()` with `componentRef.setInput` and show the view repaints only once the component is
- * marked dirty — but {@link RoleListComponent} is a ROUTED SCREEN AND DECLARES NO INPUTS AT ALL, so
- * there is no input to move and `setInput` would throw rather than prove anything. Nor is the
- * strategy observable through the store: every slice this screen renders is a signal, and a signal
- * read in a template marks its consumer dirty under EITHER strategy, so the two behave identically
- * from the outside. The compiled definition is therefore the only honest witness, and the
- * declaration is worth witnessing: the non-functional requirements make `OnPush` mandatory on every
- * component, and nothing else in this suite would notice its removal.
+ * input with `componentRef.setInput` and show the view repaints only once the component is marked
+ * dirty. {@link RoleListComponent} does now declare one input — the route-bound account key — so
+ * that move is possible, but it does not witness the STRATEGY: the input is a SIGNAL input, which
+ * marks its consumer dirty under either strategy, and everything it feeds is a signal too. Nor is
+ * the strategy observable through the store, for the same reason: every slice this screen renders
+ * is a signal, and a signal read in a template marks its consumer dirty under EITHER strategy, so
+ * the two behave identically from the outside. The compiled definition is therefore the only honest
+ * witness, and the declaration is worth witnessing: the non-functional requirements make `OnPush`
+ * mandatory on every component, and nothing else in this suite would notice its removal.
  *
  * Reads through `unknown` rather than through `any`, so no assertion here is unchecked.
  */
@@ -251,7 +272,7 @@ function withholdsMutators(source: unknown): boolean {
 describe('RoleListComponent', () => {
   let fixture: ComponentFixture<RoleListComponent>;
   let httpMock: HttpTestingController;
-  let heldPermissions: WritableSignal<readonly string[]>;
+  let administersPortal: WritableSignal<boolean>;
   let notifySpy: jasmine.Spy;
 
   /**
@@ -269,16 +290,23 @@ describe('RoleListComponent', () => {
 
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it.
     /*
-     * ⚠ THE HELD PERMISSION KEYS ARE AN INPUT TO THIS SCREEN, so they are held in a signal the cases
-     * can move. The two CREATE affordances are gated by `*hasPermission`, and that directive reads
-     * exactly one member of the identity projection — `permissions()` — which is why a one-member
-     * double is honest here rather than a convenience: nothing else in this component's subtree
-     * touches the projection at all, verified rather than assumed.
+     * ⚠ TENANT ADMINISTRATION IS THE INPUT TO THIS SCREEN, so it is held in a signal the cases can
+     * move. The two CREATE affordances address `/roles/new` and `/role-groups/new`, both of which
+     * declare the `PortalAdministrator` policy on their own routes — so the fact that decides whether
+     * to offer them is the server's own determination, re-exposed by the identity projection as
+     * `administersCurrentPortal`. Nothing else in this component's subtree touches the projection at
+     * all, which is why a one-member double is honest here rather than a convenience.
      *
-     * Seeded WITH the edit key, so the ordinary cases below describe the screen an administrator sees.
-     * The gating itself is proved separately, by taking the key away.
+     * ⚠ THIS REPLACED A PERMISSION KEY, AND THE DIFFERENCE IS NOT COSMETIC. The affordances used to be
+     * gated by `*hasPermission="'EDIT'"`. `EDIT` is a PERSISTED grant over a module or page instance,
+     * carried in `ModulePermissions` and `TabPermissions`; it is consulted by nothing on the
+     * role-administration path, so the old gate could both hide a screen the caller may reach and
+     * offer one the router will refuse.
+     *
+     * Seeded as ADMINISTERING, so the ordinary cases below describe the screen an administrator sees.
+     * The gating itself is proved separately, by taking the determination away.
      */
-    heldPermissions = signal<readonly string[]>(['EDIT', 'VIEW']);
+    administersPortal = signal<boolean>(true);
 
     await TestBed.configureTestingModule({
       imports: [RoleListComponent],
@@ -287,7 +315,7 @@ describe('RoleListComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         RoleStore,
-        { provide: AuthStore, useValue: { permissions: heldPermissions } },
+        { provide: AuthStore, useValue: { administersCurrentPortal: administersPortal } },
       ],
     }).compileComponents();
 
@@ -580,16 +608,15 @@ describe('RoleListComponent', () => {
       ]);
     });
 
-    it('withholds the two CREATE affordances from an account without the edit key', () => {
+    it('withholds the two CREATE affordances from a caller that does not administer the tenant', () => {
       // ⚠ AN AFFORDANCE AND NEVER AN ENFORCEMENT POINT. The API re-authorises every request and its
       // verdict governs, so hiding these links protects nothing — what it does is stop offering an
-      // operator two screens whose save is certain to be refused, which is the difference between an
+      // operator two screens the router is certain to refuse, which is the difference between an
       // application that knows what you may do and one that lets you find out by failing.
       //
-      // ⚠ AND THE SETTINGS LINK IS NOT GATED, DELIBERATELY. Reaching a settings screen is not itself a
-      // mutation and that screen refuses its own save, so gating it here would hide readable state
-      // behind a key that governs writing.
-      heldPermissions.set(['VIEW']);
+      // ⚠ AND THE SETTINGS LINK IS NOT GATED, DELIBERATELY. Its route carries authentication alone,
+      // so the outcome of following it is genuinely uncertain from here and the entry is shown.
+      administersPortal.set(false);
 
       arrive();
 
@@ -602,17 +629,18 @@ describe('RoleListComponent', () => {
       expect(labelled).toEqual([MEMBERSHIP_SETTINGS_LABEL]);
     });
 
-    it('restores the CREATE affordances the moment the key is held again', () => {
-      // The directive re-evaluates from the identity rather than caching a verdict at first render, so
-      // an account whose grants arrive after the screen has painted — which is the ordinary case, the
-      // identity being fetched — is not left looking at a screen it cannot act on.
-      heldPermissions.set([]);
+    it('restores the CREATE affordances the moment the determination arrives', () => {
+      // The gate is re-read from the identity rather than cached at first render, so an administrator
+      // whose determination arrives after the screen has painted — which is the ORDINARY case, the
+      // identity being fetched while the sign-in snapshot leaves the derived fact false — is not left
+      // looking at a screen it cannot act on.
+      administersPortal.set(false);
 
       arrive();
 
       expect(queryAll('a.role-list__page-action')).toHaveSize(1);
 
-      heldPermissions.set(['EDIT']);
+      administersPortal.set(true);
       fixture.detectChanges();
 
       expect(
@@ -685,6 +713,315 @@ describe('RoleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
   // PROOF 2 — FILTERING BY GROUP
   // ---------------------------------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------------------------------
+  // NARROWED TO ONE ACCOUNT
+  //
+  // MIGRATION: `Users.ascx.vb:L542` built the account listing's roles command as
+  // `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD")`, and the screen it reached served TWO
+  // MODES from one page keyed by either a role or an account (`SecurityRoles.ascx.vb:L413-L418`).
+  // The target had only the role-keyed mode, so the command discarded the row's account and landed
+  // the operator on every role in the tenant. These cases describe the account-keyed mode.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('narrowed to one account', () => {
+    /**
+     * Mounts the screen already narrowed to one account, and settles all three arrival reads.
+     *
+     * ⚠ THREE READS, NOT TWO. The group read and the chained role read are the screen's ordinary
+     * arrival; the membership read is issued by the effect that watches the account key, on the
+     * same first pass. Answering them in this order is required — the role read does not exist
+     * until the group read has answered.
+     *
+     * @param held The memberships the account holds.
+     * @param account The account key the address carries.
+     * @param roles The tenant-wide listing, which must remain reachable behind the narrowing.
+     */
+    function arriveForAccount(
+      held: readonly RoleListItem[] = [roleRow(0)],
+      account: number = ACCOUNT_ID,
+      roles: readonly RoleListItem[] = [roleRow(7, { roleName: 'Subscribers' })],
+    ): void {
+      fixture = TestBed.createComponent(RoleListComponent);
+      mounted = true;
+      fixture.componentRef.setInput('userId', String(account));
+      fixture.detectChanges();
+
+      expectRequest('GET', ROLE_GROUPS_URL, 'the group read').flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL, 'the role read').flush(pageOf(roles));
+      fixture.detectChanges();
+      expectRequest('GET', accountUrl(account), 'the membership read').flush(envelope(held));
+      fixture.detectChanges();
+    }
+
+    /**
+     * The membership address of one account.
+     *
+     * @param account The account key.
+     * @returns The address the transport builds for it.
+     */
+    function accountUrl(account: number): string {
+      return `/api/v1/users/${account}/roles`;
+    }
+
+    /** The wording rendered beneath the heading, or the empty string when there is none. */
+    function subtitle(): string {
+      return (query<HTMLElement>('.page-header__subtitle')?.textContent ?? '').trim();
+    }
+
+    /**
+     * The role names the grid is currently rendering, in order.
+     *
+     * Located by its HEADING rather than by a fixed offset: the first cell of a row carries the
+     * edit command, and a positional read would silently compare command labels instead of names.
+     */
+    function renderedRoleNames(): readonly string[] {
+      const headings: readonly HTMLTableCellElement[] = queryAll<HTMLTableCellElement>(
+        'th.data-table__header',
+      );
+      // Matched by CONTAINMENT, because a sortable heading nests a button and a sort indicator
+      // alongside its label, so its text is not the label alone.
+      const index: number = headings.findIndex((cell) =>
+        (cell.textContent ?? '').trim().startsWith('Name'),
+      );
+
+      expect(index).withContext('a column headed "Name" is rendered').toBeGreaterThan(-1);
+
+      return rows().map((row) => {
+        const cell: HTMLTableCellElement | undefined = Array.from(
+          row.querySelectorAll<HTMLTableCellElement>('td'),
+        )[index];
+
+        return (cell?.textContent ?? '').trim();
+      });
+    }
+
+    /** The label of every page-level action link, in order. */
+    function pageActions(): readonly string[] {
+      return queryAll<HTMLElement>('.role-list__page-action').map((each) =>
+        (each.textContent ?? '').trim(),
+      );
+    }
+
+    it('READS THE ACCOUNT\u2019S MEMBERSHIPS on arrival, at the account address', () => {
+      arriveForAccount();
+
+      // Proved by the read having been claimed inside the helper: the backend verification in
+      // teardown fails on an unclaimed request, so a screen that issued none would fail there.
+      expect(renderedRoleNames()).toEqual(['Administrators']);
+    });
+
+    it('RENDERS THE MEMBERSHIPS rather than the tenant-wide listing', () => {
+      // ⚠ THE DEFECT THIS FIXES. The tenant listing answered with a role the account does NOT
+      // hold; rendering it would show the operator every role in the tenant under a heading that
+      // names one person.
+      arriveForAccount([roleRow(0, { roleName: 'Administrators' })], ACCOUNT_ID, [
+        roleRow(7, { roleName: 'Subscribers' }),
+        roleRow(8, { roleName: 'Translators' }),
+      ]);
+
+      expect(renderedRoleNames()).toEqual(['Administrators']);
+      expect(renderedRoleNames()).not.toContain('Subscribers');
+    });
+
+    it('names the account beneath the heading, with the count it came for', () => {
+      arriveForAccount([roleRow(0), roleRow(7, { roleName: 'Subscribers' })]);
+
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID} \u2014 2 roles`);
+    });
+
+    it('says ROLE rather than ROLES for a single membership', () => {
+      arriveForAccount([roleRow(0)]);
+
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID} \u2014 1 role`);
+    });
+
+    it('says nothing about a count while the membership read is still outstanding', () => {
+      fixture = TestBed.createComponent(RoleListComponent);
+      mounted = true;
+      fixture.componentRef.setInput('userId', String(ACCOUNT_ID));
+      fixture.detectChanges();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow(7)]));
+      fixture.detectChanges();
+
+      const outstanding = expectRequest('GET', USER_ROLES_URL);
+
+      // The account is named — the operator asked about it — but no count is claimed.
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID}`);
+
+      outstanding.flush(envelope([roleRow(0)]));
+      fixture.detectChanges();
+
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID} \u2014 1 role`);
+    });
+
+    it('OFFERS THE WAY BACK to every role in the tenant, at this screen\u2019s own address', () => {
+      arriveForAccount();
+
+      const link = queryOrFail<HTMLAnchorElement>(host(), '.role-list__page-action');
+
+      expect((link.textContent ?? '').trim()).toBe('Show All Roles');
+      // Addressing this same route WITHOUT the parameter is what clears the narrowing, so no
+      // second route and no separate command are needed.
+      expect(link.getAttribute('href')).toBe('/roles');
+      expect(pageActions()[0]).toBe('Show All Roles');
+    });
+
+    it('offers NO account affordance and issues NO membership read when no account is the subject', () => {
+      arrive();
+
+      expect(pageActions()).not.toContain('Show All Roles');
+      expect(subtitle()).toBe('');
+      // Nothing was claimed at the account address, and teardown's verification is what proves it.
+      httpMock.expectNone(
+        (candidate) => candidate.url.startsWith('/api/v1/users/'),
+        'no membership read without an account',
+      );
+    });
+
+    it('RE-READS FOR THE NEW ACCOUNT when the address moves between two accounts', () => {
+      // ⚠ THE COMPONENT IS NOT RECREATED, because both addresses match the same route. The input
+      // moves and the effect re-reads, which is exactly the case the store\u2019s dispatch-time
+      // account recording exists to make safe.
+      arriveForAccount([roleRow(0, { roleName: 'Administrators' })]);
+
+      fixture.componentRef.setInput('userId', String(OTHER_ACCOUNT_ID));
+      fixture.detectChanges();
+
+      expectRequest('GET', OTHER_USER_ROLES_URL, 'the second membership read').flush(
+        envelope([roleRow(9, { roleName: 'Translators' })]),
+      );
+      fixture.detectChanges();
+
+      expect(renderedRoleNames()).toEqual(['Translators']);
+      expect(subtitle()).toBe(`Roles held by account ${OTHER_ACCOUNT_ID} \u2014 1 role`);
+    });
+
+    it('SHOWS NOTHING OF THE PREVIOUS ACCOUNT while a second account is read', () => {
+      // ⚠ THE MOST CONSEQUENTIAL CASE HERE, AND IT FOUND A REAL DEFECT. Between the switch and the
+      // answer the store recorded the NEW subject while still holding the OLD account's rows, so
+      // the two agreed and the subtitle claimed "account 43 — 1 role" about account 42's single
+      // membership. The store now discards a previous answer when the subject changes, which is
+      // what makes both statements below true at once.
+      //
+      // The GRID shows the shared table's waiting state for the duration — waiting wins over both
+      // data and emptiness there — so the assertion about the grid is that the previous account's
+      // row is nowhere on screen, rather than that some other row is.
+      arriveForAccount([roleRow(0, { roleName: 'Administrators' })], ACCOUNT_ID, [
+        roleRow(7, { roleName: 'Subscribers' }),
+      ]);
+      expect(renderedRoleNames()).toEqual(['Administrators']);
+
+      fixture.componentRef.setInput('userId', String(OTHER_ACCOUNT_ID));
+      fixture.detectChanges();
+
+      expect(renderedRoleNames())
+        .withContext('the previous account\u2019s membership is not painted under the new name')
+        .not.toContain('Administrators');
+      // The count is the part that reached the operator, and it is now withheld until the new
+      // account answers.
+      expect(subtitle()).toBe(`Roles held by account ${OTHER_ACCOUNT_ID}`);
+
+      expectRequest('GET', OTHER_USER_ROLES_URL).flush(
+        envelope([roleRow(9, { roleName: 'Translators' })]),
+      );
+      fixture.detectChanges();
+
+      expect(renderedRoleNames()).toEqual(['Translators']);
+      expect(subtitle()).toBe(`Roles held by account ${OTHER_ACCOUNT_ID} \u2014 1 role`);
+    });
+
+    it('FALLS BACK to the tenant listing when the membership read is refused', () => {
+      fixture = TestBed.createComponent(RoleListComponent);
+      mounted = true;
+      fixture.componentRef.setInput('userId', String(ACCOUNT_ID));
+      fixture.detectChanges();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow(7, { roleName: 'Subscribers' })]));
+      fixture.detectChanges();
+
+      expectRequest('GET', USER_ROLES_URL).flush(problem('forbidden', 403, 'The authenticated caller is not permitted to perform this operation.'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      fixture.detectChanges();
+
+      // An empty grid would read as "this account holds nothing", which is a different and false
+      // statement. The tenant listing is shown beside the reported failure.
+      expect(renderedRoleNames()).toEqual(['Subscribers']);
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID}`);
+    });
+
+    it('renders an account that holds NO role as an empty grid, not as the tenant listing', () => {
+      // ⚠ THE COUNTERPART TO THE CASE ABOVE. An empty ANSWER is a successful answer and must be
+      // rendered as one; only a failed or mismatched read falls back.
+      arriveForAccount([], ACCOUNT_ID, [roleRow(7, { roleName: 'Subscribers' })]);
+
+      expect(renderedRoleNames()).not.toContain('Subscribers');
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID} \u2014 0 roles`);
+    });
+
+    it('narrows to an account keyed NOUGHT, which is not an absence', () => {
+      // ⚠ A truthiness test on the key would treat this address as unnarrowed and read nothing.
+      arriveForAccount([roleRow(0)], 0);
+
+      expect(subtitle()).toBe('Roles held by account 0 \u2014 1 role');
+      expect(pageActions()).toContain('Show All Roles');
+      expect(USER_ZERO_ROLES_URL).toBe(accountUrl(0));
+    });
+
+    it('IGNORES a parameter that is not a whole number, rather than reading account NaN', () => {
+      fixture = TestBed.createComponent(RoleListComponent);
+      mounted = true;
+      fixture.componentRef.setInput('userId', 'not-a-key');
+      fixture.detectChanges();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow(7, { roleName: 'Subscribers' })]));
+      fixture.detectChanges();
+
+      expect(renderedRoleNames()).toEqual(['Subscribers']);
+      expect(subtitle()).toBe('');
+      httpMock.expectNone(
+        (candidate) => candidate.url.startsWith('/api/v1/users/'),
+        'a malformed key reads nothing',
+      );
+    });
+
+    it('RETURNS to every role when the parameter is dropped from the address', () => {
+      arriveForAccount([roleRow(0, { roleName: 'Administrators' })], ACCOUNT_ID, [
+        roleRow(7, { roleName: 'Subscribers' }),
+      ]);
+
+      fixture.componentRef.setInput('userId', undefined);
+      fixture.detectChanges();
+
+      expect(renderedRoleNames()).toEqual(['Subscribers']);
+      expect(subtitle()).toBe('');
+      expect(pageActions()).not.toContain('Show All Roles');
+    });
+
+    it('keeps the tenant-wide affordances beside the account ones, in that order', () => {
+      arriveForAccount();
+
+      // The way back is offered FIRST, because it is the affordance that explains the narrowing;
+      // the create affordances remain, gated as they were, so nothing is lost by narrowing.
+      expect(pageActions()).toEqual([
+        'Show All Roles',
+        'Add New Role',
+        'Add New Role Group',
+        // Worded as the legacy `UserSettings.Action` was, which is what this screen already renders.
+        'User Settings',
+      ]);
+    });
+  });
 
   describe('filtering by role group', () => {
     it('offers both pseudo-entries plus one option per group', () => {

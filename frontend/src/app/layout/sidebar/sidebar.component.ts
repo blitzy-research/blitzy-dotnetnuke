@@ -1,10 +1,42 @@
-import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink } from '@angular/router';
+import { filter, map } from 'rxjs';
+
+import type { Signal } from '@angular/core';
+import type { PermissionPolicy } from '../../core/guards/permission.guard';
+
+/**
+ * The authority a rail entry requires, expressed as an authorisation POLICY name.
+ *
+ * ⚠ NARROWED FROM THE GATE'S OWN EIGHT-NAME UNION, AND DERIVED FROM IT RATHER THAN
+ * RESTATED. `Extract` keeps this type bound to `PermissionPolicy`, so a rename or
+ * removal in the gate's vocabulary is a compile error here instead of a silent
+ * divergence — and the two files provably speak the same vocabulary, which is the
+ * whole reason the type is imported rather than re-declared as two string literals.
+ *
+ * ⚠ ONLY THE TWO MEMBERSHIP POLICIES, AND THE OMISSION IS THE POINT. The other six
+ * are decided against ONE RECORD — a specific module, a specific page, a specific
+ * account — and a rail rendered once for the whole application holds no record to
+ * decide them against. Admitting them here would mean either fetching permission
+ * records to interpret, which is a second authorisation engine, or guessing; the two
+ * below are answered from facts the identity already carries and nothing else.
+ *
+ * ⚠ NOT A PERMISSION KEY. The four persisted keys (`VIEW`, `EDIT`, `READ`, `WRITE`)
+ * held against module and tab records are a separate, unrelated vocabulary belonging
+ * to the shared permission directive. A policy name must never be passed where a key
+ * is expected, nor the reverse; that conflation is exactly what this type prevents by
+ * being a policy type.
+ */
+export type SidebarPolicy = Extract<
+  PermissionPolicy,
+  'PortalAdministrator' | 'HostAdministrator'
+>;
 
 /**
  * One addressable destination in the navigation rail.
  *
- * Both members are `readonly`, and the whole model below is a compile-time constant
+ * Every member is `readonly`, and the whole model below is a compile-time constant
  * rather than anything resolved at run time. The rail advertises a fixed set of
  * administration entry points; it does not discover them, fetch them or derive them
  * from the router's configuration. Deriving them would look tidier and would be
@@ -29,6 +61,25 @@ export interface SidebarNavItem {
    * annotation on {@link NAVIGATION} for why that distinction is load-bearing here.
    */
   readonly label: string;
+
+  /**
+   * The authority the destination's own PRIMARY API READ requires.
+   *
+   * ⚠ READ FROM THE CONTROLLER, NOT FROM THE ROUTE TABLE, and the distinction matters
+   * exactly once. A rail entry answers "can this operator use this screen", and the
+   * only authority on that is the endpoint the screen reads on arrival. For seven of
+   * the eight entries the route declares the same name, so the two agree; for
+   * `/portals` the endpoint requires host authority (`PortalsController.cs:L241`)
+   * while the route deliberately declares none, and this field follows the endpoint.
+   * The consequence is stated plainly rather than hidden: a tenant administrator is
+   * not offered the tenant collection, because the API will not give it to them.
+   *
+   * ⚠ REQUIRED, WITH NO DEFAULT AND NO OPTIONAL MARKER. An entry that could omit it
+   * would be an entry nobody had decided the authority for, and the omission would
+   * present as an unconditionally visible link — which is precisely the state this
+   * field exists to end.
+   */
+  readonly policy: SidebarPolicy;
 }
 
 /**
@@ -106,8 +157,10 @@ const NAVIGATION_REGION_ID = 'sidebar-navigation';
  * `ControlTitle_.Text` is "User Accounts"; `Roles.ascx.resx` `ControlTitle_.Text`
  * is "Security Roles"; `ControlTitle_importmodule.Text` is "Import Module";
  * `ControlTitle_usersettings.Text` is "User Settings";
- * `ControlTitle_manageprofile.Text` is "Manage Profile Properties";
- * `ControlTitle_editgroup.Text` is "Edit Role Group".
+ * `ControlTitle_manageprofile.Text` is "Manage Profile Properties"; and — the one entry
+ * taken from an ACTION rather than a control title, because the address it reaches is a
+ * creation form rather than a whole control — `Roles.ascx.resx` `AddGroup.Action` is
+ * "Add New Role Group". The entry on that address carries the full reasoning.
  *
  * MIGRATION: localisation is not carried forward. The legacy screens resolved every
  * one of these strings through a per-control resource file at run time, across 37
@@ -132,7 +185,11 @@ const NAVIGATION = [
   {
     id: 'portal',
     label: 'Portal',
-    items: [{ path: '/portals', label: 'Portals' }],
+    // `GET /api/v1/portals` requires host authority (`PortalsController.cs:L241`),
+    // because the tenant COLLECTION addresses no single tenant. A tenant
+    // administrator is therefore not offered this entry: the API would refuse the
+    // listing, and offering a link to a refusal is the defect, not the courtesy.
+    items: [{ path: '/portals', label: 'Portals', policy: 'HostAdministrator' }],
   },
   {
     id: 'module',
@@ -148,24 +205,36 @@ const NAVIGATION = [
       // legacy wording exists to inherit. "Modules" is therefore authored, not
       // ported, and is named here so a later reader does not go looking for a
       // resource key that was never there.
-      { path: '/modules', label: 'Modules' },
-      { path: '/modules/import', label: 'Import Module' },
+      //
+      // Both entries are tenant administration on the API: `ModulesController.cs:L187`
+      // for the listing and `:L627` for the import.
+      { path: '/modules', label: 'Modules', policy: 'PortalAdministrator' },
+      { path: '/modules/import', label: 'Import Module', policy: 'PortalAdministrator' },
     ],
   },
   {
     id: 'user',
     label: 'User',
+    // `UsersController.cs:L350` for the listing and `:L827` for the tenant's membership
+    // policy; `ProfileDefinitionsController.cs:L165` gates its whole class. All three
+    // are tenant administration.
     items: [
-      { path: '/users', label: 'User Accounts' },
-      { path: '/settings/membership', label: 'User Settings' },
-      { path: '/settings/profile-definitions', label: 'Manage Profile Properties' },
+      { path: '/users', label: 'User Accounts', policy: 'PortalAdministrator' },
+      { path: '/settings/membership', label: 'User Settings', policy: 'PortalAdministrator' },
+      {
+        path: '/settings/profile-definitions',
+        label: 'Manage Profile Properties',
+        policy: 'PortalAdministrator',
+      },
     ],
   },
   {
     id: 'role',
     label: 'Role',
+    // `RolesController.cs:L284` gates the whole class on tenant administration, so both
+    // entries name it.
     items: [
-      { path: '/roles', label: 'Security Roles' },
+      { path: '/roles', label: 'Security Roles', policy: 'PortalAdministrator' },
       // MIGRATION: the wording is the legacy screen's, and it reads oddly against
       // the address. The legacy role-group screen served both adding and editing
       // under the single title "Edit Role Group", whereas this address is the
@@ -174,41 +243,89 @@ const NAVIGATION = [
       // rather than improved, so the label a user recognises is the label they see;
       // the route's own title differs, and that difference is reported rather than
       // reconciled here, since the route table is another owner's file.
-      { path: '/role-groups/new', label: 'Edit Role Group' },
+      { path: '/role-groups/new', label: 'Add New Role Group', policy: 'PortalAdministrator' },
     ],
   },
 ] as const satisfies readonly SidebarNavGroup[];
 
 /**
+ * Whether a caller described by the two facts holds the authority an entry requires.
+ *
+ * ⚠ AN EXHAUSTIVE SWITCH, NOT A LOOKUP OBJECT OR A BOOLEAN EXPRESSION, so widening
+ * {@link SidebarPolicy} fails to compile here until the new policy's answer is stated.
+ * That is the intended behaviour: a policy that silently fell through to "allowed"
+ * would put an unconditionally visible entry back in the rail, which is the state this
+ * whole arrangement exists to end, and one that fell through to "refused" would delete
+ * a working capability with nothing to report it.
+ *
+ * ⚠ THE HOST ARM ON TENANT ADMINISTRATION MIRRORS THE API rather than being generous.
+ * `PolicyNames.cs:L105-L113` records that a host account satisfies portal
+ * administration, so a host that was not offered the tenant-scoped entries would be
+ * refused screens the server admits it to. Reading the host flag as well also covers
+ * the authority-minimised identity the credential responses carry, in which the
+ * administration fact is withheld while the host flag is reported truthfully.
+ *
+ * Both facts are read as the plain booleans they are. `false` is DATA — the legacy null
+ * contract conflated `false` with "not set" (`Library/Components/Shared/Null.vb`) and
+ * that conflation stops at the API boundary — so neither is tested for truthiness or
+ * treated as absence.
+ *
+ * @param policy The authority the entry requires.
+ * @param host Whether the caller is a host account.
+ * @param administersTenant Whether the SERVER reported the caller as an administrator of
+ * the tenant it is signed in to. Never inferred from a role name.
+ * @returns True when the entry may be offered.
+ */
+function holds(policy: SidebarPolicy, host: boolean, administersTenant: boolean): boolean {
+  switch (policy) {
+    case 'HostAdministrator':
+      return host;
+    case 'PortalAdministrator':
+      return host || administersTenant;
+  }
+}
+
+/**
  * The application's primary navigation rail.
  *
  * A vertical list of router links, grouped by domain, with a control that collapses
- * the rail to reclaim its width. Presentational by construction: it injects nothing,
- * makes no request, holds no session state, defines no route and provides no
- * service. Everything it renders comes from the constant model above.
+ * the rail to reclaim its width. It makes no request, holds no session state, defines no
+ * route and provides no service, and it holds exactly one boolean of its own — the
+ * collapse. It injects ONE thing: the ROUTER, whose current address decides which entry is
+ * announced as current.
+ *
+ * ⚠ IT DOES NOT READ THE SESSION. The two facts that decide which entries are offered at all —
+ * whether the caller holds a host account, and whether it administers the resolved tenant —
+ * arrive as REQUIRED INPUTS from the shell, which is the one component that mounts this one and
+ * the owner of the session boundary. Reading the store here as well would give the chrome two
+ * authorities for one determination, and required inputs make the omission a compile error in any
+ * future mount rather than a silently unfiltered rail. Both are reads of state another owner
+ * holds; neither is a decision this component makes for itself. Everything else it renders comes
+ * from the constant model above.
  *
  * ## Where it is mounted
  *
- * The shell publishes its navigation region as a projection slot —
- * `shell.component.html` renders `<div class="shell__sidebar"><ng-content /></div>` —
- * so this component is supplied as projected content by whichever component mounts
- * `<app-shell>`, rather than being imported by the shell itself. That arrangement is
- * the shell's, not this component's, and it is what keeps the shell free of any
- * knowledge of what navigation exists.
+ * The shell OWNS this component: `shell.component.html` renders
+ * `<app-sidebar class="shell__sidebar" />`, so the shell imports it by name and this
+ * host is the grid item the sidebar area places. It used to be supplied as projected
+ * content by whichever component mounted `<app-shell>`, and that arrangement failed
+ * silently when nothing was supplied — the region matched the stylesheet's `:empty`
+ * collapse rule, so a console with no navigation rendered with no raise and no
+ * warning. Being imported makes that state unreachable.
  *
  * The rail claims no width of its own from the grid. `_layout.scss` places the
- * region and deliberately declares no inline size, leaving the width to "the
- * projected content's own box, in the scoped stylesheet of whichever component
- * supplies it" — which is the paired stylesheet, not this file. No dimension,
- * colour or spacing value appears in this component, and none should: every such
- * value belongs to the stylesheet, where the design tokens are in scope.
+ * region and deliberately declares no inline size, leaving the width to "the rail's
+ * own box, in the rail's own scoped stylesheet" — which is the paired stylesheet,
+ * not this file. No dimension, colour or spacing value appears in this component,
+ * and none should: every such value belongs to the stylesheet, where the design
+ * tokens are in scope.
  *
  * ## ⚠ It never imports a feature component
  *
- * Only `RouterLink` and `RouterLinkActive` are imported. The rail addresses features
- * by route string, and importing any feature component to reach it would pull that
- * feature's entire dependency graph into the initial bundle, collapsing the lazy
- * loading the route table is built around. That failure surfaces as a bundle-budget
+ * `RouterLink` is the only directive imported. The rail addresses features by route
+ * string, and importing any feature component to reach it would pull that feature's
+ * entire dependency graph into the initial bundle, collapsing the lazy loading the route
+ * table is built around. That failure surfaces as a bundle-budget
  * error rather than a broken screen, which makes it easy to introduce and easy to
  * misdiagnose.
  *
@@ -278,31 +395,38 @@ const NAVIGATION = [
  * oversight, and no entry may be added for them without the backing endpoint and
  * route existing first.
  *
- * ## ⚠⚠ Permission-based link visibility is deliberately NOT applied here
+ * ## ⚠⚠ Link visibility IS gated, by the tenant-administration fact alone
  *
- * MIGRATION: hiding a link is an affordance, never enforcement, and this rail
- * currently offers neither. Authorisation is decided server-side and answered as
- * HTTP 403; on the client, route activation is gated by the router's own
- * authentication and permission guards. The rail shows the entry points and lets
- * those two authorities refuse — which is the safer default, because a rail that
- * hid an entry the guard would have allowed would silently remove a capability,
- * whereas showing one the guard refuses costs a redirect.
+ * Hiding a link is an affordance, never enforcement: authorisation is decided
+ * server-side and answered as HTTP 403, and route activation is additionally gated by
+ * the router's own authentication and permission guards. What this rail must not do is
+ * OFFER a destination the guard in front of it is about to refuse, because that costs the
+ * operator a navigation that lands them back where they started with no explanation.
  *
- * The shared permission directive was evaluated for group-level gating and
- * deliberately not adopted, because its input is typed to the four-value permission
- * key vocabulary (`VIEW`, `EDIT`, `READ`, `WRITE`) rather than to authorisation
- * policy names. Those are two different vocabularies, and the directive's own
- * documentation identifies conflating them as precisely the confusion its type is
- * there to prevent. Passing a policy name would not compile under strict template
- * checking, and were it to reach run time the directive fails closed on an
- * unrecognised value — so every group would disappear permanently and the rail
- * would render empty. The gap is reported rather than papered over: gating this rail
- * needs either a policy-typed input on that directive or a resolved permission-key
- * projection to gate against, and neither exists yet.
+ * So the entries whose routes carry `data: { permission: 'PortalAdministrator' }` are
+ * rendered only when the caller's forwarded authority admits it — the same facts the
+ * guard reads, from the same authority. Entries whose routes are reached with the
+ * authentication gate alone are always rendered, because the client has nothing to base a
+ * refusal on and hiding one would remove a capability the caller has. The flag lives on
+ * each entry: see {@link SidebarNavItem.policy}.
  *
- * Note also that the two module entries are declared in the route table under the
- * portal-administration policy rather than a module-scoped one, so a naive
- * module-scoped gate would not have matched the guard's own decision either.
+ * ⚠ THE SHARED PERMISSION DIRECTIVE IS DELIBERATELY NOT USED, and the reason is the whole
+ * point of the gate. Its input is typed to the four-value persisted permission KEY
+ * vocabulary — `VIEW`, `EDIT`, `READ`, `WRITE` — whereas tenant administration is an
+ * authorisation POLICY. Those are two different vocabularies over two different sets of
+ * data: the permission keys a caller holds are a union across the pages and modules it has
+ * rights on, and no member of that union says anything about whether the caller
+ * administers the tenant. Gating an administrative entry with a permission key would both
+ * hide entries a caller may reach and offer entries the server will refuse.
+ *
+ * ⚠ A GROUP WITH NO VISIBLE ENTRY IS OMITTED ENTIRELY, heading and list together. A
+ * heading standing over an empty list is announced by assistive technology as a section
+ * containing nothing, which is worse than an absent section.
+ *
+ * MIGRATION: the legacy rail had no counterpart to any of this — there was no rail. The
+ * legacy menu was generated from the tab hierarchy and filtered by the page permissions
+ * held against each tab, which is a different mechanism over different data; this gate is
+ * a decision of the migration and is documented as such rather than presented as a port.
  *
  * ## Accessibility
  *
@@ -315,9 +439,14 @@ const NAVIGATION = [
 @Component({
   selector: 'app-sidebar',
   standalone: true,
-  // Exactly the two router directives the template needs, and nothing else. No
-  // feature component, and no permission directive for the reason set out above.
-  imports: [RouterLink, RouterLinkActive],
+  // Exactly the one router directive the template needs, and nothing else. No feature
+  // component, and no permission directive for the reason set out above.
+  //
+  // ⚠ `RouterLinkActive` IS DELIBERATELY ABSENT. Current-destination state is derived here
+  // instead — see {@link SidebarComponent.activePath} — because the directive can only
+  // answer "does this link match" per link, and the question this rail has to answer is
+  // "which ONE of these links is current", which no per-link matcher can decide.
+  imports: [RouterLink],
   templateUrl: './sidebar.component.html',
   styleUrl: './sidebar.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -327,6 +456,43 @@ const NAVIGATION = [
   // screen.
 })
 export class SidebarComponent {
+  /**
+   * Whether the caller is a host account.
+   *
+   * ⚠ SUPPLIED AS AN INPUT RATHER THAN READ FROM THE SESSION STORE, AND THE CHOICE IS
+   * DELIBERATE IN BOTH DIRECTIONS. Injecting the store here would have been fewer lines
+   * and would have cost this component the one property it is built around — it injects
+   * nothing, so it cannot fetch, cannot decide who is signed in and cannot hold session
+   * state, and its specification proves all three by constructing it under a provider set
+   * that has no HTTP client in it. An input keeps that intact: the mounting component owns
+   * the identity, this one owns the presentation.
+   *
+   * ⚠ REQUIRED, WHICH IS THE STRONGER GUARANTEE. A mounting site that forgot to state the
+   * caller's authority does not silently render an unfiltered rail — it fails to compile
+   * under strict template checking. An injected store could not offer that: a second
+   * mounting site could render the rail for anybody, and nothing would report it.
+   *
+   * The value must come from the SERVER's own facts and never from a role name; see
+   * `layout/shell/shell.component.ts`, the rail's only caller, which supplies it from
+   * `AuthStore.isSuperUser`.
+   */
+  readonly hostAccount = input.required<boolean>();
+
+  /**
+   * Whether the SERVER reported the caller as an administrator of the tenant it is signed
+   * in to.
+   *
+   * ⚠ THE SERVER'S VERDICT, NOT A ROLE-NAME MATCH. The API publishes this as
+   * `CurrentUserDto.IsPortalAdministrator`, resolved from the tenant's own
+   * administrator-role designation and the caller's live assignments — because that role is
+   * designated by identifier, may be renamed, and its name may collide with an unrelated
+   * role in another tenant. `app.component.ts` supplies it from
+   * `AuthStore.holdsPortalAdministration`, which republishes exactly that fact.
+   *
+   * Required for the same reason {@link hostAccount} is.
+   */
+  readonly administersTenant = input.required<boolean>();
+
   /**
    * Whether the rail is collapsed, as writable state.
    *
@@ -353,8 +519,125 @@ export class SidebarComponent {
    */
   public readonly collapsed = this.collapsedSignal.asReadonly();
 
-  /** The four navigation groups, in presentation order. */
+  /**
+
+  /** The router, read for the address currently showing. */
+  private readonly router = inject(Router);
+
+  /**
+   * The address currently showing, as a signal.
+   *
+   * ⚠ SEEDED FROM `router.url` AND UPDATED ON COMPLETED NAVIGATIONS ONLY. The seed matters
+   * because a rail rendered after the first navigation has already missed the event that
+   * announced it, and an unseeded signal would leave no entry current until the operator
+   * navigated again. `NavigationEnd` specifically, rather than every event, because an
+   * address that a guard is about to refuse is not the address showing — marking it current
+   * would highlight a destination the operator never reached.
+   */
+  private readonly currentUrl: Signal<string> = toSignal(
+    this.router.events.pipe(
+      filter((event): event is NavigationEnd => event instanceof NavigationEnd),
+      map((event: NavigationEnd) => event.urlAfterRedirects),
+    ),
+    { initialValue: this.router.url },
+  );
+
+  /**
+   * The one entry that is current for the address showing, or `null` when none is.
+   *
+   * ⚠ LONGEST MATCH, MEASURED IN PATH SEGMENTS, AND EXACTLY ONE WINNER. Two properties have
+   * to hold at once and no per-link matcher delivers both:
+   *
+   *   * A DESCENDANT KEEPS ITS PARENT CURRENT. `/portals/3/settings` is reached from the
+   *     Portals entry, so that entry stays marked while the operator is on it. Exact
+   *     matching — which this rail used before — left EVERY entry unmarked on every
+   *     descendant screen, so nothing was highlighted and, because `aria-current` is driven
+   *     from the same state, nothing announced itself as the current page. The console has
+   *     more descendant screens than collection screens, so that was the common case.
+   *   * NO TWO ENTRIES ARE EVER CURRENT AT ONCE. `/modules` is a prefix of
+   *     `/modules/import`, so plain prefix matching marks both on the import screen. Two
+   *     elements claiming `aria-current="page"` is an accessibility defect rather than a
+   *     cosmetic one — the attribute means nothing if it is not unique — so the longest
+   *     matching entry wins and the shorter one yields.
+   *
+   * ⚠ COMPARED SEGMENT BY SEGMENT, NEVER AS A STRING PREFIX. `/roles` is a string prefix of
+   * `/role-groups/new`, so a string test would mark Security Roles current on the role-group
+   * screen. Splitting on the separator makes `roles` and `role-groups` the different
+   * segments they are.
+   *
+   * Only VISIBLE entries are considered - {@link SidebarComponent.visibleNavigation}, not the
+   * declared model - so a gated-away destination never claims to be the current page even if the
+   * operator reaches it by typing the address.
+   */
+  public readonly activePath: Signal<string | null> = computed(() => {
+    const showing: readonly string[] = pathSegments(this.currentUrl());
+    let winner: string | null = null;
+    let winningLength = 0;
+
+    for (const group of this.visibleNavigation()) {
+      for (const item of group.items) {
+        const candidate: readonly string[] = pathSegments(item.path);
+
+        if (candidate.length <= winningLength || isDescendantOf(showing, candidate) === false) {
+          continue;
+        }
+
+        winner = item.path;
+        winningLength = candidate.length;
+      }
+    }
+
+    return winner;
+  });
+
+  /**
+   * The four navigation groups as DECLARED, before any authority is considered.
+   *
+   * ⚠ NOT WHAT THE TEMPLATE RENDERS. The template reads
+   * {@link SidebarComponent.visibleNavigation}. This member remains published because
+   * the declared model is worth asserting on its own terms — that every address exists
+   * in the route table, that every entry names an authority, that the wording matches
+   * the legacy resources — and those are properties of the DECLARATION rather than of
+   * one caller's view of it.
+   */
   public readonly navigation: readonly SidebarNavGroup[] = NAVIGATION;
+
+  /**
+   * The groups and entries this caller may actually use.
+   *
+   * ⚠ ENTRIES ARE FILTERED FIRST AND EMPTIED GROUPS ARE THEN DROPPED, in that order.
+   * A group is only a heading over a list, so a group whose every entry was withheld
+   * has nothing left to head: leaving it would render a heading and an empty list, and
+   * the list carries `aria-labelledby` pointing at that heading — so assistive
+   * technology would announce a named navigation list containing nothing. Dropping the
+   * group is what keeps the announced structure honest. No group is special-cased; the
+   * emptiness is derived.
+   *
+   * ⚠ COMPUTED, NOT COPIED INTO A FIELD. The identity can change within one page load —
+   * a sign-out, or a renewal that re-reads the caller's authority — and a field
+   * initialised once would keep advertising the authority the previous caller had. A
+   * computed signal recomputes when the inputs it reads change, which is what makes the
+   * rail follow the session rather than the page load, and the component renders
+   * on-push so the view follows the signal.
+   *
+   * ⚠ IT DOES NOT DECIDE WHETHER A SESSION EXISTS. Whether the rail appears at all is
+   * the mounting component's decision, and `app.component.html` makes it by not
+   * projecting the rail until an identity is resolved. Answering it here as well would
+   * put the same question in two places; what this member answers is which entries a
+   * KNOWN identity may use.
+   *
+   * Nothing is fetched, cached or interpreted: the two facts arrive as inputs, already
+   * resolved from what the server published.
+   */
+  public readonly visibleNavigation: Signal<readonly SidebarNavGroup[]> = computed(() => {
+    const host: boolean = this.hostAccount();
+    const administersTenant: boolean = this.administersTenant();
+
+    return NAVIGATION.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => holds(item.policy, host, administersTenant)),
+    })).filter((group) => group.items.length > 0);
+  });
 
   /**
    * The identifier carried by the collapsible region.
@@ -366,21 +649,18 @@ export class SidebarComponent {
   public readonly navigationRegionId: string = NAVIGATION_REGION_ID;
 
   /**
-   * Link-activity matching options for the template's `routerLinkActive` bindings.
+   * Whether one navigation entry is the current destination.
    *
-   * ⚠ EXACT MATCHING IS REQUIRED, NOT PREFERRED, AND ONE PAIR OF ADDRESSES PROVES
-   * IT. `routerLinkActive` matches by prefix unless told otherwise, and `/modules`
-   * is a prefix of `/modules/import`. On the import screen, prefix matching would
-   * mark BOTH entries active — two highlighted links for one location, and, because
-   * the template drives `aria-current="page"` from the same state, two elements
-   * claiming to be the current page. `aria-current="page"` is meaningless if it is
-   * not unique, so this is an accessibility defect and not only a cosmetic one.
+   * Read by the template for BOTH the active class and `aria-current`, so the visual state
+   * and the announced state are the same decision and cannot disagree. That pairing is the
+   * reason this is a method rather than two bindings computed separately.
    *
-   * Held as a single stable object rather than written as a literal in the template,
-   * because a literal is a new object on every evaluation, and this way the same
-   * options instance is shared by all eight links.
+   * @param item The entry to test.
+   * @returns True when this entry is the single current destination.
    */
-  public readonly exactMatchOptions: { readonly exact: true } = { exact: true };
+  public isCurrent(item: SidebarNavItem): boolean {
+    return this.activePath() === item.path;
+  }
 
   /**
    * Collapses the rail if it is expanded, expands it if it is collapsed.
@@ -394,3 +674,41 @@ export class SidebarComponent {
   }
 }
 
+/**
+ * Splits an in-application address into its path segments.
+ *
+ * Query and fragment are removed first, because neither participates in identifying a
+ * destination: `/users?filter=A` and `/users` are the same entry, and marking the entry
+ * current only for one of them would make the rail flicker as an operator filtered a
+ * listing. Empty segments are dropped, so a trailing separator and a leading one both
+ * disappear rather than producing a phantom segment that no candidate could match.
+ *
+ * @param address An absolute in-application address, with or without query or fragment.
+ * @returns The address's path segments, in order.
+ */
+function pathSegments(address: string): readonly string[] {
+  const path: string = address.split('?')[0].split('#')[0];
+
+  return path.split('/').filter((segment) => segment.length > 0);
+}
+
+/**
+ * Whether `showing` is the same destination as `candidate` or one below it.
+ *
+ * ⚠ SEGMENT-WISE, WHICH IS THE WHOLE POINT. A string prefix test would report
+ * `/role-groups/new` as being below `/roles`, marking Security Roles current on the
+ * role-group screen; comparing segments makes `roles` and `role-groups` the distinct
+ * segments they are. An empty candidate would match everything, so it is refused outright
+ * rather than treated as a root that owns every address.
+ *
+ * @param showing The segments of the address currently showing.
+ * @param candidate The segments of a navigation entry's address.
+ * @returns True when the address showing is the candidate itself or a descendant of it.
+ */
+function isDescendantOf(showing: readonly string[], candidate: readonly string[]): boolean {
+  if (candidate.length === 0 || showing.length < candidate.length) {
+    return false;
+  }
+
+  return candidate.every((segment, index) => showing[index] === segment);
+}

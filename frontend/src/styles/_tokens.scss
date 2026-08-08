@@ -29,33 +29,33 @@
 
   --color-surface: #EEEEEE;
 
-  // MIGRATION: the informational hint surface, restored to its measured legacy
-  // value rather than folded onto --color-surface. Measured verbatim at
-  // default.css L438, `background-color: #ffff99`, inside the `.Help` rule that
-  // spans L424-439 — the rule the plan names as the affordance the shared
-  // form-field component replaces, and which the rest of that block renders as a
-  // black 1px border on ALL FOUR sides (L426 right, L428 top, L433 left, L436
-  // bottom), 2px padding on all four sides (L427, L429, L432, L435),
-  // `font-weight: normal` (L430), `font-size: 11px` (L431) and `color: black`
-  // (L434). The pale yellow is load-bearing rather than decorative: it is the
-  // only surface in the legacy stylesheet that marks a region as advisory rather
-  // than as content, and `.Help` is genuinely live — 7 references across the
-  // in-scope admin markup plus the structural one in
-  // Website/controls/labelcontrol.ascx. Mapping it onto --color-surface to hold the
-  // colour vocabulary at nine members would trade a measured, in-scope value for
-  // vocabulary economy, and the value wins.
-  // Contrast is unharmed and in fact better: inherited black measures 20.02:1 on
-  // #FFFF99 against 18.10:1 on #EEEEEE. Legacy casing #ffff99.
+  // ⚠ MIGRATION — THE PALE HINT SURFACE #FFFF99 IS NOT TOKENISED, AND ITS ABSENCE IS
+  // DELIBERATE. An earlier revision of this file declared it as a tenth member,
+  // `--color-surface-hint`, on a legacy-fidelity argument: it is measured verbatim at
+  // default.css L438 inside the `.Help` rule (L424-439), it is the only surface in the
+  // legacy stylesheet that marks a region as advisory rather than as content, and `.Help`
+  // is genuinely live in the in-scope admin markup.
   //
-  // This is the tenth colour, and it is the ONLY member admitted beyond the
-  // plan's nine-colour table. It is admitted here rather than hardcoded at the
-  // point of use because this file is the sole legitimate literal site in the
-  // workspace: the alternative is `#ffff99` written into _forms.scss, which the
-  // zero-hardcoded-values rule forbids outright. The three colours most often argued
-  // for alongside it — a base text black, a heading grey and
-  // a disabled silver — are deliberately absent, and the reasoning for each is set out in
-  // the text-colour section below.
-  --color-surface-hint: #FFFF99;
+  // That argument is sound on its own terms and it still loses, for one reason: the colour
+  // vocabulary is CLOSED AT NINE by the design specification, and #FFFF99 is not one of the
+  // nine. The specification's own colour table enumerates every value it tokenises and
+  // records, explicitly, one legacy colour it declines to tokenise — so a value absent from
+  // that table is absent by decision, not by omission. Design-system compliance is the FIRST
+  // precedence rule in this system and legacy visual continuity is the second; the two
+  // conflict here, and the order settles it. Widening a vocabulary that declares itself
+  // closed also removes the only property that makes it useful.
+  //
+  // WHAT THE ADVISORY REGIONS USE INSTEAD is --color-surface, the vocabulary's own
+  // secondary surface, and what that costs is recorded rather than glossed: the help panel,
+  // the required-value hint and the one-time-credential notice are grey rather than pale
+  // yellow. Their remaining distinctions are structural and unchanged — a border, inset
+  // padding, a smaller type size, and in every case wording or a marker glyph that states
+  // the role in text. Contrast is unharmed: inherited text measures 18.10:1 on #EEEEEE
+  // against 20.02:1 on #FFFF99, both far clear of any threshold.
+  //
+  // The value is NOT written as a literal at the point of use either. This file is the only
+  // legitimate literal site in the workspace, so a hint surface that is not declared here
+  // does not exist anywhere.
 
   // MIGRATION: a TRIPLE divergence. The value is kept exactly as the plan's
   // colour table specifies, because design-system compliance outranks legacy
@@ -99,41 +99,32 @@
   // system for every consumer at once — including the borders and rules for which the
   // value is already correct.
   //
-  // DANGER TEXT RESOLVES TO --color-danger-text INSTEAD. That token is declared
-  // immediately below and this one must never be used for a text colour again. Error
-  // states still carry a non-colour cue as well — the severity word, or the marker
-  // glyph and its visually-hidden text — because colour is never the sole indicator.
+  // ⚠ DANGER TEXT RESOLVES TO THIS TOKEN, AND THE MEASUREMENT IS RECORDED RATHER THAN
+  // REPAIRED. #FF0000 measures 4.00:1 on --color-background and 3.45:1 on
+  // --color-surface, so danger text at normal size sits below the 4.5:1 threshold WCAG
+  // AA sets for text. It clears the 3:1 threshold for large text and for non-text
+  // indicators on both surfaces.
+  //
+  // An earlier revision answered that by declaring a twelfth vocabulary member, a
+  // darkened #B30000 named `--color-danger-text`, and routing every danger text colour
+  // to it. That has been withdrawn. The colour vocabulary is closed at the nine values
+  // the design specification enumerates, and the specification's own precedence order
+  // puts design-system compliance FIRST, legacy visual continuity second and
+  // accessibility THIRD — with accessibility to be achieved "with zero visual change".
+  // A darker red is a visual change by construction, so accessibility is precisely the
+  // ground on which a new colour may NOT be admitted here. #FF0000 is also the measured
+  // legacy value, carried by both of the classes the legacy admin screens actually wired
+  // for error text, so the two higher rules agree with each other.
+  //
+  // ⚠ WHAT CARRIES THE ACCESSIBILITY OBLIGATION INSTEAD is the non-colour cue at every
+  // one of these sites, and none of them relies on the hue alone: the error banner
+  // announces its severity as a word inside a live region, the required marker pairs its
+  // glyph with visually-hidden text, each validation message is bound to its control by
+  // `aria-describedby` and the control carries `aria-invalid`, and the notification
+  // surface names its severity in text. A reader who cannot perceive the red still
+  // receives the state. That is what makes the ratio a recorded divergence rather than an
+  // unmitigated one, and it is the divergence the migration notes carry.
   --color-danger: #FF0000;
-
-  // MIGRATION: the ELEVENTH colour, and a corrected accessibility defect rather than
-  // a preference — the same standing this file's own anchor-hover substitution has,
-  // and admitted on the same terms. --color-danger renders at 4.0:1 on the page
-  // background, so every place the system rendered danger TEXT in it — the danger
-  // banner, the required marker and the validation message — sat below the 4.5:1 AA
-  // minimum for normal text. Those three sites carried standing accessibility flags
-  // saying, verbatim, that the remedy belonged in the token rather than at the point
-  // of use. This is that remedy.
-  //
-  // #B30000 is the same hue at a lower lightness, so a reader sees the same red
-  // family and nothing about the visual language changes; what changes is that the
-  // text is legible. Measured against every surface the vocabulary can put behind
-  // danger text:
-  //   --color-background #FFFFFF     7.20:1
-  //   --color-surface #EEEEEE        6.21:1
-  //   --color-selected #C1D2EE       4.70:1
-  //   --color-surface-hint #FFFF99   6.86:1
-  // All four clear 4.5:1, so the token is safe on any painted surface in the system
-  // rather than only on the page background. #C00000 was measured first and REJECTED:
-  // it reads 4.23:1 on the selected tint, which would have moved the defect onto
-  // selected rows instead of removing it.
-  //
-  // Admitting an eleventh member is a deliberate widening of a vocabulary this file
-  // declares closed, and the closed-count annotation below is updated to match. It is
-  // admitted because no existing member can carry the role: --color-danger is the
-  // measured legacy red and must not move, and no other member is a red at all. The
-  // alternative — a darkened red written as a literal at three points of use — is
-  // what the zero-hardcoded-values rule forbids outright.
-  --color-danger-text: #B30000;
 
   // Contrast on --color-background is 1.37:1, below the 3:1 AA threshold for
   // non-text UI, so this is a decorative hairline. Use --color-border-strong or
@@ -145,30 +136,37 @@
   --color-border-strong: #CCCCCC;
 
   //  COLOUR — text
-  //  ONE token, and the reasoning for the three that are deliberately absent.
+  //  ONE token, and the reasoning for the four that are deliberately absent.
   //
-  //  The colour vocabulary is CLOSED at the eleven members declared above: the
-  //  plan's nine, plus the informational hint surface --color-surface-hint, plus the
-  //  accessible danger-text colour --color-danger-text. Four
-  //  candidates beyond the nine each have a legacy-fidelity argument — a base text
-  //  black, a heading grey, a disabled silver and the pale-yellow hint surface —
-  //  and admitting all four would defeat a closed vocabulary as completely as forty
-  //  careless additions would. Three are therefore refused, and their individual
-  //  arguments are answered below rather than ignored, because each one raises a real
-  //  question. The fourth is
-  //  reinstated: the hint surface is a measured, in-scope value with no vocabulary
-  //  member that can carry its meaning, and the annotation on the token itself
-  //  records why.
+  //  ⚠ THE COLOUR VOCABULARY IS CLOSED AT THE NINE MEMBERS DECLARED ABOVE — exactly the
+  //  nine the design specification enumerates, and not one more. That count is the
+  //  specification's, not this file's, so it is not a target to be negotiated against: a
+  //  value absent from its colour table is absent by DECISION, which the table itself
+  //  demonstrates by naming one legacy colour it declines to tokenise.
   //
-  //  The eleventh member is admitted on a different and narrower ground: it is not a
-  //  legacy-fidelity argument at all but a CORRECTED ACCESSIBILITY DEFECT, and the
-  //  annotation on --color-danger-text records the measurement on all four surfaces
-  //  it can appear against. That ground is deliberately not extensible — a downstream
-  //  author cannot reach for a twelfth by preference, and a twelfth admitted on
-  //  accessibility grounds would have to carry the same four-surface measurement and
-  //  the same demonstration that no existing member can carry the role. Eleven is
-  //  therefore the closed count, and every value in every stylesheet still
-  //  resolves to a member of this list.
+  //  FOUR candidates each carry a real argument for a tenth member, and all four are
+  //  refused. Three rest on legacy fidelity — a base text black, a heading grey and a
+  //  disabled silver — and are answered individually below, because each raises a genuine
+  //  question. The fourth is the pale-yellow hint surface, and it is answered on the
+  //  --color-surface declaration above: it is a measured, in-scope legacy value whose
+  //  meaning no vocabulary member carries exactly, and it still loses to the closed count,
+  //  because design-system compliance is the FIRST precedence rule here and legacy
+  //  continuity only the second.
+  //
+  //  ⚠ A FIFTH CANDIDATE WAS ADMITTED AND HAS BEEN WITHDRAWN, and the reason it was
+  //  admitted is the reason the count needs defending. It was a darkened red for danger
+  //  TEXT, argued not on legacy fidelity but as a corrected accessibility defect — and it
+  //  is true that the measured legacy red renders below the 4.5:1 threshold for normal
+  //  text. But the specification's precedence order places accessibility THIRD, after
+  //  design-system compliance and legacy continuity, and requires it to be achieved "with
+  //  zero visual change". A new hue is a visual change by construction, so accessibility is
+  //  precisely the ground on which a colour may NOT be admitted. The obligation is met by
+  //  non-colour cues at every affected site instead, and the residual ratio is recorded on
+  //  the --color-danger declaration and in the migration notes rather than absorbed.
+  //
+  //  So NINE is the closed count, no ground for a tenth exists — not preference, not legacy
+  //  fidelity, not accessibility — and every value in every stylesheet resolves to a member
+  //  of this list.
   //
   //  The base text black and the heading grey were both answered by the platform
   //  rather than by the palette. Legacy body text had NO declared colour at all —
@@ -195,11 +193,12 @@
   //  exemption for inactive components to excuse the figures — and which had to
   //  concede that the aria-disabled group could not claim the same exemption,
   //  since a control disabled only by ARIA is not inert. Neither group needs an
-  //  exemption now. With the hint surface reinstated as --color-surface-hint,
-  //  `.form-help` in _forms.scss now renders the measured legacy pale yellow
-  //  rather than the secondary grey surface, so this file introduces NO visible
-  //  colour change to the help panel at all; the only remaining deliberate visible
-  //  colour change is the olive heading colour annotated further down.
+  //  exemption now.
+  //
+  //  Two deliberate visible colour changes therefore remain, and both are recorded: the
+  //  advisory panels render on --color-surface rather than the legacy pale yellow, for the
+  //  reason given on that declaration, and the olive heading colour is annotated further
+  //  down. Neither alters behaviour, and both are carried in the migration notes.
 
   // MIGRATION: 9 occurrences, and NOT ONE of them renders text — the token name
   // describes its target role, not its legacy role. Eight are borders: the

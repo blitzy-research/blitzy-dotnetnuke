@@ -1,24 +1,21 @@
 /**
  * PRODUCTION build-time configuration for the `dnn-migration` Angular workspace.
  *
- * READ THIS BEFORE CHANGING A VALUE BELOW, because the direction is the opposite
- * of the convention most Angular readers expect. This module is the PRODUCTION
- * configuration; `environment.development.ts` is the override. `angular.json`
- * declares a `fileReplacements` entry under its `development` configuration only:
+ * The `fileReplacements` direction is the opposite of the usual Angular scaffold, so read it before changing
+ * a value here. `angular.json` declares a replacement under its `development` configuration only, which makes
+ * THIS module the production one and `environment.development.ts` the overlay:
  *
- *     production  -> fileReplacements: []                       (no substitution)
- *     development -> fileReplacements: [ this module -> environment.development.ts ]
+ * production  -> fileReplacements: []                       (no substitution)
+ * development -> fileReplacements: [ this module -> environment.development.ts ]
  *
- * `ng build --configuration production` — which is also the build target's
- * `defaultConfiguration` — therefore ships exactly the values written here, while
- * `ng serve` and `ng build --configuration development` swap this module out. The
- * `test` target declares no substitution either, so every Karma spec compiles
- * against this file and against the relative base path below.
+ * `ng build --configuration production` - also the build target's `defaultConfiguration` - therefore ships
+ * exactly the values written here, while `ng serve` and the development build swap this module out. The `test`
+ * target declares no substitution either, so every Karma spec compiles against this file and against the
+ * relative base path below.
  *
- * Everything in this module is inlined into a world-readable JavaScript bundle by
- * the compiler. Nothing here is fetched from the server at run time, and nothing
- * confidential may ever be added: a value that must stay private, or that varies
- * per deployment, belongs to the API's own configuration or to the reverse proxy.
+ * Everything in this module is inlined into a world-readable JavaScript bundle at build time. Nothing here is
+ * fetched at run time and nothing confidential may ever be added: a value that must stay private, or that
+ * varies per deployment, belongs to the API's configuration or to the reverse proxy.
  *
  * ---------------------------------------------------------------------------
  * Deliberate divergences from the legacy DotNetNuke 4.9.0 deployment, and from
@@ -81,49 +78,21 @@
  * rather than reproduced: the API binds strongly-typed options classes through
  * dependency injection, and the browser needs none of that machinery. Hence a
  * handful of values here where the legacy deployment carried several hundred.
+ *
+ * MIGRATION: the CONTRACT the two twins satisfy lives in `./app-environment`, and it
+ * is imported by both of them rather than declared here. An earlier arrangement
+ * exported the interface from THIS module and had the development twin restate it
+ * inline — because a substituted module cannot import from the module it replaces —
+ * and described the result as a shared type contract. It was not one: two independent
+ * declarations of the same name, neither of which the compiler had any reason to
+ * compare, because every consumer imports the `environment` VALUE and none imports the
+ * type. A member added to one twin and not the other compiled cleanly. The contract is
+ * now a third, never-substituted module holding no value at all, so a type-only import
+ * from each twin erases completely and the substitution has nothing to interact with.
  * ---------------------------------------------------------------------------
  */
 
-/**
- * The shape both environment modules must satisfy.
- *
- * Declared here rather than in a third file so the folder holds exactly the two
- * twin modules. `environment.development.ts` annotates itself against this
- * interface through a type-only import, which is what makes a divergence between
- * the two a compile error instead of a run-time surprise after a substitution.
- *
- * Every member is `readonly`: the values are build-time constants, so an
- * accidental assignment at run time should not compile.
- */
-export interface AppEnvironment {
-  /**
-   * Whether this bundle was produced by the production configuration.
-   *
-   * Used only to gate development-only affordances. It never changes a business
-   * rule, so both bundles behave identically against the same API.
-   */
-  readonly production: boolean;
-
-  /**
-   * The base path every API request is issued against.
-   *
-   * MUST stay RELATIVE in this file. The reasoning and the failure mode are on
-   * the value below, where a future editor will actually read them.
-   */
-  readonly apiBaseUrl: string;
-
-  /**
-   * The application name rendered in the shell's banner band.
-   *
-   * Held here rather than hard-coded into a template so the one identity string
-   * has a single origin and the header stays presentational. Consumed as the
-   * default of an `@Input` by both `layout/shell/shell.component.ts` and
-   * `layout/header/header.component.ts`, so it is a required member of this
-   * contract rather than a speculative addition, and it must carry an identical
-   * value in both twin modules — it is not environment-specific.
-   */
-  readonly applicationName: string;
-}
+import type { AppEnvironment } from './app-environment';
 
 /**
  * The production environment: the values that ship inside the container image.
@@ -131,26 +100,15 @@ export interface AppEnvironment {
 export const environment: AppEnvironment = {
   production: true,
 
-  // MIGRATION: RELATIVE, and it must stay relative. `docker/nginx.conf` L135-136
-  // proxies `/api/` to `http://api:8080/api/` on this very origin, and L191 serves
-  // `index.html` for everything else, so the SPA and the API share one origin, no
-  // request is cross-origin, and the bundle is portable to any host name the proxy
-  // is served under. An absolute value type-checks, lints, bundles and deploys
-  // without a single complaint and leaves both containers reporting healthy, so
-  // nothing in the toolchain detects the substitution — but what breaks depends on
-  // which absolute value is written, and the difference is worth knowing:
-  //   * a compose service name such as 'http://api:8080/api/v1' resolves only
-  //     inside the Docker network, so every call fails in the browser;
-  //   * 'http://localhost:8080/api/v1' works from a browser on the machine that
-  //     published the API's port, because `Cors:AllowedOrigins` admits
-  //     'http://localhost:4200' and the published port is reachable — and then
-  //     fails for every other client, because their `localhost` is not this host;
-  //   * any other absolute host bypasses the proxy and becomes a cross-origin
-  //     request, which succeeds only if that exact origin is listed in
-  //     `Cors:AllowedOrigins` on the API.
-  // In none of the three is the value portable, which is the point. Change it only
-  // in lockstep with the proxy configuration that serves the bundle and with the
-  // API's configured origin list.
+  // RELATIVE, and it must stay relative. `docker/nginx.conf` proxies `/api/` to `http://api:8080/api/` on
+  // this very origin and serves `index.html` for everything else, so the SPA and the API share one origin,
+  // no request is cross-origin, and the bundle is portable to any host name the proxy is served under. An
+  // absolute value type-checks, lints, bundles and deploys without a complaint and leaves both containers
+  // reporting healthy, so nothing in the toolchain detects the substitution: a compose service name resolves
+  // only inside the Docker network, `localhost` works only from the machine that published the API's port,
+  // and any other host bypasses the proxy and becomes a cross-origin request that succeeds only if that
+  // exact origin is listed in `Cors:AllowedOrigins`. Change it only in lockstep with the proxy configuration
+  // that serves the bundle and with the API's configured origin list.
   apiBaseUrl: '/api/v1',
 
   applicationName: 'DotNetNuke Administration',

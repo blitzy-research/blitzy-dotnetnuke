@@ -82,6 +82,25 @@
   <div class="app-header__actions">
     @if (hasSignedInUser) {
       <span class="app-header__user">{{ userName }}</span>
+      <!-- MIGRATION: the ONE account-scoped affordance in the console's chrome, and the only
+           navigational route an ordinary account holder has to a screen it operates on its own
+           behalf. `Website/admin/Users/MemberServices.ascx` was a tab in the account container
+           that an administrator never saw (`ManageUsers.ascx.vb` L61-L66) and that the signed-in
+           account reached from the portal's own user affordance — a skin object, and skinning is
+           out of scope — so this band is the target's equivalent surface. The caption is the
+           measured legacy tab caption rather than invented wording, and the address is supplied
+           whole by the container: this band holds a caption rather than an account, so it could
+           not compose one.
+
+           A LINK where the sign-out beside it is a button, because this is a destination and
+           that is a command. It is rendered only when an address was supplied AND a session is
+           present, so it can never navigate to the current page or name an account that is not
+           signed in. -->
+      @if (hasAccountServicesLink) {
+        <a class="app-header__account-link" [routerLink]="accountServicesLink">{{
+          accountServicesLabel
+        }}</a>
+      }
       <!-- MIGRATION: signing out is a COMMAND rather than a destination, so this is a button where
            the legacy affordance was a link. `Login.ascx.vb` L119 issued a full server redirect to a
            "Logoff" address on the active page, resolving to the single tree-wide forms

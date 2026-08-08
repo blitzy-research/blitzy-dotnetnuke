@@ -337,6 +337,28 @@
 
           The row is a tab stop so selection is reachable from the keyboard.
 
+          ⚠⚠ EVERY ROW AFFORDANCE BELOW IS CONDITIONAL ON SOMETHING LISTENING, and that
+          condition is the correction of a defect rather than an optimisation. The row used
+          to carry `tabindex="0"`, an `aria-selected` attribute and both activation handlers
+          unconditionally, while the stylesheets keyed a pointer cursor, a focus ring, hover
+          feedback and press feedback to that attribute's PRESENCE. Six of the seven grids in
+          this application bind no `(rowSelect)` at all, so on those six every row was a tab
+          stop that led nowhere, announced a selection state the grid could not substantiate,
+          and showed a pointer promising an action that did nothing. A page of twenty accounts
+          put twenty inert stops between the search control and the first row command.
+
+          The attributes are therefore bound to null when nothing is listening, which removes
+          them from the document outright rather than setting them to a falsy value — and
+          because the shared table conventions key the cursor, the ring and the tint to
+          `[aria-selected]` being PRESENT, removing the attribute withdraws the whole visual
+          affordance with it. One condition, one source of truth, no way to paint a state the
+          document does not also announce.
+
+          THE HANDLERS STAY DECLARED, and the component refuses inside them instead. A
+          template cannot register a listener conditionally without duplicating the entire
+          row — every cell branch, all four column kinds — and two copies of the body markup
+          would drift. `activateRow` refuses when nothing is listening, so no state moves.
+
           MIGRATION: the selected state is published PROGRAMMATICALLY, never by colour
           alone, and it is published ONCE - as the SELECTION state and nothing else. An
           earlier revision published it twice, adding the current-item state alongside,
@@ -366,10 +388,10 @@
         @for (bodyRow of bodyRows(); track bodyRow.row) {
           <tr
             class="data-table__row"
-            tabindex="0"
+            [attr.tabindex]="rowsSelectable() ? 0 : null"
             [attr.aria-rowindex]="bodyRow.ariaRowIndex"
-            [attr.aria-selected]="bodyRow.row === selectedRow()"
-            [class.data-table__row--selected]="bodyRow.row === selectedRow()"
+            [attr.aria-selected]="rowsSelectable() ? bodyRow.row === selectedRow() : null"
+            [class.data-table__row--selected]="rowsSelectable() && bodyRow.row === selectedRow()"
             (click)="activateRowFromPointer(bodyRow.row, $event)"
             (keydown)="activateRowFromKeyboard(bodyRow.row, $event)"
           >

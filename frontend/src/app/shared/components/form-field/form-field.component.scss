@@ -192,17 +192,21 @@
 // The marker is separated from the label text by a token inset rather than by a
 // space character in the markup, which the template compiler would collapse.
 //
-// MIGRATION: the marker is TEXT — a glyph at the label's own type size — so it
-// resolves to --color-danger-text rather than to --color-danger. The measured red
-// reads 4.0:1 on the page background, below the 4.5:1 minimum that governs text
-// of this size; the darker member of the same hue reads 7.20:1 and is seen as the
-// same colour. --color-danger is reserved for borders and non-text indicators,
-// where the 3:1 floor that actually applies is cleared. The glyph is never the
-// sole indicator: .form-field__required-text states the requirement in words, and
-// the control carries the programmatic attribute.
+// ⚠ MIGRATION: the marker is TEXT — a glyph at the label's own type size — and it takes
+// --color-danger, the measured legacy red, which reads 4.00:1 on the page background and
+// therefore below the 4.5:1 minimum WCAG AA sets for text of this size. An earlier
+// revision routed it to a darkened tenth token; that token has been withdrawn, because
+// the colour vocabulary is closed at the nine values the design specification enumerates
+// and its precedence order admits no new hue on accessibility grounds.
+//
+// THE GLYPH IS NEVER THE SOLE INDICATOR, which is what carries the obligation instead
+// and is the requirement the specification actually states: .form-field__required-text
+// states the requirement IN WORDS in the accessibility tree, and the control carries the
+// programmatic required attribute. A reader who perceives no red is told the field is
+// required, twice over, by mechanisms that do not depend on colour at all.
 .form-field__required {
   margin-inline-start: var(--space-1);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // The word that gives the marker glyph a meaning for a reader who cannot see it.
@@ -322,7 +326,11 @@
 // `border-top` L428, `border-left` L433 and `border-bottom` L436, each of them
 // `black 1px solid` — 2px of padding on all four sides at L427, L429, L432 and
 // L435, `font-weight: normal` L430, `font-size: 11px` L431, `color: black` L434
-// and `background-color: #ffff99` L438. Every one of those is reproduced below.
+// and `background-color: #ffff99` L438. Every one of those is reproduced below EXCEPT the
+// surface: the pale yellow is not one of the design specification's nine colours, so the
+// panel takes --color-surface instead. That is a recorded visible divergence, and the
+// border, the inset, the type size and the weight — the distinctions that make the panel
+// read as advisory — are all preserved.
 // Two circulated readings of that rule are contradicted by the source and are
 // corrected here rather than carried: the claim that the rule has no bottom
 // border is refuted by L436, and an earlier version of this file rendered the
@@ -375,7 +383,7 @@
 
   border: var(--border-width) var(--border-style) currentColor;
   border-radius: var(--radius-sm);
-  background-color: var(--color-surface-hint);
+  background-color: var(--color-surface);
   color: inherit;
 
   font-size: var(--font-size-md);
@@ -406,23 +414,28 @@
 // set it a step smaller, which inverted that relationship and made the one
 // sentence a reader most needs to read the smallest text in the field.
 //
-// The colour is the single deliberate departure from the measurement. The measured
-// `#ff0000` is --color-danger, which _tokens.scss reserves for borders and
-// non-text indicators because it reads 4.0:1 on the page background against the
-// 4.5:1 minimum that governs text; --color-danger-text is the same hue at a lower
-// lightness and reads 7.20:1 on the page background and 6.86:1 on the help
-// surface, so the message is seen as the same red and is legible. Worth recording
-// alongside it: of the five occurrences of that red in the legacy stylesheet only
-// this one is error text — the other four, at L201, L340, L465 and L564, are all
-// `:hover` states — so the colour was never as exclusively a danger signal as its
+// ⚠ THE COLOUR IS THE MEASURED `#ff0000` EXACTLY, as --color-danger, and its ratio is
+// recorded rather than repaired. It reads 4.00:1 on the page background, below the 4.5:1
+// minimum WCAG AA sets for text. An earlier revision introduced a darkened tenth token
+// for this one role; it has been withdrawn, because the colour vocabulary is closed at the
+// design specification's nine values and that specification ranks accessibility THIRD,
+// after design-system compliance and legacy continuity, to be achieved with zero visual
+// change — so a new hue is exactly what may not be added here. Legacy fidelity points the
+// same way: this is the value the legacy rule declared.
+//
+// Worth recording alongside it: of the five occurrences of that red in the legacy
+// stylesheet only this one is error text — the other four, at L201, L340, L465 and L564,
+// are all `:hover` states — so the colour was never as exclusively a danger signal as its
 // name suggests.
 //
-// Colour is not the sole indicator in any case: the bold weight carries the same
-// emphasis the legacy rule did, the template groups the messages in a live region
-// that announces them, and the required marker states its meaning in words.
+// ⚠ COLOUR IS NOT THE SOLE INDICATOR, and that is what discharges the obligation: the
+// BOLD WEIGHT carries the same emphasis the legacy rule did, the template groups the
+// messages in a LIVE REGION that announces them, each message is bound to its control by
+// `aria-describedby`, and the control carries `aria-invalid`. A reader who perceives no
+// red still receives the failure, in text, through the accessibility tree.
 .form-field__error {
   margin: 0;
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-base);

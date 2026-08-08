@@ -200,7 +200,7 @@
  */
 
 import { Injectable, computed, inject, signal, type OnDestroy } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { EMPTY, Subscription, expand, reduce, throwError } from 'rxjs';
 
 import { isProblemDetails } from '../models/problem-details.model';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, emptyPagedResult } from '../models/paged-result.model';
@@ -220,6 +220,8 @@ import type {
   ModuleSettingsBag,
   UpdateModuleRequest,
 } from '../models/module.model';
+import type { Observable } from 'rxjs';
+
 import type { ApiMeta, SortDirection } from '../models/paged-result.model';
 import type { ProblemDetails } from '../models/problem-details.model';
 import type { TabListItem } from '../models/tab.model';
@@ -236,6 +238,23 @@ import type { ProblemSummary } from '../utils/form-errors.util';
  */
 const MISMATCHED_MODULE_MESSAGE =
   'The server answered with a different module from the one requested. Nothing was loaded.';
+
+/**
+ * The hard ceiling on how many pages one complete choice-set walk will request.
+ *
+ * A walk driven by a short page and by the server's own record total needs no ceiling to terminate
+ * under correct behaviour, and this exists ONLY for the case where both of those assumptions fail at
+ * once: a server that kept answering with full pages and an ever-growing total would otherwise have
+ * this client request pages until the tab died. At {@link MAX_PAGE_SIZE} rows a page it admits fifty
+ * thousand placements in one tenant, which is orders of magnitude beyond anything a DotNetNuke
+ * installation holds.
+ *
+ * ⚠ REACHING IT IS A FAILURE, NOT AN ANSWER. {@link ModuleStore.loadChoices} raises rather than
+ * publishing what it has, because a choice set that quietly omits choices is the exact defect the walk
+ * was introduced to remove — and an escape hatch that reintroduced it would be worse than no ceiling at
+ * all.
+ */
+export const MAXIMUM_CHOICE_PAGES = 500;
 
 // =====================================================================================================
 // SERVICE ARGUMENT TYPES, DERIVED RATHER THAN IMPORTED OR RESTATED
@@ -362,6 +381,18 @@ export interface TabHierarchy {
  */
 export type ModuleStoreOperation =
   | 'listModules'
+  /**
+   * The PICKER-CHOICE read, which is a different operation from the browsable listing even though
+   * the two reach the same endpoint.
+   *
+   * MIGRATION: {@link ModuleStore.loadChoices} used to record its failures as `listModules`, and
+   * that misattribution had consequences in both directions. A screen filtering the failure slot
+   * for its own work could not tell a picker read it had started from a grid read a sibling screen
+   * had started, so the transfer screens surfaced a refusal belonging to somebody else's listing;
+   * and a listing screen showed a refusal raised by a picker it knows nothing about. The two reads
+   * already have separate slices and separate handles, and this is the third member of that set.
+   */
+  | 'loadChoices'
   | 'loadModule'
   | 'createModule'
   | 'updateModule'
@@ -463,19 +494,44 @@ function readMember(source: unknown, key: string): unknown {
 /**
  * Extracts the RFC 7807 document from a failed request, or synthesises the minimum from its status.
  *
- * Three cases, in a deliberate order. The response BODY is examined first, because a failure object
- * carries a numeric status of its own and the narrowing predicate admits any value whose recognised
- * members type-check - so testing the failure itself first would narrow the transport wrapper as though
- * it were the document and discard the real one. A textual body is parsed, because a server that answers
- * with a problem document under a media type the client did not parse leaves it as a string. Failing
- * both, a document carrying the status ALONE is synthesised, which invents nothing - the status is what
- * the server sent - and is what lets severity and wording still resolve correctly, so that a refusal is
- * still presented as a refusal when its body was empty.
+ * ⚠ THE TRANSPORT STATUS IS RESOLVED FIRST, AND A STATUS OF ZERO SHORT-CIRCUITS BEFORE THE BODY IS
+ * LOOKED AT. That ordering is a correctness requirement, and getting it wrong produced incoherent
+ * wording rather than an obvious fault.
+ *
+ * A status of zero means NO RESPONSE ARRIVED - the server was unreachable, the request was blocked, the
+ * connection was cut. In that case the framework puts a DOM `ProgressEvent` in the body slot, and a
+ * `ProgressEvent` carries a string `type` member. The narrowing predicate is deliberately permissive
+ * about absence, because any subset of the standard members is a legal problem document - so it ACCEPTS
+ * that progress event, and a body-first reading committed it as though the server had answered with a
+ * document whose `type` happened to be `"error"`. Everything downstream then resolved against a document
+ * that was never sent: the failure code parser read `"error"` as a candidate failure type, and the
+ * severity and the sentence were chosen for a response that did not exist. An unreachable server was
+ * reported as though it had refused something.
+ *
+ * MIGRATION: `core/state/portal.store.ts` already resolved this correctly and its own note explains the
+ * same hazard; `core/interceptors/error.interceptor.ts` applies the same ordering. This function is
+ * aligned to them rather than to a fourth reading, so all three agree about what a status of zero means.
+ *
+ * The remaining cases, in order once zero is excluded. The response BODY is examined before the failure
+ * object itself, because a failure object carries a numeric status of its own and would otherwise be
+ * narrowed as though IT were the document, discarding the real one. A textual body is parsed, because a
+ * server that answers with a problem document under a media type the client did not parse leaves it as a
+ * string. Failing both, a document carrying the status ALONE is synthesised, which invents nothing - the
+ * status is what the server sent - and is what lets severity and wording still resolve correctly, so
+ * that a refusal is still presented as a refusal when its body was empty.
  *
  * @param cause The value a subscriber's error callback received.
  * @returns The problem document, or `null` when neither a document nor a status could be read.
  */
 function problemFromCause(cause: unknown): ProblemDetails | null {
+  const status: unknown = readMember(cause, 'status');
+
+  // The unreachable-server case, answered from the status alone and never from the body. Only the
+  // status is published, which is exactly the truth available: nothing was received to describe.
+  if (status === 0) {
+    return { status: 0 };
+  }
+
   const body: unknown = readMember(cause, 'error');
 
   if (isProblemDetails(body)) {
@@ -489,8 +545,6 @@ function problemFromCause(cause: unknown): ProblemDetails | null {
       return parsed;
     }
   }
-
-  const status: unknown = readMember(cause, 'status');
 
   return typeof status === 'number' ? { status } : null;
 }
@@ -761,6 +815,23 @@ export class ModuleStore implements OnDestroy {
   // wrong-record hazard above, so a handle earns its place there for the second reason alone: "this read
   // names no record" does not mean "this read is safe to let land after sign-out", and without a handle
   // teardown would have no way to stop it.
+  //
+  // ⚠ THE INVARIANT, STATED ONCE AND HELD BY EVERY READ METHOD BELOW: exactly ONE pre-dispatch
+  // cancellation per method, and it releases ONLY the handle that method is about to assign.
+  //
+  // MIGRATION: neither half of that was true. Six methods released their own handle TWICE - inert in
+  // effect, but it stated the rule twice and invited a reader to believe the second release was doing
+  // something the first had not. Two methods released a handle they do not own: `loadDefinition` and
+  // `loadDesktopDefinitions` each began by releasing `definitionsRequest`, the CATALOGUE read that
+  // neither of them performs. That was a real defect rather than an untidiness. The three definition
+  // reads serve different screens, so reading one definition abandoned a catalogue read a form was
+  // waiting on - and a cancelled subscription delivers NEITHER a value NOR an error, so the abandoned
+  // screen was left holding an empty catalogue with no failure to explain it and no request in flight
+  // to finish it. The whole point of a per-slice handle is that one slice cannot do this to another.
+  //
+  // Releasing another slice's handle is therefore forbidden anywhere except the two members whose job
+  // it explicitly is: {@link ModuleStore.cancelInFlight}, which releases everything for teardown, and
+  // the `clear*` members, each of which releases the one handle feeding the slice it discards.
 
   private listRequest: Subscription | null = null;
   private moduleRequest: Subscription | null = null;
@@ -878,8 +949,24 @@ export class ModuleStore implements OnDestroy {
    */
   private readonly _choices = signal<readonly ModuleListItem[]>([]);
 
+  /**
+   * How many modules the SERVER said match, which is not necessarily how many are in
+   * {@link ModuleStore._choices}.
+   *
+   * ⚠ THIS EXISTS SO THAT AN INCOMPLETE WALK CANNOT LOOK COMPLETE. The walk in
+   * {@link ModuleStore.loadChoices} gathers every page, so the two normally agree — and a consumer that
+   * finds them disagreeing is looking at a set the page ceiling truncated, which is a fact about the
+   * server rather than about the tenant. Publishing the row count here instead would make the two agree
+   * by construction and destroy the only signal that anything was left out.
+   *
+   * It is NOT a paging coordinate and no pager is derived from it: this slice offers no page index and no
+   * page size, because the walk has already been past every page there is.
+   */
+  private readonly _choicesTotalCount = signal(0);
+
   /** Whether a choices request is in flight. Distinct from the listing's flag, by design. */
   private readonly _choicesLoading = signal(false);
+
 
   /** The module currently being read or edited, or `null` when none has been loaded. */
   private readonly _module = signal<ModuleDetail | null>(null);
@@ -940,8 +1027,29 @@ export class ModuleStore implements OnDestroy {
    */
   private readonly _definition = signal<ModuleDefinition | null>(null);
 
-  /** Whether either catalogue read is in flight. */
-  private readonly _definitionsLoading = signal(false);
+  /**
+   * How many definition reads are outstanding: the catalogue, one bundle's definitions, and one
+   * definition on its own.
+   *
+   * ⚠ A COUNT RATHER THAN A BOOLEAN, AND THE DIFFERENCE IS A DEFECT EITHER WAY IT IS GOT WRONG.
+   * Three commands read definitions into three separate slices and all three report through the one
+   * public flag below, because the only consumer asks a single question - "is a definition read
+   * outstanding?" - and does not care which. With a boolean, whichever read answered FIRST cleared it
+   * while the others were still on the wire, so the busy indicator disappeared and a form rendered as
+   * though its catalogue had arrived, with nothing in it.
+   *
+   * A boolean can only be made honest by having each command cancel its siblings, and that cure is
+   * worse: the three reads serve different screens, a cancelled subscription delivers NEITHER a value
+   * NOR an error, and the store is provided at the application root - so cancelling a sibling left
+   * another screen holding an empty slice with no failure to explain it and no request in flight to
+   * finish it. Counting keeps every read's own handle private to the command that owns it, which is
+   * the invariant stated in the handle block above, AND leaves the flag true until the LAST read has
+   * settled. Nothing has to be cancelled for the flag to tell the truth.
+   *
+   * Held privately as a number and published as a boolean, so no caller can come to depend on the
+   * count itself.
+   */
+  private readonly _definitionReadsInFlight = signal<number>(0);
 
   /**
    * The flat page list for the portal in scope. UNPAGED, so no paging state accompanies it.
@@ -1014,8 +1122,34 @@ export class ModuleStore implements OnDestroy {
   /** Every module read as a picker choice. See {@link ModuleStore._choices}. */
   readonly choices = this._choices.asReadonly();
 
+  /**
+   * How many modules the server reported for the picker. See {@link ModuleStore._choicesTotalCount}.
+   *
+   * Compare it against `choices().length` to learn whether the walk returned everything: equal means
+   * complete, and a larger total means the page ceiling stopped the walk short.
+   */
+  readonly choicesTotalCount = this._choicesTotalCount.asReadonly();
+
+  /**
+   * Whether the picker holds every module the server reported.
+   *
+   * Offered so that a consumer does not have to compare a length against a total itself and get the
+   * direction of the comparison wrong. True on a cold slice, because nothing has been reported missing.
+   */
+  readonly choicesComplete = computed<boolean>(() => this._choices().length >= this._choicesTotalCount());
+
   /** Whether a choices request is in flight. */
   readonly choicesLoading = this._choicesLoading.asReadonly();
+
+  /**
+   * How many modules the SERVER said the picker is choosing among.
+   *
+   * Published so a screen can state the size of the set it is offering. Read together with
+   * {@link ModuleStore.choices}: the two agree after a completed walk, and a screen that ever
+   * observes them disagreeing is looking at a walk that failed, in which case
+   * {@link ModuleStore.failure} carries the reason and the choices slice has been cleared.
+   */
+  readonly choicesTotal = this._choicesTotalCount.asReadonly();
 
   /** The module currently loaded, or `null`. */
   readonly module = this._module.asReadonly();
@@ -1051,8 +1185,14 @@ export class ModuleStore implements OnDestroy {
    * placement's `cacheTime`. */
   readonly definition = this._definition.asReadonly();
 
-  /** Whether either catalogue read is in flight. */
-  readonly definitionsLoading = this._definitionsLoading.asReadonly();
+  /**
+   * Whether ANY definition read is in flight - the catalogue, one bundle's, or one definition.
+   *
+   * Derived from {@link ModuleStore._definitionReadsInFlight} rather than mirroring one boolean, so it
+   * stays true until the last outstanding read has settled. Read-only by construction: it is a
+   * derivation, so there is nothing on it to set.
+   */
+  readonly definitionsLoading = computed<boolean>(() => this._definitionReadsInFlight() > 0);
 
   /** The flat page list, unpaged, in the order the listing returned it. */
   readonly tabs = this._tabs.asReadonly();
@@ -1111,7 +1251,7 @@ export class ModuleStore implements OnDestroy {
       this._saving() ||
       this._settingsLoading() ||
       this._settingsSaving() ||
-      this._definitionsLoading() ||
+      this._definitionReadsInFlight() > 0 ||
       this._tabsLoading() ||
       this._exporting() ||
       this._importing(),
@@ -1319,11 +1459,13 @@ export class ModuleStore implements OnDestroy {
    *   contracts are theirs.
    */
   loadModules(): void {
+    // ⚠ EXACTLY ONE CANCELLATION, AND ONLY OF THIS METHOD'S OWN HANDLE. See the note on the
+    // request-handle block: a doubled release was harmless in effect but stated the rule twice, and
+    // a method that released a handle it does not own broke the rule outright.
     this.listRequest?.unsubscribe();
     this._listLoading.set(true);
     this.clearFailure();
 
-    this.listRequest?.unsubscribe();
     this.listRequest = this.moduleService.listModules(this._query(), this._filter()).subscribe({
       next: (page: ModuleListPage) => {
         this._page.set(page);
@@ -1345,32 +1487,88 @@ export class ModuleStore implements OnDestroy {
    *   showing. That separation is the whole reason this command exists rather than callers moving the
    *   shared page size themselves.
    *
-   * The widest page the endpoint accepts is requested, because a picker has no pager to expose and a
-   * default page would hide most of a tenant's modules behind paging the operator cannot reach. The
-   * server answers a larger page size with a field-level refusal, so this is the widest single read
-   * available; a tenant holding more placements than one page is a documented limit of a picker rather
-   * than a silent truncation.
+   * ⚠ EVERY PAGE IS WALKED, BECAUSE A PICKER OFFERS NO PAGER. This used to issue ONE request for the
+   * widest page the endpoint accepts and publish its items as though they were the whole set. That is a
+   * silent data loss rather than a smaller view, and the shape of the loss is what makes it serious: the
+   * consumer is the import screen's target picker, so a tenant holding more placements than one page had
+   * modules that simply COULD NOT BE CHOSEN as an import target — absent from the list, with no pager to
+   * reach them, no indication that anything had been left out, and nothing an operator could do about it.
+   * The endpoint's validator caps a page at {@link MAX_PAGE_SIZE}, so "every module" is not a request
+   * this client can make; the pages are therefore walked and joined here.
    *
-   * Only the ITEMS are retained. The paging metadata describes a window this slice does not offer to
-   * move through, so republishing it would invite a pager that could not change anything.
+   * The previous prose called this "a documented limit of a picker rather than a silent truncation". It
+   * was documented in this comment and nowhere the operator could see, which is what a silent truncation
+   * is. The walk removes the limit, and {@link ModuleStore.choicesTotalCount} publishes the server's own
+   * total so that any shortfall the guard below does cause remains visible.
+   *
+   * HOW IT TERMINATES, in three independent ways, so no server behaviour can leave it spinning:
+   *
+   *   1. A SHORT PAGE ends it — fewer records than were asked for is the last page by definition. This
+   *      is the condition a correct server always reaches, and normally on the FIRST request, so the
+   *      common case still costs exactly one round trip.
+   *   2. THE SERVER'S OWN TOTAL ends it, once as many records have been gathered as the server said
+   *      exist. Belt and braces against a server that padded a final page.
+   *   3. THE PAGE CEILING ends it — see {@link MAXIMUM_CHOICE_PAGES}.
+   *
+   * ⚠ THE TOTAL PUBLISHED IS THE SERVER'S, NOT THE ROW COUNT, for the same reason the role walk
+   * publishes the server's: reporting the rows gathered would make a truncated walk indistinguishable
+   * from a complete one, which is the very defect this removes.
+   *
+   * Nothing is sorted, filtered or de-duplicated here. No narrowing is sent at all — a picker wants every
+   * placement — and the pages are concatenated in request order, so the assembled order is the server's.
    */
   loadChoices(): void {
     this.choicesRequest?.unsubscribe();
     this._choicesLoading.set(true);
     this.clearFailure();
 
-    this.choicesRequest = this.moduleService
-      .listModules({ pageIndex: 0, pageSize: MAX_PAGE_SIZE }, {})
-      .subscribe({
-        next: (page: ModuleListPage) => {
-          this._choices.set(page.items);
-          this._choicesLoading.set(false);
-        },
-        error: (cause: unknown) => {
-          this._choicesLoading.set(false);
-          this.recordFailure('listModules', cause);
-        },
-      });
+    this.choicesRequest = this.readEveryChoice().subscribe({
+      next: (page: ModuleListPage) => {
+        this._choices.set(page.items);
+        this._choicesTotalCount.set(page.meta.totalCount);
+        this._choicesLoading.set(false);
+      },
+      error: (cause: unknown) => {
+        // ⚠ NOTHING IS PUBLISHED FROM A FAILED WALK. The pages already gathered are discarded rather
+        // than left standing, because a partial choice set is indistinguishable from a complete one on
+        // screen — which is the whole reason the walk raises instead of truncating.
+        this._choices.set([]);
+        this._choicesTotalCount.set(0);
+        this._choicesLoading.set(false);
+        // ⚠ ATTRIBUTED TO THIS COMMAND, NOT TO THE LISTING. The picker read and the grid read share an
+        // endpoint, but a failure slot names the COMMAND that failed rather than the route it addressed,
+        // and the screens that filter on it have no other way to tell a picker read from a grid read.
+        this.recordFailure('loadChoices', cause);
+      },
+    });
+  }
+
+  /**
+   * Abandons the picker-choice read and returns its slice to rest.
+   *
+   * ⚠ THE LEASE A COMPONENT-SCOPED READ NEEDS FROM A ROOT-SCOPED STORE. This store outlives every
+   * screen that reads it, and the choice slice is used by exactly one kind of screen: the transfer
+   * panels, which open a picker and then navigate away. Without this member such a screen had no way
+   * to release what it had started, and three consequences followed once it was destroyed - the
+   * request continued to be paid for by the tenant with nobody to receive it; `_choicesLoading`
+   * stayed true, so {@link ModuleStore.busy} reported the whole store busy on account of a screen
+   * that no longer existed, disabling affordances on whatever screen replaced it; and a late refusal
+   * landed in the failure slot addressed to a screen that had gone.
+   *
+   * Distinct from {@link ModuleStore.cancelInFlight}, which releases EVERY handle and belongs to
+   * session teardown alone: a screen releasing its own read must not abandon reads its siblings are
+   * waiting on.
+   *
+   * The retained choices are deliberately NOT discarded. They are a lookup rather than a selection,
+   * so leaving them costs nothing and a screen re-entered before they go stale renders immediately;
+   * what must not survive is the IN-FLIGHT state, which is what this releases.
+   *
+   * Idempotent: calling it with nothing outstanding releases nothing and writes the same value.
+   */
+  cancelChoices(): void {
+    this.choicesRequest?.unsubscribe();
+    this.choicesRequest = null;
+    this._choicesLoading.set(false);
   }
 
   /**
@@ -1392,7 +1590,6 @@ export class ModuleStore implements OnDestroy {
     this._tabsLoading.set(true);
     this.clearFailure();
 
-    this.tabsRequest?.unsubscribe();
     this.tabsRequest = this.tabService.getByPortal(portalId).subscribe({
       next: (tabs: readonly TabListItem[]) => {
         this._tabPortalId.set(portalId);
@@ -1434,7 +1631,6 @@ export class ModuleStore implements OnDestroy {
     this._tabsLoading.set(true);
     this.clearFailure();
 
-    this.tabsRequest?.unsubscribe();
     this.tabsRequest = this.tabService.getByPortal(portalId).subscribe({
       next: (tabs: readonly TabListItem[]) => {
         this._tabPortalId.set(portalId);
@@ -1471,7 +1667,6 @@ export class ModuleStore implements OnDestroy {
 
     const ticket = this.moduleReads.begin();
 
-    this.moduleRequest?.unsubscribe();
     this.moduleRequest = this.moduleService.getModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
       next: (detail: ModuleDetail) => {
         // ⚠ TWO INDEPENDENT CHECKS, AND NEITHER IS REDUNDANT.
@@ -1518,18 +1713,25 @@ export class ModuleStore implements OnDestroy {
    *   companions - and is excluded wholesale.
    */
   loadDefinitions(): void {
-    this.definitionsRequest?.unsubscribe();
-    this._definitionsLoading.set(true);
+    // ⚠ ONLY THIS METHOD'S OWN HANDLE, for the reason recorded on
+    // {@link ModuleStore.loadDefinition}: the catalogue, the single definition and a bundle's
+    // definitions are three separate slices with three separate handles, and a read of one must never
+    // abort a read of another. The shared loading flag is a presentation detail and is not a licence
+    // to share cancellation.
+    this.releaseDefinitionRead(this.definitionsRequest);
+    this.definitionsRequest = null;
+    this.beginDefinitionRead();
     this.clearFailure();
 
-    this.definitionsRequest?.unsubscribe();
     this.definitionsRequest = this.moduleService.listModuleDefinitions().subscribe({
       next: (definitions: readonly ModuleDefinition[]) => {
         this._definitions.set([...definitions]);
-        this._definitionsLoading.set(false);
+        this.definitionsRequest = null;
+        this.endDefinitionRead();
       },
       error: (cause: unknown) => {
-        this._definitionsLoading.set(false);
+        this.definitionsRequest = null;
+        this.endDefinitionRead();
         this.recordFailure('loadDefinitions', cause);
       },
     });
@@ -1561,21 +1763,29 @@ export class ModuleStore implements OnDestroy {
    * is not compared against a bound.
    */
   loadDefinition(moduleDefinitionId: number): void {
-    this.definitionsRequest?.unsubscribe();
-    this._definitionsLoading.set(true);
+    // ⚠ ONLY THIS METHOD'S OWN HANDLE. It previously released `definitionsRequest` as well - the
+    // CATALOGUE read, which this method does not perform and does not own. Reading one definition
+    // therefore abandoned a catalogue read a different screen was waiting on, and the abandoned
+    // screen was left with an empty catalogue and no failure to explain it, because a cancelled
+    // subscription delivers neither a value nor an error. The two reads are separate slices with
+    // separate handles precisely so that neither can do this to the other.
+    this.releaseDefinitionRead(this.definitionRequest);
+    this.definitionRequest = null;
+    this.beginDefinitionRead();
     this.clearFailure();
 
-    this.definitionRequest?.unsubscribe();
     this.definitionRequest = this.moduleService.getModuleDefinition(moduleDefinitionId).subscribe({
       // A successful read carries a definition: the endpoint answers `200` with it or refuses with a
       // not-found problem document, so an unknown definition reaches the error handler and is
       // announced rather than being committed as an empty success.
       next: (definition: ModuleDefinition) => {
         this._definition.set(definition);
-        this._definitionsLoading.set(false);
+        this.definitionRequest = null;
+        this.endDefinitionRead();
       },
       error: (cause: unknown) => {
-        this._definitionsLoading.set(false);
+        this.definitionRequest = null;
+        this.endDefinitionRead();
         this.recordFailure('loadDefinition', cause);
       },
     });
@@ -1588,18 +1798,23 @@ export class ModuleStore implements OnDestroy {
    * rather than a query parameter, and forwarded exactly as supplied.
    */
   loadDesktopDefinitions(desktopModuleId: number): void {
-    this.definitionsRequest?.unsubscribe();
-    this._definitionsLoading.set(true);
+    // ⚠ ONLY THIS METHOD'S OWN HANDLE, for the same reason given on
+    // {@link ModuleStore.loadDefinition}: this method released the CATALOGUE handle too, so reading
+    // one bundle's definitions silently abandoned a catalogue read belonging to another screen.
+    this.releaseDefinitionRead(this.desktopDefinitionsRequest);
+    this.desktopDefinitionsRequest = null;
+    this.beginDefinitionRead();
     this.clearFailure();
 
-    this.desktopDefinitionsRequest?.unsubscribe();
     this.desktopDefinitionsRequest = this.moduleService.listDesktopModuleDefinitions(desktopModuleId).subscribe({
       next: (definitions: readonly ModuleDefinition[]) => {
         this._desktopDefinitions.set([...definitions]);
-        this._definitionsLoading.set(false);
+        this.desktopDefinitionsRequest = null;
+        this.endDefinitionRead();
       },
       error: (cause: unknown) => {
-        this._definitionsLoading.set(false);
+        this.desktopDefinitionsRequest = null;
+        this.endDefinitionRead();
         this.recordFailure('loadDesktopDefinitions', cause);
       },
     });
@@ -1765,7 +1980,6 @@ export class ModuleStore implements OnDestroy {
 
     const ticket = this.settingsReads.begin();
 
-    this.settingsRequest?.unsubscribe();
     this.settingsRequest = this.moduleService.getModuleSettings(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
       // A successful read carries both maps. An empty map is a real answer - a module with no
       // settings recorded - and is not the same fact as an unresolvable module, which the endpoint
@@ -2068,6 +2282,9 @@ export class ModuleStore implements OnDestroy {
     this._listLoading.set(false);
 
     this._choices.set([]);
+    // Zeroed with the rows it describes. Leaving the previous session's total behind would make an
+    // emptied picker report that modules exist which it is not showing.
+    this._choicesTotalCount.set(0);
     this._choicesLoading.set(false);
 
     this._module.set(null);
@@ -2085,7 +2302,7 @@ export class ModuleStore implements OnDestroy {
     this._definitions.set([]);
     this._desktopDefinitions.set([]);
     this._definition.set(null);
-    this._definitionsLoading.set(false);
+    this._definitionReadsInFlight.set(0);
 
     // The page hierarchy, and the tenant it was read for.
     this._tabs.set([]);
@@ -2162,6 +2379,11 @@ export class ModuleStore implements OnDestroy {
    *
    * Abandoning a read is safe in a way abandoning a write is not: a read has no server-side consequence,
    * so nothing is left half-done by refusing to listen to its answer.
+   *
+   * The three definition handles are released through {@link ModuleStore.cancelDefinitionReads} rather
+   * than listed again here, so that the set of reads sharing the definitions flag is enumerated in
+   * exactly ONE place. Two lists would drift, and a handle present in one but not the other would leak
+   * through whichever path omitted it.
    */
   private cancelReads(): void {
     this.listRequest?.unsubscribe();
@@ -2170,16 +2392,174 @@ export class ModuleStore implements OnDestroy {
     this.moduleRequest = null;
     this.settingsRequest?.unsubscribe();
     this.settingsRequest = null;
-    this.definitionsRequest?.unsubscribe();
-    this.definitionsRequest = null;
-    this.definitionRequest?.unsubscribe();
-    this.definitionRequest = null;
-    this.desktopDefinitionsRequest?.unsubscribe();
-    this.desktopDefinitionsRequest = null;
+    this.cancelDefinitionReads();
     this.tabsRequest?.unsubscribe();
     this.tabsRequest = null;
     this.choicesRequest?.unsubscribe();
     this.choicesRequest = null;
+  }
+
+  /**
+   * Emits ONE envelope carrying every module the picker endpoint will return.
+   *
+   * The walk and its three terminating conditions are described on {@link ModuleStore.loadChoices}; this
+   * method is the mechanism alone. It sends NO narrowing, NO ordering and NO free-text filter, because a
+   * picker wants every placement and this store's browsable coordinates belong to a different slice that
+   * must not be read here — reading {@link ModuleStore._query} would make opening a picker depend on
+   * whatever page a sibling listing happens to be on.
+   *
+   * @returns The complete choice set as one envelope whose `meta.totalCount` is the SERVER's total.
+   * Cold: nothing is requested until it is subscribed, which is what lets {@link ModuleStore.loadChoices}
+   * hold one handle that cancels the whole walk rather than just the request in flight.
+   */
+  private readEveryChoice(): Observable<ModuleListPage> {
+    const requestPage = (pageIndex: number): Observable<ModuleListPage> =>
+      this.moduleService.listModules({ pageIndex, pageSize: MAX_PAGE_SIZE }, {});
+
+    let gathered = 0;
+
+    return requestPage(0).pipe(
+      // `expand` re-enters with each emission, so this is the walk: every page it emits is both a result
+      // to accumulate and the input that decides whether another is needed.
+      expand((page: ModuleListPage, index: number) => {
+        gathered += page.items.length;
+
+        const reportedTotal: number = page.meta.totalCount;
+
+        // An empty inner observable is how `expand` is told to stop: it emits nothing and completes, so
+        // the outer stream completes with the pages already emitted. This is the ONLY silent stop, and
+        // it is the only one that means the answer is complete.
+        if (gathered >= reportedTotal) {
+          return EMPTY;
+        }
+
+        // ⚠ AN INCOMPLETE CHOICE SET IS A REFUSAL, NOT A SHORTER ANSWER, AND A SHORT PAGE IS NOT A
+        // TERMINATION CONDITION. An earlier revision stopped the walk on any page carrying fewer rows
+        // than it asked for and published what it had, which is the defect rather than the guard: the
+        // picker is a "choose from every placement" affordance, so a truncated set is a set with
+        // placements missing that a reader cannot tell from a complete one — they simply are not
+        // offered, silently, with no indication that anything was withheld. The screen that consumes
+        // this offers NO PICKER AT ALL rather than a partial one, which is only possible if the read
+        // raises.
+        if (page.items.length === 0) {
+          return throwError(
+            () =>
+              new Error(
+                `The module choice set could not be read completely: the server reports ` +
+                  `${String(reportedTotal)} placements but supplied ${String(gathered)} and then ` +
+                  `answered with an empty page.`,
+              ),
+          );
+        }
+
+        // The bound, and reaching it is a failure rather than an answer for the same reason.
+        if (index + 1 >= MAXIMUM_CHOICE_PAGES) {
+          return throwError(
+            () =>
+              new Error(
+                `The module choice set could not be read completely: the server reports ` +
+                  `${String(reportedTotal)} placements and stopped supplying them after ` +
+                  `${String(MAXIMUM_CHOICE_PAGES)} pages (${String(gathered)} gathered).`,
+              ),
+          );
+        }
+
+        return requestPage(index + 1);
+      }),
+      reduce<ModuleListPage, ModuleListPage>(
+        (accumulated, page) => ({
+          items: [...accumulated.items, ...page.items],
+          meta: {
+            // The server's total, deliberately: see the note on the slice.
+            totalCount: page.meta.totalCount,
+            // Nought and "one page holding everything" are the coordinates the paging contract publishes
+            // for an unpaged answer, so a consumer cannot tell this envelope from one the server
+            // assembled unpaged.
+            pageIndex: 0,
+            pageSize: accumulated.items.length + page.items.length,
+            totalPages: accumulated.items.length + page.items.length > 0 ? 1 : 0,
+          },
+        }),
+        emptyPagedResult<ModuleListItem>(),
+      ),
+    );
+  }
+
+  /**
+   * Opens one definition read. Paired with {@link ModuleStore.endDefinitionRead}.
+   *
+   * Every path that dispatches a definition read calls this, and every path that settles or abandons one
+   * calls the closer, so {@link ModuleStore.definitionsLoading} is true for exactly as long as at least
+   * one of the three reads is outstanding.
+   */
+  private beginDefinitionRead(): void {
+    this._definitionReadsInFlight.update((open) => open + 1);
+  }
+
+  /**
+   * Closes one definition read.
+   *
+   * Clamped at zero rather than allowed to go negative. A count that has already been reset - by
+   * teardown, or by a session boundary discarding the store - must not be driven below zero by a
+   * callback that was already queued when the reset ran, because a negative count would make the next
+   * read's increment leave the flag reading false while that read was genuinely in flight.
+   */
+  private endDefinitionRead(): void {
+    this._definitionReadsInFlight.update((open) => (open > 0 ? open - 1 : 0));
+  }
+
+  /**
+   * Releases ONE definition read's handle and closes its count, if that handle is outstanding.
+   *
+   * ⚠ THE COUNT MUST BE CLOSED HERE, BECAUSE UNSUBSCRIBING RUNS NEITHER CALLBACK. A cancelled
+   * subscription delivers no value and no error, so the closer on the `next`/`error` paths never runs
+   * for a read that was abandoned - and without this the count would leak upward until the flag was
+   * permanently true and every screen bound to it reported itself permanently busy.
+   *
+   * The handle is only ever passed by the command that owns it, or by
+   * {@link ModuleStore.cancelDefinitionReads} on teardown. A settled read nulls its own handle, so
+   * passing an already-settled handle here is a no-op rather than a double decrement.
+   *
+   * @param handle The read's own handle, or `null` when it holds none.
+   */
+  private releaseDefinitionRead(handle: Subscription | null): void {
+    if (handle === null) {
+      return;
+    }
+
+    handle.unsubscribe();
+    this.endDefinitionRead();
+  }
+
+  /**
+   * Releases all THREE definition reads, whichever of them is outstanding. TEARDOWN ONLY.
+   *
+   * ⚠ THIS IS NOT A PRE-DISPATCH STEP, AND CALLING IT FROM A LOAD COMMAND WOULD REINTRODUCE A REAL
+   * DEFECT. Three commands read definitions — the whole catalogue, one definition, and one bundle's
+   * definitions — into three separate slices, and each of them releases ONLY its own handle, which is
+   * the invariant stated in the handle block near the top of this class. Two of them once released the
+   * catalogue handle as well: the three reads serve different screens and the store is provided at the
+   * application root, so reading one definition abandoned a catalogue read another screen was waiting
+   * on, and because a cancelled subscription delivers neither a value nor an error that screen was left
+   * holding an empty catalogue with no failure to explain it and no request in flight to finish it.
+   *
+   * The reason cross-cancellation looked necessary was the shared loading flag: with one boolean, the
+   * first read to answer cleared it while the others were still on the wire, so the only way to keep it
+   * honest was to guarantee that only one read could ever be outstanding. That premise is gone —
+   * {@link ModuleStore._definitionReadsInFlight} COUNTS the outstanding reads, so the flag stays true
+   * until the last one settles without anything having to be cancelled. Both defects are therefore
+   * closed at once, and neither fix is bought at the other's expense.
+   *
+   * All three are released here because teardown is discarding the whole store, which is the one
+   * situation in which abandoning another slice's read is exactly the intent.
+   */
+  private cancelDefinitionReads(): void {
+    this.releaseDefinitionRead(this.definitionsRequest);
+    this.definitionsRequest = null;
+    this.releaseDefinitionRead(this.definitionRequest);
+    this.definitionRequest = null;
+    this.releaseDefinitionRead(this.desktopDefinitionsRequest);
+    this.desktopDefinitionsRequest = null;
   }
 
   /**

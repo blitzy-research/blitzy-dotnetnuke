@@ -211,7 +211,7 @@
   margin: 0;
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   overflow-wrap: break-word;
 }
 
@@ -253,7 +253,9 @@
 // already caps it, and restating it would be a second definition of one value.
 .role-assignment__lookup,
 .role-assignment__matches,
-.role-assignment__no-matches {
+.role-assignment__no-matches,
+.role-assignment__lookup-note,
+.role-assignment__choices {
   flex-basis: var(--size-full);
   min-inline-size: 0;
 }
@@ -319,6 +321,32 @@
 .role-assignment__no-matches {
   margin: 0;
   color: var(--color-text-muted);
+}
+
+// Standing context under the offered matches — how many of a larger match set are being
+// shown, or that the search stopped short of exhausting it, or that the name box is
+// standing in for a dropdown the tenant asked for. Every one of those is an aside about
+// the search rather than a result of it, so they share the no-matches notice's treatment:
+// muted ink at the body step, on the same reasoning recorded there.
+//
+// Held to the body step rather than shrunk, for the same reason: the muted ink already
+// sits at the lower end of what the vocabulary records as readable, and reducing the size
+// as well would compound that.
+.role-assignment__lookup-note {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+// The dropdown the tenant's account policy can ask for instead of the name box.
+//
+// It is capped at the SAME measure the shared lookup caps itself at, so the field does not
+// change width with the setting — one control replacing the other should not move the
+// layout. The value is read from the shared breakpoint scale rather than copied as a
+// number, which is the same call the shared lookup's own rule makes.
+//
+// The global form vocabulary already paints every select, so nothing is painted here.
+.role-assignment__choices {
+  max-inline-size: mx.breakpoint('sm');
 }
 
 // -----------------------------------------------------------------------------
@@ -445,6 +473,25 @@
   gap: var(--space-2);
   padding-block-start: var(--space-4);
   border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
+}
+
+// The page-ceiling caveat, rendered immediately above the region it qualifies.
+//
+// Muted ink and not danger ink: a shortfall is a caveat on a listing that succeeded, not a
+// refusal, and colouring it as a refusal would put it in competition with the shared failure
+// surface that sits at the top of the screen. The weight is raised so it is not read as
+// incidental helper text, which is what the muted ink alone would suggest.
+//
+// `margin: 0` for the same reason as the unresolved sentence above: the paragraph is a grid
+// item of the host, so the browser's own block margin would stack onto the host's gap and
+// produce a rhythm neither value describes. The measure is capped at the same named step, so
+// the two standing sentences on this screen wrap identically.
+.role-assignment__truncated {
+  max-inline-size: mx.breakpoint('md');
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-muted);
+  overflow-wrap: break-word;
 }
 
 // -----------------------------------------------------------------------------

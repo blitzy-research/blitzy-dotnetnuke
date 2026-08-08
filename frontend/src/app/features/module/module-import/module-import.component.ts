@@ -41,6 +41,7 @@ import { Router } from '@angular/router';
 import { ModuleStore } from '../../../core/state/module.store';
 import { NotificationService } from '../../../core/services/notification.service';
 import { conflictMessage, fieldErrorMessage } from '../../../core/utils/form-errors.util';
+import { OperationGeneration } from '../../../core/utils/operation-generation.util';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -317,7 +318,18 @@ const FORBIDDEN_STATUS = 403;
  * screen. Filtering on the operation is what stops this screen presenting one, and it is a closed
  * list of exactly the two commands this screen issues: it reads the module list, and it imports.
  */
-const OWN_OPERATIONS: readonly ModuleStoreOperation[] = ['importModule', 'listModules'];
+/**
+ * The store operations this screen is answerable for.
+ *
+ * MIGRATION: the second entry was `listModules` — the BROWSABLE LISTING, which this screen never
+ * asks for. It was there because the store's picker-choice command recorded its own failures under
+ * that name, so filtering for the choice read meant claiming every grid read in the application.
+ * Both halves are corrected: the store attributes the picker read to `loadChoices`, and this list
+ * names that operation instead. The consequence of the old pairing was symmetrical and both
+ * directions were wrong — a refusal raised by somebody else's listing appeared on this screen's
+ * refusal surface, and a refusal raised by this screen's picker appeared on theirs.
+ */
+const OWN_OPERATIONS: readonly ModuleStoreOperation[] = ['importModule', 'loadChoices'];
 
 /**
  * The refusal codes that describe the DOCUMENT, and so belong beside the document field.
@@ -649,6 +661,28 @@ export class ModuleImportComponent {
    */
   private isDestroyed = false;
 
+  /**
+   * Distinguishes the import attempt now completing from one the operator has already moved on from.
+   *
+   * ⚠ WHY A LATCH ON `isDestroyed` WAS NOT ENOUGH. {@link ModuleImportComponent.submit} captures the
+   * document and the target module, then AWAITS the document's text. That await is a real suspension
+   * point at which the operator remains free to use the form, so by the time the continuation resumes
+   * the visible selection may name a DIFFERENT document, a DIFFERENT target module, or both — while the
+   * captured locals still hold the old pair. The screen used to check only that it had not been
+   * destroyed, so it went on to dispatch the captured pair regardless.
+   *
+   * The consequence is a cross-record write executed with full authority: the request carries the OLD
+   * document's content under the OLD module's identifier, the form on screen says something else
+   * entirely, and the success notification that follows appears to confirm the import the operator can
+   * see. Nothing about either request is malformed, so no server-side check catches it and the audit
+   * trail records a legitimate import into a module the operator never chose.
+   *
+   * Held per attempt. {@link ModuleImportComponent.onFileSelected} and
+   * {@link ModuleImportComponent.onModuleSelected} invalidate it, so any edit made during the read
+   * abandons the attempt in progress rather than letting it complete against stale values.
+   */
+  private readonly importAttempts = new OperationGeneration();
+
   // -------------------------------------------------------------------------------------
   // DERIVED VIEWS
   // -------------------------------------------------------------------------------------
@@ -695,6 +729,50 @@ export class ModuleImportComponent {
 
   /** Whether there is at least one module to choose from. */
   protected readonly hasModuleChoices = computed<boolean>(() => this.moduleChoices().length > 0);
+
+  /**
+   * How many placements the picker is choosing among, stated for the operator.
+   *
+   * ⚠ THIS EXISTS BECAUSE A PICKER THAT MIGHT BE INCOMPLETE IS UNUSABLE, AND AN EARLIER REVISION
+   *   OF THIS SCREEN WAS EXACTLY THAT. It read the store's picker command when that command issued
+   *   ONE request at the endpoint's maximum page size, so a tenant holding more than a hundred
+   *   placements had every one after the hundredth silently absent from this control — and an
+   *   operator importing content into one of them had no way to reach it and nothing on the screen
+   *   telling them why. The store now walks every page and refuses rather than truncating, so the
+   *   set really is complete; this line is what says so out loud.
+   *
+   * Two numbers are reported rather than one, and the pair is deliberate. The store publishes the
+   * SERVER's placement total; this screen collapses placements to one option per distinct module,
+   * because a module flagged for every page has one listing row per page. So a tenant can honestly
+   * see "4 modules across 9 placements", and the two figures differing is information rather than
+   * a discrepancy. When they agree, the simpler sentence is used.
+   *
+   * Null while the read is in flight and when nothing was found: the empty state and the indicator
+   * are the right surfaces for those, and a count of zero rendered beside a picker that is not
+   * there would be noise.
+   */
+  protected readonly moduleChoiceSummary = computed<string | null>(() => {
+    if (this.store.choicesLoading()) {
+      return null;
+    }
+
+    const options = this.moduleChoices().length;
+
+    if (options === 0) {
+      return null;
+    }
+
+    const placements = this.store.choicesTotal();
+    const modulePart = options === 1 ? '1 module' : `${String(options)} modules`;
+
+    if (placements <= options) {
+      return `Choosing among ${modulePart}.`;
+    }
+
+    const placementPart = placements === 1 ? '1 placement' : `${String(placements)} placements`;
+
+    return `Choosing among ${modulePart} across ${placementPart}.`;
+  });
 
   /** The chosen document's own name, or `null` before one is chosen. Bound as TEXT, never as markup. */
   protected readonly selectedFileName = computed<string | null>(() => {
@@ -768,6 +846,33 @@ export class ModuleImportComponent {
     () => this.ownFailure()?.problem ?? null,
   );
 
+  /**
+   * The sentence to show when a failure this screen owns carried NO problem document.
+   *
+   * ⚠ THE FAILURE THIS MAKES VISIBLE WAS COMPLETELY SILENT, AND ON THIS SCREEN IT DISABLED THE
+   * WHOLE OPERATION. The runtime decoders that check each response against its published contract run
+   * inside the service's own mapping, DOWNSTREAM of the interceptor's error handling — so a `200`
+   * whose body does not match its contract throws a plain error with no document, no status and no
+   * support reference. {@link problem} is `null` for it, and the picker's own listing read is one of
+   * the two operations this screen owns: a malformed listing left the choices empty, which leaves
+   * {@link canSubmit} false forever, and the banner said nothing at all. The operator was looking at
+   * an import screen with no modules and no explanation.
+   *
+   * The store's own authored summary is read out rather than a second sentence being invented here.
+   * Null whenever a document IS present, so the server's own explanation always wins. The supersession
+   * rule is inherited from {@link ownFailure} rather than restated, so a stale import refusal is
+   * dropped here on exactly the same terms.
+   */
+  protected readonly failureSummary = computed<string | null>(() => {
+    const failure = this.ownFailure();
+
+    if (failure === null || failure.problem !== null) {
+      return null;
+    }
+
+    return failure.summary.message;
+  });
+
   /** The failure code the server published for this screen's refusal, or `null`. */
   private readonly refusalCode = computed<string | null>(() => this.ownFailure()?.code ?? null);
 
@@ -778,6 +883,22 @@ export class ModuleImportComponent {
   constructor() {
     this.destroyRef.onDestroy(() => {
       this.isDestroyed = true;
+
+      // ⚠ THE LEASE ON THE PICKER READ, RELEASED HERE AND NOWHERE ELSE.
+      //
+      // The store is provided at the root, so it outlives this screen; the choice read is started by
+      // this screen and wanted by nothing else. Leaving it outstanding cost three things, all of them
+      // observable on the screen that REPLACED this one rather than on this one: the store's busy
+      // projection stayed true, because the choice loading flag is one of its terms, so a sibling
+      // screen's affordances were disabled on account of a read belonging to a destroyed component; a
+      // late refusal landed in the failure slot addressed to a screen that had gone; and the request
+      // itself continued to be paid for with nobody to receive it.
+      //
+      // The store's own command is used rather than a handle held here, because the handle belongs to
+      // the store and a component reaching for it would be a second owner of one subscription. It
+      // releases ONLY the choice slice — never the whole store, which would abandon reads the
+      // siblings are waiting on.
+      this.store.cancelChoices();
     });
 
     // The store outlives this screen, so a previous visit's outcome and refusal are discarded before
@@ -787,8 +908,16 @@ export class ModuleImportComponent {
     this.store.clearTransferOutcome();
     this.store.clearFailure();
 
-    // The choices are read through the store's DEDICATED PICKER COMMAND, which asks for the widest page
-    // the endpoint allows and lands in a slice of its own.
+    // The choices are read through the store's DEDICATED PICKER COMMAND, which walks EVERY page of the
+    // module listing and lands in a slice of its own.
+    //
+    // ⚠ COMPLETENESS IS THE STORE'S GUARANTEE AND THIS SCREEN RELIES ON IT RATHER THAN PAGING ITSELF.
+    // The command follows every page the server reports and REFUSES — publishing nothing and recording
+    // the reason — if it cannot finish. So this screen has exactly two states to present and no third:
+    // a complete set, or a refusal in the shared banner. It deliberately does not add a pager or a
+    // search box of its own, because either would imply the set on screen might be a window, which is
+    // the ambiguity the store's refusal exists to eliminate; what it does add is the count, so the
+    // completeness is visible rather than merely promised — see `moduleChoiceSummary`.
     //
     // MIGRATION: this screen previously widened the SHARED listing page size and re-read the shared
     // listing, which is a defect rather than a shortcut: the module listing is provided at the root, so
@@ -951,6 +1080,11 @@ export class ModuleImportComponent {
     // file it has already refused and a later submit has nothing oversized to find.
     const tooLarge = chosen !== null && chosen.size > MODULE_IMPORT_MAX_FILE_BYTES;
 
+    // Choosing a document ABANDONS any attempt still reading one. Without this the read already in
+    // flight would resume holding the previous document and dispatch it, so the operator's newer choice
+    // would be discarded in favour of the one they had just replaced.
+    this.importAttempts.invalidate();
+
     this._selectedFile.set(tooLarge ? null : chosen);
     this._fileTooLarge.set(tooLarge);
     this._fileReadFailed.set(false);
@@ -973,10 +1107,17 @@ export class ModuleImportComponent {
   /**
    * Notes that the operator changed their choice of module.
    *
-   * The control's own value is written by the form directive; this exists only so that a refusal held
-   * against the previous choice stops being shown beside the new one.
+   * The control's own value is written by the form directive; this exists for two reasons of its own: so
+   * that a refusal held against the previous choice stops being shown beside the new one, and so that
+   * changing the target abandons an attempt that is still reading a document for the PREVIOUS target.
+   *
+   * The second is not a lesser concern than changing the document. The captured target is what the
+   * request's `moduleId` becomes, so an attempt allowed to complete after the target changed would load
+   * the document into a module the operator had just navigated away from — see
+   * {@link ModuleImportComponent.importAttempts}.
    */
   protected onModuleSelected(): void {
+    this.importAttempts.invalidate();
     this.supersedeFailure();
   }
 
@@ -1009,6 +1150,26 @@ export class ModuleImportComponent {
    *   does not hold.
    */
   protected async submit(): Promise<void> {
+    // ⚠ RE-ENTRY IS REFUSED BEFORE ANY STATE IS TOUCHED, and the ordering is the point: this returns
+    // having changed NOTHING, so a refused attempt cannot alter a message, clear a flag or mark the form
+    // attempted on behalf of an operator whose earlier attempt is still running.
+    //
+    // The disabled submit button is not sufficient on its own. It is a rendered affordance, and this
+    // method is reachable without it: the form's submit event fires on the Enter key from within either
+    // field, and a re-entrant call arriving in the window before change detection has repainted the
+    // button would find it still enabled. Two concurrent attempts would each read a document and each
+    // dispatch, so the server would receive two imports and the second success notification would
+    // navigate away from a screen whose first request was still outstanding.
+    if (this.busy()) {
+      return;
+    }
+
+    // Issued HERE — before the first await and beside nothing else that can suspend — so that every edit
+    // made from this moment on is detectable by the continuation. Held in a local rather than a field,
+    // which is what the mechanism requires: a field would be overwritten by the next attempt and the
+    // earlier continuation would then compare against the newer value and admit itself.
+    const attempt = this.importAttempts.begin();
+
     this._submitAttempted.set(true);
     this._fileReadFailed.set(false);
     this._fileTooLarge.set(false);
@@ -1075,6 +1236,37 @@ export class ModuleImportComponent {
 
     // The read is the one awaited step, so it is the one place the screen can have gone in the meantime.
     if (this.isDestroyed) {
+      return;
+    }
+
+    // ⚠ TWO INDEPENDENT CHECKS ACROSS THE AWAIT, AND NEITHER IS REDUNDANT.
+    //
+    // The TICKET refuses an attempt the operator has abandoned. It is the only one of the two that can
+    // catch a re-pick of the SAME document or the SAME module, because both edits leave the compared
+    // values identical while genuinely being a newer intent — and it is also the only one that answers
+    // for an edit which the handler recorded but which left the control's committed value unchanged.
+    //
+    // The VALUE COMPARISON refuses an attempt whose captured pair no longer describes what is on screen.
+    // It is what makes the guarantee independent of the invalidation call sites: were a third edit path
+    // ever added and its invalidation forgotten, this comparison would still refuse the stale dispatch.
+    // Together they mean the request can only carry the pair the form is displaying at the instant it is
+    // issued.
+    //
+    // Nothing is announced when either refuses. An abandoned attempt is not a failure — the operator
+    // changed their mind, and the state they changed it to is already on screen — so a message here would
+    // report an error about work nobody is waiting for. The choice is left exactly as they left it.
+    if (!this.importAttempts.isCurrent(attempt)) {
+      return;
+    }
+
+    // Reference identity is the right comparison for the document and not a weaker one. A `File` is an
+    // opaque handle, two selections of the same path yield two distinct handles, and comparing names or
+    // sizes would treat a re-pick as the same choice — which is exactly the case the ticket above exists
+    // to catch, so the two checks must not be made to overlap by loosening this one.
+    //
+    // The module is compared with `!==` against the control's CURRENT value, never by truthiness: module
+    // zero is an ordinary module, so `if (!currentModuleId)` would refuse a legitimate target.
+    if (this._selectedFile() !== file || this.form.controls.moduleId.value !== moduleId) {
       return;
     }
 

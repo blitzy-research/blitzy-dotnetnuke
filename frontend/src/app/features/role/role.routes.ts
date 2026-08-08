@@ -18,39 +18,42 @@ import { permissionGuard } from '../../core/guards/permission.guard';
  * say why. `app.routes.spec.ts:L313` asserts the ordering, which is what turns a future
  * reordering into a failing suite rather than a confused caller.
  *
- * WHICH ROUTES DECLARE A POLICY, AND WHY THE LISTING DOES NOT
- * ----------------------------------------------------------
- * The three MUTATING addresses — create, edit and membership — each declare the
- * tenant-administration policy below. The LISTING at `''` declares none, and that
- * asymmetry is deliberate on three independent counts rather than an omission:
+ * WHY ALL FOUR ROUTES DECLARE THE SAME POLICY, THE LISTING INCLUDED
+ * ----------------------------------------------------------------
+ * `RolesController` declares its policy ONCE, on the CLASS, and no action overrides it —
+ * so tenant administration gates the LISTING READ exactly as tightly as it gates the
+ * writes. Every one of the four addresses below therefore declares that one name, and the
+ * uniformity is read from the controller rather than chosen here.
  *
- *   * It preserves the legacy reachability. `Website/admin/Security/Roles.ascx` was
- *     served to any caller who could reach the administration tab at all, and only the
- *     mutations reached FROM it were restricted. Gating the listing here would withdraw
- *     a screen the legacy showed, which is the one thing a migration of this kind is not
- *     allowed to do quietly.
- *   * It matches the two sibling barrels built to the same shape. `portal.routes.ts:L58`
- *     and `user.routes.ts:L97` both leave their listing ungated and gate their writes. A
- *     barrel that gated its listing while its siblings did not would be inconsistent
- *     without being any more correct, and the inconsistency would be invisible until
- *     someone compared the four files.
- *   * It costs nothing, because THIS GATE IS ADVISORY. It decides which navigation is
- *     offered, not which request succeeds. `RolesController` is class-gated on the API
- *     side and answers an unauthorised caller with 403 whatever this table says, so the
- *     listing cannot disclose a role by being reachable — it can only render what the
- *     API is willing to return to that particular caller. The server is the authority
- *     here; this array is a navigation affordance.
+ * The uniformity is a property of the domain rather than a gap in the controller: a role is
+ * a tenant-scoped object with no per-record grant of its own, so unlike a module or a tab
+ * there is no "role edit" permission to ask about — only whether the caller administers the
+ * tenant. That is precisely the policy `permission.guard.ts` resolves without needing a
+ * subject, which is why no route here carries an identifier for the gate's benefit; the two
+ * that do carry `:roleId` carry it for the screen.
  *
- * The policy the three of them name is the correct one rather than an approximation of a
- * narrower one. `RolesController` declares its policy ONCE, on the class, and no action
- * overrides it, so every role write and every membership change is gated on exactly that
- * single name. The uniformity is a property of the domain rather than a
- * gap in the controller: a role is a tenant-scoped object with no per-record grant of its
- * own, so unlike a module or a tab there is no "role edit" permission to ask about — only
- * whether the caller administers the tenant. That is precisely the policy
- * `permission.guard.ts` resolves without needing a subject, which is why no route here
- * carries an identifier for the gate's benefit; the two that do carry `:roleId` carry it
- * for the screen.
+ * MIGRATION: a previous revision left the LISTING ungated and gave three reasons, and all
+ * three are recorded here with what was wrong with them, because each looked sound in
+ * isolation:
+ *
+ *   * "It preserves the legacy reachability." It did not. `Roles.ascx.vb:L321-L323` refuses
+ *     a caller who is not in the administrator role before the grid is ever bound, so the
+ *     legacy listing was NOT served to any administration-tab visitor. Gating it is parity;
+ *     leaving it open was the divergence.
+ *   * "It matches the sibling barrels." Consistency with a sibling is not evidence about
+ *     THIS controller. The sibling barrels' listings sit behind endpoints with their own,
+ *     different policies, and the portal listing in particular remains ungated for a reason
+ *     that is stated on that route and does not transfer here.
+ *   * "It costs nothing, because the gate is advisory." This is the one that mattered, and
+ *     it had the cost backwards. Advisory is precisely why an ungated listing is wrong: a
+ *     non-administrator was admitted to a screen whose FIRST request is certain to be
+ *     refused, so the screen rendered its chrome, its column headings and its empty grid,
+ *     and then a 403 banner — a worse outcome than never offering the navigation. Nothing
+ *     was disclosed, and nothing useful was offered either.
+ *
+ * ⚠ THE GATE REMAINS ADVISORY AND THE SERVER REMAINS THE AUTHORITY. `RolesController`
+ * answers 403 on its own account whatever this table says. What the declaration buys is
+ * that an operator is not walked into a screen the client can already tell is unusable.
  *
  * ⚠ THE ROLE GROUP FORM IS NOT DECLARED IN THIS BARREL, DELIBERATELY. `role-group-form`
  * lives in this feature folder, but it is NOT addressed beneath `roles` — because a role
@@ -127,13 +130,22 @@ export const ROLE_ROUTES: Routes = [
      * `ROLES_PATH = '/roles'` once a mutation settles, and by `user-form` and
      * `role-assignment` when they navigate back out.
      *
-     * The only route here with no policy, per the reasoning at the head of this file:
-     * the legacy listing was reachable by any authenticated administration-tab visitor,
-     * both sibling barrels of this shape do the same, and the API refuses an
-     * unauthorised read on its own account. `data.permission` is omitted TOGETHER with
-     * the gate and never separately — `app.routes.spec.ts:L254-L272` asserts that a
-     * declared policy and an attached gate always agree, so half of this pair would be
-     * a failing spec rather than a subtle bug.
+     * Gated on tenant administration, like every other address in this barrel, because
+     * `RolesController`'s class-level declaration covers `GET roles` as tightly as it
+     * covers the writes. The listing is the one screen whose FIRST act is a request, so
+     * admitting a caller the server will refuse produced a fully rendered screen that
+     * could never show a row.
+     *
+     * `data.permission` is declared TOGETHER with the gate and never separately —
+     * `app.routes.spec.ts` asserts that a declared policy and an attached gate always
+     * agree, so half of this pair would be a failing spec rather than a subtle bug.
+     *
+     * MIGRATION: the legacy control performed this very check imperatively.
+     * `Roles.ascx.vb:L321-L323` redirects a caller who is neither the account under
+     * inspection nor in the administrator role to the access-denied screen, before the grid
+     * is bound. The declaration below is that test moved to the route table; leaving the
+     * address ungated, as a previous revision did, was the divergence rather than the
+     * parity.
      *
      * MIGRATION: `Roles.ascx.resx` → `ControlTitle_.Text` = `Security Roles`. The empty
      * suffix on that key is not a typo: the legacy control took its title from
@@ -141,6 +153,8 @@ export const ROLE_ROUTES: Routes = [
      */
     path: '',
     title: 'Security Roles',
+    canActivate: [permissionGuard],
+    data: { permission: 'PortalAdministrator' },
     loadComponent: () =>
       import('./role-list/role-list.component').then((m) => m.RoleListComponent),
   },

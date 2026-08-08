@@ -1242,11 +1242,27 @@ function ladderOutcome(code: AuthFailureCode, revealVerification: boolean): Veri
 // make the migrated screen differ VISIBLY from the legacy one, which is the
 // opposite of the intent.
 //
-// MIGRATION: two legacy misspellings are corrected - "Futher" for "Further" in
-// the registration-error wording, and "heirarchy" for "hierarchy" in the page-name
-// conflict wording. Both are typographic rather than behavioural, both are in text
-// this migration authors afresh rather than in a stored value, and neither
-// correction changes which message is selected for which outcome.
+// MIGRATION: NO LEGACY MISSPELLING IS CORRECTED, and that is a decision rather than
+// an oversight. The measured values carry two: "Futher" for "Further" in the
+// registration-error wording (SharedResources.resx line 301) and "heirarchy" for
+// "hierarchy" in the page-name conflict wording
+// (Website/admin/Tabs/App_LocalResources/ManageTabs.ascx.resx line 334). Both are
+// reproduced or omitted exactly as measured and neither is repaired here, because
+// the domain-logic-preservation item requires a discovered defect to be ANNOTATED
+// IN PLACE rather than fixed, and the UI-parity item requires error messages to be
+// EQUIVALENT to the ones the operator already knows. A typographic repair looks
+// free and is not: it silently changes the sentence a person has learned to
+// recognise, and it makes this file the one place in the migration where wording
+// was edited on the way through.
+//
+// Where each of the two lands differs, so both are stated:
+//   - the registration-error sentence IS shipped, at {@link REGISTRATION_ERROR}, and
+//     carries "Futher" verbatim. The annotation sits on the constant itself and the
+//     paired specification asserts the measured spelling.
+//   - the page-name conflict sentence is NOT shipped at all. Only the reserved-name
+//     refusal reaches this API, so {@link CONFLICT_MESSAGE} carries no key for the
+//     duplicate-path sentence and "heirarchy" therefore appears in no shipped
+//     string. See the note on {@link CONFLICT_CODES}.
 
 // ---------------------------------------------------------------------------
 // CODE VOCABULARY 2 - PASSWORD CHANGE
@@ -1456,9 +1472,18 @@ const USER_EMAIL_EXISTS =
   'A user already exists for the email address specified. Please login using the ' +
   'registered account of that email address.';
 
+// DEFECT PRESERVED, ANNOTATED AND DELIBERATELY NOT REPAIRED: "Futher" is a misspelling of
+// "Further", and it is in the measured resource value itself -
+// Website/App_GlobalResources/SharedResources.resx line 301. It is reproduced
+// character-for-character because the domain-logic-preservation item forbids opportunistic
+// correction and the UI-parity item requires error messages to be EQUIVALENT: this is the
+// sentence an operator of the legacy console read, and it is the sentence they read here.
+// Repairing it is a separate, explicit decision for whoever owns the wording, not something
+// a migration takes on its own initiative - and the paired specification asserts the
+// measured spelling, so a silent repair fails rather than passing unnoticed.
 const REGISTRATION_ERROR =
   'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
-  'Administrator For Further Information.';
+  'Administrator For Futher Information.';
 
 export const USER_CREATE_MESSAGE: Readonly<Record<UserCreateCode, string>> = Object.freeze({
   // These three share one message because the legacy translator combined them in a
@@ -1626,10 +1651,12 @@ export type ConflictCode = (typeof CONFLICT_CODES)[number];
 /**
  * Wording for each state-refusal code, from the legacy resource files.
  *
- * The page-name wording corrects a misspelling that is in the legacy string itself:
- * the legacy text reads "page heirarchy". Only the reserved-name refusal is reachable
- * through this API, so the corrected duplicate-path sentence has no key here - see the
- * note on {@link CONFLICT_CODES}.
+ * The legacy page-name conflict sentence misspells "hierarchy" as "heirarchy". Nothing
+ * here repairs it and nothing here reproduces it either, because only the reserved-name
+ * refusal is reachable through this API and the duplicate-path sentence therefore has no
+ * key in this table at all - see the note on {@link CONFLICT_CODES}. Should the server
+ * ever emit that refusal, the sentence is to be transcribed as measured, misspelling
+ * included, on the same reasoning as {@link REGISTRATION_ERROR}.
  */
 export const CONFLICT_MESSAGE: Readonly<Record<ConflictCode, string>> = Object.freeze({
   'portal.alias_duplicate':

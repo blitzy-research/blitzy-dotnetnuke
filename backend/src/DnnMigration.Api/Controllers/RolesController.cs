@@ -238,10 +238,22 @@ namespace DnnMigration.Api.Controllers;
 /// <strong>What this resource deliberately does not expose.</strong> There is no role-group create,
 /// read, update or delete action - that is the role-group resource, even though both are served by the
 /// same application contract because a group's every rule is a rule about the roles it classifies.
-/// There is no self-service subscription surface: the legacy member-services screen
-/// (<c>Website/admin/Users/MemberServices.ascx.vb</c>) subscribed and unsubscribed an account through
+/// There is no self-service subscription surface HERE, and no redemption of a role's invitation code
+/// here either: both belong to the ACCOUNT resource, beneath <c>/api/v1/users/{userId}/services</c>.
+/// An earlier revision recorded the opposite - that the legacy member-services screen
+/// (<c>Website/admin/Users/MemberServices.ascx.vb</c>) "subscribed and unsubscribed an account through
 /// the same underlying assignment operation, so it maps onto the two membership actions below rather
-/// than onto an invented address of its own. There is no redemption of a role's invitation code and no
+/// than onto an invented address of its own" - and that is withdrawn for two measured reasons. The panel
+/// acted on the SIGNED-IN account and on nothing else: its grid binding at <c>:L150</c>, its subscription
+/// at <c>:L106</c>, its trial at <c>:L125</c> and its code redemption at <c>:L413</c> all pass
+/// <c>UserInfo.UserID</c>, which <c>PortalModuleBase.vb:L319-L323</c> resolves as the current account,
+/// while the subject account its container assigned at <c>ManageUsers.ascx.vb:L517</c> is read nowhere.
+/// And the class-level policy on THIS controller could never admit that caller, because authorisation
+/// attributes combine rather than override, so a self-service action here would be refused to the only
+/// caller it exists for. The two membership actions below remain the ONLY implementation of the assignment
+/// and the removal, and the account service delegates to them rather than reaching persistence itself, so
+/// one rule still has one home - what moved is the address a self-service caller reaches it by, not the
+/// rule. There is no
 /// billing-transaction action. There is no cache-invalidation action and no bulk action of any kind.
 /// And there is no permission action: a role is the SUBJECT of a permission grant, never its store, so
 /// module and page permissions belong to the permission resource, which publishes them as a read-only

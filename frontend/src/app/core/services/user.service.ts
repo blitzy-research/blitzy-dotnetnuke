@@ -91,7 +91,10 @@ import {
   decodeUserProfile,
 } from '../models/profile.model';
 import {
+  decodeMemberService,
   decodeMembershipSettings,
+  decodeMembershipSettingsUpdateResult,
+  decodeRedeemServiceCodeResult,
   decodeUserDetail,
   decodeUserListItem,
 } from '../models/user.model';
@@ -109,13 +112,22 @@ import type {
 import type {
   ChangePasswordRequest,
   CreateUserRequest,
+  MemberService,
   MembershipSettings,
+  MembershipSettingsUpdateResult,
   PagedUserList,
+  RedeemServiceCodeRequest,
+  RedeemServiceCodeResult,
   UpdateUserRequest,
   UserDetail,
   UserListQuery,
 } from '../models/user.model';
-import { userApprovalParams, userListParams } from '../utils/http-params.util';
+import {
+  identifiesAPerson,
+  userApprovalParams,
+  userListParams,
+  userSearchBody,
+} from '../utils/http-params.util';
 
 /**
  * One decoder per response shape this transport reads, composed once at module scope.
@@ -141,17 +153,25 @@ const USER_PROFILE_RESPONSE: Decoder<UserProfile> = envelopeOf(decodeUserProfile
 const MEMBERSHIP_SETTINGS_RESPONSE: Decoder<MembershipSettings> = envelopeOf(
   decodeMembershipSettings,
 );
+const MEMBERSHIP_SETTINGS_UPDATE_RESPONSE: Decoder<MembershipSettingsUpdateResult> =
+  envelopeOf(decodeMembershipSettingsUpdateResult);
 const PROFILE_DEFINITION_RESPONSE: Decoder<ProfilePropertyDefinition> = envelopeOf(
   decodeProfilePropertyDefinition,
 );
 const PROFILE_DEFINITION_LIST_RESPONSE: Decoder<readonly ProfilePropertyDefinition[]> =
   envelopeOf(arrayOf(decodeProfilePropertyDefinition));
+const MEMBER_SERVICE_LIST_RESPONSE: Decoder<readonly MemberService[]> = envelopeOf(
+  arrayOf(decodeMemberService),
+);
+const REDEEM_SERVICE_CODE_RESPONSE: Decoder<RedeemServiceCodeResult> = envelopeOf(
+  decodeRedeemServiceCodeResult,
+);
 
 /**
  * Transport for accounts, profiles, the tenant's account policy and the profile
  * declarations a profile is composed of.
  *
- * Deliberately flat and deliberately dull: nineteen methods, each one endpoint, no
+ * Deliberately flat and deliberately dull: twenty-four methods, each one endpoint, no
  * branch in any of them that is not the endpoint's own shape. Everything that could
  * be described as a decision - which accounts to ask for, whether an identifier is
  * known, what to do with a failure - belongs to the caller, because the caller has
@@ -169,16 +189,27 @@ const PROFILE_DEFINITION_LIST_RESPONSE: Decoder<readonly ProfilePropertyDefiniti
  * a query string here would either be redundant or be a second, disagreeing opinion
  * about which tenant the caller meant.
  *
- * MIGRATION: AN ACCOUNT'S ROLE MEMBERSHIPS ARE NOT EXPOSED FROM THIS SIDE. Adding,
- * removing and time-bounding a membership all live on the role resource, as a
- * sub-collection of one role, and belong to the role service. The legacy
- * member-services screen (`Website/admin/Users/MemberServices.ascx.vb`) presented a
- * paid subscription as a concept of its own, but each subscription was one row joining
- * an account to a role with an effective and an expiry date - the very row the role
- * resource writes - so a parallel services or subscriptions route here would have been
- * a second name for one table, with two places to keep the rules consistent. There is
- * accordingly no membership, service or subscription method on this service, and none
- * should be added.
+ * MIGRATION: ADMINISTERED ROLE MEMBERSHIP IS NOT EXPOSED FROM THIS SIDE. Assigning a
+ * role to an account, removing one and time-bounding one all live on the role resource,
+ * as a sub-collection of one role, and belong to the role service. Each such assignment
+ * is one row joining an account to a role with an effective and an expiry date, so a
+ * parallel administrative memberships route here would have been a second name for one
+ * table with two places to keep the rules consistent.
+ *
+ * SELF-SERVICE IS A DIFFERENT MATTER, AND IT DOES LIVE HERE. An earlier revision of this
+ * note concluded from the paragraph above that "there is accordingly no membership,
+ * service or subscription method on this service, and none should be added"; that
+ * conclusion is WITHDRAWN, because it reasoned from the storage shape and the legacy
+ * screen's authority is its CALLER. `Website/admin/Users/MemberServices.ascx.vb` acted
+ * only ever on `UserInfo.UserID` - the signed-in account (`PortalModuleBase.vb:L319-L323`)
+ * - and its container hid it from an administrator outright (`manageusers.ascx.vb:L61-L66`),
+ * so its four affordances (catalogue, subscribe or cancel, trial, invitation code) are
+ * operations an account performs on ITSELF. The API gates all five endpoints on account
+ * ownership, which the role resource's endpoints cannot express: they are gated on tenant
+ * administration, so routing self-service through them would have required admitting every
+ * account holder to an administrative surface. The five methods at the foot of this class
+ * are those operations, and they write assignments through the same server-side primitives
+ * the role resource writes them through - one implementation of the rules, two callers.
  *
  * MIGRATION: NOTHING IS CACHED HERE. The legacy domain layer reached its cache
  * directly from inside the business logic, 116 times across the code this migration
@@ -310,6 +341,33 @@ export class UserService {
    * nothing is unwrapped and no paging fact is discarded.
    */
   list(query: UserListQuery): Observable<PagedUserList> {
+    // ⚠ THE TRANSPORT IS CHOSEN BY WHETHER THE QUERY NAMES A PERSON, AND THIS BRANCH MUST NOT BE
+    // COLLAPSED TO ONE CALL. A user name, an email address and an arbitrary profile-property name
+    // paired with the value to match all identify somebody. Sent as query parameters they end up in
+    // the REQUEST TARGET, which is the most widely recorded part of an HTTP exchange: the browser's
+    // own history, every forward and reverse proxy's access log, the server's access log, and any
+    // telemetry that samples URLs. Each of those recorders sits at an END of the encrypted channel
+    // rather than in the middle of it, so HTTPS does not address the exposure — this is CWE-598,
+    // "Use of GET Request Method With Sensitive Query Strings". A request body is written to none of
+    // them by default, so an identifying search goes in one.
+    //
+    // The profile pair is the sharpest case, because a tenant defines whatever properties it likes:
+    // the value being matched is arbitrary personal data whose meaning neither side knows, and it
+    // may perfectly well be a national identifier or a telephone number.
+    //
+    // A listing that names nobody — a page index, a page size, an ordering and at most an approval
+    // state — stays on the `GET`, which keeps it cacheable and idempotent. Both addresses reach the
+    // same server capability under the same authorisation policy and the same paging bounds, and
+    // both answer the same envelope, so the DECODER below is shared and the caller cannot tell which
+    // was used.
+    if (identifiesAPerson(query)) {
+      return this.http
+        .post<unknown>(API_ENDPOINTS.users.search(), userSearchBody(query, query), {
+          context: presentedInContext(),
+        })
+        .pipe(map((body) => decodeResponse(USER_PAGE, body)));
+    }
+
     const params: HttpParams = userListParams(query, query);
 
     return this.http
@@ -672,7 +730,11 @@ export class UserService {
    * into an absent member, and the server - which serialises and binds without eliding
    * a default - would read the difference as an instruction it was never given.
    *
-   * Answers with no body.
+   * ⚠ ANSWERS WITH A BODY, WHERE EVERY OTHER SETTINGS WRITE IN THIS WORKSPACE ANSWERS
+   * `204`. Adopting a new display-name format has a tenant-wide side effect the caller
+   * cannot predict from its own request - every account's stored display name is
+   * recomposed from it - so the write reports what it did rather than leaving the caller
+   * to guess. See {@link MembershipSettingsUpdateResult}.
    *
    * MIGRATION: two collision traps in this vocabulary are worth stating because
    * neither is visible from the type. An allowance of zero means UNLIMITED while minus
@@ -688,12 +750,17 @@ export class UserService {
    * nothing: a value passes through as given.
    *
    * @param request The whole policy to write.
-   * @returns Completion. No payload.
+   * @returns What the write did beyond storing the values: whether the display-name format
+   * changed, and how many accounts were rewritten as a result.
    */
-  updateMembershipSettings(request: MembershipSettings): Observable<void> {
-    return this.http.put<void>(API_ENDPOINTS.users.membershipSettings(), request, {
-      context: presentedInContext(),
-    });
+  updateMembershipSettings(
+    request: MembershipSettings,
+  ): Observable<MembershipSettingsUpdateResult> {
+    return this.http
+      .put<unknown>(API_ENDPOINTS.users.membershipSettings(), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MEMBERSHIP_SETTINGS_UPDATE_RESPONSE, body)));
   }
 
   // -------------------------------------------------------------------------
@@ -837,5 +904,152 @@ export class UserService {
       API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId),
       { context: presentedInContext() },
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // The account's own subscriptions
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reads the services offered to one account, with whatever that account already holds
+   * against each of them.
+   *
+   * Replaces the whole read half of `Website/admin/Users/MemberServices.ascx`: the
+   * seven-column `grdServices` grid (L26-L71) bound `GetUserRoles(portalId, userId, False)`
+   * (`:L147-L157`), whose `False` selected the terminal `GetServices` procedure
+   * (`DNNRoleProvider.vb:L481-L488`) and therefore the tenant's PUBLIC roles only.
+   *
+   * ⚠ EVERY PRESENTATION DECISION ARRIVES DECIDED. The legacy markup called four
+   * code-behind helpers per row - `ServiceText` for the command label, `ShowSubscribe` and
+   * `ShowTrial` for the two link visibilities, and `FormatExpiryDate` for the lapsed test -
+   * each of which read stored role terms, stored assignment dates and the server's own
+   * clock. All four are members of the contract, so nothing here or above re-derives them:
+   * a client that recomputed "is this lapsed" against the browser's clock would disagree
+   * with the server that refuses the command.
+   *
+   * Unpaged, exactly as the legacy grid was. The answer is one array in the shared envelope.
+   *
+   * @param userId The account whose catalogue to read. Interpolated unchanged; zero and
+   * negative values are transmitted as they stand, per the sentinel discipline recorded on
+   * the contract.
+   * @returns The catalogue. A read-only array; an account offered nothing has an empty one.
+   */
+  listMemberServices(userId: number): Observable<readonly MemberService[]> {
+    return this.http
+      .get<unknown>(API_ENDPOINTS.users.services(userId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MEMBER_SERVICE_LIST_RESPONSE, body)));
+  }
+
+  /**
+   * Subscribes the account to one service, or renews a subscription that has lapsed.
+   *
+   * ONE method for both, because the legacy screen had one link for both: `ServiceText`
+   * returned `Subscribe` or `Renew` from the same row state and the same command ran
+   * (`MemberServices.ascx.vb:L288-L305`, dispatched at `:L439-L452`). The catalogue names
+   * which of the two words a row is offering; this call is the same request either way.
+   *
+   * Takes no body: the account and the service are the whole of the request. Answers with
+   * none.
+   *
+   * ⚠ A SERVICE THAT CHARGES A FEE IS REFUSED, NOT CHARGED. The legacy path handed such a
+   * role to `~/admin/Sales/PayPalSubscription.aspx` (`:L113`); sales administration is out
+   * of scope for this migration, so the API answers 403 with a distinct reason. The
+   * catalogue reports which rows those are, so a caller can explain the refusal instead of
+   * offering a command that cannot complete.
+   *
+   * @param userId The account to subscribe. Interpolated unchanged.
+   * @param roleId The service to subscribe to. Interpolated unchanged; zero is a real role.
+   * @returns Completion. No payload.
+   */
+  subscribeToService(userId: number, roleId: number): Observable<void> {
+    return this.http.post<void>(API_ENDPOINTS.users.serviceSubscription(userId, roleId), null, {
+      context: presentedInContext(),
+    });
+  }
+
+  /**
+   * Cancels the account's subscription to one service.
+   *
+   * ⚠ CANCELLING MAY EXPIRE THE ASSIGNMENT RATHER THAN REMOVE IT, and that is the legacy
+   * rule rather than a compromise: `RoleController.vb:L494-L496` expires an assignment whose
+   * role charges a fee instead of deleting it, so a paid history is not destroyed by a
+   * cancellation. The API reports which of the two it did as a success reason; either way the
+   * account no longer holds the service, and re-reading the catalogue is what shows the new
+   * state.
+   *
+   * ⚠ A FEE-BEARING SERVICE IS REFUSED IN THIS DIRECTION TOO. The legacy cancel arm shared
+   * the subscribe gate and reached the same payment page with `&cancel=1` appended
+   * (`MemberServices.ascx.vb:L115`), so cancelling one locally while a processor still held
+   * the arrangement would leave the two systems disagreeing about a paying subscriber.
+   *
+   * Answers with no body.
+   *
+   * @param userId The account to cancel for. Interpolated unchanged.
+   * @param roleId The service to cancel. Interpolated unchanged.
+   * @returns Completion. No payload.
+   */
+  cancelService(userId: number, roleId: number): Observable<void> {
+    return this.http.delete<void>(API_ENDPOINTS.users.serviceSubscription(userId, roleId), {
+      context: presentedInContext(),
+    });
+  }
+
+  /**
+   * Takes one service's trial period on the account's behalf.
+   *
+   * A second command rather than a variant of the first, because the legacy screen gated it
+   * separately: `ShowTrial` (`MemberServices.ascx.vb:L325-L342`) offers it only for a public
+   * role that DOES charge a service fee, charges nothing for its trial, and has not already
+   * been tried by this account. A trial that the catalogue offers is always performable -
+   * the operation's own gate is the zero trial fee - so there is no payment counterpart to
+   * this call.
+   *
+   * Takes no body, and answers with none.
+   *
+   * @param userId The account taking the trial. Interpolated unchanged.
+   * @param roleId The service whose trial to take. Interpolated unchanged.
+   * @returns Completion. No payload.
+   */
+  startServiceTrial(userId: number, roleId: number): Observable<void> {
+    return this.http.post<void>(API_ENDPOINTS.users.serviceTrial(userId, roleId), null, {
+      context: presentedInContext(),
+    });
+  }
+
+  /**
+   * Redeems an invitation code, joining the account to every role recorded against it.
+   *
+   * The legacy affordance was a fifty-character box and a subscribe command
+   * (`MemberServices.ascx:L14-L15`) whose handler walked the tenant's whole role set with NO
+   * EARLY EXIT (`MemberServices.ascx.vb:L397-L433`), subscribing on every role whose stored
+   * code matched. The answer therefore names the roles that were joined, and may name more
+   * than one.
+   *
+   * ⚠ THE CODE IS SENT AS TYPED. The legacy comparison was ordinary string equality against
+   * the stored code, so leading space and case both mattered; trimming or folding it here
+   * would admit codes the legacy application refused.
+   *
+   * ⚠ AN EMPTY SUBMISSION IS REFUSED BY THE API RATHER THAN IGNORED. The legacy handler
+   * guarded on a non-empty code, and that guard was load-bearing: a role with no code
+   * recorded read as the empty string through the legacy null contract, so an empty
+   * submission would have matched every such role. Sending it and letting the server refuse
+   * it keeps one rule in one place; the caller may of course also decline to submit.
+   *
+   * @param userId The account redeeming the code. Interpolated unchanged.
+   * @param request The code as typed.
+   * @returns The roles the code admitted the account to. Never empty on success - a code that
+   * matched nothing is a refusal.
+   */
+  redeemServiceCode(
+    userId: number,
+    request: RedeemServiceCodeRequest,
+  ): Observable<RedeemServiceCodeResult> {
+    return this.http
+      .post<unknown>(API_ENDPOINTS.users.serviceRedemptions(userId), request, {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(REDEEM_SERVICE_CODE_RESPONSE, body)));
   }
 }

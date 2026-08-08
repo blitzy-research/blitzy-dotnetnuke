@@ -12,7 +12,10 @@ import { Router, RouterLink } from '@angular/router';
 
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
-import type { MembershipSettings } from '../../../core/models/user.model';
+import type {
+  MembershipSettings,
+  MembershipSettingsUpdateResult,
+} from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
 import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
@@ -21,6 +24,58 @@ import { FormFieldComponent } from '../../../shared/components/form-field/form-f
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 
+// ---------------------------------------------------------------------------
+// WHERE EVERY MEMBER OF THIS POLICY TAKES EFFECT
+// ---------------------------------------------------------------------------
+//
+// A settings screen that stores values nothing reads is a screen that lies, so the
+// consumer of each of the twenty-three members is named here and can be checked. The
+// list is exhaustive on purpose: a member added later with no entry is the omission
+// this block exists to make visible.
+//
+//   * The nine listing-column switches, and `displaySuppressPager` and
+//     `recordsPerPage` — the account listing. The columns are withheld SERVER-SIDE,
+//     by the account resource, so a hidden column never crosses the boundary at all;
+//     the pager rule and the page size are read by `core/state/user.store.ts`.
+//   * `displayMode` — the account listing's OPENING VIEW, applied by
+//     `core/state/user.store.ts` when it brings the screen up: every account, the
+//     first letter of the alphabet strip, or no query at all.
+//     (`Website/admin/Users/Users.ascx.vb` L494-L506.)
+//   * `profileDefaultVisibility` — the visibility a profile value that has never been
+//     set reads as. Applied SERVER-SIDE by the account resource onto every unset value
+//     and every declaration it projects, reproducing
+//     `Library/Components/Users/Profile/ProfilePropertyDefinition.vb` L348-L359 and
+//     `Library/Components/Users/Profile/ProfileController.vb` L109-L112.
+//   * `profileDisplayVisibility` — whether the profile screen offers the per-property
+//     visibility control, resolved by `features/user/user-profile` together with the
+//     caller being the subject of the profile, which is the second half of the legacy
+//     predicate at `Website/admin/Users/Profile.ascx.vb` L58-L63.
+//   * `profileManageServices` — whether an account may manage its own service
+//     subscriptions. Enforced SERVER-SIDE on all five member-service endpoints, as a
+//     refusal rather than as a hidden affordance; see the note further down.
+//   * `securityUsersControl` — which account picker the role-assignment screen offers,
+//     read by `features/role/role-assignment`.
+//   * `securityDisplayNameFormat` — applied to every account on creation and on update,
+//     and adopting a NEW format renames every account in the tenant. Both are
+//     server-side and inside one transaction; the count comes back on the write.
+//   * `securityEmailValidation`, `securityRequireValidProfile` and
+//     `securityRequireValidProfileAtLogin` — enforced server-side by the account and
+//     authentication resources.
+//   * `redirectAfterLogin`, `redirectAfterRegistration` and `redirectAfterLogout` —
+//     ⚠ MAINTAINED HERE AND ACTED ON ELSEWHERE. Each names a DOTNETNUKE PAGE, and this
+//     application renders none: page rendering is excluded by AAP 0.2.2.2 and 0.2.2.4,
+//     and the page resource offers a list and one page's detail and nothing that renders
+//     one. The migration is side by side (AAP 0.1.1), so the DotNetNuke application
+//     remains deployed and reads all three —
+//     `Website/admin/Authentication/Login.ascx.vb` L147-L177,
+//     `Website/admin/Users/ManageUsers.ascx.vb` L80-L98 and
+//     `Library/Components/Authentication/AuthenticationController.vb` L251-L270. This
+//     console maintains the policy and does not act on it, and says so on the fields
+//     themselves rather than implying an effect it cannot have. The after-registration
+//     destination has no local consumer even in principle: there is no
+//     self-registration flow in this application and no register route in its closed
+//     route set. Recorded in `MIGRATION_NOTES.md`.
+//
 // ---------------------------------------------------------------------------
 // WHAT THIS SCREEN IS, AND WHAT IT DELIBERATELY IS NOT
 // ---------------------------------------------------------------------------
@@ -32,10 +87,10 @@ import { PageHeaderComponent } from '../../../shared/components/page-header/page
 //
 // MIGRATION: the transformation plan maps this screen to three legacy controls -
 // `Website/admin/Users/UserSettings.ascx`, `Website/admin/Users/Membership.ascx`
-// and `Website/admin/Users/MemberServices.ascx`. TWO OF THE THREE ARE WRONG, and
-// the correction is recorded here rather than absorbed silently because a later
-// reader would otherwise look for nine membership fields and four account actions
-// that deliberately are not here:
+// and `Website/admin/Users/MemberServices.ascx`. NEITHER OF THE OTHER TWO IS
+// RENDERED HERE, for two different reasons, and both are recorded rather than
+// absorbed silently because a later reader would otherwise look for nine membership
+// fields, four account actions and a services grid that deliberately are not here:
 //
 //   * `Membership.ascx` is twenty-eight lines and is a read-only PER-ACCOUNT
 //     panel, not a tenant policy screen. Its editor carries `editmode="View"`
@@ -47,11 +102,33 @@ import { PageHeaderComponent } from '../../../shared/components/page-header/page
 //     `UserRow`: the membership panel is part of the account detail screen. Its
 //     fields and actions belong on the account form, and rendering them here
 //     would put per-account operations on a tenant-wide settings page.
-//   * `MemberServices.ascx` is seventy-seven lines of role subscription: a
-//     services table, an invitation-code box, a subscribe button and a
-//     seven-column services grid carrying a trial command. Role subscription,
-//     invitation codes, trials and billing transactions have no endpoint in this
-//     API at all, so there is nothing for a screen to call.
+//   * `MemberServices.ascx` is seventy-seven lines of role subscription: a help
+//     paragraph, an invitation-code box with a subscribe command, and a
+//     seven-column services grid carrying a trial command. IT IS IMPLEMENTED - by
+//     `member-services.component.ts`, the sibling component in this folder, routed
+//     at `/users/{userId}/services`.
+//
+//     ⚠ AN EARLIER REVISION OF THIS NOTE RECORDED IT AS OMITTED, on the grounds
+//     that "role subscription, invitation codes, trials and billing transactions
+//     have no endpoint in this API at all, so there is nothing for a screen to
+//     call". That was an accurate statement about the API as it then stood and is
+//     WITHDRAWN: the account resource now publishes five self-service endpoints -
+//     the catalogue, subscribe or renew, cancel, trial and invitation-code
+//     redemption - and the screen calls them. What remains excluded is the payment
+//     processor redirect the legacy screen performed for a fee-bearing role, which
+//     AAP 0.2.2.4 places out of scope; that divergence is recorded in
+//     `MIGRATION_NOTES.md` and stated on the screen itself.
+//
+//     It is not rendered on THIS screen because the two differ in whose data they
+//     show and in who may see it. This screen configures the TENANT and is reached
+//     by a portal administrator; that one shows ONE account's personal
+//     subscriptions and is gated on account ownership with no administrator arm,
+//     because the legacy panel operated on the signed-in account
+//     (`PortalModuleBase.vb` L319-L323) and its container hid the tab from an
+//     administrator outright (`ManageUsers.ascx.vb` L61-L66). Rendering them
+//     together would put an administrator's own subscriptions on a tenant
+//     configuration page and would need one route to satisfy two authorisation
+//     policies.
 //
 // This component therefore derives from `UserSettings.ascx` and the account-policy
 // contract ALONE. Its own field set comes from that contract rather than from the
@@ -120,10 +197,12 @@ import { PageHeaderComponent } from '../../../shared/components/page-header/page
 // policy contract and are therefore omitted rather than invented -
 // `Security_CaptchaLogin` and `Security_CaptchaRegister`, both of which defaulted
 // to false. They went with the excluded challenge control. The compensating
-// control is server-side and stronger than a challenge image: the sign-in
-// endpoints under the authentication route are governed by a rate-limiting policy
-// that partitions by client address and answers the eleventh request in any sixty
-// seconds with a refusal. No screen participates in that, and none should.
+// control is server-side and stronger than a challenge image: the API's global
+// limiter places every request it classifies as credential-bearing - from the
+// `[CredentialEndpoint]` marker on the action, falling back to a whole credential
+// path segment on a body-carrying method - into an address-partitioned window of
+// thirty requests a minute, and refuses beyond it. No screen participates in
+// that, and none should.
 //
 // MIGRATION: state lives in signals, and the legacy round-trip disappears
 // entirely. The legacy screen rebuilt its editors on every postback and carried
@@ -408,7 +487,68 @@ export const MEMBERSHIP_SETTINGS_TEXT = Object.freeze({
    * of the legacy green confirmation style.
    */
   savedMessage: 'User settings saved.',
+
+  /**
+   * Shown once the policy has been written AND the new display-name format has been applied
+   * across the tenant.
+   *
+   * AUTHORED, because the legacy screen reported nothing here either — and in this case the
+   * silence was the defect. `Website/admin/Users/UserSettings.ascx.vb:L175-L182` spawned
+   * `UserController.UpdateDisplayNames` on a background thread and redirected immediately, so
+   * an operator who changed the format saw the same blank confirmation whether the sweep
+   * rewrote nothing, rewrote the whole tenant, or died halfway through. The count is now part
+   * of the write's answer, and this is where it is said.
+   *
+   * `{count}` is substituted with the number of accounts rewritten, and `{accounts}` with the
+   * singular or plural noun, so the sentence reads naturally for one account as well as for
+   * many. See {@link membershipSettingsSavedMessage}.
+   */
+  savedWithRewriteMessage: 'User settings saved. {count} {accounts} renamed to match the new display name format.',
+
+  /**
+   * Shown when the display-name format changed but no account's name changed with it.
+   *
+   * ⚠ DISTINCT FROM {@link savedMessage}, AND THE DISTINCTION IS THE POINT. "The sweep ran and
+   * found nothing to alter" is a different answer from "no sweep ran", and an operator who has
+   * just changed the format is looking for exactly that difference — being shown the plain
+   * confirmation would leave them unable to tell whether the change took effect at all.
+   */
+  savedWithNoRewriteMessage:
+    'User settings saved. No account names needed to change under the new display name format.',
 } as const);
+
+/**
+ * Composes the confirmation for a written policy from what the write reported.
+ *
+ * Three sentences rather than one, because the write has three genuinely different outcomes and
+ * collapsing them would withhold from the operator the one fact they cannot obtain any other
+ * way: whether adopting a new display-name format actually renamed anything.
+ *
+ * Exported so a specification can assert the wording without reaching into the component, and
+ * so the substitution is verified in one place rather than at each call site.
+ *
+ * @param report What the write did beyond storing its values, or `null` when the server sent no
+ * report at all — in which case the plain confirmation is the honest answer, because nothing is
+ * known about a sweep.
+ * @returns The sentence to show at the success severity.
+ */
+export function membershipSettingsSavedMessage(
+  report: MembershipSettingsUpdateResult | null,
+): string {
+  if (report === null || !report.displayNameFormatChanged) {
+    return MEMBERSHIP_SETTINGS_TEXT.savedMessage;
+  }
+
+  if (report.displayNamesRewritten === 0) {
+    return MEMBERSHIP_SETTINGS_TEXT.savedWithNoRewriteMessage;
+  }
+
+  // ⚠ COMPARED AGAINST ONE RATHER THAN TESTED FOR TRUTHINESS. The zero case is handled above
+  // and is a real answer, so the only question left here is singular against plural.
+  return MEMBERSHIP_SETTINGS_TEXT.savedWithRewriteMessage
+    .replace('{count}', String(report.displayNamesRewritten))
+    .replace('{accounts}', report.displayNamesRewritten === 1 ? 'account was' : 'accounts were');
+}
 
 /**
  * The label and help text for one field.
@@ -520,14 +660,21 @@ export const MEMBERSHIP_SETTINGS_FIELD_TEXT: Readonly<
     // MIGRATION: the legacy help text names bracketed substitution tokens, and they
     // are described here rather than made to work: token replacement is an excluded
     // subsystem, so the value is stored and forwarded as opaque text and this screen
-    // expands nothing. The final sentence is a genuine cross-screen constraint - a
-    // tenant that sets a format makes the display name uneditable on the account
+    // expands nothing. The final legacy sentence is a genuine cross-screen constraint -
+    // a tenant that sets a format makes the display name uneditable on the account
     // form - and it is reported as affecting that screen.
+    //
+    // ⚠ THE LAST SENTENCE IS AUTHORED AND IS NOT IN THE RESOURCE FILE. The legacy screen
+    // never warned that saving a changed format renames every account in the tenant, even
+    // though that is exactly what it did (L175-L182, on a background thread, silently).
+    // The warning is stated BEFORE the value is edited, because afterwards is too late:
+    // the sweep is transactional with the policy write and there is no undo.
     help:
       'You can optionally specify a format for the users display name. The format ' +
       'can include tokens for dynamic substitution such as [FIRSTNAME] [LASTNAME]. ' +
       'If a display name format is specified, the display name will no longer be ' +
-      'editable through the user interface.',
+      'editable through the user interface. Changing this value renames every ' +
+      'account in this site to match it.',
   },
 } as const);
 
@@ -1084,7 +1231,18 @@ export class MembershipSettingsComponent implements OnInit {
       this.pendingSubmit = false;
 
       if (failure === null) {
-        this.notifications.success(MEMBERSHIP_SETTINGS_TEXT.savedMessage);
+        // ⚠ THE REPORT IS READ HERE RATHER THAN RENDERED ON THIS SCREEN, because this screen
+        // is about to leave. The legacy handler redirected to the account listing on success
+        // (`UserSettings.ascx.vb` L184-L187) and that navigation is reproduced below, so a
+        // panel raised here would be destroyed before it could be read. The notification
+        // outlives the route change, which makes it the only surface that can carry the count.
+        this.notifications.success(
+          membershipSettingsSavedMessage(this.store.lastSettingsWrite()),
+        );
+
+        // Discarded once reported, so returning to this screen does not re-announce a sweep
+        // that happened during a previous visit.
+        this.store.clearSettingsWriteReport();
         void this.router.navigate([ACCOUNT_LISTING_PATH]);
       }
 
@@ -1268,10 +1426,18 @@ export class MembershipSettingsComponent implements OnInit {
    *
    * MIGRATION: the legacy handler ALSO started a background thread to rewrite every
    * account's display name whenever the display-name format changed (L175-L182). That
-   * is not attempted here and must not be. It is a bulk write over a whole tenant,
-   * which belongs behind the endpoint rather than in a browser that can be closed
-   * halfway through, and there is no endpoint for it. Reported as a possible gap on
-   * the server side.
+   * rewrite is NOT attempted from here, and must not be: it is a bulk write over a whole
+   * tenant, which belongs behind the endpoint rather than in a browser that can be closed
+   * halfway through. It is performed by the SERVER, inside the same transaction as the
+   * policy write, and the endpoint answers with the number of accounts it renamed - which
+   * is why this one settings write answers `200` with a body where every other answers
+   * `204`. This screen's part is to report it, and
+   * {@link membershipSettingsSavedMessage} is where that reporting is composed.
+   *
+   * Three properties of the legacy arrangement are deliberately not reproduced, and all
+   * three were defects: the operator was told nothing, a failure part way through left
+   * some accounts renamed and the rest not, and a request the operator abandoned took the
+   * sweep with it. The divergence is recorded in MIGRATION_NOTES.md.
    */
   protected submit(): void {
     if (this.canSubmit() === false) {

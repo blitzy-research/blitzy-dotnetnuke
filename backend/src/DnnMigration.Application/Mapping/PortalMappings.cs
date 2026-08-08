@@ -360,6 +360,55 @@ public static class PortalMappings
     }
 
     /// <summary>
+    /// Projects one administrator-role assignment onto the entry the settings screen's administrator
+    /// selector offers.
+    /// </summary>
+    /// <param name="membership">
+    /// One assignment of the portal's administrator role, with its account materialised.
+    /// </param>
+    /// <returns>The selector entry.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: reproduces <c>Website/admin/Portal/SiteSettings.ascx.vb:L334</c>, which built each
+    /// entry as <c>New ListItem(objUser.FullName, objUser.UserID.ToString)</c> from a
+    /// <c>UserRoleInfo</c>. The full name it used is the display name the terminal membership statement
+    /// projects as <c>FullName</c>, so the text this entry carries is the text the legacy list showed.
+    /// </para>
+    /// <para>
+    /// The ACCOUNT is the source of every member, never the assignment. <c>UserRole.UserId</c> would
+    /// give the same key, but taking all three from one object is what makes it impossible for the key
+    /// and the names beside it to describe different people - and the assignment's own surrogate key
+    /// and its date bounds are deliberately not projected, because choosing an administrator does not
+    /// depend on when their membership of the role began or ends.
+    /// </para>
+    /// <para>
+    /// The materialised account is REQUIRED rather than tolerated. The membership read includes it, and
+    /// an assignment whose account failed to materialise is a broken read rather than an entry to
+    /// render with empty text - so this throws instead of offering a nameless choice the operator could
+    /// select.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="membership"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The assignment's account was not materialised by the read that produced it.
+    /// </exception>
+    public static PortalAdministratorDto ToAdministratorCandidate(UserRole membership)
+    {
+        ArgumentNullException.ThrowIfNull(membership);
+
+        User account = membership.User
+            ?? throw new InvalidOperationException(
+                $"The account behind role assignment {membership.UserRoleId} was not materialised, so it cannot be offered as an administrator.");
+
+        return new PortalAdministratorDto
+        {
+            UserId = account.UserId,
+            Username = account.Username,
+            DisplayName = account.DisplayName,
+        };
+    }
+
+    /// <summary>
     /// Builds a new portal aggregate from a creation request and the installation-wide defaults that
     /// the legacy creation path read from host configuration.
     /// </summary>

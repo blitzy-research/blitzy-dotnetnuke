@@ -8,20 +8,20 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Persistence;
 
-/// <summary>
-/// Covers the tenant repository against the existing schema.
-/// </summary>
+/// <summary>Covers the tenant repository against the existing schema.</summary>
 /// <remarks>
 /// <para>
-/// These assertions run below the HTTP boundary, which is what makes them worth having alongside the
-/// endpoint suites. A filter that matched a fragment rather than a prefix, an ordering that omitted its
-/// tie-break, or a count that read the wrong table would all still produce a well-formed response, so the
-/// endpoint suites cannot distinguish them. The repository contract can.
+/// These assertions run below the HTTP boundary, which is what makes them worth having alongside
+/// the endpoint suites. A filter that matched a fragment rather than a prefix, an ordering that
+/// omitted its tie-break, or a count that read the wrong table would all still produce a
+/// well-formed response, so the endpoint suites cannot distinguish them. The repository contract
+/// can.
 /// </para>
 /// <para>
-/// Every result here is the real <see cref="PagedResult{T}"/>, not the envelope the endpoint suites read
-/// into. That type has get-only members and a private constructor, so it can be produced but not
-/// deserialised; reading it directly is only possible because no serialisation is involved at this level.
+/// Every result here is the real <see cref="PagedResult{T}"/>, not the envelope the endpoint suites
+/// read into. That type has get-only members and a private constructor, so it can be produced but
+/// not deserialised; reading it directly is only possible because no serialisation is involved at
+/// this level.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -39,12 +39,8 @@ public sealed class PortalRepositoryTests
 
     private readonly ApiTestFixture _fixture;
 
-    /// <summary>Initialises a new instance of the <see cref="PortalRepositoryTests"/> class.</summary>
-    /// <param name="fixture">The shared host and database.</param>
     public PortalRepositoryTests(ApiTestFixture fixture) => _fixture = fixture;
 
-    /// <summary>The seeded tenant reads back with the values the seed wrote.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetAsync_ReturnsTheSeededTenantWithItsLegacyValues()
     {
@@ -68,15 +64,14 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The first tenant of an installation carries the identifier minus one, and the repository treats it as
-    /// an identifier rather than as an absent value.
+    /// The first tenant of an installation carries the identifier minus one, and the repository
+    /// treats it as an identifier rather than as an absent value.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <c>Portals.PortalID</c> is declared <c>IDENTITY(-1, 1)</c>, and minus one is simultaneously the value
-    /// the legacy code used to mean "no integer". Anything that treated the two as interchangeable would
-    /// make the first tenant of every installation unreachable, so the collision is asserted rather than
-    /// left to reasoning.
+    /// <c>Portals.PortalID</c> is declared <c>IDENTITY(-1, 1)</c>, and minus one is simultaneously
+    /// the value the legacy code used to mean "no integer". Anything that treated the two as
+    /// interchangeable would make the first tenant of every installation unreachable, so the
+    /// collision is asserted rather than left to reasoning.
     /// </remarks>
     [Fact]
     public async Task GetAsync_TreatsTheNegativeIdentitySeedAsAnIdentifier()
@@ -91,11 +86,10 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>Aliases load only when the caller asks for them.</summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The opt-in matters because tenant resolution reads aliases on every request while the tenant listing
-    /// does not. Loading them unconditionally would add a join to every read of the table for the benefit of
-    /// one caller.
+    /// The opt-in matters because tenant resolution reads aliases on every request while the tenant
+    /// listing does not. Loading them unconditionally would add a join to every read of the table
+    /// for the benefit of one caller.
     /// </remarks>
     [Fact]
     public async Task GetAsync_LoadsAliasesOnlyWhenRequested()
@@ -121,8 +115,6 @@ public sealed class PortalRepositoryTests
         unloaded!.PortalAliases.Should().BeEmpty();
     }
 
-    /// <summary>An unknown identifier produces nothing rather than an exception.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetAsync_WithAnUnknownIdentifier_ReturnsNull()
     {
@@ -133,8 +125,6 @@ public sealed class PortalRepositoryTests
         (await portals.ExistsAsync(UnknownPortalId)).Should().BeFalse();
     }
 
-    /// <summary>An unpaged listing returns every tenant and reports itself as unpaged.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAsync_WithAZeroPageSize_ReturnsEveryTenantUnpaged()
     {
@@ -149,8 +139,6 @@ public sealed class PortalRepositoryTests
         page.Items.Select(portal => portal.PortalId).Should().Contain(_fixture.Seed.PortalId);
     }
 
-    /// <summary>The reported total counts every match, not just the page that was returned.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAsync_Paged_ReportsTheTotalIndependentlyOfThePageSize()
     {
@@ -189,10 +177,9 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// A page beyond the last one is empty but still reports the true total, so a caller can recover rather
-    /// than concluding the collection is empty.
+    /// A page beyond the last one is empty but still reports the true total, so a caller can
+    /// recover rather than concluding the collection is empty.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAsync_BeyondTheLastPage_IsEmptyButStillReportsTheTotal()
     {
@@ -207,14 +194,13 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The name filter matches a fragment anywhere in the value and ignores case, which is what the legacy
-    /// tenant grid did.
+    /// The name filter matches a fragment anywhere in the value and ignores case, which is what the
+    /// legacy tenant grid did.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is deliberately different from the account listing, whose filters match a prefix because the
-    /// legacy account search appended a single trailing wildcard. The two behaviours are asserted separately
-    /// so that neither can be "corrected" into the other.
+    /// This is deliberately different from the account listing, whose filters match a prefix
+    /// because the legacy account search appended a single trailing wildcard. The two behaviours
+    /// are asserted separately so that neither can be "corrected" into the other.
     /// </remarks>
     [Fact]
     public async Task ListAsync_WithANameFragment_MatchesAnywhereAndIgnoresCase()
@@ -241,8 +227,6 @@ public sealed class PortalRepositoryTests
         }
     }
 
-    /// <summary>A filter that matches nothing produces an empty page whose total is zero.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAsync_WithAnUnmatchableFilter_ReturnsAnEmptyPage()
     {
@@ -257,19 +241,18 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>Descending order is the exact reverse of ascending order.</summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// Both directions carry the identifier as a tie-break, so the reversal holds even when two tenants share
-    /// a name. Without the tie-break the order of equal names would be whatever the query plan produced and
-    /// paging would silently repeat or drop rows — which is precisely why the two tenants created below are
-    /// given the same name.
+    /// Both directions carry the identifier as a tie-break, so the reversal holds even when two
+    /// tenants share a name. Without the tie-break the order of equal names would be whatever the
+    /// query plan produced and paging would silently repeat or drop rows — which is precisely why
+    /// the two tenants created below are given the same name.
     /// </para>
     /// <para>
-    /// The assertion compares the two directions against each other rather than against a sort performed in
-    /// this process. Ordering happens in the database under its own collation, which is case-insensitive and
-    /// treats punctuation differently from an ordinal comparison, so asserting against a local sort would be
-    /// asserting the collation rather than the repository.
+    /// The assertion compares the two directions against each other rather than against a sort
+    /// performed in this process. Ordering happens in the database under its own collation, which
+    /// is case-insensitive and treats punctuation differently from an ordinal comparison, so
+    /// asserting against a local sort would be asserting the collation rather than the repository.
     /// </para>
     /// </remarks>
     [Fact]
@@ -307,8 +290,6 @@ public sealed class PortalRepositoryTests
         }
     }
 
-    /// <summary>Sorting by the identifier orders by the identifier.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAsync_SortedByIdentifier_UsesTheIdentifierOrder()
     {
@@ -322,15 +303,14 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// An unrecognised sort member falls back to the default order instead of failing or reaching the
-    /// database as text.
+    /// An unrecognised sort member falls back to the default order instead of failing or reaching
+    /// the database as text.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The sort member arrives from a query string. The repository maps it through a closed set of
-    /// expressions, so an unrecognised value can only select the default; it cannot become part of a
-    /// statement. The deliberately hostile value below asserts that property rather than merely describing
-    /// it.
+    /// expressions, so an unrecognised value can only select the default; it cannot become part of
+    /// a statement. The deliberately hostile value below asserts that property rather than merely
+    /// describing it.
     /// </remarks>
     [Fact]
     public async Task ListAsync_WithAnUnrecognisedSortMember_FallsBackToTheDefaultOrder()
@@ -349,15 +329,15 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The member count reads the membership table and includes members who have not been authorised.
+    /// The member count reads the membership table and includes members who have not been
+    /// authorised.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Membership of a tenant is a row in the membership table rather than a column on the account, so an
-    /// account may belong to several tenants at once. Counting accounts instead of memberships would report
-    /// the same person once per installation rather than once per tenant. Unauthorised members are included
-    /// because the legacy tenant grid counted every registered account against its tenant regardless of
-    /// authorisation state.
+    /// Membership of a tenant is a row in the membership table rather than a column on the account,
+    /// so an account may belong to several tenants at once. Counting accounts instead of
+    /// memberships would report the same person once per installation rather than once per tenant.
+    /// Unauthorised members are included because the legacy tenant grid counted every registered
+    /// account against its tenant regardless of authorisation state.
     /// </remarks>
     [Fact]
     public async Task CountUsersAsync_CountsMembershipsIncludingUnauthorisedOnes()
@@ -391,25 +371,22 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The page count reproduces the terminal <c>GetTabCount</c>: the administration page and its direct
-    /// children are excluded, recycled pages are counted, one is subtracted, and a portal with no
-    /// administration page answers minus one.
+    /// The page count reproduces the terminal <c>GetTabCount</c>: the administration page and its
+    /// direct children are excluded, recycled pages are counted, one is subtracted, and a portal
+    /// with no administration page answers minus one.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// WHAT THIS ORACLE CHANGED AND WHY. An earlier revision asserted that the count excluded pages in the
-    /// recycle bin and included everything else - a plausible-sounding rule that agreed with the legacy
-    /// figure on no portal at all. The authority is the procedure the legacy grid actually displayed:
-    /// <c>PortalInfo.Pages</c> (<c>PortalInfo.vb</c> lines 320-325) resolved through
-    /// <c>TabController.GetTabCount(PortalID)</c>, whose terminal definition
-    /// (<c>04.04.00.SqlDataProvider</c> lines 511-527) is
-    /// <c>SELECT COUNT(*) - 1 ... WHERE PortalID = @PortalID AND TabID &lt;&gt; @AdminTabId AND (ParentId
-    /// &lt;&gt; @AdminTabId OR ParentId IS NULL)</c> - which states no soft-delete condition whatsoever.
+    /// The oracle is the procedure the legacy grid displayed - <c>PortalInfo.Pages</c> resolved
+    /// through <c>TabController.GetTabCount</c>, whose terminal definition in
+    /// <c>04.04.00.SqlDataProvider</c> is
+    /// <c>SELECT COUNT(*) - 1 ... WHERE PortalID = @PortalID AND TabID &lt;&gt; @AdminTabId AND (ParentId &lt;&gt; @AdminTabId OR ParentId IS NULL)</c>.
+    /// It states no soft-delete condition, so a recycled page IS counted; the plausible-sounding
+    /// opposite rule agrees with the legacy figure on no portal at all.
     /// </para>
     /// <para>
-    /// Each stage below isolates one clause, so a regression names itself rather than merely moving a
-    /// total: the subtraction, the recycled row, the administration page, its direct child, its
+    /// Each stage below isolates one clause, so a regression names itself rather than merely moving
+    /// a total: the subtraction, the recycled row, the administration page, its direct child, its
     /// grandchild, and the null-administration-page case.
     /// </para>
     /// </remarks>
@@ -446,8 +423,8 @@ public sealed class PortalRepositoryTests
             await AddTabAsync(portalId, "Second", isDeleted: false);
             (await portals.CountPagesAsync(portalId)).Should().Be(1);
 
-            // MIGRATION: a page in the recycle bin IS counted. GetTabCount states no IsDeleted condition,
-            // so the legacy grid included it, and Rule T5 preserves that rather than improving on it.
+            // MIGRATION: a page in the recycle bin IS counted. GetTabCount states no IsDeleted condition, so
+            // the legacy grid included it, and Rule T5 preserves that rather than improving on it.
             await AddTabAsync(portalId, "Binned", isDeleted: true);
             (await portals.CountPagesAsync(portalId)).Should().Be(
                 2,
@@ -485,14 +462,14 @@ public sealed class PortalRepositoryTests
     /// The batched tallies agree with the per-portal members, row for row, and answer for every
     /// identifier they were asked about.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The batched members exist so that a listing costs a fixed number of reads rather than two per row. The
-    /// risk that introduces is DIVERGENCE - a grouped statement whose predicate drifts from the single-portal
-    /// one would report different figures for the same tenant - so the two are compared against each other
-    /// here rather than against literals alone. The totality of the result is asserted as well, because a
-    /// grouped read naturally omits an identifier with nothing to count and a caller indexing the map
-    /// directly would then fail on a tenant that is merely empty.
+    /// The batched members exist so that a listing costs a fixed number of reads rather than two
+    /// per row. The risk that introduces is DIVERGENCE - a grouped statement whose predicate drifts
+    /// from the single-portal one would report different figures for the same tenant - so the two
+    /// are compared against each other here rather than against literals alone. The totality of the
+    /// result is asserted as well, because a grouped read naturally omits an identifier with
+    /// nothing to count and a caller indexing the map directly would then fail on a tenant that is
+    /// merely empty.
     /// </remarks>
     [Fact]
     public async Task BatchedTallies_AgreeWithThePerPortalCountsAndAnswerForEveryIdentifier()
@@ -528,9 +505,9 @@ public sealed class PortalRepositoryTests
             users[populated].Should().Be(2, "an unauthorised member is still a member");
             users[empty].Should().Be(0, "a tenant with no members is present with a zero, not absent");
 
-            // THE ASSERTIONS ARE AGAINST THE PROCEDURE'S OWN ARITHMETIC, not merely against the sibling
-            // member. Comparing the two members to each other alone is what let both of them drift away
-            // from GetTabCount together, so the literals come first and the agreement check follows.
+            // The assertions are against the procedure's own arithmetic rather than only against the sibling
+            // member: comparing the two members to each other alone would let both drift away from
+            // GetTabCount together, so the literals come first and the agreement check follows.
             pages[populated].Should().Be(
                 1,
                 "the administration page and its direct child are excluded, the recycled page is counted, "
@@ -558,13 +535,12 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// An empty request is answered with an empty result, and a repeated identifier collapses to one
-    /// entry.
+    /// An empty request is answered with an empty result, and a repeated identifier collapses to
+    /// one entry.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// A listing whose page came back empty must not issue a query at all, and a duplicated identifier must
-    /// not make the dictionary construction throw.
+    /// A listing whose page came back empty must not issue a query at all, and a duplicated
+    /// identifier must not make the dictionary construction throw.
     /// </remarks>
     [Fact]
     public async Task BatchedTallies_AnswerAnEmptyRequestAndCollapseDuplicates()
@@ -581,8 +557,6 @@ public sealed class PortalRepositoryTests
         users[seeded].Should().Be(await portals.CountUsersAsync(seeded));
     }
 
-    /// <summary>The role-name lookup names both of the tenant's assigned roles.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetRoleNamesAsync_NamesTheAdministratorAndRegisteredRoles()
     {
@@ -596,8 +570,6 @@ public sealed class PortalRepositoryTests
         names[_fixture.Seed.RegisteredRoleId].Should().Be(IntegrationSeed.RegisteredUsersRoleName);
     }
 
-    /// <summary>An unknown tenant produces an empty map rather than an exception.</summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetRoleNamesAsync_ForAnUnknownTenant_ReturnsAnEmptyMap()
     {
@@ -608,13 +580,12 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// A tenant whose two assignments point at one role yields one entry, and a tenant with no assignments
-    /// yields none.
+    /// A tenant whose two assignments point at one role yields one entry, and a tenant with no
+    /// assignments yields none.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The map is keyed by role identifier, so an assignment pair pointing at a single role must collapse
-    /// rather than attempt to add the same key twice.
+    /// The map is keyed by role identifier, so an assignment pair pointing at a single role must
+    /// collapse rather than attempt to add the same key twice.
     /// </remarks>
     [Fact]
     public async Task GetRoleNamesAsync_CollapsesADuplicatedAssignmentAndToleratesAnAbsentOne()
@@ -651,7 +622,6 @@ public sealed class PortalRepositoryTests
     /// An assignment naming a role that no longer exists is omitted, so a caller can tell an unset
     /// assignment from a broken one.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task GetRoleNamesAsync_OmitsAnAssignmentNamingARoleThatIsGone()
     {
@@ -684,22 +654,23 @@ public sealed class PortalRepositoryTests
     /// Staging an insertion records an intention and nothing more: the row becomes visible, and the
     /// store-assigned key becomes readable, only once the unit of work commits.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// Every legacy add procedure ended by reading back the scope identity, so each returned its generated
-    /// key and each was therefore durable on its own. The staging member returns a bare task instead: the key
-    /// is assigned by the store when the batch is written, which is what allows a tenant, its aliases, its
-    /// roles, its pages and its modules to be committed as one indivisible batch rather than as the five
-    /// independently durable statement sequences the legacy tenant creation issued.
+    /// Every legacy add procedure ended by reading back the scope identity, so each returned its
+    /// generated key and each was therefore durable on its own. The staging member returns a bare
+    /// task instead: the key is assigned by the store when the batch is written, which is what
+    /// allows a tenant, its aliases, its roles, its pages and its modules to be committed as one
+    /// indivisible batch rather than as the five independently durable statement sequences the
+    /// legacy tenant creation issued.
     /// </para>
     /// <para>
-    /// The boundary is asserted through VISIBILITY rather than through the key value, and that choice is
-    /// forced by this schema rather than being a matter of taste. A freshly constructed entity carries zero in
-    /// its identity property, but zero is a legitimate portal identifier here — the identifier column seeds
-    /// from minus one and steps by one, so the second tenant of an installation genuinely bears zero. Reading
-    /// "the key is still zero" as proof of anything would be reading the sentinel collision this suite exists
-    /// to document. A separate scope cannot see an uncommitted row at all, which is unambiguous.
+    /// The boundary is asserted through VISIBILITY rather than through the key value, and that
+    /// choice is forced by this schema rather than being a matter of taste. A freshly constructed
+    /// entity carries zero in its identity property, but zero is a legitimate portal identifier
+    /// here — the identifier column seeds from minus one and steps by one, so the second tenant of
+    /// an installation genuinely bears zero. Reading "the key is still zero" as proof of anything
+    /// would be reading the sentinel collision this suite exists to document. A separate scope
+    /// cannot see an uncommitted row at all, which is unambiguous.
     /// </para>
     /// </remarks>
     [Fact]
@@ -749,23 +720,24 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The repository answers for minus one, zero and a positive identifier exactly as the table does, so no
-    /// member treats a value as absent on account of its sign.
+    /// The repository answers for minus one, zero and a positive identifier exactly as the table
+    /// does, so no member treats a value as absent on account of its sign.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// This is the sentinel collision stated as an executable claim. The identifier column seeds from minus
-    /// one, so the first tenant of an installation bears minus one and the second bears zero; the legacy null
-    /// helper meanwhile defined its integer sentinel AS minus one and reported that value as absent, which
-    /// left it structurally unable to distinguish a real first tenant from a missing one. The shipped code
-    /// then passed that same sentinel around as a genuine tenant argument.
+    /// This is the sentinel collision stated as an executable claim. The identifier column seeds
+    /// from minus one, so the first tenant of an installation bears minus one and the second bears
+    /// zero; the legacy null helper meanwhile defined its integer sentinel AS minus one and
+    /// reported that value as absent, which left it structurally unable to distinguish a real first
+    /// tenant from a missing one. The shipped code then passed that same sentinel around as a
+    /// genuine tenant argument.
     /// </para>
     /// <para>
-    /// The assertion compares the repository against the table for each candidate rather than against
-    /// literals, so it holds whatever tenants happen to exist when it runs and cannot decay into asserting the
-    /// fixture. A guard clause such as "an identifier below zero means unspecified" would fail it at minus
-    /// one; one such as "an identifier of zero means unset" would fail it at zero.
+    /// The assertion compares the repository against the table for each candidate rather than
+    /// against literals, so it holds whatever tenants happen to exist when it runs and cannot decay
+    /// into asserting the fixture. A guard clause such as "an identifier below zero means
+    /// unspecified" would fail it at minus one; one such as "an identifier of zero means unset"
+    /// would fail it at zero.
     /// </para>
     /// </remarks>
     [Fact]
@@ -798,15 +770,17 @@ public sealed class PortalRepositoryTests
         (await portals.ExistsAsync(-1)).Should().BeTrue();
     }
 
-    /// <summary>Staged modifications reach the table only on commit, and then survive a fresh read.</summary>
-    /// <returns>A task representing the test.</returns>
+    /// <summary>
+    /// Staged modifications reach the table only on commit, and then survive a fresh read.
+    /// </summary>
     /// <remarks>
-    /// One member replaces two legacy procedures that wrote the same row from opposite ends — one taking
-    /// twenty-seven positional arguments covering the descriptive and configuration columns, the other taking
-    /// nine covering the administrator and the well-known page assignments. Splitting one row across two
-    /// positional argument lists made a partial update indistinguishable from an intentional overwrite with
-    /// defaults. Here a caller reads a tenant, changes what it means to change, and stages the result; the
-    /// columns it did not touch are asserted to be unchanged, which is the property the legacy split lost.
+    /// One member replaces two legacy procedures that wrote the same row from opposite ends — one
+    /// taking twenty-seven positional arguments covering the descriptive and configuration columns,
+    /// the other taking nine covering the administrator and the well-known page assignments.
+    /// Splitting one row across two positional argument lists made a partial update
+    /// indistinguishable from an intentional overwrite with defaults. Here a caller reads a tenant,
+    /// changes what it means to change, and stages the result; the columns it did not touch are
+    /// asserted to be unchanged, which is the property the legacy split lost.
     /// </remarks>
     [Fact]
     public async Task UpdateAsync_StagesTheChangeAndPersistsItOnCommit()
@@ -863,14 +837,15 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// Deleting a tenant removes it and, through the schema's own referential rules, its aliases with it.
+    /// Deleting a tenant removes it and, through the schema's own referential rules, its aliases
+    /// with it.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The alias foreign key is declared to cascade, so the repository deliberately does not sequence
-    /// dependent writes of its own; sequencing them in application code is what let the legacy deletion path
-    /// leave orphans behind when it was interrupted part-way. Asserting the cascade here is asserting that the
-    /// repository leans on the constraint rather than reimplementing it.
+    /// The alias foreign key is declared to cascade, so the repository deliberately does not
+    /// sequence dependent writes of its own; sequencing them in application code is what let the
+    /// legacy deletion path leave orphans behind when it was interrupted part-way. Asserting the
+    /// cascade here is asserting that the repository leans on the constraint rather than
+    /// reimplementing it.
     /// </remarks>
     [Fact]
     public async Task DeleteAsync_RemovesTheTenantAndCascadesToItsAliases()
@@ -903,10 +878,9 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// Deleting an identifier no tenant bears succeeds without staging anything, so a caller that has already
-    /// established absence need not distinguish the two cases.
+    /// Deleting an identifier no tenant bears succeeds without staging anything, so a caller that
+    /// has already established absence need not distinguish the two cases.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task DeleteAsync_ForAnUnknownIdentifier_StagesNothingAndSucceeds()
     {
@@ -924,22 +898,21 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The unpaged listing materialises every tenant in a deterministic order, and the standalone tally agrees
-    /// with it.
+    /// The unpaged listing materialises every tenant in a deterministic order, and the standalone
+    /// tally agrees with it.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
     /// This supersedes a controller member that returned an untyped non-generic list built by a
-    /// reflection-based row filler. The return type is a materialised read-only list rather than a deferred
-    /// sequence, and that distinction is load-bearing: a deferred sequence handed out here could be enumerated
-    /// after the scope that produced it had gone, which is exactly the failure the layering is meant to make
-    /// impossible.
+    /// reflection-based row filler. The return type is a materialised read-only list rather than a
+    /// deferred sequence, and that distinction is load-bearing: a deferred sequence handed out here
+    /// could be enumerated after the scope that produced it had gone, which is exactly the failure
+    /// the layering is meant to make impossible.
     /// </para>
     /// <para>
-    /// The tally is compared against the listing rather than against a literal. Two members that count the
-    /// same table can only be verified against each other; comparing each to a fixture-derived number would
-    /// let them drift together undetected.
+    /// The tally is compared against the listing rather than against a literal. Two members that
+    /// count the same table can only be verified against each other; comparing each to a
+    /// fixture-derived number would let them drift together undetected.
     /// </para>
     /// </remarks>
     [Fact]
@@ -974,17 +947,18 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The tally follows the table as tenants come and go, so it is computed rather than remembered.
+    /// The tally follows the table as tenants come and go, so it is computed rather than
+    /// remembered.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The removal is part of what this fact asserts, so it stays in the body where its effect on the tally is
-    /// checked; the <c>finally</c> block is a SAFETY NET for the case where the first tally assertion fails
-    /// before the removal runs. Without it a failure here would leave an extra tenant in the installation for
-    /// the remainder of the run, and the installation-wide portal count is read by other facts - so one real
-    /// failure would be followed by unrelated ones that point at working code. The net asserts nothing, so it
-    /// can never replace the failure that brought it here, and it removes the row with a direct statement
-    /// rather than through the repository, because on that path the repository is the component under
+    /// The removal is part of what this fact asserts, so it stays in the body where its effect on
+    /// the tally is checked; the <c>finally</c> block is a SAFETY NET for the case where the first
+    /// tally assertion fails before the removal runs. Without it a failure here would leave an
+    /// extra tenant in the installation for the remainder of the run, and the installation-wide
+    /// portal count is read by other facts - so one real failure would be followed by unrelated
+    /// ones that point at working code. The net asserts nothing, so it can never replace the
+    /// failure that brought it here, and it removes the row with a direct statement rather than
+    /// through the repository, because on that path the repository is the component under
     /// suspicion.
     /// </remarks>
     [Fact]
@@ -1013,14 +987,14 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// Tenant resolution matches the alias exactly, while tolerating case and surrounding whitespace, and
-    /// yields nothing for an alias no tenant claims.
+    /// Tenant resolution matches the alias exactly, while tolerating case and surrounding
+    /// whitespace, and yields nothing for an alias no tenant claims.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Case-insensitivity and trimming are normalisation of the same value, not widening of the comparison: a
-    /// host name arrives from a request header, where case is not significant and stray whitespace is possible.
-    /// Neither makes the match partial, which is the property the next assertion pins down.
+    /// Case-insensitivity and trimming are normalisation of the same value, not widening of the
+    /// comparison: a host name arrives from a request header, where case is not significant and
+    /// stray whitespace is possible. Neither makes the match partial, which is the property the
+    /// next assertion pins down.
     /// </remarks>
     [Fact]
     public async Task GetByAliasAsync_MatchesExactlyWhileNormalisingCaseAndWhitespace()
@@ -1044,25 +1018,27 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// An alias that is a substring of another tenant's alias does not resolve to that other tenant.
+    /// An alias that is a substring of another tenant's alias does not resolve to that other
+    /// tenant.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: this is a deliberate behavioural correction, recorded in the migration notes rather than
-    /// applied silently. The legacy tenant-resolution procedure selected the LOWEST matching identifier using a
-    /// leading-and-trailing wildcard comparison against the alias column, so a tenant whose alias happened to
-    /// be a substring of another's could resolve a request to the wrong tenant — and because the match was
-    /// resolved by minimum identifier, the tenant it mis-resolved to was the older one, deterministically. That
-    /// procedure was created in the baseline script, dropped and recreated across seven successive upgrade
-    /// scripts, and finally dropped for good in favour of a lookup keyed by identifier.
+    /// MIGRATION: this is a deliberate behavioural correction, recorded in the migration notes
+    /// rather than applied silently. The legacy tenant-resolution procedure selected the LOWEST
+    /// matching identifier using a leading-and-trailing wildcard comparison against the alias
+    /// column, so a tenant whose alias happened to be a substring of another's could resolve a
+    /// request to the wrong tenant — and because the match was resolved by minimum identifier, the
+    /// tenant it mis-resolved to was the older one, deterministically. That procedure was created
+    /// in the baseline script, dropped and recreated across seven successive upgrade scripts, and
+    /// finally dropped for good in favour of a lookup keyed by identifier.
     /// </para>
     /// <para>
-    /// The pairing below is chosen so that one alias is a strict substring of the other, which is the shape the
-    /// wildcard comparison could not distinguish. Both directions are asserted: neither alias may resolve to
-    /// the other's tenant. The change of behaviour lands in the request-time alias middleware; what is asserted
-    /// here is the narrower repository guarantee that makes it possible, namely that no member of this contract
-    /// offers a partial-match parameter at all.
+    /// The pairing below is chosen so that one alias is a strict substring of the other, which is
+    /// the shape the wildcard comparison could not distinguish. Both directions are asserted:
+    /// neither alias may resolve to the other's tenant. The change of behaviour lands in the
+    /// request-time alias middleware; what is asserted here is the narrower repository guarantee
+    /// that makes it possible, namely that no member of this contract offers a partial-match
+    /// parameter at all.
     /// </para>
     /// </remarks>
     [Fact]
@@ -1103,16 +1079,16 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// A page resolves a tenant only when the alias and the page belong together, so a page identifier cannot
-    /// be used to read across a tenant boundary.
+    /// A page resolves a tenant only when the alias and the page belong together, so a page
+    /// identifier cannot be used to read across a tenant boundary.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Note the argument order: the page identifier is supplied first and the alias second. The legacy
-    /// procedure resolved the alias to a tenant and then confirmed through an outer join that the requested
-    /// page belonged to it, so both halves of the check are required and the pairing must resolve as a unit. A
-    /// version that resolved on the alias alone would hand a caller another tenant's page; one that resolved on
-    /// the page alone would ignore the alias entirely.
+    /// Note the argument order: the page identifier is supplied first and the alias second. The
+    /// legacy procedure resolved the alias to a tenant and then confirmed through an outer join
+    /// that the requested page belonged to it, so both halves of the check are required and the
+    /// pairing must resolve as a unit. A version that resolved on the alias alone would hand a
+    /// caller another tenant's page; one that resolved on the page alone would ignore the alias
+    /// entirely.
     /// </remarks>
     [Fact]
     public async Task GetByTabAsync_ResolvesOnlyWhenThePageBelongsToTheAliasedTenant()
@@ -1152,15 +1128,14 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The ownership check is true only for the tenant that actually owns the page, and a host-level page that
-    /// belongs to no tenant is owned by none.
+    /// The ownership check is true only for the tenant that actually owns the page, and a
+    /// host-level page that belongs to no tenant is owned by none.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is the tenant-isolation check a caller makes before acting on a page it was merely handed an
-    /// identifier for. The host-level case matters because the page table permits a null tenant — the legacy
-    /// schema uses that to carry the pages of the installation itself — and a null tenant must not be read as
-    /// "belongs to whichever tenant is asking".
+    /// This is the tenant-isolation check a caller makes before acting on a page it was merely
+    /// handed an identifier for. The host-level case matters because the page table permits a null
+    /// tenant — the legacy schema uses that to carry the pages of the installation itself — and a
+    /// null tenant must not be read as "belongs to whichever tenant is asking".
     /// </remarks>
     [Fact]
     public async Task TabBelongsToPortalAsync_IsTrueOnlyForTheOwningTenant()
@@ -1200,31 +1175,31 @@ public sealed class PortalRepositoryTests
 
 
     /// <summary>
-    /// Asking for the aliases of the tenant whose identifier is minus one returns that tenant's aliases and
-    /// nothing else; asking for every alias is a separate, named member.
+    /// Asking for the aliases of the tenant whose identifier is minus one returns that tenant's
+    /// aliases and nothing else; asking for every alias is a separate, named member.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: this is the most consequential correction in the alias surface, and it is recorded in the
-    /// migration notes. The legacy "get every alias" member was implemented by calling the per-tenant member
-    /// with minus one, because the backing procedure carried the wildcard in its own predicate — it selected
-    /// rows where the tenant matched the argument OR the argument was minus one. Minus one therefore meant
-    /// "ALL TENANTS" inside that one procedure, which is a THIRD independent meaning for the value, alongside
-    /// its use as the legacy integer null sentinel and its use as the seed of the tenant identity column.
+    /// MIGRATION: this is the most consequential correction in the alias surface, and it is
+    /// recorded in the migration notes. The legacy "get every alias" member was implemented by
+    /// calling the per-tenant member with minus one, because the backing procedure carried the
+    /// wildcard in its own predicate — it selected rows where the tenant matched the argument OR
+    /// the argument was minus one. Minus one therefore meant "ALL TENANTS" inside that one
+    /// procedure, which is a THIRD independent meaning for the value, alongside its use as the
+    /// legacy integer null sentinel and its use as the seed of the tenant identity column.
     /// </para>
     /// <para>
-    /// The three meanings cannot coexist in a typed contract, because the tenant that genuinely bears minus one
-    /// is the FIRST tenant of every installation — so preserving the wildcard would make that tenant's aliases
-    /// unaskable, and every request for them would silently return the whole installation's aliases instead.
-    /// That is a cross-tenant disclosure, not a cosmetic quirk. The wildcard is therefore deleted rather than
-    /// translated: the per-tenant member is strictly per-tenant, and the unpaged member is the only way to ask
-    /// for everything.
+    /// The three meanings cannot coexist in a typed contract, because the tenant that genuinely
+    /// bears minus one is the FIRST tenant of every installation — so preserving the wildcard would
+    /// make that tenant's aliases unaskable, and every request for them would silently return the
+    /// whole installation's aliases instead. That is a cross-tenant disclosure, not a cosmetic
+    /// quirk. The wildcard is therefore deleted rather than translated: the per-tenant member is
+    /// strictly per-tenant, and the unpaged member is the only way to ask for everything.
     /// </para>
     /// <para>
-    /// The assertion needs both a tenant bearing minus one and at least one other tenant with an alias of its
-    /// own, otherwise the two members would agree by accident and the test would pass against a
-    /// wildcard-preserving implementation.
+    /// The assertion needs both a tenant bearing minus one and at least one other tenant with an
+    /// alias of its own, otherwise the two members would agree by accident and the test would pass
+    /// against a wildcard-preserving implementation.
     /// </para>
     /// </remarks>
     [Fact]
@@ -1280,15 +1255,16 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The alias lookup is scoped to a tenant, unlike the tenant-resolution lookup that takes an alias alone.
+    /// The alias lookup is scoped to a tenant, unlike the tenant-resolution lookup that takes an
+    /// alias alone.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The two members are easily confused and mean different things. Resolution answers "which tenant owns
-    /// this host name" and is deliberately unscoped, because at request time the tenant is not yet known.
-    /// Management answers "does this tenant hold this alias" and is deliberately scoped, because a caller
-    /// administering one tenant must not be able to read or edit another tenant's alias by guessing the string.
-    /// Both are asserted here so that neither can be rewritten into the other.
+    /// The two members are easily confused and mean different things. Resolution answers "which
+    /// tenant owns this host name" and is deliberately unscoped, because at request time the tenant
+    /// is not yet known. Management answers "does this tenant hold this alias" and is deliberately
+    /// scoped, because a caller administering one tenant must not be able to read or edit another
+    /// tenant's alias by guessing the string. Both are asserted here so that neither can be
+    /// rewritten into the other.
     /// </remarks>
     [Fact]
     public async Task AliasLookup_IsTenantScopedWhileTenantResolutionIsNot()
@@ -1330,24 +1306,25 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// A whole chain of candidate addresses resolves in one call, every match is returned rather than
-    /// collapsed, and an empty request matches nothing.
+    /// A whole chain of candidate addresses resolves in one call, every match is returned rather
+    /// than collapsed, and an empty request matches nothing.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: the legacy resolution procedure collapsed multiple matches with a minimum-identifier
-    /// aggregate, so an installation holding two rows for one address served the OLDER tenant's content under
-    /// the other tenant's name, silently and deterministically. Returning every match instead is what lets a
-    /// caller refuse an ambiguous address rather than resolve it, and the difference is asserted here rather
-    /// than described: two matches arrive from one call.
+    /// MIGRATION: the legacy resolution procedure collapsed multiple matches with a
+    /// minimum-identifier aggregate, so an installation holding two rows for one address served the
+    /// OLDER tenant's content under the other tenant's name, silently and deterministically.
+    /// Returning every match instead is what lets a caller refuse an ambiguous address rather than
+    /// resolve it, and the difference is asserted here rather than described: two matches arrive
+    /// from one call.
     /// </para>
     /// <para>
-    /// The candidate chain exists because the legacy product allowed a child tenant to be addressed by a path
-    /// segment beneath a shared host, so a stored address may be a host name or a host name followed by path
-    /// segments. A request therefore has several possible addresses, most specific first, and asking one at a
-    /// time would cost a round trip per path segment. Preferring the longer match is the caller's decision, not
-    /// this contract's, which is why both rows come back.
+    /// The candidate chain exists because the legacy product allowed a child tenant to be addressed
+    /// by a path segment beneath a shared host, so a stored address may be a host name or a host
+    /// name followed by path segments. A request therefore has several possible addresses, most
+    /// specific first, and asking one at a time would cost a round trip per path segment.
+    /// Preferring the longer match is the caller's decision, not this contract's, which is why both
+    /// rows come back.
     /// </para>
     /// </remarks>
     [Fact]
@@ -1405,10 +1382,9 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>The owning tenant is reachable from an alias identifier alone.</summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is how a caller holding an alias row establishes the tenant it must be authorised against, without
-    /// having to trust a tenant identifier supplied alongside it.
+    /// This is how a caller holding an alias row establishes the tenant it must be authorised
+    /// against, without having to trust a tenant identifier supplied alongside it.
     /// </remarks>
     [Fact]
     public async Task GetPortalByAliasIdAsync_ReturnsTheOwningTenant()
@@ -1426,15 +1402,15 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The uniqueness check can exclude the row being edited, so renaming an alias to the value it already
-    /// holds is not reported as a collision with itself.
+    /// The uniqueness check can exclude the row being edited, so renaming an alias to the value it
+    /// already holds is not reported as a collision with itself.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The alias column carries a unique index across the whole installation, so a rename that collided would
-    /// fail at the store with a constraint violation rather than as a validation message. The exclusion
-    /// parameter is what lets the caller distinguish "this value is taken by someone else" from "this value is
-    /// taken by the very row I am editing" before it reaches the store.
+    /// The alias column carries a unique index across the whole installation, so a rename that
+    /// collided would fail at the store with a constraint violation rather than as a validation
+    /// message. The exclusion parameter is what lets the caller distinguish "this value is taken by
+    /// someone else" from "this value is taken by the very row I am editing" before it reaches the
+    /// store.
     /// </remarks>
     [Fact]
     public async Task AliasExistsAsync_ExcludesTheRowUnderEditFromItsOwnCollisionCheck()
@@ -1468,16 +1444,16 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// An alias stages, commits, updates and deletes through the same unit-of-work boundary as its tenant.
+    /// An alias stages, commits, updates and deletes through the same unit-of-work boundary as its
+    /// tenant.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: the legacy controller exposed two members whose names invited exactly the wrong choice. The
-    /// one that reads as the ordinary update in fact executed an install-time procedure that rewrote whichever
-    /// row still held the placeholder alias, and its only caller was the fresh-install branch; the real update
-    /// keyed on both the tenant and the alias identifier. Only the latter behaviour is carried forward, since
-    /// the installer is out of scope, and it is asserted here by rewriting one specific row and checking that
-    /// no other row moved.
+    /// MIGRATION: the legacy controller exposed two members whose names invited exactly the wrong
+    /// choice. The one that reads as the ordinary update in fact executed an install-time procedure
+    /// that rewrote whichever row still held the placeholder alias, and its only caller was the
+    /// fresh-install branch; the real update keyed on both the tenant and the alias identifier.
+    /// Only the latter behaviour is carried forward, since the installer is out of scope, and it is
+    /// asserted here by rewriting one specific row and checking that no other row moved.
     /// </remarks>
     [Fact]
     public async Task AliasWrites_StageAndCommitThroughTheUnitOfWork()
@@ -1568,22 +1544,22 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// A value written as the empty string reads back as the empty string, and a value never written reads back
-    /// as absent; the two are not conflated in either direction.
+    /// A value written as the empty string reads back as the empty string, and a value never
+    /// written reads back as absent; the two are not conflated in either direction.
     /// </summary>
-    /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: the legacy null helper defined its string sentinel as the EMPTY STRING rather than as a null
-    /// reference, and translated every null column into it on the way out. A caller therefore could not tell a
-    /// column holding no value from one holding a zero-length value, and the distinction was lost for the whole
-    /// installation. The domain model expresses absence as a null reference instead, so the two become
-    /// distinguishable — which is only useful if the mapping does not quietly coerce one into the other.
+    /// MIGRATION: the legacy null helper defined its string sentinel as the EMPTY STRING rather
+    /// than as a null reference, and translated every null column into it on the way out. A caller
+    /// therefore could not tell a column holding no value from one holding a zero-length value, and
+    /// the distinction was lost for the whole installation. The domain model expresses absence as a
+    /// null reference instead, so the two become distinguishable — which is only useful if the
+    /// mapping does not quietly coerce one into the other.
     /// </para>
     /// <para>
-    /// The columns chosen for the round trip both PERMIT a null, which is what makes the assertion meaningful: a
-    /// coercion in either direction would be observable. A column declared not-null could not distinguish the
-    /// cases at all.
+    /// The columns chosen for the round trip both PERMIT a null, which is what makes the assertion
+    /// meaningful: a coercion in either direction would be observable. A column declared not-null
+    /// could not distinguish the cases at all.
     /// </para>
     /// </remarks>
     [Fact]
@@ -1599,8 +1575,8 @@ public sealed class PortalRepositoryTests
                 // MIGRATION: the fee is a fixed-point money column and the storage allowance is an integer
                 // column in the terminal schema, and the entity declares them that way. The baseline install
                 // script did declare the fee as a short string, but the table is altered across seventeen
-                // later scripts and the string form does not survive them, so the baseline is not the shape to
-                // map against. Asserting the entity's declared types here is what pins that down; the
+                // later scripts and the string form does not survive them, so the baseline is not the shape
+                // to map against. Asserting the entity's declared types here is what pins that down; the
                 // divergence the folder brief anticipated for the storage allowance is NOT present, and its
                 // absence is reported rather than annotated as though it existed.
                 portal.HostFee = 42.5m;
@@ -1627,8 +1603,8 @@ public sealed class PortalRepositoryTests
             persisted.HostFee.Should().Be(42.5m, "the fee keeps its fractional part, so it is not an integer");
             persisted.HostSpace.Should().Be(1024);
 
-            // The optional identifier columns are absent rather than zero, which is the other half of the same
-            // point: zero is a real identifier in this schema and cannot stand in for "unset".
+            // The optional identifier columns are absent rather than zero, which is the other half of the
+            // same point: zero is a real identifier in this schema and cannot stand in for "unset".
             persisted.HomeTabId.Should().BeNull();
             persisted.SplashTabId.Should().BeNull();
             persisted.ExpiryDate.Should().BeNull();
@@ -1646,10 +1622,10 @@ public sealed class PortalRepositoryTests
     /// <param name="configure">An optional adjustment applied before the tenant is saved.</param>
     /// <returns>The identifier the store assigned.</returns>
     /// <remarks>
-    /// The tenant is created through the repository rather than through the tenant endpoint, because the
-    /// endpoint also provisions an administrator account and three default roles. Those are correct for a
-    /// real tenant and merely noise here, and one of them would make a member count start at one rather than
-    /// zero.
+    /// The tenant is created through the repository rather than through the tenant endpoint,
+    /// because the endpoint also provisions an administrator account and three default roles. Those
+    /// are correct for a real tenant and merely noise here, and one of them would make a member
+    /// count start at one rather than zero.
     /// </remarks>
     private async Task<int> CreatePortalAsync(string portalName, Action<Portal>? configure = null)
     {
@@ -1671,10 +1647,11 @@ public sealed class PortalRepositoryTests
     /// <param name="portalId">The tenant to remove.</param>
     /// <returns>A task that completes when no such row remains.</returns>
     /// <remarks>
-    /// A direct statement rather than the repository, deliberately: this runs on the failure path, where the
-    /// repository may be the very thing that is broken, and a cleanup that depends on the component under test
-    /// cannot be relied on to clean up. The row was written bare by this suite so it has no dependents, and the
-    /// statement is unconditional so calling it after a successful removal costs nothing.
+    /// A direct statement rather than the repository, deliberately: this runs on the failure path,
+    /// where the repository may be the very thing that is broken, and a cleanup that depends on the
+    /// component under test cannot be relied on to clean up. The row was written bare by this suite
+    /// so it has no dependents, and the statement is unconditional so calling it after a successful
+    /// removal costs nothing.
     /// </remarks>
     private Task EnsurePortalRemovedAsync(int portalId) => _fixture.Database.ExecuteAsync(
         "DELETE FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
@@ -1749,9 +1726,9 @@ public sealed class PortalRepositoryTests
     /// <param name="parentTabId">The parent page.</param>
     /// <returns>The identifier the store assigned.</returns>
     /// <remarks>
-    /// The legacy page tally excludes DIRECT children of the administration page and nothing deeper, so a
-    /// parented page is required to exercise that clause and a grandchild is required to prove the clause
-    /// stops there.
+    /// The legacy page tally excludes DIRECT children of the administration page and nothing
+    /// deeper, so a parented page is required to exercise that clause and a grandchild is required
+    /// to prove the clause stops there.
     /// </remarks>
     private Task<int> AddChildTabAsync(int portalId, string tabName, int parentTabId)
     {
@@ -1776,9 +1753,9 @@ public sealed class PortalRepositoryTests
     /// <param name="adminTabId">The page to designate.</param>
     /// <returns>A task that completes when the column has been set.</returns>
     /// <remarks>
-    /// Written directly rather than through the repository because the designation is a precondition of the
-    /// assertions rather than one of them, and because the tenant-creation helper deliberately leaves the
-    /// column null so the no-administration-page case is reachable.
+    /// Written directly rather than through the repository because the designation is a
+    /// precondition of the assertions rather than one of them, and because the tenant-creation
+    /// helper deliberately leaves the column null so the no-administration-page case is reachable.
     /// </remarks>
     private async Task SetAdministrationPageAsync(int portalId, int adminTabId)
     {
@@ -1797,9 +1774,10 @@ public sealed class PortalRepositoryTests
     /// <param name="tabName">The page name.</param>
     /// <returns>The identifier the store assigned.</returns>
     /// <remarks>
-    /// The page table declares its tenant column as nullable, which is how the legacy schema carries the
-    /// pages of the installation itself. Such a page belongs to no tenant, so it is the correct negative case
-    /// for the ownership check and cannot be produced through the tenant-scoped helper.
+    /// The page table declares its tenant column as nullable, which is how the legacy schema
+    /// carries the pages of the installation itself. Such a page belongs to no tenant, so it is the
+    /// correct negative case for the ownership check and cannot be produced through the
+    /// tenant-scoped helper.
     /// </remarks>
     private Task<int> AddHostTabAsync(string tabName)
     {
@@ -1814,14 +1792,16 @@ public sealed class PortalRepositoryTests
             new Dictionary<string, object?> { ["tabName"] = tabName });
     }
 
-    /// <summary>Attaches an alias to a tenant through the repository and returns its identifier.</summary>
+    /// <summary>
+    /// Attaches an alias to a tenant through the repository and returns its identifier.
+    /// </summary>
     /// <param name="portalId">The tenant to attach the alias to.</param>
     /// <param name="httpAlias">The host alias to record.</param>
     /// <returns>The identifier the store assigned.</returns>
     /// <remarks>
-    /// The alias is written through the repository rather than through a direct statement, so the helper
-    /// exercises the same staging boundary the assertions describe: the key is read only once the unit of work
-    /// has committed.
+    /// The alias is written through the repository rather than through a direct statement, so the
+    /// helper exercises the same staging boundary the assertions describe: the key is read only
+    /// once the unit of work has committed.
     /// </remarks>
     private async Task<int> AddAliasAsync(int portalId, string httpAlias)
     {
@@ -1842,8 +1822,8 @@ public sealed class PortalRepositoryTests
     /// <returns>The number of matching rows.</returns>
     /// <remarks>
     /// Read through a connection of its own so that it cannot observe work merely staged against a
-    /// repository's session. That independence is what makes it usable as the visibility probe for the staging
-    /// boundary.
+    /// repository's session. That independence is what makes it usable as the visibility probe for
+    /// the staging boundary.
     /// </remarks>
     private Task<int> CountPortalsNamedAsync(string portalName)
     {
@@ -1872,13 +1852,16 @@ public sealed class PortalRepositoryTests
             new Dictionary<string, object?> { ["httpAlias"] = httpAlias });
     }
 
-    /// <summary>Builds a valid unsaved tenant carrying only the columns the schema insists upon.</summary>
+    /// <summary>
+    /// Builds a valid unsaved tenant carrying only the columns the schema insists upon.
+    /// </summary>
     /// <param name="portalName">The name to give the tenant.</param>
     /// <returns>An unsaved tenant whose identifier the store has not yet assigned.</returns>
     /// <remarks>
-    /// Every property set here backs a column declared not-null with no useful default, so omitting any of
-    /// them would fail at the store for a reason unrelated to whatever is under test. Nothing else is set, so a
-    /// tenant built here starts with its optional columns genuinely absent.
+    /// Every property set here backs a column declared not-null with no useful default, so omitting
+    /// any of them would fail at the store for a reason unrelated to whatever is under test.
+    /// Nothing else is set, so a tenant built here starts with its optional columns genuinely
+    /// absent.
     /// </remarks>
     private static Portal NewPortal(string portalName) => new()
     {
@@ -1900,9 +1883,9 @@ public sealed class PortalRepositoryTests
     /// <param name="label">A readable label identifying the assertion that asked for it.</param>
     /// <returns>A lower-case host alias unique across the installation.</returns>
     /// <remarks>
-    /// The alias column carries a unique index spanning the whole installation, so a reused value would fail
-    /// at the store rather than at an assertion. The result is already lower-case, so it is unaffected by the
-    /// case normalisation tenant resolution applies.
+    /// The alias column carries a unique index spanning the whole installation, so a reused value
+    /// would fail at the store rather than at an assertion. The result is already lower-case, so it
+    /// is unaffected by the case normalisation tenant resolution applies.
     /// </remarks>
     private static string NewAlias(string label) =>
         FormattableString.Invariant($"{label}-{Suffix()}.integration.test");

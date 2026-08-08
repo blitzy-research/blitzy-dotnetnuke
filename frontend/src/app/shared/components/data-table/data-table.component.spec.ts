@@ -1298,6 +1298,133 @@ describe('DataTableComponent', () => {
   });
 });
 
+// =====================================================================================================
+// THE NON-SELECTING GRID — SIX OF THE SEVEN CONSUMERS
+// =====================================================================================================
+//
+// ⚠⚠ THIS WHOLE BLOCK IS THE CORRECTION OF A DEFECT THAT REACHED EVERY GRID IN THE APPLICATION.
+// The component used to give every row `tabindex="0"`, an `aria-selected` attribute and both
+// activation handlers unconditionally, and the two stylesheets keyed a pointer cursor, a focus
+// ring, hover feedback and press feedback to that attribute's presence. Measured across the
+// application, exactly ONE of seven consumers binds `(rowSelect)` — the portal-alias listing,
+// which uses a row press to open an alias for editing. On the other six the affordance was
+// entirely inert, and it cost:
+//
+//   * A TAB STOP PER ROW that did nothing when activated. On a page of twenty accounts, reaching
+//     the first row command by keyboard meant pressing Tab past twenty rows.
+//   * AN ANNOUNCED SELECTION STATE the grid could not enter. `aria-selected="false"` tells a
+//     screen-reader user there is a selection model and they are outside it.
+//   * A POINTER CURSOR AND HOVER FEEDBACK promising an action that never happened.
+//
+// The affordance is now derived from whether anything is listening — the emitter's own
+// subscription state, which cannot disagree with itself — so this block asserts the withdrawal
+// and the sibling block above asserts that a listening consumer is unaffected.
+//
+// THE FIXTURE MUST NOT SUBSCRIBE. That is the entire difference from the first block in this
+// file, whose `beforeEach` subscribes both outputs before the first render, and it is why this
+// needs its own testing module rather than another case inside that one.
+describe('DataTableComponent when nothing listens for a row selection', () => {
+  let fixture: ComponentFixture<DataTableComponent<Row>>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [DataTableComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent<DataTableComponent<Row>>(DataTableComponent);
+
+    // ⚠ NOTHING IS SUBSCRIBED HERE, DELIBERATELY, AND NOT EVEN `sortChange`. Sorting is a
+    // separate affordance driven by the column descriptor, so leaving it unsubscribed too keeps
+    // this fixture describing a consumer that binds neither output — which is what four of the
+    // six non-selecting grids actually do.
+    fixture.componentRef.setInput('columns', baseColumns());
+    fixture.componentRef.setInput('rows', ROWS);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  function bodyRows(): readonly HTMLTableRowElement[] {
+    return fixture.debugElement
+      .queryAll(By.css('tbody tr'))
+      .map((node) => node.nativeElement as HTMLTableRowElement);
+  }
+
+  it('renders every row, the withdrawal being of the affordance and not of the data', () => {
+    expect(bodyRows().length).toBe(ROWS.length);
+  });
+
+  it('puts no row in the tab order', () => {
+    // The headline cost of the defect. Asserted as the ABSENCE of the attribute rather than as
+    // a negative value: `tabindex="-1"` would keep the row focusable programmatically and would
+    // still match the global reset's focus rule, so only removing it entirely is correct.
+    for (const row of bodyRows()) {
+      expect(row.getAttribute('tabindex')).toBeNull();
+    }
+  });
+
+  it('announces no selection state on any row', () => {
+    // ⚠ ABSENT, NOT FALSE, AND THE DIFFERENCE IS THE WHOLE MECHANISM. Both stylesheets key the
+    // cursor, the focus ring, the hover ink, the press fill and the selected tint to
+    // `[aria-selected]` being PRESENT — an attribute selector cannot match an absent attribute —
+    // so removing it withdraws the entire visual affordance with the announcement, in one move.
+    // Setting it to `false` here would compile, read correctly to a reader of the template, and
+    // leave every one of those treatments in place.
+    for (const row of bodyRows()) {
+      expect(row.hasAttribute('aria-selected')).toBeFalse();
+    }
+
+    expect(fixture.nativeElement.querySelectorAll('[aria-selected]').length).toBe(0);
+  });
+
+  it('marks no row as selected, by class or otherwise', () => {
+    for (const row of bodyRows()) {
+      expect(row.classList.contains('data-table__row--selected')).toBeFalse();
+    }
+  });
+
+  it('moves no state when a row is pressed', () => {
+    // The handlers are still declared — a template cannot register a listener conditionally
+    // without duplicating the whole row — so the component refuses inside them. Observable as
+    // the absence of any announced or painted selection after a press.
+    bodyRows()[1].click();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelectorAll('[aria-selected]').length).toBe(0);
+    expect(bodyRows()[1].classList.contains('data-table__row--selected')).toBeFalse();
+  });
+
+  it('moves no state on Enter or Space, and suppresses neither key', () => {
+    // ⚠ NOT SUPPRESSING THE SPACE BAR MATTERS. On a selectable grid the space bar's default page
+    // scroll is cancelled because the press selects the row instead; on a grid where it selects
+    // nothing, cancelling it would take the reader's page scroll away and give nothing back.
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+
+    bodyRows()[0].dispatchEvent(enter);
+    bodyRows()[0].dispatchEvent(space);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelectorAll('[aria-selected]').length).toBe(0);
+    expect(enter.defaultPrevented).toBeFalse();
+    expect(space.defaultPrevented).toBeFalse();
+  });
+
+  it('still renders the row index for assistive technology', () => {
+    // Withdrawing selection must not withdraw the grid semantics that have nothing to do with
+    // it: the row index tells a reader where they are in a paged set and is unrelated.
+    for (const row of bodyRows()) {
+      expect(row.hasAttribute('aria-rowindex')).toBeTrue();
+    }
+  });
+});
+
 describe('DataTableComponent with a real wire contract as its row', () => {
   // WHY A REAL MODEL AND NOT THE LOCAL FIXTURE SHAPE. `ProfilePropertyDefinition` is the
   // actual transfer contract this application receives, and it is the row of the grid that
@@ -1766,6 +1893,34 @@ describe('DataTableComponent projection', () => {
     // The row handler is what calls preventDefault for Space, so an unprevented event
     // is independent evidence that the event never reached the row.
     expect(event.defaultPrevented).toBeFalse();
+  });
+
+  it('offers the row affordance because the HOST TEMPLATE binds the output', () => {
+    // ⚠⚠ THE TIMING CLAIM, ASSERTED RATHER THAN ASSUMED, and this is the case that makes the
+    // whole conditional affordance trustworthy. The component decides selectability ONCE, in its
+    // initialisation hook, by reading whether anything is subscribed to its row-selection
+    // emitter. That is only correct if a template output binding is registered BEFORE the child's
+    // initialisation hook runs — which it is, output listeners being registered while the parent
+    // view is created — but "which it is" is exactly the kind of framework-ordering assumption
+    // that deserves an executable check rather than a comment.
+    //
+    // This fixture binds the output the way every real consumer does: from markup, with no manual
+    // subscription anywhere. So a regression in the reading, or a move of it into the constructor,
+    // withdraws the affordance from every grid in the application and fails here by name.
+    const rows: readonly HTMLTableRowElement[] = fixture.debugElement
+      .queryAll(By.css('tbody tr'))
+      .map((node) => node.nativeElement as HTMLTableRowElement);
+
+    expect(rows.length).toBeGreaterThan(0);
+
+    for (const row of rows) {
+      expect(row.getAttribute('tabindex'))
+        .withContext('a listening consumer must get focusable rows')
+        .toBe('0');
+      expect(row.getAttribute('aria-selected'))
+        .withContext('and rows that announce a selection state they can enter')
+        .toBe('false');
+    }
   });
 
   it('proves a key event from an ordinary cell still reaches the row', () => {

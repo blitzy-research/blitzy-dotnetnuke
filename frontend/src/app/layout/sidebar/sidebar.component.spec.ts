@@ -4,9 +4,11 @@
  *
  * ## What this file is responsible for
  *
- * The rail is presentational by construction: it injects nothing, performs no I/O,
- * declares no provider, defines no route and holds exactly one boolean of state. A
- * specification for such a component has three jobs, and all three are done here.
+ * The rail performs no I/O, declares no provider, defines no route and holds exactly one
+ * boolean of its own state. It injects two things and nothing else: the router, whose
+ * current address decides which entry is announced as current, and the authentication
+ * store, whose tenant-administration projection decides which entries are offered at all.
+ * A specification for such a component has four jobs, and all four are done here.
  *
  * 1. **Pin the rendered contract.** The paired stylesheet compiles against a published
  *    selector vocabulary — `nav.app-sidebar`, `.app-sidebar--collapsed`,
@@ -22,25 +24,39 @@
  *    exception — the router resolves it to the wildcard entry — so it would ship as a
  *    link that quietly goes nowhere. That is the single most likely regression in a
  *    file of this kind and the only one no other tool catches.
- * 3. **Pin the accessibility contract**, including the one hazard that is a genuine
- *    defect rather than a preference: `aria-current="page"` must be unique, and the
- *    address pair `/modules` and `/modules/import` makes prefix matching produce two
- *    of them. That collision is reproduced against the real router below, so the
- *    expectation proves the hazard exists *and* proves the component suppresses it.
+ * 3. **Pin the accessibility contract**, including two hazards that are genuine defects
+ *    rather than preferences. `aria-current="page"` must be UNIQUE, and the address pair
+ *    `/modules` and `/modules/import` makes plain prefix matching produce two of them.
+ *    It must also be PRESENT wherever the reader actually is: every rail entry names a
+ *    collection or a creation screen, so the moment a record is opened the address showing
+ *    is a descendant of a rail entry rather than one of them, and exact matching leaves
+ *    the whole rail unmarked for the greater part of the console's screens. Both hazards
+ *    are reproduced against the real router below — under `paths: 'subset'` and under
+ *    `paths: 'exact'` respectively — so each expectation proves the hazard exists *and*
+ *    proves the component's own segment-wise longest-prefix resolution answers it.
+ * 4. **Pin link visibility.** Five of the eight destinations address routes declared under
+ *    the `PortalAdministrator` policy, and each is offered only when the caller holds the
+ *    server's own determination that it administers the tenant. The cross-check is against
+ *    the real route tables rather than a list restated here, so an entry whose gate
+ *    disagrees with its route's policy fails.
  *
  * ## Harness
  *
  * Karma with Jasmine, driven by `ng test --watch=false --browsers=ChromeHeadless
  * --code-coverage`. The component is standalone, so it is supplied through `imports`
  * and never through a module declaration list, and the router is supplied by
- * `provideRouter` rather than by the deprecated testing module — `RouterLink` and
- * `RouterLinkActive` both resolve a real `Router`, so a stub would prove nothing about
- * the addresses actually rendered.
+ * `provideRouter` rather than by the deprecated testing module — `RouterLink` resolves a
+ * real `Router` and the component resolves the current address from real router events, so
+ * a stub would prove nothing about the addresses actually rendered or about which of them
+ * is announced.
  *
- * No HTTP client is configured, and that omission is itself an assertion: a rail that
- * injected one would fail to construct under this provider set, so every expectation
- * below only passes because the component reaches for nothing but the router. No
- * animations provider and no hydration provider are configured either, deliberately —
+ * The authentication store is supplied as a DOUBLE exposing exactly one member, the
+ * tenant-administration projection. That is deliberate on two counts: it lets a
+ * specification state administration directly, in both directions, rather than assembling
+ * a session to imply it; and because the double satisfies the rail's whole store
+ * dependency, no HTTP client is needed anywhere in this file — which keeps "this rail
+ * issues no request" an assertion rather than a claim. No animations provider and no
+ * hydration provider are configured either, deliberately —
  * neither the animations package nor the server-rendering package is installed in this
  * workspace, and the second absence is load-bearing for the project's security posture
  * rather than incidental: the sole runtime advisory outstanding against the pinned
@@ -147,15 +163,30 @@
 // such values as live markup. The legacy code held the same position where it did render
 // them — `Default.aspx.vb` L232 and `AccessDenied.ascx.vb` L43 both encode before display.
 
-// MIGRATION: permission-driven visibility would be an AFFORDANCE and never
-// enforcement, and this rail applies none — so this specification asserts that it applies
-// none. Authorisation is decided server-side and answered as HTTP 403; on the client,
-// route activation is gated by the router's own authentication and permission guards.
-// Showing the entry points and letting those two authorities refuse is the safer default:
-// hiding an entry the guard would have allowed silently removes a capability, whereas
-// showing one the guard refuses costs a redirect. The legacy application took the same
-// position — `Website/admin/Security/AccessDenied.ascx.vb` performs no permission check of
-// its own: `Page_Load` at L41 tests only the query string at L42, renders the supplied
+// MIGRATION: ⚠ LINK VISIBILITY IS GATED, AND THE EARLIER READING OF THIS FILE ARGUED THAT
+// IT SHOULD NOT BE. That argument — show every entry point and let the router's guard and
+// the API's 403 refuse — is sound for an entry whose outcome is genuinely uncertain from
+// the client. It does not hold for these five. Each of `/modules`, `/modules/import`,
+// `/settings/membership`, `/settings/profile-definitions` and `/role-groups/new` declares
+// `data: { permission: 'PortalAdministrator' }` on its own route, so the outcome for a
+// caller without that determination is not uncertain at all: the permission gate refuses
+// the navigation and redirects to the access-denied screen, every time. Painting the link
+// anyway is not a safe default, it is a promise the application has already decided to
+// break — and it is measurably worse than the alternative, because the redirect costs the
+// reader a screen change to learn what the rail could have told them by omission.
+//
+// The gate is the SERVER'S OWN DETERMINATION, re-exposed by the authentication store as
+// `administersCurrentPortal`. It is not a permission KEY: `VIEW`, `EDIT`, `READ` and
+// `WRITE` are persisted grants over a module or page INSTANCE and answer a different
+// question of a different vocabulary. It is not a role NAME either: administration is
+// conferred by `Portals.AdministratorRoleId`, the designated role is renameable, and a
+// role of the same name may belong to another tenant.
+//
+// Gating remains an AFFORDANCE and never enforcement. The three ungated destinations stay
+// ungated because their routes carry authentication alone, and every request is
+// re-authorised server-side whatever this rail painted. The legacy refusal surface is still
+// the authority on TONE — `Website/admin/Security/AccessDenied.ascx.vb` performs no check
+// of its own: `Page_Load` at L41 tests only the query string at L42, renders the supplied
 // message encoded at L43 and a localised fallback at L45, and BOTH branches use warning
 // severity. Contrast `Website/Default.aspx.vb` L582, which uses error severity for
 // insecure defaults: in the legacy vocabulary denial was a WARNING, never an error.
@@ -170,14 +201,20 @@
 // rail renders no form and no hidden input at all.
 
 import { HttpClient } from '@angular/common/http';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
-import { Router, RouterLink, RouterLinkActive, provideRouter } from '@angular/router';
+import { Router, RouterLink, provideRouter } from '@angular/router';
 
 import { APP_ROUTES, ROOT_REDIRECT_PATH } from '../../app.routes';
+import { AuthStore } from '../../core/state/auth.store';
+import { MODULE_ROUTES } from '../../features/module/module.routes';
+import { PORTAL_ROUTES } from '../../features/portal/portal.routes';
+import { ROLE_ROUTES } from '../../features/role/role.routes';
+import { USER_ROUTES } from '../../features/user/user.routes';
 import { SidebarComponent } from './sidebar.component';
 
-import type { Signal } from '@angular/core';
+import type { Signal, WritableSignal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { IsActiveMatchOptions, Route, Routes } from '@angular/router';
 import type { SidebarNavGroup } from './sidebar.component';
@@ -194,10 +231,18 @@ const TOGGLE_NAME = 'Navigation';
 /** The wildcard route's path, excluded from address resolution — see {@link routeCovering}. */
 const WILDCARD_PATH = '**';
 
-/** One expected destination: the address rendered, and the text rendered for it. */
+/** One expected destination: the address rendered, the text rendered for it, and the
+ * authority its destination's own API endpoint requires.
+ *
+ * ⚠ THE POLICY IS TRANSCRIBED FROM THE CONTROLLER, NOT COPIED FROM THE COMPONENT. Copying
+ * it would make the expectation a tautology that passed for whatever the component happened
+ * to declare. Each value below cites the attribute it was read from, so this table is the
+ * server's answer and the assertion genuinely asks whether the rail agrees with it.
+ */
 interface ExpectedItem {
   readonly address: string;
   readonly label: string;
+  readonly policy: 'PortalAdministrator' | 'HostAdministrator';
 }
 
 /** One expected group: its stable key, its heading text, and its destinations in order. */
@@ -224,33 +269,159 @@ const EXPECTED_GROUPS: readonly ExpectedGroup[] = [
   {
     id: 'portal',
     label: 'Portal',
-    items: [{ address: '/portals', label: 'Portals' }],
+    // `PortalsController.cs:L241` — the tenant COLLECTION addresses no single tenant, so
+    // enumerating it requires host authority. This is the one entry whose authority is
+    // stricter than its route's own declaration, and it follows the endpoint.
+    items: [{ address: '/portals', label: 'Portals', policy: 'HostAdministrator' }],
   },
   {
     id: 'module',
     label: 'Module',
+    // `ModulesController.cs:L187` (listing) and `:L627` (import).
     items: [
-      { address: '/modules', label: 'Modules' },
-      { address: '/modules/import', label: 'Import Module' },
+      { address: '/modules', label: 'Modules', policy: 'PortalAdministrator' },
+      { address: '/modules/import', label: 'Import Module', policy: 'PortalAdministrator' },
     ],
   },
   {
     id: 'user',
     label: 'User',
+    // `UsersController.cs:L350` (listing), `:L827` (tenant membership policy) and
+    // `ProfileDefinitionsController.cs:L165` (class-gated).
     items: [
-      { address: '/users', label: 'User Accounts' },
-      { address: '/settings/membership', label: 'User Settings' },
-      { address: '/settings/profile-definitions', label: 'Manage Profile Properties' },
+      { address: '/users', label: 'User Accounts', policy: 'PortalAdministrator' },
+      { address: '/settings/membership', label: 'User Settings', policy: 'PortalAdministrator' },
+      {
+        address: '/settings/profile-definitions',
+        label: 'Manage Profile Properties',
+        policy: 'PortalAdministrator',
+      },
     ],
   },
   {
     id: 'role',
     label: 'Role',
+    // `RolesController.cs:L284` gates the whole class on tenant administration.
     items: [
-      { address: '/roles', label: 'Security Roles' },
-      { address: '/role-groups/new', label: 'Edit Role Group' },
+      { address: '/roles', label: 'Security Roles', policy: 'PortalAdministrator' },
+      { address: '/role-groups/new', label: 'Add New Role Group', policy: 'PortalAdministrator' },
     ],
   },
+];
+
+/**
+ * The destinations offered to EVERY signed-in caller: NONE, and the emptiness is the fact.
+ *
+ * ⚠ AN EARLIER REVISION LISTED THREE — `/portals`, `/users` and `/roles` — ON THE GROUND THAT
+ * THEIR ROUTES DECLARED NO POLICY. That was measured against the wrong route. Each of those
+ * three is a lazily-mounted PARENT segment in `APP_ROUTES` carrying the session gate alone, and
+ * the policy sits on the `''` CHILD inside the feature barrel the parent loads: `/portals`
+ * resolves to `PORTAL_ROUTES['']`, which declares `HostAdministrator`, and `/users` and `/roles`
+ * resolve to children declaring `PortalAdministrator`. So following any of the three as an
+ * ordinary account holder ends at the access-denied screen, which is exactly the outcome the rail
+ * exists not to promise. {@link declaredPolicyFor} now resolves the child, which is what makes the
+ * cross-check below meaningful rather than vacuous.
+ *
+ * Every destination this rail offers is an administration screen, so a signed-in caller who
+ * administers nothing is offered nothing and the navigation landmark is withheld entirely. That
+ * is the specified behaviour, not a capability loss: the rail declines to promise a capability the
+ * application has already refused.
+ */
+const UNGATED_ADDRESSES: readonly string[] = [];
+
+/**
+ * The one destination offered only to a HOST account.
+ *
+ * The tenant collection is host-only on both sides: `PortalsController.cs` gates the listing on
+ * `HostAdministrator`, and `PORTAL_ROUTES['']` declares the same policy. A tenant administrator is
+ * refused it, which is why it cannot sit in the set below.
+ */
+const HOST_ONLY_ADDRESSES: readonly string[] = ['/portals'];
+
+/**
+ * The seven destinations offered only to a caller that administers the tenant.
+ *
+ * ⚠ EVERY ONE IS CROSS-CHECKED AGAINST ITS OWN ROUTE DECLARATION below, against the real
+ * route tables rather than against this list. The list says which entries the rail gates;
+ * the route tables say which entries MUST be gated, and an entry appearing in one and not
+ * the other is the defect that check exists to find.
+ */
+const ADMINISTRATION_ONLY_ADDRESSES: readonly string[] = [
+  '/modules',
+  '/modules/import',
+  '/users',
+  '/settings/membership',
+  '/settings/profile-definitions',
+  '/roles',
+  '/role-groups/new',
+];
+
+/**
+ * The addresses a caller that administers the tenant but holds no host account is offered.
+ *
+ * Derived rather than restated, and deliberately NOT equal to the whole rail: the tenant
+ * collection above is withheld from this caller, so this is the set that proves a group can be
+ * dropped while its siblings survive intact.
+ */
+const TENANT_ADMINISTRATION_ADDRESSES: readonly string[] = ADMINISTRATION_ONLY_ADDRESSES;
+
+/** The policy name every gated destination's route must declare. */
+const ADMINISTRATION_POLICY = 'PortalAdministrator';
+
+/** The policy the host-only destination's route must declare. */
+const HOST_POLICY = 'HostAdministrator';
+
+/**
+ * The feature barrels `APP_ROUTES` mounts lazily, by the parent segment that mounts them.
+ *
+ * Held as a map rather than as a chain of comparisons so that adding a barrel is one entry and
+ * cannot be half-done. Consumed only by {@link declaredPolicyFor}.
+ */
+const FEATURE_BARRELS: ReadonlyMap<string, readonly Route[]> = new Map<string, readonly Route[]>([
+  [ROOT_REDIRECT_PATH, PORTAL_ROUTES],
+  ['modules', MODULE_ROUTES],
+  ['users', USER_ROUTES],
+  ['roles', ROLE_ROUTES],
+]);
+
+/**
+ * The four persisted permission keys, held here to assert that NONE of them appears as a
+ * policy on any destination the rail gates.
+ *
+ * ⚠ THE VOCABULARY CONFUSION THIS FILE GUARDS AGAINST. These are grants over a module or
+ * page INSTANCE, carried in `ModulePermissions` and `TabPermissions`. Gating an
+ * administration destination with one of them asks a different question of a different
+ * vocabulary, and can both hide an entry the caller may reach and offer one the router
+ * will refuse.
+ */
+const PERSISTED_PERMISSION_KEYS: readonly string[] = ['VIEW', 'EDIT', 'READ', 'WRITE'];
+
+/** One descendant case: an address a reader can actually be at, and the entry it belongs under. */
+interface DescendantCase {
+  /** The address showing — a descendant of a rail entry, never a rail entry itself. */
+  readonly showing: string;
+  /** The rail entry that must be marked current while that address is showing. */
+  readonly expectedActive: string;
+  /** What the reader is doing there, for the failure message. */
+  readonly description: string;
+}
+
+/**
+ * The descendant addresses that prove exact matching is wrong.
+ *
+ * ⚠ THESE ARE NOT EDGE CASES — THEY ARE THE CONSOLE'S ORDINARY SCREENS. Every rail entry
+ * names a collection or a creation form, so the instant a reader opens a record, edits it,
+ * manages its memberships or changes a credential, the address showing is a descendant of
+ * a rail entry and is not itself a rail entry. Under exact matching the rail goes
+ * completely unmarked at each of them, which is where a reader most needs to know where
+ * they are. One case is drawn from each feature group, and each is a real route.
+ */
+const DESCENDANT_CASES: readonly DescendantCase[] = [
+  { showing: '/portals/new', expectedActive: '/portals', description: 'creating a portal' },
+  { showing: '/portals/0/settings', expectedActive: '/portals', description: 'a portal\u2019s settings' },
+  { showing: '/users/7/profile', expectedActive: '/users', description: 'an account\u2019s profile' },
+  { showing: '/roles/0/users', expectedActive: '/roles', description: 'a role\u2019s membership' },
+  { showing: '/modules/5/settings', expectedActive: '/modules', description: 'a module\u2019s settings' },
 ];
 
 /** Every address the rail is expected to render, flattened in presentation order. */
@@ -371,11 +542,17 @@ const COLLAPSED_CLASS = 'app-sidebar--collapsed';
 const ACTIVE_LINK_CLASS = 'app-sidebar__link--active';
 
 /**
- * The activity-matching strategy the component publishes, spelled out as the router's
- * own option object.
+ * Exact address matching, held here to DEMONSTRATE A HAZARD rather than to exercise the
+ * component — the rail no longer configures the router's activity directive at all.
  *
- * Written in the explicit four-property form rather than as the legacy boolean, because
- * the boolean overload of the router's activity test is deprecated and the explicit form
+ * ⚠ THIS IS THE STRATEGY THE RAIL USED TO PUBLISH, AND IT WAS WRONG. Under it a rail entry
+ * is active only while its own address is showing exactly, so on `/portals/new`,
+ * `/users/7/profile` and every other record screen NO entry is marked and the rail
+ * announces no current page whatsoever. That is the greater part of the console. The
+ * expectations below drive the real router under this strategy to prove the silence is a
+ * property of the strategy, and then prove the component's own resolution answers it.
+ *
+ * Written in the explicit four-property form rather than as the deprecated boolean, which
  * documents exactly which of the four comparisons is exact.
  */
 const EXACT_ADDRESS_MATCH: IsActiveMatchOptions = {
@@ -386,11 +563,12 @@ const EXACT_ADDRESS_MATCH: IsActiveMatchOptions = {
 };
 
 /**
- * The strategy the router would use if the component published nothing — the default.
+ * Plain prefix matching — the router's default, and the OTHER hazard.
  *
- * Used to DEMONSTRATE the hazard rather than to exercise the component: under this
- * strategy the module collection address is active while its child is showing, which is
- * precisely the two-current-pages defect the component's exact matching suppresses.
+ * Under this strategy the module collection address is active while its child is showing,
+ * so `/modules/import` marks two entries current at once. Held to demonstrate that
+ * collision against the real router: the component's resolution keeps only the LONGEST
+ * matching entry, which is what makes the announcement unique without making it silent.
  */
 const PREFIX_ADDRESS_MATCH: IsActiveMatchOptions = {
   paths: 'subset',
@@ -417,9 +595,16 @@ const PREFIX_ADDRESS_MATCH: IsActiveMatchOptions = {
  * satisfies that requirement while still resolving as a leaf, because a route whose child
  * table is empty matches when its own segments consume the whole address.
  */
-const NAVIGABLE_ROUTES: Routes = EXPECTED_ADDRESSES.map(
-  (address: string): Route => ({ path: address.slice(1), children: [] }),
-);
+const NAVIGABLE_ROUTES: Routes = [
+  ...EXPECTED_ADDRESSES.map((address: string): Route => ({ path: address.slice(1), children: [] })),
+  // The descendant addresses too, declared flat rather than nested: the router matches on
+  // the whole path, so a flat declaration resolves `/portals/0/settings` exactly as a
+  // nested one would while keeping this table derived from one list per purpose.
+  ...DESCENDANT_CASES.map((testCase: DescendantCase): Route => ({
+    path: testCase.showing.slice(1),
+    children: [],
+  })),
+];
 
 /**
  * Splits an absolute address into its non-empty path segments.
@@ -484,6 +669,54 @@ function routeCovering(address: string): Route | null {
 }
 
 /**
+ * The authorisation policy one route declares, or null when it declares none.
+ *
+ * @param route The route declaration, or undefined when none was found.
+ * @returns The declared policy name, or null.
+ */
+function policyOf(route: Route | undefined): string | null {
+  const declared: unknown = route?.data?.['permission'];
+
+  return typeof declared === 'string' ? declared : null;
+}
+
+/**
+ * The policy the route behind an address declares, resolved against the REAL route tables.
+ *
+ * ⚠ TWO TABLES, BECAUSE THE MODULE DESTINATIONS LIVE IN A LAZY BARREL. `/settings/membership`,
+ * `/settings/profile-definitions` and `/role-groups/new` are declared at the top level and are
+ * readable from the application table; `/modules` and `/modules/import` are declared inside the
+ * module feature's own route file, which is imported here for its DATA alone. Importing the
+ * barrel mounts nothing — the component thunks are never invoked — so this stays a data
+ * cross-check rather than dragging a feature graph into a layout specification.
+ *
+ * Resolving the policy from the tables rather than restating it is the whole point: an entry
+ * whose gate disagrees with its route's own declaration is exactly the defect being guarded
+ * against, and a restated list would agree with itself and prove nothing.
+ *
+ * @param address The absolute address a rail entry renders.
+ * @returns The declared policy name, or null when the route declares none.
+ */
+function declaredPolicyFor(address: string): string | null {
+  const segments = segmentsOf(address);
+  const barrel: readonly Route[] | undefined = FEATURE_BARRELS.get(segments[0] ?? '');
+
+  // ⚠ THE CHILD, NOT THE PARENT, AND THIS IS THE WHOLE CORRECTNESS OF THE CROSS-CHECK. Four
+  // addresses in the rail begin with a segment that `APP_ROUTES` mounts LAZILY, carrying the
+  // session gate and nothing else; the policy that decides whether the address can be followed
+  // sits on the child inside the barrel that parent loads. Reading the parent therefore reports
+  // "no policy" for four gated destinations, which an earlier revision of this file did — and it
+  // then concluded from that reading that three of them were ungated.
+  if (barrel !== undefined) {
+    const child = segments.slice(1).join('/');
+
+    return policyOf(barrel.find((route: Route): boolean => (route.path ?? '') === child));
+  }
+
+  return policyOf(APP_ROUTES.find((route: Route): boolean => (route.path ?? '') === segments.join('/')));
+}
+
+/**
  * Narrows a nullable lookup, failing with a message that names what was wanted.
  *
  * Preferred over asserting the result away, so that a missing element or a missing
@@ -534,6 +767,11 @@ describe('SidebarComponent', () => {
   let component: SidebarComponent;
 
   /**
+   * The one member of the authentication store the rail reads, held writable so a
+   * specification can state administration in either direction and flip it mid-test.
+   */
+
+  /**
    * Configures the testing module and renders the rail.
    *
    * Called explicitly from each group rather than from one shared `beforeEach`, because
@@ -543,23 +781,75 @@ describe('SidebarComponent', () => {
    *
    * The component is supplied through `imports` because it is standalone; a declaration
    * list would not compile. `provideRouter` supplies a REAL router rather than a stub,
-   * which is what makes the rendered addresses and the link-activity behaviour below
-   * meaningful. Nothing else is provided: no HTTP client, no animations provider and no
-   * hydration provider, so the rail only constructs at all because it injects none of
-   * them.
+   * which is what makes the rendered addresses and the current-page resolution below
+   * meaningful.
+   *
+   * ⚠ THE STORE DOUBLE EXPOSES EXACTLY ONE MEMBER, and that narrowness is an assertion in
+   * itself: were the rail to reach for a session, a role list, a permission key or any
+   * command, it would fail here rather than pass with a wrong premise. It is also what
+   * keeps this file free of an HTTP client — the real store needs one transitively, the
+   * double needs nothing, and "the rail issues no request" therefore stays provable.
+   *
+   * ⚠ THE DEFAULT IS AN ADMINISTERING CALLER, so the groups below describe the COMPLETE
+   * rail. Gated visibility is stated on its own, in both directions, in its own group;
+   * making the default the withholding case instead would have left every route-integrity,
+   * wording and list-semantics expectation silently describing a three-entry rail.
+   *
+   * ⚠ THE TWO AUTHORITY INPUTS ARE SET BEFORE THE FIRST RENDER, AND THEY MUST BE. Both are
+   * declared `input.required`, so reading either before it has been set raises NG0950 —
+   * which is the intended contract rather than an inconvenience: a mounting site that
+   * omitted the caller's authority must fail loudly instead of rendering the unfiltered
+   * rail. Setting them here rather than after `detectChanges()` means the very first render
+   * is already filtered, so no expectation below can pass against a rail that was briefly
+   * unfiltered.
+   *
+   * ⚠ THE DEFAULT IS THE MOST-PRIVILEGED CALLER, AND THAT IS DELIBERATE FOR THIS FILE.
+   * Almost every group here asserts the RENDERED CONTRACT — selectors, addresses, wording,
+   * landmarks, link activity — and those properties are about the rail's markup rather than
+   * about who is looking at it, so they need every entry present. The filtering itself is
+   * asserted in its own group, which states the authority explicitly for each case.
    *
    * @param routes The route table to configure. Pass an empty table for the default
    *   case, where the router has nowhere to go and no link can be active.
+   * @param authority The caller's authority. Defaults to a host account, which is the only
+   *   caller every declared entry is offered to.
    */
-  async function createComponent(routes: Routes): Promise<void> {
+  async function createComponent(
+    routes: Routes,
+    authority: { readonly hostAccount: boolean; readonly administersTenant: boolean } = {
+      hostAccount: true,
+      administersTenant: true,
+    },
+  ): Promise<void> {
     await TestBed.configureTestingModule({
       imports: [SidebarComponent],
-      providers: [provideRouter(routes)],
+      providers: [
+        provideRouter(routes),
+      ],
     }).compileComponents();
 
     fixture = TestBed.createComponent(SidebarComponent);
     component = fixture.componentInstance;
 
+    fixture.componentRef.setInput('hostAccount', authority.hostAccount);
+    fixture.componentRef.setInput('administersTenant', authority.administersTenant);
+
+    fixture.detectChanges();
+  }
+
+  /**
+   * Restates the caller's tenant administration and re-renders.
+   *
+   * ⚠ THE INPUT IS RESTATED, NOT A STORE SIGNAL. The rail's authority arrives as required
+   * inputs from its only caller rather than being read from the session store, so this is the one
+   * channel that can change it. The render is explicit because the rail uses the on-push
+   * change-detection strategy: setting the input marks the view dirty, and this is what makes the
+   * new state observable in the document.
+   *
+   * @param administers Whether the caller administers the tenant.
+   */
+  function setAdministration(administers: boolean): void {
+    fixture.componentRef.setInput('administersTenant', administers);
     fixture.detectChanges();
   }
 
@@ -651,13 +941,6 @@ describe('SidebarComponent', () => {
     }
 
     return null;
-  }
-
-  /** Every `RouterLinkActive` instance the template created, one per destination anchor. */
-  function linkActivityDirectives(): readonly RouterLinkActive[] {
-    return fixture.debugElement
-      .queryAll(By.directive(RouterLinkActive))
-      .map((debugElement): RouterLinkActive => debugElement.injector.get(RouterLinkActive));
   }
 
   /** Every `RouterLink` instance the template created, one per destination anchor. */
@@ -919,25 +1202,31 @@ describe('SidebarComponent', () => {
       expect(active.length).toBe(0);
     });
 
-    it('configures exact matching on every destination, from one shared options object', () => {
-      // ⚠ EXACT MATCHING IS REQUIRED, NOT PREFERRED — see the navigation group below for
-      // the collision that proves it. Asserted per anchor rather than in aggregate,
-      // because a single link left on the default strategy is enough to reintroduce the
-      // defect on one screen.
-      const activity = linkActivityDirectives();
+    it('resolves no active path before any navigation', () => {
+      // The published resolution and the document must agree at rest as well as in motion,
+      // so the projection is asserted alongside the two rendered consequences above.
+      expect(component.activePath()).toBeNull();
+    });
 
-      expect(activity.length).toBe(EXPECTED_ADDRESSES.length);
+    it('delegates the current-page decision to NO router directive', () => {
+      // ⚠ THE STRUCTURAL FORM OF THE CORRECTION. Activity used to be delegated to
+      // `routerLinkActive` with `{ exact: true }` on every entry, which is what left the
+      // rail silent on every descendant address. The component now resolves the current
+      // entry itself — segment-wise, longest match wins — and drives BOTH the class and the
+      // announcement from that one answer, so the two cannot disagree.
+      //
+      // Asserted by the absence of the directive rather than by behaviour alone, because a
+      // rail carrying both mechanisms could pass every behavioural expectation below while
+      // holding a second, contradictory source of truth.
+      expect(fixture.debugElement.queryAll(By.directive(RouterLink)).length).toBe(
+        EXPECTED_ADDRESSES.length,
+      );
 
-      for (const directive of activity) {
-        // Identity, not equality. The component publishes ONE stable options instance so
-        // that a template literal is not re-allocated on every evaluation, and identity
-        // is the only assertion that actually proves the sharing.
-        expect(directive.routerLinkActiveOptions)
-          .withContext('every destination must take the shared exact-matching options')
-          .toBe(component.exactMatchOptions);
+      for (const anchor of navAnchors()) {
+        expect(anchor.hasAttribute('routerLinkActive'))
+          .withContext('the rail must not delegate activity to the router directive')
+          .toBeFalse();
       }
-
-      expect(component.exactMatchOptions.exact).toBeTrue();
     });
   });
 
@@ -974,12 +1263,12 @@ describe('SidebarComponent', () => {
       expect(collection.classList.contains(ACTIVE_LINK_CLASS)).toBeFalse();
     });
 
-    it('proves the prefix collision is real, and that exact matching is what suppresses it', async () => {
-      // Demonstrates the hazard against the REAL router rather than describing it. While
-      // the import screen is showing, the collection address is active under the default
-      // subset strategy and inactive under the exact strategy — so the defect is a
-      // property of the address pair, and the component's published options are the only
-      // thing standing between the rail and two current-page claims.
+    it('proves the prefix collision is real, and that the longest match is what suppresses it', async () => {
+      // Demonstrates the hazard against the REAL router rather than describing it. While the
+      // import screen is showing, the collection address is active under the default subset
+      // strategy — so the collision is a property of the address pair and not of any
+      // implementation. The component keeps only the LONGEST matching entry, which is why
+      // exactly one claim survives above.
       await navigateTo(MODULE_IMPORT_ADDRESS);
 
       const router = TestBed.inject(Router);
@@ -988,11 +1277,88 @@ describe('SidebarComponent', () => {
         .withContext('the prefix collision this rail must suppress has disappeared')
         .toBeTrue();
 
-      expect(router.isActive(MODULE_COLLECTION_ADDRESS, EXACT_ADDRESS_MATCH))
-        .withContext('exact matching must reject the parent address')
-        .toBeFalse();
+      expect(component.activePath())
+        .withContext('the longer of the two matching entries is the current one')
+        .toBe(MODULE_IMPORT_ADDRESS);
+    });
 
-      expect(router.isActive(MODULE_IMPORT_ADDRESS, EXACT_ADDRESS_MATCH)).toBeTrue();
+    it('marks the ancestor entry while a DESCENDANT address is showing', async () => {
+      // ⚠⚠ THE EXPECTATION THAT WOULD HAVE CAUGHT THE DEFECT THIS FILE ONCE ENCODED. Every
+      // rail entry names a collection or a creation form, so a reader opening a record,
+      // editing it, managing its memberships or changing a credential is at an address that
+      // is a DESCENDANT of a rail entry and is not itself one. Exact matching left the rail
+      // entirely unmarked at every one of them — no active class and no `aria-current` — for
+      // the greater part of the console's screens, and a screen-reader user navigating by
+      // landmark had nothing at all to orient against.
+      //
+      // Each case is driven through the real router and asserted on all three surfaces: the
+      // published resolution, the active class, and the announcement.
+      for (const testCase of DESCENDANT_CASES) {
+        await navigateTo(testCase.showing);
+
+        const expected = present(
+          anchorFor(testCase.expectedActive),
+          `an anchor for ${testCase.expectedActive}`,
+        );
+
+        expect(component.activePath())
+          .withContext(`${testCase.description}: the ancestor entry must be current`)
+          .toBe(testCase.expectedActive);
+
+        expect(expected.classList.contains(ACTIVE_LINK_CLASS))
+          .withContext(`${testCase.description}: the ancestor anchor must carry the active class`)
+          .toBeTrue();
+
+        expect(expected.getAttribute('aria-current'))
+          .withContext(`${testCase.description}: the ancestor anchor must announce itself`)
+          .toBe('page');
+
+        expect(currentPageElements().length)
+          .withContext(`${testCase.description}: exactly one element may claim the current page`)
+          .toBe(1);
+      }
+    });
+
+    it('proves exact matching is what silenced the rail on those addresses', async () => {
+      // The hazard demonstrated against the REAL router, so the correction is shown to
+      // answer a real property of the route table rather than a described one. Under exact
+      // matching NOTHING the rail renders is active at a descendant address; under the
+      // component's own resolution exactly one entry is.
+      const router = TestBed.inject(Router);
+
+      for (const testCase of DESCENDANT_CASES) {
+        await navigateTo(testCase.showing);
+
+        const activeUnderExactMatching = EXPECTED_ADDRESSES.filter((address: string): boolean =>
+          router.isActive(address, EXACT_ADDRESS_MATCH),
+        );
+
+        expect(activeUnderExactMatching.length)
+          .withContext(`exact matching still marks something at ${testCase.showing}`)
+          .toBe(0);
+
+        expect(component.activePath())
+          .withContext(`the rail must stay oriented at ${testCase.showing}`)
+          .toBe(testCase.expectedActive);
+      }
+    });
+
+    it('refuses a partial SEGMENT match, so one entry cannot claim another\u2019s screens', async () => {
+      // ⚠ SEGMENT-WISE, NEVER STRING-WISE, AND THE ROUTE TABLE MAKES THAT LOAD-BEARING.
+      // `/roles` is a string PREFIX of `/role-groups/new`, so a resolution comparing text
+      // rather than segments would mark the security-roles entry current while the reader is
+      // on the role-group form — a wrong orientation rather than a missing one.
+      await navigateTo('/role-groups/new');
+
+      expect(component.activePath()).toBe('/role-groups/new');
+
+      const roles = present(anchorFor('/roles'), 'the security roles anchor');
+
+      expect(roles.classList.contains(ACTIVE_LINK_CLASS))
+        .withContext('a shared text prefix is not a shared path')
+        .toBeFalse();
+      expect(roles.hasAttribute('aria-current')).toBeFalse();
+      expect(currentPageElements().length).toBe(1);
     });
 
     it('never claims more than one current page, at any destination', async () => {
@@ -1044,14 +1410,18 @@ describe('SidebarComponent', () => {
       expect(claimed[0]).toBe(active[0]);
     });
 
-    it('reports activity through the directive as well as through the document', async () => {
+    it('reports the same answer through the published projection as through the document', async () => {
+      // One source of truth, asserted as such: the class, the announcement and the published
+      // resolution are three renderings of a single computed value, so a change that split
+      // them fails here.
       await navigateTo(MODULE_IMPORT_ADDRESS);
 
-      const active = linkActivityDirectives().filter(
-        (directive: RouterLinkActive): boolean => directive.isActive === true,
-      );
+      const claimed = currentPageElements();
+      const resolved = component.activePath();
 
-      expect(active.length).toBe(1);
+      expect(claimed.length).toBe(1);
+      expect(resolved).toBe(MODULE_IMPORT_ADDRESS);
+      expect(claimed[0]).toBe(present(anchorFor(MODULE_IMPORT_ADDRESS), 'the module import anchor'));
     });
   });
 
@@ -1455,37 +1825,45 @@ describe('SidebarComponent', () => {
       // Cross-checks the published model against the DOM, which is the only place a
       // divergence would be visible to a user. Asserting the model against itself would
       // prove nothing.
-      expect(component.navigation.length).toBe(EXPECTED_GROUPS.length);
+      const groups: readonly SidebarNavGroup[] = component.visibleNavigation();
 
-      const publishedAddresses = component.navigation.flatMap((group: SidebarNavGroup): readonly string[] =>
+      expect(groups.length).toBe(EXPECTED_GROUPS.length);
+
+      const publishedAddresses = groups.flatMap((group: SidebarNavGroup): readonly string[] =>
         group.items.map((item): string => item.path),
       );
 
       expect(publishedAddresses).toEqual(EXPECTED_ADDRESSES);
       expect(publishedAddresses).toEqual(renderedAddresses());
 
-      const publishedLabels = component.navigation.flatMap((group: SidebarNavGroup): readonly string[] =>
+      const publishedLabels = groups.flatMap((group: SidebarNavGroup): readonly string[] =>
         group.items.map((item): string => item.label),
       );
 
       expect(publishedLabels).toEqual(EXPECTED_LABELS);
       expect(publishedLabels).toEqual(renderedLabels());
 
-      expect(component.navigation.map((group: SidebarNavGroup): string => group.id)).toEqual(
+      expect(groups.map((group: SidebarNavGroup): string => group.id)).toEqual(
         EXPECTED_GROUPS.map((group: ExpectedGroup): string => group.id),
       );
     });
 
-    it('publishes the same model instance to every reader', () => {
-      // The model is a compile-time constant, not something resolved per read, so two
-      // reads must be the same object. A model rebuilt on access would defeat the
-      // tracking expressions the template depends on.
-      expect(component.navigation).toBe(component.navigation);
-      expect(component.exactMatchOptions).toBe(component.exactMatchOptions);
+    it('publishes the model and the resolution as read-only projections', () => {
+      expectReadOnlySignal(component.visibleNavigation, 'visibleNavigation');
+      expectReadOnlySignal(component.activePath, 'activePath');
+    });
+
+    it('publishes the same model instance to every reader while nothing has changed', () => {
+      // ⚠ THE MODEL IS NOW DERIVED RATHER THAN CONSTANT, so this expectation earns its keep
+      // twice over. The rail filters its declared model by the administration fact, and a
+      // filter that re-allocated on every read would defeat the template's tracking
+      // expressions and re-create every list item on every change-detection pass. A computed
+      // projection caches, so two reads with nothing changed in between are the same object.
+      expect(component.visibleNavigation()).toBe(component.visibleNavigation());
     });
 
     it('publishes a group key for every group, and keeps them unique', () => {
-      const keys = component.navigation.map((group: SidebarNavGroup): string => group.id);
+      const keys = component.visibleNavigation().map((group: SidebarNavGroup): string => group.id);
 
       expect(new Set<string>(keys).size).toBe(keys.length);
 
@@ -1495,25 +1873,215 @@ describe('SidebarComponent', () => {
     });
   });
 
+  // =========================================================================
+  // LINK VISIBILITY — THE FIVE ADMINISTRATION DESTINATIONS
+  // =========================================================================
+  describe('link visibility', () => {
+    it('offers every destination to a caller that administers the tenant', async () => {
+      await createComponent([], { hostAccount: true, administersTenant: true });
+
+      expect(renderedAddresses()).toEqual(EXPECTED_ADDRESSES);
+      expect(renderedLabels()).toEqual(EXPECTED_LABELS);
+    });
+
+    it('offers nothing at all to a caller that administers neither the tenant nor the host', async () => {
+      // ⚠ THE WITHHOLDING IS THE POINT, AND IT IS NOT A CAPABILITY LOSS. Every destination this
+      // rail offers declares a policy on the route it actually reaches, so following any of them
+      // as this caller ends at the access-denied screen — the rail is not withholding a
+      // capability, it is declining to promise one the application has already refused. This
+      // console has no non-administrative screen to offer, so "only the ungated ones" is the
+      // empty set and the landmark itself is withheld rather than left standing over nothing.
+      await createComponent([], { hostAccount: false, administersTenant: false });
+
+      expect(renderedAddresses()).toEqual([]);
+      expect(component.visibleNavigation()).toEqual([]);
+      expect(host().querySelector('nav'))
+        .withContext('a landmark standing over nothing is worse than no landmark')
+        .toBeNull();
+
+      for (const address of [...HOST_ONLY_ADDRESSES, ...ADMINISTRATION_ONLY_ADDRESSES]) {
+        expect(anchorFor(address))
+          .withContext(`${address} must not be offered to a caller that administers nothing`)
+          .toBeNull();
+      }
+    });
+
+    it('drops a whole group when every one of its destinations is gated', async () => {
+      // ⚠ ASSERTED FROM A TENANT ADMINISTRATOR WITH NO HOST ACCOUNT, which is the caller that
+      // makes this observable at all. The tenant collection is the Portal group's ONLY
+      // destination and it is host-only, so that one group empties while its three siblings
+      // survive whole. A caller administering nothing empties every group, which proves the
+      // landmark is withheld but proves nothing about dropping one group and keeping another.
+      //
+      // A heading standing over an empty list would be worse than either outcome: it announces a
+      // region in the document outline that a reader can navigate to and find nothing in.
+      await createComponent([], { hostAccount: false, administersTenant: true });
+
+      const headings = Array.from(host().querySelectorAll('h2.app-sidebar__group')).map(
+        (heading: Element): string => normalise(heading.textContent),
+      );
+
+      expect(headings).toEqual(['Module', 'User', 'Role']);
+      expect(host().querySelectorAll('.app-sidebar__list').length).toBe(3);
+
+      // One heading per list, still, with no heading standing over nothing.
+      expect(headings.length).toBe(host().querySelectorAll('.app-sidebar__list').length);
+    });
+
+    it('keeps every surviving group non-empty, with its own destinations in order', async () => {
+      // Same caller as the case above, for the same reason: a partial filter is the only one that
+      // can leave a SURVIVING group to make an assertion about.
+      await createComponent([], { hostAccount: false, administersTenant: true });
+
+      const lists = Array.from(host().querySelectorAll<HTMLElement>('.app-sidebar__list'));
+
+      expect(lists.length).toBeGreaterThan(0);
+
+      for (const list of lists) {
+        expect(list.querySelectorAll('li.app-sidebar__item').length)
+          .withContext('a rendered list must carry at least one destination')
+          .toBeGreaterThan(0);
+      }
+
+      expect(renderedAddresses()).toEqual(TENANT_ADMINISTRATION_ADDRESSES);
+    });
+
+    it('follows a change in administration without being recreated', async () => {
+      // The determination arrives asynchronously — the current-account read lands after the
+      // rail has already rendered — so the rail must widen when it does. Asserted in both
+      // directions, because a revoked administrator must lose the entries just as promptly.
+      await createComponent([], { hostAccount: false, administersTenant: false });
+
+      expect(renderedAddresses()).toEqual([]);
+
+      setAdministration(true);
+
+      // The tenant set, not the whole rail: this caller holds no host account, so the tenant
+      // collection stays withheld however its tenant administration moves.
+      expect(renderedAddresses()).toEqual(TENANT_ADMINISTRATION_ADDRESSES);
+
+      setAdministration(false);
+
+      expect(renderedAddresses()).toEqual([]);
+    });
+
+    it('gates exactly the destinations whose own route declares the administration policy', async () => {
+      // ⚠ THE CROSS-CHECK THAT MAKES THE GATE CORRECT RATHER THAN MERELY PRESENT, and it is
+      // stated against the real route tables in both directions. Every gated entry must
+      // declare the policy — otherwise the rail hides a destination the router would have
+      // served — and every ungated entry must declare none — otherwise the rail offers a
+      // destination the router will refuse.
+      await createComponent([], { hostAccount: true, administersTenant: true });
+
+      for (const address of ADMINISTRATION_ONLY_ADDRESSES) {
+        expect(declaredPolicyFor(address))
+          .withContext(`${address} is gated by the rail, so its route must declare the policy`)
+          .toBe(ADMINISTRATION_POLICY);
+      }
+
+      for (const address of HOST_ONLY_ADDRESSES) {
+        expect(declaredPolicyFor(address))
+          .withContext(`${address} is host-only in the rail, so its route must declare the host policy`)
+          .toBe(HOST_POLICY);
+      }
+
+      for (const address of UNGATED_ADDRESSES) {
+        expect(declaredPolicyFor(address))
+          .withContext(`${address} is offered to everyone, so its route must declare no policy`)
+          .toBeNull();
+      }
+    });
+
+    it('accounts for every rendered destination in exactly one of the three sets', () => {
+      // Guards the SUITE rather than the component: a destination added to the rail but to
+      // none of the sets would escape every arm of the cross-check above, and this states the
+      // invariant that keeps the lists exhaustive. Three sets rather than two, because the
+      // tenant collection is HOST-only and a tenant administrator is refused it — folding it in
+      // with the tenant-administration entries would have asserted the wrong policy for it.
+      const combined = [
+        ...UNGATED_ADDRESSES,
+        ...HOST_ONLY_ADDRESSES,
+        ...ADMINISTRATION_ONLY_ADDRESSES,
+      ];
+
+      expect(new Set<string>(combined).size).toBe(combined.length);
+      expect([...combined].sort()).toEqual([...EXPECTED_ADDRESSES].sort());
+
+      // And the derived set a tenant administrator sees is the whole rail less the host-only
+      // entries, stated here so the cases below can rely on it.
+      expect([...TENANT_ADMINISTRATION_ADDRESSES].sort()).toEqual(
+        [...EXPECTED_ADDRESSES].filter((address) => !HOST_ONLY_ADDRESSES.includes(address)).sort(),
+      );
+    });
+
+    it('names no gated destination anywhere in the document while withholding it', async () => {
+      // Withheld means ABSENT, not hidden. An entry left in the document and merely
+      // unstyled is still in the accessibility tree and still reachable by keyboard, so the
+      // omission is asserted against the whole rendered markup rather than against the
+      // anchor list alone.
+      await createComponent([], { hostAccount: false, administersTenant: false });
+
+      const markup = host().innerHTML;
+
+      for (const address of ADMINISTRATION_ONLY_ADDRESSES) {
+        expect(markup)
+          .withContext(`${address} must not appear in the document at all`)
+          .not.toContain(address);
+      }
+
+      expect(host().querySelectorAll('[hidden]').length).toBe(0);
+      expect(host().querySelectorAll('[aria-hidden="true"]').length).toBe(0);
+    });
+
+    it('still announces the current page correctly while destinations are withheld', async () => {
+      // The resolution must consider only what is RENDERED. A resolution computed over the
+      // declared model would mark a withheld entry current, which is an announcement pointing
+      // at an element that is not in the document.
+      //
+      // ⚠ ASSERTED FROM A TENANT ADMINISTRATOR WITH NO HOST ACCOUNT, and the pairing is what
+      // makes the case say something. That caller is offered every tenant-administration entry
+      // and withheld the host-only tenant collection, so one address is rendered and resolvable
+      // while another is withheld and must not resolve — both halves in one component. A caller
+      // administering nothing renders no entry at all, so the second half would be unobservable;
+      // and a HOST account is offered everything, because holding the host account satisfies the
+      // tenant policy too, so nothing would be withheld from it to assert about.
+      await createComponent(NAVIGABLE_ROUTES, { hostAccount: false, administersTenant: true });
+      await navigateTo('/portals/0/settings');
+
+      expect(component.activePath())
+        .withContext('a withheld entry must never be resolved as the current one')
+        .toBeNull();
+      expect(currentPageElements().length).toBe(0);
+
+      await navigateTo('/users/7/profile');
+
+      expect(component.activePath()).toBe('/users');
+      expect(currentPageElements().length).toBe(1);
+    });
+  });
+
   describe('architectural boundaries', () => {
     beforeEach(async () => {
       await createComponent([]);
     });
 
-    it('constructs and renders with nothing but the router available', () => {
-      // The provider set for this whole file is one call to `provideRouter`. A rail that
-      // injected a service, a store, an HTTP client or a host-settings reader would fail
-      // to construct here rather than fail subtly later — so every expectation in this
-      // file passing at all is the evidence that the rail is presentational.
+    it('constructs and renders with nothing but the router and the authentication store', () => {
+      // The provider set for this whole file is one call to `provideRouter` and one store
+      // double exposing a single member. A rail that injected a feature service, a
+      // host-settings reader, an HTTP client or a notification surface would fail to
+      // construct here rather than fail subtly later — so every expectation in this file
+      // passing at all is the evidence of how narrow the rail's dependency surface is.
       expect(component).toBeInstanceOf(SidebarComponent);
       expect(navAnchors().length).toBe(EXPECTED_ADDRESSES.length);
     });
 
     it('has no HTTP client available to it, and needs none', () => {
-      // Asserted rather than assumed. No HTTP client is configured, so requesting one
-      // optionally yields nothing — and the rail rendered its full contents regardless,
-      // which is the strongest available proof that it issues no request. Angular
-      // services communicate with the API; a layout primitive does not.
+      // Asserted rather than assumed, and still true after the rail took a store dependency:
+      // the double satisfies it without a transport, so requesting a client optionally
+      // yields nothing — and the rail rendered its full contents regardless, which is the
+      // strongest available proof that it issues no request. Angular services communicate
+      // with the API; a layout primitive does not, and it does not read a store that would
+      // make it do so on its behalf either.
       expect(TestBed.inject(HttpClient, null, { optional: true })).toBeNull();
       expect(renderedAddresses()).toEqual(EXPECTED_ADDRESSES);
     });
@@ -1533,6 +2101,11 @@ describe('SidebarComponent', () => {
       // would silently move another's.
       const second = TestBed.createComponent(SidebarComponent);
 
+      // The authority inputs are required, so a second instance must state them too — the
+      // same authority as the first, so any difference observed below is the collapse state
+      // and nothing else.
+      second.componentRef.setInput('hostAccount', true);
+      second.componentRef.setInput('administersTenant', true);
       second.detectChanges();
 
       component.toggleCollapsed();
@@ -1551,6 +2124,10 @@ describe('SidebarComponent', () => {
       // would show up here as a difference.
       const second = TestBed.createComponent(SidebarComponent);
 
+      // Stated identically to the first instance, so the comparison below is about
+      // determinism rather than about two differently authorised callers.
+      second.componentRef.setInput('hostAccount', true);
+      second.componentRef.setInput('administersTenant', true);
       second.detectChanges();
 
       const secondHost = second.nativeElement as HTMLElement;
@@ -1567,35 +2144,243 @@ describe('SidebarComponent', () => {
       second.destroy();
     });
 
-    it('applies no permission gate to any destination', () => {
-      // MIGRATION: hiding a link would be an AFFORDANCE and never enforcement, and this
-      // rail applies none — so the absence is asserted rather than left implicit.
-      // Authorisation is decided server-side and answered as HTTP 403; on the client,
-      // route activation is gated by the router's own guards. Showing the entry points
-      // and letting those two authorities refuse is the safer default, because hiding an
-      // entry the guard would have allowed silently removes a capability whereas showing
-      // one the guard refuses costs a redirect. The legacy access-denied screen took the
-      // same position: it performs no check of its own and reports refusal at warning
-      // severity, a pure display surface.
+    it('withholds a destination rather than offering it in a refused-looking state', () => {
+      // ⚠ THIS REPLACED A TEST THAT ASSERTED THE OPPOSITE. The previous expectation —
+      // "applies no permission gate to any destination" — pinned the rail as
+      // unconditionally complete, on the reasoning that hiding an entry the guard would
+      // have allowed silently removes a capability whereas showing one it refuses only
+      // costs a redirect. That is answered by WHERE the authority comes from rather than by
+      // declining to filter: the rail reads the server's own published facts, so an entry
+      // disappears only when the API has already said it would refuse the screen. See the
+      // filtering group below for the behaviour itself.
       //
-      // The rail imports only the two router directives, so no gating directive can be
-      // present. Asserted as the full set of destinations rendered although this caller
-      // supplied no permission, no session and no claim of any kind, with no destination
-      // offered in a refused-looking state.
-      expect(navAnchors().length).toBe(EXPECTED_ADDRESSES.length);
+      // What remains true, and is asserted here, is HOW a withheld entry is withheld. A
+      // disabled or aria-disabled link would announce a command that is momentarily
+      // unavailable, which is a false promise for a screen this caller cannot use at all,
+      // and it would leave the entry point named in the document for a caller who should
+      // not see it. Withholding means the element is not rendered.
+      const anchors = navAnchors().length;
+
+      expect(anchors).toBe(EXPECTED_ADDRESSES.length);
+      expect(host().querySelectorAll('[aria-disabled]').length).toBe(0);
+      expect(host().querySelectorAll('a[disabled]').length).toBe(0);
+
+      fixture.componentRef.setInput('hostAccount', false);
+      fixture.componentRef.setInput('administersTenant', false);
+      fixture.detectChanges();
+
+      expect(navAnchors().length).toBe(0);
       expect(host().querySelectorAll('[aria-disabled]').length).toBe(0);
       expect(host().querySelectorAll('a[disabled]').length).toBe(0);
     });
 
+    it('declares, for every entry, the authority its own API endpoint requires', () => {
+      // ⚠ THE DECLARED MODEL, ASSERTED ENTRY BY ENTRY AGAINST THE SERVER. `navigation` is
+      // the declaration and `visibleNavigation` is one caller's view of it; this asserts the
+      // declaration, because an entry whose authority is wrong is wrong for every caller and
+      // is not visible as a rendering difference. The expectations are transcribed from the
+      // controller attributes cited in the table above, so this compares the rail to the
+      // server rather than to itself.
+      //
+      // ⚠ AN ENTRY WITH NO AUTHORITY IS THE FAILURE THIS CATCHES. The field is required, so
+      // a missing one does not compile — but a NEW entry added with a plausible-looking
+      // wrong policy would, and it would present as a link offered to the wrong operators.
+      const declared = component.navigation.flatMap((group) =>
+        group.items.map((item) => ({ address: item.path, policy: item.policy })),
+      );
+      const expected = EXPECTED_GROUPS.flatMap((group) =>
+        group.items.map((item) => ({ address: item.address, policy: item.policy })),
+      );
+
+      expect(declared).toEqual(expected);
+    });
+
     it('cleans up without error when destroyed', () => {
-      // The link-activity directives each hold a router-event subscription, so a rail
-      // destroyed and recreated — which happens on every full navigation in a shell that
-      // re-projects it — must not leave one behind. A leaked subscription surfaces as a
-      // console error on the next event, which the shared expectation on console output
+      // The rail holds a router-event subscription of its own — the current address is read
+      // from the event stream and bound to the injection context's destruction — so a rail
+      // destroyed and recreated must not leave one behind. A leaked subscription surfaces as
+      // a console error on the next event, which the shared expectation on console output
       // would then catch.
       expect((): void => {
         fixture.destroy();
       }).not.toThrow();
+    });
+  });
+
+  // ===========================================================================
+  // PERMISSION-AWARE VISIBILITY
+  // ===========================================================================
+  //
+  // ⚠ THE GROUP THAT DID NOT EXIST, AND WHOSE ABSENCE WAS THE DEFECT. The rail advertised
+  // every administration entry point to every caller — including, because the application
+  // root projected it unconditionally, to a caller with no session on the sign-in screen and
+  // on the not-found screen. The condition on the projection lives in
+  // `app.component.spec.ts`; what belongs here is the other half: that a rail which IS
+  // rendered offers only what its caller can use.
+  //
+  // ⚠ EVERY CASE STATES THE AUTHORITY EXPLICITLY, and both facts, because the interesting
+  // failures live in the combinations rather than in one flag. The two are kept SEPARATE
+  // rather than pre-combined into "can administer" precisely so the host-only entry can be
+  // told apart from the tenant-scoped ones.
+  describe('permission-aware visibility', () => {
+    /**
+     * The addresses a caller with the stated authority is offered, in presentation order.
+     *
+     * The testing module is reset first so that one test may examine SEVERAL callers. A
+     * testing module cannot be reconfigured once a component has been created from it, so
+     * without the reset the second caller in a single test raises "Cannot configure the test
+     * module when the test module has already been instantiated" — and comparing callers
+     * within one test is the only way to assert that filtering only ever removes.
+     */
+    async function addressesFor(authority: {
+      readonly hostAccount: boolean;
+      readonly administersTenant: boolean;
+    }): Promise<readonly string[]> {
+      TestBed.resetTestingModule();
+      await createComponent([], authority);
+
+      return renderedAddresses();
+    }
+
+    /** The group headings a caller with the stated authority is offered. */
+    function renderedGroupHeadings(): readonly string[] {
+      return Array.from(host().querySelectorAll<HTMLElement>('h2.app-sidebar__group')).map(
+        (heading: HTMLElement): string => normalise(heading.textContent),
+      );
+    }
+
+    it('offers a host account every declared destination', async () => {
+      // A host account satisfies tenant administration as well
+      // (`PolicyNames.cs:L105-L113`), so it is the one caller for whom the rendered rail and
+      // the declared model coincide. A host that was NOT offered the tenant-scoped entries
+      // would be withheld screens the server admits it to, which is the failure direction the
+      // old unfiltered rail could not have.
+      expect(await addressesFor({ hostAccount: true, administersTenant: false })).toEqual(
+        EXPECTED_ADDRESSES,
+      );
+    });
+
+    it('withholds the tenant collection from a tenant administrator, because the API does', async () => {
+      // `GET /api/v1/portals` requires host authority (`PortalsController.cs:L241`) — the
+      // collection addresses no single tenant, and `PolicyNames.cs:L120-L130` records that
+      // deciding it against the arrival tenant would let an administrator of one tenant
+      // enumerate every tenant. So this operator is genuinely refused the listing, and a rail
+      // that offered it would be advertising a 403.
+      //
+      // ⚠ THE WHOLE PORTAL GROUP GOES, not just its entry. A heading over an empty list would
+      // still be announced as a named navigation list containing nothing, because the list
+      // carries `aria-labelledby` pointing at that heading.
+      const addresses = await addressesFor({ hostAccount: false, administersTenant: true });
+
+      expect(addresses).not.toContain('/portals');
+      expect(renderedGroupHeadings()).toEqual(['Module', 'User', 'Role']);
+      expect(addresses).toEqual([
+        '/modules',
+        '/modules/import',
+        '/users',
+        '/settings/membership',
+        '/settings/profile-definitions',
+        '/roles',
+        '/role-groups/new',
+      ]);
+    });
+
+    it('offers a caller with no administration nothing at all, and no empty frame either', async () => {
+      // Every declared entry requires one of the two administration authorities, so a
+      // signed-in caller holding neither has no entry point in this rail — which is the
+      // truthful answer rather than an unhelpful one: all eight destinations would refuse
+      // them.
+      expect(await addressesFor({ hostAccount: false, administersTenant: false })).toEqual([]);
+      expect(renderedGroupHeadings()).toEqual([]);
+      expect(host().querySelectorAll('ul.app-sidebar__list').length).toBe(0);
+
+      // ⚠ AND THE LANDMARK GOES WITH THEM, which is a correction to an earlier reading of
+      // this case rather than an extra assertion. The wrapper used to be emitted whatever the
+      // projection held, on the reasoning that an empty navigation region is a coherent state.
+      // Observed in a browser it is not: a named "Administration" landmark containing one
+      // disclosure button that reveals an empty region is offered to a screen-reader user
+      // orienting by landmark list, and a small bordered "Navigation" box occupies the shell's
+      // left column for a sighted one — an affordance leading nowhere in both cases. Nothing
+      // was ever disclosed by it, so this is a usability correction and not a security one.
+      expect(landmark()).withContext('no navigation landmark is emitted').toBeNull();
+      expect(toggle()).withContext('and no disclosure control for an absent region').toBeNull();
+      expect(host().querySelectorAll('nav').length).toBe(0);
+    });
+
+    it('emits the landmark again the moment ONE entry is admitted', async () => {
+      // The other side of the condition, so "withheld when empty" cannot be satisfied by a
+      // rail that is never emitted at all. A single admitted entry is enough.
+      await createComponent([], { hostAccount: false, administersTenant: false });
+
+      expect(host().querySelectorAll('nav').length).toBe(0);
+
+      fixture.componentRef.setInput('administersTenant', true);
+      fixture.detectChanges();
+
+      expect(host().querySelectorAll('nav').length).toBe(1);
+      expect(landmark()?.getAttribute('aria-label')).toBe(LANDMARK_NAME);
+      expect(navAnchors().length).toBeGreaterThan(0);
+    });
+
+    it('follows the authority within one page load, without being recreated', async () => {
+      // ⚠ THE STALENESS CASE. The identity can change while the application is running — a
+      // renewal re-reads the caller's authority, and an administrator can be demoted — and
+      // the rail is NOT recreated for that. A model captured once into a field would keep
+      // advertising the previous authority indefinitely, so the projection is computed and
+      // the component renders on-push, which is what makes the change observable at all.
+      await createComponent([], { hostAccount: false, administersTenant: true });
+
+      expect(renderedAddresses()).not.toContain('/portals');
+
+      fixture.componentRef.setInput('hostAccount', true);
+      fixture.detectChanges();
+
+      expect(renderedAddresses()).toEqual(EXPECTED_ADDRESSES);
+
+      fixture.componentRef.setInput('hostAccount', false);
+      fixture.componentRef.setInput('administersTenant', false);
+      fixture.detectChanges();
+
+      expect(renderedAddresses()).toEqual([]);
+    });
+
+    it('publishes the filtered projection read-only, so no consumer can widen it', () => {
+      // The rail's own view of what it may offer must not be assignable from outside: a
+      // consumer that could write it could restore every entry for a caller the server
+      // refuses, and would do so without touching the authority the projection derives from.
+      expectReadOnlySignal(component.visibleNavigation, 'visibleNavigation');
+    });
+
+    it('never invents a destination the declared model does not carry', async () => {
+      // Filtering may only REMOVE. A projection that mapped, re-labelled or substituted an
+      // entry would put an address in the rail that no declaration authorised and that
+      // nothing else in this file asserts against, so every rendered address is checked to be
+      // a member of the declared set for each of the three authority combinations.
+      for (const authority of [
+        { hostAccount: true, administersTenant: true },
+        { hostAccount: false, administersTenant: true },
+        { hostAccount: false, administersTenant: false },
+      ]) {
+        const addresses = await addressesFor(authority);
+
+        for (const address of addresses) {
+          expect(EXPECTED_ADDRESSES)
+            .withContext(`"${address}" is not a declared destination`)
+            .toContain(address);
+        }
+      }
+    });
+
+    it('issues no request in order to decide what to offer', async () => {
+      // ⚠ THE EXECUTABLE FORM OF "THIS RAIL IS NOT AN AUTHORISATION ENGINE". The two facts
+      // arrive as inputs, already resolved from what the server published; a rail that
+      // fetched a permission catalogue to interpret would be building a second verdict that
+      // then had to be kept in step with the API's. No HTTP client is provided at all, so a
+      // rail that injected one — directly, or transitively through a store — would fail to
+      // construct here rather than merely failing an expectation.
+      await addressesFor({ hostAccount: false, administersTenant: true });
+
+      expect(TestBed.inject(HttpClient, null, { optional: true })).toBeNull();
     });
   });
 });

@@ -165,14 +165,28 @@ namespace DnnMigration.Api.Controllers;
 /// render the form.
 /// </para>
 /// <para>
-/// MIGRATION: four legacy affordances reachable from these screens deliberately have NO address on this
-/// resource, and their absence is a decision rather than an omission. Role subscription and cancellation -
-/// <c>MemberServices.ascx.vb:L97</c> and <c>:L106</c> - belong to the role resource, which already accepts
-/// and removes an account's membership, and duplicating them here would give one rule two addresses. Bulk
+/// MIGRATION: three legacy affordances reachable from these screens deliberately have NO address on this
+/// resource, and their absence is a decision rather than an omission. Bulk
 /// removal of unauthorised accounts (<c>Users.ascx.vb:L328</c>), the unauthorised and online listings
 /// (<c>:L259</c>, <c>:L262</c>) with their <c>"None"</c> filter sentinel (<c>:L266</c>), the bulk mail
 /// screen, and the scheduled purge of the online table are all outside the agreed surface; the scheduler
 /// itself is excluded, so no background worker is introduced to replace the purge.
+/// </para>
+/// <para>
+/// MIGRATION: SELF-SERVICE ROLE SUBSCRIPTION DOES HAVE AN ADDRESS HERE, and an earlier revision of this
+/// file was wrong to say it did not. It recorded that "role subscription and cancellation -
+/// <c>MemberServices.ascx.vb:L97</c> and <c>:L106</c> - belong to the role resource, which already accepts
+/// and removes an account's membership, and duplicating them here would give one rule two addresses". Two
+/// things defeat that reasoning. The role resource is gated on tenant administration at the CLASS level, and
+/// authorisation attributes combine rather than override, so no action there can ever admit an account
+/// holder acting on itself - the affordance the legacy screen existed to provide was therefore
+/// unreachable rather than relocated. And three of the five operations are not membership writes at all:
+/// the services catalogue with its three per-row predicates, the free-trial gate, and the redemption of a
+/// role's invitation code have no counterpart on that resource. The two that ARE membership writes still
+/// have exactly one implementation, because the account service delegates them to the role service rather
+/// than reaching persistence itself, so the expiry derivation and the protected-assignment refusals are not
+/// duplicated. AAP 0.5.1.4 lists <c>MemberServices.ascx.vb</c> among the nine screens this controller
+/// replaces, which is where the five routes below belong.
 /// </para>
 /// <para>
 /// MIGRATION: caching and audit are not presentation concerns and appear nowhere in this file. The legacy
@@ -183,8 +197,8 @@ namespace DnnMigration.Api.Controllers;
 /// </para>
 /// <para>
 /// <strong>EVERY ACTION CARRIES ITS OWN POLICY, and the class-level attribute is authentication alone rather
-/// than the authorisation.</strong> An earlier revision relied on that class attribute for all fourteen
-/// routes, which meant any authenticated caller - a plain member of any tenant - could enumerate a tenant's
+/// than the authorisation.</strong> An earlier revision relied on that class attribute for every
+/// route, which meant any authenticated caller - a plain member of any tenant - could enumerate a tenant's
 /// accounts and their personal data, create, update and delete accounts, rewrite profiles and membership
 /// settings, approve, unapprove and unlock accounts, and invoke administrative credential reset against
 /// anybody. Authentication is not authorisation, and on this resource the gap between them is the whole
@@ -199,7 +213,7 @@ namespace DnnMigration.Api.Controllers;
 /// file's own inventory below, not by an attribute that cannot express the split.
 /// </para>
 /// <para>
-/// <strong>The fourteen routes split into THREE kinds, and the split is the security boundary.</strong>
+/// <strong>The nineteen routes split into THREE kinds, and the split is the security boundary.</strong>
 /// The enumeration below is exhaustive and is stated per route so it can be checked against the attributes
 /// rather than trusted.
 /// </para>
@@ -218,8 +232,11 @@ namespace DnnMigration.Api.Controllers;
 /// else and an account managing itself.
 /// </para>
 /// <para>
-/// <strong>Account ownership alone</strong>, one route, admitting nobody but the account the route names:
-/// changing a credential. An administrator is deliberately NOT admitted here, and that is not an oversight -
+/// <strong>Account ownership alone</strong>, six routes, admitting nobody but the account the route names:
+/// changing a credential, and the five member-services routes.
+/// </para>
+/// <para>
+/// For the credential change an administrator is deliberately NOT admitted, and that is not an oversight -
 /// a change presents the current credential, which only its holder can present. An administrator who must
 /// intervene uses the separate reset route, which is tenant administration and a distinct, reviewable act.
 /// Widening this one policy to admit an administrator would collapse the two operations back into one whose
@@ -228,6 +245,21 @@ namespace DnnMigration.Api.Controllers;
 /// <c>Website/admin/Users/Password.ascx.vb:L138-L144</c> hid the change panel from an administrator whenever
 /// the provider offered no retrieval, with the comment that only the user can change their own password and
 /// an administrator must reset.
+/// </para>
+/// <para>
+/// The five member-services routes are here for a MEASURED reason rather than by analogy, and admitting an
+/// administrator to them would be a functional ADDITION rather than a convenience. The legacy panel was
+/// hosted inside the account container (<c>Website/admin/Users/manageusers.ascx:L77</c>) and the container
+/// assigned it the subject account (<c>ManageUsers.ascx.vb:L517</c>) - but the panel never read it. Every
+/// one of its operations passes <c>UserInfo.UserID</c> - the grid binding at
+/// <c>MemberServices.ascx.vb:L150</c>, the subscription at <c>:L106</c>, the trial at <c>:L125</c> and the
+/// code redemption at <c>:L413</c> - and <c>PortalModuleBase.vb:L319-L323</c> resolves that as the
+/// SIGNED-IN account. The container agreed: <c>DisplayServices</c> at <c>ManageUsers.ascx.vb:L61-L66</c> is
+/// the tenant's own switch AND <c>Not (IsEdit Or User.IsSuperUser)</c>, and <c>IsEdit</c>
+/// (<c>UserModuleBase.vb:L329-L340</c>) is the administrative <c>ctl=Edit</c> entry point, so the tab was
+/// hidden whenever an administrator reached the screen at all. An administrator who must alter somebody
+/// else's membership uses the role resource's own membership actions, which is tenant administration and a
+/// distinct, reviewable act - the same separation the two credential routes make.
 /// </para>
 /// <para>
 /// MIGRATION: the legacy equivalent of all of the above was imperative tests inside the page, and they did
@@ -314,6 +346,30 @@ public sealed class UsersController : ControllerBase
     private int? ResolvePortalId() =>
         _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
 
+    /// <summary>
+    /// Returns a filter that was genuinely supplied, or <see langword="null"/> for one that is blank.
+    /// </summary>
+    /// <param name="value">The filter as it arrived.</param>
+    /// <returns>The filter, or <see langword="null"/> when it carries nothing to filter by.</returns>
+    /// <remarks>
+    /// <para>
+    /// EXISTS SO THAT A BODY-BOUND FILTER MEANS WHAT A QUERY-BOUND ONE MEANS. The framework's query binder
+    /// converts a blank query value to <see langword="null"/> before an action sees it - measured for the
+    /// empty string and for whitespace alike - so the query-bound listing never presents the application
+    /// service with a filter that is present but blank. A JSON body carries no such conversion, so
+    /// <c>""</c> arrived as <c>""</c>, the service's blank-filter rule fired, and the same operation
+    /// answered <c>400</c> through one action and <c>200</c> through the other.
+    /// </para>
+    /// <para>
+    /// The service's rule is deliberately left exactly as it is: absence means "do not filter" and a blank
+    /// filter is a caller error, because an empty prefix matches every row and would make a filtered search
+    /// silently unfiltered. What changes is that this action no longer MANUFACTURES such a filter out of a
+    /// value the other action would have discarded.
+    /// </para>
+    /// </remarks>
+    private static string? Supplied(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
+
     /// <summary>Lists a portal's users.</summary>
     /// <param name="request">Paging and sorting arguments, bound from the query string.</param>
     /// <param name="userName">Restricts the result to user names beginning with this text.</param>
@@ -387,6 +443,90 @@ public sealed class UsersController : ControllerBase
         // Projected onto the wire envelope here rather than returned as the domain page. CompletePage
         // applies PagedResponse<T>.From, so the response carries `items` plus `meta` and the domain
         // paging type never crosses the boundary.
+        return this.CompletePage(outcome);
+    }
+
+    /// <summary>Searches a portal's users, taking every filter from the request body.</summary>
+    /// <param name="request">Paging, sorting and the search filters, bound from the body.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>One page of users, in the same wire envelope the listing returns.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE SAME CAPABILITY AS <see cref="ListAsync"/>, REACHED WITHOUT PUTTING PERSONAL DATA IN THE
+    /// REQUEST TARGET. Both actions call the identical service member with the identical arguments, so
+    /// they cannot answer differently; the only difference is where the filters travelled. A caller
+    /// filtering by user name, email address or profile property uses this action, and a caller listing
+    /// with paging alone continues to use the <c>GET</c>.
+    /// </para>
+    /// <para>
+    /// WHY THAT MATTERS, PRECISELY. A request target is written to the browser's history, to every
+    /// forward and reverse proxy access log, to the server access log and to any telemetry that samples
+    /// URLs - all of which sit at an endpoint of the encrypted channel rather than in the middle of it,
+    /// so transport encryption does not address the exposure. That is CWE-598. A request body is written
+    /// to none of them by default. The profile-property pair is the sharpest case, because a tenant
+    /// defines its own properties and the value being matched is therefore arbitrary personal data whose
+    /// meaning the server does not know.
+    /// </para>
+    /// <para>
+    /// A <c>POST</c> THAT READS IS NOT A CONTRADICTION HERE. The action mutates nothing and is safe in
+    /// every sense except the one HTTP names: it is not idempotent-by-cache, which is the property being
+    /// given up on purpose, since a cache entry keyed by a body carrying personal data is the exposure
+    /// this action exists to avoid. Nothing is created, so the answer is <c>200</c> with the page and
+    /// never <c>201</c> with a location.
+    /// </para>
+    /// <para>
+    /// It carries the SAME authorisation policy as the listing rather than a weaker one. Moving a filter
+    /// from the target to the body changes where data travels and nothing about who may ask.
+    /// </para>
+    /// </remarks>
+    [HttpPost("search")]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(PagedResponse<UserListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<PagedResponse<UserListItemDto>>> SearchAsync(
+        [FromBody] UserSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        // Validated by the globally registered filter, which resolves UserSearchRequestValidator from
+        // this parameter's declared type. That validator derives from the same base as the listing's, so
+        // the two actions apply the identical paging bounds and the identical narrow sortable set - a
+        // caller moving a request into the body must not discover that different page sizes are legal.
+        //
+        // ⚠ A BLANK FILTER MEMBER IS NORMALISED TO ABSENT, AND THAT IS WHAT MAKES THE TWO ACTIONS ONE
+        // OPERATION. The service treats absence as "do not filter" and REFUSES a filter that is present
+        // but blank, on the stated grounds that an empty prefix matches every row and would make a
+        // filtered search silently unfiltered. The query-bound listing never reaches that rule, because
+        // the framework's query binder converts a blank query value to null before the action sees it -
+        // measured, for the empty string and for whitespace alike. A body carries no such conversion, so
+        // JSON "" arrived as "" and the same operation answered 400 where the query form answers 200.
+        //
+        // That was a real regression rather than a theoretical asymmetry: an operator CLEARING the search
+        // box on the account listing produces exactly this request, and it met an error banner. Reproducing
+        // the binder's own conversion here is the narrowest fix that keeps one rule in one place - the
+        // service's rule is untouched and still refuses a blank filter, and this action simply stops
+        // manufacturing one. Which COMBINATIONS are legal, and in particular that a profile-property name
+        // without a value is a refusal rather than a wildcard, remains the service's decision; normalising
+        // first is what makes that decision identical for both actions.
+        Result<PagedResult<UserListItemDto>> outcome = await _users
+            .ListUsersAsync(
+                portalId,
+                request,
+                Supplied(request.UserName),
+                Supplied(request.Email),
+                Supplied(request.ProfilePropertyName),
+                Supplied(request.ProfilePropertyValue),
+                request.IsApproved,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         return this.CompletePage(outcome);
     }
 
@@ -847,15 +987,27 @@ public sealed class UsersController : ControllerBase
     /// <summary>Replaces the resolved tenant's membership settings.</summary>
     /// <param name="request">The settings to store.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
-    /// <returns><c>204 No Content</c> when the settings have been stored.</returns>
+    /// <returns>
+    /// <c>200 OK</c> carrying what the write did beyond storing the policy: whether the display-name format
+    /// changed, and how many accounts were consequently rewritten.
+    /// </returns>
+    /// <remarks>
+    /// ⚠ ANSWERS 200 WITH A BODY WHERE EVERY OTHER SETTINGS WRITE IN THIS API ANSWERS 204, and the
+    /// difference is the point rather than an inconsistency. This write has one side effect whose size the
+    /// caller cannot predict: changing <c>Security_DisplayNameFormat</c> rewrites the display name of every
+    /// account in the tenant. The legacy screen performed that sweep on a background thread and reported
+    /// nothing (<c>UserSettings.ascx.vb</c> L175-L182), so an operator had no way to know whether it had
+    /// happened, how many accounts it touched, or whether it had failed half way. A 204 here would preserve
+    /// exactly that blindness.
+    /// </remarks>
     [HttpPut("settings")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ApiResponse<MembershipSettingsUpdateResultDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult> UpdateMembershipSettingsAsync(
+    public async Task<ActionResult<ApiResponse<MembershipSettingsUpdateResultDto>>> UpdateMembershipSettingsAsync(
         [FromBody] UpdateMembershipSettingsRequest request,
         CancellationToken cancellationToken)
     {
@@ -864,7 +1016,7 @@ public sealed class UsersController : ControllerBase
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
-        Result outcome = await _users
+        Result<MembershipSettingsUpdateResultDto> outcome = await _users
             .UpdateMembershipSettingsAsync(portalId, request, cancellationToken)
             .ConfigureAwait(false);
 
@@ -945,6 +1097,279 @@ public sealed class UsersController : ControllerBase
 
         Result outcome = await _users
             .UpdateProfileAsync(portalId, userId, profile, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Lists the member services this account may subscribe to, with its own subscription state.</summary>
+    /// <param name="userId">The account identifier, which must be the caller's own.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>The catalogue, in the shared envelope. Empty when the tenant publishes no services.</returns>
+    /// <response code="200">The tenant's published services, annotated with this account's subscription state.</response>
+    /// <response code="401">No valid credential was presented.</response>
+    /// <response code="403">The route names another account, or the tenant does not offer self-service subscription.</response>
+    /// <response code="404">No such account in this portal.</response>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: replaces the grid binding of <c>Website/admin/Users/MemberServices.ascx.vb:L147-L157</c>.
+    /// The catalogue is the tenant's PUBLIC roles rather than the account's memberships - the terminal
+    /// statement selects <c>where R.PortalId = @PortalId and R.IsPublic = 1</c>
+    /// (<c>04.06.00.SqlDataProvider:L993-L1013</c>) - so an offer the account has not taken up appears
+    /// exactly as one it has, and each row says which.
+    /// </para>
+    /// <para>
+    /// Deliberately UNPAGED, because the read it replaces was: the legacy grid bound the whole result and
+    /// hid itself when the count was zero. A tenant's set of public roles is a published price list, not a
+    /// data set.
+    /// </para>
+    /// <para>
+    /// Each row carries the three predicates the legacy markup bound - the command label, whether the
+    /// subscription command was rendered and whether the trial command was - because they are business
+    /// rules and belong beneath this file. A client renders wording from them and never recomputes them.
+    /// </para>
+    /// </remarks>
+    [HttpGet("{userId:int}/services")]
+    [Authorize(Policy = PolicyNames.AccountOwner)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<MemberServiceDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<MemberServiceDto>>>> ListMemberServicesAsync(
+        int userId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await _users
+            .ListMemberServicesAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Subscribes this account to a member service, or renews a lapsed subscription.</summary>
+    /// <param name="userId">The account identifier, which must be the caller's own.</param>
+    /// <param name="roleId">The role the service is expressed as. Zero is a real key.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns><c>204 No Content</c> when the subscription has been written.</returns>
+    /// <response code="204">The account now holds the service, with an expiry derived from its terms.</response>
+    /// <response code="401">No valid credential was presented.</response>
+    /// <response code="403">The route names another account, the tenant does not offer self-service subscription, the role is not published for it, or completing it would require taking payment.</response>
+    /// <response code="404">No such account or role in this portal.</response>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: replaces <c>Subscribe(roleID, cancel:False)</c>
+    /// (<c>Website/admin/Users/MemberServices.ascx.vb:L101-L118</c>). ONE address serves both the subscribe
+    /// and the renew command, because the legacy grid reached the same member under both labels
+    /// (<c>:L440-L442</c>) - the label differed, the operation did not. Which of the two the catalogue
+    /// advertises for a given row is reported on the row itself.
+    /// </para>
+    /// <para>
+    /// Idempotent in the way the legacy member was: subscribing again revises the expiry rather than
+    /// failing, which is exactly how a renewal was performed. The body is EMPTY and no date may be
+    /// submitted - the two bounds are derived from the role's stored terms beneath this file, and the
+    /// administrative endpoint that does accept bounds is the role resource's own membership action.
+    /// </para>
+    /// <para>
+    /// MIGRATION: a service that charges a fee is REFUSED here with <c>403</c> rather than redirected. The
+    /// legacy path answered such a role with
+    /// <c>Response.Redirect("~/admin/Sales/PayPalSubscription.aspx?…")</c> (<c>:L113</c>), and AAP 0.2.2.4
+    /// excludes sales administration, so no payment can be taken. The catalogue reports the same condition
+    /// per row, so a client can explain the refusal before provoking it.
+    /// </para>
+    /// </remarks>
+    [HttpPost("{userId:int}/services/{roleId:int}/subscription")]
+    [Authorize(Policy = PolicyNames.AccountOwner)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> SubscribeToServiceAsync(
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result outcome = await _users
+            .SubscribeToServiceAsync(portalId, userId, roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Cancels this account's subscription to a member service.</summary>
+    /// <param name="userId">The account identifier, which must be the caller's own.</param>
+    /// <param name="roleId">The role the service is expressed as. Zero is a real key.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns><c>204 No Content</c> when the subscription has ended.</returns>
+    /// <response code="204">The subscription has ended, either by removal or by being back-dated.</response>
+    /// <response code="401">No valid credential was presented.</response>
+    /// <response code="403">The route names another account, the tenant does not offer self-service subscription, the role is not published for it, the subscription is protected, or settling it would require taking payment.</response>
+    /// <response code="404">No such account or role in this portal, or the account does not hold the service.</response>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: replaces <c>Subscribe(roleID, cancel:True)</c>
+    /// (<c>Website/admin/Users/MemberServices.ascx.vb:L101-L118</c>), reached under the unsubscribe command
+    /// (<c>:L443-L445</c>). The legacy CANCEL path shared the SUBSCRIBE gate and redirected a fee-bearing
+    /// role to the payment page too, with <c>&amp;cancel=1</c> appended (<c>:L115</c>), so the payment
+    /// refusal applies to this direction as well and is not an oversight.
+    /// </para>
+    /// <para>
+    /// <c>DELETE</c> rather than a second <c>POST</c> because it is the withdrawal of the resource the
+    /// sibling <c>POST</c> creates, at the same address. It answers <c>204</c> in both of the two ways a
+    /// subscription can end: the row is withdrawn, or - when a paid trial has already been consumed - its
+    /// expiry is back-dated so the consumed-trial fact survives (<c>RoleController.vb:L494-L496</c>). Which
+    /// happened is reported as a reason on the successful outcome beneath this file; the status is the same
+    /// either way, because the subscription no longer holds in both.
+    /// </para>
+    /// </remarks>
+    [HttpDelete("{userId:int}/services/{roleId:int}/subscription")]
+    [Authorize(Policy = PolicyNames.AccountOwner)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> CancelServiceAsync(
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result outcome = await _users
+            .CancelServiceAsync(portalId, userId, roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Starts this account's free trial of a paid member service.</summary>
+    /// <param name="userId">The account identifier, which must be the caller's own.</param>
+    /// <param name="roleId">The role the service is expressed as. Zero is a real key.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns><c>204 No Content</c> when the trial subscription has been written.</returns>
+    /// <response code="204">The account now holds the service on its trial terms.</response>
+    /// <response code="401">No valid credential was presented.</response>
+    /// <response code="403">The route names another account, the tenant does not offer self-service subscription, or this service offers this account no trial.</response>
+    /// <response code="404">No such account or role in this portal.</response>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: replaces <c>UseTrial(roleID)</c>
+    /// (<c>Website/admin/Users/MemberServices.ascx.vb:L120-L133</c>), which the legacy grid reached through
+    /// its own second command column with the fixed command name <c>UseTrial</c> (<c>:L45-L52</c>).
+    /// </para>
+    /// <para>
+    /// ITS OWN ADDRESS, AND THAT IS THE POINT. The two gates genuinely differ - subscribing requires a zero
+    /// SERVICE fee while trialling requires a zero TRIAL fee - so a paid service with a free trial can be
+    /// trialled here even though it cannot be subscribed to. Folding the two into one endpoint that chose
+    /// between them by reading a body field would make the effect depend on the payload rather than on the
+    /// address, which is the shape the credential endpoints on this controller were deliberately split to
+    /// avoid.
+    /// </para>
+    /// <para>
+    /// The single <c>403</c> code covers every reason the legacy panel would not have rendered the command,
+    /// without saying which: the service is free and so has nothing to trial, its trial carries a fee, or
+    /// this account has already consumed it. Distinguishing them would tell a caller which of a tenant's
+    /// commercial terms it had guessed wrong about, and the catalogue already reports whether the trial is
+    /// on offer.
+    /// </para>
+    /// </remarks>
+    [HttpPost("{userId:int}/services/{roleId:int}/trial")]
+    [Authorize(Policy = PolicyNames.AccountOwner)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> StartServiceTrialAsync(
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result outcome = await _users
+            .StartServiceTrialAsync(portalId, userId, roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Redeems a service invitation code against this account.</summary>
+    /// <param name="userId">The account identifier, which must be the caller's own.</param>
+    /// <param name="request">The submitted code.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>The services the code enrolled the account in, in the shared envelope.</returns>
+    /// <response code="200">The code matched, and the response names every service it enrolled the account in.</response>
+    /// <response code="400">The submission carries no code, the code is longer than any stored code can be, or no role bears it.</response>
+    /// <response code="401">No valid credential was presented.</response>
+    /// <response code="403">The route names another account, or the tenant does not offer self-service subscription.</response>
+    /// <response code="404">No such account in this portal.</response>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: replaces <c>cmdRSVP_Click</c>
+    /// (<c>Website/admin/Users/MemberServices.ascx.vb:L397-L433</c>), the invitation-code box and its
+    /// command at <c>MemberServices.ascx:L14-L15</c>.
+    /// </para>
+    /// <para>
+    /// It answers <c>200</c> with a body rather than <c>204</c> because the legacy screen could not say
+    /// WHICH services a code had enrolled the account in - it posted one fixed sentence about "the role(s)
+    /// associated with the RSVP Code entered" and rebound the grid - and the collection is genuinely
+    /// plural: the legacy loop had no early exit, so one code may match several roles.
+    /// </para>
+    /// <para>
+    /// It is not a <c>201</c> and carries no location header: nothing addressable is created at a new
+    /// address, and the affected rows are found in the account's own catalogue.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an unmatched code answers <c>400</c> and not <c>404</c>. The addressed resource is this
+    /// account's own redemption endpoint, which exists; the code is a submitted VALUE the caller can
+    /// correct, which is what the legacy <c>RSVPFailure</c> message told them. An empty submission is
+    /// refused by declarative validation rather than silently ignored, which is what the legacy guard
+    /// <c>If code &lt;&gt; ""</c> did.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the search deliberately spans EVERY role of the tenant, published or not, free or not.
+    /// The legacy handler read the whole role set and applied neither the public test nor the fee test the
+    /// grid's own commands applied, because an invitation code IS the bypass for an unpublished service.
+    /// This endpoint therefore does not refuse a fee-bearing role: no payment was taken on the legacy path
+    /// either.
+    /// </para>
+    /// </remarks>
+    [HttpPost("{userId:int}/services/redemptions")]
+    [Authorize(Policy = PolicyNames.AccountOwner)]
+    [ProducesResponseType(typeof(ApiResponse<RedeemServiceCodeResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<RedeemServiceCodeResultDto>>> RedeemServiceCodeAsync(
+        int userId,
+        [FromBody] RedeemServiceCodeRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        // Validated by the globally registered filter; see the note on the constructor. The service repeats
+        // the emptiness guard so it holds for a caller that reached it without this pipeline in front.
+        Result<RedeemServiceCodeResultDto> outcome = await _users
+            .RedeemServiceCodeAsync(portalId, userId, request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);

@@ -101,22 +101,32 @@
 -->
 <app-page-header [title]="pageTitle">
   <!--
-    The CREATE affordance is gated on the edit key. The two settings links are not, because
-    reaching a settings screen is not itself a mutation and each of those screens refuses its
-    own save. This is an AFFORDANCE ONLY — the API re-authorises every request and answers 403,
-    and its verdict is the only authority. The directive fails closed on an absent grant.
+    ALL THREE AFFORDANCES ARE GATED ON TENANT ADMINISTRATION, because all three destinations are.
+    `/users/new`, `/settings/membership` and `/settings/profile-definitions` each carry the
+    `PortalAdministrator` policy on its route declaration, so a caller without it is bounced to
+    the access-denied screen the moment the link is followed. Painting the link anyway would be a
+    false affordance — an offer the application has already decided to refuse.
+
+    ⚠ THE GATE IS THE SERVER'S OWN DETERMINATION, not a permission KEY and not a role NAME. The
+    four-key permission vocabulary (`VIEW`, `EDIT`, `READ`, `WRITE`) grants access to a MODULE or
+    a PAGE instance; it says nothing about who administers a tenant, and `EDIT` — which these
+    links previously asked for — is not the authority any of these routes consults.
+
+    STILL ADVISORY ONLY. Withholding a link withholds nothing but the link: the route guard
+    re-checks, the API re-authorises every request and answers 403, and its verdict is the only
+    authority. The gate reads `false` while the identity is unresolved, which fails closed.
   -->
-  <a *hasPermission="'EDIT'" class="user-list__page-action" [routerLink]="addUserLink">{{
-    addUserLabel
-  }}</a>
+  @if (administersPortal()) {
+    <a class="user-list__page-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
 
-  <a class="user-list__page-action" [routerLink]="membershipSettingsLink">{{
-    membershipSettingsLabel
-  }}</a>
+    <a class="user-list__page-action" [routerLink]="membershipSettingsLink">{{
+      membershipSettingsLabel
+    }}</a>
 
-  <a class="user-list__page-action" [routerLink]="profileDefinitionsLink">{{
-    profileDefinitionsLabel
-  }}</a>
+    <a class="user-list__page-action" [routerLink]="profileDefinitionsLink">{{
+      profileDefinitionsLabel
+    }}</a>
+  }
 </app-page-header>
 
 <!--
@@ -149,9 +159,20 @@
   it. It is disabled while a request is already in flight so a second cannot be queued behind the
   first.
 -->
-@if (readFailure() !== null) {
+@if (hasReadFailure()) {
   <div class="user-list__failure">
-    <app-error-banner [problem]="readFailure()" />
+    <!--
+      Both inputs are bound, and they are ORDERED rather than alternatives. A failure that carries a
+      problem document shows the server's own explanation; a failure that carries none — which is what
+      a contract-violating `200` produces, because the decoders run downstream of the interceptor —
+      shows the store's authored summary instead. Before the second input existed, that class of
+      failure rendered nothing at all and the grid simply stayed empty with no diagnostic anywhere.
+
+      ⚠ THE BLOCK IS OPENED BY THE UNION OF THE TWO, NOT BY THE DOCUMENT. Gating on the document alone
+      is what made the document-less failure unreachable: the input was bound correctly and the block
+      containing it never opened. See `hasReadFailure` on the paired class.
+    -->
+    <app-error-banner [problem]="readFailure()" [fallbackMessage]="readFailureSummary()" />
 
     <button
       type="button"
@@ -318,13 +339,22 @@
   page argument of `"1"`, and the store's search commands return to page index nought for exactly
   that reason, so the reset is inherited rather than restated here.
 
-  ⚠ REPORTED GAP: THE APPLIED ENTRY IS NOT ANNOUNCED. The sibling portal listing binds
-  `aria-pressed` from an applied-filter predicate its own component exposes. This component
-  exposes no such predicate — the letter in force lives inside the store's search discriminator
-  and is not re-published on the screen's surface — and this template may not add one, so no
-  `aria-pressed` is written rather than a state being invented. The legacy strip did not report
-  its own state either (every entry rendered identically, L16), so this is parity with a known
-  ceiling rather than a regression, and it is reported rather than worked around.
+  MIGRATION: THE APPLIED ENTRY IS ANNOUNCED, WHICH THE LEGACY STRIP DID NOT DO. Every legacy
+  entry rendered identically whatever was applied (`users.ascx` L16), so the strip never reported
+  its own state — an operator could not tell from it which letter they were looking at, and a
+  reader was given twenty-seven controls with no indication that one of them was in force.
+
+  This template previously carried that as a REPORTED GAP, on the grounds that the letter in
+  force "lives inside the store's search discriminator and is not re-published on the screen's
+  surface". That was a description of a missing predicate on the paired class rather than a limit
+  of anything: the store publishes its search, the sibling portal listing already derives exactly
+  this state from its own equivalent, and the class now exposes `isFilterApplied`. The gap is
+  closed rather than reported.
+
+  ⚠ THE STATE IS CARRIED BY MORE THAN COLOUR. `aria-pressed` reaches assistive technology, and
+  the paired stylesheet gives the applied entry a WEIGHT change alongside its tint, so an
+  operator who cannot distinguish the two colours still has a cue. Both are token-driven; no
+  colour value appears in this markup.
 
   ⚠ BLITZY [A11Y]: each entry's pointer target is smaller than the 44-by-44 recommendation, and it
   is implemented per the measured design source rather than silently enlarged. The legacy
@@ -350,6 +380,7 @@
     <button
       type="button"
       class="user-list__letter"
+      [attr.aria-pressed]="isFilterApplied(affordance)"
       [attr.aria-label]="affordance === allFilterLabel ? null : filterStripLabel + ' ' + affordance"
       (click)="onFilterSelected(affordance)"
     >
@@ -413,6 +444,31 @@
   it, so it is not reproduced. A documented functional reduction — the row contract does carry a
   signed-in flag, so this is a scope decision rather than a data limitation.
 -->
+<!--
+  THE NO-QUERY NOTICE, rendered ABOVE the grid and only while no query has been issued.
+
+  ⚠ IT EXISTS BECAUSE THE SHARED GRID'S EMPTY STATE WOULD OTHERWISE STATE A FALSEHOOD. That state
+  reports that nothing was FOUND; in this state nothing was LOOKED FOR, because the tenant's
+  `Display_Mode` selects the no-query view — which `Users.ascx.vb` L266 expressed by excluding the
+  bare marker `"None"` from every branch of `BindData`, leaving `grdUsers.DataSource` assigned
+  `Nothing`. That is also the mode `UserModuleBase.vb` L126-L130 defaulted an absent setting to, so
+  it is the state every unconfigured tenant opens in.
+
+  MIGRATION: the legacy showed no message at all here, so this is a net addition. It is authored
+  rather than recovered, it names the two affordances that resolve it using the wording those
+  controls actually carry, and it costs no visual change to any other state — it is not rendered
+  once a query has been issued, whatever that query returned.
+
+  A PARAGRAPH RATHER THAN THE SHARED EMPTY STATE. The shared component emits its own heading and
+  documents that it assumes no surrounding table or list, and the grid already renders one inside
+  its own body; a second would put two competing empty statements on one screen. It carries the
+  polite live role so a reader who reached the screen with assistive technology is told why the
+  grid below is bare, rather than being read an empty table.
+-->
+@if (noQueryIssued()) {
+  <p class="user-list__notice" role="status" aria-live="polite">{{ noQueryNotice }}</p>
+}
+
 <app-data-table [columns]="columns()" [rows]="rows()" [loading]="loading()">
   <span dataTableCaption>{{ pageTitle }}</span>
 </app-data-table>
@@ -507,15 +563,25 @@
   dynamically here and the grid's cell-context type is what documents it: the row is an account
   listing item. Every member reached below exists on that contract.
 
-  ⚠ THE ROW COMMANDS ARE PERMISSION-GATED AND THE SIBLING ROLE LISTING'S ARE NOT — a deliberate
-  divergence, not an inconsistency. Gating is ADVISORY ONLY: it withholds an affordance and never
-  enforces anything, the directive fails closed on an absent grant, and the API re-authorises every
-  request and answers 403 whether or not a control was ever painted. The key is `EDIT`, a member of
-  the PERSISTED four-key permission vocabulary — `VIEW`, `EDIT`, `READ`, `WRITE`. It is emphatically
-  NOT an authorisation POLICY name: `ModuleView`, `ModuleEdit`, `TabView`, `TabEdit` and
-  `PortalAdministrator` belong to a separate, closed and non-interchangeable vocabulary, and writing
-  one here would be treated as a render grant the moment a matching string appeared in the caller's
-  granted list.
+  ⚠ THE ROW COMMANDS ARE GATED ON TENANT ADMINISTRATION, and the vocabulary matters. Both commands
+  address routes and endpoints declared under the `PortalAdministrator` POLICY, so the fact that
+  decides them is the one the server itself decides: `isSuperUser` or the API's own
+  `isPortalAdministrator`, re-exposed by the authentication store as `administersCurrentPortal`.
+
+  It is NOT the four-key permission vocabulary. `VIEW`, `EDIT`, `READ` and `WRITE` are PERSISTED
+  grants over a module or page INSTANCE, carried in `ModulePermissions` and `TabPermissions`;
+  `EDIT` — which these commands previously asked for — grants editing of a page's content and is
+  consulted by nothing on the account-administration path. The two vocabularies are closed and
+  non-interchangeable, and the earlier reading conflated them.
+
+  It is also NOT a role NAME. Tenant administration is conferred by `Portals.AdministratorRoleId`,
+  the designated role is renameable through the role screens, and more than one role may administer
+  a tenant — so matching the literal "Administrators" was wrong three ways at once.
+
+  STILL ADVISORY ONLY: gating withholds an affordance and enforces nothing. The route guard
+  re-checks on navigation, the API re-authorises every request and answers 403 whether or not a
+  control was ever painted, and the gate reads `false` on an unresolved identity, which fails
+  closed. The sibling role listing gates its page actions the same way and for the same reason.
   ══════════════════════════════════════════════════════════════════════════════════════════════
 -->
 
@@ -544,29 +610,40 @@
   width or height, so the stylesheet sizes it and it scales with the surrounding typography, and it
   is stroked in `currentColor` so no colour value is hardcoded in markup.
 -->
+<!--
+  ⚠ GATED ON THE SERVER'S ADMINISTRATION VERDICT, NOT ON THE PERSISTED `EDIT` KEY.
+  `UsersController.cs:L492-L493` declares the `PortalAdministrator` policy on
+  `PUT /users/{userId}`. The key this control used to name is a grant held against module and
+  tab records and cannot express that policy; see `administersPortal` in the paired component
+  for why the two vocabularies are not interchangeable and why no key arm belongs here.
+
+  Withheld by not rendering. A row whose edit command is absent simply has one fewer command,
+  which is what the shared table's projected-template contract already supports.
+-->
 <ng-template #editCommand let-row>
-  <a
-    *hasPermission="'EDIT'"
-    class="user-list__row-action"
-    [routerLink]="editUserLinks()[row.userId]"
-    [attr.aria-label]="editCommandLabel + ' ' + row.username"
-  >
-    <svg
-      class="user-list__icon"
-      aria-hidden="true"
-      focusable="false"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.4"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+  @if (administersPortal()) {
+    <a
+      class="user-list__row-action"
+      [routerLink]="editUserLinks()[row.userId]"
+      [attr.aria-label]="editCommandLabel + ' ' + row.username"
     >
-      <path d="M11.2 2.6 L13.4 4.8" />
-      <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
-    </svg>
-    <span class="user-list__action-label">{{ editCommandLabel }}</span>
-  </a>
+      <svg
+        class="user-list__icon"
+        aria-hidden="true"
+        focusable="false"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M11.2 2.6 L13.4 4.8" />
+        <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
+      </svg>
+      <span class="user-list__action-label">{{ editCommandLabel }}</span>
+    </a>
+  }
 </ng-template>
 
 <!--
@@ -577,45 +654,65 @@
   shared confirmation dialogue above rather than acting immediately, and it is disabled while a
   write is already in flight — the legacy screen post-backed, so the reader could not press twice.
 
-  ⚠ REPORTED PARITY GAP, NOT A CHOICE. `grdUsers_ItemDataBound` L681-L705 HID this command when the
-  account was the tenant's designated administrator, and when it was both the signed-in caller's
-  own account and an installation administrator. Neither fact is reachable from this feature: the
-  row contract carries the installation-administrator flag, but the tenant's administrator
-  identifier and the caller's own identifier live in the authentication store, and a feature may not
-  import another feature's state. The gap is an AFFORDANCE gap only — the server is authoritative
-  and refuses a removal it will not perform — and it is reported rather than worked around.
+  ⚠ THE TWO PROTECTED ACCOUNTS KEEP THEIR PROTECTION. `grdUsers_ItemDataBound` L693-L694 HID this
+  command when the account was the tenant's DESIGNATED ADMINISTRATOR, and when it was both the
+  signed-in caller's OWN account AND an installation administrator. Both facts are reachable and
+  both are honoured: `canRemove` on the paired component reproduces that predicate line for line,
+  reading the designated administrator from the tenant's own record and the caller's identifier
+  from the authentication store — AND it consults `canDelete`, the server's own per-row verdict,
+  first. That flag is the wider rule (it withholds every installation administrator, not only one
+  that is also the caller) and it is what the endpoint actually enforces, so a row it refuses is
+  never rendered a destructive command at all. Neither is a feature's private state — the authentication store
+  and the portal store are CORE state, which every feature may inject; nothing here imports from
+  another feature.
+
+  Withholding the command rather than letting the server refuse it is deliberate. A refusal
+  arrives only after the operator has confirmed a deletion and waited, and it arrives on the two
+  accounts where a mistaken attempt is most alarming. Until the tenant's record has been read the
+  guard withholds nothing, so the read never removes a capability while it is in flight.
 
   MIGRATION: the legacy delete image carried no alternative text, so it reached assistive technology
   as an unnamed control that destroyed a record. It is named here, and the name carries the account.
+
+  ⚠ GATED ON THE SERVER'S ADMINISTRATION VERDICT, NOT ON THE PERSISTED `EDIT` KEY.
+  `UsersController.cs:L540-L541` declares the `PortalAdministrator` policy on
+  `DELETE /users/{userId}`. Gating a destructive command on a module grant was the sharpest form
+  of the vocabulary error: an `EDIT` grant on one unrelated module offered account removal to a
+  caller the endpoint refuses. See `administersPortal` in the paired component.
+
+  The in-flight `disabled` binding is a different concern and stays: it prevents a second press
+  while a write is settling, which is about timing rather than authority. Authority is expressed
+  by not rendering the control at all.
 -->
 <ng-template #deleteCommand let-row>
-  <button
-    *hasPermission="'EDIT'"
-    type="button"
-    class="user-list__row-action user-list__row-action--danger"
-    [disabled]="saving()"
-    [attr.aria-label]="deleteCommandLabel + ' ' + row.username"
-    (click)="requestRemoval(row)"
-  >
-    <svg
-      class="user-list__icon"
-      aria-hidden="true"
-      focusable="false"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.4"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+  @if (administersPortal() && canRemove(row)) {
+    <button
+      type="button"
+      class="user-list__row-action user-list__row-action--danger"
+      [disabled]="saving()"
+      [attr.aria-label]="deleteCommandLabel + ' ' + row.username"
+      (click)="requestRemoval(row)"
     >
-      <path d="M2.6 4.4 L13.4 4.4" />
-      <path d="M6 4.4 V2.9 A0.8 0.8 0 0 1 6.8 2.1 L9.2 2.1 A0.8 0.8 0 0 1 10 2.9 V4.4" />
-      <path d="M4 4.4 L4.7 14.4 L11.3 14.4 L12 4.4" />
-      <path d="M6.6 7.2 V11.7" />
-      <path d="M9.4 7.2 V11.7" />
-    </svg>
-    <span class="user-list__action-label">{{ deleteCommandLabel }}</span>
-  </button>
+      <svg
+        class="user-list__icon"
+        aria-hidden="true"
+        focusable="false"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M2.6 4.4 L13.4 4.4" />
+        <path d="M6 4.4 V2.9 A0.8 0.8 0 0 1 6.8 2.1 L9.2 2.1 A0.8 0.8 0 0 1 10 2.9 V4.4" />
+        <path d="M4 4.4 L4.7 14.4 L11.3 14.4 L12 4.4" />
+        <path d="M6.6 7.2 V11.7" />
+        <path d="M9.4 7.2 V11.7" />
+      </svg>
+      <span class="user-list__action-label">{{ deleteCommandLabel }}</span>
+    </button>
+  }
 </ng-template>
 
 <!--
@@ -625,13 +722,24 @@
   used `imageColumn.CommandName` as the resource key — which is why it reads "Manage Roles" and not
   "User Roles".
 
-  ⚠ MIGRATION — A DOCUMENTED FUNCTIONAL REDUCTION (DL-8). `Users.ascx.vb` L542 navigated to
-  `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)`, a PER-ACCOUNT role screen. No such route
-  exists in the target's closed route set: the only membership route is `/roles/:roleId/users`, which
-  is keyed by ROLE and belongs to the role feature. So this command navigates to the role listing by
-  URL STRING and the operator reaches a specific account's memberships from there. A route is a URL
-  and not an import — nothing in this feature imports from `features/role/`, and the target is a
-  plain string constant on the paired component rather than a per-row array.
+  ⚠ MIGRATION — THE ACCOUNT TRAVELS WITH THE COMMAND (DL-8, previously a documented reduction).
+  `Users.ascx.vb` L542 navigated to `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)`, a
+  PER-ACCOUNT role screen, and the screen it reached served TWO MODES from one page keyed by either a
+  role or an account (`SecurityRoles.ascx.vb` L413-L418).
+
+  This command used to navigate to the bare role listing and DISCARD the row's account, which was
+  recorded here as an accepted reduction. It is no longer one: an operator asking "what does this
+  person hold" was shown every role in the tenant, with the account they had just chosen nowhere on
+  screen. The account now travels as a QUERY PARAMETER on the same address, and the role listing
+  narrows itself to that account's memberships.
+
+  ⚠ NO NEW ROUTE IS INTRODUCED, and none may be. The target's route set is closed, and the only
+  membership route in it is `/roles/:roleId/users`, keyed by ROLE. A query parameter on an address
+  that already exists carries the account without adding to that set — which is also how the legacy
+  did it, since `UserId=KEYFIELD` was itself a query argument rather than a distinct page.
+
+  A route is a URL and not an import: nothing in this feature imports from `features/role/`, and the
+  target is a plain string constant plus a per-row parameter object on the paired component.
 
   THE ACCESSIBLE NAME STILL CARRIES THE ACCOUNT, because without it a page of accounts presents a
   column of identical links and a reader cannot tell which row they are on. It names the ROW the
@@ -649,6 +757,7 @@
   <a
     class="user-list__row-action"
     [routerLink]="manageRolesLink"
+    [queryParams]="manageRolesQueryParams(row)"
     [attr.aria-label]="manageRolesCommandLabel + ' ' + row.username"
   >
     <svg

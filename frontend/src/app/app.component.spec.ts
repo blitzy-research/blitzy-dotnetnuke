@@ -36,7 +36,7 @@
 // That guard is exactly what this file replaces. A missing or wrong shell is now a COMPILE
 // failure rather than a run-time one, so the residual risk is no longer "can the layout be
 // loaded" but "is the one layout wired up correctly" — one shell, one of each singular
-// landmark, the navigation rail actually projected, and the session the root supplies
+// landmark, the navigation rail actually rendered, and the session the shell resolves
 // reaching the chrome. Those are the properties asserted below, and each of them fails
 // SILENTLY in a browser if it regresses, which is why they are worth asserting at all.
 //
@@ -118,7 +118,16 @@ const SESSION_BODY: AuthSession = {
     displayName: 'Operator A',
     email: 'operator.a@example.test',
     isSuperUser: false,
-    isPortalAdministrator: false,
+    // ⚠ THE TWO FACTS AGREE, AND THEY DID NOT USED TO. This fixture previously paired
+    // `isPortalAdministrator: false` with `roles: ['Administrators']`, describing a caller
+    // the API never sends: the server derives the flag from the tenant's own
+    // administrator-role designation, so an account holding the designated role is reported
+    // as an administrator. The inconsistency was harmless only while nothing read the flag,
+    // which is exactly the condition that let the navigation rail and the route gate infer
+    // administration from the role NAME instead. A tenant administrator that is not a host
+    // account is also the more interesting caller for the rail, because it is the one for
+    // whom the host-only tenant collection is withheld.
+    isPortalAdministrator: true,
     roles: ['Administrators'],
     permissions: ['EDIT'],
   },
@@ -375,35 +384,222 @@ describe('AppComponent', () => {
     it('reports no name at all when neither the display name nor the account key is usable', () => {
       holdSession({ displayName: '', username: '' });
 
-      expect(component['userName']()).toBeUndefined();
+      // Asserted through the rendered chrome rather than through a member, because the name
+      // is resolved by the shell now and the root holds no session member at all. See
+      // `layout/shell/shell.component.spec.ts` for the resolution rules themselves.
       expect(host().querySelector('span.app-header__user')).toBeNull();
     });
 
-    it('projects the navigation rail into the secondary region, so it is not collapsed', () => {
-      // The shell publishes this region as a projection slot and assigns the mounting
-      // decision to whichever component mounts `<app-shell>` — this one. The region is
-      // therefore only populated if the root actually projects the rail, and the
-      // stylesheet's `.shell__sidebar:empty` collapse rule means an unprojected rail
-      // fails silently: the application would simply render with no navigation rather
-      // than raise anything. Asserting the rail is present, and present INSIDE the
-      // region, is what closes that gap.
-      const region = host().querySelector('div.shell__sidebar');
-      const rail = host().querySelector('app-sidebar');
-
-      expect(region).not.toBeNull();
-      expect(rail).not.toBeNull();
-      expect(region?.children.length).toBe(1);
-      expect(region?.contains(rail as Node)).toBeTrue();
+    it('offers no account affordance while no account is signed in', () => {
+      // The address is composed from the session key, so there is nothing to compose from and
+      // nothing to render. `undefined` rather than `null`, because that is what the shell's
+      // optional input declares and what the banner tests for.
+      expect(host().querySelector('a.app-header__account-link')).toBeNull();
     });
 
-    it('announces the rail through its own labelled landmark, which the region does not supply', () => {
-      // The shell's region is a bare `div` that deliberately writes no `role` and no
-      // `aria-label`, leaving the landmark to whatever is projected. That contract only
-      // holds if the projected rail brings one.
+    it("composes the signed-in account's own subscriptions address once a session is held", () => {
+      // MIGRATION: this is the one account-scoped affordance in the console's chrome, and the
+      // only route an ordinary account holder has to a screen it operates on its own behalf.
+      // `Website/admin/Users/MemberServices.ascx` was a tab an administrator never saw
+      // (`ManageUsers.ascx.vb` L61-L66), reached by the signed-in account from the portal's own
+      // user affordance — a skin object, and skinning is out of scope — so this band is the
+      // target's equivalent surface.
+      //
+      // ⚠ THE FIXTURE'S ACCOUNT KEY IS ZERO, WHICH MAKES THIS A SENTINEL PROOF AS WELL AS A
+      // COMPOSITION ONE. A truthiness test or a `> 0` guard anywhere on the path from the
+      // session to the rendered `href` would drop this affordance entirely, and the address
+      // below is what proves none exists.
+      holdSession();
+
+      expect(host().querySelector('a.app-header__account-link')?.getAttribute('href')).toBe(
+        '/users/0/services',
+      );
+    });
+
+    it('captions the account affordance with the measured legacy tab wording', () => {
+      holdSession();
+
+      // `cmdServices.Text` in `ManageUsers.ascx.resx`. The root composes the address and the
+      // banner owns the wording, so this asserts the seam rather than restating the label.
+      expect(
+        host().querySelector('a.app-header__account-link')?.textContent?.trim(),
+      ).toBe('Manage Services');
+    });
+
+    it('renders the navigation rail exactly once, as the shell\'s own region', () => {
+      // ⚠ THE ROOT SUPPLIES NOTHING HERE, AND THAT IS THE CORRECTION. The rail used to be
+      // imported by this component and projected into a slot the shell published, which
+      // failed SILENTLY when it was not: the stylesheet's `:empty` collapse rule meant the
+      // application simply rendered with no navigation rather than raising anything. The
+      // shell owns the rail now, so the rail appears here because the shell renders it —
+      // and it appears exactly once, carrying the grid region class on its own host.
+      const rail = host().querySelector('app-sidebar');
+
+      expect(rail).not.toBeNull();
+      expect(host().querySelectorAll('app-sidebar').length).toBe(1);
+      expect(rail?.classList.contains('shell__sidebar')).toBeTrue();
+      expect(host().querySelectorAll('div.shell__sidebar').length).toBe(0);
+    });
+
+    it('announces the rail through its own labelled landmark', () => {
+      // The shell writes no `role` and no `aria-label` on the region, leaving the landmark
+      // to the rail. That contract only holds if the rail brings one.
+      //
+      // ⚠ A SESSION IS HELD, BECAUSE THE LANDMARK IS CONDITIONAL. Every destination the rail
+      // offers is an administration screen, so the rail emits its landmark only once at least one
+      // entry is admitted — the withheld case is asserted on its own below. The fixture account
+      // administers the tenant, which is what admits entries.
+      holdSession();
+
       const landmark = host().querySelector('app-sidebar nav');
 
       expect(landmark).not.toBeNull();
       expect(landmark?.getAttribute('aria-label')?.trim().length).toBeGreaterThan(0);
+      expect(host().querySelectorAll('nav').length).toBe(1);
+    });
+  });
+
+  describe('navigation rail — whether it is offered at all', () => {
+    /**
+     * The rail's RENDERED NAVIGATION, or null when the rail is offering nothing.
+     *
+     * ⚠ THE LANDMARK, NOT THE CUSTOM ELEMENT, AND THE DISTINCTION IS THE WHOLE OF THIS SUITE.
+     * The shell composes the rail unconditionally — that is the correction the case above records,
+     * and it is what makes shipping without navigation a compile error — so `app-sidebar` is in the
+     * document at every address including the sign-in screen. What is CONDITIONAL is everything
+     * inside it: the rail resolves its own entries from the two authority facts the shell forwards
+     * and emits no landmark, no group and no anchor while none is admitted, leaving its host
+     * genuinely childless so the layout's `:empty` collapse rule takes the column away with it.
+     * Asserting the element's absence would therefore assert the OLD arrangement; asserting the
+     * landmark's absence asserts the behaviour an operator meets.
+     */
+    function rail(): Element | null {
+      return host().querySelector('app-sidebar nav');
+    }
+
+    /**
+     * The rail's host element, which the shell composes UNCONDITIONALLY.
+     *
+     * Separate from {@link rail} on purpose: the two say different things, and the cases below need
+     * both. This one proves the shell still composes the rail; that one proves the rail is offering
+     * something.
+     */
+    function railElement(): Element | null {
+      return host().querySelector('app-sidebar');
+    }
+
+    /** Every navigation address currently rendered anywhere in the application. */
+    function railAddresses(): readonly string[] {
+      return Array.from(host().querySelectorAll<HTMLAnchorElement>('a.app-sidebar__link')).map(
+        (anchor: HTMLAnchorElement): string => anchor.getAttribute('href') ?? '',
+      );
+    }
+
+    it('projects no rail at all while nobody is signed in', () => {
+      // ⚠ THE DEFECT THIS CLOSES, STATED AS THE STATE IT PRODUCED. This component is mounted
+      // for EVERY address the application serves, the sign-in screen and the catch-all
+      // included, and it projected the rail unconditionally — so an unauthenticated visitor
+      // was shown the complete administrative surface of the installation: every domain,
+      // every collection, every settings screen. No row of data was disclosed by naming them,
+      // and that is not the whole of the harm — the set of administration screens an
+      // installation runs is worth withholding, and a sign-in form ringed with links that
+      // cannot be followed is a broken screen besides.
+      //
+      // No session is established here, which is the whole fixture.
+      expect(rail()).toBeNull();
+      expect(railAddresses()).toEqual([]);
+    });
+
+    it('leaves the shell region genuinely empty, so its collapse rule engages', () => {
+      // The layout collapses `.shell__sidebar:empty`. That branch only engages if the region
+      // renders NOTHING, so a rail that emitted an empty frame — a landmark, a heading or even a
+      // collapse toggle — would defeat it and reserve a blank column beside the sign-in form. The
+      // region class sits on the rail's OWN host, so the emptiness has to be the host's.
+      const region = host().querySelector('app-sidebar.shell__sidebar');
+
+      expect(region).not.toBeNull();
+      expect(region?.children.length).toBe(0);
+      expect((region?.textContent ?? '').trim()).toBe('');
+      expect(region?.matches(':empty'))
+        .withContext('the collapse rule is what takes the column away, so it must actually match')
+        .toBeTrue();
+
+      // And no wrapper element carries the class, which would sever the grid relationship.
+      expect(host().querySelectorAll('div.shell__sidebar').length).toBe(0);
+    });
+
+    it('projects the rail as soon as a session with a resolved identity is held', () => {
+      expect(rail()).toBeNull();
+
+      holdSession();
+
+      expect(rail()).not.toBeNull();
+      expect(railAddresses().length).toBeGreaterThan(0);
+    });
+
+    it('withdraws the rail again when the session ends', () => {
+      // ⚠ THE RAIL MUST NOT OUTLIVE THE SESSION IT WAS RENDERED FOR. A sign-out leaves this
+      // component mounted — the application is not reloaded — so a rail derived from a value
+      // captured once would keep the previous operator's navigation on screen while they were
+      // being returned to the sign-in form.
+      holdSession();
+      expect(rail()).not.toBeNull();
+
+      tokens.clear();
+      fixture.detectChanges();
+
+      expect(rail()).toBeNull();
+      expect(railAddresses()).toEqual([]);
+    });
+
+    it('states the caller\u2019s authority from the server\u2019s own facts, not from a role name', () => {
+      // ⚠ BOTH INPUTS ARE REQUIRED, so omitting either is a compile error rather than an
+      // unfiltered rail — but the VALUES are this component's responsibility, and getting them
+      // from the wrong place is not a compile error. This asserts the source: the host flag and
+      // the server-derived administration verdict, both republished by the store from
+      // `CurrentUserDto`. The fixture is a tenant administrator who is NOT a host account,
+      // which is the caller that distinguishes the two.
+      holdSession();
+
+      // The two authority facts are published by the SHELL, which owns the session boundary, and
+      // their source is asserted in `layout/shell/shell.component.spec.ts`. What this file asserts is
+      // the consequence the operator actually meets, end to end: the host-only tenant collection is withheld —
+      // `GET /api/v1/portals` requires host authority — while every tenant-scoped entry is
+      // offered. A rail that had inferred administration from the role name `Administrators`
+      // would have produced the same list here and the WRONG list for a tenant that renamed
+      // that role, which is why the source rather than the outcome is asserted above.
+      const addresses = railAddresses();
+
+      expect(addresses).not.toContain('/portals');
+      expect(addresses).toContain('/users');
+      expect(addresses).toContain('/roles');
+      expect(addresses).toContain('/modules');
+    });
+
+    it('offers the tenant collection once the caller is a host account', () => {
+      holdSession({ isSuperUser: true });
+
+      expect(railAddresses()).toContain('/portals');
+    });
+
+    it('offers no entry point to a signed-in caller holding no administration', () => {
+      // Truthful rather than unhelpful: every declared entry requires one of the two
+      // administration authorities, so all of them would refuse this caller. The rail is still
+      // COMPOSED — a session IS held and the shell renders it either way — and it simply has
+      // nothing to offer, so it withholds its landmark along with its entries rather than
+      // announcing a region a reader can navigate to and find nothing in.
+      //
+      // ⚠ THE ROLE NAME IN THE FIXTURE IS THE POINT OF THE THIRD ASSERTION. This caller holds a
+      // role named 'Subscribers' and the server reports it as administering nothing; a rail that
+      // inferred authority from a role name rather than from the server's own flags could not tell
+      // this caller from an administrator whose tenant renamed its administrator role.
+      holdSession({ isSuperUser: false, isPortalAdministrator: false, roles: ['Subscribers'] });
+
+      expect(railElement()).not.toBeNull();
+      expect(rail())
+        .withContext('no landmark stands over a rail with nothing in it')
+        .toBeNull();
+      expect(railAddresses()).toEqual([]);
     });
   });
 
@@ -452,12 +648,14 @@ describe('AppComponent', () => {
       revocation.flush(null, { status: 204, statusText: 'No Content' });
     });
 
-    it('ends the session through the coordinator rather than through the session store', () => {
-      // The distinction is the whole reason the coordinator exists. The store's own
+    it('ends the session through the lifecycle service rather than through the session store', () => {
+      // The distinction is the whole reason the lifecycle service exists. The store's own
       // sign-out discards the credentials and the identity and knows nothing about the
-      // portals, accounts, roles or exported module documents the domain stores hold, so a
-      // root that called the store directly would leave every one of those slices legible
-      // to whoever signs in next.
+      // portals, accounts, roles or exported module documents the domain stores hold, so
+      // chrome that called the store directly would leave every one of those slices legible
+      // to whoever signs in next. Asserted from the root because this is the whole
+      // application rendered: the shell is what calls it, and this case proves the wiring
+      // survives end to end.
       const coordinated = spyOn(session, 'signOut').and.callThrough();
       const storeDirect = spyOn(authStore, 'logout').and.callThrough();
 
@@ -466,8 +664,8 @@ describe('AppComponent', () => {
 
       expect(coordinated).toHaveBeenCalledTimes(1);
 
-      // Reached only THROUGH the coordinator: one call, made by it rather than by this
-      // component. Asserting the count alone would pass either way, so the caller matters.
+      // Reached only THROUGH the lifecycle service: one call, made by it rather than by the
+      // chrome. Asserting the count alone would pass either way, so the caller matters.
       expect(storeDirect).toHaveBeenCalledTimes(1);
       expect(coordinated).toHaveBeenCalledBefore(storeDirect);
 
@@ -574,41 +772,47 @@ describe('AppComponent', () => {
       holdSession();
       clickSignOut();
 
-      expect(component['signingOut']()).toBeTrue();
+      // ⚠ ASSERTED ON THE STORE'S PHASE, AND IT HAS TO BE. The store discards the identity
+      // SYNCHRONOUSLY at subscribe time — local sign-out is the part the operator asked for
+      // and it does not wait for the server — so the banner's session cluster, and with it
+      // the control carrying the disabled state, is already gone by the time this line runs.
+      // The phase is what the shell reads and forwards, and the forwarding itself is
+      // asserted against the banner's input in `layout/shell/shell.component.spec.ts`.
+      expect(authStore.isSigningOut()).toBeTrue();
 
       httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(component['signingOut']()).toBeFalse();
+      expect(authStore.isSigningOut()).toBeFalse();
+      expect(host().querySelector('button.app-header__logout')).toBeNull();
     });
 
     it('issues one revocation only, however many times the gesture arrives in a single tick', () => {
       // The banner guards the gesture twice already, but both of its guards read the flag
-      // as it stood at the last change detection. The store sets the phase SYNCHRONOUSLY
-      // at subscribe time, so the guard on this component is the one that closes the
-      // same-tick window — which is exactly what calling the output handler directly,
-      // without an intervening render, reproduces.
+      // as it stood at the last change detection. The store sets the phase SYNCHRONOUSLY at
+      // subscribe time, so the guard in the shell is the one that closes the same-tick
+      // window — which is exactly what activating the control repeatedly WITHOUT an
+      // intervening render reproduces.
       holdSession();
 
-      component['onSignOut']();
-      component['onSignOut']();
-      component['onSignOut']();
+      const control = host().querySelector<HTMLButtonElement>('button.app-header__logout');
+
+      control?.click();
+      control?.click();
+      control?.click();
+      fixture.detectChanges();
 
       httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
 
       expect(navigate).toHaveBeenCalledTimes(1);
     });
 
-    it('issues nothing at all when no session is held', () => {
-      // No cluster is rendered, so there is no control to activate — but the handler is
-      // reachable programmatically, and a revocation for a session that does not exist
-      // would be a request with no credential to revoke.
-      component['onSignOut']();
-
-      // The custodian holds no refresh token, so the authentication service short-circuits
-      // to a synchronous completion without issuing anything. `httpMock.verify()` in the
-      // teardown is what proves the absence.
-      expect(navigate).toHaveBeenCalledWith(['/login']);
+    it('offers no sign-out gesture at all when no session is held', () => {
+      // The session cluster is not rendered, so there is nothing to activate and no
+      // revocation can be attempted for a session that does not exist. `httpMock.verify()`
+      // in the teardown is what proves the absence of any request.
+      expect(host().querySelector('button.app-header__logout')).toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
     });
   });
 });

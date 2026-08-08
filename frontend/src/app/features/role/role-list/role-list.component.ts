@@ -6,6 +6,7 @@ import {
   computed,
   effect,
   inject,
+  input,
   signal,
   untracked,
   type Signal,
@@ -13,6 +14,7 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 
+import { AuthStore } from '../../../core/state/auth.store';
 import { DEFAULT_ROLE_GROUP_FILTER, RoleStore } from '../../../core/state/role.store';
 import { NotificationService } from '../../../core/services/notification.service';
 import {
@@ -23,7 +25,6 @@ import {
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
-import { HasPermissionDirective } from '../../../shared/directives/has-permission.directive';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
@@ -139,6 +140,33 @@ const ROLE_MEMBERS_SEGMENT = 'users';
 
 /** Target of the legacy `AddContent.Action` module action. */
 const ADD_ROLE_LINK = '/roles/new';
+
+/**
+ * This screen's own address, used to clear an account narrowing.
+ *
+ * Navigating here WITHOUT a query parameter is what returns the listing to every role: the router
+ * matches the same route, the account input becomes absent, and the effect that watches it discards
+ * the narrowed slice. No separate command is needed and no route is added.
+ */
+const ROLE_LIST_LINK = '/roles';
+
+/**
+ * The lead-in for the wording that names the account whose memberships are on screen.
+ *
+ * Authored here rather than taken from a legacy resource value, because the legacy screen had no
+ * equivalent line: it rendered the account's name into its own heading through a control this
+ * target does not have. The wording is therefore new, and it is deliberately plain.
+ */
+const ACCOUNT_SUBJECT_PREFIX = 'Roles held by account';
+
+/** The unit for a single membership, for the count beside the account. */
+const ROLE_SINGULAR = 'role';
+
+/** The unit for none or several memberships. */
+const ROLE_PLURAL = 'roles';
+
+/** The affordance that returns the listing to every role in the tenant. */
+const SHOW_ALL_ROLES_LABEL = 'Show All Roles';
 
 /** Target of the legacy `AddGroup.Action` module action. */
 const ADD_ROLE_GROUP_LINK = '/role-groups/new';
@@ -435,9 +463,6 @@ interface AwaitedGroupMutation {
     ReactiveFormsModule,
     // Typed route segments for the two row commands and the three header actions.
     RouterLink,
-    // Gates the two create affordances on the caller's edit grant. An affordance only:
-    // it fails closed on an absent key and never substitutes for server authorisation.
-    HasPermissionDirective,
     // Page heading plus the projected action bar.
     PageHeaderComponent,
     // The twelve-column grid. It renders its own spinner and empty state, so neither
@@ -466,6 +491,30 @@ export class RoleListComponent implements OnInit {
 
   /** Carries the transient outcome of a reader-initiated mutation. */
   private readonly notifications = inject(NotificationService);
+
+  /**
+   * The session projection, read for ONE fact: whether the caller administers the tenant.
+   *
+   * ⚠ THE RIGHT VOCABULARY FOR THIS QUESTION, AND THE PREVIOUS ONE WAS WRONG. The two create
+   * affordances below were gated on the persisted permission KEY `EDIT`, which is a
+   * different question over different data: the caller's permission keys are a union across
+   * the pages and modules it holds rights on, and no member of that union says whether the
+   * caller may create a role. Both addresses those affordances lead to are declared under
+   * the tenant-administration POLICY, so that is the fact the gate has to read — the same
+   * fact the route guard reads, from the same authority.
+   *
+   * Advisory only. The API re-authorises every request against stored state and answers 403,
+   * so withholding a control here never stands in for the policy the API enforces.
+   */
+  private readonly auth = inject(AuthStore);
+
+  /**
+   * Whether the caller may be offered the tenant-administration affordances.
+   *
+   * Exposed for the template's two create links. Reads `false` while the caller's identity is
+   * unresolved, which is the safe direction for an affordance gate.
+   */
+  protected readonly administersPortal: Signal<boolean> = this.auth.administersCurrentPortal;
 
   // -------------------------------------------------------------------------
   // CELL TEMPLATES
@@ -545,7 +594,59 @@ export class RoleListComponent implements OnInit {
    * metadata on the envelope is read by nobody here because one envelope now carries
    * everything.
    */
-  protected readonly roles = this.store.roleItems;
+  /**
+   * The account whose memberships are the subject, arriving from `?userId=` on the address.
+   *
+   * ⚠ A ROUTE-BOUND INPUT, not a parameter this screen reads for itself. Component input binding
+   * is configured on the router, so a query parameter of this name binds here with no
+   * `ActivatedRoute` subscription to manage and nothing to unsubscribe.
+   *
+   * Declared as `number | undefined` and TRANSFORMED FROM THE RAW STRING, because a query
+   * parameter always arrives as text. Absence is `undefined` alone — never nought and never minus
+   * one — because `Users.UserID` seeds at 1 in this schema but the value is nonetheless an opaque
+   * key, and a screen that treated `0` as "no account" would silently ignore a real one.
+   *
+   * MIGRATION: the legacy account listing's roles command carried exactly this
+   * (`Users.ascx.vb:L542`, `UserId=KEYFIELD`) and the screen it reached served two modes from one
+   * page keyed by either a role or an account (`SecurityRoles.ascx.vb:L413-L418`). This input is
+   * the account-keyed mode.
+   */
+  public readonly userId = input<number | undefined, string | number | undefined>(undefined, {
+    transform: (value: string | number | undefined): number | undefined => {
+      if (value === undefined || value === '') {
+        return undefined;
+      }
+
+      const parsed: number = typeof value === 'number' ? value : Number(value);
+
+      // A parameter that is not a number at all is treated as absent rather than as account NaN,
+      // which would be forwarded to the transport and refused with a confusing message.
+      return Number.isInteger(parsed) ? parsed : undefined;
+    },
+  });
+
+  /**
+   * The rows the grid renders: the account's memberships when an account is the subject, and the
+   * browsable listing otherwise.
+   *
+   * ⚠ THE ACCOUNT-NARROWED SLICE IS USED ONLY ONCE IT DESCRIBES THE ACCOUNT ASKED ABOUT. The store
+   * records the account at dispatch, so during a read of account B the slice may still hold account
+   * A's answer; rendering that would show one person's memberships under another's name. Until the
+   * two agree the browsable listing is shown, which is also what a failed read falls back to.
+   */
+  protected readonly roles = computed<readonly RoleListItem[]>(() => {
+    const subject: number | undefined = this.userId();
+    const held: readonly RoleListItem[] | null = this.store.rolesHeldByUser();
+
+    if (subject === undefined || held === null || this.store.heldRolesUserId() !== subject) {
+      return this.store.roleItems();
+    }
+
+    return held;
+  });
+
+  /** Whether an account is the subject of the listing. */
+  protected readonly narrowedToAccount = computed<boolean>(() => this.userId() !== undefined);
 
   /** The portal's role groups, in the order the endpoint returned them. Unpaged, as the legacy was. */
   protected readonly roleGroups = this.store.roleGroups;
@@ -558,7 +659,9 @@ export class RoleListComponent implements OnInit {
    * here, and no custom empty wording is supplied: the legacy grid showed no empty-state
    * message at all, so the component's own default is the closest thing to parity.
    */
-  protected readonly loading = this.store.rolesLoading;
+  protected readonly loading = computed<boolean>(
+    () => this.store.rolesLoading() || this.store.heldRolesLoading(),
+  );
 
   /** Whether a mutation is in flight; disables the editor and the removal affordance. */
   protected readonly saving = this.store.saving;
@@ -764,6 +867,46 @@ export class RoleListComponent implements OnInit {
   /** Page heading: `ControlTitle_.Text`. */
   protected readonly pageTitle = PAGE_TITLE;
 
+  /**
+   * The wording beneath the heading when an account is the subject, or `undefined` otherwise.
+   *
+   * ⚠ THE ACCOUNT IS NAMED BY ITS IDENTIFIER, NOT BY ITS DISPLAY NAME, and that is a deliberate
+   * limit rather than an oversight. The read this screen makes returns ROLES; it carries no account
+   * name, and this feature holds no account transport of its own. Fetching one would mean either
+   * importing the account feature's service — which no feature here does — or adding a second
+   * request for one label. The identifier is what the address carries and what the operator
+   * navigated with, so it is what is stated, and it is enough to confirm the listing is narrowed and
+   * to which key.
+   *
+   * The count is included because it is the fact the operator came for, and it is read from the rows
+   * actually rendered rather than from the store, so it cannot disagree with the grid.
+   */
+  protected readonly accountSubtitle = computed<string | undefined>(() => {
+    const subject: number | undefined = this.userId();
+
+    if (subject === undefined) {
+      return undefined;
+    }
+
+    // Reads the narrowed rows, so while the read is in flight this says nothing about a count it
+    // does not yet have.
+    const held: readonly RoleListItem[] | null = this.store.rolesHeldByUser();
+
+    if (held === null || this.store.heldRolesUserId() !== subject) {
+      return `${ACCOUNT_SUBJECT_PREFIX} ${subject}`;
+    }
+
+    return `${ACCOUNT_SUBJECT_PREFIX} ${subject} — ${held.length} ${
+      held.length === 1 ? ROLE_SINGULAR : ROLE_PLURAL
+    }`;
+  });
+
+  /** The wording of the affordance that returns to the unnarrowed listing. */
+  protected readonly showAllRolesLabel = SHOW_ALL_ROLES_LABEL;
+
+  /** The address of the unnarrowed listing, which is this screen without its query parameter. */
+  protected readonly showAllRolesLink = ROLE_LIST_LINK;
+
   /** Filter label, colon included; the shared field strips it on display. */
   protected readonly groupFilterLabel = GROUP_FILTER_LABEL;
 
@@ -907,6 +1050,34 @@ export class RoleListComponent implements OnInit {
     this.columnSet.set(this.buildColumns());
     this.store.loadRoleAdministration();
   }
+
+  /**
+   * Keeps the account-narrowed slice in step with the address.
+   *
+   * A genuine side effect — it issues a read — so an effect is the right mechanism rather than a
+   * computed. Registered in the field initialiser so it runs in this component's injection context
+   * and is torn down with it.
+   *
+   * Navigating BETWEEN two accounts does not recreate this component, because both addresses match
+   * the same route: the input changes and this effect re-reads, which is exactly the case the
+   * store's dispatch-time account recording exists to make safe.
+   *
+   * `untracked` guards the store call so that nothing the command writes is mistaken for a
+   * dependency of this effect, which would otherwise re-enter it.
+   */
+  private readonly accountSubjectEffect = effect((): void => {
+    const subject: number | undefined = this.userId();
+
+    untracked((): void => {
+      if (subject === undefined) {
+        this.store.clearRolesHeldByUser();
+
+        return;
+      }
+
+      this.store.loadRolesHeldByUser(subject);
+    });
+  });
 
   // -------------------------------------------------------------------------
   // ROW COMMAND TARGETS

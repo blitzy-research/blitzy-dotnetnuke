@@ -1,27 +1,21 @@
 // Root component stylesheet. The template mounts a single element, so the only visual job here is to
 // establish the box that element lays out inside; there is no wrapper, hence `:host` rather than a class.
 //
-// MIGRATION: the legacy equivalent of this layer was a runtime, cached, ordered stylesheet cascade
-// assembled per request. `ManageStyleSheets` in Website/Default.aspx.vb read the `CSS` entry out of the
-// shared cache and appended, in order, the host `default.css` (marked in the source itself as the
-// required default sheet), the skin package's own sheet, the skin-file sheet and the portal sheet, with
-// the cache writes gated on the global performance setting - and it ran twice per request, straddling
-// the skin injection. All of it is replaced by one build-time bundle plus component-scoped stylesheets
-// such as this one, so the cascade order is fixed at compile time rather than recomputed and cached at
-// runtime.
+// MIGRATION: the legacy equivalent was a runtime, cached, per-request stylesheet cascade assembled from the
+// host, skin-package, skin-file and portal sheets in that order. It is replaced by one build-time bundle
+// plus component-scoped stylesheets such as this one, so the cascade order is fixed at compile time.
 
 :host {
-  // A custom element has no user-agent display and would lay out inline, shrink-wrapping the shell. A
-  // block box fills the available inline size and gives the shell the block-level containing block it
-  // expects.
+  // A custom element has no user-agent display and would lay out inline, shrink-wrapping the shell. A block
+  // box fills the available inline size and gives the shell the block-level containing block it expects.
   display: block;
 
-  // MIGRATION: NO viewport-height floor is declared here, and the omission is the point. Full height
-  // belongs to exactly one authority - `.shell` in _layout.scss, which declares `min-block-size: 100vh`
-  // then `100dvh` so an engine understanding the dynamic unit measures the visual viewport. Restating
-  // `100vh` here would silently defeat that, because a parent minimum cannot be reduced by a child: on a
-  // mobile browser whose toolbar has retracted, the root would stay taller than the visible area and
-  // push a scroll range onto a page that fits. Both behaviours the floor would provide are already
-  // properties of the shell's own grid - its `1fr` main row absorbs slack, and a minimum is a floor
-  // rather than a fixed size - and this host inherits them by being a block box the shell fills.
+  // MIGRATION: NO viewport-height floor is declared here, and the omission is the point. Full height belongs
+  // to exactly one authority - `.shell` in _layout.scss, which declares `min-block-size: 100vh` then
+  // `100dvh` so an engine understanding the dynamic unit measures the visual viewport. Restating `100vh`
+  // here would silently defeat that, because a parent minimum cannot be reduced by a child: on a mobile
+  // browser whose toolbar has retracted, the root would stay taller than the visible area and push a scroll
+  // range onto a page that fits. Both behaviours the floor would provide are already properties of the
+  // shell's own grid - its `1fr` main row absorbs slack, and a minimum is a floor rather than a fixed size -
+  // and this host inherits them by being a block box the shell fills.
 }

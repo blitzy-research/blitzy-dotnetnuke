@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 // WHAT THIS FILE PROVES
 // ---------------------------------------------------------------------------
-// One thing, in nineteen parts: that each method on the service under test issues
+// One thing, in twenty-four parts: that each method on the service under test issues
 // EXACTLY ONE request, to exactly the path and with exactly the verb, body and query
 // string the API declares - and that it neither adds to nor subtracts from what its
 // caller handed it.
@@ -102,8 +102,10 @@ import type { ApiResponse } from '../models/paged-result.model';
 import type {
   ChangePasswordRequest,
   CreateUserRequest,
+  MemberService,
   MembershipSettings,
   PagedUserList,
+  RedeemServiceCodeResult,
   UpdateUserRequest,
   UserDetail,
   UserListItem,
@@ -142,6 +144,20 @@ type UpdateDefinitionRequest = Parameters<UserService['updateProfileDefinition']
 const USERS = '/api/v1/users';
 
 /**
+ * The body-bound account search.
+ *
+ * ⚠ A SEPARATE ADDRESS FROM {@link USERS}, AND THE DISTINCTION IS A PRIVACY BOUNDARY RATHER
+ * THAN A ROUTING DETAIL. Four of the listing's filters identify a person — a user name, an
+ * email address, and an arbitrary profile-property name paired with the value to match — and a
+ * query parameter travels in the REQUEST TARGET, which is written to the browser's history, to
+ * every forward and reverse proxy's access log, to the server's access log and to any telemetry
+ * that samples URLs. All of those sit at an END of the encrypted channel, so HTTPS does not
+ * address it: this is CWE-598. A search carrying any of the four goes here, in a body; a listing
+ * that names nobody stays on the cacheable `GET`.
+ */
+const USERS_SEARCH = '/api/v1/users/search';
+
+/**
  * The tenant's account policy.
  *
  * NOTE - DIVERGENCE FROM THE FOLDER REQUIREMENTS, RECORDED RATHER THAN PAPERED OVER.
@@ -160,6 +176,31 @@ const ACCOUNT_POLICY = '/api/v1/users/settings';
 
 /** The profile-definition collection. */
 const PROFILE_DEFINITIONS = '/api/v1/profile-definitions';
+
+/**
+ * The member-services catalogue of account 1.
+ *
+ * Spelled out in full rather than composed from {@link USERS}, on the same terms as every
+ * other address in this file: composing it would let a wrong template agree with itself.
+ */
+const MEMBER_SERVICES = '/api/v1/users/1/services';
+
+/**
+ * The subscription of account 1 to service 0.
+ *
+ * ⚠ THE SERVICE IDENTIFIER IS ZERO ON PURPOSE. `Roles.RoleID` seeds `IDENTITY(0, 1)`
+ * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L114), so role
+ * zero is the administrator role of every shipped installation - and it is also the value a
+ * truthiness test drops. Exercising the address with zero is what proves the subject
+ * interpolates what it was handed.
+ */
+const MEMBER_SERVICE_SUBSCRIPTION = '/api/v1/users/1/services/0/subscription';
+
+/** The trial of service 0, taken by account 1. */
+const MEMBER_SERVICE_TRIAL = '/api/v1/users/1/services/0/trial';
+
+/** The invitation-code redemptions of account 1. */
+const MEMBER_SERVICE_REDEMPTIONS = '/api/v1/users/1/services/redemptions';
 
 /**
  * The trailing match character the legacy screen appended, expressed as a character
@@ -219,6 +260,7 @@ const USER_LIST_ITEM: UserListItem = {
   isOnline: false,
   isSuperUser: false,
   isLockedOut: false,
+  canDelete: true,
 };
 
 /** One account, as a read answers with it. */
@@ -390,6 +432,18 @@ const ACCOUNT_POLICY_BODY_EXCHANGED: MembershipSettings = {
 };
 
 /**
+ * The report a policy write answers with, wrapped in the shared envelope.
+ *
+ * Both members carry a value that is NOT the type's default - a true flag and a non-zero
+ * count - so a decoder that dropped either would be visible rather than reading as an
+ * unremarkable "nothing changed".
+ */
+const ACCOUNT_POLICY_UPDATE_ENVELOPE = {
+  data: { displayNameFormatChanged: true, displayNamesRewritten: 3 },
+  meta: null,
+};
+
+/**
  * One profile definition.
  *
  * Its identity is ZERO, which is a real identifier here for the same reason minus one is
@@ -397,6 +451,55 @@ const ACCOUNT_POLICY_BODY_EXCHANGED: MembershipSettings = {
  * carries mixed case, a hyphen and a space, so any normalisation applied anywhere on the
  * path would be visible.
  */
+/**
+ * One row of the member-services catalogue: a paid service the account already holds, whose
+ * subscription has lapsed.
+ *
+ * Chosen to be the row that exercises the most contract at once. Its service identifier is
+ * ZERO - a real role, and the value a truthiness test drops. Its fee is fifty CENTS, which the
+ * legacy projection could not express at all: `GetServices`
+ * (`Website/Providers/DataProviders/SqlDataProvider/04.06.00.SqlDataProvider` L993-L1013)
+ * selected the fee only when `convert(int, R.ServiceFee) <> 0`, so this value arrived as null
+ * and the grid said "Free" for a role the subscribe path still sent to a payment page. And its
+ * command is `Renew`, which the legacy screen derived from an expiry earlier than today
+ * (`MemberServices.ascx.vb` L288-L305).
+ */
+const MEMBER_SERVICE: MemberService = {
+  roleId: 0,
+  roleName: 'Premium Members',
+  description: 'Access to the subscriber area',
+  serviceFee: 0.5,
+  billingPeriod: 1,
+  billingFrequency: 'M',
+  trialFee: 0,
+  trialPeriod: 14,
+  trialFrequency: 'D',
+  effectiveDate: '2026-01-01T00:00:00Z',
+  expiryDate: '2026-02-01T00:00:00Z',
+  isSubscribed: true,
+  isTrialUsed: false,
+  isExpired: true,
+  subscriptionAction: 'Renew',
+  subscriptionOffered: true,
+  subscriptionRequiresPayment: true,
+  trialOffered: true,
+};
+
+/**
+ * What an invitation code admitted the account to.
+ *
+ * TWO roles, because the legacy walk had no early exit (`MemberServices.ascx.vb` L397-L433):
+ * one code recorded against several roles joined every one of them, so a client that read only
+ * the first would under-report what the submission did. One of the two is role zero.
+ */
+const REDEMPTION_RESULT: RedeemServiceCodeResult = {
+  roles: [
+    { roleId: 0, roleName: 'Premium Members' },
+    { roleId: 7, roleName: 'Founders' },
+  ],
+};
+
+
 const PROFILE_DEFINITION: ProfileDefinition = {
   propertyDefinitionId: 0,
   portalId: -1,
@@ -661,6 +764,51 @@ describe('UserService', () => {
       (request) => request.method === method && request.url === path,
       `${method} ${path}`,
     );
+
+  /** The one outstanding body-bound account search. */
+  const expectSearch = (): TestRequest => expectRequest('POST', USERS_SEARCH);
+
+  /**
+   * The body a search transmitted, narrowed by throwing rather than asserted.
+   *
+   * The transport types the body as `unknown`, and the workspace forbids the assertion that
+   * would silence that. Reading it through an index signature keeps every member access below
+   * checked while still letting a case name a member the contract does not declare — which is
+   * what a regression would look like.
+   *
+   * @param request The search whose body to read.
+   * @returns The body as a keyed record.
+   */
+  const searchBody = (request: TestRequest): Readonly<Record<string, unknown>> => {
+    const body: unknown = request.request.body;
+
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      throw new Error('the search did not transmit a JSON object body');
+    }
+
+    return { ...body };
+  };
+
+  /**
+   * Asserts that a request's TARGET carries none of the given values, in its path or its query.
+   *
+   * The load-bearing assertion of the privacy cases: it is not enough that the value appears in
+   * the body, it must be ABSENT from the string that gets logged. The whole target is examined
+   * rather than one parameter, because a value smuggled into the path would pass a
+   * parameter-by-parameter check.
+   *
+   * @param request The request to inspect.
+   * @param values The values that must not appear in the target.
+   */
+  const expectTargetCarriesNoneOf = (request: TestRequest, values: readonly string[]): void => {
+    const target = `${request.request.urlWithParams}`;
+
+    for (const value of values) {
+      expect(target)
+        .withContext(`"${value}" must not appear in the request target`)
+        .not.toContain(value);
+    }
+  };
 
   /**
    * Asserts that neither header applied by the interceptor chain has been set here.
@@ -1250,10 +1398,19 @@ describe('UserService', () => {
       expect(Object.keys(ACCOUNT_POLICY_BODY).length).toBe(23);
       expectNoInterceptorHeaders(request);
 
-      request.flush(null, { status: 204, statusText: 'No Content' });
+      request.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
 
       expect(observed.failures).toEqual([]);
       expect(observed.completions.length).toBe(1);
+
+      // ⚠ THIS WRITE ANSWERS 200 WITH A BODY, unlike every other settings write in this
+      // workspace. Adopting a new display-name format rewrites every account's stored display
+      // name, and the caller cannot tell from its own request whether it did or how many it
+      // touched - so the report is part of the response and is decoded rather than discarded.
+      expect(observed.values[0]).toEqual({
+        displayNameFormatChanged: true,
+        displayNamesRewritten: 3,
+      });
     });
 
     it('keeps a page size of zero and a landing page of minus one distinct from one another', () => {
@@ -1271,7 +1428,7 @@ describe('UserService', () => {
           redirectAfterLogout: 0,
         }),
       );
-      first.flush(null, { status: 204, statusText: 'No Content' });
+      first.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
 
       observe(service.updateMembershipSettings(ACCOUNT_POLICY_BODY_EXCHANGED));
 
@@ -1283,7 +1440,7 @@ describe('UserService', () => {
           redirectAfterLogout: -1,
         }),
       );
-      second.flush(null, { status: 204, statusText: 'No Content' });
+      second.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
     });
 
     it('keeps a null landing page distinct from a zero one', () => {
@@ -1298,7 +1455,7 @@ describe('UserService', () => {
           redirectAfterLogout: 0,
         }),
       );
-      request.flush(null, { status: 204, statusText: 'No Content' });
+      request.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
     });
 
     it('keeps an empty policy string as an empty string rather than a null', () => {
@@ -1316,7 +1473,7 @@ describe('UserService', () => {
           securityDisplayNameFormat: '',
         }),
       );
-      request.flush(null, { status: 204, statusText: 'No Content' });
+      request.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
     });
   });
 
@@ -1543,6 +1700,308 @@ describe('UserService', () => {
   });
 
   // =========================================================================
+  // The account's own subscriptions
+  //
+  // Measured against `Website/admin/Users/MemberServices.ascx` and its 530-line
+  // code-behind. The whole panel was SELF-SERVICE: every operation it performed passed
+  // `UserInfo.UserID` - the signed-in account - even though its container assigned it a
+  // user identifier at `manageusers.ascx.vb` L517, and the container hid the tab outright
+  // whenever an administrator reached the screen (L61-L66). That is why these five
+  // endpoints are gated on account ownership rather than on tenant administration, and it
+  // is why they are not sub-resources of the role collection.
+  // =========================================================================
+
+  describe('listMemberServices', () => {
+    it('reads the catalogue of one account with no query string at all', () => {
+      const observed = observe(service.listMemberServices(1));
+
+      const request = expectRequest('GET', MEMBER_SERVICES);
+
+      // Unpaged, exactly as the legacy `grdServices` grid was: it bound the whole answer of
+      // `GetUserRoles(portalId, userId, False)` in one pass (`MemberServices.ascx.vb`
+      // L147-L157). A page coordinate here would be a parameter the endpoint does not read.
+      expect(request.request.params.keys()).toEqual([]);
+      expectNoInterceptorHeaders(request);
+
+      request.flush({ data: [MEMBER_SERVICE], meta: null } satisfies ApiResponse<
+        readonly MemberService[]
+      >);
+
+      expect(observed.values).toEqual([[MEMBER_SERVICE]]);
+      expect(observed.completions.length).toBe(1);
+    });
+
+    it('carries a sub-unit fee through unrounded, where the legacy projection erased it', () => {
+      // THE DIVERGENCE THIS ASSERTION PINS. `GetServices` published the fee only when
+      // `convert(int, R.ServiceFee) <> 0`, so a fee of fifty cents arrived as null and the grid
+      // rendered "Free" for a role the subscribe path still handed to a payment page. The stored
+      // value crosses intact here, and the payment flag - not the presence of a number - is what
+      // says whether a charge applies.
+      const observed = observe(service.listMemberServices(1));
+
+      expectRequest('GET', MEMBER_SERVICES).flush({
+        data: [MEMBER_SERVICE],
+        meta: null,
+      } satisfies ApiResponse<readonly MemberService[]>);
+
+      const rows = observed.values[0] as readonly MemberService[];
+
+      expect(rows[0].serviceFee).toBe(0.5);
+      expect(rows[0].subscriptionRequiresPayment).toBeTrue();
+      expect(rows[0].roleId).withContext('role zero is a real role').toBe(0);
+    });
+
+    it('answers an account offered nothing with an empty catalogue rather than a failure', () => {
+      // A tenant with no public roles is an ordinary state, and the legacy screen showed an
+      // empty grid for it. An empty array is therefore a success; only an absent tenant or an
+      // absent account is a 404.
+      const observed = observe(service.listMemberServices(1));
+
+      expectRequest('GET', MEMBER_SERVICES).flush({ data: [], meta: null } satisfies ApiResponse<
+        readonly MemberService[]
+      >);
+
+      expect(observed.values).toEqual([[]]);
+      expect(observed.failures).toEqual([]);
+    });
+
+    it('refuses a command word the API does not publish', () => {
+      // The command vocabulary is closed at three, so an unknown word is drift rather than data
+      // - it has no wording and no handler on this side. This is the one member of the row
+      // validated against a value list; the frequency codes beside it are validated for shape
+      // only, because `char(1)` may legitimately carry a code a later release adds.
+      const observed = observe(service.listMemberServices(1));
+
+      expectRequest('GET', MEMBER_SERVICES).flush({
+        data: [{ ...MEMBER_SERVICE, subscriptionAction: 'Cancel' }],
+        meta: null,
+      });
+
+      expect(observed.values).toEqual([]);
+      expect(observed.failures.length).toBe(1);
+      expect(isContractViolation(observed.failures[0])).toBeTrue();
+    });
+
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      expectNullPayloadRefused(service.listMemberServices(1), MEMBER_SERVICES, 'response.data');
+    });
+  });
+
+  describe('subscribeToService', () => {
+    it('subscribes with no body and completes without a payload', () => {
+      const observed = observe(service.subscribeToService(1, 0));
+
+      const request = expectRequest('POST', MEMBER_SERVICE_SUBSCRIPTION);
+
+      // No body: the account and the service are the whole of the request. The legacy screen
+      // carried its role identifier as the command argument of the link and nothing else
+      // (`MemberServices.ascx` L36).
+      expect(request.request.body).toBeNull();
+      expect(request.request.params.keys()).toEqual([]);
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(observed.failures).toEqual([]);
+      expect(observed.completions.length).toBe(1);
+    });
+
+    it('issues the same request for a renewal as for a first subscription', () => {
+      // `ServiceText` returned `Subscribe` or `Renew` from the same row state and BOTH ran the
+      // same command (`MemberServices.ascx.vb` L288-L305, dispatched at L439-L452). The word is
+      // presentation; the request is one request. The catalogue row in hand carries `Renew`.
+      expect(MEMBER_SERVICE.subscriptionAction).toBe('Renew');
+
+      observe(service.subscribeToService(1, MEMBER_SERVICE.roleId));
+
+      const request = expectRequest('POST', MEMBER_SERVICE_SUBSCRIPTION);
+
+      expect(request.request.body).toBeNull();
+      request.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('propagates the refusal of a service that would require payment', () => {
+      // THE EXCLUDED PAYMENT PATH, REPORTED RATHER THAN SIMULATED. The legacy screen redirected
+      // a fee-bearing role to `~/admin/Sales/PayPalSubscription.aspx` (`MemberServices.ascx.vb`
+      // L113); sales administration is out of scope, so the API answers 403 with its own reason.
+      const paymentRequired = refusal(
+        'user.service.payment-required-forbidden',
+        403,
+        'Forbidden',
+        'This service requires payment, which this application cannot take.',
+      );
+      const observed = observe(service.subscribeToService(1, 0));
+
+      expectRequest('POST', MEMBER_SERVICE_SUBSCRIPTION).flush(paymentRequired, {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(403);
+      expect(observed.failures[0].error).toEqual(paymentRequired);
+      expect(observed.completions.length)
+        .withContext('a refusal must not look like a completed subscription')
+        .toBe(0);
+    });
+  });
+
+  describe('cancelService', () => {
+    it('cancels at the same address it subscribed at, with the removing verb', () => {
+      const observed = observe(service.cancelService(1, 0));
+
+      const request = expectRequest('DELETE', MEMBER_SERVICE_SUBSCRIPTION);
+
+      expect(request.request.body).toBeNull();
+      request.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(observed.failures).toEqual([]);
+      expect(observed.completions.length).toBe(1);
+    });
+
+    it('propagates a refusal to cancel an assignment the tenant protects', () => {
+      // The same protection the role resource enforces, reached through the account resource:
+      // one implementation of the rule, two callers. `RoleController.vb` L494-L496 is the other
+      // half of it - a paid assignment is EXPIRED rather than removed, which is a success with
+      // its own reason rather than a refusal.
+      const protectedAssignment = refusal(
+        'role_assignment.protected',
+        403,
+        'Forbidden',
+        'This assignment is protected and was not removed.',
+      );
+      const observed = observe(service.cancelService(1, 0));
+
+      expectRequest('DELETE', MEMBER_SERVICE_SUBSCRIPTION).flush(protectedAssignment, {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(403);
+      expect(observed.completions.length).toBe(0);
+    });
+  });
+
+  describe('startServiceTrial', () => {
+    it('takes the trial at its own address, with no body', () => {
+      const observed = observe(service.startServiceTrial(1, 0));
+
+      const request = expectRequest('POST', MEMBER_SERVICE_TRIAL);
+
+      expect(request.request.body).toBeNull();
+      request.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(observed.failures).toEqual([]);
+      expect(observed.completions.length).toBe(1);
+    });
+
+    it('propagates the refusal of a trial the service does not offer', () => {
+      // `ShowTrial` (`MemberServices.ascx.vb` L325-L342) offered a trial only for a public role
+      // that charges a service fee, charges nothing for the trial, and has not already been
+      // tried by this account. The API applies the same predicate and refuses the rest.
+      const notOffered = refusal(
+        'user.service.trial-not-offered-forbidden',
+        403,
+        'Forbidden',
+        'This service offers no trial to this account.',
+      );
+      const observed = observe(service.startServiceTrial(1, 0));
+
+      expectRequest('POST', MEMBER_SERVICE_TRIAL).flush(notOffered, {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(403);
+      expect(observed.completions.length).toBe(0);
+    });
+  });
+
+  describe('redeemServiceCode', () => {
+    it('sends the code exactly as typed and reports every role it joined', () => {
+      const observed = observe(service.redeemServiceCode(1, { code: '  Founders-2026  ' }));
+
+      const request = expectRequest('POST', MEMBER_SERVICE_REDEMPTIONS);
+
+      // ⚠ UNTRIMMED AND UNFOLDED. The legacy comparison was ordinary string equality against
+      // the stored code (`MemberServices.ascx.vb` L410), so leading space and case both
+      // mattered. Trimming here would admit codes the legacy application refused, and would
+      // make the outcome depend on which client typed the code.
+      expect(request.request.body).toEqual({ code: '  Founders-2026  ' });
+      expectNoInterceptorHeaders(request);
+
+      request.flush({
+        data: REDEMPTION_RESULT,
+        meta: null,
+      } satisfies ApiResponse<RedeemServiceCodeResult>);
+
+      expect(observed.values).toEqual([REDEMPTION_RESULT]);
+      expect((observed.values[0] as RedeemServiceCodeResult).roles.length)
+        .withContext('the legacy walk had no early exit, so one code may join several roles')
+        .toBe(2);
+    });
+
+    it('reports a code that matched nothing as a refusal, not as an empty success', () => {
+      // The legacy screen had two distinct messages for the two outcomes - `RSVPSuccess.Text`
+      // and `RSVPFailure.Text` - so a client that treated an empty answer as success would
+      // report the failure as a success. The API refuses instead, and this pins that.
+      const notMatched = refusal(
+        'user.service.code-not-matched',
+        400,
+        'Bad Request',
+        'The invitation code entered is not valid or does not exist.',
+      );
+      const observed = observe(service.redeemServiceCode(1, { code: 'nope' }));
+
+      expectRequest('POST', MEMBER_SERVICE_REDEMPTIONS).flush(notMatched, {
+        status: 400,
+        statusText: 'Bad Request',
+      });
+
+      expect(observed.values).toEqual([]);
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(400);
+    });
+
+    it('transmits an empty submission rather than deciding the rule locally', () => {
+      // The legacy handler guarded on a non-empty code (`MemberServices.ascx.vb` L403), and the
+      // guard was load-bearing: a role with no code recorded read as the empty string through
+      // the legacy null contract, so an empty submission would otherwise have matched every
+      // such role. The API owns that rule and answers 400; this transport does not second-guess
+      // it, because two copies of one rule are one copy too many. A screen may of course also
+      // decline to submit.
+      const observed = observe(service.redeemServiceCode(1, { code: '' }));
+
+      const request = expectRequest('POST', MEMBER_SERVICE_REDEMPTIONS);
+
+      expect(request.request.body).toEqual({ code: '' });
+
+      request.flush(
+        refusal(
+          'user.service.code-required',
+          400,
+          'Bad Request',
+          'An invitation code is required.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+
+      expect(observed.failures.length).toBe(1);
+      expect(observed.failures[0].status).toBe(400);
+    });
+
+    it('refuses a null payload from a non-conforming intermediary', () => {
+      expectNullPayloadRefused(
+        service.redeemServiceCode(1, { code: 'Founders-2026' }),
+        MEMBER_SERVICE_REDEMPTIONS,
+        'response.data',
+      );
+    });
+  });
+
+
+  // =========================================================================
   // The three search axes
   //
   // Measured verbatim at `Website/admin/Users/Users.ascx.vb` L245-L280. The legacy
@@ -1562,14 +2021,42 @@ describe('UserService', () => {
       }
     };
 
+    /**
+     * The body counterpart of {@link expectNoTrailingMatchCharacter}.
+     *
+     * The three prefix filters now travel in a body, so the assertion that no pattern character
+     * was appended has to follow them there — a check that only read the query string would pass
+     * vacuously and prove nothing about a search at all.
+     *
+     * @param request The search whose body to inspect.
+     */
+    const expectBodyCarriesNoMatchCharacter = (request: TestRequest): void => {
+      for (const [name, value] of Object.entries(searchBody(request))) {
+        if (typeof value !== 'string') {
+          continue;
+        }
+
+        expect(value)
+          .withContext(`body member "${name}" must not carry a match character`)
+          .not.toContain(TRAILING_MATCH_CHARACTER);
+      }
+    };
+
     it('searches by account name without appending a match character', () => {
       // `Users.ascx.vb` L270-L271 read the name branch and passed the typed text with one
       // match character appended. Appending one here as well would send a doubled pattern.
       observe(service.list({ pageIndex: 0, pageSize: 25, userName: 'ada' }));
 
-      const request = expectRequest('GET', USERS);
-      expect(request.request.params.get('userName')).toBe('ada');
+      // ⚠ A BODY, NOT A QUERY STRING. A user name identifies a person, and a request target is
+      // recorded by the browser, by every proxy and by the server. See {@link USERS_SEARCH}.
+      const request = expectSearch();
+
+      expect(searchBody(request)['userName']).toBe('ada');
+      expect(searchBody(request)['pageIndex']).toBe(0);
+      expect(searchBody(request)['pageSize']).toBe(25);
+      expectTargetCarriesNoneOf(request, ['ada']);
       expectNoTrailingMatchCharacter(request);
+      expectBodyCarriesNoMatchCharacter(request);
       request.flush(USER_PAGE);
     });
 
@@ -1577,9 +2064,12 @@ describe('UserService', () => {
       // `Users.ascx.vb` L268-L269 is the address branch, appending the same character.
       observe(service.list({ pageIndex: 0, pageSize: 25, email: 'ada@example.test' }));
 
-      const request = expectRequest('GET', USERS);
-      expect(request.request.params.get('email')).toBe('ada@example.test');
+      const request = expectSearch();
+
+      expect(searchBody(request)['email']).toBe('ada@example.test');
+      expectTargetCarriesNoneOf(request, ['ada@example.test', 'ada', 'example.test']);
       expectNoTrailingMatchCharacter(request);
+      expectBodyCarriesNoMatchCharacter(request);
       request.flush(USER_PAGE);
     });
 
@@ -1603,10 +2093,19 @@ describe('UserService', () => {
         }),
       );
 
-      const request = expectRequest('GET', USERS);
-      expect(request.request.params.get('profilePropertyName')).toBe(oddPropertyName);
-      expect(request.request.params.get('profilePropertyValue')).toBe('Ada');
+      const request = expectSearch();
+
+      expect(searchBody(request)['profilePropertyName']).toBe(oddPropertyName);
+      expect(searchBody(request)['profilePropertyValue']).toBe('Ada');
+
+      // ⚠ THE SHARPEST CASE OF ALL, AND THE REASON THE BODY EXISTS. A tenant declares whatever
+      // profile properties it likes, so BOTH halves of this pair are arbitrary tenant data whose
+      // meaning neither side knows — the value may be a national identifier or a telephone number.
+      // Neither half may appear in the target, and the property NAME is asserted too because a
+      // name alone discloses what the tenant collects about its members.
+      expectTargetCarriesNoneOf(request, [oddPropertyName, 'Preferred-Locale', 'Ada']);
       expectNoTrailingMatchCharacter(request);
+      expectBodyCarriesNoMatchCharacter(request);
       request.flush(USER_PAGE);
     });
 
@@ -1629,8 +2128,11 @@ describe('UserService', () => {
         service.list({ pageIndex: 0, pageSize: 25, userName: LEGACY_NO_SEARCH_SENTINEL }),
       );
 
-      const searched = expectRequest('GET', USERS);
-      expect(searched.request.params.get('userName'))
+      // Supplying the word AS a user name makes the request a search, so it travels in a body —
+      // and the word is ordinary text there, exactly as it would have been in a query.
+      const searched = expectSearch();
+
+      expect(searchBody(searched)['userName'])
         .withContext('the word is ordinary text once it is the caller who supplied it')
         .toBe(LEGACY_NO_SEARCH_SENTINEL);
       searched.flush(USER_PAGE);
@@ -1646,13 +2148,17 @@ describe('UserService', () => {
         service.list({ pageIndex: 0, pageSize: 25, userName: 'ada', email: 'ada@example.test' }),
       );
 
-      const request = expectRequest('GET', USERS);
-      expect(request.request.params.keys().sort()).toEqual([
+      const request = expectSearch();
+
+      expect(Object.keys(searchBody(request)).sort()).toEqual([
         'email',
         'pageIndex',
         'pageSize',
         'userName',
       ]);
+      expect(request.request.params.keys())
+        .withContext('a search transmits no query parameters at all')
+        .toEqual([]);
       request.flush(USER_PAGE);
     });
 
@@ -1670,6 +2176,120 @@ describe('UserService', () => {
       expect(request.request.params.get('pageIndex')).toBe('0');
       expect(request.request.params.get('pageSize')).toBe('25');
       request.flush(USER_PAGE);
+    });
+  });
+
+  // =========================================================================
+  // CWE-598 — NOTHING THAT NAMES A PERSON TRAVELS IN A REQUEST TARGET
+  //
+  // The account listing used to send every filter as a query parameter, including a user
+  // name, an email address and an arbitrary profile-property name paired with the value to
+  // match. A request target is the most widely recorded part of an HTTP exchange: the
+  // browser writes it to its own history, every forward and reverse proxy writes it to an
+  // access log, the server writes it to another, and URL-sampling telemetry writes it to a
+  // third. All four sit at an END of the encrypted channel rather than in the middle of it,
+  // so transport encryption addresses none of them, and redaction is a control that has to
+  // be re-applied at every hop and stops working silently when one is added.
+  //
+  // These cases pin the OUTCOME rather than the mechanism: for each identifying filter, the
+  // value must be absent from the transmitted target and present in the body. They also pin
+  // the boundary in the other direction — a listing that names nobody must NOT become a
+  // POST, because that would give up caching for nothing.
+  // =========================================================================
+
+  describe('no identifying value in a request target', () => {
+    /** Every filter that names a person, with a value distinctive enough to search a URL for. */
+    const identifyingFilters = [
+      { name: 'userName', query: { userName: 'ada.lovelace' }, values: ['ada.lovelace'] },
+      { name: 'email', query: { email: 'ada@example.test' }, values: ['ada@example.test'] },
+      {
+        name: 'profilePropertyName',
+        query: { profilePropertyName: 'NationalIdentifier' },
+        values: ['NationalIdentifier'],
+      },
+      {
+        name: 'profilePropertyValue',
+        query: { profilePropertyValue: 'AB-123-456-C' },
+        values: ['AB-123-456-C'],
+      },
+    ] as const;
+
+    for (const axis of identifyingFilters) {
+      it(`keeps ${axis.name} out of the target and puts it in the body`, () => {
+        observe(service.list({ pageIndex: 0, pageSize: 25, ...axis.query }));
+
+        const request = expectSearch();
+
+        expectTargetCarriesNoneOf(request, axis.values);
+
+        for (const value of axis.values) {
+          expect(Object.values(searchBody(request)))
+            .withContext(`${axis.name} must reach the server, in the body`)
+            .toContain(value);
+        }
+
+        request.flush(USER_PAGE);
+      });
+    }
+
+    it('sends a search as a POST to the search address, never as a GET to the collection', () => {
+      observe(service.list({ pageIndex: 0, pageSize: 25, userName: 'ada' }));
+
+      // Stated as an ABSENCE as well as a presence. Asserting only that the POST exists would pass
+      // even if the service also issued the old GET, which is the shape a half-applied fix takes.
+      httpMock.expectNone((request) => request.method === 'GET' && request.url === USERS);
+      expectSearch().flush(USER_PAGE);
+    });
+
+    it('leaves a listing that names nobody on the cacheable GET', () => {
+      // The boundary in the other direction. Page coordinates, an ordering and the paging
+      // contract's own filter identify nobody, so moving them into a body would give up caching
+      // and idempotence for no privacy gain at all.
+      observe(service.list({ pageIndex: 2, pageSize: 25, sortBy: 'Username', sortDir: 'Ascending' }));
+
+      httpMock.expectNone((request) => request.method === 'POST' && request.url === USERS_SEARCH);
+      expectRequest('GET', USERS).flush(USER_PAGE);
+    });
+
+    it('leaves an approval-only restriction on the GET, because a state names nobody', () => {
+      // ⚠ THE ONE FILTER DELIBERATELY NOT TREATED AS IDENTIFYING. It is one of two values and
+      // holds for a whole population, so it discloses nothing about an individual.
+      observe(service.list({ pageIndex: 0, pageSize: 25, isApproved: false }));
+
+      httpMock.expectNone((request) => request.method === 'POST' && request.url === USERS_SEARCH);
+
+      const request = expectRequest('GET', USERS);
+
+      expect(request.request.params.get('isApproved')).toBe('false');
+      request.flush(USER_PAGE);
+    });
+
+    it('omits an unsupplied filter from the body rather than sending it as null', () => {
+      // A body carrying `profilePropertyName: null` would state a restriction the caller never
+      // asked for, and would make an unfiltered search indistinguishable from a filtered one in
+      // any request log kept for debugging.
+      observe(service.list({ pageIndex: 0, pageSize: 25, userName: 'ada', email: undefined }));
+
+      const request = expectSearch();
+
+      expect(Object.keys(searchBody(request)).sort()).toEqual([
+        'pageIndex',
+        'pageSize',
+        'userName',
+      ]);
+      request.flush(USER_PAGE);
+    });
+
+    it('decodes the search answer through the same contract as the listing', () => {
+      // Both addresses answer the identical envelope, so a caller cannot tell which was used and
+      // no second decoder exists to drift from the first.
+      const observed = observe(service.list({ pageIndex: 0, pageSize: 25, userName: 'ada' }));
+
+      expectSearch().flush(USER_PAGE);
+
+      expect(observed.values.length).toBe(1);
+      expect(observed.values[0].items.length).toBe(USER_PAGE.items.length);
+      expect(observed.values[0].meta.totalCount).toBe(USER_PAGE.meta.totalCount);
     });
   });
 
@@ -1727,11 +2347,18 @@ describe('UserService', () => {
       // truthiness test here would erase the difference between "cleared" and "not stated".
       observe(service.list({ pageIndex: 0, pageSize: 25, query: '', userName: '' }));
 
-      const request = expectRequest('GET', USERS);
-      expect(request.request.params.has('query')).toBe(true);
-      expect(request.request.params.get('query')).toBe('');
-      expect(request.request.params.has('userName')).toBe(true);
-      expect(request.request.params.get('userName')).toBe('');
+      // ⚠ AN EMPTY USER NAME IS STILL A SEARCH, AND MUST STILL USE THE BODY. The transport chooses
+      // its address on ABSENCE, never on emptiness: the server matches empty text as a prefix that
+      // every value begins with, so a caller sending it is placing a real restriction. Routing this
+      // one case back onto the query string would reopen the exposure for precisely the input an
+      // operator produces by clearing the box.
+      const request = expectSearch();
+      const body = searchBody(request);
+
+      expect(Object.prototype.hasOwnProperty.call(body, 'query')).toBe(true);
+      expect(body['query']).toBe('');
+      expect(Object.prototype.hasOwnProperty.call(body, 'userName')).toBe(true);
+      expect(body['userName']).toBe('');
       request.flush(USER_PAGE);
     });
 
@@ -1766,7 +2393,7 @@ describe('UserService', () => {
      * Every method on the service, each paired with the exact success the SERVER declares.
      *
      * ⚠️ THE SUCCESS STATUS AND BODY ARE PART OF EACH CASE, and they are not
-     * interchangeable. An earlier revision of this file drove all nineteen methods with one
+     * interchangeable. An earlier revision of this file drove every method with one
      * shared `{ data: null, meta: null }` body flushed at the transport's default `200`,
      * which asserted a response shape NO endpoint here produces: the nine payload-free
      * commands answer `204` and HTTP forbids a `204` from carrying a body at all, the two
@@ -1920,8 +2547,8 @@ describe('UserService', () => {
       {
         method: 'PUT',
         path: ACCOUNT_POLICY,
-        status: 204,
-        body: null,
+        status: 200,
+        body: ACCOUNT_POLICY_UPDATE_ENVELOPE,
         invoke: () => service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
       },
       {
@@ -1931,6 +2558,43 @@ describe('UserService', () => {
         body: null,
         invoke: () => service.deleteProfileDefinition(0),
       },
+      // The account's own subscriptions. Two reads answering 200 with a payload, three
+      // commands answering 204, and every one of them addressed with service identifier ZERO.
+      {
+        method: 'GET',
+        path: MEMBER_SERVICES,
+        status: 200,
+        body: { data: [MEMBER_SERVICE], meta: null },
+        invoke: () => service.listMemberServices(1),
+      },
+      {
+        method: 'POST',
+        path: MEMBER_SERVICE_REDEMPTIONS,
+        status: 200,
+        body: { data: REDEMPTION_RESULT, meta: null },
+        invoke: () => service.redeemServiceCode(1, { code: 'Founders-2026' }),
+      },
+      {
+        method: 'POST',
+        path: MEMBER_SERVICE_SUBSCRIPTION,
+        status: 204,
+        body: null,
+        invoke: () => service.subscribeToService(1, 0),
+      },
+      {
+        method: 'DELETE',
+        path: MEMBER_SERVICE_SUBSCRIPTION,
+        status: 204,
+        body: null,
+        invoke: () => service.cancelService(1, 0),
+      },
+      {
+        method: 'POST',
+        path: MEMBER_SERVICE_TRIAL,
+        status: 204,
+        body: null,
+        invoke: () => service.startServiceTrial(1, 0),
+      },
     ];
 
     it('sets no header of its own on any request across the whole surface', () => {
@@ -1939,7 +2603,7 @@ describe('UserService', () => {
       // that a header added to a shared options object would appear everywhere at once.
       expect(SURFACE.length)
         .withContext('every method on the service is exercised by this pass')
-        .toBe(19);
+        .toBe(24);
 
       for (const { method, path, status, body, invoke } of SURFACE) {
         observe(invoke());
@@ -1994,7 +2658,7 @@ describe('UserService', () => {
 
     it('declares 204 for every payload-free command and 201 for every creation', () => {
       // The mapping itself, pinned as data so a drift is visible in one place rather than
-      // having to be inferred from nineteen flushes. `ApiResults.Complete(Result)` answers 204
+      // having to be inferred from twenty-four flushes. `ApiResults.Complete(Result)` answers 204
       // and `Created(...)` answers 201; both are read off the controllers' own declarations.
       const byStatus = (status: number): readonly string[] =>
         SURFACE.filter((entry) => entry.status === status)
@@ -2004,16 +2668,27 @@ describe('UserService', () => {
       expect(byStatus(204)).toEqual([
         'DELETE /api/v1/profile-definitions/0',
         'DELETE /api/v1/users/1',
+        'DELETE /api/v1/users/1/services/0/subscription',
         'POST /api/v1/users/1/password',
         'POST /api/v1/users/1/password-reset',
         'POST /api/v1/users/1/require-password-change',
+        'POST /api/v1/users/1/services/0/subscription',
+        'POST /api/v1/users/1/services/0/trial',
         'POST /api/v1/users/1/unlock',
         'PUT /api/v1/users/1/approval',
         'PUT /api/v1/users/1/profile',
-        'PUT /api/v1/users/settings',
       ]);
       expect(byStatus(201)).toEqual(['POST /api/v1/profile-definitions', 'POST /api/v1/users']);
-      expect(byStatus(200).length).toBe(8);
+
+      // ELEVEN operations answer 200 with a payload. Two of them are not reads, and each is
+      // worth naming. The redemption answers `Ok(...)` carrying the roles the code joined, NOT
+      // `Created`, because the resource it creates - an assignment - has no address of its own
+      // to name in a location header. The account-policy write answers `Ok(...)` because
+      // adopting a new display-name format rewrites the tenant's accounts, and the number it
+      // rewrote is not derivable from the request. Subscribing, by contrast, answers 204 for the
+      // same reason it takes no body: it is the whole of the request.
+      expect(byStatus(200).length).toBe(11);
+      expect(byStatus(200)).toContain('PUT /api/v1/users/settings');
     });
   });
 
@@ -2030,6 +2705,7 @@ describe('UserService', () => {
      * the count below is exact rather than approximate.
      */
     const PROTOTYPE_MEMBERS: readonly string[] = [
+      'cancelService',
       'changePassword',
       'constructor',
       'create',
@@ -2041,10 +2717,14 @@ describe('UserService', () => {
       'getProfile',
       'getProfileDefinition',
       'list',
+      'listMemberServices',
       'listProfileDefinitions',
       'passwordReset',
+      'redeemServiceCode',
       'requirePasswordChange',
       'setApproval',
+      'startServiceTrial',
+      'subscribeToService',
       'unlock',
       'update',
       'updateMembershipSettings',
@@ -2052,13 +2732,13 @@ describe('UserService', () => {
       'updateProfileDefinition',
     ];
 
-    it('exposes exactly nineteen methods and not one more', () => {
+    it('exposes exactly twenty-four methods and not one more', () => {
       const actual: readonly string[] = Object.getOwnPropertyNames(UserService.prototype).sort();
 
       expect(actual)
         .withContext('a method added without a specification fails here first')
         .toEqual([...PROTOTYPE_MEMBERS]);
-      expect(actual.filter((name) => name !== 'constructor').length).toBe(19);
+      expect(actual.filter((name) => name !== 'constructor').length).toBe(24);
     });
 
     it('exposes no reordering helper, because a position is a field on a replacement', () => {
@@ -2316,6 +2996,45 @@ describe('UserService', () => {
         ACCOUNT_POLICY,
         { data: { ...ACCOUNT_POLICY_BODY, redirectAfterLogin: '5' }, meta: null },
         'response.data.redirectAfterLogin',
+      );
+    });
+
+    it('refuses a policy-write report that omits the rewrite count', () => {
+      // The count is REQUIRED rather than optional, and this is why. A stale server - one that
+      // still answers this write with an empty `204` - would satisfy an optional member as
+      // `undefined`, and the screen would then report "no accounts were rewritten" when what
+      // actually happened is that it cannot tell. Refusing the shape says so.
+      expectViolationAt(
+        service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
+        ACCOUNT_POLICY,
+        { data: { displayNameFormatChanged: true }, meta: null },
+        'response.data.displayNamesRewritten',
+      );
+    });
+
+    it('refuses a policy-write report whose rewrite count arrived as text', () => {
+      expectViolationAt(
+        service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
+        ACCOUNT_POLICY,
+        { data: { displayNameFormatChanged: false, displayNamesRewritten: '3' }, meta: null },
+        'response.data.displayNamesRewritten',
+      );
+    });
+
+    it('refuses an account row that omits the deletion capability', () => {
+      // The capability decides whether a destructive command is OFFERED. An optional member
+      // would arrive as `undefined`, read as falsy, and silently withhold the command from
+      // every row on a server that had simply not been upgraded - a listing on which nothing
+      // can be removed and no failure anywhere to explain it.
+      const malformed: Record<string, unknown> = { ...USER_LIST_ITEM };
+
+      delete malformed['canDelete'];
+
+      expectViolationAt(
+        service.list({ pageIndex: 0, pageSize: 25 }),
+        LISTING_WITH_PAGING,
+        { ...USER_PAGE, items: [malformed] },
+        'response.items[0].canDelete',
       );
     });
 

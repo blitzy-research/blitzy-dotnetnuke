@@ -71,20 +71,38 @@
  * role renamed on the editor left this heading showing the old name. One owner removes the
  * possibility rather than papering over it.
  *
- * The listing is read at the COMPLETE scope, `RoleStore.loadAllAssignments`, because the
- * legacy grid was unpaged — `securityroles.ascx:L56` declares no `AllowPaging`, no pager
- * style and `enableviewstate="false"` — so a first page would put an eleventh member's
- * Delete command out of reach. The store follows every page the server reports and
- * remembers that the caller asked for the whole set, so the re-read it performs after each
- * write reproduces the whole set rather than collapsing it to a page.
+ * The listing is read ONE PAGE AT A TIME, `RoleStore.loadAssignments`, and the shared pager
+ * reaches the rest. The legacy grid declared no pager — `securityroles.ascx:L56` carries no
+ * `AllowPaging`, no pager style and `enableviewstate="false"` — and a first port reproduced
+ * that literally, by reading every page the server reported and rendering the union: an
+ * unbounded read of a listing the endpoint counts and windows per request, and an unbounded
+ * render of whatever came back. One page is held instead. Every membership stays addressable
+ * because the pager reaches it, so the Delete command on an eleventh member is one click away
+ * rather than out of reach, and the pager is drawn on the same predicate as every other
+ * listing here — only when more memberships exist than fit on one page — which means a role
+ * small enough to have fitted in the legacy grid renders with no pager at all and looks
+ * exactly as it did.
  *
- * The one transport this screen still calls directly is the ACCOUNT LOOKUP behind the search
- * field, `UserService.list`. That is deliberate and is not the defect above: the matches it
- * returns are a transient candidate list held nowhere else, owned by nothing else and
- * discarded when the field is cleared, so there is no second copy to diverge from. Routing it
- * through the account store would instead make this screen mutate that store's shared search
- * term and page coordinate, which would move a sibling account listing under its own
- * operator — trading a copy that cannot diverge for state that genuinely can.
+ * The two questions the legacy screen answered by SCANNING that whole grid — what bounds to
+ * show for the account the operator chose, and whether to relabel the action 'Update User
+ * Role' — are answered by a keyed probe instead, `RoleStore.probeAssignment`. A scan of one
+ * page would answer "holds nothing" for an account whose row sits on another page, which the
+ * legacy screen never did; one narrow request, filtered to the chosen account and matched by
+ * identifier, reproduces the legacy answer without materialising the membership.
+ *
+ * The one transport this screen still calls directly is the ACCOUNT CANDIDATE LIST behind
+ * whichever account control the tenant asked for, `UserService.list`. That is deliberate and is
+ * not the defect above: the candidates it returns are a transient list held nowhere else, owned
+ * by nothing else and discarded when the choice is made, so there is no second copy to diverge
+ * from. Routing it through the account store would instead make this screen mutate that store's
+ * shared search term and page coordinate, which would move a sibling account listing under its
+ * own operator — trading a copy that cannot diverge for state that genuinely can.
+ *
+ * The tenant's ACCOUNT POLICY is the other way round, and comes from {@link UserStore} for
+ * exactly the same reason stated in reverse: the policy IS held elsewhere and IS owned elsewhere,
+ * so a private copy here could disagree with the screen that edits it. Reading it disturbs no
+ * coordinate another screen holds, which is what makes the two decisions consistent rather than
+ * arbitrary.
  *
  * ## How an outcome is observed
  *
@@ -116,7 +134,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
-import type { Subscription } from 'rxjs';
+import { EMPTY, count, expand, map, throwError, type Observable, type Subscription } from 'rxjs';
 import {
   FormControl,
   FormGroup,
@@ -126,7 +144,14 @@ import {
 } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 
-import { DEFAULT_PAGE_SIZE, toPagedResult } from '../../../core/models/paged-result.model';
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  toPagedResult,
+  type ApiMeta,
+  type PagedResponse,
+  type PagedResult,
+} from '../../../core/models/paged-result.model';
 import { isProblemDetails, type ProblemDetails } from '../../../core/models/problem-details.model';
 import type { Role, RoleAssignmentRequest, UserRole } from '../../../core/models/role.model';
 import type { UserListItem, UserListQuery } from '../../../core/models/user.model';
@@ -135,11 +160,15 @@ import {
   type NotificationSeverity,
 } from '../../../core/services/notification.service';
 import { UserService } from '../../../core/services/user.service';
+import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
+import { OperationGeneration } from '../../../core/utils/operation-generation.util';
 import {
   RoleStore,
   type RoleStoreFailure,
   type RoleStoreOperation,
 } from '../../../core/state/role.store';
+import { UserStore } from '../../../core/state/user.store';
 import {
   conflictMessage,
   fieldErrorMessages,
@@ -155,7 +184,9 @@ import {
 } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
+import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 
@@ -276,8 +307,89 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
    */
   noMatchingUsers: 'No accounts match that name.',
 
+  /**
+   * Standing context under the offered matches, shown only when MORE accounts match than are
+   * being offered. `{0}` is how many are offered, `{1}` the server's own count of the match set.
+   *
+   * It exists because the lookup examines every page of the match set rather than only the
+   * first, so the number of accounts it found and the number it can reasonably offer as buttons
+   * are now different numbers. Saying both is what keeps the shorter list from reading as the
+   * whole answer.
+   */
+  lookupPartial:
+    'Showing {0} of {1} matching accounts. Type more of the name to narrow the list.',
+
+  /**
+   * The same context for a lookup that DID find the exact name, on the same two substitutions.
+   *
+   * Separate wording rather than one sentence for both, because the narrowing advice is wrong here:
+   * the operator typed the whole name and got it, so telling them to type more of it would be
+   * advice against an outcome that already succeeded. What they still need to know is that the
+   * shorter list is not the whole match set.
+   */
+  lookupExact: 'The exact match is offered first. Showing {0} of {1} matching accounts.',
+
+  /**
+   * Shown when the walk stopped at its own page ceiling without finding an exact match. `{0}` is
+   * how many accounts it examined, `{1}` the server's own count of the match set.
+   */
+  lookupCurtailed:
+    'The search examined {0} of {1} matching accounts without finding an exact match and stopped ' +
+    'there. Type more of the name to narrow it.',
+
+  /** The label on the drop-down the tenant's account policy can ask for instead of the name box. */
+  userChoiceLabel: 'User Name',
+
+  /**
+   * MIGRATION: `plUsers.HelpText` belongs to the name box and says 'Enter The User Name and
+   * click Validate to confirm', which is untrue of the drop-down the other policy value selects.
+   * The legacy screen carried one help string for both controls because both shared one label
+   * cell (`securityroles.ascx:L14`); this states what the drop-down actually does.
+   */
+  userChoiceHelp: 'Choose an account from every account in this site.',
+
+  /** The unselected entry of that drop-down. */
+  userChoicePrompt: '<None Specified>',
+
+  /** Shown while the tenant's account policy is being read, before either control is offered. */
+  accountPolicyLoading: 'Reading how this site asks you to choose an account…',
+
+  /**
+   * Shown while a lookup is walking pages.
+   *
+   * ⚠ THE LOOKUP'S OWN, distinct from {@link accountChoicesLoading}. A lookup searches for a name
+   * and the drop-down walk lists every account; one wording for both would tell an operator who
+   * typed a name that the site was being enumerated.
+   */
+  lookupLoading: 'Searching for matching accounts…',
+
+  /**
+   * Shown when the account policy could not be read, so the name box is offered without knowing
+   * which control the tenant prefers.
+   */
+  accountPolicyUnavailable:
+    "This site's preferred account selector could not be read, so the name box is offered.",
+
+  /**
+   * Shown when the tenant asked for the drop-down but the complete account list could not be
+   * assembled, so the name box is offered in its place.
+   *
+   * The name box needs no complete list, which is why this degrades rather than fails: the
+   * capability the operator loses is browsing, and the capability they keep — naming the account
+   * — is the one the legacy screen's own help text described.
+   */
+  accountChoicesUnavailable:
+    'Every account in this site could not be listed, so the name box is offered instead.',
+
+  /** Shown while the complete account list for the drop-down is being assembled. */
+  accountChoicesLoading: 'Listing every account in this site…',
+
+  /** Shown when the tenant asked for the drop-down and the site holds no accounts to offer. */
+  accountChoicesEmpty: 'This site holds no accounts to choose from.',
+
   /** Shown when the route did not carry a usable role identifier. */
   roleUnresolved: 'No security role was addressed, so no memberships can be shown.',
+
 } as const);
 
 /**
@@ -470,8 +582,172 @@ const NO_DATE = '';
 /** Calendar year of the legacy date sentinel, which is data to be ignored and never a date. */
 const SENTINEL_YEAR = 1;
 
-/** How many accounts one lookup returns before the operator is asked to narrow the name. */
-const USER_LOOKUP_PAGE_SIZE = DEFAULT_PAGE_SIZE;
+/**
+ * How many accounts one request of the lookup walk asks for.
+ *
+ * ⚠ THE SERVER'S OWN MAXIMUM, and it replaced the shared DEFAULT of ten. The account listing's
+ * paging validator refuses a larger page, so this is the widest legal request and it is what
+ * keeps the number of round trips the walk in {@link RoleAssignmentComponent.onUserSearch} has
+ * to make as low as the endpoint allows. It is NOT by itself the fix for that walk — see the
+ * note there.
+ */
+const USER_LOOKUP_PAGE_SIZE = MAX_PAGE_SIZE;
+
+/**
+ * How many matched accounts are offered as choices at once.
+ *
+ * A rendering bound rather than a search bound, and the distinction is what makes it honest.
+ * The walk examines every page the server reports until it finds the exact name or exhausts the
+ * match set; this limits only how many of the near matches become buttons, because a one-letter
+ * prefix in a large tenant legitimately matches thousands of accounts and offering thousands of
+ * buttons is not a choice anybody can make. Whenever it bites, the template says so and reports
+ * the server's own total — see {@link RoleAssignmentComponent.userLookupSummary}.
+ *
+ * An exact match is ALWAYS offered regardless of this bound, because it is the one result the
+ * legacy screen existed to produce.
+ */
+const USER_LOOKUP_DISPLAY_LIMIT = MAX_PAGE_SIZE;
+
+/**
+ * The hard ceiling on how many pages one account lookup will request.
+ *
+ * ⚠ DELIBERATELY MODEST, BECAUSE THE WALK IS A GUARANTEE RATHER THAN THE MECHANISM. The lookup
+ * asks the listing to order by login name, which — the filter being a literal prefix match — puts
+ * an exact match first among every account it can return, so the ordinary answer arrives in ONE
+ * request. The walk exists so that correctness does not *depend* on the server honouring that
+ * order, and it goes deep only for a term short enough to match thousands of accounts none of
+ * which is the name typed. At {@link USER_LOOKUP_PAGE_SIZE} accounts a page it still examines two
+ * thousand of them, which is far past the point at which the operator is better served by typing
+ * more of the name — and far cheaper than a ceiling generous enough to make a one-character search
+ * cost hundreds of round trips.
+ *
+ * ⚠ REACHING IT DOES NOT PRODUCE A REFUSAL, and that asymmetry with the store's walks is
+ * deliberate. Those walks answer "every module" and "every membership", where a partial answer
+ * masquerading as complete is the defect; this one answers "does this name exist", where the
+ * matches already examined are genuinely useful and the operator's next move — typing more of
+ * the name — is both obvious and offered. The template states that the search was cut short
+ * rather than pretending it was exhaustive.
+ */
+const MAX_USER_LOOKUP_PAGES = 20;
+
+/**
+ * The hard ceiling on how many pages the complete-account-list walk will request.
+ *
+ * Unlike {@link MAX_USER_LOOKUP_PAGES}, reaching this one is a REFUSAL — see
+ * {@link RoleAssignmentComponent.walkAllAccounts} for why the two differ. At
+ * {@link USER_LOOKUP_PAGE_SIZE} accounts a page it accommodates a hundred thousand accounts,
+ * which is two orders of magnitude past the thousand-account threshold at which the legacy code
+ * itself stopped offering this drop-down (`UserModuleBase.vb:L178-L186`).
+ */
+const MAX_ACCOUNT_CHOICE_PAGES = 1000;
+
+/**
+ * How the tenant's account policy says this screen should let an operator pick an account.
+ *
+ * MIGRATION: this is `Security_UsersControl`, read at `SecurityRoles.ascx.vb:L133-L136` through
+ * `UserModuleBase.GetSetting(PortalId, "Security_UsersControl")` and acted on at `:L202-L221`,
+ * where `UsersControl.Combo` bound `cboUsers` to the tenant's whole account listing and hid the
+ * text box, and the other value did the reverse. `:L106-L109` then read the chosen account from
+ * whichever control was live. The two numeric values are the legacy enumeration's own and are
+ * the values the settings contract carries, so they are preserved rather than renamed.
+ */
+const USERS_CONTROL = Object.freeze({
+  /** A drop-down list of every account in the tenant. `UsersControl.Combo`. */
+  combo: 0,
+
+  /** A name box with a lookup. `UsersControl.TextBox`. */
+  textBox: 1,
+} as const);
+
+/** Which account-selection control this screen is presenting. */
+type UsersControlMode = 'combo' | 'lookup';
+
+/** Why an account lookup stopped walking pages. */
+type UserLookupCompletion =
+  /** Every account the server said matches was examined. */
+  | 'complete'
+  /** The exact name was found, so there was nothing left worth examining. */
+  | 'exact'
+  /** {@link MAX_USER_LOOKUP_PAGES} was reached first. */
+  | 'curtailed';
+
+/**
+ * What one completed account lookup found.
+ *
+ * Carried as one value rather than as three separate signals so the matches, the counts and the
+ * reason the walk stopped are published together and cannot describe different lookups.
+ */
+interface UserLookupOutcome {
+  /** The accounts offered as choices — already limited to {@link USER_LOOKUP_DISPLAY_LIMIT}. */
+  readonly matches: readonly UserListItem[];
+
+  /** How many accounts the walk examined, which is at least `matches.length`. */
+  readonly examined: number;
+
+  /** The server's own count of the whole match set. */
+  readonly reportedTotal: number;
+
+  /** Why the walk stopped. */
+  readonly completion: UserLookupCompletion;
+}
+
+/** An account lookup that found nothing, for the cleared and failed states. */
+const NO_USER_LOOKUP: UserLookupOutcome = Object.freeze({
+  matches: Object.freeze([]) as readonly UserListItem[],
+  examined: 0,
+  reportedTotal: 0,
+  completion: 'complete',
+});
+
+/**
+ * Chooses which of a lookup's matches become buttons, keeping the exact one whatever else goes.
+ *
+ * The head of the set is offered, because the listing returns matches in the server's own order
+ * and the nearest prefixes come first. THE EXACT MATCH IS HOISTED TO THE FRONT when it falls
+ * outside that head: the walk stops on the page that holds it, so a name found on the fourth page
+ * of a large match set would otherwise be examined and then dropped from the very list it ended
+ * the search — which would reproduce the unreachable-account defect one layer higher up.
+ *
+ * @param collected Every account the walk examined, in the order the server supplied them.
+ * @param isExact Whether one account carries exactly the name that was searched for.
+ * @returns The accounts to offer, never more than {@link USER_LOOKUP_DISPLAY_LIMIT}.
+ */
+function offerableMatches(
+  collected: readonly UserListItem[],
+  isExact: (candidate: UserListItem) => boolean,
+): readonly UserListItem[] {
+  if (collected.length <= USER_LOOKUP_DISPLAY_LIMIT) {
+    return collected;
+  }
+
+  const head = collected.slice(0, USER_LOOKUP_DISPLAY_LIMIT);
+  if (head.some(isExact)) {
+    return head;
+  }
+
+  const exact = collected.find(isExact);
+  if (exact === undefined) {
+    return head;
+  }
+
+  return [exact, ...head.slice(0, USER_LOOKUP_DISPLAY_LIMIT - 1)];
+}
+
+/**
+ * The paging facts to report while no answer for the addressed role is in hand.
+ *
+ * Its applied size is NOUGHT, which is the value the shared pager treats as unresolved and
+ * declines to render for — so a screen that has not yet received a page shows no pager at all
+ * rather than one claiming a single empty page. The same envelope the paging contract returns
+ * for an empty result, restated here because this screen must publish something while the
+ * store's slice belongs to another role.
+ */
+const UNRESOLVED_PAGE_META: ApiMeta = Object.freeze({
+  totalCount: 0,
+  pageIndex: 0,
+  pageSize: 0,
+  totalPages: 0,
+});
 
 /**
  * The failure code a refused removal carries.
@@ -733,7 +1009,9 @@ function pairingKey(roleId: number, userId: number): string {
     ErrorBannerComponent,
     FormFieldComponent,
     SearchInputComponent,
+    LoadingSpinnerComponent,
     DataTableComponent,
+    PaginationComponent,
     ConfirmDialogComponent,
     DateDisplayPipe,
   ],
@@ -760,9 +1038,49 @@ export class RoleAssignmentComponent {
   // MIGRATION: 13. 'Security Role' column omitted because role-centric mode hid it; :L245.
   // MIGRATION: 14. no required validator on the account field; :L520-L521 was a guard clause.
   // MIGRATION: 15. silent blank on a failed lookup -> visible no-matches state; :L476-L488.
+  // MIGRATION: 16. unpaged grid -> one page plus the shared pager; securityroles.ascx:L56; see
+  // MIGRATION:     loadAssignments and pagerRequired.
+  // MIGRATION: 17. whole-set scans for the label and the prefill -> one keyed server probe;
+  // MIGRATION:     :L253, :L273-L303, :L656-L658; see selectUser and selectedMembership.
 
   private readonly store = inject(RoleStore);
   private readonly userService = inject(UserService);
+
+  /**
+   * The identity, read for ONE fact: which tenant the caller belongs to.
+   *
+   * Taken from the caller rather than from a route, because this screen addresses a role and names
+   * no portal.
+   */
+  private readonly auth = inject(AuthStore);
+
+  /**
+   * The tenant's own record, for the protected pairing this screen must not offer to remove.
+   *
+   * CORE state, injected as the account listing and the role editor both inject it. The store owns
+   * the request, de-duplicates it across screens, and discards one tenant's facts the moment
+   * another tenant is asked for.
+   */
+  private readonly portals = inject(PortalStore);
+
+  /**
+   * The owner of the tenant's account policy, which decides how an account is chosen here.
+   *
+   * ⚠ THE STORE RATHER THAN THE TRANSPORT, and that is this file's own rule applied rather than
+   * an inconsistency with the lookup beside it. The lookup calls the transport because its
+   * matches are "held nowhere else, owned by nothing else"; the account policy is held somewhere
+   * else and owned by something else — {@link UserStore} publishes it and the account-listing
+   * screen already reads it from there — so a second copy here is exactly the divergence this
+   * screen's header records having corrected for the role and its memberships.
+   *
+   * Reading it disturbs no coordinate another screen holds: `loadMembershipSettings` touches the
+   * policy slice and that store's failure slice, and never the account listing's search term, page
+   * coordinate or rows — which is the one objection that kept the lookup on the transport. Clearing
+   * the failure slice is the store's own contract for starting a read and costs nothing here, since
+   * only one routed screen is mounted at a time and the account listing re-records its own failures
+   * when it next reads.
+   */
+  private readonly accounts = inject(UserStore);
   private readonly notifications = inject(NotificationService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -786,9 +1104,38 @@ export class RoleAssignmentComponent {
    */
   private userLookupRequest: Subscription | null = null;
 
+  /**
+   * The complete-account-list walk in flight, or `null` when none is.
+   *
+   * Held for the same reason as {@link userLookupRequest}: a walk the screen has stopped waiting
+   * for is still a sequence of requests the tenant pays for, and its answer would repopulate a
+   * drop-down the policy may since have replaced with the name box.
+   */
+  private accountChoicesRequest: Subscription | null = null;
+
   /** The membership write this screen is waiting on, or `null` when none is outstanding. */
   private readonly awaitedWrite: WritableSignal<AwaitedAssignmentWrite | null> =
     signal<AwaitedAssignmentWrite | null>(null);
+
+  /**
+   * The identifier the store issued for {@link RoleAssignmentComponent.awaitedWrite}.
+   *
+   * Zero means "no write of ours is outstanding". That is safe rather than a sentinel collision: the
+   * store pre-increments, so the first identifier it ever issues is 1 and no real write holds 0.
+   */
+  private readonly awaitedWriteId: WritableSignal<number> = signal<number>(0);
+
+  /**
+   * The generation of the account lookup now wanted.
+   *
+   * ⚠ CANCELLATION ALONE IS NOT SUFFICIENT HERE, WHICH IS WHY THIS EXISTS ALONGSIDE THE HANDLE.
+   * Releasing the handle stops a superseded lookup being delivered, and it is the stronger fix where
+   * it applies — but the handle is released on two paths that are not "a newer lookup started": the
+   * box being emptied, and the addressed role changing. A response already scheduled to commit is not
+   * recalled by either, so the callback also asks whether the answer it is holding is still the answer
+   * to the question that was asked.
+   */
+  private readonly userLookupGeneration = new OperationGeneration();
 
   /**
    * The membership an outstanding removal addressed, so a refusal can be attributed to it.
@@ -811,6 +1158,26 @@ export class RoleAssignmentComponent {
     signal<DeferredNotice | null>(null);
 
   /**
+   * The account whose probe answer may still write the two date boxes, or `null`.
+   *
+   * A one-shot marker rather than a mode. The probe runs in two circumstances — the operator
+   * has just chosen an account, and a write has just settled — and only the FIRST of those may
+   * touch the form: `SecurityRoles.ascx.vb:L546` rebound the grid after a write and left the
+   * form alone, so an operator who left the expiry empty and let the server derive one saw an
+   * empty box afterwards, not the derived value. Writing the stored bounds back after a write
+   * would put a value the operator never typed into a box that a second submit would then send
+   * explicitly — a change to what gets STORED, not merely to what is shown.
+   *
+   * Held as the account's identifier and compared with `===`, because a probe answer that
+   * arrives after the operator has moved on to a different account must not prefill from it.
+   * Absence is `null`: account identifiers seed at one on this schema, but sibling tables seed
+   * at zero and minus one, so absence is never a number here.
+   */
+  private readonly awaitedPrefillUserId: WritableSignal<number | null> = signal<number | null>(
+    null,
+  );
+
+  /**
    * Whether a membership read is in flight that this screen has not yet reported on.
    *
    * A latch rather than a mirror. The listing flag falls once per read, and the deferred
@@ -821,11 +1188,35 @@ export class RoleAssignmentComponent {
 
   private readonly problemSignal: WritableSignal<ProblemDetails | null> =
     signal<ProblemDetails | null>(null);
-  private readonly userMatchesSignal: WritableSignal<readonly UserListItem[]> = signal<
-    readonly UserListItem[]
-  >([]);
+  /**
+   * What the last completed account lookup found.
+   *
+   * One value rather than several so the offered matches and the two counts beside them can never
+   * describe different lookups. See {@link UserLookupOutcome}.
+   */
+  private readonly userLookupSignal: WritableSignal<UserLookupOutcome> =
+    signal<UserLookupOutcome>(NO_USER_LOOKUP);
+
   private readonly userLookupLoadingSignal: WritableSignal<boolean> = signal(false);
   private readonly userLookupTermSignal: WritableSignal<string> = signal('');
+
+  /** Every account in the tenant, for the drop-down the account policy can ask for. */
+  private readonly accountChoicesSignal: WritableSignal<readonly UserListItem[]> = signal<
+    readonly UserListItem[]
+  >([]);
+
+  private readonly accountChoicesLoadingSignal: WritableSignal<boolean> = signal(false);
+
+  /**
+   * Whether the complete account list could NOT be assembled, so the drop-down cannot be offered.
+   *
+   * A refusal rather than a truncation, on the same terms the membership and module walks settled:
+   * a drop-down that claims to hold every account and silently holds some of them hides the
+   * accounts it dropped, and an operator cannot tell a missing account from an absent one. What is
+   * different here is the remedy — the name box needs no complete list and reaches any account by
+   * name, so the screen falls back to it and says so instead of failing outright.
+   */
+  private readonly accountChoicesFailedSignal: WritableSignal<boolean> = signal(false);
   private readonly selectedUserSignal: WritableSignal<UserListItem | null> =
     signal<UserListItem | null>(null);
   private readonly pendingRemovalSignal: WritableSignal<UserRole | null> = signal<UserRole | null>(
@@ -834,15 +1225,6 @@ export class RoleAssignmentComponent {
   private readonly protectedPairingsSignal: WritableSignal<ReadonlySet<string>> = signal<
     ReadonlySet<string>
   >(new Set<string>());
-  private readonly administratorUserIdSignal: WritableSignal<number | null> = signal<number | null>(
-    null,
-  );
-  private readonly administratorRoleIdSignal: WritableSignal<number | null> = signal<number | null>(
-    null,
-  );
-  private readonly registeredRoleIdSignal: WritableSignal<number | null> = signal<number | null>(
-    null,
-  );
 
   /**
    * The screen's typed form.
@@ -909,7 +1291,7 @@ export class RoleAssignmentComponent {
   public readonly roleLoading: Signal<boolean> = computed(() => this.awaitedRoleKey() !== null);
 
   /**
-   * Every membership of the addressed role, unpaged.
+   * The page of memberships on screen. Exactly one page is held; the pager reaches the rest.
    *
    * Gated on identity for the same reason as {@link role}: the store's assignment slice is
    * keyed by the role it was read for, and a slice read for another role is not this screen's
@@ -923,6 +1305,63 @@ export class RoleAssignmentComponent {
     }
 
     return this.store.assignmentItems();
+  });
+
+  /**
+   * The paging facts of the page in hand, gated on the addressed role.
+   *
+   * One gate for all three pager inputs, so they cannot disagree with each other or with the
+   * rows: a slice read for another role reports {@link UNRESOLVED_PAGE_META}, whose applied size
+   * of nought is what withholds the pager entirely until a real answer has landed.
+   */
+  private readonly assignmentsMeta: Signal<ApiMeta> = computed(() => {
+    const addressed = this.roleIdSignal();
+
+    if (addressed === null || this.store.assignmentsRoleId() !== addressed) {
+      return UNRESOLVED_PAGE_META;
+    }
+
+    return this.store.assignmentsMeta();
+  });
+
+  /**
+   * The page on screen, counted from nought, for the shared pager's `page` input.
+   *
+   * The index the SERVER reported is bound rather than the one this screen last asked for, so
+   * the pager can never claim to be on a page whose request failed. No arithmetic appears
+   * anywhere on this path: the pager's input and its output are both zero-based, as the wire
+   * is.
+   */
+  public readonly pageIndex: Signal<number> = computed(() => this.assignmentsMeta().pageIndex);
+
+  /**
+   * The page size in effect, for the shared pager's `pageSize` input.
+   *
+   * Also the server's own figure and deliberately not a constant declared here: the size that
+   * was applied is a fact about the answer in hand, and binding a local constant would make the
+   * pager compute a page count the server did not.
+   */
+  public readonly pageSize: Signal<number> = computed(() => this.assignmentsMeta().pageSize);
+
+  /** How many memberships the role has in total, for the shared pager's `totalCount` input. */
+  public readonly totalCount: Signal<number> = computed(() => this.assignmentsMeta().totalCount);
+
+  /**
+   * Whether the pager has anything to offer.
+   *
+   * The same predicate the rest of the workspace draws its pager on — more memberships exist
+   * than fit on one page — so a role with ten or fewer members renders exactly what the unpaged
+   * legacy grid rendered, with no pager in sight. This says whether the control has work to do;
+   * whether it is DRAWN is the template's decision and the control's own.
+   *
+   * The size is tested for a positive value first, because the slice starts at the empty
+   * envelope whose applied size is nought, and `0 < 0` would otherwise be the only thing
+   * standing between an unresolved page size and a pager bound to it.
+   */
+  public readonly pagerRequired: Signal<boolean> = computed(() => {
+    const size = this.pageSize();
+
+    return size > 0 && size < this.totalCount();
   });
 
   /**
@@ -953,15 +1392,149 @@ export class RoleAssignmentComponent {
   /** The last failure as a problem document, for the shared banner's `problem` input. */
   public readonly problem: Signal<ProblemDetails | null> = this.problemSignal.asReadonly();
 
-  /** The accounts the current lookup matched. */
-  public readonly userMatches: Signal<readonly UserListItem[]> =
-    this.userMatchesSignal.asReadonly();
+  /**
+   * The accounts the current lookup offers as choices.
+   *
+   * Not every account it matched: see {@link USER_LOOKUP_DISPLAY_LIMIT}, and
+   * {@link userLookupSummary} for the sentence that reports the difference whenever there is one.
+   */
+  public readonly userMatches: Signal<readonly UserListItem[]> = computed(
+    () => this.userLookupSignal().matches,
+  );
 
   /** Whether an account lookup is in flight. */
   public readonly userLookupLoading: Signal<boolean> = this.userLookupLoadingSignal.asReadonly();
 
+  /**
+   * The sentence describing a lookup whose match set is larger than what is offered, or `null`.
+   *
+   * `null` in the ordinary case, where every matching account is a button and there is nothing to
+   * explain. It reports the server's own count rather than a count of what is displayed, because
+   * the whole point of saying anything is that the two differ.
+   */
+  public readonly userLookupSummary: Signal<string | null> = computed(() => {
+    const outcome = this.userLookupSignal();
+    if (outcome.matches.length === 0) {
+      return null;
+    }
+
+    // A server that under-reports its own total would otherwise produce a sentence claiming fewer
+    // accounts exist than were examined. The larger of the two figures is the only defensible one.
+    const total = Math.max(outcome.reportedTotal, outcome.examined);
+
+    if (outcome.completion === 'curtailed') {
+      return ROLE_ASSIGNMENT_TEXT.lookupCurtailed.replace('{0}', String(outcome.examined)).replace(
+        '{1}',
+        String(total),
+      );
+    }
+
+    if (outcome.matches.length >= total) {
+      return null;
+    }
+
+    const template =
+      outcome.completion === 'exact'
+        ? ROLE_ASSIGNMENT_TEXT.lookupExact
+        : ROLE_ASSIGNMENT_TEXT.lookupPartial;
+
+    return template.replace('{0}', String(outcome.matches.length)).replace('{1}', String(total));
+  });
+
+  /**
+   * Which account-selection control the tenant's policy asks this screen to present.
+   *
+   * MIGRATION: this is `Security_UsersControl`, acted on at `SecurityRoles.ascx.vb:L202-L221`.
+   * The legacy screen resolved it once during page load and rendered exactly one of the two
+   * controls, hiding the other; the same holds here, and {@link accountPolicyPending} is what
+   * keeps a control from being offered before the policy is known and then swapped underneath the
+   * operator.
+   *
+   * The name box is the answer whenever the drop-down cannot be honoured — an unread policy, or a
+   * complete account list that could not be assembled — because it is the affordance that needs no
+   * tenant-wide read, and it is the one the legacy help text described.
+   */
+  public readonly usersControlMode: Signal<UsersControlMode> = computed(() => {
+    if (this.accountChoicesFailedSignal()) {
+      return 'lookup';
+    }
+
+    const settings = this.accounts.membershipSettings();
+    if (settings === null) {
+      return 'lookup';
+    }
+
+    return settings.securityUsersControl === USERS_CONTROL.combo ? 'combo' : 'lookup';
+  });
+
+  /**
+   * Whether the account policy has not yet resolved, so neither control should be offered.
+   *
+   * The legacy screen never had this state — it decided before it rendered — and reproducing that
+   * means holding the field rather than guessing and correcting.
+   */
+  public readonly accountPolicyPending: Signal<boolean> = computed(
+    () => this.accounts.membershipSettings() === null && this.accounts.membershipSettingsLoading(),
+  );
+
+  /** Whether the account policy could not be read at all, so the template can say why. */
+  public readonly accountPolicyUnavailable: Signal<boolean> = computed(
+    () =>
+      this.accounts.membershipSettings() === null &&
+      this.accounts.membershipSettingsLoading() === false,
+  );
+
+  /** Every account in the tenant, for the drop-down. Empty in every other mode. */
+  public readonly accountChoices: Signal<readonly UserListItem[]> =
+    this.accountChoicesSignal.asReadonly();
+
+  /** Whether the complete account list is being assembled. */
+  public readonly accountChoicesLoading: Signal<boolean> =
+    this.accountChoicesLoadingSignal.asReadonly();
+
+  /** Whether the drop-down was asked for but could not be built. See {@link usersControlMode}. */
+  public readonly accountChoicesUnavailable: Signal<boolean> =
+    this.accountChoicesFailedSignal.asReadonly();
+
+  /** Whether the drop-down resolved and the tenant simply holds no accounts. */
+  public readonly accountChoicesEmpty: Signal<boolean> = computed(
+    () =>
+      this.usersControlMode() === 'combo' &&
+      this.accountChoicesLoadingSignal() === false &&
+      this.accountChoicesSignal().length === 0,
+  );
+
   /** The account chosen for the next write, or `null` when none has been chosen. */
   public readonly selectedUser: Signal<UserListItem | null> = this.selectedUserSignal.asReadonly();
+
+  /**
+   * The chosen account's existing membership of the addressed role, or `null` when none is
+   * known.
+   *
+   * `null` covers three cases this screen treats identically, because the legacy screen did:
+   * no account is chosen, the account holds no membership, and the probe could not settle the
+   * question. All three show empty bounds and the 'Add User to Role' label — the state the
+   * legacy grid scan produced when no row matched.
+   *
+   * Gated on the store's probe KEY, so an answer about another pairing can never be read as
+   * this one's. Both halves of the key are compared with `===` because zero and minus one are
+   * legitimate identifiers on this schema.
+   */
+  public readonly selectedMembership: Signal<UserRole | null> = computed(() => {
+    const addressed = this.roleIdSignal();
+    const chosen = this.selectedUserSignal();
+    const key = this.store.probedAssignmentKey();
+
+    if (addressed === null || chosen === null || key === null) {
+      return null;
+    }
+
+    if (key.roleId !== addressed || key.userId !== chosen.userId) {
+      return null;
+    }
+
+    return this.store.probedAssignment();
+  });
 
   /** The membership awaiting confirmation, or `null` when no dialogue is open. */
   public readonly pendingRemoval: Signal<UserRole | null> = this.pendingRemovalSignal.asReadonly();
@@ -1034,13 +1607,19 @@ export class RoleAssignmentComponent {
    * is false here, so `:L651-L653` was dead code on this screen; `:L656` tested the ACCOUNT
    * identifier, which is true here, and `:L657-L658` is the branch that ran — it relabelled
    * the action when a grid row's account matched the chosen one. That is reproduced exactly.
+   *
+   * MIGRATION: the fact comes from the KEYED PROBE and never from the rows on screen. The
+   * legacy scan covered every membership because its grid was unpaged; a scan of one page would
+   * relabel for an account on this page and not for the same account on the next, which is a
+   * different answer from the legacy one. See {@link RoleAssignmentComponent.selectedMembership}.
    */
   public readonly actionLabel: Signal<string> = computed(() => {
     const chosen = this.formStateSignal().userId;
     if (chosen === null) {
       return ROLE_ASSIGNMENT_TEXT.addUser;
     }
-    const holdsRole = this.assignments().some((row) => row.userId === chosen);
+    const membership = this.selectedMembership();
+    const holdsRole = membership !== null && membership.userId === chosen;
     return holdsRole ? ROLE_ASSIGNMENT_TEXT.updateUserRole : ROLE_ASSIGNMENT_TEXT.addUser;
   });
 
@@ -1054,7 +1633,7 @@ export class RoleAssignmentComponent {
     () =>
       this.userLookupTermSignal().length > 0 &&
       this.userLookupLoadingSignal() === false &&
-      this.userMatchesSignal().length === 0,
+      this.userLookupSignal().matches.length === 0,
   );
 
   /** Whether the route addressed a role at all, so the template can explain its absence. */
@@ -1228,14 +1807,26 @@ export class RoleAssignmentComponent {
   @Input()
   public set roleId(value: number | string | null | undefined) {
     const resolved = parseRouteIdentifier(value);
-    if (resolved === this.roleIdSignal()) {
+    const previous = this.roleIdSignal();
+    if (resolved === previous) {
       return;
     }
     this.roleIdSignal.set(resolved);
     this.resetForRole();
     if (resolved === null) {
+      // The route stopped naming a role, so this screen is no longer looking at any listing. Said
+      // before returning, because the early return below skips the reads and would otherwise leave
+      // the store believing the previous role is still on screen.
+      if (previous !== null) {
+        this.store.closeAssignmentsView(previous);
+      }
       return;
     }
+    // ⚠ ANNOUNCED BEFORE THE READS, AND ON EVERY CHANGE OF ROLE. The store refuses to refresh a
+    // membership listing that is not the one on screen, and it can only know which that is because
+    // this screen tells it. Announcing the new role is the whole of what a reused instance owes:
+    // `open` replaces `open`, and no close is due because the screen never left.
+    this.store.openAssignmentsView(resolved);
     this.loadRole(resolved);
     this.loadAssignments(resolved, null);
   }
@@ -1244,48 +1835,122 @@ export class RoleAssignmentComponent {
     return this.roleIdSignal();
   }
 
-  /**
-   * The tenant's designated administrator account, when the caller knows it.
+  /*
+   * THE TENANT'S PROTECTED PAIRING IS READ, NOT SUPPLIED.
    *
-   * Supplied rather than derived because the tenant's settings are not part of this screen's
-   * contract. When it is not supplied the row command is offered and the server refuses the
-   * write, which is the same outcome by a different route — see {@link canRemove}.
+   * ⚠ THESE WERE THREE OPTIONAL INPUTS THAT NOTHING SUPPLIED, AND THAT IS WHY THEY ARE GONE. They
+   * were declared "supplied rather than derived because the tenant's settings are not part of this
+   * screen's contract", with the documented consequence that "when it is not supplied the row
+   * command is offered and the server refuses the write, which is the same outcome by a different
+   * route". No route in `role.routes.ts` and no parent template ever supplied one, so the guard
+   * shipped permanently disarmed — and a refusal is NOT the same outcome by a different route. It
+   * invites the operator to confirm the removal of the membership that makes an account part of the
+   * tenant, waits, and then reports a failure the screen already had the facts to prevent.
+   *
+   * {@link PortalStore} is CORE state and every feature may inject it; this is not a reach into the
+   * portal FEATURE. `GET /api/v1/portals/{portalId}` is declared under the same
+   * `PortalAdministrator` policy this screen's own route declares, and the tenant key comes from
+   * the caller's identity rather than from a route segment — this screen addresses a ROLE, not a
+   * portal, and must never be able to protect one tenant's membership using another tenant's keys.
+   *
+   * ⚠ AN UNRESOLVED READ STILL DISARMS THE GUARD, which is the fail-safe direction here: until the
+   * record arrives each key is `null`, {@link canRemove} offers the command and the server's
+   * refusal governs — exactly the behaviour that shipped — rather than a capability being withheld
+   * from every row for the duration of a request.
    */
-  @Input()
-  public set administratorUserId(value: number | string | null | undefined) {
-    this.administratorUserIdSignal.set(parseRouteIdentifier(value));
-  }
 
-  public get administratorUserId(): number | null {
-    return this.administratorUserIdSignal();
-  }
+  /** The tenant's designated administrator account, or `null` until its record resolves. */
+  public readonly administratorUserId: Signal<number | null> = computed(() =>
+    this.portals.administratorUserId(),
+  );
 
   /** The tenant's administrator role, on the same terms as {@link administratorUserId}. */
-  @Input()
-  public set administratorRoleId(value: number | string | null | undefined) {
-    this.administratorRoleIdSignal.set(parseRouteIdentifier(value));
-  }
+  public readonly administratorRoleId: Signal<number | null> = computed(() =>
+    this.portals.administratorRoleId(),
+  );
 
-  public get administratorRoleId(): number | null {
-    return this.administratorRoleIdSignal();
-  }
-
-  /** The tenant's registered-users role, on the same terms as {@link administratorUserId}. */
-  @Input()
-  public set registeredRoleId(value: number | string | null | undefined) {
-    this.registeredRoleIdSignal.set(parseRouteIdentifier(value));
-  }
-
-  public get registeredRoleId(): number | null {
-    return this.registeredRoleIdSignal();
-  }
+  /**
+   * The tenant's registered-users role, on the same terms as {@link administratorUserId}.
+   *
+   * `Roles.RoleID` is `IDENTITY(0, 1)`, so nought is a real role key; every comparison against
+   * these values is an explicit equality test against `null` and never a truthiness test.
+   */
+  public readonly registeredRoleId: Signal<number | null> = computed(() =>
+    this.portals.registeredRoleId(),
+  );
 
   public constructor() {
+    // ⚠ THE STORE IS TOLD WHEN THIS SCREEN GOES, AND THAT IS NOT COSMETIC BOOKKEEPING. Both
+    // membership writes re-read the listing when they settle, and a write dispatched here can settle
+    // after the operator has moved on. The store refuses that re-read only if it knows the screen has
+    // gone; without this it would go on believing this role's grid is still in front of somebody,
+    // re-read a listing nobody is looking at, and clear the shared failure slot underneath whichever
+    // screen replaced it. Runtime validation reproduced exactly that, three times out of three, by
+    // enrolling an account and returning to the role listing before the write settled.
+    //
+    // The role is passed so the close is idempotent and order-independent — see
+    // `RoleStore.closeAssignmentsView`. Reading the signal here is safe: destruction hooks run
+    // outside change detection, and this only reads.
+    this.destroyRef.onDestroy(() => {
+      const roleId = this.roleIdSignal();
+
+      if (roleId !== null) {
+        this.store.closeAssignmentsView(roleId);
+      }
+    });
+
     // The control event stream is the only source that reports a TOUCHED change as well as a
     // value or status change, which is what the dynamic-display gating above needs. One
     // subscription keeps the mirrored snapshot current for every derived view.
     this.form.events.pipe(takeUntilDestroyed()).subscribe(() => {
       this.formStateSignal.set(this.readFormState());
+    });
+
+    // The tenant's own record, for the protected pairing. Read from the CALLER'S identity and never
+    // from a route, and idempotent in the store — several screens asking on initialisation issue one
+    // request between them. Presence is tested explicitly because `Portals.PortalID` is
+    // `IDENTITY(-1, 1)`, so -1 and 0 are both real tenants and a truthiness test would silently
+    // skip the request for either.
+    const portalId: number | undefined = this.auth.currentUser()?.portalId;
+
+    if (portalId !== undefined) {
+      this.portals.loadCurrentPortalContext(portalId);
+    }
+
+    // ACCOUNT POLICY. Which control this screen offers for choosing an account is the tenant's
+    // decision, not this screen's, so the policy is read before either control is rendered -
+    // reproducing `SecurityRoles.ascx.vb:L202-L221`, which resolved `Security_UsersControl` during
+    // page load and rendered exactly one of the two.
+    //
+    // Read through the store rather than the transport, and read UNCONDITIONALLY rather than only
+    // when absent: the store owns the policy and a screen cannot tell a policy read from this
+    // session apart from one cached before a setting was changed elsewhere. A policy already in the
+    // slice is still shown at once, so the refresh costs the operator no wait.
+    this.accounts.loadMembershipSettings();
+
+    // COMPLETE ACCOUNT LIST. Assembled only when the policy actually asks for the drop-down, which
+    // is what keeps a tenant that uses the name box from paying for a walk of every account it
+    // holds. The mode is derived, so this fires when the policy arrives rather than on a guess, and
+    // the emptiness test is what makes it fire ONCE rather than on every unrelated notification -
+    // a re-entry after a refusal would otherwise loop, because a refusal leaves the list empty.
+    effect(() => {
+      const mode = this.usersControlMode();
+
+      untracked(() => {
+        if (mode !== 'combo') {
+          return;
+        }
+
+        if (
+          this.accountChoicesSignal().length > 0 ||
+          this.accountChoicesLoadingSignal() ||
+          this.accountChoicesFailedSignal()
+        ) {
+          return;
+        }
+
+        this.loadAccountChoices();
+      });
     });
 
     // ROLE READ BRIDGE. The store reports a read by settling its flag, so the outcome is
@@ -1311,6 +1976,37 @@ export class RoleAssignmentComponent {
         if (failure !== null && failure.operation === 'loadRole') {
           this.raise(this.failureNoticeFor(failure));
         }
+      });
+    });
+
+    // MEMBERSHIP PROBE BRIDGE. The probe answers the two questions the legacy grid scan answered,
+    // and only ONE of its two callers may write the form. The marker names the account whose
+    // answer is allowed to prefill, so the probe issued after a write refreshes the label and
+    // leaves the boxes alone — the ordering `SecurityRoles.ascx.vb:L546` fixed.
+    //
+    // The answer is read through the identity-gated projection rather than from the store
+    // directly, so an answer about another pairing cannot prefill from a row that is not the
+    // chosen account's. A probe that failed publishes no membership, which prefills empty bounds:
+    // the state the legacy screen showed for an account it found no row for.
+    effect(() => {
+      const awaited = this.awaitedPrefillUserId();
+      const inFlight = this.store.assignmentProbeLoading();
+      const membership = this.selectedMembership();
+
+      if (awaited === null || inFlight === true) {
+        return;
+      }
+
+      untracked(() => {
+        this.awaitedPrefillUserId.set(null);
+
+        const chosen = this.selectedUserSignal();
+
+        if (chosen === null || chosen.userId !== awaited) {
+          return;
+        }
+
+        this.applyProbeAnswer(membership);
       });
     });
 
@@ -1350,27 +2046,44 @@ export class RoleAssignmentComponent {
     // ours, the flag falling proves it settled, and the operation-matched failure proves which
     // way it went.
     //
-    // Success announces NOTHING and re-reads nothing. The legacy handler was silent on both
+    // Success announces NOTHING and re-reads no LISTING. The legacy handler was silent on both
     // writes — `SecurityRoles.ascx.vb:L546` rebound the grid and said nothing — and the store
-    // performs that re-read itself, so a second one here would race the first.
+    // performs that re-read itself, so a second one here would race the first. What IS re-asked
+    // is the keyed probe, because a write is exactly what can change whether the chosen account
+    // holds the role: the legacy rebind refreshed that fact as a side effect of rebuilding the
+    // grid it scanned, and with a paged grid the fact has its own request. The re-probe carries
+    // no prefill marker, so it moves the label and never the boxes.
     //
     // A refusal is the ordered path: the pairing is remembered against the row that was
     // refused, the listing is re-read, and the message is raised only once that read settles.
     effect(() => {
       const awaited = this.awaitedWrite();
-      const inFlight = this.store.saving();
-      const failure = this.store.failure();
+      const awaitedId = this.awaitedWriteId();
+      const settled = this.store.mutation();
 
-      if (awaited === null || inFlight === true) {
+      // ⚠ SETTLED ON THE IDENTIFIER, NOT ON THE AGGREGATE FLAG FALLING. The published result carries
+      // the identifier the store handed back at dispatch, so a result belonging to any other screen's
+      // write fails this comparison and is ignored — a total test that needs no knowledge of what else
+      // is in flight. The operation is asserted as well, which cannot disagree with the identifier but
+      // states the expectation the branches below rely on.
+      if (awaited === null || settled === null || settled.id !== awaitedId) {
         return;
       }
 
       untracked(() => {
         this.awaitedWrite.set(null);
+        this.awaitedWriteId.set(0);
         const target = this.outstandingRemoval();
         this.outstandingRemoval.set(null);
 
-        if (failure === null || failure.operation !== awaited) {
+        // The failure travels ON the settled result rather than being read from the store's shared
+        // slot, which a concurrent dispatch clears. `null` here means THIS write succeeded.
+        const failure = settled.failure;
+
+        if (failure === null || settled.operation !== awaited) {
+          // ⚠ ON SUCCESS ONLY. A refused write changed nothing, so re-asking the probe after one would
+          // spend a request to be told what the screen already knows.
+          this.reprobeSelectedMembership();
           return;
         }
 
@@ -1429,9 +2142,9 @@ export class RoleAssignmentComponent {
     if (this.protectedPairingsSignal().has(pairingKey(row.roleId, row.userId))) {
       return false;
     }
-    const administratorUserId = this.administratorUserIdSignal();
-    const administratorRoleId = this.administratorRoleIdSignal();
-    const registeredRoleId = this.registeredRoleIdSignal();
+    const administratorUserId = this.administratorUserId();
+    const administratorRoleId = this.administratorRoleId();
+    const registeredRoleId = this.registeredRoleId();
     const isDesignatedAdministrator =
       administratorUserId !== null &&
       administratorRoleId !== null &&
@@ -1454,6 +2167,36 @@ export class RoleAssignmentComponent {
    * The term is sent RAW. The listing matches on a prefix, so appending a wildcard would
    * search for the wildcard itself.
    *
+   * ## Why it walks pages instead of reading one
+   *
+   * ⚠ THE PREFIX MATCH SET IS UNBOUNDED AND A PAGE OF IT IS NOT THE ANSWER. This previously
+   * asked for page zero alone and published its items, which made an account reachable only when
+   * it happened to fall in the first page of everything sharing its prefix. In a tenant where a
+   * hundred accounts begin `sm`, `smith` was findable and `smithson` was not — and nothing on
+   * screen distinguished "no such account" from "further down a list you cannot see", because the
+   * no-matches state and a full first page look the same to an operator who typed the whole name.
+   * The account that could not be selected could not be enrolled in the role, which is the entire
+   * purpose of this screen.
+   *
+   * So the walk requests pages in sequence and stops at the FIRST of these:
+   *
+   * - a page containing the EXACT name, case-insensitively. This is the legacy capability
+   *   (`GetUserByName` at `SecurityRoles.ascx.vb:L480`) and once it is in hand nothing further can
+   *   improve the answer, so the walk ends there however many pages remain. Ordinarily this is the
+   *   FIRST page, because the request asks the listing to order by login name and the filter is a
+   *   literal prefix match — see the note on the request itself.
+   * - having examined as many accounts as the server says match. The server's own total, not a
+   *   short page — a short page is NOT treated as the end, for the reason the store's walks record.
+   * - an empty page, which can only mean the reported total will never be reached.
+   * - {@link MAX_USER_LOOKUP_PAGES}, which is reported rather than hidden.
+   *
+   * Sequential rather than fanned out, because the exact match usually arrives on the first page
+   * and every request after it would be work nobody needed; and because a prefix that matches
+   * thousands of accounts would otherwise open thousands of concurrent requests at once.
+   *
+   * The walk examines the whole match set; {@link USER_LOOKUP_DISPLAY_LIMIT} bounds how much of it
+   * becomes buttons, and {@link userLookupSummary} states both figures whenever they differ.
+   *
    * @param term The name fragment the operator typed.
    */
   public onUserSearch(term: string): void {
@@ -1462,34 +2205,54 @@ export class RoleAssignmentComponent {
 
     // The lookup this term replaces is ABANDONED before the next one starts, and also when the box
     // is emptied - a lookup nobody is waiting for is still a request the tenant pays for, and its
-    // answer would otherwise repopulate a list the operator has just cleared.
+    // answer would otherwise repopulate a list the operator has just cleared. With a walk rather
+    // than a single read this matters more than it did: an abandoned walk would otherwise keep
+    // requesting pages for a term the operator has already replaced.
     this.userLookupRequest?.unsubscribe();
     this.userLookupRequest = null;
 
+    // ⚠ THE PREVIOUS TERM'S RESULTS ARE DISCARDED HERE, NOT LEFT UNTIL THE NEW ONES ARRIVE, and the
+    // same goes for the banner. Superseding a term used to leave both in place: the matches for `a`
+    // stayed on screen for the whole of the lookup for `ann`, so the operator could read - and
+    // CHOOSE - an account that does not match what the box says, and a refusal from the previous
+    // lookup stayed visible beside a lookup that had not failed. Emptying them at dispatch means the
+    // screen only ever shows matches for the term it is displaying. The register holds the matches
+    // AND whether the bounded walk reached the row being looked for, so emptying it empties both.
+    this.userLookupSignal.set(NO_USER_LOOKUP);
+    this.problemSignal.set(null);
+
+    // The generation moves on every dispatch, INCLUDING the empty-box path below, so an answer
+    // already scheduled to commit cannot repopulate a list the operator has just cleared.
+    const generation = this.userLookupGeneration.begin();
+
     if (query.length === 0) {
       this.userLookupLoadingSignal.set(false);
-      this.userMatchesSignal.set([]);
+      this.userLookupSignal.set(NO_USER_LOOKUP);
       return;
     }
+
     this.userLookupLoadingSignal.set(true);
-    const request: UserListQuery = {
-      pageIndex: 0,
-      pageSize: USER_LOOKUP_PAGE_SIZE,
-      userName: query,
-    };
-    this.userLookupRequest = this.userService
-      .list(request)
+    this.userLookupRequest = this.walkUserLookup(query)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (page): void => {
+        next: (outcome: UserLookupOutcome): void => {
+          // Fenced as well as cancelled. See {@link RoleAssignmentComponent.userLookupGeneration}:
+          // the handle is released on paths that are not "a newer lookup started", and a response
+          // already scheduled to commit is not recalled by any of them.
+          if (this.userLookupGeneration.isCurrent(generation) === false) {
+            return;
+          }
+
           this.userLookupLoadingSignal.set(false);
-          // `UserService.list` already answers a decoded page, so the envelope needs no
-          // second unwrapping here.
-          this.userMatchesSignal.set(page.items);
+          this.userLookupSignal.set(outcome);
         },
         error: (error: unknown): void => {
+          if (this.userLookupGeneration.isCurrent(generation) === false) {
+            return;
+          }
+
           this.userLookupLoadingSignal.set(false);
-          this.userMatchesSignal.set([]);
+          this.userLookupSignal.set(NO_USER_LOOKUP);
           this.raise(this.failureNotice(error));
         },
       });
@@ -1515,17 +2278,71 @@ export class RoleAssignmentComponent {
    * same bound the legacy write path did. What is lost is only the SUGGESTION appearing in the
    * box before the write; what is stored is unchanged.
    *
+   * MIGRATION: the membership is ASKED FOR rather than looked up in the rows on screen, because
+   * the grid holds one page. The marker is set before the command so the answer this call
+   * produces is the one allowed to write the boxes; see
+   * {@link RoleAssignmentComponent.awaitedPrefillUserId}.
+   *
    * @param user The account the operator chose from the lookup.
    */
   public selectUser(user: UserListItem): void {
     this.selectedUserSignal.set(user);
     this.form.controls.userId.setValue(user.userId);
-    this.applyPrefill(user.userId);
+    this.formStateSignal.set(this.readFormState());
+
+    const roleId = this.roleIdSignal();
+
+    if (roleId === null) {
+      return;
+    }
+
+    this.awaitedPrefillUserId.set(user.userId);
+    this.store.probeAssignment(roleId, user.userId, user.username);
+  }
+
+  /**
+   * Chooses an account from the drop-down the tenant's account policy asked for.
+   *
+   * MIGRATION: this is `cboUsers`, read at `SecurityRoles.ascx.vb:L106-L109`. The legacy control
+   * carried `autopostback="True"` (`securityroles.ascx:L26`) so choosing an entry round-tripped the
+   * whole page to reach the prefill at `:L273-L303`; the prefill happens here without one.
+   *
+   * The raw value is matched rather than parsed, so no numeric coercion stands between the entry
+   * the operator chose and the account it denotes — the empty prompt value simply matches nothing
+   * and clears the choice, which is what `<None Specified>` meant.
+   *
+   * The event is narrowed here rather than in the template. A template that reached through the
+   * event target would need the type-check escape hatch to do it, which would switch strict template
+   * checking off for that expression; narrowing in TypeScript keeps the check on and makes a
+   * non-select target return rather than throw.
+   *
+   * @param event The change event the drop-down raised.
+   */
+  public selectAccountChoice(event: Event): void {
+    const target: EventTarget | null = event.target;
+
+    if (!(target instanceof HTMLSelectElement)) {
+      return;
+    }
+
+    const chosen = this.accountChoicesSignal().find(
+      (candidate) => String(candidate.userId) === target.value,
+    );
+
+    if (chosen === undefined) {
+      this.clearSelectedUser();
+
+      return;
+    }
+
+    this.selectUser(chosen);
   }
 
   /** Forgets the chosen account and clears the bounds that were prefilled from it. */
   public clearSelectedUser(): void {
     this.selectedUserSignal.set(null);
+    this.awaitedPrefillUserId.set(null);
+    this.store.clearProbedAssignment();
     this.form.controls.userId.setValue(null);
     this.form.controls.effectiveDate.setValue(NO_DATE);
     this.form.controls.expiryDate.setValue(NO_DATE);
@@ -1570,7 +2387,11 @@ export class RoleAssignmentComponent {
     }
     this.problemSignal.set(null);
     this.awaitedWrite.set('assignUser');
-    this.store.assignUser(roleId, this.buildAssignmentRequest(roleId, userId));
+    // The identifier is captured from the command's own return value, so what this screen waits on is
+    // the very write it just dispatched and not merely "a write of this kind".
+    this.awaitedWriteId.set(
+      this.store.assignUser(roleId, this.buildAssignmentRequest(roleId, userId)),
+    );
   }
 
   /**
@@ -1630,7 +2451,7 @@ export class RoleAssignmentComponent {
     this.problemSignal.set(null);
     this.outstandingRemoval.set(target);
     this.awaitedWrite.set('removeAssignment');
-    this.store.removeAssignment(roleId, target.userId);
+    this.awaitedWriteId.set(this.store.removeAssignment(roleId, target.userId));
   }
 
   /** Clears the banner once the operator has read it. */
@@ -1647,6 +2468,29 @@ export class RoleAssignmentComponent {
     this.problemSignal.set(null);
     this.loadRole(roleId);
     this.loadAssignments(roleId, null);
+    this.reprobeSelectedMembership();
+  }
+
+  /**
+   * Moves the grid to another page of memberships.
+   *
+   * The index is passed through untouched: the shared pager reports a ZERO-BASED index and the
+   * listing takes one, so there is no base to convert between, and the pager only ever emits an
+   * index inside the range it was given. The store's read cancels whichever page read was in
+   * flight, so clicking through the pager cannot leave an earlier page's answer to land on top
+   * of a later one.
+   *
+   * The keyed probe is NOT re-asked: whether the chosen account holds the role does not depend
+   * on which page is on screen, which is the whole reason the fact has its own request.
+   *
+   * @param pageIndex The page to read, counted from nought.
+   */
+  public onPageChange(pageIndex: number): void {
+    if (this.roleIdSignal() === null || pageIndex === this.pageIndex()) {
+      return;
+    }
+
+    this.store.setAssignmentsPage(pageIndex);
   }
 
 
@@ -1685,26 +2529,263 @@ export class RoleAssignmentComponent {
   }
 
   /**
+   * Walks the account listing for one name until the exact account is found or the whole match
+   * set has been examined.
+   *
+   * The termination rules and the reasoning behind them are stated on
+   * {@link RoleAssignmentComponent.onUserSearch}; this is their implementation.
+   *
+   * ⚠ THE PAGES ARE JOINED IN PLACE inside the projector rather than by re-spreading an
+   * accumulator per page. Copying the whole accumulation on every page makes the join quadratic
+   * in the number of pages, which at this walk's ceiling would be millions of element copies for a
+   * result nobody would wait for. The array is never observable while it is being built: the
+   * outcome is composed once, after the walk completes.
+   *
+   * @param term The name the operator typed, already trimmed and known non-empty.
+   * @returns The completed lookup, emitted exactly once.
+   */
+  private walkUserLookup(term: string): Observable<UserLookupOutcome> {
+    const wanted = term.toLocaleLowerCase();
+    const collected: UserListItem[] = [];
+    let examined = 0;
+    let reportedTotal = 0;
+    let completion: UserLookupCompletion = 'complete';
+
+    // MIGRATION: the comparison is CASE-INSENSITIVE because the legacy one was. `GetUserByName`
+    // resolved through a SQL Server lookup under the database's own collation, which for a default
+    // installation does not distinguish case, so an operator who typed 'Admin' found 'admin'. A
+    // case-sensitive test here would refuse a name the legacy screen accepted.
+    const isExact = (candidate: UserListItem): boolean =>
+      candidate.username.toLocaleLowerCase() === wanted;
+
+    const requestPage = (pageIndex: number): Observable<PagedResponse<UserListItem>> => {
+      const request: UserListQuery = {
+        pageIndex,
+        pageSize: USER_LOOKUP_PAGE_SIZE,
+        userName: term,
+        // ⚠ THE ORDER IS WHAT MAKES THE COMMON CASE ONE REQUEST, and it is a guarantee rather
+        // than a heuristic. The filter is a literal PREFIX match, so every account this listing
+        // returns has `term` at the start of its login name; ascending by that name therefore puts
+        // the SHORTEST match first, and the shortest possible match is `term` itself. So when an
+        // account with exactly this name exists it is the first row of the first page, and the walk
+        // below stops there.
+        //
+        // Without it the listing orders by display name — which bears no relation to the login name
+        // being searched for — and an exact match could sit on any page of the set. That is the
+        // defect this walk exists to survive, and the ordering is what keeps surviving it cheap.
+        sortBy: 'Username',
+        sortDir: 'Ascending',
+      };
+
+      return this.userService.list(request);
+    };
+
+    return requestPage(0).pipe(
+      expand((response: PagedResponse<UserListItem>, index: number) => {
+        // `UserService.list` already answers a decoded page; this re-reads its framing rather than
+        // unwrapping an envelope, which is what makes the same projector safe for every page.
+        const page: PagedResult<UserListItem> = toPagedResult<UserListItem>(response);
+
+        collected.push(...page.items);
+        examined += page.items.length;
+        reportedTotal = page.meta.totalCount;
+
+        // The one ending that beats every other: the account the operator named is in hand, so no
+        // remaining page can improve the answer.
+        if (page.items.some(isExact)) {
+          completion = 'exact';
+
+          return EMPTY;
+        }
+
+        // The server's own total is what ends the walk. A SHORT PAGE IS NOT AN ENDING - a page
+        // shorter than requested is what a filtered listing produces mid-set, and treating it as
+        // the end is precisely how a truncated answer passes for a complete one.
+        if (examined >= page.meta.totalCount) {
+          completion = 'complete';
+
+          return EMPTY;
+        }
+
+        // An empty page cannot be followed by a fuller one, so the reported total will never be
+        // reached. There is nothing further to examine and nothing to refuse: what was gathered is
+        // every account the server was willing to supply for this name.
+        if (page.items.length === 0) {
+          completion = 'complete';
+
+          return EMPTY;
+        }
+
+        // `index` counts emissions of this walk, which began at page 0, so the page just handled is
+        // `index` and the next one is `index + 1`.
+        if (index + 1 >= MAX_USER_LOOKUP_PAGES) {
+          completion = 'curtailed';
+
+          return EMPTY;
+        }
+
+        return requestPage(index + 1);
+      }),
+      // Consumes every page and emits once at completion. The pages themselves are not the answer -
+      // the closure above holds it - so the emission is counted and discarded rather than retained.
+      count(),
+      map(
+        (): UserLookupOutcome => ({
+          matches: offerableMatches(collected, isExact),
+          examined,
+          reportedTotal,
+          completion,
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Assembles the complete account list the tenant's drop-down policy needs, or fails.
+   *
+   * The same termination rules as {@link walkUserLookup} minus the exact-match ending, which has
+   * no meaning when the whole list is the answer, and with the ceiling turned into a REFUSAL rather
+   * than a reported stop. That asymmetry is the point: a lookup that stops early still answers a
+   * question the operator asked, whereas a drop-down claiming to hold every account while holding
+   * some of them hides the accounts it dropped. {@link accountChoicesFailedSignal} records the
+   * refusal and the screen offers the name box instead.
+   *
+   * @returns Every account in the tenant, emitted once.
+   */
+  private walkAllAccounts(): Observable<readonly UserListItem[]> {
+    const collected: UserListItem[] = [];
+    let gathered = 0;
+
+    // NO SORT IS ASKED FOR, and that is the right request rather than an omission. The listing's own
+    // default orders by DISPLAY name, which is what the drop-down's entries are captioned with, so
+    // the entries read in the order they are shown. Asking for the login-name order the lookup uses
+    // would sort the list by a value the operator cannot see.
+    const requestPage = (pageIndex: number): Observable<PagedResponse<UserListItem>> =>
+      this.userService.list({ pageIndex, pageSize: USER_LOOKUP_PAGE_SIZE });
+
+    return requestPage(0).pipe(
+      expand((response: PagedResponse<UserListItem>, index: number) => {
+        const page: PagedResult<UserListItem> = toPagedResult<UserListItem>(response);
+
+        collected.push(...page.items);
+        gathered += page.items.length;
+
+        if (gathered >= page.meta.totalCount) {
+          return EMPTY;
+        }
+
+        if (page.items.length === 0) {
+          return throwError(
+            () =>
+              new Error(
+                'The accounts of this site could not be listed completely: the server reports ' +
+                  `${page.meta.totalCount} accounts but supplied ${gathered} and then answered ` +
+                  'with an empty page.',
+              ),
+          );
+        }
+
+        if (index + 1 >= MAX_ACCOUNT_CHOICE_PAGES) {
+          return throwError(
+            () =>
+              new Error(
+                'The accounts of this site could not be listed completely: the server reports ' +
+                  `${page.meta.totalCount} accounts and stopped supplying them after ` +
+                  `${MAX_ACCOUNT_CHOICE_PAGES} pages (${gathered} gathered).`,
+              ),
+          );
+        }
+
+        return requestPage(index + 1);
+      }),
+      count(),
+      map((): readonly UserListItem[] => collected),
+    );
+  }
+
+  /**
+   * Assembles the complete account list for the drop-down, abandoning any earlier attempt.
+   *
+   * A refusal is reported TWICE deliberately, and the two say different things: the banner names
+   * what went wrong, and the note beside the name box says what is offered in its place. Reporting
+   * only the second would leave a server fault looking like a policy choice.
+   */
+  private loadAccountChoices(): void {
+    this.accountChoicesRequest?.unsubscribe();
+    this.accountChoicesLoadingSignal.set(true);
+    this.accountChoicesFailedSignal.set(false);
+
+    this.accountChoicesRequest = this.walkAllAccounts()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (accounts: readonly UserListItem[]): void => {
+          this.accountChoicesLoadingSignal.set(false);
+          this.accountChoicesSignal.set(accounts);
+        },
+        error: (error: unknown): void => {
+          this.accountChoicesLoadingSignal.set(false);
+          this.accountChoicesSignal.set([]);
+          this.accountChoicesFailedSignal.set(true);
+          this.raise(this.failureNotice(error));
+        },
+      });
+  }
+
+  /**
    * Returns the screen to its initial state, which a change of addressed role requires.
    *
    * The role and the rows are NOT cleared here and do not need to be: both are derived from
    * the store gated on the addressed key, so they empty themselves the moment the key changes.
    * What is cleared is everything this screen owns outright — the outstanding markers, the
    * banner, the lookup, the confirmation and the form.
+   *
+   * THE ACCOUNT LIST AND THE ACCOUNT POLICY ARE DELIBERATELY KEPT. Both are tenant-scoped rather
+   * than role-scoped — the same accounts are selectable whichever role is addressed — so clearing
+   * them would re-walk every account in the site each time the operator moved between roles, for
+   * an identical answer.
+   *
+   * The lookup walk in flight is ABANDONED rather than merely ignored. Clearing the matches without
+   * ending the walk would leave it requesting pages for a role nobody is looking at, and its answer
+   * would land in a field belonging to a different role.
    */
   private resetForRole(): void {
     this.awaitedRoleKey.set(null);
     this.awaitedWrite.set(null);
+    this.awaitedWriteId.set(0);
+    this.awaitedPrefillUserId.set(null);
     this.outstandingRemoval.set(null);
     this.deferredNotice.set(null);
     this.assignmentsSettling.set(false);
     this.problemSignal.set(null);
-    this.userMatchesSignal.set([]);
+
+    // ⚠ THE LOOKUP IS RELEASED, NOT MERELY BLANKED, AND ITS GENERATION IS INVALIDATED.
+    //
+    // Clearing the signals without doing either was the defect. Because the route reuses one
+    // component instance, moving from role A to role B runs this method while a lookup started under
+    // role A may still be outstanding — and nothing here stopped it. The sequence was:
+    //
+    //     role A: operator types 'ann'                -> lookup A dispatched
+    //     operator navigates to role B                -> resetForRole blanks the matches
+    //     lookup A lands                              -> role A's matches rendered under role B
+    //
+    // The matches are then a live selection list: choosing one prefills the enrolment form from that
+    // account's membership of a DIFFERENT role, and submitting enrols it into role B with bounds read
+    // from role A. Both are done because they answer different questions — the handle stops the
+    // delivery, and the generation refuses a commit already scheduled, which no cancellation can
+    // recall.
+    this.userLookupRequest?.unsubscribe();
+    this.userLookupRequest = null;
+    this.userLookupGeneration.invalidate();
+
+    this.userLookupSignal.set(NO_USER_LOOKUP);
     this.userLookupLoadingSignal.set(false);
     this.userLookupTermSignal.set('');
     this.selectedUserSignal.set(null);
     this.pendingRemovalSignal.set(null);
     this.protectedPairingsSignal.set(new Set<string>());
+    // The probe's answer is about a pairing that included the role being left, so it is released
+    // rather than left to be gated out - and releasing it also abandons a probe still in flight.
+    this.store.clearProbedAssignment();
     this.form.reset();
     this.formStateSignal.set(this.readFormState());
   }
@@ -1723,13 +2804,16 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Asks the store for every membership of the addressed role, deferring one message until it
-   * has settled.
+   * Asks the store for ONE PAGE of the addressed role's memberships, deferring one message
+   * until it has settled.
    *
-   * MIGRATION: the grid is UNPAGED, as `securityroles.ascx:L56` declares it, so the COMPLETE
-   * scope is requested — `RoleStore.loadAllAssignments` follows every page the server reports
-   * and remembers the scope, so the re-read each write performs stays complete. Nothing here
-   * consumes the shared pager, because the legacy grid had none.
+   * MIGRATION: the grid IS paged and the legacy one was not. `securityroles.ascx:L56` declares
+   * no `AllowPaging` and no pager style, and a first port reproduced that by reading every page
+   * the server reported and rendering the union — an unbounded read of a listing that counts and
+   * windows per request. One page is read instead and the shared pager reaches the rest, so
+   * every membership is still addressable and no Delete command is out of reach. The store keeps
+   * the coordinate for a role it is already showing and returns to the first page on a change of
+   * role, so a refresh after a write leaves the operator on the window they were looking at.
    *
    * The notice is recorded before the command is issued, so the read that raises it is always
    * the read this call started. See {@link RoleAssignmentComponent.deferredNotice}.
@@ -1739,14 +2823,44 @@ export class RoleAssignmentComponent {
    */
   private loadAssignments(roleId: number, notice: DeferredNotice | null): void {
     this.deferredNotice.set(notice);
-    this.store.loadAllAssignments(roleId);
+    this.store.loadAssignments(roleId);
   }
 
-  /** Prefills the two bounds from the chosen account's existing membership, if it has one. */
-  private applyPrefill(userId: number): void {
-    const existing = this.assignments().find((row) => row.userId === userId);
-    const effective = existing === undefined ? NO_DATE : toCalendarDateValue(existing.effectiveDate);
-    const expiry = existing === undefined ? NO_DATE : toCalendarDateValue(existing.expiryDate);
+  /**
+   * Re-asks whether the chosen account holds the role, after a write may have changed it.
+   *
+   * MIGRATION: this refreshes the FACT and deliberately leaves the two date boxes alone — no
+   * prefill marker is set. `SecurityRoles.ascx.vb:L546` rebound the grid after a write and
+   * touched nothing else, so an operator who left the expiry empty and let the server derive one
+   * saw an empty box afterwards, not the derived value.
+   *
+   * Does nothing when there is no pairing to ask about, which is the ordinary case for a removal
+   * the operator performed without having chosen an account.
+   */
+  private reprobeSelectedMembership(): void {
+    const roleId = this.roleIdSignal();
+    const chosen = this.selectedUserSignal();
+
+    if (roleId === null || chosen === null) {
+      return;
+    }
+
+    this.store.probeAssignment(roleId, chosen.userId, chosen.username);
+  }
+
+  /**
+   * Prefills the two bounds from the probe's answer.
+   *
+   * Passing `null` is how "no membership is known" is expressed, and it produces exactly the
+   * state the legacy screen showed for an account with no row: both boxes empty and neither
+   * marked as visited, so no dynamic validator has anything to say about a value the operator
+   * never typed.
+   *
+   * @param membership The chosen account's membership of the addressed role, or `null`.
+   */
+  private applyProbeAnswer(membership: UserRole | null): void {
+    const effective = membership === null ? NO_DATE : toCalendarDateValue(membership.effectiveDate);
+    const expiry = membership === null ? NO_DATE : toCalendarDateValue(membership.expiryDate);
     this.form.controls.effectiveDate.setValue(effective);
     this.form.controls.expiryDate.setValue(expiry);
     this.form.controls.effectiveDate.markAsUntouched();
@@ -1782,8 +2896,8 @@ export class RoleAssignmentComponent {
    * @returns The body to send.
    */
   private buildAssignmentRequest(roleId: number, userId: number): RoleAssignmentRequest {
-    const administratorUserId = this.administratorUserIdSignal();
-    const administratorRoleId = this.administratorRoleIdSignal();
+    const administratorUserId = this.administratorUserId();
+    const administratorRoleId = this.administratorRoleId();
     const isDesignatedAdministrator =
       administratorUserId !== null &&
       administratorRoleId !== null &&

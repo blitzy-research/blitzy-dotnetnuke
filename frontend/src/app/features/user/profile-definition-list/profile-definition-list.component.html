@@ -60,7 +60,14 @@
   files and `role="alert"` in zero files, so the announcement is new behaviour and is stated as
   such rather than presented as parity.
 -->
-<app-error-banner [problem]="problem()" />
+<!--
+  Both inputs are bound, and they are ORDERED. A failure carrying a problem document shows the
+  server's own explanation; a failure carrying none — which is what a contract-violating `200`
+  produces, because the decoders run downstream of the interceptor — shows the store's authored
+  summary instead. Before the second input existed that class of failure rendered nothing at all and
+  the grid simply stayed empty with no diagnostic anywhere.
+-->
+<app-error-banner [problem]="problem()" [fallbackMessage]="readFailureSummary()" />
 
 @if (hasRows()) {
   <!--
@@ -209,6 +216,16 @@
       -->
       <div class="profile-definitions__form-grid">
         <!--
+          ⚠ THE MESSAGE MAP IS BOUND ONCE FOR THE WHOLE FORM, AND EVERY FIELD BELOW READS IT.
+
+          Each field needs its messages twice - for the shared field's `error` input and for the
+          control's own `aria-invalid` - so calling an accessor per binding meant fourteen calls per
+          change-detection pass, each allocating and re-normalising. The class derives the whole map
+          once per change; this names it once so a template read is a property read.
+        -->
+        @let messages = fieldMessages();
+
+        <!--
           0. PROPERTY NAME.
 
           ⚠ READ-ONLY WHILE EDITING (DL-12). `IsReadOnly(True)` sits on the member at L228, and
@@ -227,7 +244,7 @@
           [label]="fieldText.propertyName.label"
           for="profile-definition-name"
           [required]="true"
-          [error]="messagesFor('propertyName')"
+          [error]="messages.propertyName"
         >
           <input
             id="profile-definition-name"
@@ -237,7 +254,7 @@
             [attr.maxlength]="50"
             [attr.readonly]="isEditMode() ? '' : null"
             [attr.aria-required]="'true'"
-            [attr.aria-invalid]="messagesFor('propertyName').length === 0 ? null : 'true'"
+            [attr.aria-invalid]="messages.propertyName.length === 0 ? null : 'true'"
           />
           <span class="profile-definitions__form-hint">{{ fieldText.propertyName.help }}</span>
         </app-form-field>
@@ -268,7 +285,7 @@
           [label]="fieldText.dataType.label"
           for="profile-definition-data-type"
           [required]="true"
-          [error]="messagesFor('dataType')"
+          [error]="messages.dataType"
         >
           <input
             id="profile-definition-data-type"
@@ -277,7 +294,7 @@
             formControlName="dataType"
             [attr.readonly]="isEditMode() ? '' : null"
             [attr.aria-required]="'true'"
-            [attr.aria-invalid]="messagesFor('dataType').length === 0 ? null : 'true'"
+            [attr.aria-invalid]="messages.dataType.length === 0 ? null : 'true'"
           />
           <span class="profile-definitions__form-hint">{{ fieldText.dataType.help }}</span>
         </app-form-field>
@@ -287,7 +304,7 @@
           [label]="fieldText.propertyCategory.label"
           for="profile-definition-category"
           [required]="true"
-          [error]="messagesFor('propertyCategory')"
+          [error]="messages.propertyCategory"
         >
           <input
             id="profile-definition-category"
@@ -296,7 +313,7 @@
             autocomplete="off"
             [attr.maxlength]="50"
             [attr.aria-required]="'true'"
-            [attr.aria-invalid]="messagesFor('propertyCategory').length === 0 ? null : 'true'"
+            [attr.aria-invalid]="messages.propertyCategory.length === 0 ? null : 'true'"
           />
           <span class="profile-definitions__form-hint">
             {{ fieldText.propertyCategory.help }}
@@ -304,21 +321,31 @@
         </app-form-field>
 
         <!--
-          3. LENGTH. No `Required` attribute, and ZERO IS A REAL VALUE — it means "no declared
-          bound", which is why the control has no minimum and the component never tests the
-          number for truthiness.
+          3. LENGTH. The legacy definition carried no `Required` attribute, and ZERO IS A REAL VALUE —
+          it means "no declared bound", which is why the control has no minimum and the component
+          never tests the number for truthiness.
+
+          ⚠ MARKED REQUIRED ALL THE SAME, AND THE TWO FACTS ARE NOT IN CONFLICT. "Required" here
+          means A NUMBER MUST BE PRESENT, not "the number must be non-zero": the write contract
+          declares `Length` as a non-nullable integer, so an empty box is not a value the server can
+          accept. It previously had no rule at all, so clearing the box sent `null` to that
+          non-nullable integer and drew a `400` that named no field — the operator saw a refusal with
+          nothing to correct. The indicator and the `aria-required` state are what tell a reader,
+          sighted or not, that the box may not simply be emptied.
         -->
         <app-form-field
           [label]="fieldText.length.label"
           for="profile-definition-length"
-          [error]="messagesFor('length')"
+          [required]="true"
+          [error]="messages.length"
         >
           <input
             id="profile-definition-length"
             type="number"
             step="1"
             formControlName="length"
-            [attr.aria-invalid]="messagesFor('length').length === 0 ? null : 'true'"
+            [attr.aria-required]="'true'"
+            [attr.aria-invalid]="messages.length.length === 0 ? null : 'true'"
           />
           <span class="profile-definitions__form-hint">{{ fieldText.length.help }}</span>
         </app-form-field>
@@ -335,7 +362,7 @@
         <app-form-field
           [label]="fieldText.defaultValue.label"
           for="profile-definition-default-value"
-          [error]="messagesFor('defaultValue')"
+          [error]="messages.defaultValue"
         >
           <textarea
             id="profile-definition-default-value"
@@ -357,7 +384,7 @@
         <app-form-field
           [label]="fieldText.validationExpression.label"
           for="profile-definition-expression"
-          [error]="messagesFor('validationExpression')"
+          [error]="messages.validationExpression"
         >
           <textarea
             id="profile-definition-expression"
@@ -365,9 +392,7 @@
             spellcheck="false"
             formControlName="validationExpression"
             [attr.maxlength]="512"
-            [attr.aria-invalid]="
-              messagesFor('validationExpression').length === 0 ? null : 'true'
-            "
+            [attr.aria-invalid]="messages.validationExpression.length === 0 ? null : 'true'"
           ></textarea>
           <span class="profile-definitions__form-hint">
             {{ fieldText.validationExpression.help }}
@@ -378,7 +403,7 @@
         <app-form-field
           [label]="fieldText.required.label"
           for="profile-definition-required"
-          [error]="messagesFor('required')"
+          [error]="messages.required"
         >
           <input id="profile-definition-required" type="checkbox" formControlName="required" />
           <span class="profile-definitions__form-hint">{{ fieldText.required.help }}</span>
@@ -392,7 +417,7 @@
         <app-form-field
           [label]="fieldText.visible.label"
           for="profile-definition-visible"
-          [error]="messagesFor('visible')"
+          [error]="messages.visible"
         >
           <input id="profile-definition-visible" type="checkbox" formControlName="visible" />
           <span class="profile-definitions__form-hint">{{ fieldText.visible.help }}</span>
@@ -416,7 +441,7 @@
           [label]="fieldText.viewOrder.label"
           for="profile-definition-view-order"
           [required]="true"
-          [error]="messagesFor('viewOrder')"
+          [error]="messages.viewOrder"
         >
           <input
             id="profile-definition-view-order"
@@ -424,7 +449,7 @@
             step="1"
             formControlName="viewOrder"
             [attr.aria-required]="'true'"
-            [attr.aria-invalid]="messagesFor('viewOrder').length === 0 ? null : 'true'"
+            [attr.aria-invalid]="messages.viewOrder.length === 0 ? null : 'true'"
           />
           <span class="profile-definitions__form-hint">{{ fieldText.viewOrder.help }}</span>
         </app-form-field>

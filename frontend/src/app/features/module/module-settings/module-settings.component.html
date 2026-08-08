@@ -1,79 +1,47 @@
 <!--
   The module settings screen, replacing Website/admin/Modules/modulesettings.ascx.
 
-  Structure notes that are load-bearing:
+  Load-bearing structure:
 
     - Seven disclosure regions nested two levels deep, reproducing the legacy section-head hierarchy. The
-      three top-level heads carry --ruled because their legacy counterparts declared includerule="True"; the
-      four nested regions carry --nested on the SECTION, because the legacy indent sat outside the group.
-    - A closed region's body is REMOVED rather than hidden. The [hidden] attribute's user-agent rule loses to
-      any author rule, and .module-settings__body declares display:grid, so hiding would not hide. Removal
-      also keeps the closed content out of the accessibility tree entirely.
-    - aria-controls is deliberately omitted from every head. aria-expanded alone is a complete disclosure
-      pattern, and pointing aria-controls at an element that is not in the document would be worse than
-      omitting it.
-    - MIGRATION - THE FOUR NESTED HEADS ARE DISAMBIGUATED BY DESCRIPTION, defects D13 and D-M10. The resource
-      file gives four regions only TWO distinct names: GeneralDetails and Appearance both resolve to 'Basic
-      Settings', and Security and OtherSettings both resolve to 'Advanced Settings'. They are separable in
-      the legacy source only by their resource KEYS, which never reach a rendered page, so a screen-reader
-      user working through the head list hears the same name twice with nothing to tell the pair apart.
-      Visual nesting resolves it for a sighted reader and resolves nothing for anyone else. Each nested head
-      therefore points aria-describedby at its PARENT region's head, which appends the parent's name to the
-      accessible description - 'Basic Settings', described by 'Module Settings', against 'Basic Settings',
-      described by 'Page Settings'. The fix reuses names and element ids that already exist, so it invents no
-      wording, alters no visible text and costs nothing visually, which is what AAP 0.3.5 requires of an
-      accessibility measure. The duplication itself is preserved rather than corrected: renaming a region
-      would be an opportunistic fix of a legacy defect, which the Minimal Change Clause forbids.
-    - MIGRATION - SERVER-REJECTED FIELDS REPORT BESIDE THEIR OWN CONTROL. Every editable control renders the
-      messages the server returned for it, resolved from the RFC 7807 problem document by
-      core/utils/form-errors.util.ts through the component's serverMessages(). That utility owns the removal
-      of the leading break tag the legacy resources carry, so nothing is stripped here. This is parity, not
-      an addition: the legacy screen reported each failure next to the field that caused it and summarised
-      nothing, which is why the banner above carries the document-level title and detail only.
-    - MIGRATION - ⚠ EACH FIELD'S MESSAGES LIVE IN ONE IDENTIFIED REGION THAT THE CONTROL'S
-      aria-describedby NAMES. An earlier note here argued the opposite - that a server message is transient
-      and so should not describe the control - and that reasoning was wrong on both halves. A role="alert"
-      region is announced once, when it appears, and never again: a person who hears it, moves to the
-      control to correct the value and then returns is told nothing, and cannot reach the message from the
-      control at all. That is the ordinary case rather than an edge one, since the whole purpose of a
-      per-field message is that the person goes to that field. And the message is not transient - it stays
-      until the next save answers, exactly as long as the hint does. The region is emitted only when there
-      IS a message, so no control ever names an element that does not exist.
-      The client-side message shares that ONE region rather than sitting beside it as a second element: the
-      two were briefly separate siblings that both bound messageId(field), which duplicated an identifier on
-      the four controls carrying a client rule and left aria-describedby resolving to whichever the browser
-      found first. Both kinds are now emitted through hasMessages()/clientMessage()/serverMessages(), local
-      reason first, so one control names one region holding the complete set of reasons its value was
-      refused.
-    - Every migrated string is INTERPOLATED from a component constant, never written as template text.
-      Angular compiles templates with preserveWhitespaces disabled, which collapses whitespace runs inside a
-      text node and would silently rewrite the four legacy help strings that carry two spaces after a
-      sentence period. Interpolated values are not collapsed.
+      three top-level heads carry --ruled for the legacy includerule="True"; the four nested regions carry
+      --nested on the SECTION, because the legacy indent sat outside the group.
+    - A closed region's body is REMOVED, not hidden: [hidden] loses to .module-settings__body's own
+      display:grid, so hiding would not hide. aria-expanded alone is the complete disclosure contract, so
+      aria-controls is omitted rather than pointed at an element that is not in the document.
+    - MIGRATION: the four nested heads are disambiguated by description. The resource file gives them only
+      two distinct names, separable in the legacy source by resource keys that never reach a rendered page,
+      so each nested head points aria-describedby at its parent region's head and the accessible description
+      carries the parent's name. The duplication itself is preserved rather than renamed.
+    - Each field's messages live in ONE identified region named by that control's aria-describedby, client
+      reason first, emitted only when a message exists. A role="alert" region is announced once, so the
+      reason must stay reachable from the control afterwards.
+    - Every migrated string is INTERPOLATED from a component constant: templates compile with
+      preserveWhitespaces disabled, which would collapse the two spaces four legacy help strings carry after
+      a sentence period.
 -->
 <app-page-header [title]="heading"></app-page-header>
 
 <!--
-  The rejected-write surface. It renders the problem document the server sent, resolved to plain text by
-  core/utils/form-errors.util.ts, and nothing else: a refusal is announced as an advisory at warning
-  severity instead, on the legacy access-denied screen's own precedent.
+  The rejected-write surface: it renders the problem document the server sent, resolved to plain text by
+  core/utils/form-errors.util.ts, and nothing else. A refusal is announced as a warning-severity advisory
+  instead, on the legacy access-denied screen's precedent.
 
-  MIGRATION: this banner is a NET-NEW affordance and not the migration of a legacy rendering path. A
-  case-insensitive census finds asp:ValidationSummary ZERO times in the whole of Website/, so there is no
-  predecessor to port - the legacy screen showed each message beside its own field and summarised nothing.
+  MIGRATION: net-new. Website/ declares no asp:ValidationSummary anywhere, so there is no predecessor to
+  port - the legacy screen showed each message beside its own field and summarised nothing.
 -->
 <app-error-banner [problem]="problem()"></app-error-banner>
 
 @if (loading) {
   <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
 } @else if (notFound()) {
-  <!-- Addressed by identifier, so an identifier that resolves to nothing is a legitimate state - a stale
-       bookmark, or a module already removed - and is reported as such rather than as an error. -->
+  <!-- An identifier that resolves to nothing is a legitimate state - a stale bookmark, or a module already
+       removed - and is reported as such rather than as an error. -->
   <app-empty-state [message]="notFoundMessage"></app-empty-state>
 } @else if (settings === null) {
   <app-empty-state [message]="noModuleMessage"></app-empty-state>
 } @else {
   <form class="module-settings" [formGroup]="form" (ngSubmit)="onSubmit()">
-    <!-- ============================= Module Settings (top level) ============================= -->
     <section class="module-settings__section">
       <button
         class="module-settings__toggle module-settings__toggle--ruled"
@@ -89,7 +57,6 @@
         <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('moduleSettings')">
           <p class="module-settings__intro">{{ intros['moduleSettings'] }}</p>
 
-          <!-- ------------------------- Basic Settings (nested) ------------------------- -->
           <section class="module-settings__section module-settings__section--nested">
             <button
               class="module-settings__toggle"
@@ -179,7 +146,6 @@
             }
           </section>
 
-          <!-- ------------------------- Advanced Settings (nested) ------------------------- -->
           <section class="module-settings__section module-settings__section--nested">
             <button
               class="module-settings__toggle"
@@ -288,8 +254,6 @@
                     </div>
                   </div>
 
-                  <!-- A native date control carries its own picker, which is the affordance the legacy
-                       pop-up calendar link provided. -->
                   <div class="module-settings__field">
                     <label [for]="controlId('startDate')">
                       {{ labels['startDate'] }}
@@ -304,8 +268,6 @@
                         [attr.aria-describedby]="describedBy('startDate')"
                         [attr.aria-invalid]="form.controls.startDate.touched && form.controls.startDate.invalid"
                       />
-                      <!-- valtxtStartDate (modulesettings.ascx L78), Operator="DataTypeCheck" Type="Date",
-                           Display="Dynamic" - so the message occupies no space until it is triggered. -->
                       @if (hasMessages('startDate')) {
                         <div class="module-settings__messages" [id]="messageId('startDate')" role="alert">
                           @if (clientMessage('startDate') !== null) {
@@ -333,7 +295,6 @@
                         [attr.aria-describedby]="describedBy('endDate')"
                         [attr.aria-invalid]="form.controls.endDate.touched && form.controls.endDate.invalid"
                       />
-                      <!-- valtxtEndDate (modulesettings.ascx L88), Operator="DataTypeCheck" Type="Date". -->
                       @if (hasMessages('endDate')) {
                         <div class="module-settings__messages" [id]="messageId('endDate')" role="alert">
                           @if (clientMessage('endDate') !== null) {
@@ -354,7 +315,6 @@
       }
     </section>
 
-    <!-- ============================== Page Settings (top level) ============================== -->
     <section class="module-settings__section">
       <button
         class="module-settings__toggle module-settings__toggle--ruled"
@@ -370,7 +330,6 @@
         <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('pageSettings')">
           <p class="module-settings__intro">{{ intros['pageSettings'] }}</p>
 
-          <!-- ------------------------- Basic Settings (nested) ------------------------- -->
           <section class="module-settings__section module-settings__section--nested">
             <button
               class="module-settings__toggle"
@@ -409,13 +368,10 @@
                     </div>
                   </div>
 
-                  <!-- A choice group's visible name is NOT a <label>: a label names one control, and
+                  <!-- A choice group's visible name is NOT a <label>: a label names one control, so
                        pointing for at the first radio would name the group by side effect and make clicking
-                       its title select an option. The group is named through role="radiogroup" +
-                       aria-labelledby instead, and the name is carried by the same <span> element the two
-                       other non-control names on this screen use. A bare <label> that names nothing is also
-                       what a browser reports as an unassociated form label, so the span removes a false
-                       report as well as the wrong semantics.
+                       its title select an option. The group is named through role="radiogroup" plus
+                       aria-labelledby, carried by the same <span> the screen's other non-control names use.
                        [value] rather than [ngValue]: RadioControlValueAccessor writes the numeric enum
                        value through unchanged. -->
                   <div class="module-settings__field">
@@ -432,13 +388,11 @@
                       @for (choice of visibilityChoices; track choice.value) {
                         <label [for]="choiceId('visibility', $index)">
                             <!--
-                              ⚠ THE STATIC `name` IS NOT REDUNDANT BESIDE `formControlName`. The reactive
-                              directive groups these inputs in the MODEL, and it deliberately does not write
-                              a `name` attribute into the document — so without one the browser sees three
-                              unrelated radios rather than one group, and the native behaviour every keyboard
-                              and screen-reader user expects is lost: arrow keys stop moving between the
-                              choices and each input takes its own tab stop instead of the group taking one.
-                              The value is the control's own name, so the two cannot drift apart.
+                              The static `name` is not redundant beside `formControlName`. The reactive
+                              directive groups these inputs in the MODEL and writes no `name` attribute, so
+                              without one the browser sees three unrelated radios: arrow keys stop moving
+                              between the choices and each input takes its own tab stop. The value is the
+                              control's own name, so the two cannot drift apart.
                             -->
                           <input
                             type="radio"
@@ -483,13 +437,12 @@
                   </div>
 
                   <!--
-                    THE THREE-STATE CACHE RULE. ModuleSettings.ascx.vb:L136-L142 hid the whole row - the
-                    legacy id was rowCache - when the DEFINITION's DefaultCacheTime was Null.NullInteger,
-                    i.e. -1, meaning the definition records no default at all. A default of 0 is a different
-                    fact: caching IS supported with a zero-second default, so the field shows. And this
-                    PLACEMENT's own cacheTime of 0 is a third, legitimate stored value meaning "not cached".
-                    The three are never coalesced and falsiness never distinguishes them, because 0 is falsy
-                    and is one of the two values that must survive.
+                    THE THREE-STATE CACHE RULE. The legacy screen hid the whole row when the DEFINITION's
+                    DefaultCacheTime was -1, meaning the definition records no default at all. A default of 0
+                    is a different fact: caching IS supported with a zero-second default, so the field shows.
+                    And this PLACEMENT's own cacheTime of 0 is a third legitimate stored value meaning "not
+                    cached". The three are never coalesced and falsiness never distinguishes them, because 0
+                    is falsy and is one of the two values that must survive.
                   -->
                   @if (showCacheField()) {
                     <div class="module-settings__field">
@@ -501,9 +454,9 @@
                         <!--
                           A TEXT control, matching the legacy asp:textbox with maxlength="6", and validated by
                           the integer data-type check rather than by a numeric control's own coercion. Holding
-                          it as text is what keeps the Option Strict coercion visible and explicit: the legacy
-                          save used Int32.Parse and not TryParse (L350), so the parse and its failure are both
-                          handled in the component instead of disappearing into a value accessor.
+                          it as text keeps the Option Strict coercion explicit: the legacy save used
+                          Int32.Parse rather than TryParse, so the parse and its failure are both handled in
+                          the component instead of disappearing into a value accessor.
                         -->
                         <input
                           type="text"
@@ -514,7 +467,6 @@
                           [attr.aria-describedby]="describedBy('cacheTime')"
                           [attr.aria-invalid]="form.controls.cacheTime.touched && form.controls.cacheTime.invalid"
                         />
-                        <!-- valCacheTime (modulesettings.ascx L172), Operator="DataTypeCheck" Type="Integer". -->
                         @if (hasMessages('cacheTime')) {
                           <div class="module-settings__messages" [id]="messageId('cacheTime')" role="alert">
                             @if (clientMessage('cacheTime') !== null) {
@@ -533,7 +485,6 @@
             }
           </section>
 
-          <!-- ------------------------- Advanced Settings (nested) ------------------------- -->
           <section class="module-settings__section module-settings__section--nested">
             <button
               class="module-settings__toggle"
@@ -604,7 +555,6 @@
       }
     </section>
 
-    <!-- ========================= Module Specific Settings (top level) ========================= -->
     <section class="module-settings__section">
       <button
         class="module-settings__toggle module-settings__toggle--ruled"

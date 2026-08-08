@@ -2020,7 +2020,7 @@ describe('PortalStore', () => {
       const composed = createPortalRequest();
       const created: PortalDetail[] = [];
 
-      store.createPortal(composed, (portal: PortalDetail) => {
+      store.createPortal(composed).subscribe((portal: PortalDetail) => {
         created.push(portal);
       });
 
@@ -2077,7 +2077,7 @@ describe('PortalStore', () => {
       const composed = updatePortalRequest({ portalId: PORTAL_ID, portalName: 'Renamed' });
       const stored: PortalDetail[] = [];
 
-      store.updatePortal(PORTAL_ID, composed, (portal: PortalDetail) => {
+      store.updatePortal(PORTAL_ID, composed).subscribe((portal: PortalDetail) => {
         stored.push(portal);
       });
 
@@ -2117,7 +2117,7 @@ describe('PortalStore', () => {
 
       let removals = 0;
 
-      store.deletePortal(SECOND_PORTAL_ID, () => {
+      store.deletePortal(SECOND_PORTAL_ID).subscribe(() => {
         removals += 1;
       });
 
@@ -2299,7 +2299,7 @@ describe('PortalStore', () => {
       const composed = updatePortalSettingsRequest({ portalName: 'Renamed' });
       const saved: PortalSettings[] = [];
 
-      store.saveSettings(PORTAL_ID, composed, (projection: PortalSettings) => {
+      store.saveSettings(PORTAL_ID, composed).subscribe((projection: PortalSettings) => {
         saved.push(projection);
       });
 
@@ -2447,7 +2447,7 @@ describe('PortalStore', () => {
       const composed = createAliasRequest('contoso.example.test');
       const created: PortalAlias[] = [];
 
-      store.createAlias(PORTAL_ID, composed, (alias: PortalAlias) => {
+      store.createAlias(PORTAL_ID, composed).subscribe((alias: PortalAlias) => {
         created.push(alias);
       });
 
@@ -2486,7 +2486,7 @@ describe('PortalStore', () => {
       const composed = updateAliasRequest('renamed.example.test');
       let notifications = 0;
 
-      store.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, composed, () => {
+      store.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, composed).subscribe(() => {
         notifications += 1;
       });
 
@@ -2526,7 +2526,7 @@ describe('PortalStore', () => {
 
       let removals = 0;
 
-      store.deleteAlias(PORTAL_ID, OTHER_PORTAL_ALIAS_ID, () => {
+      store.deleteAlias(PORTAL_ID, OTHER_PORTAL_ALIAS_ID).subscribe(() => {
         removals += 1;
       });
 
@@ -2608,6 +2608,220 @@ describe('PortalStore', () => {
   // =========================================================================
   // FAILURES — the structured document, classified once and held whole
   // =========================================================================
+
+  // =========================================================================
+  // WRITES REPORT THROUGH A TICKET, NOT THROUGH A RETAINED CALLBACK
+  //
+  // Every write here used to take an optional continuation and invoke it from inside its
+  // response handler. This store is provided at the ROOT, so it outlives every screen that
+  // calls it, and a callback handed to it is a closure over a COMPONENT — over that
+  // component's signals, its router and its notification service. Retaining one made a
+  // root-lived object hold a destroyed component's scope, and a response arriving after the
+  // operator had navigated away ran that component's continuation anyway: announcing a success
+  // into a screen that was gone and, where the continuation navigated, moving a route nobody
+  // had asked to move. The component could not see the reference, so it could not cancel it.
+  //
+  // It was also the only store in this application that did this.
+  //
+  // Each write now returns an `AsyncSubject`-backed ticket. The three properties asserted
+  // below are the ones that make it a safe replacement rather than merely a different shape.
+  // =========================================================================
+
+  describe('write outcome tickets', () => {
+    it('takes NO callback argument on any of the seven writes', () => {
+      // ⚠ ARITY IS THE CONTRACT, and asserting it is what stops a continuation creeping back
+      // in. Each count is the write's real arguments with no trailing callback slot.
+      expect(store.createPortal.length).withContext('createPortal(request)').toBe(1);
+      expect(store.updatePortal.length).withContext('updatePortal(id, request)').toBe(2);
+      expect(store.deletePortal.length).withContext('deletePortal(id)').toBe(1);
+      expect(store.saveSettings.length).withContext('saveSettings(id, request)').toBe(2);
+      expect(store.createAlias.length).withContext('createAlias(id, request)').toBe(2);
+      expect(store.updateAlias.length)
+        .withContext('updateAlias(id, aliasId, request)')
+        .toBe(3);
+      expect(store.deleteAlias.length).withContext('deleteAlias(id, aliasId)').toBe(2);
+    });
+
+    it('emits the outcome ONCE, and only after the state has settled', () => {
+      // ⚠ THE ORDERING PROPERTY. The value is published as the LAST act of the response
+      // handler, so a continuation can never observe a half-finished write. Here the
+      // continuation reads the store back and finds it already correct.
+      const observedSelection: (number | undefined)[] = [];
+      const emissions: PortalDetail[] = [];
+      let completions = 0;
+
+      store.createPortal(createPortalRequest()).subscribe({
+        next: (created: PortalDetail) => {
+          emissions.push(created);
+          observedSelection.push(store.selectedPortalId());
+        },
+        complete: () => {
+          completions += 1;
+        },
+      });
+
+      httpMock
+        .expectOne(PORTALS_URL)
+        .flush(envelope(portalDetail(0)), { status: 201, statusText: 'Created' });
+
+      expect(emissions.length).withContext('exactly one outcome per write').toBe(1);
+      expect(completions).toBe(1);
+      expect(observedSelection)
+        .withContext('the continuation sees settled state, not state mid-update')
+        .toEqual([0]);
+      expect(store.detailLoading()).toBeFalse();
+
+      settleListingReread('the listing re-read that follows a creation');
+    });
+
+    it('COMPLETES WITHOUT EMITTING when the write fails, and does not error', () => {
+      // ⚠ THE FAILURE CONTRACT. Erroring would hand every caller an unhandled rejection to
+      // guard against and would report the same failure TWICE, because a failure already
+      // reaches the screen through the failure slice below. Completing empty means the success
+      // continuation simply does not run, which is the whole of what a caller needs.
+      let succeeded = 0;
+      let errored = 0;
+      let completed = 0;
+
+      store.createPortal(createPortalRequest()).subscribe({
+        next: () => {
+          succeeded += 1;
+        },
+        error: () => {
+          errored += 1;
+        },
+        complete: () => {
+          completed += 1;
+        },
+      });
+
+      httpMock.expectOne(PORTALS_URL).flush(
+        { title: 'Conflict', status: 409, detail: 'That host name is already bound.' },
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      expect(succeeded).withContext('the success continuation must not run').toBe(0);
+      expect(errored).withContext('and the caller is handed no error to catch').toBe(0);
+      expect(completed).withContext('the ticket still settles, so nothing waits forever').toBe(1);
+
+      // The failure keeps its single existing route to the operator.
+      expect(store.detailFailure()).withContext('reported once, through the slice').not.toBeNull();
+      expect(store.detailLoading()).toBeFalse();
+    });
+
+    it('UPDATES STATE EVEN WHEN NOBODY SUBSCRIBES, so ignoring the ticket is safe', () => {
+      // ⚠ WHAT MAKES THE LISTING SCREEN'S IGNORED RETURN VALUE CORRECT. The store subscribes to
+      // the transport itself, so the request is issued and every slice is written whether or not
+      // a caller is listening. A ticket that only ran its effects on subscription would turn
+      // every unsubscribed write into a silent no-op.
+      readListing(portalPage([portalListItem(SEEDED_PORTAL_ID, 'First portal')], 0, 10, 1, 1), 'a listing');
+
+      store.deletePortal(SEEDED_PORTAL_ID);
+
+      const removed = httpMock.expectOne(SEEDED_PORTAL_URL);
+
+      expect(removed.request.method)
+        .withContext('the request went out with no subscriber at all')
+        .toBe('DELETE');
+
+      removed.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.portals().length).withContext('and the optimistic edit still ran').toBe(0);
+      expect(store.detailLoading()).toBeFalse();
+
+      settleListingReread('the listing re-read that follows a removal');
+    });
+
+    it('REPLAYS to a subscriber that arrives after the response, which a plain Subject would drop', () => {
+      // ⚠ WHY AN `AsyncSubject` AND NOT A `Subject`. A caller subscribes after the command
+      // returns, and a transport answering synchronously would already have completed a plain
+      // subject by then — silently dropping the outcome and, in production, a screen's success
+      // notification. This case forces that ordering: the response is flushed BEFORE anybody
+      // subscribes.
+      const ticket = store.createPortal(createPortalRequest());
+
+      httpMock
+        .expectOne(PORTALS_URL)
+        .flush(envelope(portalDetail(0)), { status: 201, statusText: 'Created' });
+
+      const received: PortalDetail[] = [];
+
+      ticket.subscribe((created: PortalDetail) => {
+        received.push(created);
+      });
+
+      expect(received.length).withContext('the late subscriber still gets its outcome').toBe(1);
+      expect(received[0].portalId).toBe(0);
+
+      settleListingReread('the listing re-read that follows a creation');
+    });
+
+    it('gives each write its OWN ticket, so two writes cannot cross-report', () => {
+      // One ticket per operation. A shared subject would deliver the second write's outcome to
+      // the first write's continuation — the same class of cross-record confusion the
+      // continuations themselves caused.
+      const firstOutcomes: PortalDetail[] = [];
+      const secondOutcomes: PortalDetail[] = [];
+
+      store
+        .updatePortal(PORTAL_ID, updatePortalRequest({ portalId: PORTAL_ID, portalName: 'First' }))
+        .subscribe((stored: PortalDetail) => {
+          firstOutcomes.push(stored);
+        });
+      store
+        .updatePortal(PORTAL_ID, updatePortalRequest({ portalId: PORTAL_ID, portalName: 'Second' }))
+        .subscribe((stored: PortalDetail) => {
+          secondOutcomes.push(stored);
+        });
+
+      const writes = httpMock.match(
+        (candidate) => candidate.method === 'PUT' && candidate.url === PORTAL_URL,
+      );
+
+      expect(writes.length).withContext('a write is never superseded by a later one').toBe(2);
+
+      writes[0].flush(envelope(portalDetail(PORTAL_ID, { portalName: 'First' })));
+      writes[1].flush(envelope(portalDetail(PORTAL_ID, { portalName: 'Second' })));
+
+      expect(firstOutcomes.map((entry) => entry.portalName)).toEqual(['First']);
+      expect(secondOutcomes.map((entry) => entry.portalName)).toEqual(['Second']);
+
+      for (const reread of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === PORTALS_URL,
+      )) {
+        if (!reread.cancelled) {
+          reread.flush(portalPage([], 0, 10, 0, 0));
+        }
+      }
+    });
+
+    it('lets a caller UNSUBSCRIBE, which a retained callback gave no way to do', () => {
+      // ⚠ THE PROPERTY THE WHOLE CHANGE EXISTS FOR. A component binds its subscription to its
+      // own lifetime, so a response arriving after teardown reaches nothing. With a retained
+      // callback there was no handle and therefore no way to express this at all — the
+      // continuation ran regardless, into a component that no longer existed.
+      let ran = 0;
+
+      const subscription = store.createPortal(createPortalRequest()).subscribe(() => {
+        ran += 1;
+      });
+
+      // The screen goes away while the write is in flight.
+      subscription.unsubscribe();
+
+      httpMock
+        .expectOne(PORTALS_URL)
+        .flush(envelope(portalDetail(0)), { status: 201, statusText: 'Created' });
+
+      expect(ran).withContext("the departed screen's continuation does not run").toBe(0);
+
+      // The store's own state still settled, because its subscription is its own.
+      expect(store.selectedPortalId()).toBe(0);
+      expect(store.detailLoading()).toBeFalse();
+
+      settleListingReread('the listing re-read that follows a creation');
+    });
+  });
 
   describe('failures', () => {
     it('retains the trace identifier, and reports it as the support reference when it stands alone', () => {

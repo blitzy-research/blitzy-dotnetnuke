@@ -8,10 +8,11 @@
   screen, and that is deliberately the only contract this file has.
 
   MIGRATION: the transformation plan derives this screen from THREE legacy controls
-  and TWO OF THE THREE ARE WRONG. The correction is recorded on the paired class in
-  full and is repeated here because it is the single most load-bearing fact about
-  this markup - a later reader will otherwise look for nine read-only membership
-  fields and four account commands that are deliberately absent.
+  and NEITHER OF THE OTHER TWO IS RENDERED HERE. The reasons differ and are recorded
+  on the paired class in full; they are repeated here because they are the single most
+  load-bearing fact about this markup - a later reader will otherwise look for nine
+  read-only membership fields, four account commands and a services grid that are
+  deliberately absent.
     * `Website/admin/Users/Membership.ascx` is twenty-eight lines and is a
       read-only PER-ACCOUNT panel, not a tenant policy screen. Its editor is
       declared in view mode and its four commands - authorise, unauthorise, unlock
@@ -22,9 +23,18 @@
       part of the account detail screen, so its fields and commands belong on the
       account form and none of them is rendered here.
     * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role
-      subscription - a services table, an invitation code box, a subscribe command
-      and a seven column services grid carrying a trial command. None of it has an
-      endpoint in this API, so there is nothing for a screen to call.
+      subscription - a help paragraph, an invitation code box with a subscribe
+      command, and a seven column services grid carrying a trial command. IT IS
+      IMPLEMENTED, in the sibling component in this folder, and reached at
+      `/users/{userId}/services`. An earlier revision of this note said "none of it
+      has an endpoint in this API, so there is nothing for a screen to call"; that
+      was true of the API as it then stood and is now withdrawn - the account
+      resource publishes five self-service endpoints. It is not rendered HERE
+      because it is per-account and gated on account ownership, whereas this screen
+      configures the TENANT and is reached by an administrator: rendering them
+      together would put an administrator's own subscriptions on a tenant
+      configuration page and would need one route to satisfy two authorisation
+      policies.
   This screen therefore derives from `Website/admin/Users/UserSettings.ascx` and
   the account policy contract ALONE.
 
@@ -434,6 +444,16 @@
           legacy enumeration published as a plain integer, choices from a frozen list
           on the paired class, ordinals unchanged.
 
+          WHERE THIS SETTING TAKES EFFECT: it is the visibility a profile value that has
+          NEVER BEEN SET reads as, and it is applied SERVER-SIDE - the account resource
+          reads this policy and stamps it onto every unset value and every declaration it
+          projects. That reproduces both legacy consumers exactly:
+          `Library/Components/Users/Profile/ProfilePropertyDefinition.vb` L348-L359 seeded a
+          new declaration's visibility from it, and
+          `Library/Components/Users/Profile/ProfileController.vb` L109-L112 stamped it onto
+          every declaration it read back. Nothing on this side re-derives it, which is what
+          stops a second opinion about it existing.
+
           MIGRATION: two of these three choices had no label in the legacy resource
           file either, and again one of the two is the shipped default - the file
           supplies only "Members Only". Both authored labels are reported as gaps.
@@ -477,13 +497,22 @@
         </app-form-field>
 
         <!--
-          MIGRATION: this switch is rendered because the policy contract carries it,
-          and it is worth stating that the SECTION it governs is out of scope. The
-          legacy services panel it would reveal on the profile screen has no endpoint
-          in this API, so the setting is stored and honoured by whatever renders that
-          profile, and this screen does no more than record the tenant's choice. It is
-          not silently dropped, because dropping a member the contract carries would
-          make the policy this screen saves incomplete.
+          MIGRATION: this switch GOVERNS A REAL BEHAVIOUR, and an earlier revision of this
+          note said otherwise - that "the legacy services panel it would reveal on the
+          profile screen has no endpoint in this API, so the setting is stored and
+          honoured by whatever renders that profile". That is withdrawn. The account
+          resource publishes five self-service endpoints, and EVERY ONE OF THEM CHECKS
+          THIS SETTING on the server: a tenant that clears it makes each of them refuse
+          with its own reason rather than merely hiding a screen. The screen it governs is
+          `member-services.component.ts`, the sibling in this folder, reached at
+          `/users/{userId}/services`.
+
+          The enforcement is deliberately the server's and not this client's. The legacy
+          container folded the setting into a tab's visibility, which a client can only
+          approximate; a copy of the rule here would be a second opinion about it, and the
+          screen it governs cannot read this policy at all - the policy endpoint is gated
+          on tenant administration, so the account holder that screen serves would be
+          refused it.
         -->
         <app-form-field
           class="form-field--inline"
@@ -507,6 +536,27 @@
           grouped them - it attached a page chooser to each of the three
           (`Website/admin/Users/UserSettings.ascx.vb` L80 to L82). Tracked by the
           control name, which is the stable identity.
+
+          ⚠ WHERE THESE THREE TAKE EFFECT, AND WHERE THEY DO NOT. Each names a
+          DOTNETNUKE PAGE, and this application renders no DotNetNuke page: page
+          rendering - skins, containers, the whole server-rendered page surface - is
+          excluded by AAP 0.2.2.2 and 0.2.2.4, and the page resource in this API is
+          deliberately narrow, offering a tenant's page list and one page's detail and
+          nothing that renders one. So a destination recorded here is not somewhere this
+          console can send anybody, and no screen in it consults these three.
+
+          THAT IS NOT A GAP, BECAUSE THE POLICY HAS A LIVE CONSUMER. The migration is
+          side by side (AAP 0.1.1): the DotNetNuke application remains deployed and it
+          reads all three - `Website/admin/Authentication/Login.ascx.vb` L147-L177 after a
+          sign-in, `Website/admin/Users/ManageUsers.ascx.vb` L80-L98 after a
+          registration, and `Library/Components/Authentication/AuthenticationController.vb`
+          L251-L270 after a sign-out. This console is the screen that MAINTAINS that
+          policy, exactly as it maintains every other member of it; what it does not do is
+          act on it, and it does not pretend to. Recorded in `MIGRATION_NOTES.md`.
+
+          A further reason the after-registration destination has no local consumer even in
+          principle: this application has no self-registration flow at all. The account
+          form is administrative, and no register route exists in the closed route set.
 
           MIGRATION: a page CHOOSER is not offered and a page identifier is taken
           instead. The reason is a dependency boundary rather than a preference: the
@@ -702,12 +752,16 @@
           name uneditable on the account form - and it is reported as affecting that
           screen. Nothing is enforced from here.
 
-          MIGRATION: the legacy save ALSO started a background thread that rewrote
-          every account's display name whenever this format changed
-          (`Website/admin/Users/UserSettings.ascx.vb` L175 to L182). That is not
-          attempted, and must not be: it is a bulk write across a whole tenant, which
-          belongs behind an endpoint rather than in a browser that can be closed
-          halfway through. Reported as a possible gap on the server side.
+          ⚠ CHANGING THIS VALUE RENAMES EVERY ACCOUNT IN THE TENANT. The legacy save
+          started a background thread that rewrote every account's display name whenever
+          this format changed (`Website/admin/Users/UserSettings.ascx.vb` L175 to L182),
+          and told the operator nothing about it. The rewrite is still NOT attempted from
+          the browser, and must not be - it is a bulk write across a whole tenant, which
+          belongs behind an endpoint rather than in a page that can be closed halfway
+          through. It is performed by the SERVER inside the same transaction as this
+          policy write, and the endpoint answers with the number of accounts it renamed;
+          the confirmation shown on save reports that number. The help text above carries
+          the warning so it is read BEFORE the value is changed rather than after.
         -->
         <app-form-field
           [label]="labelFor('securityDisplayNameFormat')"

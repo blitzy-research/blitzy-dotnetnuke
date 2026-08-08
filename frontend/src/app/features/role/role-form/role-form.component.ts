@@ -73,7 +73,12 @@ import type {
   StoredBillingFrequency,
   UpdateRoleRequest,
 } from '../../../core/models/role.model';
-import { NotificationService } from '../../../core/services/notification.service';
+import {
+  NotificationService,
+  type NotificationSeverity,
+} from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { RoleStore } from '../../../core/state/role.store';
 import type { RoleStoreFailure, RoleStoreOperation } from '../../../core/state/role.store';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
@@ -894,42 +899,74 @@ export class RoleFormComponent {
    */
   public readonly roleId = input<string | undefined>(undefined);
 
-  /**
-   * The portal's administrator role id, when a caller can supply it.
+  /*
+   * THE TENANT'S PROTECTED ROLE KEYS AND ITS PROCESSOR STATE ARE READ, NOT AWAITED.
    *
-   * MIGRATION — THE MEASURED GAP, stated plainly. `EditRoles.ascx.vb:L174-L182` guards three
-   * things on the identity of two portal-level roles:
+   * MIGRATION: `EditRoles.ascx.vb:L174-L182` guards three things on the identity of two
+   * PORTAL-level roles, and nothing on the role itself discriminates them — `RoleInfo.vb` has no
+   * `IsSystem`, `SystemRole` or `IsAdmin` member of any kind, and the target's `Role` contract
+   * likewise carries no such flag:
    *
    *   L174-L178  `If RoleID = PortalSettings.AdministratorRoleId Or RoleID = PortalSettings.RegisteredRoleId`
    *              then hide Delete, hide Update, and `ActivateControls(False)`.
    *   L180-L182  `If RoleID = PortalSettings.RegisteredRoleId` then additionally hide Manage.
    *
-   * Nothing on the role itself discriminates a protected role: `RoleInfo.vb` has no `IsSystem`,
-   * `SystemRole` or `IsAdmin` member of any kind, and the target's `Role` contract likewise
-   * carries no such flag. `AdministratorRoleId` and `RegisteredRoleId` are PORTAL-scoped, and the
-   * only place the target exposes them is the portal detail contract, which this screen may not
-   * read — a portal-settings call is outside its endpoint boundary, and the portal model is not
-   * among its dependencies.
+   * ⚠ THESE WERE OPTIONAL INPUTS THAT NOTHING SUPPLIED, AND THAT IS WHY THEY ARE GONE. The three
+   * facts used to be declared as inputs on the reasoning that "a portal-settings call is outside
+   * this screen's endpoint boundary, and the portal model is not among its dependencies", with the
+   * documented consequence that "when it does not — which is the case today — the form stays fully
+   * editable and the API's own refusal governs". Neither half of that reasoning survives scrutiny.
    *
-   * The guards are therefore expressed as optional inputs rather than dropped. When a caller
-   * supplies them the measured behaviour is reproduced exactly; when it does not — which is the
-   * case today — the form stays fully editable and the API's own refusal governs, arriving as a
-   * `403` that is surfaced as a warning. No role id is hardcoded, no role NAME is consulted, and
-   * no endpoint is invented.
+   * The boundary claim was wrong about the architecture. {@link PortalStore} is CORE state, and
+   * every feature may inject core state — the account listing already reads exactly these facts
+   * from it to protect its own removal command, and nothing here imports from another FEATURE.
+   * `GET /api/v1/portals/{portalId}` is declared under the same `PortalAdministrator` policy that
+   * both of this screen's routes declare, so any caller who can reach this form can read the
+   * record; and the tenant key needs no route segment, because the identity projection carries the
+   * caller's own `portalId`.
+   *
+   * The fallback claim was wrong about the cost. Leaving the guards permanently disarmed did not
+   * merely defer to the server: it OFFERED Update and Delete on the two roles that hold the tenant
+   * together, let an administrator fill in a form for them, and only then reported a refusal —
+   * having also left the payment-processor warning permanently visible, since the warning shows
+   * when the processor is NOT configured and an unread portal reads as unconfigured. Reproducing
+   * a guard the legacy had is not scope creep; withholding it was the divergence.
+   *
+   * ⚠ AN UNRESOLVED READ STILL DISARMS THE GUARDS, and that direction is deliberate. Until the
+   * record arrives each key is `null`, every comparison below is `false`, the form is editable and
+   * the API's refusal governs — which is exactly the behaviour that shipped, so nothing regresses
+   * while the request is outstanding. Disabling the form until the read completed would instead
+   * take a capability away from every role for the duration of a request. The processor warning is
+   * the one exception worth naming: it is suppressed until the record resolves, because showing
+   * "configure a payment processor" about a portal nobody has read yet is an assertion rather than
+   * a default.
+   *
+   * No role id is hardcoded, no role NAME is consulted, and no endpoint is invented.
    */
-  public readonly administratorRoleId = input<number | null>(null);
 
   /**
-   * The portal's registered-users role id, when a caller can supply it.
+   * The tenant's administrator role key, or `null` until its record resolves.
    *
-   * See {@link administratorRoleId} for why this is an input. This role is the stricter of the
-   * two: it is protected from deletion and update AND its membership screen is unreachable,
-   * because every authenticated user holds it.
+   * `Roles.RoleID` is `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L114`), so nought is a real role
+   * key and the administrator role in the seeded tenant genuinely holds it. Every comparison
+   * against this value is an explicit equality test against `null`, never a truthiness test.
    */
-  public readonly registeredRoleId = input<number | null>(null);
+  protected readonly administratorRoleId: Signal<number | null> = computed(() =>
+    this.portals.administratorRoleId(),
+  );
 
   /**
-   * Whether the portal has a configured payment processor.
+   * The tenant's registered-users role key, or `null` until its record resolves.
+   *
+   * The stricter of the two: it is protected from deletion and update AND its membership screen is
+   * unreachable, because every authenticated user holds it.
+   */
+  protected readonly registeredRoleId: Signal<number | null> = computed(() =>
+    this.portals.registeredRoleId(),
+  );
+
+  /**
+   * Whether the tenant has a configured payment processor.
    *
    * MIGRATION — DEFECT 5, reproduced rather than repaired. `EditRoles.ascx.vb:L104-L109` runs
    * OUTSIDE the `If Page.IsPostBack = False` block, so it re-evaluates on every load, and reads:
@@ -942,13 +979,18 @@ export class RoleFormComponent {
    * the processor is NOT configured. The CODE is the behaviour and the code is also the sensible
    * reading — the warning tells an administrator to configure a processor before charging for a
    * role — so the code is what is reproduced, and the contradiction is recorded here instead of
-   * being tidied away.
-   *
-   * `ProcessorUserId` is a PORTAL property and is unobtainable from this screen's endpoints, so
-   * this input defaults to `false`, matching the markup's own `visible="false"`
-   * (`editroles.ascx:L80`). No portal-settings call is invented to populate it.
+   * being tidied away. Note that the legacy's own first clause, `objPortalInfo Is Nothing`, warned
+   * when the portal could not be read at all; the target withholds the warning in that case
+   * instead, for the reason given above.
    */
-  public readonly paymentProcessorConfigured = input<boolean>(false);
+  protected readonly paymentProcessorConfigured: Signal<boolean> = computed(() =>
+    this.portals.paymentProcessorConfigured(),
+  );
+
+  /** Whether the tenant's record has arrived, which is what arms the guards above. */
+  protected readonly protectedFactsResolved: Signal<boolean> = computed(() =>
+    this.portals.contextResolved(),
+  );
 
   // -------------------------------------------------------------------------
   // COLLABORATORS
@@ -967,6 +1009,25 @@ export class RoleFormComponent {
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
 
+  /**
+   * The identity, read for ONE fact: which tenant the caller belongs to.
+   *
+   * The tenant is taken from the caller rather than from a route segment, because this screen
+   * addresses no portal and must never be able to protect one tenant's roles using another
+   * tenant's keys.
+   */
+  private readonly auth = inject(AuthStore);
+
+  /**
+   * The tenant's own record, for the two protected role keys and the processor state.
+   *
+   * CORE state, which every feature may inject — this is not a reach into the portal FEATURE, and
+   * the account listing already reads the same slice to protect its removal command. The store
+   * owns the request, de-duplicates it across screens and discards one tenant's facts the moment
+   * another tenant is asked for.
+   */
+  private readonly portals = inject(PortalStore);
+
   /*
    * MIGRATION: a `DestroyRef` used to be held here to bound every request to this screen's lifetime,
    * because a response arriving after the operator had left would have navigated them back. The
@@ -979,7 +1040,7 @@ export class RoleFormComponent {
   // LOCAL STATE
   // -------------------------------------------------------------------------
 
-  
+
   /** The role currently loaded, or `null` in creation mode and before the first response. */
   private readonly loadedRole: WritableSignal<Role | null> = signal<Role | null>(null);
 
@@ -997,6 +1058,22 @@ export class RoleFormComponent {
   /** Which mutation this screen is waiting for, or `null` when it is waiting for none. */
   private readonly awaitedMutation: WritableSignal<AwaitedRoleMutation | null> =
     signal<AwaitedRoleMutation | null>(null);
+
+  /**
+   * The identifier the store issued for {@link RoleFormComponent.awaitedMutation}.
+   *
+   * ⚠ WITHOUT THIS, THE OPERATION NAME ALONE DECIDED WHOSE WRITE HAD SETTLED, AND IT CANNOT.
+   * `RoleStore` is provided at the application root, so the listing screen and this form share one
+   * instance and their writes overlap. The bridge below waited for the store's aggregate flag to fall
+   * and then announced success and NAVIGATED AWAY — so an unrelated role write settling first took
+   * this operator off a form whose own save was still in the air, told them it had worked, and left
+   * nowhere for the real answer to be reported. If that unrelated write had FAILED, the shared failure
+   * slot made this form report somebody else's refusal as its own.
+   *
+   * Zero means "no write of ours is outstanding", which is safe rather than a sentinel collision: the
+   * store pre-increments, so 1 is the first identifier it ever issues and no real write holds 0.
+   */
+  private readonly awaitedMutationId: WritableSignal<number> = signal<number>(0);
 
   /**
    * The role key already applied to the form.
@@ -1212,8 +1289,10 @@ export class RoleFormComponent {
    * semantically identical in this instance because both operands are side-effect-free integer
    * comparisons, and the change of operator class is recorded rather than made silently.
    *
-   * The comparison is against a numeric id and is `false` whenever the id is unknown, which is the
-   * gap described on {@link administratorRoleId}.
+   * The comparison is against a numeric id, and it is `false` while the tenant's record is still
+   * outstanding — the fail-safe direction recorded on {@link administratorRoleId}: the form stays
+   * editable and the API's refusal governs for the duration of one request, rather than a
+   * capability being withheld from every role until a read completes.
    */
   protected readonly isProtectedRole: Signal<boolean> = computed(() => {
     const key = this.roleKey();
@@ -1274,11 +1353,17 @@ export class RoleFormComponent {
    * True when the payment-processor warning is shown.
    *
    * See {@link paymentProcessorConfigured}: the warning appears when the processor is NOT
-   * configured, which is what the code did, and it stays hidden until something can genuinely
-   * report the portal's processor state.
+   * configured, which is what the code did rather than what its comment claimed.
+   *
+   * ⚠ WITHHELD UNTIL THE TENANT'S RECORD RESOLVES, which is the one place this screen departs
+   * from the legacy expression. The legacy's first clause, `objPortalInfo Is Nothing`, warned when
+   * the portal could not be read at all; here an unread portal shows nothing, because telling an
+   * administrator to configure a payment processor on the strength of a request that has not
+   * answered is an assertion rather than a default. Once the record arrives the reproduction is
+   * exact.
    */
   protected readonly showProcessorWarning: Signal<boolean> = computed(
-    () => !this.paymentProcessorConfigured(),
+    () => this.protectedFactsResolved() && !this.paymentProcessorConfigured(),
   );
 
 
@@ -1291,6 +1376,17 @@ export class RoleFormComponent {
     // fetched once per session rather than once per visit to this screen. The store owns the
     // request and its loading flag; this screen only reads the result.
     this.roleStore.loadRoleGroups();
+
+    // The tenant's own record, for the two protected role keys and the processor state. Read from
+    // the CALLER'S identity and never from a route, and idempotent in the store — several screens
+    // asking on initialisation issue one request between them. Presence is tested explicitly
+    // because `Portals.PortalID` is `IDENTITY(-1, 1)`, so -1 and 0 are both real tenants and a
+    // truthiness test would silently skip the request for either.
+    const portalId: number | undefined = this.auth.currentUser()?.portalId;
+
+    if (portalId !== undefined) {
+      this.portals.loadCurrentPortalContext(portalId);
+    }
 
     // Reacts to the route parameter. Reading `roleKey()` is the ONLY dependency taken here, so the
     // role is re-read when the route moves from one role to another — which happens without the
@@ -1387,17 +1483,26 @@ export class RoleFormComponent {
      */
     effect(() => {
       const awaited: AwaitedRoleMutation | null = this.awaitedMutation();
-      const inFlight: boolean = this.roleStore.saving();
-      const failure: RoleStoreFailure | null = this.roleStore.failure();
+      const awaitedId: number = this.awaitedMutationId();
+      const settled = this.roleStore.mutation();
 
-      if (awaited === null || inFlight) {
+      // ⚠ SETTLED ON THE IDENTIFIER THE STORE HANDED BACK AT DISPATCH, not on the aggregate flag
+      // falling. A published result whose identifier is not ours belongs to another screen's write and
+      // is ignored — which is a total test, needing no knowledge of what else is in flight.
+      if (awaited === null || settled === null || settled.id !== awaitedId) {
         return;
       }
 
       untracked(() => {
         this.awaitedMutation.set(null);
+        this.awaitedMutationId.set(0);
 
-        if (failure !== null && failure.operation === awaited) {
+        // The failure travels ON the settled result. Reading the store's shared slot instead — as this
+        // bridge used to — could find a concurrent write's refusal, or find nothing where our own had
+        // been, because every dispatch clears that slot.
+        const failure: RoleStoreFailure | null = settled.failure;
+
+        if (failure !== null && settled.operation === awaited) {
           this.reportFailure(failure, MUTATION_FAILURE_MESSAGE[awaited]);
 
           return;
@@ -1462,6 +1567,26 @@ export class RoleFormComponent {
       return;
     }
 
+    // ⚠ THE NAME IS TIDIED INTO ITS OWN CONTROL AND THE FORM IS THEN RE-JUDGED, rather than
+    // tidied on the way into the request. The order is the whole point.
+    //
+    // Tidying into the request meant the value that was VALIDATED and the value that was SENT were
+    // different strings. `roleName` carries `required` and `maxLength` and nothing else, so a
+    // whitespace-only entry is a non-empty string that satisfies both — and was then trimmed to the
+    // EMPTY STRING on its way out. `CreateRoleRequestValidator` declares `NotEmpty`, which treats a
+    // whitespace-only string as empty, so the server refused what the screen had just declared
+    // valid and the operator was shown a server rejection for a field the form had raised no
+    // complaint about. `maxLength` cannot be newly breached by tidying, because trimming can only
+    // shorten — but shortening TO NOTHING is precisely what invalidates the value, which is why
+    // requiredness has to be re-asked and not merely assumed to have been settled above.
+    this.normaliseRoleName();
+
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+
+      return;
+    }
+
     this.failure.set(null);
     const key = this.roleKey();
 
@@ -1471,6 +1596,35 @@ export class RoleFormComponent {
     }
 
     this.updateRole(key);
+  }
+
+  /**
+   * Trims the role name into its own control.
+   *
+   * `emitEvent: false` because this is a DISPLAY CORRECTION rather than an operator edit: it must
+   * not be able to start a cascade through any listener on this form — and this form has two, the
+   * role-group reconciler and the protected-role lock, either of which reacting to a tidy-up would
+   * be a side effect nobody asked for. `setValue` re-runs the control's validators regardless of
+   * that flag, which is what lets the caller re-read validity immediately afterwards and find it
+   * reflecting the tidied value.
+   *
+   * A control whose value is already trimmed is left completely alone, so an unnecessary write
+   * cannot mark a pristine form dirty.
+   *
+   * ⚠ ONLY THE NAME. `description`, `rsvpCode` and `iconFile` pass through `textOrNull`, which
+   * already collapses a blank entry to `null` for a member the contract declares nullable — a
+   * different rule for a different obligation — and the two fee and period members are parsed
+   * numerically. The name is the one member whose emptiness the server refuses outright.
+   */
+  private normaliseRoleName(): void {
+    const control = this.form.controls.roleName;
+    const trimmed: string = control.value.trim();
+
+    if (trimmed === control.value) {
+      return;
+    }
+
+    control.setValue(trimmed, { emitEvent: false });
   }
 
   /**
@@ -1683,7 +1837,7 @@ export class RoleFormComponent {
     this.roleStore.selectRole(key);
   }
 
-  
+
   /**
    * Populates the form from a loaded role — `EditRoles.ascx.vb:L139-L169`.
    *
@@ -1760,7 +1914,9 @@ export class RoleFormComponent {
    */
   private createRole(): void {
     this.awaitedMutation.set('createRole');
-    this.roleStore.createRole(this.toCreateRequest());
+    // The identifier is captured from the command's own return value, so the bridge waits on the very
+    // write dispatched here rather than on "a write of this kind, from anywhere".
+    this.awaitedMutationId.set(this.roleStore.createRole(this.toCreateRequest()));
   }
 
   /**
@@ -1776,7 +1932,9 @@ export class RoleFormComponent {
    */
   private updateRole(key: number): void {
     this.awaitedMutation.set('updateRole');
-    this.roleStore.updateRole(key, this.toUpdateRequest());
+    // The identifier is captured from the command's own return value, so the bridge waits on the very
+    // write dispatched here rather than on "a write of this kind, from anywhere".
+    this.awaitedMutationId.set(this.roleStore.updateRole(key, this.toUpdateRequest()));
   }
 
   /**
@@ -1791,7 +1949,9 @@ export class RoleFormComponent {
   private deleteRole(key: number): void {
     this.failure.set(null);
     this.awaitedMutation.set('deleteRole');
-    this.roleStore.deleteRole(key);
+    // The identifier is captured from the command's own return value, so the bridge waits on the very
+    // write dispatched here rather than on "a write of this kind, from anywhere".
+    this.awaitedMutationId.set(this.roleStore.deleteRole(key));
   }
 
   /**
@@ -1835,7 +1995,10 @@ export class RoleFormComponent {
     const trial = this.resolveTrialTerms(billing);
 
     return {
-      roleName: value.roleName.trim(),
+      // Already tidied INTO the control by `onSubmit`, and re-judged there, so the value read here
+      // is the value the form declared valid. Trimming again would be harmless but would also
+      // restore the impression that this is where tidying belongs.
+      roleName: value.roleName,
       description: textOrNull(value.description),
       serviceFee: billing.fee,
       billingPeriod: billing.period,
@@ -1872,7 +2035,9 @@ export class RoleFormComponent {
     const loaded = this.loadedRole();
 
     return {
-      roleName: loaded === null ? value.roleName.trim() : loaded.roleName,
+      // The loaded name wins in edit mode; the control's value is reached only when no role has
+      // been loaded, and it has already been tidied and re-judged by `onSubmit`.
+      roleName: loaded === null ? value.roleName : loaded.roleName,
       description: textOrNull(value.description),
       roleGroupId: value.roleGroupId,
       isPublic: value.isPublic,
@@ -1980,25 +2145,42 @@ export class RoleFormComponent {
    * remainder is handed to the shared error banner, which renders the title, the detail and the
    * support reference.
    *
-   * A `403` is a WARNING, not an error. `Website/admin/Security/AccessDenied.ascx.vb` is
-   * unambiguous: BOTH of its branches — `:L43` and `:L45` — raise
-   * `ModuleMessageType.YellowWarning`, never `RedError`. Being told one lacks permission is not a
-   * failure of the request, it is the answer to it.
+   * ⚠ THE SEVERITY IS THE STORE SUMMARY'S, AND THIS METHOD DECIDES NONE OF IT.
    *
-   * A `409` on the creation path is the duplicate-name refusal the legacy detected for itself, and
-   * it carries the legacy wording as its fallback. A `429` is a real status this API emits and is
-   * left to the banner, which styles rate limiting distinctly from an error.
+   * MIGRATION: a second severity table used to live here — 401 and 403 to warning, 409 to error,
+   * everything else to error — and it DISAGREED with the shared classifier the same screen's banner
+   * uses, on two statuses that this API really emits:
+   *
+   *   * a `404` resolves to WARNING in `problemSeverity` and was reported as an ERROR here, so
+   *     deleting a role another operator had already removed painted a calm banner beside an alarming
+   *     notification, on the same screen, about the same response;
+   *   * a `429` resolves to INFO — quieter than the refusals on purpose, because nothing was rejected
+   *     on its merits and the only action is to wait — and was likewise reported as an ERROR.
+   *
+   * The intent behind the old table was right and its placement was wrong, which is the same
+   * correction `error-banner.component.ts` records for its own former rate-limit special case. The
+   * classification belongs to the shared function, which owns the rule and states its legacy evidence:
+   * `Website/admin/Security/AccessDenied.ascx.vb` raises `ModuleMessageType.YellowWarning` on BOTH of
+   * its branches (`:L43`, `:L45`) and never `RedError`, so being told one lacks permission is the
+   * ANSWER to a request rather than a failure of it. A severity this screen wants for a status is now a
+   * change to that function, never a table here.
+   *
+   * WHAT THIS METHOD STILL OWNS IS THE WORDING, and only where the legacy supplied some. A conflict on
+   * the creation path is the duplicate-name refusal the legacy detected for itself and carries the
+   * legacy sentence as its fallback; a permission refusal carries the access-denied sentence. Both are
+   * FALLBACKS: the server's own `detail` wins when it sent one, which is what
+   * {@link ProblemSummary.message} already resolves.
    *
    * The document is stored whole, so `traceId` and `correlationId` survive into the banner for
    * support to quote.
    *
-   * @param error Whatever the transport rejected with.
+   * @param failure The store's record of the refusal, whose summary carries the severity.
    * @param fallback The wording to use when the document says nothing useful.
    */
   private reportFailure(failure: RoleStoreFailure, fallback: string): void {
     // ⚠ THE STATUS IS READ FROM THE STORE'S RECORD, NOT FROM THE DOCUMENT. The two go missing
     // independently - a transport failure has a status and no document - so deriving one from the
-    // other would collapse the distinction these branches exist to make.
+    // other would collapse the distinction the wording branches below exist to make.
     const problem: ProblemDetails | null = failure.problem;
     const status: number | null = failure.status;
 
@@ -2008,17 +2190,20 @@ export class RoleFormComponent {
       this.applyFieldErrors(problem);
     }
 
+    // The one classification, resolved once by the shared function and consumed here.
+    const severity: NotificationSeverity = failure.summary.severity;
+
     if (status === UNAUTHORIZED || status === FORBIDDEN) {
-      this.notifications.notify('warning', problemDetailsMessage(problem, ACCESS_DENIED_MESSAGE));
+      this.notifications.notify(severity, problemDetailsMessage(problem, ACCESS_DENIED_MESSAGE));
       return;
     }
 
     if (status === CONFLICT) {
-      this.notifications.notify('error', problemDetailsMessage(problem, DUPLICATE_ROLE_MESSAGE));
+      this.notifications.notify(severity, problemDetailsMessage(problem, DUPLICATE_ROLE_MESSAGE));
       return;
     }
 
-    this.notifications.notify('error', problemDetailsMessage(problem, fallback));
+    this.notifications.notify(severity, problemDetailsMessage(problem, fallback));
   }
 
   /**

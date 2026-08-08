@@ -1,17 +1,17 @@
 @use '../../../../styles/mixins' as mx;
 
 // A custom element has no intrinsic display, so the host is given block flow explicitly. Left inline, the
-// header's own flow, spacing and wrapping would all be computed against an inline box - a defect that
-// only surfaces once a consumer places the component beside other content.
+// header's own flow, spacing and wrapping would all be computed against an inline box - a defect that only
+// surfaces once a consumer places the component beside other content.
 :host {
   display: block;
 }
 
 // Stacked below the breakpoint and side by side above it, authored mobile-first: the narrow layout is
-// unconditional and the wider one is layered on top. The breakpoint is obtained only by including the
-// shared mixin, so no component restates a width and lets it drift. Wrapping is enabled alongside the row
-// direction so a long title beside several actions reflows rather than overflowing at widths between the
-// declared steps.
+// unconditional and the wider one is layered on top. The breakpoint is obtained only by including the shared
+// mixin, so no component restates a width and lets it drift. Wrapping is enabled alongside the row direction
+// so a long title beside several actions reflows rather than overflowing at widths between the declared
+// steps.
 .page-header {
   display: flex;
   flex-direction: column;
@@ -35,9 +35,9 @@
 }
 
 // Size and weight are declared rather than left to inherit: an `h1` given neither falls back to the
-// user-agent default of twice the inherited size at bold weight, which is not the step this heading
-// renders at. The margin is zeroed for a related reason - the default heading margin would double the
-// spacing that the text group's gap already owns.
+// user-agent default of twice the inherited size at bold weight, which is not the step this heading renders
+// at. The margin is zeroed for a related reason - the default heading margin would double the spacing that
+// the text group's gap already owns.
 .page-header__title {
   margin: 0;
   color: var(--color-primary);
@@ -48,8 +48,8 @@
 }
 
 // MIGRATION: the supporting line is de-emphasised. The legacy body-text rule it derives from declared no
-// colour at all, so that line simply inherited the surrounding text colour; resolving it to the muted
-// token separates the two text roles without introducing a second type size.
+// colour at all, so that line simply inherited the surrounding text colour; resolving it to the muted token
+// separates the two text roles without introducing a second type size.
 .page-header__subtitle {
   margin: 0;
   color: var(--color-text-muted);
@@ -58,13 +58,13 @@
   overflow-wrap: break-word;
 }
 
-// This wrapper declares no padding, no border and no surface, so it paints nothing when a screen projects
-// no actions - but it does not therefore disappear, which is why the collapse rule below exists.
+// This wrapper declares no padding, no border and no surface, so it paints nothing when a screen projects no
+// actions - but it does not therefore disappear, which is why the collapse rule below exists.
 //
 // `gap` still reaches projected children, because it is a property of the flex container and the browser
-// applies it to whatever children that container ends up with. Their appearance cannot be reached from
-// here at all - projected content keeps the style scoping of the component that declares it - so it
-// belongs to an unscoped global stylesheet or to the consuming feature.
+// applies it to whatever children that container ends up with. Their appearance cannot be reached from here
+// at all - projected content keeps the style scoping of the component that declares it - so it belongs to an
+// unscoped global stylesheet or to the consuming feature.
 .page-header__actions {
   display: flex;
   flex-wrap: wrap;
@@ -76,20 +76,20 @@
   // the wrapper. `.page-header` is a flex container declaring a gap, and a gap is contributed by the
   // CONTAINER between adjacent flex items - and a zero-sized item is still an item. Without this rule a
   // header on a screen carrying no action at all emits a full spacing step of dead space after the title,
-  // which in the stacked layout is a visible band of whitespace beneath the heading. That is the common
-  // case on these screens, not an edge case.
+  // which in the stacked layout is a visible band of whitespace beneath the heading. That is the common case
+  // on these screens, not an edge case.
   //
   // `display: none` removes the box from layout entirely, so it is not a flex item and the container
   // generates no gap for it. Reducing the gap or switching to sibling margins would not fix it: the gap is
   // correct whenever actions DO exist, and the defect is only the empty case.
   //
   // `:empty` is the right test and is exact here rather than approximate. It matches an element with no
-  // child elements and no text - comments do not count, and no placeholder node is emitted for an
-  // unmatched content slot, so the wrapper is genuinely empty when nothing is projected. Whitespace-only
-  // text nodes cannot defeat it either, because the template compiler strips them by default. The
-  // alternative - projecting into a guarded region, reading the result back and reconciling it under
-  // OnPush - substitutes a runtime change-detection concern for one declarative line that cannot
-  // desynchronise from the DOM it describes.
+  // child elements and no text - comments do not count, and no placeholder node is emitted for an unmatched
+  // content slot, so the wrapper is genuinely empty when nothing is projected. Whitespace-only text nodes
+  // cannot defeat it either, because the template compiler strips them by default. The alternative -
+  // projecting into a guarded region, reading the result back and reconciling it under OnPush - substitutes
+  // a runtime change-detection concern for one declarative line that cannot desynchronise from the DOM it
+  // describes.
   &:empty {
     display: none;
   }

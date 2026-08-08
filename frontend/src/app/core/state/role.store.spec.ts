@@ -224,12 +224,13 @@ import { TestBed } from '@angular/core/testing';
 
 import {
   DEFAULT_ROLE_GROUP_FILTER,
+  MAXIMUM_ROLE_PAGES,
   ROLES_FETCH_PAGE_SIZE,
   RoleStore,
   billingTermsBound,
 } from './role.store';
 
-import { DEFAULT_PAGE_SIZE } from '../models/paged-result.model';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../models/paged-result.model';
 
 import type { TestRequest } from '@angular/common/http/testing';
 import type { Signal } from '@angular/core';
@@ -291,6 +292,26 @@ const ROLE_GROUPS_URL = '/api/v1/role-groups';
 
 /** One role group, addressed with its own identity seed of zero. */
 const ROLE_GROUP_ZERO_URL = '/api/v1/role-groups/0';
+
+/**
+ * The memberships-of-one-account address, for an ordinary account key.
+ *
+ * Nested under the ACCOUNT because the answer is one person's memberships. This is the read
+ * that lets the role listing open narrowed to the person an operator was just looking at.
+ */
+const USER_ROLES_URL = '/api/v1/users/42/roles';
+
+/** The same address for the account keyed nought, which no truthiness test may drop. */
+const USER_ZERO_ROLES_URL = '/api/v1/users/0/roles';
+
+/** An ordinary account key, for the per-account membership read. */
+const HELD_ROLES_USER_ID = 42;
+
+/** A second account key, so a switch of subject is provable. */
+const OTHER_HELD_ROLES_USER_ID = 43;
+
+/** The second account's address. */
+const OTHER_USER_ROLES_URL = '/api/v1/users/43/roles';
 
 // ---------------------------------------------------------------------------
 // WIRE VOCABULARY
@@ -779,6 +800,9 @@ describe('RoleStore', () => {
         ['assignmentsLoading', store.assignmentsLoading],
         ['saving', store.saving],
         ['failure', store.failure],
+        ['rolesHeldByUser', store.rolesHeldByUser],
+        ['heldRolesUserId', store.heldRolesUserId],
+        ['heldRolesLoading', store.heldRolesLoading],
       ];
 
       for (const [name, projection] of projections) {
@@ -797,6 +821,8 @@ describe('RoleStore', () => {
         ['rolesMeta', store.rolesMeta],
         ['assignmentItems', store.assignmentItems],
         ['assignmentsMeta', store.assignmentsMeta],
+        ['probedAssignment', store.probedAssignment],
+        ['probedAssignmentKey', store.probedAssignmentKey],
         ['busy', store.busy],
         ['hasRoleGroups', store.hasRoleGroups],
         ['selectedRoleGroupId', store.selectedRoleGroupId],
@@ -826,6 +852,8 @@ describe('RoleStore', () => {
         'clearSelectedRole',
         'loadAssignments',
         'reloadAssignments',
+        'probeAssignment',
+        'clearProbedAssignment',
         'setGroupFilter',
         'setRolesSort',
         'setRolesQuery',
@@ -838,6 +866,8 @@ describe('RoleStore', () => {
         'createRoleGroup',
         'updateRoleGroup',
         'deleteRoleGroup',
+        'loadRolesHeldByUser',
+        'clearRolesHeldByUser',
         'clearError',
         'reset',
       ];
@@ -859,6 +889,243 @@ describe('RoleStore', () => {
       expect(store.failure()).toBeNull();
       expect(store.busy()).toBeFalse();
       expect(store.hasRoleGroups()).toBeFalse();
+
+      // No account is the subject until one is asked for, and `null` is that fact. It is a
+      // DIFFERENT fact from an account that holds no roles, which is the empty sequence.
+      expect(store.rolesHeldByUser()).toBeNull();
+      expect(store.heldRolesUserId()).toBeUndefined();
+      expect(store.heldRolesLoading()).toBeFalse();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE ROLES ONE ACCOUNT HOLDS
+  //
+  // MIGRATION: `SecurityRoles.ascx.vb:L413-L418` served two modes from one screen, keyed by
+  // either a role or an account, and `Users.ascx.vb:L542` reached the account-keyed mode from
+  // the account listing. This slice is the account-keyed mode: an unpaged answer to "what does
+  // this person hold", held apart from the browsable listing so neither overwrites the other.
+  // -------------------------------------------------------------------------
+
+  describe('the roles one account holds', () => {
+    it('reads the memberships at the account address and publishes them in their own slice', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expectGet(USER_ROLES_URL).flush(
+        envelopeOf([aRoleListItem({ roleId: 0, roleName: 'Administrators' })]),
+      );
+
+      expect(store.rolesHeldByUser()).toEqual([
+        aRoleListItem({ roleId: 0, roleName: 'Administrators' }),
+      ]);
+      expect(store.heldRolesUserId()).toBe(HELD_ROLES_USER_ID);
+      expect(store.heldRolesLoading()).toBeFalse();
+    });
+
+    it('leaves the BROWSABLE listing completely alone, so neither answer overwrites the other', () => {
+      // ⚠ THE TWO ANSWERS ARE DIFFERENT QUESTIONS. The listing is paged, ordered and
+      // filterable; this is unpaged. Landing the narrowed answer in `roles` would put rows the
+      // pager cannot account for into a slice whose meta says otherwise.
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 7, roleName: 'Subscribers' })], 1));
+
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      expectGet(USER_ROLES_URL).flush(
+        envelopeOf([aRoleListItem({ roleId: 0, roleName: 'Administrators' })]),
+      );
+
+      expect(store.roleItems().map((each) => each.roleName)).toEqual(['Subscribers']);
+      expect(store.rolesMeta().totalCount).toBe(1);
+      expect(present(store.rolesHeldByUser(), 'the narrowed answer').map((e) => e.roleName)).toEqual(
+        ['Administrators'],
+      );
+    });
+
+    it('addresses an account key of NOUGHT rather than dropping it from the path', () => {
+      store.loadRolesHeldByUser(0);
+
+      expectGet(USER_ZERO_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 0 })]));
+
+      expect(store.heldRolesUserId()).toBe(0);
+      expect(store.rolesHeldByUser()).toHaveSize(1);
+    });
+
+    it('records the account at DISPATCH, so a screen knows who is being waited for', () => {
+      // Recording it on arrival would leave a screen unable to distinguish "waiting for this
+      // person" from "waiting, subject unknown", and it would keep the PREVIOUS subject on
+      // screen for the whole of the new read.
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expect(store.heldRolesUserId())
+        .withContext('the subject is known before the answer arrives')
+        .toBe(HELD_ROLES_USER_ID);
+      expect(store.heldRolesLoading()).toBeTrue();
+
+      expectGet(USER_ROLES_URL).flush(envelopeOf([]));
+
+      expect(store.heldRolesLoading()).toBeFalse();
+    });
+
+    it('holds an account that belongs to NO role as the empty sequence, not as null', () => {
+      // ⚠ THE TWO ARE DIFFERENT FACTS. `null` means no account is the subject; the empty
+      // sequence means this account holds nothing. A screen that conflated them would fall
+      // back to the unnarrowed listing for a person who genuinely holds no role.
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expectGet(USER_ROLES_URL).flush(envelopeOf([]));
+
+      expect(store.rolesHeldByUser()).toEqual([]);
+      expect(store.rolesHeldByUser()).not.toBeNull();
+      expect(store.heldRolesUserId()).toBe(HELD_ROLES_USER_ID);
+    });
+
+    it('ABANDONS the narrowing when the read fails, rather than showing an empty membership set', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expectGet(USER_ROLES_URL).flush(aProblem(403, null, 'Forbidden'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      expect(store.rolesHeldByUser())
+        .withContext('an empty set would read as "this account holds nothing"')
+        .toBeNull();
+      expect(store.heldRolesUserId()).toBeUndefined();
+      expect(store.heldRolesLoading()).toBeFalse();
+      expect(present(store.failure(), 'the reported failure').status).toBe(403);
+    });
+
+    it('cancels a read in flight before starting another, so the last subject asked for wins', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      const abandoned = expectGet(USER_ROLES_URL);
+
+      store.loadRolesHeldByUser(OTHER_HELD_ROLES_USER_ID);
+
+      expect(abandoned.cancelled)
+        .withContext('the first read is released rather than left to answer later')
+        .toBeTrue();
+      expect(store.heldRolesUserId()).toBe(OTHER_HELD_ROLES_USER_ID);
+
+      expectGet(OTHER_USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 7 })]));
+
+      expect(present(store.rolesHeldByUser(), 'the answer').map((each) => each.roleId)).toEqual([7]);
+      expect(store.heldRolesUserId()).toBe(OTHER_HELD_ROLES_USER_ID);
+    });
+
+    it('DISCARDS the previous account\u2019s answer the moment the subject changes', () => {
+      // ⚠ THE WINDOW THIS CLOSES. The subject is recorded at dispatch, so without this a consumer
+      // comparing "which account is the subject" against "is there an answer" found them in
+      // agreement while the collection still described the PREVIOUS account — and presented one
+      // person's memberships, and their count, under another person's name.
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      expectGet(USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 0 })]));
+      expect(store.rolesHeldByUser()).toHaveSize(1);
+
+      store.loadRolesHeldByUser(OTHER_HELD_ROLES_USER_ID);
+
+      expect(store.rolesHeldByUser())
+        .withContext('no answer is held for the new subject until it answers')
+        .toBeNull();
+      expect(store.heldRolesUserId()).toBe(OTHER_HELD_ROLES_USER_ID);
+
+      expectGet(OTHER_USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 7 })]));
+
+      expect(present(store.rolesHeldByUser(), 'the new answer').map((each) => each.roleId)).toEqual([
+        7,
+      ]);
+    });
+
+    it('KEEPS the answer when the SAME account is re-read, so a refresh does not blank it', () => {
+      // The counterpart to the case above, and the reason the discard is conditional. An answer for
+      // the account still on screen is not wrong, so discarding it would blank the very listing the
+      // refresh exists to update.
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      expectGet(USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 0 })]));
+
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expect(store.rolesHeldByUser())
+        .withContext('the account on screen keeps its rows while they are re-read')
+        .toHaveSize(1);
+
+      expectGet(USER_ROLES_URL).flush(
+        envelopeOf([aRoleListItem({ roleId: 0 }), aRoleListItem({ roleId: 7 })]),
+      );
+
+      expect(store.rolesHeldByUser()).toHaveSize(2);
+    });
+
+    it('stops treating any account as the subject on request, without contacting the server', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      expectGet(USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 0 })]));
+
+      store.clearRolesHeldByUser();
+
+      expect(store.rolesHeldByUser()).toBeNull();
+      expect(store.heldRolesUserId()).toBeUndefined();
+      expect(store.heldRolesLoading()).toBeFalse();
+    });
+
+    it('cancels a read in flight when the narrowing is cleared, so no answer re-narrows it', () => {
+      // ⚠ A RESPONSE ARRIVING AFTER THE CLEARING WOULD RE-NARROW THE LISTING with no command
+      // on screen to explain it. Discarding the answer is not enough; the read is released.
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      const inFlight = expectGet(USER_ROLES_URL);
+
+      store.clearRolesHeldByUser();
+
+      expect(inFlight.cancelled).toBeTrue();
+      expect(store.rolesHeldByUser()).toBeNull();
+      expect(store.heldRolesUserId()).toBeUndefined();
+      expect(store.heldRolesLoading()).toBeFalse();
+    });
+
+    it('counts itself busy while the membership read is outstanding', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expect(store.busy())
+        .withContext('a screen must be able to show progress for this read too')
+        .toBeTrue();
+
+      expectGet(USER_ROLES_URL).flush(envelopeOf([]));
+
+      expect(store.busy()).toBeFalse();
+    });
+
+    it('returns the narrowing to its initial values on a reset, and releases the read', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      const inFlight = expectGet(USER_ROLES_URL);
+
+      store.reset();
+
+      expect(inFlight.cancelled).toBeTrue();
+      expect(store.rolesHeldByUser()).toBeNull();
+      expect(store.heldRolesUserId()).toBeUndefined();
+      expect(store.heldRolesLoading()).toBeFalse();
+    });
+
+    it('publishes the narrowed answer read-only, so a consumer cannot write it', () => {
+      expect('set' in store.rolesHeldByUser).toBeFalse();
+      expect('update' in store.rolesHeldByUser).toBeFalse();
+      expect('set' in store.heldRolesUserId).toBeFalse();
+      expect('set' in store.heldRolesLoading).toBeFalse();
+    });
+
+    it('clears a previously reported failure when a new membership read begins', () => {
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      expectGet(USER_ROLES_URL).flush(aProblem(500, null, 'Server Error'), {
+        status: 500,
+        statusText: 'Server Error',
+      });
+      expect(store.failure()).not.toBeNull();
+
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+
+      expect(store.failure())
+        .withContext('a fresh attempt is not presented beside the previous failure')
+        .toBeNull();
+
+      expectGet(USER_ROLES_URL).flush(envelopeOf([]));
     });
   });
 
@@ -1204,7 +1471,11 @@ describe('RoleStore', () => {
 
     it('re-reads the whole listing from the first page when the narrowing changes', () => {
       store.loadRoles();
-      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 40));
+      // A self-consistent single page: one row against a total of one, so the walk completes on
+      // this response. An earlier revision of this fixture reported a total of FORTY against one
+      // row, which the walk of the day accepted as complete because it stopped on a short page —
+      // the very behaviour this file now refuses. See the shortfall case further down.
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
 
       store.setGroupFilter({ kind: 'AllRoles' });
 
@@ -1240,16 +1511,96 @@ describe('RoleStore', () => {
       expect(request.request.params.get('pageSize')).toBe(String(ROLES_FETCH_PAGE_SIZE));
       expect(request.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize', 'scope']);
 
-      // A short page - fewer rows than were asked for - is the last page by definition, so
-      // this single response ends the walk.
-      request.flush(pageOf([aRoleListItem()], 137));
+      // The server's own record total is what ends the walk: one row against a total of one means
+      // everything it said exists is in hand, so this single response completes it.
+      //
+      // ⚠ AN EARLIER REVISION OF THIS CASE ENCODED THE DEFECT RATHER THAN THE CONTRACT. It flushed
+      // one row against a reported total of a hundred and thirty-seven, asserted that the walk
+      // ended there because "a short page is the last page by definition", and then asserted the
+      // published total was 137 on the reasoning that "a shortfall stays visible rather than
+      // passing as complete". The screen this slice feeds has no pager and renders no total, so
+      // nothing made that shortfall visible to anybody: one role was presented as the tenant's
+      // whole set of roles. A short page is no longer a termination condition, and a server that
+      // stops short of its own total now produces a refusal - see the case below.
+      request.flush(pageOf([aRoleListItem()], 1));
 
       expect(store.rolesMeta().pageIndex)
         .withContext('one envelope holding everything reports the unpaged coordinate')
         .toBe(0);
       expect(store.rolesMeta().totalCount)
-        .withContext("the SERVER's total, so a shortfall stays visible rather than passing as complete")
-        .toBe(137);
+        .withContext("the SERVER's total, which a completed walk has necessarily satisfied")
+        .toBe(1);
+      expect(store.roleItems().length).toBe(1);
+    });
+
+    it('refuses the listing rather than publishing a subset when the server stops short', () => {
+      // ⚠ THE M-3 REGRESSION, PINNED. The server reports far more roles than it supplies and then
+      // answers with an empty page. Publishing the rows in hand would present them as the whole
+      // listing on a pager-less screen, so the walk raises instead.
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 137));
+
+      const second = expectGet(ROLES_URL);
+
+      expect(second.request.params.get('pageIndex'))
+        .withContext('a reported total larger than the rows supplied warrants another page')
+        .toBe('1');
+
+      second.flush(pageOf([], 137, 1));
+
+      expect(store.rolesLoading()).toBeFalse();
+      expect(store.roleItems())
+        .withContext('nothing is published, because a subset would look like the whole listing')
+        .toEqual([]);
+      expect(store.failure()?.operation).toBe('loadRoles');
+      expect(store.failure()).not.toBeNull();
+    });
+
+    it('stops at the page ceiling by refusing rather than by truncating', () => {
+      // ⚠ A SERVER WHOSE TOTAL IS NEVER REACHED. Every page carries a row and the reported total
+      // stays out of reach, so neither of the walk's successful endings can ever fire. The walk
+      // must not run for ever, and it must not quietly publish what it managed to collect either.
+      store.loadRoles();
+
+      let issued = 0;
+      let inFlightMoreThanOne = 0;
+
+      for (;;) {
+        const outstanding = httpMock.match(
+          (candidate) => candidate.method === 'GET' && candidate.url === ROLES_URL,
+        );
+
+        if (outstanding.length === 0) {
+          break;
+        }
+
+        if (outstanding.length > 1) {
+          inFlightMoreThanOne += 1;
+        }
+
+        issued += outstanding.length;
+        outstanding.forEach((request) => {
+          const pageIndex = Number(request.request.params.get('pageIndex') ?? '0');
+
+          // One row per page against an unreachable total. Cheap to produce and sufficient: the
+          // walk continues on the TOTAL rather than on a full page, so a single row keeps it going.
+          request.flush(
+            pageOf([aRoleListItem({ roleId: pageIndex })], Number.MAX_SAFE_INTEGER, pageIndex),
+          );
+        });
+      }
+
+      expect(inFlightMoreThanOne)
+        .withContext('the walk is sequential: never more than one request in flight')
+        .toBe(0);
+      expect(issued)
+        .withContext('the walk stops at the declared ceiling rather than running unbounded')
+        .toBe(MAXIMUM_ROLE_PAGES);
+      expect(store.roleItems())
+        .withContext('a ceiling hit publishes nothing rather than a plausible-looking subset')
+        .toEqual([]);
+      expect(store.failure()?.operation).toBe('loadRoles');
+      expect(store.rolesLoading()).toBeFalse();
     });
 
     it('walks every page and joins them, so no role is silently left off the listing', () => {
@@ -1387,6 +1738,198 @@ describe('RoleStore', () => {
       expect(store.assignmentsMeta().totalCount).toBe(25);
     });
 
+    it('issues exactly ONE request per assignment read, following no further page', () => {
+      // ⚠ THE REGRESSION THIS PINS DOWN. An earlier revision read the assignment listing at the widest
+      // legal page and then requested every further page the metadata reported, together, joining them
+      // into one set - a burst of concurrent requests bounded only by a thousand-page ceiling, the whole
+      // membership of a role retained in memory, and a repeat of the walk after every assignment write.
+      // The screen that consumes this slice mounts the shared pager instead, so the page is the unit.
+      store.loadAssignments(7);
+
+      const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(request.request.params.get('pageSize')).toBe(String(DEFAULT_PAGE_SIZE));
+
+      // A FULL page against a much larger total, which is the strongest possible invitation to walk.
+      request.flush(pageOf([anAssignment()], 137));
+
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
+
+      expect(store.assignmentItems()).toHaveSize(1);
+      // The SERVER's own coordinate and total are held as published, because that is what a pager binds
+      // to and what tells an operator there is more to see.
+      expect(store.assignmentsMeta().totalCount).toBe(137);
+      expect(store.assignmentsMeta().pageSize).toBe(DEFAULT_PAGE_SIZE);
+    });
+
+    it('returns the assignment coordinate to the first page when the addressed role changes', () => {
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 25));
+
+      store.setAssignmentsPage(2);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 25, 2));
+
+      expect(store.assignmentsPage().pageIndex).toBe(2);
+
+      // A different role, and the page an operator was standing on belongs to the role they were
+      // looking at. Carrying the index across would request a window the new role may not have and
+      // present an empty grid for a role that has members. Zero is a REAL role, so this is also the
+      // case that proves the change of address is detected by identity rather than by truthiness.
+      store.loadAssignments(0);
+
+      const fresh = expectGet('/api/v1/roles/0/users');
+
+      expect(fresh.request.params.get('pageIndex')).toBe('0');
+      expect(store.assignmentsPage().pageIndex).toBe(0);
+      expect(store.assignmentItems())
+        .withContext('and the previous role\'s rows are not published under the new role')
+        .toEqual([]);
+
+      fresh.flush(pageOf([anAssignment({ roleId: 0 })], 1));
+    });
+
+    it('steps back to the last page that exists when a removal leaves the coordinate past the end', () => {
+      // ⚠ THE DEAD END THIS PREVENTS, WHICH ONLY PAGING CAN REACH. Eleven members at ten a page;
+      // the operator moves to the second page, where the eleventh sits alone, and removes it. The
+      // write's re-read asks for page one again and the server answers an empty window whose
+      // metadata still reports ten members. Without a correction the grid renders nothing AND the
+      // pager is withdrawn — it is drawn on `pageSize < totalCount`, which ten against ten makes
+      // false — so the operator is left on a blank grid with no affordance back to the ten rows
+      // that are still there. An unpaged grid could not reach that state.
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 11));
+
+      store.setAssignmentsPage(1);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ userRoleId: 11 })], 11, 1));
+
+      expect(store.assignmentsPage().pageIndex).toBe(1);
+
+      // The re-read after a removal, answered as the server would: the window is empty, the total
+      // has fallen to ten, and the reported page count no longer reaches the index asked for.
+      store.reloadAssignments();
+
+      const stranded = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(stranded.request.params.get('pageIndex')).toBe('1');
+      stranded.flush(pageOf([], 10, 1));
+
+      // ONE corrective read, at the last page the server says exists.
+      const corrected = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(corrected.request.params.get('pageIndex'))
+        .withContext('the step-back target comes from the reported page count, not from arithmetic on rows')
+        .toBe('0');
+      expect(store.assignmentsPage().pageIndex).toBe(0);
+      expect(store.assignmentsLoading())
+        .withContext('a read is still outstanding, so the grid must not report itself at rest')
+        .toBeTrue();
+
+      corrected.flush(pageOf([anAssignment()], 10));
+
+      expect(store.assignmentItems()).toHaveSize(1);
+      expect(store.assignmentsMeta().totalCount).toBe(10);
+      expect(store.assignmentsLoading()).toBeFalse();
+      expect(store.failure())
+        .withContext('a corrected coordinate is not a failure')
+        .toBeNull();
+    });
+
+    it('issues no corrective read when the listing is legitimately empty', () => {
+      // A role with no members answers an empty window with a total of nought, and that is a
+      // COMPLETE answer. Correcting it would cost a second request to be told the same thing, and
+      // the positive-total clause is the only thing separating the two cases.
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 25));
+
+      store.setAssignmentsPage(2);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([], 0, 2));
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
+
+      expect(store.assignmentItems()).toEqual([]);
+      expect(store.assignmentsPage().pageIndex)
+        .withContext('the coordinate is left exactly where the caller put it')
+        .toBe(2);
+      expect(store.assignmentsLoading()).toBeFalse();
+    });
+
+    it('issues no corrective read for an empty FIRST page, whatever the total says', () => {
+      // The first page is never past the end. A server reporting an empty first page beside a
+      // positive total is inconsistent with itself, and a correction would ask for page nought
+      // again — the page it just answered — for ever.
+      store.loadAssignments(7);
+
+      const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(request.request.params.get('pageIndex')).toBe('0');
+      request.flush(pageOf([], 25));
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
+
+      expect(store.assignmentsPage().pageIndex).toBe(0);
+      expect(store.assignmentsLoading()).toBeFalse();
+    });
+
+    it('believes a server that reports the window it was asked for does exist', () => {
+      // An empty page can be a truthful answer for a window that DOES exist — every row in it
+      // removed by another administrator between the count and the window. The reported page
+      // count still covers the index, so nothing is corrected.
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 35));
+
+      store.setAssignmentsPage(1);
+
+      // Thirty-five members at ten a page is four pages, so page one is well inside the set.
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([], 35, 1));
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
+
+      expect(store.assignmentsPage().pageIndex).toBe(1);
+      expect(store.assignmentItems()).toEqual([]);
+    });
+
+    it('corrects AT MOST ONCE per read, so a listing shrinking underneath cannot loop', () => {
+      // ⚠ THE TERMINATION PROOF. The corrective read is issued with correction withheld, so a
+      // listing that keeps shrinking between requests costs one extra request and stops — rather
+      // than chasing a receding end for as long as the shrinking continues.
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 35));
+
+      store.setAssignmentsPage(3);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 35, 3));
+
+      store.reloadAssignments();
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([], 21, 3));
+
+      // Corrected to page two, the last of three that twenty-one members make.
+      const corrected = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(corrected.request.params.get('pageIndex')).toBe('2');
+
+      // And the listing has shrunk AGAIN in the meantime, so this answer is past the end too.
+      corrected.flush(pageOf([], 10, 2));
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
+
+      expect(store.assignmentsPage().pageIndex)
+        .withContext('the coordinate the corrective read used is kept; it is not chased further')
+        .toBe(2);
+      expect(store.assignmentsLoading())
+        .withContext('and the slice is at rest rather than waiting on a request nobody issued')
+        .toBeFalse();
+    });
+
     it('reads the role-group listing with no query parameter whatsoever', () => {
       store.loadRoleGroups();
 
@@ -1445,6 +1988,110 @@ describe('RoleStore', () => {
   // -------------------------------------------------------------------------
   // ASSIGNMENT REMOVAL — THE EMPTY SUCCESS THAT MAY LEAVE THE ROW IN PLACE
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // THE SINGLE-ACCOUNT MEMBERSHIP PROBE
+  // -------------------------------------------------------------------------
+
+  describe('the keyed membership probe answers about ONE pairing, in ONE request', () => {
+    it('filters the listing by the login name and matches the row by identifier', () => {
+      store.probeAssignment(7, 42, 'host');
+
+      const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      // ⚠ THE NAME IS THE FILTER; THE IDENTIFIER IS THE MATCH. The listing matches the free-text
+      // filter as a case-insensitive substring of either the login name or the display name, so a
+      // name that is a fragment of another brings back neighbours. The wanted row is picked out
+      // afterwards by identity, because a name is not an identifier.
+      expect(request.request.params.get('query')).toBe('host');
+      // BOUNDED: one request, at the widest page the contract allows, and never a walk.
+      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(request.request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+
+      // The pairing being asked about is published BEFORE the answer lands, so a screen can see
+      // which question is outstanding.
+      expect(store.probedAssignmentKey()).toEqual({ roleId: 7, userId: 42 });
+      expect(store.assignmentProbeLoading()).toBeTrue();
+
+      const wanted = anAssignment({ userRoleId: 9, userId: 42 });
+
+      request.flush(
+        pageOf([anAssignment({ userRoleId: 8, userId: 43, username: 'hostess' }), wanted], 2),
+      );
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === ROLE_SEVEN_MEMBERS_URL,
+      );
+
+      expect(store.probedAssignment()).toEqual(wanted);
+      expect(store.assignmentProbeLoading()).toBeFalse();
+      // And the LISTING slice is untouched by a probe: the two answer different questions and neither
+      // may overwrite the other.
+      expect(store.assignmentItems()).toEqual([]);
+    });
+
+    it('reports NO MEMBERSHIP when the filtered page holds no row for the account', () => {
+      // Role zero and account zero, because both tables carry a legitimate zero key and a truthiness
+      // test on either would make this case pass for the wrong reason.
+      store.probeAssignment(0, 0, 'ada');
+
+      expectGet('/api/v1/roles/0/users').flush(pageOf([anAssignment({ userId: 99 })], 1));
+
+      // A settled "holds nothing", told apart from "nothing has been asked" by the key beside it.
+      expect(store.probedAssignment()).toBeNull();
+      expect(store.probedAssignmentKey()).toEqual({ roleId: 0, userId: 0 });
+    });
+
+    it('records a failed probe under its own operation, never as a failed listing', () => {
+      store.probeAssignment(7, 42, 'host');
+
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(
+        aProblem(500, 'server.unexpected_failure', 'Something went wrong.'),
+        { status: 500, statusText: 'Internal Server Error' },
+      );
+
+      // A screen reports a listing failure by matching the OPERATION, so a probe reported as
+      // `loadAssignments` would be announced as the grid having failed to load.
+      expect(present(store.failure(), 'the recorded failure').operation).toBe('probeAssignment');
+      expect(store.probedAssignment())
+        .withContext('a failed probe holds nothing, which is the state an unknown account shows')
+        .toBeNull();
+      expect(store.assignmentProbeLoading()).toBeFalse();
+    });
+
+    it('abandons the probe it replaces, so an older answer cannot land on a newer question', () => {
+      store.probeAssignment(7, 42, 'host');
+
+      const first = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      store.probeAssignment(7, 43, 'hostess');
+
+      const second = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      expect(first.cancelled).withContext('superseded').toBeTrue();
+      expect(second.cancelled).withContext('current').toBeFalse();
+      expect(store.probedAssignmentKey()).toEqual({ roleId: 7, userId: 43 });
+
+      second.flush(pageOf([anAssignment({ userId: 43 })], 1));
+
+      expect(present(store.probedAssignment(), 'the newer answer').userId).toBe(43);
+    });
+
+    it('forgets the answer and the question together, and abandons a probe in flight', () => {
+      store.probeAssignment(7, 42, 'host');
+
+      const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
+
+      store.clearProbedAssignment();
+
+      expect(request.cancelled).withContext('abandoned').toBeTrue();
+      // Both are cleared, so the state is "nothing has been asked" rather than "the pairing holds
+      // nothing" - two different facts that read differently to an operator.
+      expect(store.probedAssignment()).toBeNull();
+      expect(store.probedAssignmentKey()).toBeNull();
+      expect(store.assignmentProbeLoading()).toBeFalse();
+    });
+  });
 
   describe('assignment removal expires the row rather than deleting it', () => {
     /**
@@ -3430,6 +4077,382 @@ describe('RoleStore', () => {
       expect(store.saving()).toBeFalse();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // WRITE IDENTITY, AND WHY AN AGGREGATE FLAG COULD NOT SETTLE A WRITE
+  //
+  // This store used to publish ONE boolean for "a write is in flight" and nothing else. It is
+  // provided at the application root, so every screen that dispatched a write watched that one
+  // boolean fall and then read the store's single failure slot to learn the outcome. Three distinct
+  // wrong answers follow from that, and none of them is visible from inside one screen:
+  //
+  //   (a) TWO WRITES, ONE FLAG. Screen A dispatches, screen B dispatches, A settles -> the flag
+  //       falls while B is still open, and BOTH screens conclude their own write is done.
+  //   (b) SOMEBODY ELSE'S FAILURE. A's write succeeds and B's is refused. A reads the failure slot,
+  //       finds B's refusal there and reports it as the outcome of its own successful write.
+  //   (c) A SUCCESS READ AS A FAILURE, AND THE REVERSE. The slot is cleared at every dispatch, so
+  //       whether a screen sees a refusal at all depends on which dispatch happened to be last.
+  //
+  // The correction is an identifier per write, handed back at dispatch, and a published result that
+  // carries the identifier, the operation and that write's OWN failure. The cases below pin each
+  // half: the identity is unique and monotone, the result names the write it belongs to, and the
+  // failure travels with the result rather than being read out of shared state.
+  // -------------------------------------------------------------------------
+  describe('every write is settled by identity rather than by an aggregate flag', () => {
+    it('hands back a distinct identifier for every write, and never the absent value', () => {
+      // Zero is reserved as "no write awaited" by the screens that hold one of these, so the
+      // FIRST identifier must not be zero. The counter therefore pre-increments, and that is
+      // asserted here rather than left to a comment.
+      const first = store.createRole(aCreateRequest());
+      const second = store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
+
+      expect(first).withContext('the absent marker must never be issued').not.toBe(0);
+      expect(second).not.toBe(first);
+      expect(second).toBeGreaterThan(first);
+
+      expectPost(ROLES_URL).flush(envelopeOf(aRole({ roleId: 7 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
+      expectPost(ROLE_GROUPS_URL).flush(envelopeOf(aRoleGroup({ roleGroupId: 3 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 3 })]));
+    });
+
+    it('publishes a result naming the write that settled, its operation and its own outcome', () => {
+      const issued = store.deleteRole(7);
+
+      expect(store.mutation())
+        .withContext('nothing is published while the write is open')
+        .toBeNull();
+
+      expectDelete(ROLE_SEVEN_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLES_URL).flush(pageOf([], 0));
+
+      const settled = present(store.mutation(), 'the settled write');
+
+      expect(settled.id).toBe(issued);
+      expect(settled.operation).toBe('deleteRole');
+      expect(settled.failure)
+        .withContext('a success settles with no failure attached')
+        .toBeNull();
+    });
+
+    it('carries a refusal ON the settled result, so no screen reads it out of shared state', () => {
+      const issued = store.updateRole(7, anUpdateRequest());
+
+      expectPut(ROLE_SEVEN_URL).flush(
+        aProblem(409, CONFLICT_CODE.duplicateRoleName, 'Already exists.'),
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      const settled = present(store.mutation(), 'the settled write');
+      const failure = present(settled.failure, 'the refusal on the result');
+
+      expect(settled.id).toBe(issued);
+      expect(settled.operation).toBe('updateRole');
+      expect(failure.operation).toBe('updateRole');
+      expect(failure.status).toBe(409);
+    });
+
+    it('settles the first of two open writes without settling the second', () => {
+      // ⚠ THIS IS DEFECT (a), AND IT IS THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. Both writes
+      // are open; the second answers first. The result must name the SECOND, and the aggregate must
+      // stay raised because the first is still open.
+      const firstWrite = store.createRole(aCreateRequest());
+      const secondWrite = store.createRoleGroup({
+        roleGroupName: 'Paid Services',
+        description: null,
+      });
+
+      const roleCreate = expectPost(ROLES_URL);
+
+      expectPost(ROLE_GROUPS_URL).flush(envelopeOf(aRoleGroup({ roleGroupId: 3 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 3 })]));
+
+      expect(present(store.mutation(), 'the settled write').id).toBe(secondWrite);
+      expect(store.saving())
+        .withContext('one write settling must not report the other as settled')
+        .toBeTrue();
+
+      roleCreate.flush(envelopeOf(aRole({ roleId: 7 })), { status: 201, statusText: 'Created' });
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
+
+      expect(present(store.mutation(), 'the settled write').id).toBe(firstWrite);
+      expect(store.saving())
+        .withContext('the aggregate falls only once every write has settled')
+        .toBeFalse();
+    });
+
+    it('does not attach one write\u2019s refusal to another write\u2019s result', () => {
+      // ⚠ THIS IS DEFECT (b). The refused write and the successful one overlap, and the successful
+      // one settles LAST — so the shared failure slot holds a refusal at the very moment the
+      // successful write's result is published. The result must still carry no failure.
+      store.updateRole(7, anUpdateRequest());
+
+      const refused = expectPut(ROLE_SEVEN_URL);
+      const succeeding = store.createRoleGroup({
+        roleGroupName: 'Paid Services',
+        description: null,
+      });
+      const groupCreate = expectPost(ROLE_GROUPS_URL);
+
+      refused.flush(aProblem(409, CONFLICT_CODE.duplicateRoleName, 'Already exists.'), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+
+      // The refusal IS in the shared slot at this instant, which is what makes the second half of
+      // this case meaningful rather than vacuous.
+      expect(present(store.failure(), 'the shared slot').operation).toBe('updateRole');
+
+      groupCreate.flush(envelopeOf(aRoleGroup({ roleGroupId: 3 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 3 })]));
+
+      const settled = present(store.mutation(), 'the settled write');
+
+      expect(settled.id).toBe(succeeding);
+      expect(settled.failure)
+        .withContext('a successful write must not inherit the other write\u2019s refusal')
+        .toBeNull();
+
+      // ⚠ AND THE SHARED SLOT IS ALREADY EMPTY, WHICH IS DEFECT (c) IN ITS PUREST FORM. The refusal
+      // WAS recorded there — asserted above — but the successful write's own listing re-read cleared
+      // it moments later, because every read clears the slot at dispatch.
+      // So a screen that learned its outcome from this slot would here have concluded that a REFUSED
+      // update succeeded, purely because an unrelated write finished afterwards. Whether the slot
+      // holds anything at all depends on what else the application happened to do next, which is
+      // exactly why the outcome travels on the settled result instead.
+      expect(store.failure())
+        .withContext('the shared slot cannot be relied on to still hold the refusal')
+        .toBeNull();
+    });
+
+    it('clears the published result and the pending count on a session boundary', () => {
+      store.deleteRole(7);
+      expectDelete(ROLE_SEVEN_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLES_URL).flush(pageOf([], 0));
+
+      expect(store.mutation()).not.toBeNull();
+
+      store.reset();
+
+      expect(store.mutation())
+        .withContext('a result from the ended session must not settle a new one\u2019s write')
+        .toBeNull();
+      expect(store.saving()).toBeFalse();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // WHICH ROLE A SETTLED MEMBERSHIP WRITE MAY REFRESH
+  // -------------------------------------------------------------------------
+  describe('a membership write refreshes only a listing it cannot misattribute', () => {
+    const request: RoleAssignmentRequest = Object.freeze({
+      userId: 42,
+      effectiveDate: null,
+      expiryDate: null,
+      notifyUser: false,
+    });
+
+    it('adopts the role it wrote to when no listing is in scope', () => {
+      // Nothing is being viewed, so there is no set to overwrite and no heading to mis-label. The
+      // refresh is what makes the enrolment observable at all on a fresh store.
+      expect(store.assignmentsRoleId()).toBeNull();
+
+      store.assignUser(7, request);
+      expectPost(ROLE_SEVEN_MEMBERS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      expect(store.assignmentsRoleId()).toBe(7);
+      expect(store.assignmentItems().length).toBe(1);
+    });
+
+    it('refreshes the listing when the write addressed the role already in scope', () => {
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([], 0));
+
+      store.assignUser(7, request);
+      expectPost(ROLE_SEVEN_MEMBERS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      expect(store.assignmentsRoleId()).toBe(7);
+      expect(store.assignmentItems().length).toBe(1);
+    });
+
+    it('refuses to move the scope when a DIFFERENT role is the one being viewed', () => {
+      // ⚠ THE CROSS-ROLE REPUBLICATION. Role 7 is enrolled, the operator moves to role 0, and role
+      // 7's write then settles. The previous code forced the scope back to 7, cancelled the read of
+      // 0 and rendered 7's named members under 0's heading — silently, because a cancelled read
+      // delivers neither a value nor an error.
+      store.assignUser(7, request);
+
+      const write = expectPost(ROLE_SEVEN_MEMBERS_URL);
+
+      store.loadAssignments(0);
+
+      const otherRead = expectGet(ROLE_ZERO_MEMBERS_URL);
+
+      write.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.assignmentsRoleId())
+        .withContext('the scope stays where the operator put it')
+        .toBe(0);
+      expect(otherRead.cancelled)
+        .withContext('the read the operator is waiting for must survive')
+        .toBeFalse();
+
+      otherRead.flush(pageOf([anAssignment({ roleId: 0, userId: 9 })], 1));
+
+      expect(store.assignmentsRoleId()).toBe(0);
+      expect(present(store.assignmentItems()[0], 'the held row').roleId).toBe(0);
+    });
+
+    it('applies the same test to a removal, which re-reads for a different reason', () => {
+      store.loadAssignments(0);
+      expectGet(ROLE_ZERO_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 0 })], 1));
+
+      store.removeAssignment(7, 42);
+      expectDelete(ROLE_SEVEN_MEMBER_URL).flush(null, { status: 204, statusText: 'No Content' });
+
+      // No second read is opened. `httpMock.verify()` in the shared teardown is what proves it.
+      expect(store.assignmentsRoleId()).toBe(0);
+      expect(store.assignmentItems().length).toBe(1);
+    });
+
+    it('refreshes the listing on screen when the write addressed the role it shows', () => {
+      // The ordinary path, now stated through the screen's own announcement rather than through the
+      // scope standing in for it.
+      store.openAssignmentsView(7);
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([], 0));
+
+      store.assignUser(7, request);
+      expectPost(ROLE_SEVEN_MEMBERS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      expect(store.assignmentItems().length).toBe(1);
+    });
+
+    it('refuses the refresh once the screen that asked has been LEFT', () => {
+      // ⚠ THE DEFECT RUNTIME VALIDATION CAUGHT, and the reason the screen's announcement exists at
+      // all. The scope test alone cannot see this case: leaving a membership listing does not blank
+      // the rows, so the scope STILL names role 7 here and agreed with the write. Reproduced three
+      // times out of three in a real browser by enrolling an account and clicking back to the role
+      // listing before the write settled — which is the ordinary path from one role's memberships to
+      // another's, the listing being the unavoidable stop between them.
+      store.openAssignmentsView(7);
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      store.assignUser(7, request);
+
+      const write = expectPost(ROLE_SEVEN_MEMBERS_URL);
+
+      // The operator returns to the role listing: the membership screen is destroyed, so it closes.
+      store.closeAssignmentsView(7);
+
+      write.flush(null, { status: 204, statusText: 'No Content' });
+
+      // No re-read is opened. `httpMock.verify()` in the shared teardown is what proves it.
+      expect(store.assignmentsRoleId())
+        .withContext('the rows keep their label; only the refresh is refused')
+        .toBe(7);
+    });
+
+    it('applies the same refusal to a removal, which re-reads for a different reason', () => {
+      store.openAssignmentsView(7);
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      store.removeAssignment(7, 42);
+
+      const write = expectDelete(ROLE_SEVEN_MEMBER_URL);
+
+      store.closeAssignmentsView(7);
+      write.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.assignmentsRoleId()).toBe(7);
+    });
+
+    it('refreshes again for a screen that leaves and comes back to the same role', () => {
+      // Returning re-announces, so the refusal is not sticky: the operator is looking at role 7's
+      // grid again and must see the change their own write made.
+      store.openAssignmentsView(7);
+      store.loadAssignments(7);
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([], 0));
+
+      store.assignUser(7, request);
+
+      const write = expectPost(ROLE_SEVEN_MEMBERS_URL);
+
+      store.closeAssignmentsView(7);
+      store.openAssignmentsView(7);
+
+      write.flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      expect(store.assignmentItems().length).toBe(1);
+    });
+
+    it('ignores a departing screen that names a role another screen has already claimed', () => {
+      // A screen tears down and a replacement announces itself in an order this store does not
+      // control. Were the close unconditional, the predecessor's teardown would un-announce the
+      // replacement and the replacement's own legitimate refresh would then be refused.
+      store.openAssignmentsView(0);
+      store.closeAssignmentsView(7);
+
+      store.loadAssignments(0);
+      expectGet(ROLE_ZERO_MEMBERS_URL).flush(pageOf([], 0));
+
+      store.assignUser(0, {
+        ...request,
+        userId: 9,
+      });
+      expectPost(ROLE_ZERO_MEMBERS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLE_ZERO_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 0, userId: 9 })], 1));
+
+      expect(store.assignmentItems().length).toBe(1);
+    });
+
+    it('adopts again after a session reset has discarded the departed screen', () => {
+      // A reset returns the store to "nothing has been on screen", not to "the screen has left", so
+      // the adoption contract holds for the next session.
+      store.openAssignmentsView(7);
+      store.closeAssignmentsView(7);
+      store.reset();
+
+      store.assignUser(7, request);
+      expectPost(ROLE_SEVEN_MEMBERS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
+
+      expect(store.assignmentsRoleId()).toBe(7);
+    });
+
+    it('treats role zero as an occupied scope rather than as an absent one', () => {
+      // Role keys are `IDENTITY(0, 1)`, so role 0 is the Administrators role of a fresh tenant. A
+      // truthiness test on the scope would read it as "nothing in scope" and take the adoption
+      // branch — reintroducing the republication for precisely the most important role.
+      store.loadAssignments(0);
+      expectGet(ROLE_ZERO_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 0 })], 1));
+
+      store.assignUser(7, request);
+      expectPost(ROLE_SEVEN_MEMBERS_URL).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.assignmentsRoleId()).toBe(0);
+    });
+  });
+
+
 });
 
 /**

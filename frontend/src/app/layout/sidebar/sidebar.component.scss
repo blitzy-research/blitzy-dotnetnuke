@@ -13,8 +13,8 @@
 //  named sidebar area and states that the region rules there are "PLACEMENT ONLY".
 //  That same rule records that it deliberately declares no inline size, because "the
 //  shell's `auto` track measures this region intrinsically, so the width it occupies
-//  is decided by the projected content's own box, in the scoped stylesheet of
-//  whichever component supplies it". This is that stylesheet, and the width is
+//  is decided by the rail's own box, in the rail's own scoped stylesheet". This is
+//  that stylesheet, and the width is
 //  therefore left INTRINSIC here as well — the rail is as wide as its longest
 //  destination label plus its gutter.
 //
@@ -174,13 +174,14 @@
 // -----------------------------------------------------------------------------
 //  1. HOST
 // -----------------------------------------------------------------------------
-//  The shell renders `<div class="shell__sidebar"><ng-content /></div>` and this
-//  component is the projected content, so the host is an ordinary in-flow child of
-//  that region rather than a grid item. An unknown element such as a component host
-//  is inline by default, and an inline host would collapse the rail's block padding,
-//  so `block` is declared. `display: contents` is deliberately NOT used: the rail is
-//  a real box with a fill and a boundary of its own, and removing it from the box
-//  tree would drop both.
+//  The shell renders `<app-sidebar class="shell__sidebar" />`, so THIS HOST IS THE GRID
+//  ITEM: the region class sits on this element and the shell's named sidebar area places
+//  it directly, with no wrapper in between. A grid item is blockified automatically, but
+//  `block` is declared anyway because the host is also rendered as an ordinary element in
+//  specifications that mount the rail on its own, and an unknown element is inline by
+//  default — an inline host would collapse the rail's block padding.
+//  `display: contents` is deliberately NOT used: the rail is a real box with a fill and a
+//  boundary of its own, and removing it from the box tree would drop both.
 :host {
   display: block;
 }

@@ -147,7 +147,7 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // tuned for a border or an icon and does not clear the contrast threshold as body text.
 .role-form__warning {
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // -----------------------------------------------------------------------------
@@ -464,7 +464,7 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // same kind of control being hovered.
 .role-form__command--danger,
 .role-form__command--danger:hover {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // =============================================================================

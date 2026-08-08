@@ -2177,6 +2177,101 @@ describe('AuthStore', () => {
    * command may only return the store to idle while nothing has claimed the phase since. Both
    * halves are asserted below, and the second half is the one a naive fix would fail.
    */
+  // =========================================================================
+  // TENANT ADMINISTRATION — THE ONE ANSWER THE APPLICATION ASKS
+  // =========================================================================
+  describe('tenant administration', () => {
+    it('reports no administration before anybody signs in', () => {
+      expect(store.administersCurrentPortal())
+        .withContext('an unresolved caller administers nothing, which is the safe direction')
+        .toBe(false);
+      expect(store.holdsPortalAdministration()).toBe(false);
+      expect(store.isSuperUser()).toBe(false);
+    });
+
+    it('reports administration when the server derives it, with no role of that name held', async () => {
+      // ⚠ THE CORRECTION THIS PROJECTION EXISTS FOR. Administration is conferred by
+      // `Portals.AdministratorRoleId`, a per-tenant COLUMN naming whichever role administers
+      // that tenant — and `Roles.RoleName` is an ordinary updatable column. So a legitimate
+      // administrator routinely holds a role list containing nothing called `Administrators`,
+      // and the API's `IsPortalAdministratorAsync` resolves the designated role ID against the
+      // caller's active assignments rather than comparing any name.
+      await signIn(
+        credentialPayload({
+          user: currentUser({
+            isSuperUser: false,
+            isPortalAdministrator: true,
+            roles: ['Site Managers'],
+          }),
+        }),
+      );
+
+      expect(store.administersCurrentPortal()).toBe(true);
+      expect(store.roles())
+        .withContext('the role list is data, and it is not what decided this')
+        .toEqual(['Site Managers']);
+    });
+
+    it('reports NO administration for a caller holding the literal administrator role name', async () => {
+      // ⚠ THE REGRESSION TEST. Three screens and the route gate each used to answer this
+      // question for themselves by testing the role list for `Administrators`. A role of that
+      // name may belong to a DIFFERENT tenant, and the tenant in hand may designate another
+      // role entirely — so the name is right about the word and wrong about the portal.
+      await signIn(
+        credentialPayload({
+          user: currentUser({
+            isSuperUser: false,
+            isPortalAdministrator: false,
+            roles: ['Administrators'],
+          }),
+        }),
+      );
+
+      expect(store.roles()).toEqual(['Administrators']);
+      expect(store.administersCurrentPortal())
+        .withContext('a role NAME confers nothing; the server\u2019s determination decides')
+        .toBe(false);
+    });
+
+    it('reports administration for a host account whose derived fact is false', async () => {
+      // ⚠ THE HOST ARM, AND WHY THIS IS NOT SIMPLY THE DERIVED FACT. The API's own handler
+      // opens with `if (account.IsSuperUser) return true` — a host account administers every
+      // tenant — but the sign-in and renewal responses carry an authority-minimised snapshot
+      // in which the derived fact is FALSE while the host flag is present and true. Reading
+      // the derived fact alone would withhold every administrative affordance from a host
+      // account for the whole window between signing in and the current-account read landing.
+      await signIn(
+        credentialPayload({
+          user: currentUser({
+            isSuperUser: true,
+            isPortalAdministrator: false,
+            roles: [],
+          }),
+        }),
+      );
+
+      expect(store.holdsPortalAdministration())
+        .withContext('the derived arm alone is false, exactly as the snapshot reports it')
+        .toBe(false);
+      expect(store.isSuperUser()).toBe(true);
+      expect(store.administersCurrentPortal())
+        .withContext('the host arm carries it, which is what the enforcing policy also does')
+        .toBe(true);
+    });
+
+    it('withdraws administration the moment the session ends', async () => {
+      await signIn(credentialPayload({ user: currentUser({ isPortalAdministrator: true }) }));
+
+      expect(store.administersCurrentPortal()).toBe(true);
+
+      store.reset();
+
+      expect(store.administersCurrentPortal())
+        .withContext('a discarded session administers nothing')
+        .toBe(false);
+    });
+  });
+
   describe('phase ownership', () => {
     it('returns to idle when a sign-in is abandoned before it answers', () => {
       const subscription = store.login({ username: 'admin', password: FAKE_PASSWORD }).subscribe({
@@ -2581,6 +2676,8 @@ describe('AuthStore', () => {
         ['roles', store.roles],
         ['permissions', store.permissions],
         ['isSuperUser', store.isSuperUser],
+        ['holdsPortalAdministration', store.holdsPortalAdministration],
+        ['administersCurrentPortal', store.administersCurrentPortal],
         ['mustChangePassword', store.mustChangePassword],
         ['passwordExpiring', store.passwordExpiring],
         ['mustUpdateProfile', store.mustUpdateProfile],
@@ -2608,7 +2705,7 @@ describe('AuthStore', () => {
 
       expect(projections.length)
         .withContext('every projection the store declares is covered above')
-        .toBe(27);
+        .toBe(29);
     });
 
     it('reports a stable reading for a projection nothing has changed', async () => {
@@ -3140,6 +3237,112 @@ describe('AuthStore', () => {
   //   the defect. The transport now propagates the refusal and this store absorbs it
   //   DELIBERATELY, recording it and saying so.
   // -------------------------------------------------------------------------
+  // =========================================================================
+  // WHO REPORTS A REFUSED RENEWAL
+  //
+  // `core/services/auth.service.ts` marks every credential request as reported by its caller, which
+  // stopped the global announcer in `core/interceptors/error.interceptor.ts` reporting a refused
+  // sign-in twice and a rate-limited one three times. A renewal, though, has NO SCREEN: it happens
+  // behind whatever the operator is doing, so nothing binds its outcome and moving ownership without
+  // giving it an owner would have turned a duplicate report into no report at all. This store is
+  // that owner, and these cases are what stop the silence coming back.
+  // =========================================================================
+
+  describe('renewal reporting', () => {
+    it('announces a renewal refused for a reason other than authority, once, in shared wording', async () => {
+      const notify = spyOn(notifications, 'notify').and.callThrough();
+
+      for (const status of [429, 500, 503]) {
+        notify.calls.reset();
+
+        await signIn();
+
+        const renewal = firstValueFrom(store.refreshSession());
+        httpMock
+          .expectOne(REFRESH_URL)
+          .flush(codelessRefusal(status), { status, statusText: 'Refused' });
+
+        await expectAsync(renewal).toBeRejected();
+
+        expect(notify.calls.count())
+          .withContext(`a ${status} is announced exactly once, by this store and by nobody else`)
+          .toBe(1);
+        expect(String(notify.calls.mostRecent().args[1]).length)
+          .withContext('and it says something rather than announcing an empty sentence')
+          .toBeGreaterThan(0);
+
+        store.reset();
+      }
+    });
+
+    it('stays silent when authority itself is refused, because arriving at sign-in is the report', async () => {
+      // ⚠ THE ONE STATUS THIS OWNER MUST NOT SPEAK ON, and it was silent before this store took
+      // ownership too: the global announcer returns early on it, on the documented grounds that
+      // `core/interceptors/auth.interceptor.ts` owns the lifecycle of a refused credential. What
+      // that owner does is end the session and send the operator to the sign-in screen. A queued
+      // sentence would arrive alongside the navigation, and the teardown clears the queue anyway.
+      const notify = spyOn(notifications, 'notify').and.callThrough();
+
+      await signIn();
+      notify.calls.reset();
+
+      const renewal = firstValueFrom(store.refreshSession());
+      httpMock
+        .expectOne(REFRESH_URL)
+        .flush(codelessRefusal(401), { status: 401, statusText: 'Unauthorized' });
+
+      await expectAsync(renewal).toBeRejected();
+
+      expect(notify)
+        .withContext('the terminal refusal is reported by navigation, not by a sentence')
+        .not.toHaveBeenCalled();
+      expect(store.isAuthenticated())
+        .withContext('and the session is gone regardless')
+        .toBeFalse();
+    });
+
+    it('announces an unreachable endpoint, which carries no status to be terminal by', async () => {
+      const notify = spyOn(notifications, 'notify').and.callThrough();
+
+      await signIn();
+      notify.calls.reset();
+
+      const renewal = firstValueFrom(store.refreshSession());
+      httpMock
+        .expectOne(REFRESH_URL)
+        .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+
+      await expectAsync(renewal).toBeRejected();
+
+      expect(notify.calls.count())
+        .withContext('a renewal that never reached the server is still reported')
+        .toBe(1);
+    });
+
+    it('says nothing about a renewal belonging to a session that has already been replaced', async () => {
+      // The epoch guard the announcement sits behind. A renewal begun before a sign-out arrives
+      // afterwards and must neither clear the session that replaced it nor tell the operator that
+      // something failed: from where they are standing, nothing did.
+      const notify = spyOn(notifications, 'notify').and.callThrough();
+
+      await signIn();
+
+      const renewal = firstValueFrom(store.refreshSession());
+      const pending = httpMock.expectOne(REFRESH_URL);
+
+      store.reset();
+      notify.calls.reset();
+
+      pending.flush(codelessRefusal(503), { status: 503, statusText: 'Service Unavailable' });
+
+      await expectAsync(renewal).toBeRejected();
+
+      expect(notify)
+        .withContext('a superseded renewal reports nothing to anybody')
+        .not.toHaveBeenCalled();
+    });
+  });
+
   describe('revocation reporting', () => {
     it('reports no outstanding revocation before anything has been signed out', () => {
       expect(store.revocationOutstanding()).toBeFalse();
@@ -3249,6 +3452,118 @@ describe('AuthStore', () => {
         .withContext('nothing was left live, so there is nothing to warn about')
         .toBeFalse();
       expect(warning).not.toHaveBeenCalled();
+    });
+
+    // ---------------------------------------------------------------------
+    // HOW LONG THE REPORT LIVES
+    //
+    // ⚠ THE CASES THAT EXIST BECAUSE THE REPORT USED TO OUTLIVE ITS SESSION. It was cleared
+    // by exactly one thing — a later sign-out whose withdrawal SUCCEEDED — so after a single
+    // refused withdrawal the sign-in screen carried the warning indefinitely: still there
+    // after the next successful sign-in, still there when the next expiry returned somebody
+    // to that screen, and still above the form for whoever typed in it next. A sentence about
+    // a session two boundaries ago, presented as though it described theirs.
+    //
+    // The lifetime is now exactly ONE SESSION BOUNDARY: raised by a withdrawal that could not
+    // be confirmed, and retired by the next boundary of any kind — a new attempt beginning, a
+    // confirmed later withdrawal, or the store being reset. These cases pin both ends of that
+    // interval, because a report retired too early says nothing when it should and one retired
+    // too late says the wrong thing to the wrong person.
+    // ---------------------------------------------------------------------
+
+    it('retires the report the moment a new attempt BEGINS, not when it succeeds', async () => {
+      await signIn();
+
+      const refused = firstValueFrom(store.logout());
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush(codelessRefusal(503), { status: 503, statusText: 'Service Unavailable' });
+      await refused;
+
+      expect(store.revocationOutstanding())
+        .withContext('the precondition: a withdrawal the server never confirmed')
+        .toBeTrue();
+
+      const nextAttempt = firstValueFrom(store.login(credentials()));
+
+      // ⚠ ASSERTED WHILE THE CREDENTIAL EXCHANGE IS STILL IN FLIGHT. Clearing on success
+      // would leave the previous session's warning standing above the form for the whole
+      // duration of the attempt — which is precisely when somebody is reading that form.
+      expect(store.revocationOutstanding())
+        .withContext('retired at the start of the attempt, before its outcome is known')
+        .toBeFalse();
+
+      const payload = credentialPayload();
+      httpMock.expectOne(LOGIN_URL).flush(payload);
+      answerIdentityRead(payload.data.accessToken, payload.data.user);
+      await nextAttempt;
+
+      expect(store.revocationOutstanding()).toBeFalse();
+    });
+
+    it('keeps the report retired when that new attempt is REFUSED', async () => {
+      // The other half of clearing at the start: a refused attempt must not inherit the
+      // warning either. The person at the keyboard has already been shown it once, and
+      // re-presenting it beside a rejected sign-in reads as an explanation of the rejection.
+      await signIn();
+
+      const refused = firstValueFrom(store.logout());
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush(codelessRefusal(503), { status: 503, statusText: 'Service Unavailable' });
+      await refused;
+      expect(store.revocationOutstanding()).toBeTrue();
+
+      await refuseSignIn(codelessRefusal(401), 401, 'Unauthorized');
+
+      expect(store.revocationOutstanding())
+        .withContext('the refusal is reported through the failure record, not through this flag')
+        .toBeFalse();
+      expect(store.hasFailure())
+        .withContext('and the refusal itself IS reported')
+        .toBeTrue();
+    });
+
+    it('retires the report when the store is reset', async () => {
+      await signIn();
+
+      const refused = firstValueFrom(store.logout());
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush(codelessRefusal(503), { status: 503, statusText: 'Service Unavailable' });
+      await refused;
+      expect(store.revocationOutstanding()).toBeTrue();
+
+      store.reset();
+
+      expect(store.revocationOutstanding())
+        .withContext('a reset session carries nothing forward from the one it replaced')
+        .toBeFalse();
+    });
+
+    it('raises the report only in the withdrawal request FAILING, so the discard cannot erase it', async () => {
+      // ⚠ THE ORDERING CASE, and the reason clearing on every boundary is safe at all.
+      // Sign-out discards the session — which retires this report — BEFORE it posts the
+      // withdrawal, so a naive reading suggests the clear could race ahead of the report it is
+      // meant to raise. It cannot, because the flag is set in that same request's failure
+      // handler, strictly after the discard. Asserted across the boundary rather than argued:
+      // false while the withdrawal is unanswered, true once it is refused.
+      await signIn();
+
+      const inFlight = firstValueFrom(store.logout());
+
+      expect(store.revocationOutstanding())
+        .withContext('the discard has already run and retired any earlier report')
+        .toBeFalse();
+
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush(codelessRefusal(429), { status: 429, statusText: 'Too Many Requests' });
+      await inFlight;
+
+      expect(store.revocationOutstanding())
+        .withContext('and the refusal raises it afterwards, where nothing can clear it back')
+        .toBeTrue();
     });
   });
 

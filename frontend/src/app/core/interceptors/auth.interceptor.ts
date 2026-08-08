@@ -9,6 +9,7 @@ import { catchError, switchMap, throwError } from 'rxjs';
 import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 
 import { isAnonymousAuthEndpoint, isApiRequest } from '../config/api-endpoints';
+import { SIGN_IN_ROUTE } from '../config/app-routes.config';
 import { TokenStorageService } from '../services/token-storage.service';
 // MIGRATION: the renewal used to be reached through `core/services/auth.service`, which owned the
 //   in-flight slot, the two-request composition and custody of the stored session. That service is
@@ -30,19 +31,26 @@ import { SessionTeardownService } from '../state/session-teardown.service';
  */
 const AUTHORIZATION_HEADER = 'Authorization';
 
-/**
- * Where an operator is sent once a session cannot be renewed.
+/*
+ * Where an operator is sent once a session cannot be renewed: `SIGN_IN_ROUTE`, IMPORTED from
+ * `core/config/app-routes.config.ts` at the head of this file.
  *
- * A route rather than a full reload, so the single-page application is not started
- * again from scratch for what is an ordinary end of session.
+ * A route rather than a full reload, so the single-page application is not started again from
+ * scratch for what is an ordinary end of session.
  *
- * `APP_ROUTES` declares this path and mounts the sign-in feature behind it UNGATED, so the
+ * `APP_ROUTES` declares that path and mounts the sign-in feature behind it UNGATED, so the
  * navigation resolves to the sign-in screen rather than to the catch-all. It must stay
  * unguarded: guarding the one destination an expired session is sent to would bounce that
  * session between the guard and this interceptor. Nothing else in this file depends on the
  * destination beyond its resolving.
+ *
+ * MIGRATION: this was a private `LOGIN_PATH` copy, one of four across the workspace. Both
+ * route gates and the root component held the others, and the value is only correct if it
+ * matches an ungated entry in the route table - a mismatch resolves to the catch-all with no
+ * diagnostic anywhere, so an expired session would land on the not-found view. The four are
+ * now one constant in a module that imports nothing, which is what removes the drift without
+ * coupling this transport concern to a navigation gate.
  */
-const LOGIN_PATH = '/login';
 
 /**
  * The health-probe paths, which are published at the HOST ROOT rather than under the
@@ -542,9 +550,14 @@ function endSession(
   // already in flight still believing its session was current, free to repopulate the very
   // slices the purge had just emptied.
   tokenStorage.clear();
-  sessionTeardown.purge();
 
-  void router.navigate([LOGIN_PATH]).catch(() => false);
+  // ⚠ THE REASON IS RECORDED, AND IT IS NOT `signedOut`. This path is reached when a renewal
+  // could not recover a refusal, so the session ended WITHOUT the operator asking — and the
+  // one owner of the boundary publishes which boundary was crossed so a consumer, a
+  // specification most of all, can tell the two apart. It does not change what is discarded.
+  sessionTeardown.purge('renewalRefused');
+
+  void router.navigate([SIGN_IN_ROUTE]).catch(() => false);
 }
 
 /**

@@ -456,6 +456,46 @@ public interface IPortalService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists the accounts a portal may designate as its administrator.
+    /// </summary>
+    /// <param name="portalId">Identifier of the portal whose candidates are wanted.</param>
+    /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
+    /// <returns>
+    /// A successful outcome carrying the candidates, or a successful outcome whose value is
+    /// <see langword="null"/> when no portal carries that identifier.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Fills the administrator selector on the settings screen, reproducing
+    /// <c>Website/admin/Portal/SiteSettings.ascx.vb:L329-L339</c>: the legacy screen asked the role
+    /// controller for the members of the portal's own administrator role, added one entry per member,
+    /// and pre-selected the entry matching the stored <c>AdministratorId</c>.
+    /// </para>
+    /// <para>
+    /// The candidates are keyed off the portal's <c>AdministratorRoleId</c> rather than off a literal
+    /// role name. The legacy member was name-keyed because its callers held names, and the legacy
+    /// screen passed <c>objPortal.AdministratorRoleName</c> - a value that comes from a join rather
+    /// than from a constant precisely because a tenant may rename the role. Resolving the name from
+    /// the stored key preserves that and cannot be defeated by a rename.
+    /// </para>
+    /// <para>
+    /// MIGRATION: UNPAGED, matching the legacy read. <c>GetUserRolesByRoleName</c> returned every
+    /// member as an untyped list and the selector held them all, so there is no page coordinate to
+    /// honour and no window a caller could mistake for the whole set. A portal's administrator role
+    /// is small by nature; the account listing, which is not, is paged.
+    /// </para>
+    /// <para>
+    /// An implementer must not widen this to every account in the portal. The write path already
+    /// guards the broader rule - the designated account must belong to the addressed portal - and a
+    /// wider list would offer accounts the legacy selector never offered, which is a change in
+    /// behaviour rather than a convenience.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<PortalAdministratorDto>?>> ListAdministratorCandidatesAsync(
+        int portalId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists the aliases bound to one portal, or every alias in the installation.
     /// </summary>
     /// <param name="portalId">

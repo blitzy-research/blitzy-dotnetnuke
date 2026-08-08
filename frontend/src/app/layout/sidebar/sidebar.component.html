@@ -11,13 +11,13 @@
   kind in the accessibility tree, which is a defect rather than a duplicate.
 
   HOW THIS COMPONENT IS MOUNTED, AND WHY IT MUST NAME ITSELF
-  The shell publishes its navigation region as a projection slot rather than importing
-  this component, and its own template records the consequence: "the projected content
-  brings its own landmark and its own accessible name". That is why the landmark below
-  carries an accessible name of its own — an unnamed landmark is announced as an
-  anonymous region and is indistinguishable in a landmark list. The name is a plain
-  attribute and deliberately does not repeat the word navigation, which assistive
-  technology already announces from the element itself.
+  The shell imports this component and renders it as its navigation region, and its own
+  template records the consequence: the region "writes no landmark and no accessible name
+  of its own", leaving both to the rail. That is why the landmark below carries an
+  accessible name of its own — an unnamed landmark is announced as an anonymous region and
+  is indistinguishable in a landmark list. The name is a plain attribute and deliberately
+  does not repeat the word navigation, which assistive technology already announces from
+  the element itself.
 
   SELECTOR CONTRACT FOR THE PAIRED STYLESHEET
   The paired stylesheet owns every dimension, colour and spacing value; none appears
@@ -150,44 +150,40 @@
      stating plainly: this rail is English-only, where the legacy menu could be
      localised per portal. -->
 
-<!-- MIGRATION: ⚠ the current-page announcement is bound with EXACT address matching,
-     and that is a correctness requirement rather than a refinement. Link-activity
-     matching is by prefix unless told otherwise, and one pair of addresses proves the
-     hazard: the module collection address is a strict prefix of the module import
-     address, so on the import screen prefix matching would mark BOTH entries active —
-     two highlighted links for one location and, because the announcement is driven from
-     the same state, two elements each claiming to be the current page. That claim is
-     meaningless unless it is unique, so this is an accessibility defect and not merely a
-     cosmetic one. The other pairs were checked and do not collide. The matching options
-     are taken from the single stable instance the paired component publishes rather than
-     written as a literal here, because a literal would allocate a new object on every
-     evaluation. -->
+<!-- MIGRATION: ⚠ the current-destination decision is the COMPONENT'S, resolved as the
+     longest matching entry, and both the highlight and the announcement read that one
+     answer. This replaced exact per-link matching, which was wrong in the common case: the
+     console has more descendant screens than collection screens — a portal's settings, a
+     module's edit form and export, an account's detail, profile and credential, a role's
+     membership — and on every one of them exact matching left NO entry marked, so nothing
+     was highlighted and nothing announced itself as the current page. Plain prefix matching
+     is not the answer either: the module collection address is a strict prefix of the module
+     import address, so it would mark BOTH entries on the import screen, and a claim to be
+     the current page is meaningless unless it is unique. Longest-match satisfies both, and
+     the comparison is segment-wise rather than textual because the role collection address
+     is a string prefix of the role-group address without being an ancestor of it. -->
 
-<!-- MIGRATION: permission-based link visibility is an AFFORDANCE and never enforcement,
-     and this rail deliberately applies none. Authorisation is decided server-side and
-     answered as HTTP 403; on the client, route activation is gated by the router's own
-     authentication and permission guards. Showing the entry points and letting those two
-     authorities refuse is the safer default: hiding an entry the guard would have allowed
-     silently removes a capability, whereas showing one the guard refuses costs a
-     redirect. The legacy application took the same position — its access-denied screen
-     performs no permission check of its own and is a pure display surface, reporting
-     refusal at warning severity rather than as an error.
+<!-- MIGRATION: ⚠ the entries whose routes carry the tenant-administration policy are
+     rendered ONLY for a caller the client can already tell administers the tenant, and the
+     fact comes from the same authority the route gate reads. Hiding a link is an affordance
+     and never enforcement — authorisation is decided server-side and answered as HTTP 403 —
+     but offering a destination the guard in front of it is about to refuse costs the
+     operator a navigation that lands them back where they started with no explanation.
+     Entries whose routes are reached with the authentication gate alone are always shown,
+     because the client has nothing to base a refusal on and hiding one would remove a
+     capability the caller has. A group left with no visible entry is omitted whole, heading
+     included: a heading over an empty list is announced as a section containing nothing.
 
-     The shared permission directive was evaluated for group-level gating and is NOT
-     adopted, for three independently sufficient reasons, all measured. Its required
-     input is typed to the four-value permission-key vocabulary rather than to
-     authorisation policy names, and those are two different vocabularies — the
-     directive's own documentation identifies conflating them as precisely the confusion
-     its type exists to prevent — so a policy name written there would not compile under
-     strict template checking, and were it to reach run time the directive fails closed
-     on an unrecognised value and every group would disappear permanently. The paired
-     component imports only the two router directives, so the directive is not available
-     in this template at all. And the route table gates just three of these eight
-     addresses, leaving the four collection addresses on authentication alone, so a
-     group-level gate would contradict the guards it is supposed to mirror. The gap is
-     reported rather than papered over: gating this rail needs either a policy-typed
-     input on that directive or a resolved permission-key projection to gate against, and
-     neither exists yet. -->
+     The shared permission directive is NOT used, and this is the reason rather than an
+     omission. Its input is typed to the four-value persisted permission-KEY vocabulary,
+     whereas tenant administration is an authorisation POLICY — two different vocabularies
+     over two different sets of data, and the directive's own documentation identifies
+     conflating them as precisely the confusion its type exists to prevent. The paired
+     component therefore imports one router directive and no permission directive.
+
+     The legacy application took a comparable position at its own boundary: its
+     access-denied screen performs no permission check of its own and is a pure display
+     surface, reporting refusal at warning severity rather than as an error. -->
 
 <!-- MIGRATION: the bulleted list markers are dropped. `default.css` L592-L595 sets
      `list-style-type: square` on every list item, nesting to disc at L597 and circle at
@@ -204,101 +200,138 @@
      control natively focusable and adds no attribute that would take one out of the tab
      order or reorder it. -->
 
-<nav
-  class="app-sidebar"
-  aria-label="Administration"
-  [class.app-sidebar--collapsed]="collapsed()"
->
-  <!--
-    The disclosure control. A real button, because a button is what a control that acts
-    on the current document is, and because it is focusable, keyboard-operable and
-    announced correctly with no attribute added to make it so. An anchor without a
-    destination would be announced as a link and go nowhere, and a clickable division
-    would be neither focusable nor announced at all.
+<!--
+  ⚠ THE RAIL IS NOT EMITTED AT ALL WHEN IT HAS NOTHING TO OFFER, and this was observed in a
+  browser rather than reasoned about. Every entry requires one of the two administration
+  authorities, so a signed-in caller holding neither filters the projection down to nothing —
+  and the wrapper below, emitted unconditionally, then rendered a NAMED navigation landmark
+  containing one disclosure button that reveals an empty region. A screen-reader user
+  orienting by landmark list is offered "Administration navigation", opens it, and finds
+  nothing inside; a sighted user is shown a small bordered "Navigation" box occupying the
+  shell's left column with no destination in it.
 
-    Its name is STABLE across both states and the state is carried by `aria-expanded`
-    alone, which is the position the rest of this codebase takes as well. A name that
-    rewrote itself on activation would change the control's identity underneath the user
-    at the moment they were relying on it, and would restate in words something already
-    reported by an attribute built to report it.
-
-    It names the region it operates, so the relationship is programmatic rather than
-    implied by adjacency. Both halves of that relationship read the SAME identifier
-    published by the paired component, so the control and the region it claims to
-    operate are provably the same element and cannot drift apart.
-  -->
-  <!-- MIGRATION: the marker is text, not an icon. The legacy chrome drew its menu
-       indicators from a symbol font and its affordances from raster images referenced by
-       the stylesheet; neither ships with this application, and the only static asset in
-       the workspace is the favicon. Any decorative shape belongs to the paired
-       stylesheet, where the design tokens are in scope; this file contributes the
-       accessible name. -->
-  <button
-    type="button"
-    class="app-sidebar__toggle"
-    [attr.aria-expanded]="collapsed() === false"
-    [attr.aria-controls]="navigationRegionId"
-    (click)="toggleCollapsed()"
-  >
-    Navigation
-  </button>
-
-  <div
-    class="app-sidebar__regions"
-    [id]="navigationRegionId"
-    [hidden]="collapsed()"
-  >
+  Neither is a security defect — no entry point is disclosed either way, which is what the
+  filtering exists to guarantee — but an affordance that leads nowhere is worse than no
+  affordance, so the landmark is withheld with its contents rather than left as an empty
+  frame. The condition reads the same projection the entries read, so the two cannot
+  disagree: if a single entry is admitted the landmark is emitted, and if none is it is not.
+-->
+@if (visibleNavigation().length > 0) {
+    <nav
+      class="app-sidebar"
+      aria-label="Administration"
+      [class.app-sidebar--collapsed]="collapsed()"
+    >
     <!--
-      One group per preserved domain, each a genuine heading followed by a genuine list.
-      The heading is a real heading element rather than a styled division, so it appears
-      in the document outline and can be navigated to; the level sits one below the page
-      title that the shared page-header component emits inside the main region, which is
-      the only other heading level in use.
+      The disclosure control. A real button, because a button is what a control that acts
+      on the current document is, and because it is focusable, keyboard-operable and
+      announced correctly with no attribute added to make it so. An anchor without a
+      destination would be announced as a link and go nowhere, and a clickable division
+      would be neither focusable nor announced at all.
 
-      Tracking is by the group's own stable key and by each destination's address, both
-      of which are invariant. Tracking either loop by index would re-associate every row
-      with different data the moment the model changed, and tracking a group by its label
-      would tie identity to user-visible wording.
+      Its name is STABLE across both states and the state is carried by `aria-expanded`
+      alone, which is the position the rest of this codebase takes as well. A name that
+      rewrote itself on activation would change the control's identity underneath the user
+      at the moment they were relying on it, and would restate in words something already
+      reported by an attribute built to report it.
 
-      The heading identifier is derived once and read twice — as the heading's own
-      identifier and as the list's accessible name — so the association is structural and
-      cannot drift. It is namespaced with the region identifier so that it stays unique in
-      the document even though these values become global identifiers.
+      It names the region it operates, so the relationship is programmatic rather than
+      implied by adjacency. Both halves of that relationship read the SAME identifier
+      published by the paired component, so the control and the region it claims to
+      operate are provably the same element and cannot drift apart.
     -->
-    @for (group of navigation; track group.id) {
-      @let groupHeadingId = navigationRegionId + '-' + group.id;
+    <!-- MIGRATION: the marker is text, not an icon. The legacy chrome drew its menu
+         indicators from a symbol font and its affordances from raster images referenced by
+         the stylesheet; neither ships with this application, and the only static asset in
+         the workspace is the favicon. Any decorative shape belongs to the paired
+         stylesheet, where the design tokens are in scope; this file contributes the
+         accessible name. -->
+    <button
+      type="button"
+      class="app-sidebar__toggle"
+      [attr.aria-expanded]="collapsed() === false"
+      [attr.aria-controls]="navigationRegionId"
+      (click)="toggleCollapsed()"
+    >
+      Navigation
+    </button>
 
-      <h2 class="app-sidebar__group" [id]="groupHeadingId">{{ group.label }}</h2>
+    <div
+      class="app-sidebar__regions"
+      [id]="navigationRegionId"
+      [hidden]="collapsed()"
+    >
+      <!--
+        One group per preserved domain, each a genuine heading followed by a genuine list.
+        The heading is a real heading element rather than a styled division, so it appears
+        in the document outline and can be navigated to; the level sits one below the page
+        title that the shared page-header component emits inside the main region, which is
+        the only other heading level in use.
 
-      <ul class="app-sidebar__list" [attr.aria-labelledby]="groupHeadingId">
-        @for (item of group.items; track item.path) {
-          <li class="app-sidebar__item">
-            <!--
-              The anchor is a real link to a real address, so it is focusable, announced
-              as a link, and openable in a new tab exactly as a user expects — none of
-              which a click handler on a non-interactive element would give.
+        Tracking is by the group's own stable key and by each destination's address, both
+        of which are invariant. Tracking either loop by index would re-associate every row
+        with different data the moment the model changed, and tracking a group by its label
+        would tie identity to user-visible wording.
 
-              The router applies the active class and the reference below reads the same
-              router state to decide the current-page announcement, so the visual
-              treatment and the announcement are driven by ONE source and cannot
-              disagree. The announcement is bound rather than written as a fixed
-              attribute, and resolves to nothing at all when the address is not the one
-              showing: binding an empty result removes the attribute outright instead of
-              leaving a stale claim behind. Colour is therefore never the only carrier of
-              which entry is current.
-            -->
-            <a
-              class="app-sidebar__link"
-              [routerLink]="item.path"
-              routerLinkActive="app-sidebar__link--active"
-              #linkActivity="routerLinkActive"
-              [routerLinkActiveOptions]="exactMatchOptions"
-              [attr.aria-current]="linkActivity.isActive ? 'page' : null"
-              >{{ item.label }}</a
-            >
-          </li>
-        }
-      </ul>
-    }
-  </div>
-</nav>
+        The heading identifier is derived once and read twice — as the heading's own
+        identifier and as the list's accessible name — so the association is structural and
+        cannot drift. It is namespaced with the region identifier so that it stays unique in
+        the document even though these values become global identifiers.
+      -->
+      <!--
+        ⚠ THE FILTERED PROJECTION, NOT THE DECLARED MODEL. `visibleNavigation` holds only
+        the groups and entries the caller's own server-published authority admits, so an
+        administration entry point is never rendered to somebody the API would refuse. The
+        declared model remains published as `navigation` for the specification to assert the
+        declaration against, and binding it here instead would restore the unconditional rail
+        with no compile error to report it.
+
+        A group whose every entry was withheld is dropped by the projection rather than
+        rendered empty, which is why nothing below tests for an empty list: an empty
+        `aria-labelledby` list would announce a named navigation region containing nothing.
+      -->
+      @for (group of visibleNavigation(); track group.id) {
+        @let groupHeadingId = navigationRegionId + '-' + group.id;
+
+        <h2 class="app-sidebar__group" [id]="groupHeadingId">{{ group.label }}</h2>
+
+        <ul class="app-sidebar__list" [attr.aria-labelledby]="groupHeadingId">
+          @for (item of group.items; track item.path) {
+            <li class="app-sidebar__item">
+              <!--
+                The anchor is a real link to a real address, so it is focusable, announced
+                as a link, and openable in a new tab exactly as a user expects — none of
+                which a click handler on a non-interactive element would give.
+
+                ⚠ THE ACTIVE CLASS AND THE ANNOUNCEMENT COME FROM ONE CALL, so the visual
+                treatment and what assistive technology is told cannot disagree. That single
+                decision is the component's rather than the router directive's, and the
+                difference matters: `routerLinkActive` can only answer "does THIS link match"
+                per link, and the question this rail has to answer is "which ONE of these
+                links is current". Exact matching left every entry unmarked on every
+                descendant screen - a portal's settings, a module's edit form, an account's
+                detail, a role's membership - and prefix matching marked both `/modules` and
+                `/modules/import` on the import screen. The component resolves the longest
+                matching entry segment-wise, so a descendant keeps its parent marked, `/roles`
+                does not claim the role-group screen, and exactly one element ever claims to be
+                the current page.
+
+                The announcement is bound rather than written as a fixed attribute, and
+                resolves to nothing at all when the entry is not current: binding a null
+                removes the attribute outright instead of leaving a stale claim behind. Colour
+                is therefore never the only carrier of which entry is current.
+              -->
+              <a
+                class="app-sidebar__link"
+                [routerLink]="item.path"
+                [class.app-sidebar__link--active]="isCurrent(item)"
+                [attr.aria-current]="isCurrent(item) ? 'page' : null"
+                >{{ item.label }}</a
+              >
+            </li>
+          }
+        </ul>
+      }
+    </div>
+  </nav>
+}

@@ -12,7 +12,8 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { debounce, timer } from 'rxjs';
+import { EMPTY, Subject, merge, switchMap, timer } from 'rxjs';
+import { map } from 'rxjs/operators';
 
 /**
  * Default debounce delay, in milliseconds.
@@ -148,6 +149,18 @@ function nextSearchInputId(): string {
  * `search` DOM event it fires is neutralised here rather than at the call site.
  * See {@link SearchInputComponent.suppressNativeSearchEvent}.
  */
+/**
+ * One event on the debounced term stream.
+ *
+ * A typed term starts a fresh delay and eventually emits; a cancellation supersedes whatever delay is
+ * outstanding and emits nothing. Expressed as a discriminated union rather than as a nullable term
+ * because the EMPTY STRING is a legitimate term on this control — it means "omit the query parameter"
+ * — so reserving any string value to mean "cancel" would make one real term unreachable.
+ */
+type SearchInputStreamEvent =
+  | { readonly kind: 'typed'; readonly term: string }
+  | { readonly kind: 'cancelled' };
+
 @Component({
   selector: 'app-search-input',
   standalone: true,
@@ -276,6 +289,29 @@ export class SearchInputComponent implements OnInit {
    */
   private lastEmittedTerm: string | null = null;
 
+  /**
+   * Notifies the debounced stream that a pending emission is no longer wanted.
+   *
+   * ⚠ THIS EXISTS BECAUSE A DEBOUNCE HELD INSIDE A COMPONENT CANNOT OTHERWISE BE CALLED OFF, AND
+   * THAT MADE A REAL ORDERING DEFECT UNREACHABLE FROM THE OUTSIDE. A consumer that offers both this
+   * control and a second affordance over the same result set — an alphabet strip beside a search box
+   * is the case in this workspace — could be overtaken by its own user: typing "bl" starts a delay
+   * here, pressing "C" a moment later dispatches a query for C, and the delay then elapses and emits
+   * "bl", so the newer intent is silently replaced by the older one and the strip shows C selected
+   * over a listing of B. Nothing the consumer could do prevented it: the pending emission lived in
+   * this component's own stream.
+   *
+   * A `Subject` merged INTO the stream is what makes cancellation expressible without a second
+   * source of truth. `switchMap` over the merged stream is the whole mechanism: a cancellation
+   * supersedes whatever timer is outstanding, exactly as a newer keystroke does, and maps to `EMPTY`
+   * so nothing is emitted in its place.
+   *
+   * The alternative the shared contract would not allow is an `@Input`: this component's input
+   * surface is deliberately fixed at `placeholder` and `debounceMs`, and an input whose value means
+   * "cancel now" is a command wearing the clothes of state. A method is what a command is.
+   */
+  private readonly pendingCancelled = new Subject<void>();
+
   public get isTermEmpty(): boolean {
     return this.term.value.length === 0;
   }
@@ -323,9 +359,31 @@ export class SearchInputComponent implements OnInit {
    * destroyed, so there is no unsubscribe bookkeeping and no timer handle to leak.
    */
   public ngOnInit(): void {
-    this.term.valueChanges
+    // ⚠ `switchMap` OVER A MERGED STREAM, NOT `debounce`. The two are equivalent for typing — each
+    // new keystroke supersedes the outstanding timer either way — but only this form admits a THIRD
+    // kind of event that also supersedes it and emits nothing: a cancellation. See
+    // {@link pendingCancelled} for the ordering defect that made cancellation necessary.
+    //
+    // The delay is read INSIDE the projection so that rebinding `debounceMs` mid-life takes effect
+    // at the next keystroke rather than being frozen at initialisation, which is the behaviour the
+    // input's own documentation promises.
+    // A DISCRIMINATED UNION rather than a nullable term, because `''` is a legitimate term on this
+    // control and reserving any string value to mean "cancel" would make that term unreachable. The
+    // discriminator says which KIND of event happened; the term travels beside it.
+    const typed = this.term.valueChanges.pipe(
+      map((value: string): SearchInputStreamEvent => ({ kind: 'typed', term: value })),
+    );
+    const cancelled = this.pendingCancelled.pipe(
+      map((): SearchInputStreamEvent => ({ kind: 'cancelled' })),
+    );
+
+    merge(typed, cancelled)
       .pipe(
-        debounce(() => timer(this.resolveDebounceMs())),
+        switchMap((event: SearchInputStreamEvent) =>
+          event.kind === 'cancelled'
+            ? EMPTY
+            : timer(this.resolveDebounceMs()).pipe(map((): string => event.term)),
+        ),
         takeUntilDestroyed(this.destroyRef),
       )
       .subscribe((value: string): void => {
@@ -420,6 +478,49 @@ export class SearchInputComponent implements OnInit {
   public submit(event?: Event): void {
     event?.preventDefault();
     this.emitTerm(this.term.value);
+  }
+
+  /**
+   * Abandons any pending debounced emission, and optionally adopts a term without emitting it.
+   *
+   * ⚠ FOR A CONSUMER THAT OFFERS A SECOND AFFORDANCE OVER THE SAME RESULT SET, AND IT CLOSES AN
+   * ORDERING DEFECT THE CONSUMER COULD NOT REACH. The pending emission lives in this component's own
+   * stream, so a consumer with an alphabet strip beside this box could be overtaken by its own user:
+   * typing "bl" starts a delay here, pressing "C" a moment later dispatches a query for C, and the
+   * delay then elapses and emits "bl" — the newer intent silently replaced by the older one, with the
+   * strip showing C over a listing of B. Calling this at the moment the other affordance acts is what
+   * makes the newer intent win.
+   *
+   * ⚠ THE ADOPTED TERM IS NOT EMITTED, AND THAT IS THE WHOLE POINT OF THE ARGUMENT. A consumer that
+   * has just dispatched its own query wants the box to SHOW what is being filtered on without asking
+   * for it a second time. So the control's value is written with the change event suppressed, which
+   * also keeps it out of the debounced stream — otherwise adopting a term would start a fresh delay
+   * and emit it, which is precisely the duplicate this method exists to avoid.
+   *
+   * ⚠ THE DUPLICATE-SUPPRESSION MEMORY IS UPDATED TOO, and omitting that would be a subtle defect:
+   * without it, a user who pressed "C" and then typed "C" into the box would have their keystroke
+   * swallowed as a duplicate of a term this control never emitted. The consumer's own query for "C"
+   * is, from this control's point of view, an emission that happened — so it is recorded as one.
+   *
+   * A method rather than an input. This component's input surface is deliberately fixed at
+   * `placeholder` and `debounceMs`, and an input whose value means "cancel now" is a command wearing
+   * the clothes of state: it would need a distinct value on every invocation and would fire on
+   * re-render.
+   *
+   * @param adoptedTerm The term to display, or omitted to leave the box exactly as it is.
+   */
+  public cancelPendingSearch(adoptedTerm?: string): void {
+    this.pendingCancelled.next();
+
+    if (adoptedTerm === undefined) {
+      return;
+    }
+
+    // `emitEvent: false` keeps this out of `valueChanges`, so writing the box neither starts a new
+    // delay nor emits. `emitModelToViewChange` is left at its default so the rendered field updates.
+    this.term.setValue(adoptedTerm, { emitEvent: false });
+    this.lastEmittedTerm = boundSearchTerm(adoptedTerm);
+    this.changeDetectorRef.markForCheck();
   }
 
   /**

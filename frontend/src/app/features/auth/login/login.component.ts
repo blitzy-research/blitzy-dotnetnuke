@@ -269,6 +269,28 @@ export const USERNAME_QUERY_KEY = 'username';
 export const PORTAL_ID_QUERY_KEY = 'portalId';
 
 /**
+ * The complete grammar a tenant selector must satisfy, anchored at both ends.
+ *
+ * An optional single leading sign followed by one or more decimal digits, and NOTHING ELSE
+ * — no surrounding whitespace, no radix prefix, no exponent, no decimal point, no digit
+ * separator and no trailing text. Anchoring is the entire point: an unanchored expression
+ * would match the numeric part of `'1junk'` and hand it on as though the caller had asked
+ * for tenant 1.
+ *
+ * ⚠ THE SIGN IS ADMITTED DELIBERATELY, and `-1` is why. `Portals.PortalID` is declared
+ * `IDENTITY(-1, 1)` at
+ * `Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77`, so the
+ * first tenant in a fresh installation really is -1. A digits-only expression would refuse
+ * to sign in to it. A leading `+` is admitted for the same reason it is admitted by every
+ * integer grammar — it denotes the same value — and `Number` reads both signs identically.
+ *
+ * Declared at module scope so the expression is compiled once rather than on every
+ * submission, and exported so a specification asserts against the same grammar the
+ * component applies.
+ */
+export const SIGNED_DECIMAL_INTEGER = /^[+-]?\d+$/;
+
+/**
  * The query key that seeds the verification code.
  *
  * Lower-cased with no separator, exactly as `Login.ascx.vb:L109` spelled it. The legacy
@@ -282,11 +304,21 @@ export const VERIFICATION_CODE_QUERY_KEY = 'verificationcode';
  * Where a completed sign-in goes when no return address was supplied, or when the one
  * supplied was rejected as unsafe.
  *
- * The administration console's own landing address. It is also what the application's
- * empty path redirects to, so this constant and that redirect describe the same
- * destination rather than two competing ones.
+ * THE APPLICATION ROOT, WHICH RESOLVES THE LANDING SCREEN FROM THE CALLER'S AUTHORITY.
+ * It is not a screen address and deliberately not one: `app.routes.ts` answers the root
+ * through `rootLandingRedirect`, which sends a host account to the tenant listing, a
+ * tenant administrator to the first screen its authority admits, and any other account to
+ * its own services. Naming a screen here instead would put a second answer to the same
+ * question in the application, and the screen it used to name — the portals list — is
+ * host-only (`Website/admin/Portal/Portals.ascx.vb:L339-L341` redirected a non-host to
+ * Access Denied), so for every operator who is not a host account this default sent a
+ * SUCCESSFUL sign-in straight into a refusal and left them standing on this screen.
+ *
+ * The invariant the previous revision stated therefore still holds and holds more
+ * strongly: this constant and the application's empty path describe the same destination
+ * rather than two competing ones, because this constant IS that path.
  */
-export const DEFAULT_SIGNED_IN_ROUTE = '/portals';
+export const DEFAULT_SIGNED_IN_ROUTE = '/';
 
 // ---------------------------------------------------------------------------
 // THE CONTROL IDENTIFIERS
@@ -839,6 +871,52 @@ export class LoginComponent implements OnInit {
   });
 
   /**
+   * Whether the form-level sentence is ALSO rendered beside the verification field.
+   *
+   * ⚠ THIS EXISTS SO THAT ONE SENTENCE IS ANNOUNCED ONCE. Both copies are required and neither is
+   * a slip: the form-level line is what the legacy screen showed, and the field-level copy is
+   * beside the control the person must actually use, which is why
+   * {@link LoginComponent.verificationMessages} puts the ladder sentence at the head of that
+   * field's list. But the shared field wraps its messages in an assertive region of its own, so on
+   * a verification rung the identical sentence was announced TWICE — once from each region.
+   *
+   * The FIELD's region is kept as the single assertive source, for two reasons. It is beside the
+   * control the person has to act on, and focus is moved there on the rung that first reveals the
+   * field. And the region belongs to the shared component, so silencing it would silence it for
+   * every other screen that uses it.
+   *
+   * The form-level copy is therefore rendered VISIBLY and announced by nothing on exactly this
+   * path. It stays fully assertive on every other path — a wrong credential, a rate limit, a fault
+   * carrying no document — because none of those appears at field level and the form-level line is
+   * then the only thing that says anything.
+   *
+   * Both halves of the test are needed and they ask different questions. The ladder sentence must
+   * be the sentence the form level is showing, which the rate-limited arm of
+   * {@link LoginComponent.signInMessage} takes precedence over; and the field must actually be on
+   * screen, because before the first refusal reveals it there is no field region to announce
+   * anything.
+   *
+   * ⚠ A NARROWER MECHANISM WAS CONSIDERED AND DELIBERATELY NOT TAKEN: withholding only the
+   * form-level region's LIVENESS, leaving the duplicate sentence in the accessibility tree as
+   * ordinary text. It resolves the double announcement equally well, and it is worth recording why
+   * this one is kept instead. Suppressing liveness alone leaves a screen-reader user reading the
+   * identical sentence twice while browsing the form linearly, which is the same redundancy one
+   * step removed; hiding the duplicate outright is defensible here, and only here, because the
+   * very same words remain in the tree beside the control, so nothing is withheld from anybody.
+   * The predicate is what has to be right either way — it must judge whether the FIELD is showing
+   * this sentence, not merely whether the field exists — which is why it is re-derived from the
+   * current failure code, the same code that puts the sentence at the head of
+   * {@link LoginComponent.verificationMessages}, rather than from the field's visibility.
+   */
+  protected readonly signInMessageEchoedAtField: Signal<boolean> = computed(() => {
+    if (this.store.rateLimited() || this.store.verificationRequired() === false) {
+      return false;
+    }
+
+    return authFailureMessage(this.store.failureCode()) !== null;
+  });
+
+  /**
    * The identifier a person should quote when reporting the last failure, or null.
    *
    * Surfaced because it is the only join key between something seen in the browser and the
@@ -940,6 +1018,15 @@ export class LoginComponent implements OnInit {
    * message about a field belongs beside it. It is added only while the field is actually
    * on screen: before the first refusal reveals it there is no field to attach a message
    * to, and the store has recorded no ladder turn.
+   *
+   * ⚠ THIS IS THE SURFACE THAT ANNOUNCES THE LADDER SENTENCE, and the form-level line
+   * deliberately yields to it — see {@link signInMessageEchoedAtField} for the whole reasoning and
+   * for why the yielding is done there rather than by withholding the sentence here. In
+   * short: the field's region is the one that carries the sentence TOGETHER WITH the label
+   * of the box the person must type into, and it is also what tells a screen-reader user
+   * that a new box has appeared at all. Withholding the sentence from here would have
+   * removed the field's only message, leaving the revealed box to appear silently — trading
+   * one accessibility defect for another.
    */
   protected readonly verificationMessages: Signal<readonly string[]> = computed(() => {
     const collected = [
@@ -1482,20 +1569,44 @@ export class LoginComponent implements OnInit {
   /**
    * The tenant selector to send with the credentials, or null when the request host resolves it.
    *
+   * ⚠ THIS IS A SECURITY BOUNDARY, NOT A CONVENIENCE PARSE. The value is attacker-controlled —
+   * anyone can put anything in a query string and send the resulting link to somebody else — and
+   * what it selects is WHICH TENANT the credentials are offered to. So the grammar is validated
+   * on the WHOLE string BEFORE any conversion happens, and only a complete signed decimal integer
+   * literal is accepted.
+   *
+   * ⚠ WHY `Number.parseInt` IS NOT USED, stated plainly because a previous revision did use it and
+   * the defect it caused was real rather than theoretical. `parseInt` is PREFIX-TOLERANT: it
+   * consumes the longest leading run that looks numeric and silently discards the rest, so it
+   * answers `1` for `'1junk'`, `1` for `'1e3'`, `1` for `'1.9'` and `12` for `'12 34'`. Paired with
+   * an `isInteger` test — which only asks whether the RESULT is a whole number, never whether the
+   * INPUT was one — every one of those malformed strings became a confident selection of a
+   * DIFFERENT, REAL tenant. `'0x10'` is worse still: the ten-radix argument makes `parseInt` stop
+   * at the `x` and answer `0`, which is a real portal under the seeding described below. The
+   * conversion here is {@link Number} over an already-validated literal instead, which is total and
+   * has no prefix behaviour at all.
+   *
+   * ⚠ AND `Number.isSafeInteger` RATHER THAN `Number.isInteger`. Beyond 2^53 the double-precision
+   * grid is coarser than the integers, so a longer digit run does not merely overflow — it ROUNDS
+   * to a nearby representable value and still passes `isInteger`. `'9007199254740993'` becomes
+   * 9007199254740992. A key the server could never have issued would then be transmitted as though
+   * it were exact, so anything outside the safe range is refused rather than rounded.
+   *
    * ⚠ SENTINEL DISCIPLINE, AND IT IS LOAD-BEARING HERE RATHER THAN CEREMONIAL. `Portals.PortalID`
    * is declared `IDENTITY(-1, 1)`, so MINUS ONE names the first tenant and ZERO the second — and
-   * minus one is also the legacy stand-in for an absent integer. Presence is therefore tested
-   * EXPLICITLY: a truthiness test would discard tenant zero, a `> 0` test would discard both real
-   * seeds, and a `?? -1` fallback would manufacture the very value that causes the confusion.
-   * `Number.isInteger` accepts both seeds and rejects `NaN`, which is what a non-numeric segment
-   * and the empty string both parse to.
+   * minus one is also the legacy stand-in for an absent integer
+   * (`Library/Components/Shared/Null.vb:L41`). Presence is therefore tested EXPLICITLY: a
+   * truthiness test would discard tenant zero, a `> 0` test would discard both real seeds, and a
+   * `?? -1` fallback would manufacture the very value that causes the confusion. The grammar below
+   * admits a leading sign for exactly this reason, so `-1` and `0` both survive.
    *
-   * A malformed value yields NO selector rather than a refusal or a guessed tenant. The parameter is
-   * untrusted — anyone can put anything in a query string — and the server's own precedence already
-   * covers the case: with no selector it resolves the tenant from the host exactly as it does for a
-   * sign-in that named none, and if that resolves nothing the sign-in is refused by the server with
-   * its own message. Refusing here instead would invent a client-side error the server does not have,
-   * and forwarding a non-numeric value would earn a 400 that says nothing useful to the person.
+   * A malformed value yields NO selector rather than a refusal or a guessed tenant. The server's own
+   * precedence already covers that case: with no selector it resolves the tenant from the host
+   * exactly as it does for a sign-in that named none, and if that resolves nothing the sign-in is
+   * refused by the server with its own message. Refusing here instead would invent a client-side
+   * error the server does not have, and forwarding a malformed value would earn a 400 that says
+   * nothing useful to the person. What must never happen — and what this method now prevents — is
+   * SUBSTITUTING a different tenant for the one nobody asked for.
    *
    * @returns The selector, or null to send none.
    */
@@ -1507,12 +1618,21 @@ export class LoginComponent implements OnInit {
       return null;
     }
 
-    // MIGRATION: an explicit coercion the Option Strict asymmetry forces. The legacy pages compiled
-    // with strict conversion OFF and used request values as numbers with no conversion written down;
-    // the radix is stated so a leading zero cannot be read as octal by any engine.
-    const parsed: number = Number.parseInt(raw, 10);
+    // MIGRATION: an explicit coercion the Option Strict asymmetry forces, written as a whole-string
+    // grammar check rather than a parse. The legacy pages compiled with strict conversion OFF
+    // (`Website/release.config:L125`) and read request values as numbers with no conversion written
+    // down at all; the target states the accepted language instead. Anchored at both ends, so no
+    // prefix, suffix, surrounding space, radix marker, exponent, separator or decimal point can
+    // reach the conversion below.
+    if (!SIGNED_DECIMAL_INTEGER.test(raw)) {
+      return null;
+    }
 
-    if (!Number.isInteger(parsed)) {
+    // Total on this input by construction: the string is known to be a sign followed by digits, so
+    // `Number` cannot answer NaN here. The safe-integer test is what remains to be decided.
+    const parsed: number = Number(raw);
+
+    if (!Number.isSafeInteger(parsed)) {
       return null;
     }
 

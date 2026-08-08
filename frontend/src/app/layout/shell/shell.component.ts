@@ -1,19 +1,24 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
-  EventEmitter,
   Input,
-  Output,
-  booleanAttribute,
+  computed,
   inject,
 } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Router, RouterOutlet } from '@angular/router';
 
 import { environment } from '../../../environments/environment';
+import { AuthStore } from '../../core/state/auth.store';
+import { SessionLifecycleService } from '../../core/state/session-lifecycle.service';
 import { FooterComponent } from '../footer/footer.component';
 import { HeaderComponent } from '../header/header.component';
 import { NotificationListComponent } from '../notifications/notification-list.component';
+import { SidebarComponent } from '../sidebar/sidebar.component';
+
+import type { Signal } from '@angular/core';
 
 /**
  * The fragment identifier the skip link targets, and therefore the identifier the
@@ -30,6 +35,18 @@ const MAIN_REGION_ID = 'main-content';
  * The skip link's `href`.
  */
 const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
+
+/**
+ * Where an operator is sent once their session has ended.
+ *
+ * A private copy of the value the two route gates and the bearer interceptor each hold
+ * — `core/guards/auth.guard.ts`, `core/guards/permission.guard.ts` and
+ * `core/interceptors/auth.interceptor.ts` — rather than an import of one of them. None of
+ * the three exports it, and the reason `permission.guard.ts` gives for the duplication
+ * applies here too: the four agreeing by construction matters less than no one of them
+ * reaching into another. The route itself is declared once, in `app.routes.ts`.
+ */
+const SIGN_IN_ROUTE = '/login';
 
 /**
  * The application shell.
@@ -76,23 +93,37 @@ const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
  * generic element carrying an explicit main role: the stylesheet selects the bare
  * element name.
  *
- * ## PRESENTATIONAL BY CONSTRUCTION
+ * ## THE SESSION BOUNDARY LIVES HERE
  *
- * The shell injects no service, issues no request, holds no transfer object and
- * performs no data access. The session facts the banner needs — the signed-in
- * account's display name, whether a sign-out is in flight — arrive as inputs and
- * are forwarded straight through, and the sign-out gesture is re-emitted upward
- * unchanged. That is a deliberate scope decision. A layout that injected the
- * authentication surface to obtain one display name would couple every screen
- * beneath it to that surface. Because the shell forwards rather than resolves, the
- * session is wired in exactly one place — the component that mounts the shell —
- * with no change to this file.
+ * The shell is the chrome's state boundary: it reads the signed-in identity from
+ * `AuthStore`, hands the banner the name to render and the in-flight flag to disable
+ * its control with, and turns the banner's gesture into an ended session followed by a
+ * navigation. It performs NO data access of its own — no request is issued here, no
+ * transfer object is held, and no domain slice is read.
  *
- * The single output is an Angular event emitter used as an output, which is the
- * framework's declarative parent-notification mechanism. It is not a state
- * container: nothing in this component subscribes to it, reads a current value
- * from it, or stores anything in it. Client state elsewhere in the workspace is
- * held in signals.
+ * ⚠ THE ROOT IS NOT THIS BOUNDARY, AND THAT IS A CORRECTION RATHER THAN A PREFERENCE.
+ * The session used to be bound one level up, in `AppComponent`, which also imported the
+ * navigation rail and projected it through a slot published here. That put the chrome's
+ * composition in two files and made the root a session container, when the specified
+ * graph is an empty root mounting one shell that owns header, navigation, the routed
+ * outlet and footer. The root is now exactly that mount point: it imports this class and
+ * nothing else, declares no member, and renders `<app-shell />` with no binding. Every
+ * decision the chrome makes is therefore reachable from this one file.
+ *
+ * WHAT THIS COMPONENT STILL DELIBERATELY DOES NOT DO. It does not discard the session
+ * itself: ending a session means cancelling every in-flight request and clearing every
+ * domain slice as well as the credentials, and `core/state/session-lifecycle.service.ts`
+ * owns that invariant in one place precisely so that no caller has to remember the whole
+ * list. It does not decide WHETHER a session has ended either — it knows only that the
+ * operator asked. It does navigate, and that split is the lifecycle service's own design:
+ * that service deliberately does not navigate, because where a caller should end up
+ * differs by caller — the shell sends the operator to the sign-in screen, while the
+ * bearer interceptor is mid-way through re-throwing the server's own response and must
+ * not have that outcome displaced by a routing failure.
+ *
+ * The banner remains stricter still: its own comment records that it "does not end the
+ * session, clear any credential or navigate anywhere", so those three decisions have
+ * exactly one home, which is this class.
  *
  * ## ACCESSIBILITY
  *
@@ -111,42 +142,33 @@ const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
  *
  * ## ⚠⚠⚠ THE SECONDARY NAVIGATION SEAM — READ BEFORE CHANGING THIS FILE
  *
- * The navigation region is published here as a projection slot. The paired template
- * renders `<div class="shell__sidebar"><ng-content /></div>`, so the navigation rail
- * is supplied as projected content by whichever component mounts `<app-shell>`,
- * rather than being imported by the shell itself. That arrangement keeps the shell
- * free of any knowledge of what navigation exists, and it is the arrangement the
- * rail's own published contract specifies.
+ * The navigation rail is OWNED HERE. The paired template renders
+ * `<app-sidebar class="shell__sidebar" />`, so the shell imports the rail by name and
+ * mounts it itself; there is no projection slot and no `<ng-content />` anywhere in this
+ * component.
  *
- * The rail that belongs in this slot is `SidebarComponent`, selector `app-sidebar`,
- * at `../sidebar/sidebar.component`. It is standalone, takes no required input and
- * emits nothing, so projecting it needs no binding:
+ * The rail is `SidebarComponent`, selector `app-sidebar`, at
+ * `../sidebar/sidebar.component`. It is standalone, takes no required input and emits
+ * nothing, so mounting it needs no binding:
  *
  * ```text
- * <app-shell …><app-sidebar /></app-shell>
+ * <app-sidebar class="shell__sidebar" />
  * ```
  *
- * ⚠ It is NOT imported here, and the omission is deliberate and measured rather
- * than an oversight: the rail's own contract assigns the mounting decision to the
- * component that mounts the shell, not to the shell. Importing it here would
- * contradict the published contract of a component this file does not own, and would
- * give the shell knowledge of what navigation exists — the one thing the projection
- * slot is there to prevent.
+ * ⚠ IT IS IMPORTED HERE RATHER THAN PROJECTED, and the change is a correction. A slot
+ * left the console's navigation dependent on whichever component happened to mount the
+ * shell, and its failure mode was silent: with nothing projected the region matched the
+ * stylesheet's `:empty` collapse rule, so a console with NO navigation at all rendered
+ * without a raise, a warning or a compile error. Owning the rail makes that state
+ * unreachable — the only way to ship the shell without navigation is now to delete the
+ * import, which is a compile error in the paired template because strict template
+ * checking is enabled.
  *
- * The rail IS supplied, by `AppComponent`: `app.component.html` mounts
- * `<app-shell …><app-sidebar /></app-shell>` and `app.component.ts` lists
- * `SidebarComponent` in its `imports`. That is the whole of the wiring, and it is
- * where it belongs — this file needs no edit to participate in it.
- *
- * ⚠ Note for anyone changing the mounting side: if nothing is projected, the region
- * matches the stylesheet's `.shell__sidebar:empty { display: none }` collapse rule,
- * so it contributes no width and is not announced as a nameless landmark. That is
- * the correct behaviour for a shell mounted with no navigation — this component's
- * own specification still asserts it, mounting the shell directly — but at the
- * application root it would mean shipping a console with NO navigation at all, and
- * it would do so SILENTLY: nothing raises, nothing warns, the rail simply never
- * renders. `app.component.spec.ts` asserts the projection precisely to close that
- * gap. Do not remove the projection without removing the rail.
+ * It also puts the composition where the specified structure puts it: the shell composes
+ * the banner, the rail, the routed outlet and the footer. The shell knowing which rail it
+ * renders is the point of that arrangement, not a leak — the rail resolves its own
+ * navigation and its own gating, so this component holds no knowledge of what the
+ * navigation contains.
  *
  * ## MIGRATION RECORD
  *
@@ -277,11 +299,17 @@ const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
 @Component({
   selector: 'app-shell',
   standalone: true,
-  // Exactly the directives and components the paired template renders. The
-  // navigation rail is projected rather than imported, for the two reasons set out
-  // above; the router outlet is the directive, not the router's module, because
-  // nothing in this workspace declares an Angular module at all.
-  imports: [RouterOutlet, HeaderComponent, FooterComponent, NotificationListComponent],
+  // Exactly the directives and components the paired template renders, the navigation
+  // rail included: the shell composes banner, rail, routed outlet and footer, so all
+  // four are listed here. The router outlet is the directive, not the router's module,
+  // because nothing in this workspace declares an Angular module at all.
+  imports: [
+    RouterOutlet,
+    HeaderComponent,
+    SidebarComponent,
+    FooterComponent,
+    NotificationListComponent,
+  ],
   templateUrl: './shell.component.html',
   styleUrl: './shell.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -300,32 +328,124 @@ export class ShellComponent {
    */
   @Input() applicationName: string = environment.applicationName;
 
-  /**
-   * The signed-in account's display name, or `undefined` when no account is
-   * signed in.
-   *
-   * Forwarded verbatim; the shell applies no interpretation of its own, so the
-   * banner's rule that a blank name means no session holds unchanged whichever
-   * component the value is read from.
-   */
-  @Input() userName?: string;
+  /** The session store, read for the signed-in identity and the sign-out phase. */
+  private readonly authStore = inject(AuthStore);
 
   /**
-   * Whether a sign-out is currently in flight.
+   * The one place a session ends.
    *
-   * Declared with `booleanAttribute` so the bare attribute form is understood as
-   * `true`, matching the banner input it forwards to.
+   * Injected rather than reached through {@link AuthStore.logout} directly, and the
+   * distinction is the whole point of the service: the store's own sign-out discards the
+   * credentials and the identity and knows nothing about the portals, accounts, roles or
+   * exported module documents the domain stores are still holding. Calling the store
+   * would leave every one of those slices resident and legible to whoever signs in next.
    */
-  @Input({ transform: booleanAttribute }) signingOut = false;
+  private readonly session = inject(SessionLifecycleService);
+
+  /** Used to send the operator to the sign-in screen once the session has ended. */
+  private readonly router = inject(Router);
 
   /**
-   * Re-emitted when the banner's sign-out control is activated.
+   * Bounds the sign-out subscription to this component's lifetime.
    *
-   * The shell adds nothing to the gesture — no confirmation, no state change —
-   * because it owns no session to end. Re-emitting rather than handling keeps the
-   * decision with whichever component supplied the session in the first place.
+   * The command is cold and the service behind it is root-provided, so it would never end
+   * the subscription itself. In practice the shell outlives every navigation and is
+   * destroyed only when the application is, but binding the subscription to a lifetime
+   * that is actually shorter than the service's is what makes the leak impossible rather
+   * than merely unlikely.
    */
-  @Output() readonly signOut = new EventEmitter<void>();
+  private readonly destroyRef = inject(DestroyRef);
+
+  /**
+   * The name the banner renders for the signed-in account, or `undefined` when no
+   * account is signed in.
+   *
+   * ⚠ THE FALLBACK TO THE ACCOUNT KEY IS A PUBLISHED CONTRACT, NOT A CONVENIENCE.
+   * `core/models/auth.model.ts` documents `displayName` as never null and never absent
+   * because the column is `nvarchar(128) NOT NULL` defaulting to the empty string, and
+   * states outright that "a caller with no display name has `""`, and the shell renders
+   * `username` in its place". Implementing that substitution is this component's
+   * obligation as the boundary that resolves the session.
+   *
+   * It also prevents a concrete defect rather than tidying a cosmetic one. The banner
+   * decides whether an account is signed in by testing the name it was given, so a blank
+   * name renders no session cluster — and the sign-out control lives inside that cluster.
+   * Passing `""` straight through would therefore leave an operator whose display name
+   * happens to be empty signed in with no way to sign out.
+   *
+   * ⚠ SENTINEL DISCIPLINE. Presence is decided by an explicit comparison against `null`
+   * and by an explicit length test after trimming, never by truthiness. The empty string
+   * is exactly what the legacy null contract returns for a missing string
+   * (`Library/Components/Shared/Null.vb:L71-L75`), so `""` means "not recorded" here and
+   * has to be treated as absence — while remaining a value the API genuinely sends rather
+   * than one this client may reject.
+   *
+   * Returns `undefined` rather than `null` for the absent case because that is what the
+   * banner's optional input declares, and the banner tests for `undefined` specifically.
+   */
+  protected readonly userName: Signal<string | undefined> = computed(() => {
+    const user = this.authStore.currentUser();
+
+    if (user === null) {
+      return undefined;
+    }
+
+    const displayName: string = user.displayName.trim();
+
+    if (displayName.length > 0) {
+      return displayName;
+    }
+
+    // The documented substitution. The account key is `NOT NULL` and unique, so this is a
+    // value rather than a second fallback — but it is trimmed and length-tested on the
+    // same terms, because a boundary that trusted one field and not the other would
+    // reintroduce the blank-name defect one level down.
+    const username: string = user.username.trim();
+
+    return username.length > 0 ? username : undefined;
+  });
+
+  /**
+   * Whether a sign-out is in flight.
+   *
+   * Read straight from the store's phase rather than mirrored into a local flag, so there
+   * is no second source of truth to fall out of step with the request it describes. The
+   * banner disables its sign-out control while this is true.
+   */
+  protected readonly signingOut: Signal<boolean> = this.authStore.isSigningOut;
+
+  /**
+   * The address of the signed-in account's own member-services screen, or `undefined`.
+   *
+   * Handed to the banner so the operator can reach the subscriptions the account holds. Derived
+   * here rather than taken as an input because this component owns the session boundary and is the
+   * only place that knows which account is signed in; `undefined` when no identity has resolved,
+   * which is what the banner tests for before it renders the link at all.
+   */
+  protected readonly accountServicesLink: Signal<string | undefined> = computed(() => {
+    const user = this.authStore.currentUser();
+
+    return user === null ? undefined : `/users/${String(user.userId)}/services`;
+  });
+
+  /**
+   * Whether the signed-in account is a host (super user), as the SERVER reported it.
+   *
+   * Forwarded to the navigation rail, which declares this and {@link administersTenant} as REQUIRED
+   * inputs so that a caller cannot mount it without stating the caller's authority and silently
+   * render an unfiltered administration map. The shell is the rail's only caller and already owns
+   * the session boundary, so it is the one place that can answer.
+   */
+  protected readonly hostAccount: Signal<boolean> = this.authStore.isSuperUser;
+
+  /**
+   * Whether the server reported the signed-in account as an administrator of the current tenant.
+   *
+   * ⚠ THE SERVER'S OWN VERDICT, NEVER A ROLE NAME. The administrator role is renameable, so a name
+   * test would admit a colliding role and refuse a renamed one; this is the projection of
+   * `CurrentUserDto.IsPortalAdministrator`.
+   */
+  protected readonly administersTenant: Signal<boolean> = this.authStore.holdsPortalAdministration;
 
   /**
    * The identifier the main region carries, and the target the skip link names.
@@ -348,10 +468,63 @@ export class ShellComponent {
   private readonly hostElement: ElementRef<HTMLElement> = inject(ElementRef);
 
   /**
-   * Forwards the banner's sign-out gesture to this component's own consumer.
+   * Ends the session the operator asked to end, then sends them to the sign-in screen.
+   *
+   * ⚠ SUBSCRIBED EXACTLY ONCE, AND THAT IS WHAT ISSUES THE REQUEST. The command is cold
+   * by design — `session-lifecycle.service.ts` documents its return as "COLD: it must be
+   * subscribed for the request to be issued, exactly once" — so a command nobody
+   * subscribes to revokes nothing, and a command subscribed twice revokes twice.
+   *
+   * THE RE-ENTRY GUARD CLOSES A WINDOW THE MARKUP CANNOT. The banner already guards the
+   * gesture twice over, through its template's `[disabled]="signingOut"` binding and again
+   * in its own handler, so this is a third check — and it is not redundant with either.
+   * Both of the banner's guards read the flag as it stood at the last change detection,
+   * whereas {@link AuthStore.logout} sets the phase SYNCHRONOUSLY at subscribe time (it
+   * opens with `defer`), so this test sees the update immediately. Two emissions within a
+   * single tick — a synthetic pair from a specification, or a second affordance added
+   * later — would pass both of the banner's guards and are stopped here.
+   *
+   * NAVIGATION HAPPENS ON BOTH EXITS, DELIBERATELY. The service discards the session in a
+   * `finalize`, so the session is gone whether the revocation succeeded or failed; leaving
+   * the operator on an administration screen with no credentials would strand them on a
+   * view whose every request is about to be refused. An observable cannot both error and
+   * complete, so exactly one of the two handlers below runs.
+   *
+   * ⚠ WHAT ACTUALLY REACHES THE ERROR HANDLER IS NOT A FAILED REQUEST, and stating that
+   * precisely matters more than the handler itself. {@link AuthStore.logout} absorbs the
+   * revocation's own failure — the server answers 204 whatever it finds, a network fault
+   * is treated the same way, and local sign-out has already happened unconditionally — so
+   * a refused or unreachable endpoint arrives here as a COMPLETION, and the navigation
+   * below happens through the `complete` handler. The `error` handler covers the remaining
+   * case: a throw from inside the teardown itself, since both the store's discard and the
+   * service's slice clearing run in a `finalize` whose exception would propagate to this
+   * subscriber. It is present because the service PUBLISHES an error exit, and coding to a
+   * dependency's published contract rather than to its current implementation is what
+   * keeps this component correct if that absorption is ever removed.
+   *
+   * THE ERROR IS ABSORBED RATHER THAN SURFACED, and this is the one place in the
+   * application where that is the right call. The session has already been discarded by
+   * the time the handler runs, so there is nothing left for the operator to act on and
+   * nothing to retry — a person who asked to sign out has ended up signed out. Rethrowing
+   * would raise an unhandled error on a path that succeeded from the operator's point of
+   * view, and would do it while the application is mid-teardown of its own session.
+   *
+   * The navigation itself is not awaited and its rejection is swallowed, matching how the
+   * rest of the application navigates: a navigation the router refuses is not this
+   * component's failure to report, and the session has already ended either way.
    */
   protected onSignOut(): void {
-    this.signOut.emit();
+    if (this.signingOut()) {
+      return;
+    }
+
+    this.session
+      .signOut()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        complete: () => this.goToSignIn(),
+        error: () => this.goToSignIn(),
+      });
   }
 
   /**
@@ -385,5 +558,19 @@ export class ShellComponent {
     // `tabindex="-1"` on the region is what makes this call effective; without it a
     // `<main>` is not focusable and focus would stay on the link.
     mainRegion?.focus();
+  }
+
+  /**
+   * Sends the operator to the sign-in screen.
+   *
+   * No `returnUrl` is carried, and the omission is the point. The two route gates attach
+   * one when they INTERRUPT a navigation, so that a caller who is sent to sign in is
+   * returned to the address they asked for. Signing out is not an interruption: the
+   * operator chose to leave, and returning them to the screen they deliberately left — or
+   * worse, restoring an address that named a record the next operator has no right to know
+   * exists — would defeat the discard that just happened.
+   */
+  private goToSignIn(): void {
+    void this.router.navigate([SIGN_IN_ROUTE]).catch(() => false);
   }
 }

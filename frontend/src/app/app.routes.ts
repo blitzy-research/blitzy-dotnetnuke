@@ -1,7 +1,10 @@
-import type { Routes } from '@angular/router';
+import { inject } from '@angular/core';
+import type { RedirectFunction, Routes } from '@angular/router';
 
+import { SIGN_IN_ROUTE } from './core/config/app-routes.config';
 import { authGuard } from './core/guards/auth.guard';
 import { permissionGuard } from './core/guards/permission.guard';
+import { AuthStore } from './core/state/auth.store';
 
 /**
  * The wording the fallback route renders.
@@ -30,6 +33,108 @@ export const NO_ROUTED_VIEW_MESSAGE =
  * one declaration both sides depend on.
  */
 export const ROOT_REDIRECT_PATH = 'portals';
+
+/**
+ * Where a HOST account lands when it arrives at the application root.
+ *
+ * The tenant listing, which is the screen a host operator opens the console for and the
+ * destination this redirect has always resolved to. Expressed in terms of
+ * {@link ROOT_REDIRECT_PATH} rather than restating the segment, so the landing address and
+ * the portal group's own segment cannot drift apart.
+ */
+export const HOST_LANDING_ROUTE = `/${ROOT_REDIRECT_PATH}`;
+
+/**
+ * Where a TENANT ADMINISTRATOR who is not a host account lands at the application root.
+ *
+ * The module listing, chosen because it is the FIRST address the navigation rail offers
+ * such a caller — `layout/sidebar/sidebar.component.ts` declares the Module group first
+ * and gates its listing on `PortalAdministrator`, exactly as `module.routes.ts` does — so
+ * the root resolves to the same screen the operator would reach by taking the first
+ * affordance in front of them. It is not an arbitrary second choice: a host account
+ * satisfies `PortalAdministrator` too, so this address is reachable by BOTH administrative
+ * authorities and the ordering above only decides which of the two screens each one opens
+ * on.
+ */
+export const TENANT_LANDING_ROUTE = '/modules';
+
+/**
+ * Resolves the application root to an address the arriving caller can actually use.
+ *
+ * ⚠ THIS IS A FUNCTION AND NOT A STRING, AND THE REASON IS A MEASURED DEAD END RATHER
+ * THAN A PREFERENCE. A single static destination cannot be correct for every caller,
+ * because the console's authorities are DISJOINT at the top: `/portals` enumerates tenants
+ * and `PortalsController.cs:L241` requires host authority to do it, so the portal listing
+ * declares `HostAdministrator` (`features/portal/portal.routes.ts`) and its rail entry
+ * declares the same. With a static `redirectTo: 'portals'`, a tenant administrator signing
+ * in was sent to the one screen the client can prove they may not open: the gate refused
+ * the navigation, the refusal cancelled it, and the caller was left standing on
+ * `/login?returnUrl=%2Fportals` — authenticated, holding a valid token, with the sign-in
+ * form still mounted and a warning telling them they have no access to content they never
+ * asked for. Reproduced in a browser against the running stack for the seeded tenant
+ * administrator, and reproduced identically twice.
+ *
+ * The two facts that produce it are individually correct and must both stand. The listing
+ * IS host-only — `Website/admin/Portal/Portals.ascx.vb:L339-L341` opened with
+ * `If Not UserInfo.IsSuperUser Then Response.Redirect(NavigateURL("Access Denied"), True)`,
+ * so refusing a non-host is the legacy behaviour rather than a narrowing of it — and the
+ * root MUST resolve to something, since a router with no match for `/` raises `NG04002` on
+ * the first navigation of every page load. What was wrong was the assumption joining them:
+ * that one address serves every caller.
+ *
+ * WHAT EACH CALLER GETS, and why each answer is the honest one:
+ *
+ *   * No session: the sign-in screen, WITHOUT a `returnUrl`. Deliberately without: a
+ *     caller who typed the root asked for "the application", not for the portals list, and
+ *     capturing `/portals` here is precisely what used to bake an unreachable destination
+ *     into the sign-in that followed. The address they did not choose is not preserved,
+ *     because preserving it is what stranded them.
+ *   * A host account: {@link HOST_LANDING_ROUTE}, unchanged from the behaviour this
+ *     redirect has always had.
+ *   * A tenant administrator: {@link TENANT_LANDING_ROUTE}, the first rail entry their
+ *     authority admits.
+ *   * Any other signed-in account: their own account services, the same address
+ *     `layout/shell/shell.component.ts` computes for the header's account affordance. The
+ *     route declares `AccountOwner`, which the caller satisfies by construction because
+ *     the identifier comes from their own identity, so this can never resolve to a screen
+ *     they will be refused.
+ *   * A held session whose identity has not resolved yet: {@link HOST_LANDING_ROUTE},
+ *     which preserves the previous behaviour for the one window in which nothing better is
+ *     knowable. The policy gate admits while the identity is unresolved — refusing there
+ *     would lock out the operators the screens exist for — so this window cannot strand a
+ *     caller, and the screen's own read settles what the identity could not.
+ *
+ * ORDER IS LOAD-BEARING: the host test comes first because `administersCurrentPortal()` is
+ * satisfied BY a host account (`core/state/auth.store.ts:L628-L629` reads it as the host
+ * flag or tenant administration), so testing tenant administration first would send every
+ * host operator to the module listing instead of the tenant listing.
+ *
+ * The router runs this inside an injection context, which is what makes {@link inject}
+ * legal in the body — the same contract the two functional gates in this table rely on.
+ * It reads the store's published verdicts and recomputes nothing, so the root cannot
+ * resolve on a different view of the identity from the one the gates then apply.
+ *
+ * @returns The address the root resolves to for the caller arriving at it.
+ */
+export const rootLandingRedirect: RedirectFunction = () => {
+  const authStore = inject(AuthStore);
+
+  if (authStore.isAuthenticated() === false) {
+    return SIGN_IN_ROUTE;
+  }
+
+  if (authStore.isSuperUser()) {
+    return HOST_LANDING_ROUTE;
+  }
+
+  if (authStore.administersCurrentPortal()) {
+    return TENANT_LANDING_ROUTE;
+  }
+
+  const caller = authStore.currentUser();
+
+  return caller === null ? HOST_LANDING_ROUTE : `/users/${String(caller.userId)}/services`;
+};
 
 /**
  * The application's top-level route table.
@@ -108,20 +213,25 @@ export const ROOT_REDIRECT_PATH = 'portals';
  * route specification asserts the biconditional across this table and all five barrels.
  *
  * MIGRATION: the POLICY VOCABULARY IS CLOSED, and an unknown name is not a soft
- * failure. The client's declarable set is exactly five — `ModuleView`, `ModuleEdit`,
- * `TabView`, `TabEdit` and `PortalAdministrator` (`permission.guard.ts:L105-L111`) —
- * and because the API registers no `IAuthorizationPolicyProvider`, an unregistered
- * policy name throws when the request is authorised rather than degrading to a denial.
- * Names are therefore never invented to fit a screen. The mapping this table applies is:
- * tenant, account, role and role-group administration all resolve to
- * `PortalAdministrator`, because each is administration WITHIN a tenant and the
- * corresponding controllers are class-gated on exactly that; module administration
+ * failure. The client's declarable set is the SAME EIGHT the API registers —
+ * `ModuleView`, `ModuleEdit`, `TabView`, `TabEdit`, `PortalAdministrator`,
+ * `HostAdministrator`, `AccountOwner` and `AccountOwnerOrPortalAdministrator`
+ * (`permission.guard.ts:L131-L141`, mirroring `Api/Authorization/PolicyNames.cs` L54,
+ * L61, L73, L80, L115, L139, L153, L164) — and because the API registers no
+ * `IAuthorizationPolicyProvider`, an unregistered policy name throws when the request is
+ * authorised rather than degrading to a denial. Names are therefore never invented to fit
+ * a screen, and equally never SUBSTITUTED for one another: an earlier revision of this
+ * comment described the declarable set as "exactly five" and licensed each barrel to
+ * approximate a host or account rule with the tenant rule, or to declare nothing at all.
+ * Both licences are withdrawn. Every route declares the policy its own endpoint declares:
+ * the portal COLLECTION and portal creation are `HostAdministrator` because they address
+ * no single tenant; the account profile and credential screens are
+ * `AccountOwnerOrPortalAdministrator` because their endpoints admit the account holder as
+ * well as the tenant administrator; tenant, account, role and role-group administration
+ * resolve to `PortalAdministrator`, because each is administration WITHIN a tenant and the
+ * corresponding controllers are class-gated on exactly that; and module administration
  * resolves to `ModuleEdit`, which is scoped to one module instance and so is only ever
  * declared on a route that carries `:moduleId` for the API to resolve the scope from.
- * The API registers three further policies that the client deliberately does not
- * declare, and a route whose endpoint requires one of those declares no policy at all
- * rather than substituting a different one — under-declaring is safe here, because of
- * the next paragraph, whereas substituting would grant or refuse the wrong thing.
  *
  * MIGRATION: THE GATE IS ADVISORY; THE SERVER IS AUTHORITATIVE. Both guards decide
  * only whether to MOUNT a screen, using claims the browser already holds, so they
@@ -197,19 +307,26 @@ export const APP_ROUTES: Routes = [
      * something: a router with no match for `/` raises `NG04002` on the very first
      * navigation of every page load. A redirect rather than a landing screen of its own,
      * because this workspace has no dashboard component and inventing one would be a
-     * feature addition rather than a routing decision. The destination is the constant
-     * above, which `layout/header/header.component.ts` already documents as the target
-     * of its identity affordance.
+     * feature addition rather than a routing decision. It remains the single declared
+     * destination `layout/header/header.component.ts` documents its identity affordance as
+     * targeting, so that affordance still has exactly one place to point at.
      *
-     * An unauthenticated visitor is not shown the portals list by this: the redirect
-     * resolves to `portals`, whose `authGuard` then redirects to the sign-in screen with
-     * the original address preserved as `returnUrl`, so arriving at the root of the
-     * application signs a caller in and returns them here. That reproduces the legacy
-     * behaviour, where an unauthenticated request to the site root was answered by the
-     * login control rather than by the requested page.
+     * THE DESTINATION IS RESOLVED PER CALLER, and {@link rootLandingRedirect} carries the
+     * whole reasoning — which authority lands where, why the order of its tests matters,
+     * and the dead end a single static destination produced for every operator who is not
+     * a host account.
+     *
+     * An unauthenticated visitor is still never shown the portals list by this: the
+     * resolver answers the sign-in address directly. It answers it WITHOUT a `returnUrl`,
+     * which is the one behavioural difference from the static form and is deliberate — the
+     * caller asked for the application rather than for a particular screen, and capturing
+     * a screen they did not choose is what used to send them back to an unreachable one
+     * after signing in. That still reproduces the legacy behaviour, where an
+     * unauthenticated request to the site root was answered by the login control rather
+     * than by the requested page.
      */
     path: '',
-    redirectTo: ROOT_REDIRECT_PATH,
+    redirectTo: rootLandingRedirect,
     pathMatch: 'full',
   },
   {
@@ -453,4 +570,3 @@ export const APP_ROUTES: Routes = [
  * constraints stated above apply to both names because there is only one array.
  */
 export const routes: Routes = APP_ROUTES;
-

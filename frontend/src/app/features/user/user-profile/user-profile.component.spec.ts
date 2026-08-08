@@ -13,8 +13,9 @@ import {
   type UserProfileValue,
 } from '../../../core/models/profile.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
-import type { UserDetail } from '../../../core/models/user.model';
+import type { MembershipSettings, UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { NOT_SPECIFIED_OPTION_TEXT, UserProfileComponent } from './user-profile.component';
 
 /**
@@ -80,6 +81,17 @@ describe('UserProfileComponent', () => {
    * address rather than against a guess at it.
    */
   const profileDefinitionsUrl: string = API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection();
+
+  /**
+   * The tenant's account policy, which this screen reads once per mount.
+   *
+   * ⚠ READ ON EVERY MOUNT, WHATEVER THE ROUTE SUPPLIES, because the policy decides whether the
+   * per-property visibility control is offered - `Profile.ascx.vb` L59-L63 computed that from
+   * `Profile_DisplayVisibility` AND the viewer being the subject of the profile. It is not
+   * account-scoped, so it is issued before any account is known, which is why the "dispatches
+   * nothing" cases below count ACCOUNT reads rather than all requests.
+   */
+  const membershipSettingsUrl: string = API_ENDPOINTS.users.membershipSettings();
 
   /**
    * The reason phrase the API publishes as the problem `title`, keyed by status.
@@ -221,6 +233,40 @@ describe('UserProfileComponent', () => {
   };
 
   /**
+   * The tenant's account policy as this screen reads it.
+   *
+   * The one member that matters here is `profileDisplayVisibility`, and it defaults to TRUE because
+   * that is the default the server publishes when the tenant has stored nothing
+   * (`Library/Components/Users/UserModuleBase.vb` L143-L145). Every other member is stated so the
+   * fixture is the shape the contract declares rather than a partial the decoder would refuse.
+   */
+  const POLICY: MembershipSettings = {
+    columnFirstName: false,
+    columnLastName: false,
+    columnDisplayName: true,
+    columnAddress: true,
+    columnTelephone: true,
+    columnEmail: false,
+    columnCreatedDate: true,
+    columnLastLogin: false,
+    columnAuthorized: true,
+    displayMode: 2,
+    displaySuppressPager: false,
+    recordsPerPage: 10,
+    profileDefaultVisibility: 2,
+    profileDisplayVisibility: true,
+    profileManageServices: true,
+    redirectAfterLogin: null,
+    redirectAfterRegistration: null,
+    redirectAfterLogout: null,
+    securityEmailValidation: '',
+    securityRequireValidProfile: false,
+    securityRequireValidProfileAtLogin: true,
+    securityUsersControl: 0,
+    securityDisplayNameFormat: '',
+  };
+
+  /**
    * Answers both reads the screen dispatches and renders the result.
    *
    * The account read is answered as well as the profile read because the screen issues
@@ -321,7 +367,74 @@ describe('UserProfileComponent', () => {
     notifications = TestBed.inject(NotificationService);
   });
 
+  /**
+   * Answers the account-policy read with a stated policy.
+   *
+   * @param profileDisplayVisibility Whether the tenant offers the per-property visibility control.
+   * @returns Whether a read was outstanding to answer.
+   */
+  function answerPolicy(profileDisplayVisibility: boolean): boolean {
+    const pending = httpMock.match(membershipSettingsUrl);
+
+    for (const request of pending) {
+      request.flush({
+        data: { ...POLICY, profileDisplayVisibility },
+        meta: null,
+      });
+    }
+
+    fixture.detectChanges();
+
+    return pending.length > 0;
+  }
+
+  /**
+   * Seats the caller's identity in the stored session.
+   *
+   * The identity is READ FROM THE STORED SESSION rather than fetched, so seating it is what decides
+   * whether the caller is the subject of the profile - the second half of the legacy
+   * `ShowVisibility` predicate (`Profile.ascx.vb` L58-L63, over `UserModuleBase.IsUser`
+   * L399-L406). The expiry is a FIXED literal: reading the clock in a specification would make it
+   * depend on when it runs.
+   *
+   * @param userId The account the caller is signed in as.
+   */
+  function seatIdentity(userId: number): void {
+    TestBed.inject(TokenStorageService).store({
+      accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+      expiresAtUtc: '2099-12-31T23:59:59.000Z',
+      refreshToken: 'not-a-real-refresh-token',
+      mustChangePassword: false,
+      mustUpdateProfile: false,
+      passwordExpiring: false,
+      user: {
+        userId,
+        portalId: 0,
+        portalName: 'Baseline Portal',
+        username: 'caller',
+        displayName: 'The Caller',
+        email: 'caller@example.test',
+        isSuperUser: false,
+        isPortalAdministrator: false,
+        roles: ['Registered Users'],
+        permissions: [],
+      },
+    });
+  }
+
   afterEach(() => {
+    // The session is cleared so one case's signed-in caller cannot decide another's affordances.
+    TestBed.inject(TokenStorageService).clear();
+
+    // The account-policy read is DRAINED rather than asserted here, so that no case has to describe
+    // a read it is not about. The cases that are about it answer it themselves, with a stated
+    // policy, through `answerPolicy` - and because they answer it first, nothing is left for this to
+    // drain. Draining is not the same as ignoring: `verify` below still fails on any OTHER
+    // outstanding request, which is the guarantee every case in this file depends on.
+    for (const pending of httpMock.match(membershipSettingsUrl)) {
+      pending.flush({ data: POLICY, meta: null });
+    }
+
     httpMock.verify();
   });
 
@@ -338,13 +451,21 @@ describe('UserProfileComponent', () => {
     // makes the signal-driven rendering correct. Splitting them across two places invited one to be
     // updated without the others.
 
-    it('dispatches nothing until the route supplies an account', () => {
+    it('dispatches nothing account-scoped until the route supplies an account', () => {
       fixture.detectChanges();
 
       // Asserted through `match` rather than `expectNone`, so the count is a real
       // expectation. `expectNone` throws on a match but registers no expectation, and a
       // spec with none silently passes if its subject stops doing anything at all.
-      expect(httpMock.match(() => true).length).toBe(0);
+      //
+      // ⚠ COUNTS ACCOUNT-SCOPED READS, NOT ALL REQUESTS. The tenant's account policy is read on
+      // every mount and is not account-scoped - it decides whether the visibility control is
+      // offered, which is a property of the tenant and the caller rather than of the account being
+      // edited. Counting it here would make this case assert something it is not about.
+      expect(httpMock.match((request) => request.url !== membershipSettingsUrl).length).toBe(0);
+      expect(httpMock.match(membershipSettingsUrl).length)
+        .withContext('the policy read is issued once, regardless of the route')
+        .toBe(1);
     });
   });
 
@@ -428,7 +549,9 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', 'not-an-id');
       fixture.detectChanges();
 
-      expect(httpMock.match(() => true).length).toBe(0);
+      // The tenant's policy read is excluded: it is not account-scoped and is issued whatever the
+      // route says, so it is not evidence that a malformed identifier was dispatched.
+      expect(httpMock.match((request) => request.url !== membershipSettingsUrl).length).toBe(0);
     });
 
     it('reads the second account when the route moves to it', () => {
@@ -748,7 +871,11 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders a property whose declared length is large with a multi-line control', () => {
-      load([entry(declaration({ propertyName: 'Biography', length: 3750 }))]);
+      // ⚠ A TENANT-AUTHORED NAME, DELIBERATELY. The seeded rich-text property gets a multi-line
+      // control by NAME as well as by length, so naming it here would leave this case unable to
+      // say which of the two rules produced the box. This name is in no measured table, so the
+      // declared length is the only thing that can have decided it.
+      load([entry(declaration({ propertyName: 'ProjectSummary', length: 3750 }))]);
 
       expect(host().querySelector('textarea')).not.toBeNull();
       expect(host().querySelector('input[type="text"]')).toBeNull();
@@ -1009,10 +1136,70 @@ describe('UserProfileComponent', () => {
   });
 
   describe('the visibility affordance', () => {
-    it('is not offered by default, matching the legacy condition on this route', () => {
-      // `ShowVisibility` was the tenant setting AND the viewer being the profile's subject.
-      // An administrator editing another account failed the second half.
+    /*
+     * MIGRATION: `Profile.ascx.vb` L58-L63 computed
+     * `CType(UserModuleBase.GetSetting(PortalId, "Profile_DisplayVisibility"), Boolean) And IsUser` -
+     * the tenant's policy AND the viewer being the subject of the profile
+     * (`Library/Components/Users/UserModuleBase.vb` L399-L406). BOTH halves are resolved on the
+     * routed path now: the policy from the account-policy read, the identity from the signed-in
+     * session.
+     *
+     * ⚠ AN EARLIER REVISION TOOK THE AFFORDANCE FROM AN INPUT ALONE, which no route supplies - so
+     * the routed screen never offered the control whatever the tenant had configured, and the
+     * setting was stored, published and inert. That is the gap these cases close.
+     *
+     * No signed-in session is established in this fixture, so the identity half is false throughout
+     * except where a case says otherwise, which is why the policy being enabled is not on its own
+     * enough to render the control.
+     */
+
+    it('is not offered while the tenant policy is unresolved, whatever the caller is', () => {
+      // The conservative posture: offering a control that then disappears is worse than offering it
+      // a moment late, so an unresolved policy reads as "not offered" rather than as a stored false.
       load([entry(declaration())]);
+
+      expect(host().querySelector('select')).toBeNull();
+    });
+
+    it('is not offered to a caller who is not the subject of the profile, even with the policy on', () => {
+      /*
+       * ⚠ THE SECOND HALF OF THE LEGACY PREDICATE, AND WHY IT MATTERS. Visibility is a choice the
+       * account holder makes about their OWN data. An administrator editing somebody else's profile
+       * could otherwise change who can see it without the holder knowing, so the legacy hid the
+       * affordance for exactly that caller however the tenant had set the policy.
+       */
+      load([entry(declaration())]);
+      answerPolicy(true);
+
+      expect(host().querySelector('select'))
+        .withContext('no session is signed in here, so the caller is not the subject')
+        .toBeNull();
+    });
+
+    it('is not offered when the tenant switched the policy off', () => {
+      load([entry(declaration())]);
+      answerPolicy(false);
+
+      expect(host().querySelector('select')).toBeNull();
+    });
+
+    it('is offered to the subject of the profile when the tenant enabled the policy', () => {
+      // BOTH halves of the legacy predicate satisfied at once, which is the only combination the
+      // legacy screen rendered the control for: the tenant's policy on, and the signed-in caller
+      // being the account whose profile is on screen.
+      seatIdentity(USER_ID);
+      load([entry(declaration())]);
+      answerPolicy(true);
+
+      expect(host().querySelector('select')).not.toBeNull();
+    });
+
+    it('is withheld from a signed-in caller who is a different account', () => {
+      // The same policy, a real session, a DIFFERENT account. This is the administrator case, and it
+      // is the one the second half of the predicate exists for.
+      seatIdentity(USER_ID + 1);
+      load([entry(declaration())]);
+      answerPolicy(true);
 
       expect(host().querySelector('select')).toBeNull();
     });
@@ -1022,6 +1209,43 @@ describe('UserProfileComponent', () => {
       load([entry(declaration())]);
 
       expect(host().querySelector('select')).not.toBeNull();
+    });
+
+    it('lets the caller override force it on, and never lets a false override force it off', () => {
+      // The input is an OVERRIDE for an embedding caller, not the routed behaviour: it can only turn
+      // the affordance on. A false defers to the resolved answer rather than suppressing it, which is
+      // what stops an embedding context silently overriding a tenant that enabled the policy.
+      fixture.componentRef.setInput('manageVisibility', true);
+      load([entry(declaration())]);
+      answerPolicy(false);
+
+      expect(host().querySelector('select'))
+        .withContext('the override asserts the affordance even against a policy that is off')
+        .not.toBeNull();
+    });
+
+    it('reads the account policy once per mount, whatever the route supplies', () => {
+      // ⚠ ONCE, NOT ONCE PER PROPERTY. `Profile.ascx.vb` L60 read the setting inside a property
+      // GETTER, so it was fetched on every render of every field. The policy is tenant-wide and does
+      // not change as the route moves from one account to another, so it is read from the lifecycle
+      // hook rather than from the account-scoped effect.
+      load([entry(declaration()), entry(declaration({ propertyDefinitionId: 88, propertyName: 'City' }))]);
+
+      expect(httpMock.match(membershipSettingsUrl).length).toBe(1);
+
+      fixture.componentRef.setInput('userId', '8');
+      fixture.detectChanges();
+
+      const reads = httpMock.match((request) => request.url.startsWith('/api/v1/users/8'));
+
+      expect(reads.length).withContext('the account and its profile, and nothing else').toBe(2);
+      expect(httpMock.match(membershipSettingsUrl).length)
+        .withContext('the tenant policy is not re-read for a different account')
+        .toBe(0);
+
+      reads[0]?.flush({ data: account, meta: null });
+      reads[1]?.flush({ data: { userId: 8, properties: [] }, meta: null });
+      fixture.detectChanges();
     });
 
     it('offers the three legacy choices', () => {
@@ -1430,6 +1654,13 @@ describe('UserProfileComponent', () => {
       // the fields.
       load([entry(declaration())]);
 
+      // The tenant's policy read is answered here rather than excluded, because this case is about
+      // the WHOLE set of addresses this screen uses - so the read is named, answered, and then the
+      // set is asserted empty. That is a stronger claim than excluding it would be.
+      expect(answerPolicy(true))
+        .withContext('the policy is one of the addresses this screen uses')
+        .toBeTrue();
+
       expect(httpMock.match(() => true).length)
         .withContext('every dispatched request has already been answered')
         .toBe(0);
@@ -1670,16 +1901,49 @@ describe('UserProfileComponent', () => {
       ).toBeFalse();
     });
 
-    it('renders the seeded rich-text property as a single-line control, a reported reduction', () => {
-      // MIGRATION: A DELIBERATE, REPORTED FUNCTIONAL REDUCTION. Biography was edited through the
-      // excluded rich-text provider and is seeded with `@Length = 0`, so the length-driven choice
-      // between one line and several resolves to one line. The declared DATA TYPE cannot drive the
-      // choice instead, because it is an unresolved database-assigned integer. No rich-text control
-      // is substituted and no lookalike is invented.
+    it('renders the seeded rich-text property as a plain textarea, a reported reduction', () => {
+      // MIGRATION: A DELIBERATE, REPORTED FUNCTIONAL REDUCTION — rich text becomes a PLAIN
+      // MULTI-LINE BOX, not a single-line one and not an editor. Biography is the one property the
+      // installer seeds with the rich-text data type
+      // (`04.00.04.SqlDataProvider` L1330), and it was edited through the excluded FCK provider.
+      //
+      // ⚠ IT IS RECOGNISED BY NAME, AND IT HAS TO BE. The installer also seeds it with
+      // `@Length = 0`, which is the ABSENCE of a bound rather than a large one, so the
+      // length-driven rule cannot reach it — a purely length-driven screen renders the one
+      // property that is unambiguously prose in a one-line box. The declared DATA TYPE cannot
+      // drive the choice either, because it is an unresolved database-assigned integer.
       load(seededProperties());
 
-      expect(host().querySelector('textarea')).toBeNull();
-      expect(host().querySelectorAll('input[type="text"]').length).toBe(19);
+      const biography = present(
+        host().querySelector<HTMLTextAreaElement>('textarea'),
+        'the biography control',
+      );
+
+      // Eighteen single-line controls and this one multi-line control: nineteen in total, so
+      // the textarea REPLACES an input rather than being added beside one.
+      expect(host().querySelectorAll('textarea').length).toBe(1);
+      expect(host().querySelectorAll('input[type="text"]').length).toBe(18);
+      expect(controls().length).toBe(19);
+      expect(biography.getAttribute('rows')).withContext('a real multi-line box').toBe('4');
+
+      // The label proves it is Biography that got the box rather than some other property.
+      expect(
+        (
+          present(biography.closest('.form-field'), 'the biography field').querySelector(
+            '.form-field__label',
+          )?.textContent ?? ''
+        ).trim(),
+      ).toBe('Biography');
+
+      // ⚠ AND NO RICH-TEXT AFFORDANCE IS SUBSTITUTED, which is the other half of the reduction.
+      // A `textarea` cannot render markup, and nothing on this screen opts back into it: there
+      // is no editable container, no editor toolbar, no framed editor document, and no element
+      // whose content was written as trusted HTML. Asserting the reduction without asserting
+      // this would leave the door open to a "small" editor being added later.
+      expect(host().querySelector('[contenteditable]')).toBeNull();
+      expect(host().querySelector('iframe')).toBeNull();
+      expect(host().querySelector('[role="toolbar"]')).toBeNull();
+      expect(host().querySelector('.ql-editor, .cke, .fck, .rich-text-editor')).toBeNull();
     });
   });
 
@@ -2199,7 +2463,14 @@ describe('UserProfileComponent', () => {
         entry(declaration({ propertyDefinitionId: 4, propertyName: 'Biography', dataType: 404, viewOrder: 4 })),
       ]);
 
-      expect(host().querySelectorAll('input[type="text"]').length).toBe(4);
+      // Four PLAIN TEXT controls for four arbitrary integers, and not one specialised control
+      // among them. Three are single-line; the fourth is Biography's textarea, which is still a
+      // plain text control and is chosen by the measured seeded-rich-text set rather than by its
+      // integer — the proof being that FirstName, Country and TimeZone carry three DIFFERENT
+      // arbitrary integers here and all three stay single-line.
+      expect(controls().length).toBe(4);
+      expect(host().querySelectorAll('input[type="text"]').length).toBe(3);
+      expect(host().querySelectorAll('textarea').length).toBe(1);
       expect(host().querySelector('input[type="number"]')).toBeNull();
       expect(host().querySelector('input[type="date"]')).toBeNull();
       expect(host().querySelector('input[type="checkbox"]')).toBeNull();
@@ -2215,6 +2486,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('chooses a multi-line control on the declared LENGTH rather than the type', () => {
+      // ⚠ NEITHER NAME IS IN THE MEASURED SEEDED-RICH-TEXT SET, and that is what isolates the
+      // rule under test. Naming Biography here would give the multi-line control a second,
+      // independent reason to appear and the case could no longer attribute it to the length.
       load([
         entry(
           declaration({
@@ -2228,7 +2502,7 @@ describe('UserProfileComponent', () => {
         entry(
           declaration({
             propertyDefinitionId: 2,
-            propertyName: 'Biography',
+            propertyName: 'ProjectSummary',
             dataType: 101,
             length: 3750,
             viewOrder: 2,
@@ -2331,7 +2605,9 @@ describe('UserProfileComponent', () => {
         fixture.componentRef.setInput('userId', loose);
         fixture.detectChanges();
 
-        expect(httpMock.match(() => true).length)
+        // Account-scoped reads only. The policy read is not account-scoped and would otherwise
+        // register on the first iteration as though a malformed identifier had been dispatched.
+        expect(httpMock.match((request) => request.url !== membershipSettingsUrl).length)
           .withContext(`"${loose}" must not be read as an account identifier`)
           .toBe(0);
       }

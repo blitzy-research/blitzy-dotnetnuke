@@ -231,18 +231,67 @@ export class ErrorBannerComponent {
   readonly problem = input<ProblemDetails | null>(null);
 
   /**
+   * A sentence to show when a failure carries NO problem document at all, or null to stay silent.
+   *
+   * ⚠ THIS EXISTS FOR A CLASS OF FAILURE THAT WAS ENTIRELY INVISIBLE, AND THAT IS WORTH STATING
+   * PRECISELY. The runtime decoders that check each response against its published contract run
+   * INSIDE the service's own mapping — downstream of the interceptor's error handling — so a
+   * successful response whose body does not match its contract throws a plain error carrying no
+   * problem document, no status and no support reference. Every screen in this workspace binds a
+   * nullable document, so such a failure rendered NOTHING: a listing became permanently empty, a
+   * form became permanently disabled, and no surface anywhere said why. The operator was left
+   * looking at a screen that had simply stopped working.
+   *
+   * A consumer supplies the sentence its own store already authored for that operation, and the
+   * banner shows it with the same severity, the same live region and the same wording pipeline as a
+   * real document. What it cannot supply is a support reference, because there is none: the response
+   * was a success as far as the transport was concerned and the server logged no failure.
+   *
+   * ⚠ IT DOES NOT OVERRIDE A DOCUMENT. When a document is present, its own sentence wins and this
+   * input is not consulted — a fallback that displaced the server's own explanation would be strictly
+   * worse than the explanation. The two are ordered rather than merged, so binding both is safe and
+   * is in fact the intended usage: bind the document you have and the sentence you would use if you
+   * had none.
+   *
+   * Null is the default, so every existing consumer keeps its exact previous behaviour and shows
+   * nothing when it has no document.
+   */
+  readonly fallbackMessage = input<string | null>(null);
+
+  /**
    * Everything resolved about the current failure, computed exactly once per change.
    *
    * The single call into the resolution utility. Every public member below reads this
    * rather than calling the utility again, so a redraw that changes nothing costs one
    * signal read instead of re-resolving the document once per member.
+   *
+   * The fallback is passed THROUGH the utility rather than substituted afterwards, so the sentence
+   * travels the same normalisation path a document's own detail does — legacy break markup stripped,
+   * and the status-derived wording used only when neither a document nor a fallback says anything.
    */
   private readonly summary: Signal<ProblemSummary> = computed(() =>
-    summarizeProblem(this.problem()),
+    summarizeProblem(this.problem(), this.fallbackMessage()),
   );
 
-  /** Whether there is anything to show. */
-  readonly hasProblem: Signal<boolean> = computed(() => this.problem() !== null);
+  /**
+   * Whether there is anything to show.
+   *
+   * ⚠ TRUE FOR A FALLBACK SENTENCE WITH NO DOCUMENT, WHICH IS THE WHOLE POINT OF THE INPUT. A
+   * document-only test would leave the banner empty for exactly the failures that carry no document,
+   * so the input would be bindable and have no effect. Emptiness is tested explicitly rather than by
+   * truthiness because the empty string is a legitimate value throughout this data — here it means
+   * "no sentence", so a consumer binding it stays silent, which is the correct reading of a caller
+   * that supplied nothing to say.
+   */
+  readonly hasProblem: Signal<boolean> = computed(() => {
+    if (this.problem() !== null) {
+      return true;
+    }
+
+    const fallback: string | null = this.fallbackMessage();
+
+    return fallback !== null && fallback.length > 0;
+  });
 
   /**
    * How forcefully to present the failure.

@@ -69,10 +69,16 @@
  * entire handler on `If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)` and was
  * the only anti-automation control in the legacy sign-in path; its control lives under
  * `Library/Controls/**`, which this migration excludes wholesale. The compensating control is
- * the server's rate limiter on the credential endpoints - policy `"auth"`, ten requests a
- * minute, partitioned by calling address, applied to `/api/v1/auth/*` alone so the health
- * probe is never throttled - and its refusal is exercised by "reports a rate-limited refusal
- * calmly" and "issues exactly one request for a rate-limited refusal".
+ * the API's credential window, applied by the GLOBAL limiter to every request the server
+ * classifies as credential-bearing - from the `[CredentialEndpoint]` marker on the action
+ * first, and from a whole credential path segment on a body-carrying method only as a
+ * fall-back. Sign-in carries that marker and additionally declares the `auth` policy, so this
+ * screen's own write draws the credential budget: thirty requests a minute per partition,
+ * partitioned by the caller's observable address, with a refusal answered `429`. A health
+ * probe is never throttled because a GET carries no marker and the fall-back matcher
+ * considers only POST, PUT and PATCH, so it resolves to the shared no-limit partition. The
+ * refusal is exercised by "reports a rate-limited refusal calmly" and "issues exactly one
+ * request for a rate-limited refusal".
  *
  * MIGRATION: `Login.ascx.vb:L187` carries a DEFECT that is recorded and NOT reproduced. It
  * reads `authenticated = (loginStatus <> UserLoginStatus.LOGIN_FAILURE)`, and because the
@@ -153,7 +159,7 @@ import type {
 // substituted - the spy calls through - because replacing it would prove nothing about the
 // real one.
 import { NotificationService } from '../../../core/services/notification.service';
-import { AuthStore } from '../../../core/state/auth.store';
+import { REVOCATION_FAILED_MESSAGE, AuthStore } from '../../../core/state/auth.store';
 // Wording is imported from its single owner rather than copied, so a case cannot fossilise a
 // duplicate of a legacy sentence. `isValidationProblemDetails` is imported from HERE and not
 // from the model module: this is the file that declares it, and a second copy would be a
@@ -171,7 +177,9 @@ import {
   LOGIN_PASSWORD_MAX_BYTES,
   LOGIN_REQUIRED_MESSAGES,
   LOGIN_USERNAME_MAX_LENGTH,
+  PORTAL_ID_QUERY_KEY,
   RETURN_URL_QUERY_KEY,
+  SIGNED_DECIMAL_INTEGER,
   USERNAME_QUERY_KEY,
   VERIFICATION_CODE_QUERY_KEY,
   LoginComponent,
@@ -209,6 +217,15 @@ const LOGIN_URL = '/api/v1/auth/login';
  * this read succeeds, so there is nothing for an interceptor to attach.
  */
 const ME_URL = '/api/v1/auth/me';
+
+/**
+ * `POST /api/v1/auth/logout`. The withdrawal of the renewal credential.
+ *
+ * Named here because this screen renders the CONSEQUENCE of that request failing, and the only
+ * honest way to reach that state is to fail the genuine request rather than to write the flag
+ * directly. It is the one authentication address this screen never issues itself.
+ */
+const LOGOUT_URL = '/api/v1/auth/logout';
 
 // ---------------------------------------------------------------------------
 // THE FAILURE VOCABULARY
@@ -1874,10 +1891,134 @@ describe('LoginComponent', () => {
       expect(fieldMessages).toContain(VERIFICATION_REQUIRED_MESSAGE);
       expect(textOf('.login__message')).toBe(VERIFICATION_REQUIRED_MESSAGE);
 
+      // ⚠ SHOWN TWICE, ANNOUNCED ONCE. Both surfaces are assertive live regions, so the
+      // form-level line stands down for exactly this turn while the field's region - which
+      // names the box as well as the sentence - keeps the announcement. Asserted as a COUNT of
+      // live regions carrying the sentence rather than as a property of one element, because
+      // the defect being pinned is the duplication itself.
+      const liveWithSentence = queryAll('[role="alert"]').filter((node) =>
+        (node.textContent ?? '').includes(VERIFICATION_REQUIRED_MESSAGE),
+      );
+
+      expect(liveWithSentence.length)
+        .withContext('exactly one live region announces the ladder sentence')
+        .toBe(1);
+      expect(liveWithSentence[0]?.classList).toContain('form-field__errors');
+      expect(queryOrFail('.login__message').hasAttribute('role'))
+        .withContext('the duplicated form-level line is not live on a ladder rung')
+        .toBeFalse();
+
       // Compared against the shared utility's own output rather than a copy of the resource
       // value, so this case cannot fossilise a duplicate of legacy wording that the utility
       // later changes.
       expect(authFailureMessage(VERIFICATION_REQUIRED_CODE)).toBe(VERIFICATION_REQUIRED_MESSAGE);
+    });
+
+    it('says the ladder sentence twice on screen but announces it once', () => {
+      // ⚠ TWO VISIBLE COPIES, ONE ANNOUNCEMENT. Both copies are required and neither is a slip:
+      // the form-level line is what the legacy screen showed, and the field-level copy is beside
+      // the control the person must actually use. But the shared field wraps its messages in an
+      // assertive region of its own, so the identical sentence used to be ANNOUNCED twice.
+      //
+      // The FIELD's region is the one kept: it is beside the control that has to be acted on, and
+      // focus is moved there on the rung that reveals the field. It also belongs to the shared
+      // component, so silencing it would silence it for every other screen.
+      create();
+
+      attemptAndRefuse(refusal(VERIFICATION_REQUIRED_CODE, 401, 'Verification is required.'));
+
+      const formLevel = queryOrFail<HTMLElement>('.login__message');
+
+      expect((formLevel.textContent ?? '').trim())
+        .withContext('the sentence is still on screen at form level')
+        .toBe(VERIFICATION_REQUIRED_MESSAGE);
+      expect(formLevel.getAttribute('role'))
+        .withContext('and it is announced by nothing on this one path')
+        .toBeNull();
+      expect(formLevel.getAttribute('aria-hidden'))
+        .withContext('hidden from assistive technology rather than removed from the page')
+        .toBe('true');
+
+      const fieldRegions = queryAll('.form-field__error')
+        .map((node) => (node.textContent ?? '').trim())
+        .filter((text) => text === VERIFICATION_REQUIRED_MESSAGE);
+
+      expect(fieldRegions.length)
+        .withContext('the field beside the control is the single assertive source')
+        .toBe(1);
+    });
+
+    it('keeps the form-level sentence assertive when nothing echoes it at field level', () => {
+      // The other side of the same rule, and the reason the suppression is conditional rather than
+      // blanket. This is the case where the form-level line is the ONLY surface saying anything at
+      // all: the refusal carried no document, so the banner has nothing to render, and the sentence
+      // is not a ladder outcome, so no field echoes it. A line silenced unconditionally would have
+      // left this refusal announced by nobody.
+      create();
+
+      fillCredentials();
+      submit();
+
+      // A body an intermediary wrote on its own behalf, which is what produces a refusal carrying
+      // no problem document.
+      expectLoginRequest().flush('<html>Gateway failure</html>', {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+      fixture.detectChanges();
+
+      const formLevel = queryOrFail<HTMLElement>('.login__message');
+
+      expect((formLevel.textContent ?? '').trim()).toBe(SERVER_ERROR_MESSAGE);
+      expect(formLevel.getAttribute('role'))
+        .withContext('this is the only surface saying it, so it must announce')
+        .toBe('alert');
+      expect(formLevel.getAttribute('aria-hidden'))
+        .withContext('and it is not hidden from the technology that has to announce it')
+        .toBeNull();
+      expect(control(LOGIN_CONTROL_IDS.verificationCode))
+        .withContext('no verification field is on screen to echo it')
+        .toBeNull();
+      expect(query('.error-banner'))
+        .withContext('and no banner either, which is why this line has to speak')
+        .toBeNull();
+    });
+
+    it('leaves the form-level sentence assertive again once the ladder stops being the reason', () => {
+      // ⚠ THE PREDICATE IS RE-DERIVED FROM THE CURRENT FAILURE, NOT FROM THE FIELD BEING VISIBLE,
+      // and this is the case that separates the two. The store leaves the revealed field in place
+      // deliberately, so after a verification rung followed by an ordinary wrong-credential refusal
+      // the field is STILL on screen while the sentence is no longer a ladder outcome and nothing
+      // echoes it. Suppressing on "the field is visible" would have silenced this one.
+      create();
+
+      attemptAndRefuse(refusal(VERIFICATION_REQUIRED_CODE, 401, 'Verification is required.'));
+
+      expect(queryOrFail<HTMLElement>('.login__message').getAttribute('aria-hidden'))
+        .withContext('echoed on the rung itself')
+        .toBe('true');
+
+      // A second attempt on the revealed form, refused for a different reason and carrying no
+      // document, so the form-level line is once again the only surface. The revealed field carries
+      // a presence rule of its own, so it has to be filled or nothing is submitted at all.
+      type(LOGIN_CONTROL_IDS.verificationCode, '123456');
+      submit();
+      expectLoginRequest().flush('<html>Gateway failure</html>', {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+      fixture.detectChanges();
+
+      expect(control(LOGIN_CONTROL_IDS.verificationCode))
+        .withContext('the revealed field is deliberately still there')
+        .not.toBeNull();
+
+      const formLevel = queryOrFail<HTMLElement>('.login__message');
+
+      expect(formLevel.getAttribute('role'))
+        .withContext('but nothing echoes this sentence, so it announces again')
+        .toBe('alert');
+      expect(formLevel.getAttribute('aria-hidden')).toBeNull();
     });
 
     it('announces the revealed field rather than letting it appear silently', () => {
@@ -2027,6 +2168,39 @@ describe('LoginComponent', () => {
 
       expect(fieldMessages).toContain(VERIFICATION_CODE_INVALID_MESSAGE);
       expect(textOf('.login__message')).toBe(VERIFICATION_CODE_INVALID_MESSAGE);
+
+      // The stand-down applies to the second rung as well, not just the first: the field is
+      // still on screen and still carrying the same sentence, so the duplication is identical.
+      expect(
+        queryAll('[role="alert"]').filter((node) =>
+          (node.textContent ?? '').includes(VERIFICATION_CODE_INVALID_MESSAGE),
+        ).length,
+      )
+        .withContext('exactly one live region announces the second rung')
+        .toBe(1);
+    });
+
+    it('keeps the form-level line assertive on the rung that reveals no field', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(
+          ACCOUNT_NOT_APPROVED_CODE,
+          401,
+          'This account has not been authorised to sign in to this portal.',
+        ),
+      );
+
+      // ⚠ THE STAND-DOWN IS NARROW BY DESIGN, and this case is what pins that. The third ladder
+      // outcome does not reveal the verification box, so no field is repeating the sentence and
+      // the form-level line is the ONLY surface - it must therefore stay assertive, or a
+      // refusal would be shown with nothing announcing it at all.
+      expect(control(LOGIN_CONTROL_IDS.verificationCode)).toBeNull();
+
+      const message = queryOrFail('.login__message');
+
+      expect((message.textContent ?? '').trim()).toBe(ACCOUNT_NOT_APPROVED_MESSAGE);
+      expect(message.getAttribute('role')).toBe('alert');
     });
 
     it('asks again, and keeps the field, when the server repeats the request for a code', () => {
@@ -2192,6 +2366,146 @@ describe('LoginComponent', () => {
       // The ladder resets on success and ONLY on success, which is what stops a failed attempt
       // silently sending the person back to the first rung.
       expect(control(LOGIN_CONTROL_IDS.verificationCode)).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // PROOF 6b — WHICH TENANT THE CREDENTIALS ARE OFFERED TO
+  // -------------------------------------------------------------------------
+  //
+  // ⚠ THIS IS A SECURITY BOUNDARY. The tenant selector is attacker-controlled query text and it
+  // decides which portal receives the credentials, so a malformed value must yield NO selector
+  // rather than a DIFFERENT one. Every rejection below was a real substitution under the
+  // previous `Number.parseInt(raw, 10)` + `Number.isInteger` implementation, which was
+  // prefix-tolerant and precision-blind.
+
+  describe('the tenant selector', () => {
+    /**
+     * Seeds the selector, completes one submission and reports what reached the wire.
+     *
+     * @param raw The query text, exactly as an attacker could supply it.
+     * @returns The transmitted selector, or null when none was sent.
+     */
+    function selectorSentFor(raw: string): string | null {
+      queryParams = { [PORTAL_ID_QUERY_KEY]: raw };
+
+      create();
+      fillCredentials();
+      submit();
+
+      const request = expectLoginRequest();
+      const sent: string | null = request.request.params.get(PORTAL_ID_QUERY_KEY);
+
+      request.flush(credentialPayload());
+      completeIdentityRead();
+
+      return sent;
+    }
+
+    it('accepts both identity seeds, because -1 and 0 are real tenants', () => {
+      // `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant is -1 and the second is 0.
+      // A digits-only grammar would refuse the first and a truthiness test would discard the
+      // second.
+      expect(selectorSentFor('-1')).toBe('-1');
+    });
+
+    it('accepts tenant zero', () => {
+      expect(selectorSentFor('0')).toBe('0');
+    });
+
+    it('accepts an ordinary positive key and a signed positive key alike', () => {
+      expect(selectorSentFor('7')).toBe('7');
+    });
+
+    it('sends no selector at all when the parameter is absent', () => {
+      queryParams = {};
+
+      create();
+      fillCredentials();
+      submit();
+
+      const request = expectLoginRequest();
+
+      expect(request.request.params.has(PORTAL_ID_QUERY_KEY)).toBeFalse();
+
+      request.flush(credentialPayload());
+      completeIdentityRead();
+    });
+
+    it('omits the selector for every malformed value rather than substituting a tenant', () => {
+      // Each entry is a value the previous implementation converted into a CONFIDENT selection
+      // of a real, different tenant. `'1junk'` and `'1 2'` became 1 through prefix tolerance;
+      // `'0x10'` became 0 because the stated radix stops the parse at the `x`, and 0 is a real
+      // portal; `'1e3'` and `'1.9'` became 1 by truncation; `'  7  '` became 7 through leading
+      // whitespace tolerance; and `'9007199254740993'` ROUNDED to 9007199254740992 while still
+      // satisfying `Number.isInteger`.
+      const malformed: readonly string[] = [
+        '1junk',
+        'junk1',
+        '1 2',
+        '0x10',
+        '0b11',
+        '1e3',
+        '1.9',
+        '1.0',
+        '  7  ',
+        '7\n',
+        '',
+        '-',
+        '+',
+        '--1',
+        'NaN',
+        'Infinity',
+        '1_0',
+        '9007199254740993',
+        '-9007199254740993',
+        '99999999999999999999',
+      ];
+
+      let previous: ComponentFixture<LoginComponent> | null = null;
+
+      for (const raw of malformed) {
+        queryParams = { [PORTAL_ID_QUERY_KEY]: raw };
+
+        // Rebuilt per value so each is judged in isolation: the selector is read from the
+        // ACTIVATION SNAPSHOT during initialisation, so reseeding a live component would
+        // change nothing. The PREVIOUS fixture is torn down rather than the current one, because
+        // on the first pass there is none yet - an unguarded destroy here made this case depend
+        // on some earlier specification having left a fixture behind, which under Jasmine's
+        // random ordering it does not reliably do.
+        previous?.destroy();
+        create();
+        previous = fixture;
+        fillCredentials();
+        submit();
+
+        const request = expectLoginRequest();
+
+        expect(request.request.params.has(PORTAL_ID_QUERY_KEY))
+          .withContext(`"${raw}" must not select a tenant`)
+          .toBeFalse();
+
+        request.flush(credentialPayload());
+        completeIdentityRead();
+
+        httpMock.verify();
+      }
+    });
+
+    it('states the accepted grammar as a whole-string, both-ends-anchored expression', () => {
+      // The anchoring IS the fix, so it is asserted directly rather than only through the
+      // component: an unanchored expression would match the numeric part of `'1junk'`.
+      expect(SIGNED_DECIMAL_INTEGER.source.startsWith('^')).toBeTrue();
+      expect(SIGNED_DECIMAL_INTEGER.source.endsWith('$')).toBeTrue();
+      expect(SIGNED_DECIMAL_INTEGER.global).toBeFalse();
+
+      for (const accepted of ['0', '-1', '+1', '000', '9007199254740991']) {
+        expect(SIGNED_DECIMAL_INTEGER.test(accepted)).withContext(accepted).toBeTrue();
+      }
+
+      for (const refused of ['1junk', '0x10', '1e3', '1.0', ' 1', '1 ', '', '-', '1_0']) {
+        expect(SIGNED_DECIMAL_INTEGER.test(refused)).withContext(refused).toBeFalse();
+      }
     });
   });
 
@@ -2425,6 +2739,134 @@ describe('LoginComponent', () => {
       // visitor who is already signed in.
       expect(requiredControl(LOGIN_CONTROL_IDS.username).value).toBe('');
       httpMock.expectNone(() => true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE UNCONFIRMED-WITHDRAWAL NOTICE, AND HOW LONG IT STANDS
+  //
+  // ⚠ THIS SCREEN IS WHERE THE REPORT IS SEEN, WHICH MAKES IT WHERE A STALE ONE DOES HARM.
+  // A sign-out whose withdrawal the server never confirmed leaves a renewal credential that may
+  // still be live, and sign-out sends the operator here — so this is the one place the report is
+  // certain to be read. That is also why its LIFETIME is a property of this screen and not only
+  // of the store: the flag used to be retired by exactly one thing, a later sign-out that
+  // succeeded, so after a single refused withdrawal the sentence stood above this form
+  // indefinitely — through the next successful sign-in, through the next expiry that returned
+  // somebody here, and in front of whoever typed next. A sentence about a session two boundaries
+  // ago, presented as though it described theirs.
+  //
+  // Driven through the REAL store and the REAL transport rather than by writing a signal: the
+  // report exists only as the consequence of a withdrawal request failing, and a case that set
+  // the flag by hand would prove the template renders a boolean while proving nothing about when
+  // that boolean is true.
+  // -------------------------------------------------------------------------
+
+  describe('an unconfirmed withdrawal from the session before this one', () => {
+    /**
+     * Signs in on the real store, then signs out with a withdrawal the server refuses.
+     *
+     * Leaves the store reporting an outstanding revocation and nothing signed in — which is
+     * exactly the state an operator is in when sign-out lands them back on this screen.
+     */
+    function signOutWithAnUnconfirmedWithdrawal(): void {
+      store.login({ username: ACCOUNT_NAME, password: SUBMITTED_PASSWORD }).subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.method === 'POST' && candidate.url === LOGIN_URL)
+        .flush(credentialPayload());
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === ME_URL)
+        .flush(identityPayload());
+
+      store.logout().subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.method === 'POST' && candidate.url === LOGOUT_URL)
+        .flush(null, { status: 503, statusText: 'Service Unavailable' });
+
+      expect(store.isAuthenticated())
+        .withContext('signed out locally whatever the server said')
+        .toBeFalse();
+      expect(store.revocationOutstanding())
+        .withContext('and the withdrawal is genuinely unconfirmed')
+        .toBeTrue();
+    }
+
+    it('reports it calmly, in the same words the announcement channel used', () => {
+      signOutWithAnUnconfirmedWithdrawal();
+
+      create();
+
+      const notice = query('.login__notice');
+
+      expect(notice).withContext('the report is rendered').not.toBeNull();
+      expect((notice?.textContent ?? '').trim()).toBe(REVOCATION_FAILED_MESSAGE);
+
+      // Polite, not assertive: nothing the operator did was rejected and the local sign-out
+      // succeeded, so this must not interrupt the way a refusal does.
+      expect(notice?.getAttribute('role')).toBe('status');
+      expect(query('.login__message'))
+        .withContext('and it is not dressed as a refused attempt')
+        .toBeNull();
+    });
+
+    it('withdraws it the moment a new attempt begins, before its outcome is known', () => {
+      signOutWithAnUnconfirmedWithdrawal();
+
+      create();
+      expect(query('.login__notice')).withContext('the precondition is on screen').not.toBeNull();
+
+      fillCredentials();
+      submit();
+
+      const attempt = expectExactlyOneLoginRequest('one attempt, one request');
+
+      fixture.detectChanges();
+
+      // ⚠ ASSERTED WITH THE CREDENTIAL EXCHANGE STILL UNANSWERED. Retiring the report only on a
+      // SUCCESSFUL sign-in would leave the previous session's sentence standing above the form
+      // for the whole duration of the attempt, which is precisely when it is being read.
+      expect(query('.login__notice'))
+        .withContext('the previous session\'s report does not accompany this attempt')
+        .toBeNull();
+
+      attempt.flush(credentialPayload());
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === ME_URL)
+        .flush(identityPayload());
+      fixture.detectChanges();
+
+      expect(query('.login__notice')).toBeNull();
+    });
+
+    it('does not bring it back when that new attempt is refused', () => {
+      // The other half. A refused attempt renders its own inline refusal, and re-presenting a
+      // withdrawal notice beside it would read as an explanation of the refusal.
+      signOutWithAnUnconfirmedWithdrawal();
+
+      create();
+      expect(query('.login__notice')).not.toBeNull();
+
+      attemptAndRefuse(
+        refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
+      );
+
+      expect(query('.login__notice'))
+        .withContext('retired by the attempt starting, and not restored by its failure')
+        .toBeNull();
+
+      // ⚠ THE REFUSAL ITSELF IS STILL REPORTED, in the region that owns refusals. Asserted so
+      // that "the notice is gone" cannot pass by the screen having reported nothing at all.
+      expect(query('.login__failure'))
+        .withContext('the refused attempt is reported in its own region')
+        .not.toBeNull();
+    });
+
+    it('is absent for a visitor who never signed out at all', () => {
+      // The baseline the three cases above are measured against: the region is not simply
+      // always rendered, so its presence above is a fact about the session that ended and not
+      // about this screen.
+      create();
+
+      expect(query('.login__notice')).toBeNull();
     });
   });
 

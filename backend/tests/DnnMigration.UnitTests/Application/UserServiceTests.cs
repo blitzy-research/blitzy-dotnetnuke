@@ -223,6 +223,7 @@ public class UserServiceApplicationTests
                 Profiles.Object,
                 Roles.Object,
                 Permissions.Object,
+                RoleService.Object,
                 Portals.Object,
                 Modules.Object,
                 Definitions.Object,
@@ -252,6 +253,12 @@ public class UserServiceApplicationTests
 
         /// <summary>Gets the permission contract mock, which owns the grant cascade.</summary>
         public Mock<IPermissionService> Permissions { get; } = new();
+
+        /// <summary>
+        /// Gets the role contract mock, reached only by the member-services operations and only for the
+        /// two membership primitives they delegate.
+        /// </summary>
+        public Mock<IRoleService> RoleService { get; } = new();
 
         /// <summary>Gets the tenant repository mock.</summary>
         public Mock<IPortalRepository> Portals { get; } = new();

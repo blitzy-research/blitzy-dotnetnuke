@@ -88,70 +88,168 @@
   <form class="role-assignment__form" [formGroup]="form" (ngSubmit)="submit()">
     <div class="role-assignment__fields">
       <!--
-        MIGRATION: the account picker was a dropdown holding EVERY account in the tenant
-        (`securityroles.ascx:L26`, bound at `SecurityRoles.ascx.vb:L204`), which does not scale
-        past a small tenant. The screen's own help text says what was intended — 'Enter The
-        User Name and click Validate to confirm' — so the text box beside it was the primary
-        affordance and the shared lookup replaces the dropdown with it, querying the account
-        listing a page at a time through the shared client layer.
+        MIGRATION: WHICH CONTROL APPEARS HERE IS THE TENANT'S DECISION, not this screen's.
+        `SecurityRoles.ascx.vb:L133-L136` read `Security_UsersControl` and `:L202-L221` acted on
+        it, binding `cboUsers` to every account in the tenant and hiding the name box for one
+        value, and doing the reverse for the other; `:L106-L109` then read the chosen account
+        from whichever control was live. Both branches are reproduced, and the policy is resolved
+        before either is offered so a control is never swapped underneath the operator.
 
-        MIGRATION: the lookup no longer fails silently. `SecurityRoles.ascx.vb:L476-L488`
-        looked the account up by name and, on no match, simply blanked the box at `:L484` with
-        no message at all. A visible no-matches state replaces that; a documented improvement.
-
-        The `for` reference is taken from the shared lookup's own published field identifier
-        rather than from this screen's identifier constant, because the lookup owns the
-        identifier of the input it renders. Pointing the label at a name no element carries
-        would be a dangling association, which is worse than none.
+        The two branches are separate elements rather than one field with a conditional control,
+        because the label and the help text differ: the legacy screen shared one label cell
+        between them (`securityroles.ascx:L14`) and so carried one help string, which describes
+        only the name box — 'Enter The User Name and click Validate to confirm' — and is untrue of
+        the dropdown.
       -->
-      <app-form-field
-        [label]="text.userLabel"
-        [for]="userLookup.fieldId"
-        [help]="text.userHelp"
-        [error]="userMessages()"
-      >
-        <app-search-input
-          #userLookup
-          class="role-assignment__lookup"
-          [placeholder]="text.validate"
-          (search)="onUserSearch($event)"
-        />
+      @if (accountPolicyPending()) {
+        <app-loading-spinner [label]="text.accountPolicyLoading" />
+      } @else if (usersControlMode() === 'combo') {
+        <!--
+          MIGRATION: `cboUsers` from `securityroles.ascx:L26`, bound at
+          `SecurityRoles.ascx.vb:L204` to the tenant's whole account listing. The dropdown is
+          offered here only because the tenant asked for it; the legacy code itself stopped
+          choosing it above a thousand accounts (`UserModuleBase.vb:L178-L186`).
 
-        @if (userMatches().length > 0) {
-          <!--
-            A single-select set of real toggle buttons. The pressed state is what conveys the
-            choice, so the state is carried by the control itself rather than by colour, and
-            activating the pressed entry releases it. Two variants rather than one with a
-            conditional handler, so the pressed state and the outcome can never disagree and
-            no decision is taken in this file.
-          -->
-          <ul class="role-assignment__matches">
-            @for (match of userMatches(); track match.userId) {
-              <li class="role-assignment__match">
-                @if (match.userId === formState().userId) {
-                  <button
-                    class="role-assignment__match-action"
-                    type="button"
-                    aria-pressed="true"
-                    (click)="clearSelectedUser()"
-                  >{{ match.displayName }} ({{ match.username }})</button>
-                } @else {
-                  <button
-                    class="role-assignment__match-action"
-                    type="button"
-                    aria-pressed="false"
-                    (click)="selectUser(match)"
-                  >{{ match.displayName }} ({{ match.username }})</button>
-                }
-              </li>
+          MIGRATION: the legacy control carried `autopostback="True"`, so choosing an entry
+          round-tripped the whole page to reach the prefill. The choice is handled without one.
+
+          A native select inside the shared wrapper, following the precedent the design decisions
+          set for controls the closed shared component set does not cover. The wrapper is what
+          carries the label association, the help disclosure and the message region.
+        -->
+        <app-form-field
+          [label]="text.userChoiceLabel"
+          [for]="controlId.user"
+          [help]="text.userChoiceHelp"
+          [error]="userMessages()"
+        >
+          <select
+            class="role-assignment__choices"
+            [id]="controlId.user"
+            [disabled]="accountChoicesLoading()"
+            [attr.aria-invalid]="userMessages().length === 0 ? null : 'true'"
+            (change)="selectAccountChoice($event)"
+          >
+            <option value="">{{ text.userChoicePrompt }}</option>
+            @for (choice of accountChoices(); track choice.userId) {
+              <option
+                [value]="choice.userId"
+                [selected]="choice.userId === formState().userId"
+              >{{ choice.displayName }} ({{ choice.username }})</option>
             }
-          </ul>
-        }
+          </select>
 
-        @if (showNoMatchingUsers()) {
-          <p class="role-assignment__no-matches">{{ text.noMatchingUsers }}</p>
-        }
-      </app-form-field>
+          @if (accountChoicesLoading()) {
+            <app-loading-spinner size="small" [label]="text.accountChoicesLoading" />
+          } @else if (accountChoicesEmpty()) {
+            <p class="role-assignment__lookup-note">{{ text.accountChoicesEmpty }}</p>
+          }
+        </app-form-field>
+      } @else {
+        <!--
+          MIGRATION: `txtUsers` from `securityroles.ascx:L25` with its Validate command at
+          `:L28`, whose handler looked the account up by exact name
+          (`SecurityRoles.ascx.vb:L476-L488`). The shared lookup replaces the pair: it searches as
+          the operator types and offers what it found, which reaches the same account by the same
+          name and also names the near misses.
+
+          MIGRATION: the lookup no longer fails silently. On no match the legacy handler simply
+          blanked the box at `:L484` with no message at all. A visible no-matches state replaces
+          that; a documented improvement.
+
+          The `for` reference is taken from the shared lookup's own published field identifier
+          rather than from this screen's identifier constant, because the lookup owns the
+          identifier of the input it renders. Pointing the label at a name no element carries
+          would be a dangling association, which is worse than none.
+        -->
+        <app-form-field
+          [label]="text.userLabel"
+          [for]="userLookup.fieldId"
+          [help]="text.userHelp"
+          [error]="userMessages()"
+        >
+          <app-search-input
+            #userLookup
+            class="role-assignment__lookup"
+            [placeholder]="text.validate"
+            (search)="onUserSearch($event)"
+          />
+
+          <!--
+            Why the name box appears when the tenant asked for the dropdown. Stated rather than
+            silently substituted: without it the operator sees a control the site's own settings
+            say should not be there and has no way to know why.
+          -->
+          @if (accountPolicyUnavailable()) {
+            <p class="role-assignment__lookup-note">{{ text.accountPolicyUnavailable }}</p>
+          } @else if (accountChoicesUnavailable()) {
+            <p class="role-assignment__lookup-note">{{ text.accountChoicesUnavailable }}</p>
+          }
+
+          <!--
+            A lookup now walks pages rather than reading one, so it can take visibly longer than it
+            used to and an operator has to be able to tell "still searching" from "nothing matched".
+            Without this the two states render identically: an empty match list and no message.
+          -->
+          @if (userLookupLoading()) {
+            <app-loading-spinner size="small" [label]="text.lookupLoading" />
+          }
+
+          @if (userMatches().length > 0) {
+            <!--
+              A single-select set of real toggle buttons. The pressed state is what conveys the
+              choice, so the state is carried by the control itself rather than by colour, and
+              activating the pressed entry releases it. Two variants rather than one with a
+              conditional handler, so the pressed state and the outcome can never disagree and
+              no decision is taken in this file.
+            -->
+            <ul class="role-assignment__matches">
+              @for (match of userMatches(); track match.userId) {
+                <li class="role-assignment__match">
+                  @if (match.userId === formState().userId) {
+                    <button
+                      class="role-assignment__match-action"
+                      type="button"
+                      aria-pressed="true"
+                      (click)="clearSelectedUser()"
+                    >{{ match.displayName }} ({{ match.username }})</button>
+                  } @else {
+                    <button
+                      class="role-assignment__match-action"
+                      type="button"
+                      aria-pressed="false"
+                      (click)="selectUser(match)"
+                    >{{ match.displayName }} ({{ match.username }})</button>
+                  }
+                </li>
+              }
+            </ul>
+          }
+
+          <!--
+            Standing context, deliberately NOT a live region and NOT inside the field's message
+            slot. The lookup examines every page of the match set, so the number of accounts it
+            found and the number offered as buttons are now different numbers, and the shorter
+            list would otherwise read as the whole answer. It reports the server's own count and
+            is absent whenever the two figures agree, which is the ordinary case.
+
+            ⚠ AND THERE IS DELIBERATELY NO PAGER HERE. A pager would invite the operator to walk
+            the match set themselves to find a name — which is the interaction the walk exists to
+            remove, and which the legacy screen never offered either: `securityroles.ascx` declares
+            no pager on this control at all. What the operator needs instead is stated in words: the
+            exact name was found, or how many matched, or that the search was cut short. Offering
+            page controls would also reintroduce the ambiguity this note resolves, because a window
+            with a pager is precisely what a truncated answer looks like.
+          -->
+          @if (userLookupSummary() !== null) {
+            <p class="role-assignment__lookup-note">{{ userLookupSummary() }}</p>
+          }
+
+          @if (showNoMatchingUsers()) {
+            <p class="role-assignment__no-matches">{{ text.noMatchingUsers }}</p>
+          }
+        </app-form-field>
+      }
 
       <!--
         MIGRATION: each bound was a text box paired with an image link that opened a scripted
@@ -275,10 +373,20 @@
     would be a column the legacy screen never showed, so `SecurityRole.Header` is deliberately
     unused. The columns themselves are assembled in the class.
 
-    MIGRATION: the grid is UNSORTED and UNPAGED by parity. `securityroles.ascx:L56` declares
-    neither sorting nor paging, no pager style and no alternating-item style, so nothing here
-    binds a sort field or a sort direction, nothing handles a sort request, no column is marked
-    sortable and no pager component is rendered. There is no row striping to reproduce either.
+    MIGRATION: the grid is UNSORTED by parity. `securityroles.ascx:L56` declares no
+    `AllowSorting`, so nothing here binds a sort field or a sort direction, nothing handles a
+    sort request and no column is marked sortable. There is no row striping to reproduce either,
+    since no alternating-item style was declared.
+
+    MIGRATION: the grid IS paged, and the legacy one was not. The same declaration carries no
+    `AllowPaging` and no pager style, and a first port reproduced that by reading every page the
+    server reported and rendering the union - an unbounded read of a listing that counts and
+    windows per request, followed by a DOM proportional to whatever came back. One page is
+    rendered instead and the shared pager reaches the rest, so every membership is still
+    addressable and no Delete command is out of reach. The pager is drawn on the same predicate
+    as every other listing here: only when more memberships exist than fit on one page, which
+    means a role small enough to have fitted in the legacy grid renders with no pager at all and
+    looks exactly as it did.
 
     The loading and empty presentations belong to the shared grid, which renders both from the
     inputs below. Neither is duplicated here, and the empty wording is not settable by a
@@ -301,6 +409,23 @@
       -->
       <span dataTableCaption>{{ text.caption }}</span>
     </app-data-table>
+
+    <!--
+      The pager, handed the three facts its contract declares - the page the server reported, the
+      size it applied and the total across every page - and reporting a zero-based index straight
+      back. No arithmetic appears on either binding: the control's input and its output are both
+      on the wire's base, and the one-based number an operator reads is derived inside the control
+      itself. It is mounted only when it has somewhere to go, so the common case of a role whose
+      members fit on one page renders the bare grid.
+    -->
+    @if (pagerRequired()) {
+      <app-pagination
+        [page]="pageIndex()"
+        [pageSize]="pageSize()"
+        [totalCount]="totalCount()"
+        (pageChange)="onPageChange($event)"
+      />
+    }
   </section>
 
   <!--

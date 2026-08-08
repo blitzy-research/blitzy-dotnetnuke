@@ -7,6 +7,7 @@ import type { Observable } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
 import {
+  decodePortalAdministrator,
   decodePortalAlias,
   decodePortalDetail,
   decodePortalListItem,
@@ -20,6 +21,7 @@ import type { Decoder } from '../utils/decode.util';
 import type {
   CreatePortalAliasRequest,
   CreatePortalRequest,
+  PortalAdministrator,
   PortalAlias,
   PortalDetail,
   PortalListPage,
@@ -46,6 +48,9 @@ const PORTAL_SETTINGS_RESPONSE: Decoder<PortalSettings> = envelopeOf(decodePorta
 const PORTAL_ALIAS_RESPONSE: Decoder<PortalAlias> = envelopeOf(decodePortalAlias);
 const PORTAL_ALIAS_LIST_RESPONSE: Decoder<readonly PortalAlias[]> = envelopeOf(
   arrayOf(decodePortalAlias),
+);
+const PORTAL_ADMINISTRATOR_LIST_RESPONSE: Decoder<readonly PortalAdministrator[]> = envelopeOf(
+  arrayOf(decodePortalAdministrator),
 );
 
 /**
@@ -413,6 +418,38 @@ export class PortalService {
         context: presentedInContext(),
       })
       .pipe(map((body) => decodeResponse(PORTAL_SETTINGS_RESPONSE, body)));
+  }
+
+  /**
+   * Lists the accounts one portal may designate as its administrator.
+   *
+   * Fills the administrator selector on the settings screen, whose chosen value is
+   * {@link UpdatePortalSettingsRequest.administratorId}.
+   *
+   * MIGRATION: reproduces `Website/admin/Portal/SiteSettings.ascx.vb:L331-L336`, which asked
+   * the role controller for the members of the portal's own administrator role and added one
+   * entry per member. The server does the same, keyed off the portal's stored administrator
+   * role rather than off a literal role name, so a renamed role still yields its members.
+   *
+   * MIGRATION: this read lives on the PORTAL resource, and that is the point of it. Every role
+   * read resolves its tenant from the caller's own context rather than from a path segment, so
+   * none of them can enumerate the administrators of the portal a settings screen is
+   * addressing — which is what previously left the administrator displayable and not
+   * reassignable, the one legacy affordance on that screen with no target equivalent.
+   *
+   * UNPAGED, matching the legacy read: `GetUserRolesByRoleName` returned every member as an
+   * untyped list and the selector held them all. There is therefore no page coordinate to send
+   * and no window a caller could mistake for the whole set.
+   *
+   * @param portalId The portal whose eligible administrators to list.
+   * @returns Every candidate, ordered by the name a selector displays.
+   */
+  listAdministrators(portalId: number): Observable<readonly PortalAdministrator[]> {
+    return this.http
+      .get<unknown>(API_ENDPOINTS.portals.administrators(portalId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(PORTAL_ADMINISTRATOR_LIST_RESPONSE, body)));
   }
 
   /**

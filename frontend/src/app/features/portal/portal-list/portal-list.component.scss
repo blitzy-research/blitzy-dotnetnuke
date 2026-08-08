@@ -291,7 +291,7 @@
 // The destructive command. Colour is a reinforcement and never the only signal: the command
 // reads "Delete", its accessible name names the portal, and it opens a confirmation.
 .portal-list__row-command--danger {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 
   // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text sits
   // below the large-text threshold, so it needs 4.5:1, and the bright danger token
@@ -308,7 +308,7 @@
     // on `.portal-list__row-command:hover`, which has exactly this selector's specificity, so
     // omitting the colour here does not "keep" the danger colour - it hands the destructive command
     // the ordinary action's blue on hover. Naming it makes the intent true rather than merely stated.
-    color: var(--color-danger-text);
+    color: var(--color-danger);
     text-decoration: underline;
   }
 

@@ -1820,4 +1820,260 @@ public class PortalServiceApplicationTests
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
+
+    // =============================================================================================
+    //  THE ADMINISTRATOR SELECTOR'S CANDIDATES
+    //
+    //  Reproduces Website/admin/Portal/SiteSettings.ascx.vb:L329-L339, which filled cboAdministratorId
+    //  from the members of the portal's own administrator role. The affordance was previously absent
+    //  altogether: the settings screen displayed the stored administrator and could not offer a
+    //  replacement, because every role read resolves its tenant from the CALLER's context rather than
+    //  from a path segment and so cannot enumerate another portal's administrators.
+    // =============================================================================================
+
+    /// <summary>
+    /// The stored administrator role's key, distinct from the seed so a zero cannot pass by accident.
+    /// </summary>
+    private const int AdministratorRoleId = 0;
+
+    /// <summary>Arranges a portal whose administrator role holds the supplied assignments.</summary>
+    /// <param name="subject">The prepared subject.</param>
+    /// <param name="assignments">The assignments the membership read should answer with.</param>
+    private static void ArrangeAdministratorRole(Subject subject, params UserRole[] assignments)
+    {
+        subject.StoredPortal!.AdministratorRoleId = AdministratorRoleId;
+
+        subject.Roles
+            .Setup(roles => roles.GetByIdAsync(
+                AdministratorRoleId,
+                SeedPortalId,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Role
+            {
+                RoleId = AdministratorRoleId,
+                PortalId = SeedPortalId,
+                RoleName = "Renamed Administrators",
+            });
+
+        subject.Roles
+            .Setup(roles => roles.GetUserRolesByUsernameAsync(
+                SeedPortalId,
+                null,
+                "Renamed Administrators",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(assignments);
+    }
+
+    /// <summary>One administrator-role assignment with its account materialised.</summary>
+    /// <param name="userRoleId">The assignment's own surrogate key.</param>
+    /// <param name="userId">The account key.</param>
+    /// <param name="username">The account's login name.</param>
+    /// <param name="displayName">The account's display name.</param>
+    /// <returns>The assignment.</returns>
+    private static UserRole AdministratorAssignment(
+        int userRoleId,
+        int userId,
+        string username,
+        string displayName) => new()
+        {
+            UserRoleId = userRoleId,
+            UserId = userId,
+            RoleId = AdministratorRoleId,
+            User = new User
+            {
+                UserId = userId,
+                Username = username,
+                DisplayName = displayName,
+            },
+        };
+
+    [Fact]
+    public async Task ListAdministratorCandidates_ReadsTheMembersOfThePortalsOwnAdministratorRole()
+    {
+        // ⚠ THE ROLE NAME IS RESOLVED FROM THE STORED KEY, NEVER WRITTEN AS A LITERAL. The legacy screen
+        // passed objPortal.AdministratorRoleName, a value the terminal read view supplies through a join
+        // precisely because a tenant may rename the role - so the arrangement above names the role
+        // "Renamed Administrators" and this case fails if anything hardcodes "Administrators".
+        Subject subject = Subject.Ready();
+        ArrangeAdministratorRole(
+            subject,
+            AdministratorAssignment(11, 1_001, "ada", "Ada Lovelace"));
+
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await subject.Service
+            .ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().NotBeNull();
+
+        IReadOnlyList<PortalAdministratorDto> candidates = outcome.Value!;
+        candidates.Should().HaveCount(1);
+        candidates[0].UserId.Should().Be(1_001);
+        candidates[0].Username.Should().Be("ada");
+        candidates[0].DisplayName.Should().Be("Ada Lovelace");
+
+        // Exactly the legacy GetUserRolesByRoleName(portalId, roleName): a null login name, which the
+        // contract documents as "every account in the portal", leaving the role name as the only narrowing.
+        subject.Roles.Verify(
+            roles => roles.GetUserRolesByUsernameAsync(
+                SeedPortalId,
+                null,
+                "Renamed Administrators",
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ListAdministratorCandidates_ReportsAnAbsentPortalAsAbsentRatherThanAsEmpty()
+    {
+        // The two answers reach the caller as different HTTP statuses - a null value becomes 404 and an
+        // empty list becomes 200 - so conflating them would tell the screen a portal exists with no
+        // eligible administrators when in fact no such portal exists.
+        Subject subject = Subject.Ready();
+        subject.StoredPortal = null;
+
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await subject.Service
+            .ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListAdministratorCandidates_TreatsRoleZeroAsARealRoleRatherThanAsAbsence()
+    {
+        // ⚠ THE SENTINEL BOUNDARY. Roles.RoleID is IDENTITY (0, 1) (01.00.00.SqlDataProvider:L114), so the
+        // FIRST role a tenant ever gets is numbered zero - and on the shipped installation that role is
+        // the Administrators role. A truthiness or greater-than-zero test on AdministratorRoleId would
+        // therefore report the one portal that matters as having no administrator role at all.
+        Subject subject = Subject.Ready();
+        ArrangeAdministratorRole(
+            subject,
+            AdministratorAssignment(11, 1_001, "ada", "Ada Lovelace"));
+
+        subject.StoredPortal.Should().NotBeNull();
+        subject.StoredPortal!.AdministratorRoleId.Should().Be(0, "the arrangement pins the seed value");
+
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await subject.Service
+            .ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task ListAdministratorCandidates_AnswersEmptyWhenThePortalDesignatesNoAdministratorRole()
+    {
+        // An empty answer rather than a failure: the write path's own guard is what refuses a designation,
+        // and it permits any account belonging to the portal, so a portal with no administrator role has
+        // nothing to OFFER without thereby being broken.
+        Subject subject = Subject.Ready();
+        subject.StoredPortal!.AdministratorRoleId = null;
+
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await subject.Service
+            .ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.Should().BeEmpty();
+
+        subject.Roles.Verify(
+            roles => roles.GetUserRolesByUsernameAsync(
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task ListAdministratorCandidates_OffersEachAccountOnceAndOrdersThemAsTheyAreDisplayed()
+    {
+        // Two facts in one case because they concern the same list. DUPLICATES: the relation permits one
+        // account to hold one role more than once - UserRoles.UserRoleID is the surrogate and no unique
+        // constraint spans the account and role pair - and the legacy loop added one entry per assignment,
+        // so it could show the same person twice. ORDER: the membership read orders by role and then by
+        // assignment key, which is right for a membership grid and wrong for a name picker.
+        Subject subject = Subject.Ready();
+        ArrangeAdministratorRole(
+            subject,
+            AdministratorAssignment(11, 1_001, "zoe", "Zoe Zebra"),
+            AdministratorAssignment(12, 1_002, "ada", "Ada Lovelace"),
+            AdministratorAssignment(13, 1_001, "zoe", "Zoe Zebra"));
+
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await subject.Service
+            .ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.Select(candidate => candidate.DisplayName)
+            .Should().Equal("Ada Lovelace", "Zoe Zebra");
+    }
+
+    [Fact]
+    public async Task ListAdministratorCandidates_BreaksADisplayNameTieByTheLoginName()
+    {
+        // Why the login name is published at all. The display name is the ONE account field a tenant may
+        // compose from a format string, which makes a collision likelier rather than merely possible, and
+        // a selector offering two identical entries cannot be used to choose between them.
+        Subject subject = Subject.Ready();
+        ArrangeAdministratorRole(
+            subject,
+            AdministratorAssignment(11, 1_001, "smith.b", "B Smith"),
+            AdministratorAssignment(12, 1_002, "smith.a", "B Smith"));
+
+        Result<IReadOnlyList<PortalAdministratorDto>?> outcome = await subject.Service
+            .ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.Select(candidate => candidate.Username)
+            .Should().Equal("smith.a", "smith.b");
+    }
+
+    [Fact]
+    public async Task ListAdministratorCandidates_IsNotServedFromTheCache()
+    {
+        // The same reasoning as the settings read it sits beside: this backs an editing form, so a stale
+        // list would either hide an administrator promoted a moment ago or offer one just removed from the
+        // role - and the operator would save the stale choice back over their own change.
+        Subject subject = Subject.Ready();
+        ArrangeAdministratorRole(
+            subject,
+            AdministratorAssignment(11, 1_001, "ada", "Ada Lovelace"));
+
+        await subject.Service.ListAdministratorCandidatesAsync(SeedPortalId, CancellationToken.None);
+
+        subject.Cache.Verify(
+            cache => cache.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<Func<CancellationToken, Task<IReadOnlyList<PortalAdministratorDto>>>>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public void AdministratorCandidateMapping_RefusesAnAssignmentWhoseAccountDidNotMaterialise()
+    {
+        // A nameless entry is worse than a loud failure: it would render as an empty option the operator
+        // could select, designating an administrator they could not read the name of. The membership read
+        // includes the account, so an absent one is a broken read rather than a case to tolerate.
+        var orphan = new UserRole { UserRoleId = 77, UserId = 1_001, RoleId = AdministratorRoleId };
+
+        Action projecting = () => PortalMappings.ToAdministratorCandidate(orphan);
+
+        projecting.Should().Throw<InvalidOperationException>()
+            .WithMessage("*77*");
+    }
+
+    [Fact]
+    public void AdministratorCandidateMapping_TakesEveryMemberFromTheAccountRatherThanTheAssignment()
+    {
+        // The assignment carries its own copy of the account key, and taking the key from one object and
+        // the names from another is what would let a selector entry describe two different people.
+        UserRole membership = AdministratorAssignment(11, 1_001, "ada", "Ada Lovelace");
+        membership.UserId = 9_999;
+
+        PortalAdministratorDto candidate = PortalMappings.ToAdministratorCandidate(membership);
+
+        candidate.UserId.Should().Be(1_001);
+    }
 }

@@ -1964,7 +1964,12 @@ public class MappingTests
     {
         User user = FullUser();
 
-        UserListItemDto dto = UserMappings.ToListItem(user, portalId: -1, address: "1 Measured Way", telephone: "555-0100");
+        UserListItemDto dto = UserMappings.ToListItem(
+            user,
+            portalId: -1,
+            address: "1 Measured Way",
+            telephone: "555-0100",
+            portalAdministratorId: null);
 
         dto.UserId.Should().Be(1);
         dto.PortalId.Should().Be(-1, "the tenant comes from the route, not from the account row");
@@ -1981,6 +1986,72 @@ public class MappingTests
         dto.IsOnline.Should().BeTrue();
         dto.IsSuperUser.Should().BeTrue();
         dto.IsLockedOut.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The deletion capability reports what the service will actually do with a removal request: a host
+    /// account is refused, and so is the account the tenant designates as its administrator.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy grid decided the same thing in markup.
+    /// <c>Website/admin/Users/Users.ascx.vb:L691-L692</c> read
+    /// <c>delImage.Visible = Not (user.UserID = PortalSettings.AdministratorId) AndAlso Not (user.UserID =
+    /// Me.UserId And user.IsSuperUser)</c>. The first arm is reproduced exactly. The second is
+    /// DELIBERATELY WIDENED: the legacy hid the command for a host account only when the row also happened
+    /// to be the identifier the container had been handed, which on the listing was the absent marker, so
+    /// in ordinary use a host row was offered a command the server would refuse. The flag here reports the
+    /// server's rule instead, so every host row is withheld. The divergence is recorded in
+    /// MIGRATION_NOTES.md.
+    /// </para>
+    /// <para>
+    /// ⚠ The administrator arm must stay an EQUALITY against the designated identifier. A tenant with no
+    /// designated administrator, and one whose stored value is the legacy absent marker, both protect
+    /// NOBODY - reading either as "matches this row" would withhold the command from an ordinary account.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void UserToListItem_WithholdsDeletionFromTheHostAndFromTheDesignatedAdministrator()
+    {
+        User host = FullUser();
+        host.IsSuperUser.Should().BeTrue("the shared fixture is a host account");
+
+        UserMappings.ToListItem(host, -1, null, null, portalAdministratorId: null)
+            .CanDelete.Should().BeFalse("the service refuses to remove a host account");
+
+        User member = FullUser();
+        member.IsSuperUser = false;
+
+        UserMappings.ToListItem(member, -1, null, null, portalAdministratorId: member.UserId)
+            .CanDelete.Should().BeFalse("the tenant designates this account as its administrator");
+
+        UserMappings.ToListItem(member, -1, null, null, portalAdministratorId: 9)
+            .CanDelete.Should().BeTrue("an ordinary account of the tenant may be removed");
+    }
+
+    /// <summary>
+    /// A tenant that designates no administrator, or records the legacy absent marker in that column,
+    /// protects no account at all.
+    /// </summary>
+    /// <param name="designated">The designated administrator the tenant reports.</param>
+    /// <remarks>
+    /// The two cases are asserted together because they are the two ways "no administrator" reaches this
+    /// projection. <c>dbo.Portals.AdministratorId</c> is a nullable integer, and the legacy null contract
+    /// (<c>Library/Components/Shared/Null.vb:L38-L90</c>) spelled a missing integer as -1 - so a real
+    /// installation holds both spellings. Neither may be read as matching a row, and -1 in particular is
+    /// also a legitimate key elsewhere in this schema, which is why the comparison is an equality against
+    /// the account's own identifier rather than a test for "absent".
+    /// </remarks>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(-1)]
+    public void UserToListItem_ProtectsNobodyWhenTheTenantDesignatesNoAdministrator(int? designated)
+    {
+        User member = FullUser();
+        member.IsSuperUser = false;
+
+        UserMappings.ToListItem(member, -1, null, null, designated)
+            .CanDelete.Should().BeTrue();
     }
 
     /// <summary>
@@ -2002,7 +2073,7 @@ public class MappingTests
         user.IsLockedOut = null;
         user.Email = null;
 
-        UserListItemDto dto = UserMappings.ToListItem(user, -1, null, null);
+        UserListItemDto dto = UserMappings.ToListItem(user, -1, null, null, null);
 
         dto.IsApproved.Should().BeFalse();
         dto.IsOnline.Should().BeFalse();
@@ -2500,7 +2571,7 @@ public class MappingTests
         User user = FullUser();
         ProfilePropertyDefinition definition = FullDefinition();
 
-        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToListItem(null!, -1, null, null); });
+        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToListItem(null!, -1, null, null, null); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(null!, -1, []); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(user, -1, null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDto(null!, 0); });
@@ -3708,7 +3779,7 @@ public class MappingTests
 
         object[] projections =
         [
-            UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100"),
+            UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null),
             UserMappings.ToDetail(user, -1, ["Administrators"]),
             UserMappings.ToProfile(user.UserId, [FullDefinition()], [NewProfileValue("555-0100", null)], 2),
             UserMappings.ToDto(FullDefinition(), 2),
@@ -3819,7 +3890,7 @@ public class MappingTests
         User user = FullUser();
         user.Email = "ada@example.com";
 
-        UserMappings.ToListItem(user, -1, null, null).Email.Should().Be("ada@example.com");
+        UserMappings.ToListItem(user, -1, null, null, null).Email.Should().Be("ada@example.com");
         UserMappings.ToDetail(user, -1, []).Email.Should().Be("ada@example.com");
     }
 
@@ -3871,7 +3942,7 @@ public class MappingTests
         fromFalse.IsOnline.Should().BeFalse();
         fromFalse.IsLockedOut.Should().BeFalse();
 
-        UserListItemDto listed = UserMappings.ToListItem(unread, -1, null, null);
+        UserListItemDto listed = UserMappings.ToListItem(unread, -1, null, null, null);
 
         listed.IsApproved.Should().BeFalse();
         listed.IsOnline.Should().BeFalse();
@@ -4161,8 +4232,8 @@ public class MappingTests
         ModuleMappings.ToDto(moduleDefinition, NewDesktopModule("Announcements", 7)).Should()
             .BeEquivalentTo(ModuleMappings.ToDto(moduleDefinition, NewDesktopModule("Announcements", 7)));
 
-        UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100").Should()
-            .BeEquivalentTo(UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100"));
+        UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null).Should()
+            .BeEquivalentTo(UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null));
         UserMappings.ToDetail(user, -1, ["Administrators"]).Should()
             .BeEquivalentTo(UserMappings.ToDetail(user, -1, ["Administrators"]));
         UserMappings.ToDto(definition, 2).Should().BeEquivalentTo(UserMappings.ToDto(definition, 2));
@@ -4297,6 +4368,206 @@ public class MappingTests
         PageHeadText = "<meta name=\"measured\" />",
         IsSecure = true,
     };
+
+    /// <summary>
+    /// The member-services projection carries the role's own stored terms, the account's own subscription
+    /// state, and the three predicates the legacy grid bound.
+    /// </summary>
+    /// <remarks>
+    /// The predicates are <c>ServiceText</c>, <c>ShowSubscribe</c> and <c>ShowTrial</c> at
+    /// <c>Website/admin/Users/MemberServices.ascx.vb</c> L288-L305, L307-L323 and L325-L342. All three read
+    /// the FULL role rather than the suppressed <c>GetServices</c> projection, and so does this mapper.
+    /// </remarks>
+    [Fact]
+    public void MemberServiceProjection_CarriesTheStoredTermsAndTheAccountsOwnState()
+    {
+        Role role = FullRole();
+        var assignment = new UserRole
+        {
+            UserRoleId = 7,
+            UserId = 1,
+            RoleId = role.RoleId,
+            EffectiveDate = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            ExpiryDate = new DateTime(2026, 12, 31, 0, 0, 0, DateTimeKind.Utc),
+            IsTrialUsed = true,
+        };
+
+        MemberServiceDto row = UserMappings.ToMemberService(
+            role,
+            assignment,
+            new DateTime(2026, 6, 1, 9, 30, 0, DateTimeKind.Utc),
+            tenantTakesPayment: true);
+
+        row.RoleId.Should().Be(role.RoleId);
+        row.RoleName.Should().Be(role.RoleName);
+        row.Description.Should().Be(role.Description);
+        row.ServiceFee.Should().Be(role.ServiceFee);
+        row.BillingPeriod.Should().Be(role.BillingPeriod);
+        row.BillingFrequency.Should().Be(role.BillingFrequency);
+        row.TrialFee.Should().Be(role.TrialFee);
+        row.TrialPeriod.Should().Be(role.TrialPeriod);
+        row.TrialFrequency.Should().Be(role.TrialFrequency);
+        row.EffectiveDate.Should().Be(assignment.EffectiveDate);
+        row.ExpiryDate.Should().Be(assignment.ExpiryDate);
+        row.IsSubscribed.Should().BeTrue();
+        row.IsTrialUsed.Should().BeTrue();
+        row.IsExpired.Should().BeFalse("the expiry is later than the supplied date");
+        row.SubscriptionAction.Should().Be(MemberServiceActions.Unsubscribe);
+        row.SubscriptionOffered.Should().BeTrue("the tenant can take payment");
+        row.SubscriptionRequiresPayment.Should().BeTrue();
+        row.TrialOffered.Should().BeFalse("this account has already consumed the trial");
+    }
+
+    /// <summary>
+    /// The lapsed test compares DATES and is strict, so a subscription expiring today is not yet lapsed.
+    /// </summary>
+    /// <remarks>
+    /// The legacy comparison is <c>expiryDate &lt; Date.Today</c> (<c>:L296</c>) - a date-only comparison
+    /// against a date-only value - so the whole of the expiry day remained current. Comparing instants
+    /// instead would make a subscription expiring at midnight read as lapsed for the entire day.
+    /// </remarks>
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    public void MemberServiceProjection_TreatsTheExpiryDayItselfAsStillCurrent(int expiryOffsetInDays, bool expected)
+    {
+        var today = new DateTime(2026, 6, 1, 23, 45, 0, DateTimeKind.Utc);
+        Role role = FullRole();
+        role.ServiceFee = 0m;
+
+        MemberServiceDto row = UserMappings.ToMemberService(
+            role,
+            new UserRole
+            {
+                UserId = 1,
+                RoleId = role.RoleId,
+                ExpiryDate = today.Date.AddDays(expiryOffsetInDays),
+            },
+            today,
+            tenantTakesPayment: false);
+
+        row.IsExpired.Should().Be(expected);
+        row.SubscriptionAction.Should().Be(
+            expected ? MemberServiceActions.Renew : MemberServiceActions.Unsubscribe);
+    }
+
+    /// <summary>
+    /// A perpetual subscription - one with no expiry - never reads as lapsed, however old it is.
+    /// </summary>
+    /// <remarks>
+    /// The legacy arm is guarded by <c>Not Null.IsNull(expiryDate)</c> (<c>:L295</c>), so an unbounded
+    /// membership fell through to the unsubscribe label. Under Rule T7 the absent bound is a null here rather
+    /// than the minimum-date sentinel, and a mapper that compared the sentinel would call every unbounded
+    /// subscription expired.
+    /// </remarks>
+    [Fact]
+    public void MemberServiceProjection_NeverCallsAnUnboundedSubscriptionLapsed()
+    {
+        Role role = FullRole();
+        role.ServiceFee = null;
+
+        MemberServiceDto row = UserMappings.ToMemberService(
+            role,
+            new UserRole { UserId = 1, RoleId = role.RoleId, EffectiveDate = DateTime.MinValue },
+            new DateTime(2099, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            tenantTakesPayment: false);
+
+        row.IsExpired.Should().BeFalse();
+        row.SubscriptionAction.Should().Be(MemberServiceActions.Unsubscribe);
+    }
+
+    /// <summary>
+    /// An ABSENT fee means no fee, on both the service and the trial term.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>RoleInfo.ServiceFee</c> was a non-nullable <c>Single</c>, so a stored <c>NULL</c>
+    /// reached the legacy predicates through <c>Null.SetNull</c> as <c>Single.MinValue</c> - which is not
+    /// zero - and <c>objRole.ServiceFee = 0.0</c> was consequently FALSE for a role with no fee at all,
+    /// presenting it as needing payment. Reading absence as "no fee" is the Rule T7 translation and matches
+    /// the role service's own cancellation test.
+    /// </remarks>
+    [Theory]
+    [InlineData(null, null, false, false)]
+    [InlineData(0, 0, false, false)]
+    [InlineData(9, null, true, true)]
+    [InlineData(9, 0, true, true)]
+    [InlineData(9, 4, true, false)]
+    public void MemberServiceProjection_ReadsAnAbsentFeeAsNoFee(
+        int? serviceFee,
+        int? trialFee,
+        bool requiresPayment,
+        bool trialOffered)
+    {
+        Role role = FullRole();
+        role.ServiceFee = serviceFee;
+        role.TrialFee = trialFee;
+
+        MemberServiceDto row = UserMappings.ToMemberService(
+            role,
+            assignment: null,
+            new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc),
+            tenantTakesPayment: true);
+
+        row.SubscriptionRequiresPayment.Should().Be(requiresPayment);
+        row.TrialOffered.Should().Be(trialOffered);
+        row.IsSubscribed.Should().BeFalse();
+        row.IsTrialUsed.Should().BeFalse("an absent assignment has consumed no trial");
+        row.SubscriptionAction.Should().Be(MemberServiceActions.Subscribe);
+    }
+
+    /// <summary>
+    /// A role the tenant does not publish is offered neither a subscription nor a trial, whatever its terms.
+    /// </summary>
+    /// <remarks>
+    /// The first arm of both legacy predicates is <c>objRole.IsPublic</c>. The mapper tests the role's own
+    /// flag rather than assuming it, so it is correct for a caller that pairs it with a wider read than the
+    /// subscribable-role one.
+    /// </remarks>
+    [Fact]
+    public void MemberServiceProjection_OffersNothingForAnUnpublishedRole()
+    {
+        Role role = FullRole();
+        role.IsPublic = false;
+
+        MemberServiceDto row = UserMappings.ToMemberService(
+            role,
+            assignment: null,
+            new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc),
+            tenantTakesPayment: true);
+
+        row.SubscriptionOffered.Should().BeFalse();
+        row.TrialOffered.Should().BeFalse();
+        row.SubscriptionRequiresPayment.Should().BeTrue("the terms are a fact about the role, not about the offer");
+    }
+
+    /// <summary>The redemption row carries the key and the name, and nothing else.</summary>
+    /// <remarks>
+    /// The legacy confirmation interpolated the role NAME
+    /// (<c>Website/admin/Users/ManageUsers.ascx.vb:L847</c>), and the key is carried so a client can locate
+    /// the affected row in the catalogue it already holds.
+    /// </remarks>
+    [Fact]
+    public void RedeemedServiceProjection_CarriesTheKeyAndTheName()
+    {
+        Role role = FullRole();
+
+        RedeemedServiceDto redeemed = UserMappings.ToRedeemedService(role);
+
+        redeemed.RoleId.Should().Be(role.RoleId);
+        redeemed.RoleName.Should().Be(role.RoleName);
+    }
+
+    /// <summary>Both member-services mappers refuse a null role.</summary>
+    [Fact]
+    public void MemberServiceMappers_RefuseANullRole()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            _ = UserMappings.ToMemberService(null!, null, DateTime.UtcNow, tenantTakesPayment: false);
+        });
+        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToRedeemedService(null!); });
+    }
 
     /// <summary>
     /// Builds a role whose every mapped column carries a distinguishable value.

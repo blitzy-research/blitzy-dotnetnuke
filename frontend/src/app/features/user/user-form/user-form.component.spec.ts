@@ -1911,24 +1911,29 @@ describe('UserFormComponent', () => {
         .withContext('four distinct members behind one sentence')
         .toBe(4);
 
-      // MIGRATION — DEFECT NOT PRESERVED, AND RECORDED HERE RATHER THAN HIDDEN. The measured
-      // value of `RegError.Text` in `Website/App_GlobalResources/SharedResources.resx` contains
-      // the misspelling "Futher". The shipped vocabulary in
-      // `core/utils/form-errors.util.ts` L1459-L1461 spells it "Further". The Minimal Change
-      // Clause asks for defects to be ANNOTATED rather than corrected, so the divergence is
-      // pinned here: the two strings differ by exactly that one repair and nothing else. That
-      // file belongs to another author, so this suite reports the difference instead of
-      // asserting wording the code does not carry.
+      // ⚠ MIGRATION — DEFECT PRESERVED, AND THIS IS THE ASSERTION THAT KEEPS IT PRESERVED.
+      // The measured value of `RegError.Text` in
+      // `Website/App_GlobalResources/SharedResources.resx` line 301 misspells "Further" as
+      // "Futher". The Minimal Change Clause requires a discovered defect to be ANNOTATED
+      // rather than corrected, and requires error messages to be EQUIVALENT to the legacy
+      // ones — so the shipped sentence must be this one, character for character.
+      //
+      // The measured value is written out in full rather than derived from the shipped
+      // constant by substitution. A comparison that spelled the repair — asserting that the
+      // shipped text differs from the measurement by exactly one word — would BLESS the
+      // divergence instead of detecting it, and would keep passing however far the wording
+      // drifted from the resource file so long as that one word still differed. Written out
+      // in full, any edit to the shipped sentence fails here.
       const measuredRegError =
         'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
         'Administrator For Futher Information.';
 
       expect(shipped)
-        .withContext('the typo was repaired rather than preserved')
-        .not.toBe(measuredRegError);
-      expect(shipped.replace('Further', 'Futher'))
-        .withContext('and the repair is the ONLY difference from the measured value')
+        .withContext('the measured wording, misspelling and all')
         .toBe(measuredRegError);
+      expect(shipped)
+        .withContext('and specifically NOT the repaired spelling')
+        .not.toContain('Further');
     });
 
     it('keys success on the HTTP status and never on an outcome ordinal', () => {
@@ -2350,10 +2355,11 @@ describe('UserFormComponent', () => {
       // `User.ascx` L67. The control is one of the 102 excluded `Library/Controls` files, so
       // there is nothing to render and no field to post.
       //
-      // ⚠ AND THE PROTECTION IS NOT SIMPLY GONE. The compensating control lives on the server:
-      // the API rate-limits `/api/v1/auth/*` per client address and answers 429 once the
-      // allowance is spent. A challenge on an administrator's own create form was never the
-      // thing holding automated registration back.
+      // ⚠ AND THE PROTECTION IS NOT SIMPLY GONE. The compensating control lives on the server
+      // and it covers THIS form's own write: the global limiter classifies a request as
+      // credential-bearing from the `[CredentialEndpoint]` marker on the action, and
+      // `UsersController.CreateAsync` carries it, so account creation draws the credential
+      // budget per calling address and is answered 429 once the allowance is spent.
       //
       // MIGRATION — DEFECT 8, ANNOTATED. The legacy label for that row read
       // `text="Password:"` at `User.ascx` L64, which was MASKED at run time because

@@ -10,7 +10,11 @@ import {
   type PagedResponse,
 } from '../../../core/models/paged-result.model';
 import type { ProblemDetails, ProblemDetailsErrors } from '../../../core/models/problem-details.model';
-import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
+import type {
+  MembershipSettings,
+  MembershipSettingsUpdateResult,
+  UserListItem,
+} from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
 import { MembershipSettingsComponent } from './membership-settings.component';
@@ -90,17 +94,31 @@ import { MembershipSettingsComponent } from './membership-settings.component';
  *     four actions therefore belong to the ACCOUNT FORM, and NOT ONE CASE BELOW ASSERTS THEM.
  *   * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role subscription — an
  *     invitation-code box, a subscribe command and a seven-column services grid carrying a trial
- *     command. Role subscription, invitation codes, trials and billing have NO ENDPOINT in this
- *     API at all, so there is nothing for a screen to call and NO CASE BELOW COVERS THEM.
+ *     command. It is implemented by the SIBLING component in this folder, routed at
+ *     `/users/{userId}/services` and specified by `member-services.component.spec.ts`, so NO CASE
+ *     BELOW COVERS IT — not because the workflow is absent, but because it is not this screen.
+ *     (An earlier revision of this note said those affordances had "NO ENDPOINT in this API at
+ *     all", which was true of the API as it then stood and is withdrawn.) The two are separate
+ *     screens because they differ in whose data they show and in who may see it: this one
+ *     configures the tenant and is reached by an administrator, that one shows one account's
+ *     personal subscriptions and is gated on account ownership with no administrator arm.
  *
  * Parity is therefore measured against `UserSettings.ascx` ALONE, and the correction is reported
  * rather than absorbed silently.
  *
  * MIGRATION: the legacy save started a BACKGROUND THREAD that rewrote every account's display
- * name whenever the display-name format changed (`UserSettings.ascx.vb` L175-L182). Nothing here
- * attempts it and no case asserts it: it is a bulk write across a whole tenant, which belongs
- * behind an endpoint rather than in a browser that can be closed halfway through, and no endpoint
- * exists for it. Reported as a possible gap on the server side rather than quietly dropped.
+ * name whenever the display-name format changed (`UserSettings.ascx.vb` L175-L182). Nothing HERE
+ * attempts the rewrite and nothing should: it is a bulk write across a whole tenant, which belongs
+ * behind an endpoint rather than in a browser that can be closed halfway through. The SERVER
+ * performs it, inside the same transaction as the policy write, and the endpoint answers with the
+ * number of accounts it renamed — which is why this one settings write answers `200` with a body
+ * where every other answers `204`.
+ *
+ * ⚠ AN EARLIER REVISION OF THIS NOTE SAID "no endpoint exists for it" and reported it as a possible
+ * gap on the server side. That was accurate about the API as it then stood and is WITHDRAWN. What
+ * this screen owns is REPORTING the rewrite, and the cases under "writing the policy" assert every
+ * outcome of it: a named count, the singular reading for one account, a format that changed and
+ * renamed nothing, a format left alone, and the report being discarded once announced.
  *
  * MIGRATION: the legacy handler cleared the settings CACHE itself (`UserSettings.ascx.vb` L189).
  * Cache lifetime is the server's business in the target, nothing is cached in the browser, and no
@@ -203,6 +221,8 @@ describe('MembershipSettingsComponent', () => {
   const LOADING_LABEL = 'Loading user settings…';
   const SAVING_LABEL = 'Saving user settings…';
   const SAVED_MESSAGE = 'User settings saved.';
+  const SAVED_NO_RENAME_MESSAGE =
+    'User settings saved. No account names needed to change under the new display name format.';
   const REQUIRED_MESSAGE = 'This setting is required.';
   const PAGE_SIZE_RANGE_MESSAGE = 'The number of accounts per page must be between 1 and 100.';
   const NEGATIVE_PAGE_MESSAGE =
@@ -315,6 +335,29 @@ describe('MembershipSettingsComponent', () => {
 
   function envelope<T>(data: T): ApiResponse<T> {
     return { data, meta: null };
+  }
+
+  /**
+   * The report the policy write answers with.
+   *
+   * ⚠ THIS WRITE ANSWERS `200` WITH A BODY, unlike every other settings write in the workspace.
+   * Adopting a new display-name format renames every account in the tenant, and the caller cannot
+   * infer from its own request that it happened - so the count travels back on the response.
+   *
+   * Defaults to "the format was left alone", which is what an ordinary save produces, so a case
+   * that merely needs the write to succeed does not have to describe a rename it never asked for.
+   *
+   * @param overrides What this case needs the write to have reported.
+   * @returns The enveloped report.
+   */
+  function writeReport(
+    overrides: Partial<MembershipSettingsUpdateResult> = {},
+  ): ApiResponse<MembershipSettingsUpdateResult> {
+    return envelope<MembershipSettingsUpdateResult>({
+      displayNameFormatChanged: false,
+      displayNamesRewritten: 0,
+      ...overrides,
+    });
   }
 
   /**
@@ -574,6 +617,51 @@ describe('MembershipSettingsComponent', () => {
   }
 
   /**
+   * The account listing's re-read, whichever of its two transports carried it.
+   *
+   * ⚠ THE LISTING HAS TWO ADDRESSES AND THE CHOICE IS NOT THIS SCREEN'S. A listing that names
+   * nobody — page coordinates, an ordering, at most an approval state — is a cacheable
+   * `GET /api/v1/users`; a listing carrying an account name, an address or a profile pair is
+   * `POST /api/v1/users/search`, because a query parameter travels in the request target and four
+   * separate recorders keep it while HTTPS protects none of them. The re-read after a policy write
+   * carries whatever search is in force, so either address is legitimate here and the case is about
+   * the page COORDINATES rather than the verb.
+   */
+  function expectListingRead(
+    description: string,
+  ): ReturnType<HttpTestingController['expectOne']> {
+    return httpMock.expectOne(
+      (candidate) =>
+        (candidate.method === 'GET' && candidate.url === USERS_URL)
+        || (candidate.method === 'POST' && candidate.url === `${USERS_URL}/search`),
+      description,
+    );
+  }
+
+  /**
+   * One page coordinate, read from the query string or the body as the transport dictates.
+   *
+   * Stringified so a case reads the same value either way: a query parameter is always text and a
+   * body member is typed, so without this every coordinate assertion would be written twice.
+   */
+  function coordinate(
+    request: ReturnType<HttpTestingController['expectOne']>,
+    name: string,
+  ): string {
+    if (request.request.method === 'POST') {
+      const sent: unknown = request.request.body;
+
+      if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
+        throw new Error('the search did not transmit a JSON object body');
+      }
+
+      return String((sent as Record<string, unknown>)[name]);
+    }
+
+    return String(request.request.params.get(name));
+  }
+
+  /**
    * Answers a successful write in full.
    *
    * ⚠ THREE REQUESTS, IN THIS ORDER. The write answers with no body, so the store re-reads the
@@ -583,12 +671,12 @@ describe('MembershipSettingsComponent', () => {
     expectRequest('GET', SETTINGS_URL, 'the re-read policy').flush(envelope(policy));
     fixture.detectChanges();
 
-    const listing = expectRequest('GET', USERS_URL, 'the re-read listing');
+    const listing = expectListingRead('the re-read listing');
 
-    expect(listing.request.params.get('pageIndex'))
+    expect(coordinate(listing, 'pageIndex'))
       .withContext('the listing returns to the first page')
       .toBe('0');
-    expect(listing.request.params.get('pageSize'))
+    expect(coordinate(listing, 'pageSize'))
       .withContext('the listing is fetched at the size the policy declares')
       .toBe(String(policy.recordsPerPage));
 
@@ -971,7 +1059,7 @@ describe('MembershipSettingsComponent', () => {
       expect(body.redirectAfterLogin).withContext('never the legacy marker').not.toBe(-1);
       expect(body.redirectAfterLogout).not.toBe(-1);
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(policy);
     });
@@ -1009,7 +1097,7 @@ describe('MembershipSettingsComponent', () => {
       expect(body.securityEmailValidation).toBe(expression);
       expect(body.securityDisplayNameFormat).toBe(format);
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(settings({ securityEmailValidation: expression, securityDisplayNameFormat: format }));
     });
@@ -1160,7 +1248,7 @@ describe('MembershipSettingsComponent', () => {
         .withContext('page zero travels as zero, never as null')
         .toBe(0);
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(settings());
     });
@@ -1211,7 +1299,7 @@ describe('MembershipSettingsComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('writing the policy', () => {
-    it('replaces the whole policy with all twenty-three members and answers 204', () => {
+    it('replaces the whole policy with all twenty-three members and reads the write report', () => {
       const policy = settings();
 
       arrive(policy);
@@ -1249,7 +1337,7 @@ describe('MembershipSettingsComponent', () => {
       expect(typeof body.displayMode).withContext('a mode is a number').toBe('number');
       expect(typeof body.securityDisplayNameFormat).withContext('text is text').toBe('string');
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(policy);
     });
@@ -1308,7 +1396,7 @@ describe('MembershipSettingsComponent', () => {
       // would read the difference as an instruction it was never given.
       expect(memberNames(body)).toHaveSize(POLICY_MEMBER_COUNT);
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(settings({ displayMode: 0 }));
     });
@@ -1319,7 +1407,7 @@ describe('MembershipSettingsComponent', () => {
       type('recordsPerPage', '50');
       submitForm();
 
-      expectRequest('PUT', SETTINGS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectRequest('PUT', SETTINGS_URL).flush(writeReport());
       fixture.detectChanges();
 
       // ⚠ THE LISTING FOLLOWS BECAUSE THE POLICY DECLARES THE SIZE OF A PAGE. Leaving it alone
@@ -1336,12 +1424,116 @@ describe('MembershipSettingsComponent', () => {
 
       arrive(policy);
       submitForm();
-      expectRequest('PUT', SETTINGS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectRequest('PUT', SETTINGS_URL).flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(policy);
 
       expect(successSpy).toHaveBeenCalledOnceWith(SAVED_MESSAGE);
       expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
+    });
+
+    it('names how many accounts the new display name format renamed', () => {
+      /*
+       * ⚠ THE ONE SETTINGS WRITE WITH A TENANT-WIDE SIDE EFFECT, AND THE ONE THE LEGACY SCREEN
+       * KEPT SILENT ABOUT. `Website/admin/Users/UserSettings.ascx.vb` L175-L182 compared the
+       * submitted format against the stored one and, when they differed, spawned
+       * `UserController.UpdateDisplayNames` (`Library/Components/Users/UserController.vb`
+       * L1259-L1268) on a BACKGROUND THREAD, then redirected. An operator saw the same blank
+       * confirmation whether the sweep renamed nothing, renamed the whole tenant, or died
+       * halfway. The count is part of the write's answer now, and this is where it is said.
+       *
+       * REPORTED THROUGH THE NOTIFICATION RATHER THAN A PANEL, because this screen navigates
+       * away on success exactly as the legacy handler did (L184-L187) - a panel raised here
+       * would be destroyed before it could be read.
+       */
+      const policy = settings({ securityDisplayNameFormat: '[LASTNAME]' });
+
+      arrive(policy);
+      submitForm();
+
+      expectRequest('PUT', SETTINGS_URL).flush(
+        writeReport({ displayNameFormatChanged: true, displayNamesRewritten: 12 }),
+      );
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+
+      expect(successSpy).toHaveBeenCalledOnceWith(
+        'User settings saved. 12 accounts were renamed to match the new display name format.',
+      );
+      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
+    });
+
+    it('reads naturally for a single renamed account', () => {
+      // The plural noun and the verb both agree with the count. A sentence reading "1 accounts
+      // were renamed" is the kind of defect a template that only interpolated a number produces,
+      // and it appears on the most common case of all: a tenant with one account.
+      const policy = settings({ securityDisplayNameFormat: '[LASTNAME]' });
+
+      arrive(policy);
+      submitForm();
+
+      expectRequest('PUT', SETTINGS_URL).flush(
+        writeReport({ displayNameFormatChanged: true, displayNamesRewritten: 1 }),
+      );
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+
+      expect(successSpy).toHaveBeenCalledOnceWith(
+        'User settings saved. 1 account was renamed to match the new display name format.',
+      );
+    });
+
+    it('distinguishes a format that changed and renamed nothing from a format left alone', () => {
+      /*
+       * ⚠ THE DISTINCTION IS THE WHOLE POINT OF CARRYING TWO MEMBERS. "The sweep ran and found
+       * nothing to alter" is a different answer from "no sweep ran", and an operator who has just
+       * changed the format is looking for exactly that difference - shown the plain confirmation
+       * they could not tell whether the change had taken effect at all.
+       */
+      const policy = settings({ securityDisplayNameFormat: '[LASTNAME]' });
+
+      arrive(policy);
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(
+        writeReport({ displayNameFormatChanged: true, displayNamesRewritten: 0 }),
+      );
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+
+      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_NO_RENAME_MESSAGE);
+    });
+
+    it('announces the plain confirmation when the format was left alone', () => {
+      // The default report, which is what an ordinary save of any other member produces. Nothing
+      // about renaming is mentioned, because nothing was renamed and nothing was attempted.
+      const policy = settings();
+
+      arrive(policy);
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+
+      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_MESSAGE);
+    });
+
+    it('does not re-announce a rename on a later visit to the screen', () => {
+      // The report is DISCARDED once reported. It lives on the store, which outlives this screen,
+      // so leaving it behind would make the next save of any member announce a rename that
+      // happened during a previous visit.
+      const policy = settings({ securityDisplayNameFormat: '[LASTNAME]' });
+
+      arrive(policy);
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(
+        writeReport({ displayNameFormatChanged: true, displayNamesRewritten: 5 }),
+      );
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+
+      expect(TestBed.inject(UserStore).lastSettingsWrite())
+        .withContext('discarded the moment it was reported')
+        .toBeNull();
     });
 
     it('announces the write in flight and withholds the submit command while it runs', () => {
@@ -1364,7 +1556,7 @@ describe('MembershipSettingsComponent', () => {
       // The way out stays operable while a write is in flight, as the legacy command was.
       expect(button(CANCEL_LABEL)?.disabled).withContext('the way out is never withheld').toBeFalse();
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(settings());
     });
@@ -1388,6 +1580,77 @@ describe('MembershipSettingsComponent', () => {
   // ---------------------------------------------------------------------------------------------------
   // PROOF 6 — A REFUSED READ OR WRITE
   // ---------------------------------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 5b — WHERE EACH SETTING TAKES EFFECT
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the destinations this console maintains but does not act on', () => {
+    /*
+     * ⚠ EACH OF THE THREE NAMES A DOTNETNUKE PAGE, AND THIS APPLICATION RENDERS NONE. Page rendering
+     * is excluded by AAP 0.2.2.2 and 0.2.2.4, and the page resource offers a tenant's page list and
+     * one page's detail and nothing that renders one. The migration is side by side (AAP 0.1.1), so
+     * the DotNetNuke application remains deployed and reads all three -
+     * `Website/admin/Authentication/Login.ascx.vb` L147-L177 after a sign-in,
+     * `Website/admin/Users/ManageUsers.ascx.vb` L80-L98 after a registration, and
+     * `Library/Components/Authentication/AuthenticationController.vb` L251-L270 after a sign-out.
+     *
+     * These two cases pin BOTH halves of that: the values round-trip, so the policy is genuinely
+     * maintained, and no navigation is derived from them, so the console does not pretend to an
+     * effect it cannot have.
+     */
+
+    it('carries all three destinations to the server and back without acting on any of them', () => {
+      const policy = settings({
+        redirectAfterLogin: 12,
+        redirectAfterRegistration: 0,
+        redirectAfterLogout: null,
+      });
+
+      arrive(policy);
+
+      // ⚠ ZERO IS A REAL PAGE - the page table's identity seeds at zero - and null is the only
+      // expression of "no destination". Both must survive, which is what makes the round trip
+      // meaningful rather than merely successful.
+      expect(field<HTMLInputElement>('redirectAfterLogin').value).toBe('12');
+      expect(field<HTMLInputElement>('redirectAfterRegistration').value).toBe('0');
+      expect(field<HTMLInputElement>('redirectAfterLogout').value).toBe('');
+
+      submitForm();
+
+      const body = writtenPolicy(expectRequest('PUT', SETTINGS_URL));
+
+      expect(body.redirectAfterLogin).toBe(12);
+      expect(body.redirectAfterRegistration).toBe(0);
+      expect(body.redirectAfterLogout).toBeNull();
+    });
+
+    it('never navigates to a destination a redirect setting names', () => {
+      // The one navigation this screen performs is back to the account listing, on save and on
+      // abandonment - and it performs that whatever the destinations say. A screen that had wired a
+      // redirect would send the operator to page 12 here instead, which is a page this application
+      // cannot render.
+      const policy = settings({
+        redirectAfterLogin: 12,
+        redirectAfterRegistration: 13,
+        redirectAfterLogout: 14,
+      });
+
+      arrive(policy);
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+
+      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
+
+      for (const call of navigateSpy.calls.all()) {
+        expect(JSON.stringify(call.args))
+          .withContext('no destination recorded in the policy reaches the router')
+          .not.toMatch(/1[234]/);
+      }
+    });
+  });
 
   describe('a refused read', () => {
     it('shows the refusal in the shared banner and withholds submission entirely', () => {
@@ -1669,7 +1932,7 @@ describe('MembershipSettingsComponent', () => {
 
       expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
 
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(settings());
     });

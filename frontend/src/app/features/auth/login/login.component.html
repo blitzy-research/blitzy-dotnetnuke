@@ -176,16 +176,20 @@
       has-a-document arm. That is not a slip in either place - both surfaces are required. The
       form-level line is what the legacy screen showed, and the field-level copy is where the
       person must actually act, which is why the sibling's own message list puts the ladder
-      sentence at the head of the verification field's messages. The screen therefore says it
+      sentence at the head of the verification field's messages. The screen therefore SHOWS it
       twice on that one rung, deliberately.
 
-      ⚠ AND A DIVERGENCE THAT IS RECORDED RATHER THAN FIXED. Because the shared field wraps its
-      messages in a region carrying an assertive role of its own, that one repeated sentence is
-      also ANNOUNCED twice. It is not correctable from this file: suppressing either surface
-      would drop one the design requires, and the field's region belongs to the shared component.
-      A previous revision of this comment claimed the two "never say the same thing twice" - that
-      claim was false on exactly this path, and stating the real behaviour is worth more than a
-      tidier sentence.
+      ⚠ AND IT IS SAID TWICE VISIBLY BUT ANNOUNCED ONCE, which is the whole reason the roles below
+      are bound rather than written literally. Because the shared field wraps its messages in a
+      region carrying an assertive role of its own, that one repeated sentence used to be ANNOUNCED
+      twice as well. Suppressing either VISUAL copy would drop one the design requires, and the
+      field's region belongs to the shared component and is used by every other screen - so on
+      exactly the path where the sentence is echoed at field level, this copy is rendered visibly
+      and hidden from assistive technology, leaving the field's region as the single assertive
+      source. It is beside the control the person must act on, and focus is moved there on the rung
+      that first reveals the field. On every other path - a wrong credential, a rate limit, a fault
+      carrying no document - nothing appears at field level, so this line is the only thing that
+      says anything and stays fully assertive. See `signInMessageEchoedAtField` on the paired class.
 
       MIGRATION: the three verification sentences and the refusal sentence are reproduced
       verbatim by the shared form-errors utility from
@@ -198,7 +202,13 @@
     @if (rateLimited()) {
       <p class="login__notice" role="status">{{ rateLimitMessage }}</p>
     } @else if (signInMessage() !== null) {
-      <p class="login__message" role="alert">{{ signInMessage() }}</p>
+      <p
+        class="login__message"
+        [attr.role]="signInMessageEchoedAtField() ? null : 'alert'"
+        [attr.aria-hidden]="signInMessageEchoedAtField() ? 'true' : null"
+      >
+        {{ signInMessage() }}
+      </p>
     }
 
     <!--

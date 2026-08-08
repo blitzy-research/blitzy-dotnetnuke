@@ -362,79 +362,101 @@
   contain-intrinsic-block-size: auto
     calc((var(--font-size-base) * var(--line-height-base)) + var(--space-2));
 
-  // The row is a tab stop, so it owns a visible focus indicator rather than
-  // depending on a global selector staying broad enough to match it. Composed from
-  // the shared mixin so the ring's width, style and colour keep one definition
-  // site; only the offset is corrected below.
-  @include mx.focus-ring;
-
-  // The row's ONE correction — an inward offset and no outer band — is not written
-  // here. It cannot be: a nested `&:focus-visible` compiles to a two-token selector
-  // that two broader rules out-specify, so the correction would be authored and never
-  // applied. It is therefore a compound top-level rule immediately after this block,
-  // and the reasoning is recorded there.
-
-  // HOVER AND PRESS, giving a selectable row the same interaction feedback the sort
-  // control above has. The shared table conventions already put the pointer and the
-  // ring on these rows; those tell a reader that the row is operable, but neither
-  // responds to the pointer being over THIS row rather than another, which is what a
-  // hover state is for in a grid of near-identical lines.
+  // ⚠⚠ EVERY INTERACTION TREATMENT BELOW IS GATED ON `[aria-selected]`, AND THE GATE IS A
+  // CORRECTION RATHER THAN A REFINEMENT. The focus ring, the hover ink and the press fill
+  // used to apply to every row in every grid, whether or not anything was listening for a
+  // selection — so six of the seven grids in this application painted a full interaction
+  // vocabulary onto rows that do nothing when pressed. The component now emits
+  // `aria-selected` only when a consumer binds `(rowSelect)`, so matching the attribute's
+  // PRESENCE is what confines these treatments to rows that are genuinely operable.
   //
-  // THE INK MOVES, NOT THE SURFACE, and that choice is forced by the zebra stripe. A
-  // hover surface would have to differ from BOTH row backgrounds at once — the page
-  // surface on odd rows and the neutral surface on even ones — and the only palette
-  // members that do are the selection tint, which would make hover indistinguishable
-  // from selection, and the two hairline values, which the vocabulary documents as
-  // decorative and which measure under 1.7 to 1 against either row. Moving the ink is
-  // independent of the stripe entirely, so it reads identically on every row. It is
-  // also the closer parallel to the legacy grid, which expressed row state by
-  // recolouring text rather than by filling a row.
-  @include mx.hover {
-    color: var(--color-primary-hover);
-  }
+  // Matching the bare attribute rather than one of its values is deliberate: the ordinary
+  // state of a selectable row is `aria-selected="false"`, and it is still operable. This is
+  // the same mechanism the shared table conventions use for the cursor and the tint, so
+  // there is ONE condition expressed in one vocabulary across both files and no way for the
+  // visual affordance and the announced affordance to disagree.
+  //
+  // The virtualisation properties above stay UNCONDITIONAL, correctly: skipping the layout
+  // of an off-screen row has nothing to do with whether the row can be selected.
+  &[aria-selected] {
+    // The row is a tab stop, so it owns a visible focus indicator rather than
+    // depending on a global selector staying broad enough to match it. Composed from
+    // the shared mixin so the ring's width, style and colour keep one definition
+    // site; only the offset is corrected below.
+    @include mx.focus-ring;
 
-  // Press previews its own outcome: the fill is the selection tint, and pressing a
-  // row is what selects it, so the press state and the state it produces agree. On a
-  // row that is already selected the fill is already there and the press is a no-op,
-  // which is correct — there is nothing new to signal.
-  &:active {
-    background-color: var(--color-selected);
-  }
+    // The row's ONE correction — an inward offset and no outer band — is not written
+    // here. It cannot be: a nested `&:focus-visible` compiles to a selector that two
+    // broader rules out-specify, so the correction would be authored and never
+    // applied. It is therefore a compound top-level rule immediately after this block,
+    // and the reasoning is recorded there.
 
-  // A SELECTED ROW HOVERS TO THE BRAND INK INSTEAD, and the reason is measured
-  // contrast rather than taste. A selected row is painted with the selection tint,
-  // against which the two candidate inks measure very differently: the hover ink above
-  // reaches 4.77 to 1, and the brand ink the vocabulary documents on that same tint
-  // reaches 8.24 to 1. Both clear the 4.5 to 1 threshold for text, so this is a choice
-  // between two passing values rather than a repair of a failing one — but the margin
-  // is the whole point. Hovering necessarily lowers the contrast of a selected row,
-  // whose resting ink measures 13.72 to 1 on that tint, and the hover ink would leave
-  // only 0.27 of headroom above the floor on the one row the reader is currently
-  // acting on, where the brand ink leaves 3.74. The darker ink is also the more
-  // perceivable of the two against a tint that is itself blue, so the state change
-  // reads as a change. Nested rather than declared as a sibling rule so it outranks
-  // the hover above by specificity and not by source order.
-  &.data-table__row--selected {
+    // HOVER AND PRESS, giving a selectable row the same interaction feedback the sort
+    // control above has. The shared table conventions already put the pointer and the
+    // ring on these rows; those tell a reader that the row is operable, but neither
+    // responds to the pointer being over THIS row rather than another, which is what a
+    // hover state is for in a grid of near-identical lines.
+    //
+    // THE INK MOVES, NOT THE SURFACE, and that choice is forced by the zebra stripe. A
+    // hover surface would have to differ from BOTH row backgrounds at once — the page
+    // surface on odd rows and the neutral surface on even ones — and the only palette
+    // members that do are the selection tint, which would make hover indistinguishable
+    // from selection, and the two hairline values, which the vocabulary documents as
+    // decorative and which measure under 1.7 to 1 against either row. Moving the ink is
+    // independent of the stripe entirely, so it reads identically on every row. It is
+    // also the closer parallel to the legacy grid, which expressed row state by
+    // recolouring text rather than by filling a row.
     @include mx.hover {
-      color: var(--color-primary);
+      color: var(--color-primary-hover);
+    }
+
+    // Press previews its own outcome: the fill is the selection tint, and pressing a
+    // row is what selects it, so the press state and the state it produces agree. On a
+    // row that is already selected the fill is already there and the press is a no-op,
+    // which is correct — there is nothing new to signal.
+    &:active {
+      background-color: var(--color-selected);
+    }
+
+    // A SELECTED ROW HOVERS TO THE BRAND INK INSTEAD, and the reason is measured
+    // contrast rather than taste. A selected row is painted with the selection tint,
+    // against which the two candidate inks measure very differently: the hover ink above
+    // reaches 4.77 to 1, and the brand ink the vocabulary documents on that same tint
+    // reaches 8.24 to 1. Both clear the 4.5 to 1 threshold for text, so this is a choice
+    // between two passing values rather than a repair of a failing one — but the margin
+    // is the whole point. Hovering necessarily lowers the contrast of a selected row,
+    // whose resting ink measures 13.72 to 1 on that tint, and the hover ink would leave
+    // only 0.27 of headroom above the floor on the one row the reader is currently
+    // acting on, where the brand ink leaves 3.74. The darker ink is also the more
+    // perceivable of the two against a tint that is itself blue, so the state change
+    // reads as a change. Nested rather than declared as a sibling rule so it outranks
+    // the hover above by specificity and not by source order.
+    &.data-table__row--selected {
+      @include mx.hover {
+        color: var(--color-primary);
+      }
     }
   }
 }
 
 // THE ROW'S FOCUS-RING CORRECTION, and the compound selector is load-bearing rather
 // than defensive. Measured in a real browser: a nested `&:focus-visible` inside the
-// row block compiles to `.data-table__row:focus-visible`, which two broader rules
-// out-specify — the base focus rule in the global reset, whose
-// `[tabindex]:not([tabindex='-1']):focus-visible` arm carries two attribute weights
-// and a pseudo-class, and the global table convention's
-// `tbody > tr[aria-selected]:focus-visible`. Every row here matches all three, because
-// the template sets `tabindex="0"` and `aria-selected` on each one, so the nested form
-// was authored and then simply never applied: the rows rendered the outward ring the
+// row block compiles to a selector that two broader rules out-specify — the base focus
+// rule in the global reset, whose `[tabindex]:not([tabindex='-1']):focus-visible` arm
+// carries two attribute weights and a pseudo-class, and the global table convention's
+// `tbody > tr[aria-selected]:focus-visible`. A SELECTABLE row matches all three, because
+// the component gives such a row both `tabindex="0"` and `aria-selected`, so the nested
+// form was authored and then simply never applied: the rows rendered the outward ring the
 // correction exists to prevent, and its outer band was clipped away on the left and
 // right edges of every row and on the bottom edge of the last one. Naming the
 // clipping ancestor and the row's own element and class raises this rule past both
 // aggressors, and it also states the REASON the correction exists rather than merely
 // winning a cascade argument. Do not flatten it back into the block above.
+//
+// ⚠ `[aria-selected]` IS PART OF THE SELECTOR, not decoration. A row in a grid nothing
+// listens to carries neither attribute, is not focusable, and has no ring to correct —
+// naming the attribute keeps this rule's subject the same as the ring's subject, so the
+// correction cannot outlive the thing it corrects.
 //
 // THE OFFSET IS TURNED INWARD. The shared ring sits outside the box it marks, which
 // is right for a control in normal flow — but these rows sit inside a region that
@@ -455,7 +477,7 @@
 // inward outline alone is therefore already compliant on all three, which is why the
 // correction is a suppression rather than a re-tune. `none` is one of the six literals
 // the token vocabulary admits.
-.data-table__container tbody > tr.data-table__row:focus-visible {
+.data-table__container tbody > tr.data-table__row[aria-selected]:focus-visible {
   outline-offset: calc(-1 * var(--focus-ring-offset));
   box-shadow: none;
 }

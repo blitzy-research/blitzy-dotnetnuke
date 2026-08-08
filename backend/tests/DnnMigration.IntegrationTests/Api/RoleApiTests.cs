@@ -3605,13 +3605,22 @@ public sealed class RoleApiTests
     /// Role GROUP management is the first pair: a group's rules are rules about the roles it classifies,
     /// so the same application contract serves both, but the ADDRESSES are separate and the group ones
     /// live under the kebab-cased <c>role-groups</c> collection. The remaining addresses are the
-    /// subscription and housekeeping surfaces: the legacy member-services screen subscribed and
-    /// unsubscribed an account through the very same assignment operation the two membership actions
-    /// already expose, so it earns no address of its own; a role's invitation code is stored and returned
-    /// but redeeming it is not an operation here; there is no billing-transaction action, because no
+    /// subscription and housekeeping surfaces: self-service subscription and the redemption of a role's
+    /// invitation code are NOT operations on this resource; there is no billing-transaction action, because no
     /// billing subsystem is in scope; and there is neither a cache-invalidation action nor a bulk action,
     /// because invalidation belongs to the service that performs a write and a bulk endpoint would be a
     /// second, weaker copy of every rule the single-item endpoints enforce.
+    /// </para>
+    /// <para>
+    /// MIGRATION: <c>/api/v1/users/{userId}/services</c> was once probed here as an address NOTHING serves,
+    /// on the reasoning that the legacy member-services screen "subscribed and unsubscribed an account
+    /// through the very same assignment operation the two membership actions already expose, so it earns no
+    /// address of its own". That probe is WITHDRAWN, because the address now exists on the ACCOUNT resource
+    /// and the reasoning behind it was wrong twice over: the panel operated on the signed-in account and
+    /// never on the account its container was managing, and this controller's class-level policy - which
+    /// combines rather than overrides - could never admit that caller, so the affordance was unreachable
+    /// rather than relocated. The role-side probes below still matter and are unchanged: they prove the
+    /// address did not land HERE. Where it did land is asserted by the account resource's own suite.
     /// </para>
     /// <para>
     /// A credentialled administrator issues these probes on purpose. An anonymous caller would be refused
@@ -3628,7 +3637,6 @@ public sealed class RoleApiTests
     [InlineData("/api/v1/roles/0/services")]
     [InlineData("/api/v1/roles/cache")]
     [InlineData("/api/v1/roles/bulk")]
-    [InlineData("/api/v1/users/1/services")]
     public async Task RoleResource_PublishesNoAddressForTheOperationsItDoesNotOwn(string path)
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();

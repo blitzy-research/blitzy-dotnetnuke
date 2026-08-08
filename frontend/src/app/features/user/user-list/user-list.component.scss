@@ -60,6 +60,7 @@
 //    .user-list__page-action         the three header actions, projected into the
 //                                    shared page header
 //    .user-list__failure             the failure banner and its retry, stacked
+//    .user-list__notice              the notice shown while no query has been issued
 //    .user-list__failure-retry       that retry command
 //    .user-list__filters             the free-text filter beside the search-axis field
 //    .user-list__search              the shared search control within that row
@@ -207,6 +208,21 @@
   display: grid;
   gap: var(--space-2);
   justify-items: start;
+}
+
+//  The no-query notice, shown only while the tenant's opening-view policy has issued no
+//  query at all. Muted rather than emphasised: it explains why the grid below is bare,
+//  and it is not a fault. The tokens are the same two the help text beside a field uses,
+//  so it reads as guidance rather than as an alert, and no colour outside the token
+//  vocabulary appears here.
+//
+//  MIGRATION: the legacy screen rendered nothing in this state, so there is no legacy
+//  rule to inherit and no measured value to transcribe. Spacing comes from the region gap
+//  the screen already declares.
+.user-list__notice {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 // -----------------------------------------------------------------------------
@@ -383,6 +399,28 @@
   //  ambiguous, and restating it here is what makes the indicator's survival of the
   //  chrome removal an explicit, reviewable fact rather than an inherited accident.
   @include mx.focus-ring;
+
+  //  THE APPLIED ENTRY, AND ITS STATE IS NOT CARRIED BY COLOUR ALONE.
+  //
+  //  The paired template binds `aria-pressed` from the applied-filter predicate, so the
+  //  state reaches assistive technology; this rule is what reaches the eye. Selection
+  //  gets a WEIGHT change as well as a surface tint, and the weight is the load-bearing
+  //  half: an operator who cannot distinguish the brand ink from the selection tint still
+  //  sees which of twenty-seven entries is heavier. Reporting a state by tint alone would
+  //  put the whole cue in one channel.
+  //
+  //  Keyed to the ATTRIBUTE'S VALUE rather than its presence, because `aria-pressed` is
+  //  emitted on every entry — twenty-six of them carrying `false` — so a presence selector
+  //  would paint the entire strip as applied.
+  //
+  //  Both values are tokens. The tint is the same one the sibling portal listing uses for
+  //  its own applied entry, so the two strips read as one family, and no colour literal
+  //  appears here. Nothing else about the box changes: the measured collapse above stands,
+  //  so an applied entry is still a text link rather than acquiring a button's chrome.
+  &[aria-pressed='true'] {
+    font-weight: var(--font-weight-bold);
+    background-color: var(--color-selected);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -478,10 +516,10 @@
 //  is what stops the group rule above reaching this element — and the affordance is not
 //  lost, because the anchors' underline and the reset's own hover treatment carry it.
 .user-list__row-action--danger {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 
   @include mx.hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger);
   }
 }
 

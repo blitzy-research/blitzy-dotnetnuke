@@ -236,13 +236,21 @@ import {
   UserCreateStatus,
   type ChangePasswordRequest,
   type CreateUserRequest,
+  type MemberService,
   type MembershipSettings,
+  type MembershipSettingsUpdateResult,
+  type RedeemServiceCodeResult,
   type UpdateUserRequest,
   type UserDetail,
   type UserListItem,
 } from '../models/user.model';
 import { UserService } from '../services/user.service';
-import { UserStore, type UserFailure, type UserSearchMode } from './user.store';
+import {
+  UserStore,
+  type ProfileDefinitionEdit,
+  type UserFailure,
+  type UserSearchMode,
+} from './user.store';
 
 // ---------------------------------------------------------------------------
 // THE EXPECTED ADDRESSES, SPELLED OUT INDEPENDENTLY
@@ -250,6 +258,20 @@ import { UserStore, type UserFailure, type UserSearchMode } from './user.store';
 
 /** The account collection. Relative, because the production base is relative. */
 const USERS_URL = '/api/v1/users';
+
+/**
+ * The body-bound account search.
+ *
+ * ⚠ A SEARCH BY NAME, ADDRESS OR PROFILE PROPERTY GOES HERE, NOT TO {@link USERS_URL}, AND THE
+ * REASON IS PRIVACY RATHER THAN ROUTING. All four of those filters identify a person, and a query
+ * parameter travels in the REQUEST TARGET — which the browser writes to its history, every forward
+ * and reverse proxy writes to an access log, the server writes to another, and URL-sampling
+ * telemetry writes to a third. Every one of those recorders sits at an END of the encrypted channel
+ * rather than in the middle of it, so HTTPS addresses none of them: CWE-598. The unfiltered listing,
+ * which carries page coordinates, an ordering and at most an approval state, names nobody and stays
+ * on the cacheable `GET`.
+ */
+const USERS_SEARCH_URL = '/api/v1/users/search';
 
 /**
  * The tenant's account policy.
@@ -261,6 +283,28 @@ const SETTINGS_URL = '/api/v1/users/settings';
 
 /** The tenant's profile declarations. Unpaged, and scoped by the resolved tenant. */
 const DEFINITIONS_URL = '/api/v1/profile-definitions';
+
+/**
+ * The member-services catalogue of account 7 — the account every fixture in this file uses.
+ *
+ * Unpaged, exactly as the legacy `grdServices` grid was.
+ */
+const SERVICES_URL = '/api/v1/users/7/services';
+
+/**
+ * The subscription of account 7 to service ZERO.
+ *
+ * ⚠ THE SERVICE IDENTIFIER IS ZERO ON PURPOSE. `Roles.RoleID` seeds `IDENTITY(0, 1)`, so role
+ * zero is the administrator role of every shipped installation — and it is exactly the value a
+ * truthiness test drops. Every address here uses it.
+ */
+const SERVICE_SUBSCRIPTION_URL = '/api/v1/users/7/services/0/subscription';
+
+/** The trial of service zero, taken by account 7. */
+const SERVICE_TRIAL_URL = '/api/v1/users/7/services/0/trial';
+
+/** The invitation-code redemptions of account 7. */
+const SERVICE_REDEMPTIONS_URL = '/api/v1/users/7/services/redemptions';
 
 /**
  * The legacy reserved word that meant "no search".
@@ -329,6 +373,7 @@ const listItemFixture = (overrides: Partial<UserListItem> = {}): UserListItem =>
   isOnline: false,
   isSuperUser: false,
   isLockedOut: false,
+  canDelete: true,
   ...overrides,
 });
 
@@ -512,6 +557,51 @@ const definitionWriteFixture = (
 /** The single-payload success envelope every non-collection endpoint answers with. */
 const envelope = <T>(data: T): ApiResponse<T> => ({ data, meta: null });
 
+/**
+ * The report the account-policy write answers with, wrapped in the shared envelope.
+ *
+ * Defaults to "nothing was swept", which is what an ordinary settings save produces, so a fact
+ * that merely needs the write to succeed does not have to describe a rewrite it never asked for.
+ */
+const settingsWriteEnvelope = (
+  overrides: Partial<MembershipSettingsUpdateResult> = {},
+): ApiResponse<MembershipSettingsUpdateResult> =>
+  envelope<MembershipSettingsUpdateResult>({
+    displayNameFormatChanged: false,
+    displayNamesRewritten: 0,
+    ...overrides,
+  });
+
+/**
+ * One row of the member-services catalogue.
+ *
+ * Defaults to a paid service the account already holds whose subscription has LAPSED, which is
+ * the row that exercises the most contract at once: service identifier zero, a fifty-cent fee
+ * the legacy projection could not express, and the `Renew` command the legacy screen derived
+ * from an expiry earlier than today.
+ */
+const serviceFixture = (overrides: Partial<MemberService> = {}): MemberService => ({
+  roleId: 0,
+  roleName: 'Premium Members',
+  description: 'Access to the subscriber area',
+  serviceFee: 0.5,
+  billingPeriod: 1,
+  billingFrequency: 'M',
+  trialFee: 0,
+  trialPeriod: 14,
+  trialFrequency: 'D',
+  effectiveDate: '2026-01-01T00:00:00Z',
+  expiryDate: '2026-02-01T00:00:00Z',
+  isSubscribed: true,
+  isTrialUsed: false,
+  isExpired: true,
+  subscriptionAction: 'Renew',
+  subscriptionOffered: true,
+  subscriptionRequiresPayment: true,
+  trialOffered: true,
+  ...overrides,
+});
+
 /** A problem document, defaulting to a refusal that carries both identifiers. */
 const problemFixture = (overrides: Partial<ProblemDetails> = {}): ProblemDetails => ({
   type: `${FAILURE_TYPE}user.membership.self-forbidden`,
@@ -621,6 +711,81 @@ describe('UserStore', () => {
     }
 
     return value;
+  };
+
+  /** The one outstanding body-bound account search. */
+  const expectSearch = (): TestRequest => expectRequest('POST', USERS_SEARCH_URL);
+
+  /**
+   * The body a search transmitted, narrowed by throwing rather than cast.
+   *
+   * @param request The search whose body to read.
+   * @returns The body as a keyed record.
+   */
+  const body = (request: TestRequest): Readonly<Record<string, unknown>> => {
+    const sent: unknown = request.request.body;
+
+    if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
+      throw new Error('the search did not transmit a JSON object body');
+    }
+
+    return { ...sent };
+  };
+
+  /**
+   * One string member of a search body, narrowed by throwing.
+   *
+   * The body counterpart of {@link parameter}, and it throws for the same reason: absence and the
+   * empty string are DIFFERENT values on these filters, so a reader that returned one for the other
+   * would erase the distinction several of these cases exist to prove.
+   *
+   * @param request The search to read.
+   * @param name The member to read.
+   * @returns The member's value.
+   */
+  const member = (request: TestRequest, name: string): string => {
+    const value: unknown = body(request)[name];
+
+    if (typeof value !== 'string') {
+      throw new Error(`expected the body member "${name}" to be present as text`);
+    }
+
+    return value;
+  };
+
+  /** Asserts that none of the named body members was emitted at all. */
+  const expectMembersOmitted = (request: TestRequest, names: readonly string[]): void => {
+    const sent = body(request);
+
+    for (const name of names) {
+      // Absence is proved by asking whether the member is THERE, for the same reason the query
+      // counterpart does: a reader answering undefined is also what a present-but-empty member
+      // answers, and empty text is a legitimate value on this contract.
+      expect(Object.prototype.hasOwnProperty.call(sent, name))
+        .withContext(`the body member "${name}" must be omitted, not sent empty`)
+        .toBe(false);
+    }
+  };
+
+  /**
+   * Asserts that a request's TARGET carries none of the given values.
+   *
+   * The load-bearing assertion of the privacy cases: it is not enough that a searched value reached
+   * the server in the body, it must be ABSENT from the string that gets logged.
+   *
+   * @param request The request to inspect.
+   * @param values The values that must not appear in the target.
+   */
+  const expectTargetCarriesNoneOf = (request: TestRequest, values: readonly string[]): void => {
+    for (const value of values) {
+      if (value.length === 0) {
+        continue;
+      }
+
+      expect(request.request.urlWithParams)
+        .withContext(`"${value}" must not appear in the request target`)
+        .not.toContain(value);
+    }
   };
 
   /** Asserts that none of the named query parameters was emitted at all. */
@@ -766,11 +931,13 @@ describe('UserStore', () => {
 
       store.searchByUsername('ann');
 
-      const request = expectRequest('GET', USERS_URL);
+      // A search, so the page coordinates travel in the body alongside the term rather than in a
+      // query string. The coordinate is a NUMBER there, not the string a query would have carried.
+      const request = expectSearch();
 
-      expect(parameter(request, 'pageIndex'))
+      expect(body(request)['pageIndex'])
         .withContext('a new match set is a new first page')
-        .toBe('0');
+        .toBe(0);
 
       request.flush(pageFixture([listItemFixture()]));
     });
@@ -872,7 +1039,7 @@ describe('UserStore', () => {
       store.saveMembershipSettings(
         settingsFixture({ recordsPerPage: 25, displaySuppressPager: true }),
       );
-      expectRequest('PUT', SETTINGS_URL).flush(null, { status: 204, statusText: 'No Content' });
+      expectRequest('PUT', SETTINGS_URL).flush(settingsWriteEnvelope());
       expectRequest('GET', SETTINGS_URL).flush(
         envelope(settingsFixture({ recordsPerPage: 25, displaySuppressPager: true })),
       );
@@ -1017,7 +1184,7 @@ describe('UserStore', () => {
 
       const write = expectRequest('PUT', SETTINGS_URL);
       expect(write.request.body).toEqual(settingsFixture({ recordsPerPage: 50 }));
-      write.flush(null, { status: 204, statusText: 'No Content' });
+      write.flush(settingsWriteEnvelope());
 
       expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 50 })));
 
@@ -1028,6 +1195,104 @@ describe('UserStore', () => {
         .toBe('50');
 
       request.flush(pageFixture([listItemFixture()], { pageSize: 50 }));
+    });
+
+    it('publishes what the policy write did to the tenant\'s display names', () => {
+      // ⚠ THE ONE SETTINGS WRITE IN THIS WORKSPACE WITH A TENANT-WIDE SIDE EFFECT. Adopting a
+      // new display-name format recomposes every account's stored display name, and the caller
+      // cannot infer from its own request that it happened or to how many accounts - so the
+      // report travels back on the response and is kept here.
+      //
+      // MIGRATION: `Website/admin/Users/UserSettings.ascx.vb:L175-L182` spawned
+      // `UserController.UpdateDisplayNames` (`Library/Components/Users/UserController.vb:L1259-L1268`)
+      // on a BACKGROUND THREAD and told the operator nothing. This slice is what replaces that
+      // silence.
+      openListingAtPageSize(25);
+
+      expect(store.lastSettingsWrite())
+        .withContext('nothing has been written yet')
+        .toBeNull();
+
+      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
+
+      expectRequest('PUT', SETTINGS_URL).flush(
+        settingsWriteEnvelope({ displayNameFormatChanged: true, displayNamesRewritten: 12 }),
+      );
+      expectRequest('GET', SETTINGS_URL).flush(
+        envelope(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' })),
+      );
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { pageSize: 25 }));
+
+      // ⚠ SURVIVES THE RE-READ THAT FOLLOWS THE WRITE. The re-read clears state belonging to a
+      // previous answer, so the command publishes the report AFTER dispatching it; publishing
+      // first would discard the very report it was meant to accompany.
+      expect(store.lastSettingsWrite()).toEqual({
+        displayNameFormatChanged: true,
+        displayNamesRewritten: 12,
+      });
+      expect(store.failure()).toBeNull();
+    });
+
+    it('keeps a swept-but-unchanged report distinct from no sweep at all', () => {
+      // The two are different answers and an operator is looking for the difference: a format
+      // left alone reports false and zero because no sweep ran, while a format that changed on a
+      // tenant whose accounts already read that way reports true and zero because the sweep ran
+      // and found nothing to alter. Collapsing them would make "nothing happened" and "nothing
+      // needed to happen" indistinguishable.
+      openListingAtPageSize(25);
+
+      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
+      expectRequest('PUT', SETTINGS_URL).flush(
+        settingsWriteEnvelope({ displayNameFormatChanged: true, displayNamesRewritten: 0 }),
+      );
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', USERS_URL).flush(pageFixture([], { pageSize: 25 }));
+
+      expect(store.lastSettingsWrite()).toEqual({
+        displayNameFormatChanged: true,
+        displayNamesRewritten: 0,
+      });
+
+      store.saveMembershipSettings(settingsFixture());
+      expectRequest('PUT', SETTINGS_URL).flush(settingsWriteEnvelope());
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', USERS_URL).flush(pageFixture([], { pageSize: 25 }));
+
+      expect(store.lastSettingsWrite()).toEqual({
+        displayNameFormatChanged: false,
+        displayNamesRewritten: 0,
+      });
+    });
+
+    it('discards the report on request and on reset, and never publishes one for a refusal', () => {
+      openListingAtPageSize(25);
+
+      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
+      expectRequest('PUT', SETTINGS_URL).flush(
+        settingsWriteEnvelope({ displayNameFormatChanged: true, displayNamesRewritten: 4 }),
+      );
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', USERS_URL).flush(pageFixture([], { pageSize: 25 }));
+
+      store.clearSettingsWriteReport();
+      expect(store.lastSettingsWrite())
+        .withContext('dismissing a notice is not abandoning the screen, so nothing is re-read')
+        .toBeNull();
+      httpMock.expectNone(() => true);
+
+      // A refused write publishes a failure and NO report. The width guard refuses the whole
+      // policy when the format would overflow the stored column for any one account, so there is
+      // no partial sweep to report - and reporting a zero would read as "it ran and changed
+      // nothing", which is not what happened.
+      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[USERNAME]' }));
+      expectRequest('PUT', SETTINGS_URL).flush(
+        { title: 'Bad Request', status: 400, type: 'urn:dnnmigration:error:user.display-name.too-long' },
+        { status: 400, statusText: 'Bad Request' },
+      );
+
+      expect(store.lastSettingsWrite()).toBeNull();
+      expect(store.failure()).not.toBeNull();
+      expect(store.saving()).toBeFalse();
     });
 
     it('publishes no credential policy of its own', () => {
@@ -1061,6 +1326,149 @@ describe('UserStore', () => {
   // THE THREE PREFIX SEARCHES
   // =========================================================================
 
+  // =========================================================================
+  // THE TENANT'S OPENING-VIEW POLICY
+  // =========================================================================
+
+  describe('the opening view the tenant configured', () => {
+    /*
+     * MIGRATION: `Website/admin/Users/Users.ascx.vb` L494-L506 read `Display_Mode` and set the
+     * screen's opening `Filter` from it, and `BindData` (L248-L290) then branched on that value:
+     * the localised "All" word listed everything (L264), any other non-"None" value fell through to
+     * the search-axis switch (L267) whose default axis was `Username` (L577), and the bare marker
+     * "None" matched no branch at all so no query was issued.
+     *
+     * ⚠ AN EARLIER REVISION IGNORED THE SETTING ENTIRELY and always opened on the unfiltered
+     * listing. The tenant's choice made no difference to what the screen did, which is the defect
+     * these four cases close.
+     */
+
+    it('opens on every account when the tenant chose the unfiltered view', () => {
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 0 })));
+
+      const listing = expectRequest('GET', USERS_URL);
+
+      expectOmitted(listing, ['userName', 'email', 'profilePropertyName', 'profilePropertyValue']);
+      expect(parameter(listing, 'pageIndex')).toBe('0');
+
+      listing.flush(pageFixture([listItemFixture()]));
+      expect(store.search()).toEqual({ mode: 'all' });
+    });
+
+    it('opens on the first letter of the alphabet strip when the tenant chose that view', () => {
+      // The letter is `A`, and its provenance is the resource value the legacy read the first
+      // character of: `Users.ascx.resx` `Filter.Text` is "A,B,C,…,Z" and L502 kept `Substring(0, 1)`.
+      // The AXIS is the account name, because the legacy search selector's first-added item was
+      // "Username" (L577) and the first-letter filter fell through to that switch.
+      // ⚠ THE OPENING READ IS THE BODY-BOUND SEARCH, NOT THE UNFILTERED LISTING, BECAUSE A LETTER
+      // ON THE ACCOUNT-NAME AXIS NAMES PEOPLE. The transport is chosen by whether the query
+      // identifies anybody — see {@link USERS_SEARCH_URL} — and a first-letter view IS an
+      // account-name filter, so it travels in a request body like every other name search rather
+      // than putting the axis and its value in a request target that four separate recorders keep.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 1 })));
+
+      const listing = expectSearch();
+
+      expect(member(listing, 'userName')).toBe('A');
+      expectMembersOmitted(listing, ['email', 'profilePropertyName', 'profilePropertyValue']);
+      // A body carries a NUMBER where a query string could only carry text, so the page coordinate
+      // is read as one rather than through the text-only member reader.
+      expect(body(listing)['pageIndex']).toBe(0);
+
+      listing.flush(pageFixture([listItemFixture()]));
+      expect(store.search()).toEqual({ mode: 'username', text: 'A' });
+    });
+
+    it('issues no listing query at all when the tenant chose the no-query view', () => {
+      /*
+       * ⚠ NOT A DEFECT AND NOT WORKED AROUND. This is the deliberate choice a large tenant makes so
+       * that opening the screen does not page a hundred thousand accounts, and it is also the
+       * DEFAULT the legacy applied when the setting was absent
+       * (`Library/Components/Users/UserModuleBase.vb` L126-L130), which the server reproduces. The
+       * alphabet strip and the unfiltered affordance are both on the screen for the operator to act
+       * on, so nothing is unreachable.
+       */
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 2 })));
+
+      httpMock.expectNone(() => true);
+
+      expect(store.search()).toEqual({ mode: 'none' });
+      expect(store.usersLoading())
+        .withContext('nothing may spin for a request that will never be made')
+        .toBeFalse();
+      expect(store.userRows()).toEqual([]);
+
+      // And the operator's own action still works from that state.
+      store.showAllAccounts();
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
+      expect(store.userRows().length).toBe(1);
+    });
+
+    it('opens on every account for a mode it does not recognise, and for an unreadable policy', () => {
+      /*
+       * MIGRATION: the legacy `Select Case` had NO `Case Else`, so an unrecognised mode left `Filter`
+       * as the empty string - not the "All" word, not "None" - which fell through to the axis switch
+       * and queried `GetUsersByUserName(…, "" & "%")`. An empty prefix plus the server's own trailing
+       * wildcard matches every account, so the legacy outcome was the unfiltered listing.
+       *
+       * ⚠ ASKED FOR AS THE UNFILTERED LISTING RATHER THAN AS AN EMPTY-PREFIX NAME SEARCH, because
+       * the target endpoint refuses a filter supplied blank - "omit it to search without it" - so
+       * sending the legacy's literal empty prefix would be a refused request where the legacy served
+       * a page. The result set is identical; only the way of asking differs.
+       */
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 99 })));
+
+      const unrecognised = expectRequest('GET', USERS_URL);
+
+      expectOmitted(unrecognised, ['userName', 'email', 'profilePropertyName', 'profilePropertyValue']);
+      unrecognised.flush(pageFixture([listItemFixture()]));
+      expect(store.search()).toEqual({ mode: 'all' });
+
+      /*
+       * An UNREADABLE policy is a different situation from an absent key, and is answered
+       * differently on purpose. The legacy default applied to a key missing from a policy it could
+       * still read; here the whole policy is gone, the page size falls back for the same reason, and
+       * a tenant whose policy is unavailable still has accounts. The failure stays recorded.
+       */
+      store.reset();
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(
+        { title: 'Not Found', status: 404, type: 'urn:dnnmigration:error:portal.not_found' },
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      const fallback = expectRequest('GET', USERS_URL);
+
+      expectOmitted(fallback, ['userName', 'email', 'profilePropertyName', 'profilePropertyValue']);
+      fallback.flush(pageFixture([listItemFixture()]));
+
+      expect(store.search()).toEqual({ mode: 'all' });
+      expect(store.failure())
+        .withContext('the policy failure is still recorded, so nothing is concealed')
+        .not.toBeNull();
+    });
+
+    it('leaves a search already chosen alone when the policy arrives', () => {
+      // The policy decides how the screen OPENS, not what it shows after an operator has asked for
+      // something. A policy read that landed after a search would otherwise discard the search.
+      store.searchByEmail('ada');
+      expectSearch().flush(pageFixture([listItemFixture()]));
+
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 0 })));
+
+      const listing = expectSearch();
+
+      expect(member(listing, 'email')).toBe('ada');
+      listing.flush(pageFixture([listItemFixture()]));
+      expect(store.search()).toEqual({ mode: 'email', text: 'ada' });
+    });
+  });
+
   describe('search modes', () => {
     it('transmits an account-name search verbatim, with no wildcard of its own', () => {
       // MIGRATION: `Users.ascx.vb` L271 appended one trailing per-cent character before
@@ -1068,12 +1476,15 @@ describe('UserStore', () => {
       // would double the pattern. A PREFIX match - never described as a containing one.
       store.searchByUsername('abc');
 
-      const request = expectRequest('GET', USERS_URL);
-      const transmitted = parameter(request, 'userName');
+      // ⚠ A BODY, NOT A QUERY STRING — see {@link USERS_SEARCH_URL}. A searched account name names
+      // a person, and a request target is recorded by the browser, by every proxy and by the server.
+      const request = expectSearch();
+      const transmitted = member(request, 'userName');
 
       expect(transmitted).toBe('abc');
       expect(transmitted).not.toContain('%');
-      expectOmitted(request, ['email', 'profilePropertyName', 'profilePropertyValue']);
+      expectMembersOmitted(request, ['email', 'profilePropertyName', 'profilePropertyValue']);
+      expectTargetCarriesNoneOf(request, ['abc']);
 
       request.flush(pageFixture([listItemFixture()]));
     });
@@ -1084,12 +1495,13 @@ describe('UserStore', () => {
       // `release.config` L244 - so this can legitimately match several accounts.
       store.searchByEmail('ann@');
 
-      const request = expectRequest('GET', USERS_URL);
-      const transmitted = parameter(request, 'email');
+      const request = expectSearch();
+      const transmitted = member(request, 'email');
 
       expect(transmitted).toBe('ann@');
       expect(transmitted).not.toContain('%');
-      expectOmitted(request, ['userName', 'profilePropertyName', 'profilePropertyValue']);
+      expectMembersOmitted(request, ['userName', 'profilePropertyName', 'profilePropertyValue']);
+      expectTargetCarriesNoneOf(request, ['ann@', 'ann']);
 
       request.flush(pageFixture([listItemFixture()]));
     });
@@ -1100,12 +1512,17 @@ describe('UserStore', () => {
       // string at L275.
       store.searchByProfileProperty('Nickname', 'Ann');
 
-      const request = expectRequest('GET', USERS_URL);
+      const request = expectSearch();
 
-      expect(parameter(request, 'profilePropertyName')).toBe('Nickname');
-      expect(parameter(request, 'profilePropertyValue')).toBe('Ann');
-      expect(parameter(request, 'profilePropertyValue')).not.toContain('%');
-      expectOmitted(request, ['userName', 'email']);
+      expect(member(request, 'profilePropertyName')).toBe('Nickname');
+      expect(member(request, 'profilePropertyValue')).toBe('Ann');
+      expect(member(request, 'profilePropertyValue')).not.toContain('%');
+      expectMembersOmitted(request, ['userName', 'email']);
+
+      // ⚠ BOTH HALVES ARE ARBITRARY TENANT DATA, which is what makes this the sharpest case: the
+      // tenant declares its own properties, so the name discloses what it collects about its members
+      // and the value may be anything at all, up to a national identifier.
+      expectTargetCarriesNoneOf(request, ['Nickname', 'Ann']);
 
       request.flush(pageFixture([listItemFixture()]));
     });
@@ -1118,9 +1535,10 @@ describe('UserStore', () => {
 
       store.searchByProfileProperty(unusual, 'they');
 
-      const request = expectRequest('GET', USERS_URL);
+      const request = expectSearch();
 
-      expect(parameter(request, 'profilePropertyName')).toBe(unusual);
+      expect(member(request, 'profilePropertyName')).toBe(unusual);
+      expectTargetCarriesNoneOf(request, [unusual]);
 
       request.flush(pageFixture([]));
     });
@@ -1132,10 +1550,10 @@ describe('UserStore', () => {
 
       store.searchByProfileProperty(mixedCase, 'x');
 
-      const request = expectRequest('GET', USERS_URL);
+      const request = expectSearch();
 
-      expect(parameter(request, 'profilePropertyName')).toBe(mixedCase);
-      expect(parameter(request, 'profilePropertyName')).not.toBe(mixedCase.toLowerCase());
+      expect(member(request, 'profilePropertyName')).toBe(mixedCase);
+      expect(member(request, 'profilePropertyName')).not.toBe(mixedCase.toLowerCase());
 
       request.flush(pageFixture([]));
     });
@@ -1147,8 +1565,8 @@ describe('UserStore', () => {
 
       store.searchByUsername(typed);
 
-      const request = expectRequest('GET', USERS_URL);
-      const transmitted = parameter(request, 'userName');
+      const request = expectSearch();
+      const transmitted = member(request, 'userName');
 
       expect(transmitted).toBe(typed);
       expect(transmitted).not.toBe(typed.trim());
@@ -1166,12 +1584,15 @@ describe('UserStore', () => {
       // reserved for the caller that asked for nothing.
       store.searchByUsername('');
 
-      const request = expectRequest('GET', USERS_URL);
+      // ⚠ AN EMPTY TERM IS STILL A SEARCH, AND STILL USES THE BODY. The transport chooses its
+      // address on ABSENCE, never on emptiness, so the one input an operator produces by clearing
+      // the box does not fall back onto the query string.
+      const request = expectSearch();
 
-      expect(request.request.params.has('userName'))
+      expect(Object.prototype.hasOwnProperty.call(body(request), 'userName'))
         .withContext('empty text is a value, not an absence')
         .toBe(true);
-      expect(parameter(request, 'userName')).toBe('');
+      expect(member(request, 'userName')).toBe('');
 
       request.flush(pageFixture([]));
     });
@@ -1181,7 +1602,7 @@ describe('UserStore', () => {
       // L264, so the query a person got depended on the rendered language. Nothing here
       // compares a display string.
       store.searchByProfileProperty('Nickname', 'Ann');
-      expectRequest('GET', USERS_URL).flush(pageFixture([]));
+      expectSearch().flush(pageFixture([]));
 
       expect(store.searchMode()).toBe('profileProperty');
 
@@ -1264,9 +1685,9 @@ describe('UserStore', () => {
       // that no value is compared against a reserved word on the way out.
       store.searchByUsername(NO_SEARCH_RESERVED_WORD);
 
-      const request = expectRequest('GET', USERS_URL);
+      const request = expectSearch();
 
-      expect(parameter(request, 'userName'))
+      expect(member(request, 'userName'))
         .withContext('a person may legitimately search for this word')
         .toBe(NO_SEARCH_RESERVED_WORD);
 
@@ -1297,10 +1718,13 @@ describe('UserStore', () => {
       // Clearing a filter on a listing screen means "show me everything", not "show me
       // nothing".
       store.searchByUsername('ann');
-      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
+      expectSearch().flush(pageFixture([listItemFixture()]));
 
       store.clearSearch();
 
+      // ⚠ AND THE CLEARED LISTING RETURNS TO THE `GET`. Once no filter names anybody there is
+      // nothing to keep out of a request target, and staying on the search address would give up
+      // caching and idempotence for nothing.
       const request = expectRequest('GET', USERS_URL);
 
       expect(store.searchMode()).toBe('all');
@@ -2462,11 +2886,911 @@ describe('UserStore', () => {
 
       expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
     });
+
+  // =========================================================================
+  // PROFILE DECLARATIONS - THE STAGED BATCH
+  //
+  // Legacy: `Website/admin/Users/ProfileDefinitions.ascx.vb` L446-L448 - the Apply handler called
+  // `UpdateProperties()` and then `RefreshGrid()`. `UpdateProperties` (L291-L298) walked the
+  // collection and issued the update for each row whose dirty flag was up, one after another,
+  // because that is all a `For Each` inside one post-back can be; and the grid was rebound
+  // EXACTLY ONCE afterwards.
+  //
+  // ⚠ WHAT THIS BLOCK GUARDS. A screen that applied N staged rows by issuing the per-row command N
+  // times produced N CONCURRENT writes and up to N full catalogue re-reads - one per write, each
+  // firing on its own completion - while the shared saving flag fell on the first write to land,
+  // leaving a second batch startable on top of the first. The proofs below are therefore mostly
+  // NEGATIVE: at every step exactly one write is outstanding, no catalogue read has been issued
+  // yet, and after the batch settles exactly one has.
+  // =========================================================================
+
+  describe('profile declarations (the staged batch)', () => {
+    /** One staged row, addressing a declaration and carrying its replacement. */
+    const edit = (
+      propertyDefinitionId: number,
+      overrides: Partial<UpdateProfilePropertyDefinitionRequest> = {},
+    ): ProfileDefinitionEdit => ({
+      propertyDefinitionId,
+      request: definitionWriteFixture(overrides),
+    });
+
+    /**
+     * Settles a whole batch, proving as it goes that ONE write is outstanding at a time and
+     * that the catalogue has not been re-read yet.
+     *
+     * The matched write is taken off the outstanding list by the expectation itself, so the
+     * "none" that follows it is the proof that it was the only write in flight rather than
+     * merely one of several - which is the property the concatenation exists to provide.
+     *
+     * @param expected The declaration identifiers, in the order they must be written.
+     * @param refuse The identifiers to answer with a refusal instead of a replacement.
+     * @returns The bodies written, in order, so a caller can assert what travelled.
+     */
+    const settleBatch = (
+      expected: readonly number[],
+      refuse: readonly number[] = [],
+    ): readonly unknown[] => {
+      const bodies: unknown[] = [];
+
+      for (const propertyDefinitionId of expected) {
+        const written = expectRequest('PUT', `${DEFINITIONS_URL}/${propertyDefinitionId}`);
+
+        httpMock.expectNone(
+          (request) => request.method === 'PUT',
+          'a second write must not be in flight beside this one',
+        );
+        httpMock.expectNone(
+          (request) => request.method === 'GET' && request.url === DEFINITIONS_URL,
+          'the catalogue must not be re-read until the batch has settled',
+        );
+
+        bodies.push(written.request.body);
+
+        if (refuse.includes(propertyDefinitionId)) {
+          written.flush(problemFixture({ status: 403 }), {
+            status: 403,
+            statusText: 'Forbidden',
+          });
+        } else {
+          written.flush(envelope(definitionFixture({ propertyDefinitionId })));
+        }
+      }
+
+      return bodies;
+    };
+
+    it('writes the staged rows one at a time, in the order supplied', () => {
+      store.applyProfileDefinitionEdits([
+        edit(4, { viewOrder: 0, propertyName: 'City' }),
+        edit(7, { viewOrder: 1, propertyName: 'Region' }),
+        edit(9, { viewOrder: 2, propertyName: 'Country' }),
+      ]);
+
+      const bodies = settleBatch([4, 7, 9]);
+
+      expect(bodies).toEqual([
+        definitionWriteFixture({ viewOrder: 0, propertyName: 'City' }),
+        definitionWriteFixture({ viewOrder: 1, propertyName: 'Region' }),
+        definitionWriteFixture({ viewOrder: 2, propertyName: 'Country' }),
+      ]);
+
+      expectRequest('GET', DEFINITIONS_URL).flush(
+        envelope([definitionFixture({ propertyDefinitionId: 4 })]),
+      );
+    });
+
+    it('re-reads the catalogue exactly ONCE, after the last row has settled', () => {
+      // ⚠ THE FINDING THIS CLOSES. Three per-row commands re-read the whole catalogue three
+      // times, and the third read raced the first two. One read, after the batch, is what the
+      // legacy handler did and it is what a screen needs to derive which rows are still
+      // outstanding: whatever still differs from the server.
+      store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
+
+      settleBatch([4, 7, 9]);
+
+      expectRequest('GET', DEFINITIONS_URL).flush(
+        envelope([
+          definitionFixture({ propertyDefinitionId: 4 }),
+          definitionFixture({ propertyDefinitionId: 7, propertyName: 'Region' }),
+          definitionFixture({ propertyDefinitionId: 9, propertyName: 'Country' }),
+        ]),
+      );
+
+      httpMock.expectNone(
+        (request) => request.url === DEFINITIONS_URL,
+        'one batch reads the catalogue once, whatever its length',
+      );
+      expect(store.profileDefinitions().length).toBe(3);
+      expect(store.profileDefinitionsLoading()).toBeFalse();
+    });
+
+    it('holds the saving flag raised for the whole batch, and counts the rows down', () => {
+      // ⚠ THE SECOND HALF OF THE FINDING. With per-row commands the flag fell on the FIRST
+      // completion, so a form re-enabled itself while later rows were still travelling and a
+      // second Apply could be pressed on top of the first.
+      expect(store.saving()).toBeFalse();
+      expect(store.profileDefinitionBatchRemaining()).toBe(0);
+
+      store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
+
+      expect(store.saving()).toBeTrue();
+      expect(store.profileDefinitionBatchRemaining()).toBe(3);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/4`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 4 })),
+      );
+
+      expect(store.saving())
+        .withContext('two rows are still to be written')
+        .toBeTrue();
+      expect(store.profileDefinitionBatchRemaining()).toBe(2);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/7`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 7 })),
+      );
+
+      expect(store.saving()).toBeTrue();
+      expect(store.profileDefinitionBatchRemaining()).toBe(1);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/9`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 9 })),
+      );
+
+      expect(store.saving())
+        .withContext('the batch has settled, so the form may re-enable itself')
+        .toBeFalse();
+      expect(store.profileDefinitionBatchRemaining()).toBe(0);
+
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+    });
+
+    it('attempts every row after a refusal, and still reads the catalogue once', () => {
+      // ⚠ THE BATCH IS NOT ATOMIC, AND ABANDONING THE REST WOULD STRAND WORK. The rows address
+      // different declarations, so the server applies each on its own merits; a refusal of the
+      // middle row must not cost the operator the row behind it.
+      store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
+
+      settleBatch([4, 7, 9], [7]);
+
+      expectRequest('GET', DEFINITIONS_URL).flush(
+        envelope([
+          definitionFixture({ propertyDefinitionId: 4 }),
+          definitionFixture({ propertyDefinitionId: 9 }),
+        ]),
+      );
+
+      const failure = recordedFailure();
+
+      expect(failure.operation)
+        .withContext('the batch is the command that failed, not the per-row write')
+        .toBe('applyProfileDefinitionEdits');
+      expect(failure.summary.severity)
+        .withContext('a refusal is a warning, unlike a genuine fault')
+        .toBe('warning');
+      expect(store.saving()).toBeFalse();
+      expect(store.profileDefinitionBatchRemaining()).toBe(0);
+    });
+
+    it('records the FIRST refusal when several rows are refused', () => {
+      // The failure slot holds one document, and the first refusal is the one whose cause the
+      // operator has to deal with. Recording whichever row happened to answer LAST would be an
+      // arbitrary choice presented as a diagnosis.
+      store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/4`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 4 })),
+      );
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/7`).flush(
+        problemFixture({ status: 403, detail: 'The first refusal.' }),
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/9`).flush(
+        problemFixture({ status: 409, detail: 'The second refusal.' }),
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+
+      expect(recordedProblem().detail).toBe('The first refusal.');
+      expect(recordedFailure().operation).toBe('applyProfileDefinitionEdits');
+    });
+
+    it('clears a previous failure when a batch starts, so a stale message cannot outlive it', () => {
+      store.loadProfileDefinitions();
+      expectRequest('GET', DEFINITIONS_URL).flush(problemFixture({ status: 500 }), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      expect(store.failure()).not.toBeNull();
+
+      store.applyProfileDefinitionEdits([edit(4)]);
+
+      expect(store.failure())
+        .withContext('the message the operator is now acting on is the batch, not the read')
+        .toBeNull();
+
+      settleBatch([4]);
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+    });
+
+    it('refuses a second batch while one is running, and contacts the server not at all', () => {
+      store.applyProfileDefinitionEdits([edit(4), edit(7)]);
+
+      const first = expectRequest('PUT', `${DEFINITIONS_URL}/4`);
+
+      store.applyProfileDefinitionEdits([edit(11), edit(12)]);
+
+      httpMock.expectNone(
+        (request) => request.method === 'PUT',
+        'the second batch must add no write of its own',
+      );
+      expect(store.profileDefinitionBatchRemaining())
+        .withContext('the count still describes the batch in hand')
+        .toBe(2);
+
+      first.flush(envelope(definitionFixture({ propertyDefinitionId: 4 })));
+
+      settleBatch([7]);
+
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+
+      httpMock.expectNone(
+        (request) => request.url.startsWith(`${DEFINITIONS_URL}/1`),
+        'neither row of the refused batch was ever written',
+      );
+    });
+
+    it('accepts a further batch once the one in hand has settled', () => {
+      store.applyProfileDefinitionEdits([edit(4)]);
+      settleBatch([4]);
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+
+      store.applyProfileDefinitionEdits([edit(7)]);
+
+      expect(store.profileDefinitionBatchRemaining())
+        .withContext('the count was released, so the next batch is not refused')
+        .toBe(1);
+
+      settleBatch([7]);
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+    });
+
+    it('writes nothing at all for an empty batch, and does not re-read the catalogue', () => {
+      // Nothing staged is nothing to write, and re-reading the catalogue to prove it would be a
+      // request spent to change nothing. The outstanding-request verification in the teardown is
+      // what proves the silence.
+      store.applyProfileDefinitionEdits([]);
+
+      expect(store.saving()).toBeFalse();
+      expect(store.profileDefinitionBatchRemaining()).toBe(0);
+      expect(store.failure()).toBeNull();
+
+      httpMock.expectNone(() => true, 'an empty batch dispatches nothing whatsoever');
+    });
+
+    it('reconciles the selected declaration from the answer of the row that IS selected', () => {
+      store.selectProfileDefinition(7);
+      expectRequest('GET', `${DEFINITIONS_URL}/7`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 7, viewOrder: 0 })),
+      );
+
+      store.applyProfileDefinitionEdits([edit(4, { viewOrder: 9 }), edit(7, { viewOrder: 5 })]);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/4`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 4, viewOrder: 9 })),
+      );
+
+      expect(store.selectedProfileDefinition()?.propertyDefinitionId)
+        .withContext('an unselected row must not replace the selection')
+        .toBe(7);
+      expect(store.selectedProfileDefinition()?.viewOrder).toBe(0);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/7`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 7, viewOrder: 5 })),
+      );
+
+      expect(store.selectedProfileDefinition()?.viewOrder)
+        .withContext("reconciled from the server's own answer, not from the request")
+        .toBe(5);
+
+      expectRequest('GET', DEFINITIONS_URL).flush(
+        envelope([definitionFixture({ propertyDefinitionId: 7, viewOrder: 5 })]),
+      );
+    });
+
+    it('passes each identifier and body on exactly as supplied, sentinels included', () => {
+      // SENTINELS ARE DATA on this contract: the declaration table seeds its key at zero, a
+      // zero-valued module association is a real association and an empty default is a real
+      // default. A batch that coerced any of them would rewrite the operator's intent.
+      store.applyProfileDefinitionEdits([
+        edit(0, { viewOrder: 0, length: 0, defaultValue: '', validationExpression: null }),
+      ]);
+
+      const written = expectRequest('PUT', `${DEFINITIONS_URL}/0`);
+
+      expect(written.request.body).toEqual(
+        definitionWriteFixture({
+          viewOrder: 0,
+          length: 0,
+          defaultValue: '',
+          validationExpression: null,
+        }),
+      );
+
+      written.flush(envelope(definitionFixture({ propertyDefinitionId: 0 })));
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+    });
+  });
+
+  });
+
+  // =========================================================================
+  // CONCURRENT WRITES
+  //
+  // ⚠ THE GROUP THAT EXISTS BECAUSE `saving` USED TO BE A BOOLEAN. Every write set it before
+  // dispatching and cleared it in both callbacks, which is exactly right for one write and wrong
+  // for every case where two are outstanding: the FIRST response to land cleared it while the rest
+  // were still on the wire, so "not saving" stopped meaning "every write has settled" and started
+  // meaning "at least one has". There is a real screen that does this — the profile-declaration
+  // grid's Apply issues ONE WRITE PER CHANGED ROW, concurrently — and every control on it is
+  // disabled on this flag, so a mid-batch clear re-enabled all of them, admitted a second write
+  // into the middle of the batch, and let the batch's next response settle THAT write: announced
+  // as a success before its own request had answered, with the record of what was awaited
+  // discarded, so its eventual refusal had nothing left to attribute it to. A false success and a
+  // lost failure, from one shared boolean.
+  //
+  // The same defect had a second half in the single failure slot, which every write emptied as it
+  // started — so a later write's START erased a refusal an earlier one had already recorded.
+  //
+  // These cases pin both halves. They drive the STORE directly rather than through the screen,
+  // because the store is where the invariant lives and a screen could satisfy it by accident
+  // through a disabled button.
+  // =========================================================================
+
+  describe('concurrent writes', () => {
+    /**
+     * Drains the re-reads a batch of successful writes leaves behind.
+     *
+     * Each write's callback re-reads the declaration list, and each re-read supersedes the one
+     * before it — so a batch of three leaves one live request and two cancelled ones. All three
+     * must be accounted for, because the teardown's `verify()` counts a cancelled request just as
+     * a live one.
+     */
+    function drainDefinitionReads(): void {
+      for (const read of httpMock.match((request) => request.url === DEFINITIONS_URL)) {
+        if (!read.cancelled) {
+          read.flush(envelope([definitionFixture()]));
+        }
+      }
+    }
+
+    it('reports saving until the LAST of several concurrent writes settles', () => {
+      store.updateProfileDefinition(0, definitionWriteFixture({ viewOrder: 1 }));
+      store.updateProfileDefinition(4, definitionWriteFixture({ viewOrder: 2 }));
+      store.updateProfileDefinition(9, definitionWriteFixture({ viewOrder: 3 }));
+
+      const writes = httpMock.match(
+        (request) => request.method === 'PUT' && request.url.startsWith(`${DEFINITIONS_URL}/`),
+      );
+
+      expect(writes.length).withContext('one write per changed row, dispatched together').toBe(3);
+      expect(store.saving()).toBeTrue();
+
+      writes[0].flush(envelope(definitionFixture({ propertyDefinitionId: 0, viewOrder: 1 })));
+
+      // ⚠ THE ASSERTION THE BOOLEAN FAILED. Two requests are still on the wire.
+      expect(store.saving())
+        .withContext('the first response does not settle the batch')
+        .toBeTrue();
+
+      writes[1].flush(envelope(definitionFixture({ propertyDefinitionId: 4, viewOrder: 2 })));
+
+      expect(store.saving())
+        .withContext('nor does the second, while one remains')
+        .toBeTrue();
+
+      writes[2].flush(envelope(definitionFixture({ propertyDefinitionId: 9, viewOrder: 3 })));
+
+      expect(store.saving())
+        .withContext('and the last one does')
+        .toBeFalse();
+
+      drainDefinitionReads();
+    });
+
+    it('holds a refusal from early in a batch until the batch has settled', () => {
+      // The consumer that matters reads the failure slot at the moment saving turns false, so a
+      // refusal raised by the first response has to still be there when the last one lands.
+      store.updateProfileDefinition(0, definitionWriteFixture({ required: true }));
+      store.updateProfileDefinition(4, definitionWriteFixture({ required: true }));
+
+      const writes = httpMock.match(
+        (request) => request.method === 'PUT' && request.url.startsWith(`${DEFINITIONS_URL}/`),
+      );
+
+      writes[0].flush(problemFixture({ status: 409 }), { status: 409, statusText: 'Conflict' });
+
+      const refusal = store.failure();
+
+      expect(refusal).withContext('the refusal is recorded when it arrives').not.toBeNull();
+      expect(refusal?.operation).toBe('updateProfileDefinition');
+      expect(store.saving()).withContext('and the batch is still outstanding').toBeTrue();
+
+      writes[1].flush(envelope(definitionFixture({ propertyDefinitionId: 4, required: true })));
+
+      expect(store.saving()).toBeFalse();
+      expect(store.failure())
+        .withContext('a sibling write succeeding does not erase the refusal')
+        .not.toBeNull();
+
+      drainDefinitionReads();
+    });
+
+    it('does not let a write STARTING erase a refusal a sibling write already recorded', () => {
+      // The second half of the same defect. Every write clears the failure slot as it starts,
+      // which is correct for a fresh attempt and destructive while siblings are outstanding: the
+      // row that was refused would be left looking as though it had been written, with the
+      // refusal discarded by a request rather than by anything the operator did.
+      store.updateProfileDefinition(0, definitionWriteFixture());
+      store.updateProfileDefinition(4, definitionWriteFixture());
+
+      const batch = httpMock.match(
+        (request) => request.method === 'PUT' && request.url.startsWith(`${DEFINITIONS_URL}/`),
+      );
+
+      batch[0].flush(problemFixture({ status: 403 }), { status: 403, statusText: 'Forbidden' });
+      expect(store.failure()).not.toBeNull();
+
+      // A third write starts while the second is still outstanding.
+      store.updateProfileDefinition(9, definitionWriteFixture());
+
+      expect(store.failure())
+        .withContext('the slot is cleared only by the first write of a batch')
+        .not.toBeNull();
+
+      const late = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === `${DEFINITIONS_URL}/9`,
+      );
+
+      batch[1].flush(envelope(definitionFixture({ propertyDefinitionId: 4 })));
+      late.flush(envelope(definitionFixture({ propertyDefinitionId: 9 })));
+
+      expect(store.saving()).toBeFalse();
+
+      drainDefinitionReads();
+    });
+
+    it('clears the slot again for a write that starts with nothing outstanding', () => {
+      // The behaviour a single write has always had, asserted so the rule above cannot be
+      // mistaken for "the failure slot is never cleared".
+      store.updateProfileDefinition(0, definitionWriteFixture());
+      expectRequest('PUT', `${DEFINITIONS_URL}/0`).flush(problemFixture({ status: 403 }), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      expect(store.failure()).not.toBeNull();
+      expect(store.saving()).toBeFalse();
+
+      store.updateProfileDefinition(0, definitionWriteFixture());
+
+      expect(store.failure())
+        .withContext('a fresh attempt starts from a clean slot')
+        .toBeNull();
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/0`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 0 })),
+      );
+
+      drainDefinitionReads();
+    });
+
+    it('zeroes the count when a session boundary releases the writes', () => {
+      // ⚠ WITHOUT THIS THE COUNT WOULD STRAND. A released write fires neither callback, and the
+      // callbacks are where the count comes down — so a boundary crossed with two writes
+      // outstanding would leave saving stuck at true for the remaining life of the application,
+      // with every form on every account screen disabled and no request outstanding to explain it.
+      store.updateProfileDefinition(0, definitionWriteFixture());
+      store.createProfileDefinition({
+        propertyName: 'Nickname',
+        propertyCategory: 'Contact',
+        dataType: 0,
+        defaultValue: null,
+        length: 0,
+        required: false,
+        validationExpression: null,
+        viewOrder: 0,
+        visible: true,
+        moduleDefId: null,
+      });
+
+      const outstanding = httpMock.match((request) => request.url.startsWith(DEFINITIONS_URL));
+
+      expect(outstanding.length).toBe(2);
+      expect(store.saving()).toBeTrue();
+
+      store.reset();
+
+      for (const request of outstanding) {
+        expect(request.cancelled)
+          .withContext('a write must not outlive the session that issued it')
+          .toBeTrue();
+      }
+
+      expect(store.saving())
+        .withContext('and the count goes with them')
+        .toBeFalse();
+
+      // The count is genuinely zero rather than merely reported as false: the next write moves it
+      // off zero, which a stranded or negative count could not do.
+      store.updateProfileDefinition(0, definitionWriteFixture());
+
+      expect(store.saving()).toBeTrue();
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/0`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 0 })),
+      );
+
+      expect(store.saving()).toBeFalse();
+
+      drainDefinitionReads();
+    });
+
+    it('counts writes across DIFFERENT commands, not per command', () => {
+      // The count is one fact about the store, not one per endpoint: a form disabling itself on
+      // this flag is protecting the operator from a second submission of any kind, not only from
+      // a second submission of the same shape.
+      store.updateUser(7, updateRequestFixture());
+      store.updateProfileDefinition(0, definitionWriteFixture());
+
+      const account = expectRequest('PUT', `${USERS_URL}/7`);
+      const definition = expectRequest('PUT', `${DEFINITIONS_URL}/0`);
+
+      expect(store.saving()).toBeTrue();
+
+      account.flush(envelope(detailFixture({ userId: 7 })));
+
+      expect(store.saving())
+        .withContext('the declaration write is still outstanding')
+        .toBeTrue();
+
+      definition.flush(envelope(definitionFixture({ propertyDefinitionId: 0 })));
+
+      expect(store.saving()).toBeFalse();
+
+      // ⚠ NO LISTING RE-READ IS EXPECTED, and that is this store's own rule rather than an
+      // omission: the account listing dispatches nothing while no search has been chosen, which is
+      // the state this case leaves it in. The declaration write re-reads its own list, which is
+      // drained below.
+      httpMock.expectNone((request) => request.url === USERS_URL);
+      drainDefinitionReads();
+    });
   });
 
   // =========================================================================
   // FAILURES
   // =========================================================================
+
+  // =========================================================================
+  // THE OPENING LISTING IS THE TENANT'S POLICY DECISION
+  // =========================================================================
+  //
+  // `Users.ascx.vb` L494-L506 branched on the portal's own `DisplayMode` setting to decide what a
+  // freshly opened listing shows, and its three values are three different answers:
+  //
+  //   All (0)         list every account, paged and unfiltered
+  //   FirstLetter (1) open on the first letter, so a large tenant does not render thousands of rows
+  //   None (2)        list NOTHING and wait to be asked
+  //
+  // The store used to promote the no-query state to the unfiltered listing UNCONDITIONALLY, which
+  // collapsed all three onto `All`. For a `FirstLetter` tenant that reverses a performance decision
+  // without being asked; for a `None` tenant it OVERRIDES A POLICY — the one setting whose whole
+  // purpose is to withhold the roster was the one setting with no effect, and every account was
+  // listed to anybody who opened the screen.
+  describe('the opening listing follows the tenant policy', () => {
+    it('lists everything when the policy says All', () => {
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 0 })));
+
+      const request = expectRequest('GET', USERS_URL);
+
+      // No filter member of any kind: the unfiltered listing is the absence of one, never a
+      // reserved word transmitted as a filter. Absence is proved by asking whether the parameter
+      // is THERE — a reader answering null is the weaker claim, because that is also what a
+      // present-but-empty parameter answers, and empty text IS a value on this contract.
+      expectOmitted(request, ['userName', 'email']);
+      expect(store.searchMode()).toBe('all');
+
+      request.flush(pageFixture([listItemFixture()]));
+    });
+
+    it('opens on the FIRST LETTER when the policy says FirstLetter', () => {
+      // ⚠ THE BRANCH THAT WAS SILENTLY LOST. Before the fix this dispatched the unfiltered listing
+      // and this assertion found no account-name filter at all.
+      // ⚠ THE OPENING READ IS THE BODY-BOUND SEARCH, NOT THE UNFILTERED LISTING, BECAUSE A LETTER
+      // ON THE ACCOUNT-NAME AXIS NAMES PEOPLE. The transport is chosen by whether the query
+      // identifies anybody — see {@link USERS_SEARCH_URL} — and a first-letter view IS an
+      // account-name filter, so it travels in a request body like every other name search rather
+      // than putting the axis and its value in a request target that four separate recorders keep.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 1 })));
+
+      const request = expectSearch();
+
+      expect(member(request, 'userName'))
+        .withContext('the legacy opened its alphabet strip on A')
+        .toBe('A');
+      expect(store.searchMode()).toBe('username');
+
+      request.flush(pageFixture([listItemFixture()]));
+    });
+
+    it('lists NOTHING when the policy says None, and dispatches no request at all', () => {
+      // ⚠ THE POLICY OVERRIDE, ASSERTED DIRECTLY. Absence of a request is the assertion: a tenant
+      // that has chosen not to publish its roster must not have it published by the screen opening.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 2 })));
+
+      httpMock.expectNone((request) => request.url === USERS_URL);
+
+      expect(store.searchMode())
+        .withContext('the no-query state is retained rather than promoted')
+        .toBe('none');
+      expect(store.users().items.length).toBe(0);
+    });
+
+    it('still lets an operator ASK, on a None tenant', () => {
+      // Withholding the opening listing is not withholding the screen. The policy governs what
+      // appears unbidden, and an explicit command is bidden.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 2 })));
+      httpMock.expectNone((request) => request.url === USERS_URL);
+
+      store.showAllAccounts();
+
+      const request = expectRequest('GET', USERS_URL);
+
+      expect(store.searchMode()).toBe('all');
+
+      request.flush(pageFixture([listItemFixture()]));
+    });
+
+    it('LISTS THE ACCOUNTS when the policy cannot be read, and does not read absence as None', () => {
+      // ⚠ THE CONTRACT THAT MUST NOT REGRESS, AND THE DISTINCTION THAT MATTERS MOST HERE. The
+      // server answers `404` for a tenant that stores no membership settings, so an absent policy is
+      // an ORDINARY case rather than an exceptional one. Withholding the roster is a choice a tenant
+      // makes; a failed read is not that choice, so absence falls back to the listing rather than to
+      // silence — otherwise one unreadable settings row would make a tenant's accounts unreachable.
+      store.initialise();
+
+      expectRequest('GET', SETTINGS_URL).flush(problemFixture({ status: 404, title: 'Not Found' }), {
+        status: 404,
+        statusText: 'Not Found',
+      });
+
+      const request = expectRequest('GET', USERS_URL);
+
+      expect(store.membershipSettings()).toBeNull();
+      expect(store.searchMode()).toBe('all');
+
+      request.flush(pageFixture([listItemFixture()]));
+
+      expect(store.users().items.length).toBe(1);
+    });
+
+    it('falls back to the listing for an UNRECOGNISED mode rather than to silence', () => {
+      // The contract declares this member as a plain integer validated against no closed set, so an
+      // unknown value is reachable. Treating one as "withhold everything" would let a single
+      // unrecognised integer make a tenant's accounts unreachable; the listing is recoverable.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 99 })));
+
+      const request = expectRequest('GET', USERS_URL);
+
+      expect(store.searchMode()).toBe('all');
+
+      request.flush(pageFixture([listItemFixture()]));
+    });
+
+    it('leaves a search ALREADY CHOSEN exactly as it is, whatever the policy says', () => {
+      // The policy decides the OPENING state and nothing else. A caller that has already narrowed
+      // must not have its narrowing replaced by a policy default.
+      store.searchByEmail('a@example.test');
+      expectSearch().flush(pageFixture([listItemFixture()]));
+
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 1 })));
+
+      // An address search is body-bound for the same reason a name search is, so the re-read the
+      // policy triggers is the search endpoint on both sides of the policy arriving.
+      const request = expectSearch();
+
+      expect(member(request, 'email')).toBe('a@example.test');
+      expectMembersOmitted(request, ['userName']);
+      expect(store.searchMode()).toBe('email');
+
+      request.flush(pageFixture([listItemFixture()]));
+    });
+  });
+
+  // =========================================================================
+  // A WRITE SETTLES ITS OWN FLOW AND NOBODY ELSE'S
+  // =========================================================================
+  //
+  // Every one of this store's thirteen writes reports through one slice. That slice used to be a
+  // BOOLEAN, which answers "is anybody writing" — indistinguishable from "is MY write finished" only
+  // while at most one write can be outstanding. `profile-definition-list.applyChanges` dispatches
+  // ONE WRITE PER PENDING ROW, so several are genuinely in flight at once, and the first to answer
+  // set the flag false: every flow watching it concluded its own write had finished, re-enabled its
+  // form, cleared its awaited marker and announced a confirmation, while the rest were still on the
+  // wire. A later failure among them then arrived at a screen that had already reported success.
+  describe('concurrent writes settle independently', () => {
+    it('stays saving until the LAST of several writes settles', () => {
+      // ⚠ THE DEFECT, EXPRESSED AS A TEST. With a boolean the first flush below took `saving` to
+      // false and this assertion failed on the very next line.
+      store.updateProfileDefinition(1, definitionWriteFixture());
+      store.updateProfileDefinition(2, definitionWriteFixture());
+      store.updateProfileDefinition(3, definitionWriteFixture());
+
+      expect(store.writesInFlight()).toBe(3);
+      expect(store.saving()).toBeTrue();
+
+      const writes = httpMock.match(
+        (candidate) => candidate.method === 'PUT' && candidate.url.includes('/profile-definitions/'),
+      );
+
+      expect(writes.length).toBe(3);
+
+      writes[0].flush(envelope(definitionFixture({ propertyDefinitionId: 1 })));
+
+      expect(store.writesInFlight()).withContext('two are still outstanding').toBe(2);
+      expect(store.saving())
+        .withContext('one write finishing does not mean the batch finished')
+        .toBeTrue();
+
+      writes[1].flush(envelope(definitionFixture({ propertyDefinitionId: 2 })));
+
+      expect(store.saving()).toBeTrue();
+
+      writes[2].flush(envelope(definitionFixture({ propertyDefinitionId: 3 })));
+
+      expect(store.writesInFlight()).toBe(0);
+      expect(store.saving()).withContext('and now the batch has finished').toBeFalse();
+
+      // Each write re-reads the declarations, and every re-read is answered so the backend
+      // verification at teardown is satisfied.
+      for (const reread of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === DEFINITIONS_URL,
+      )) {
+        if (!reread.cancelled) {
+          reread.flush(envelope([definitionFixture()]));
+        }
+      }
+    });
+
+    it('counts a FAILED write down as well as a successful one', () => {
+      // Settlement is settlement. A failure that did not decrement would leave the store claiming
+      // to be saving for the rest of the session and disable every form on it.
+      store.updateProfileDefinition(1, definitionWriteFixture());
+      store.updateProfileDefinition(2, definitionWriteFixture());
+
+      const writes = httpMock.match(
+        (candidate) => candidate.method === 'PUT' && candidate.url.includes('/profile-definitions/'),
+      );
+
+      writes[0].flush(problemFixture({ status: 500, title: 'Server' }), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      expect(store.writesInFlight()).toBe(1);
+      expect(store.saving()).toBeTrue();
+
+      writes[1].flush(problemFixture({ status: 500, title: 'Server' }), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      expect(store.writesInFlight()).toBe(0);
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('mixes a success and a failure without either settling the other', () => {
+      store.updateProfileDefinition(1, definitionWriteFixture());
+      store.updateProfileDefinition(2, definitionWriteFixture());
+
+      const writes = httpMock.match(
+        (candidate) => candidate.method === 'PUT' && candidate.url.includes('/profile-definitions/'),
+      );
+
+      writes[0].flush(envelope(definitionFixture({ propertyDefinitionId: 1 })));
+
+      expect(store.saving())
+        .withContext('a success does not settle the sibling that is still in flight')
+        .toBeTrue();
+
+      writes[1].flush(problemFixture({ status: 409, title: 'Conflict' }), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+
+      expect(store.saving()).toBeFalse();
+      expect(store.failure()).not.toBeNull();
+
+      for (const reread of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === DEFINITIONS_URL,
+      )) {
+        if (!reread.cancelled) {
+          reread.flush(envelope([definitionFixture()]));
+        }
+      }
+    });
+
+    it('ZEROES the count on reset rather than decrementing it', () => {
+      // ⚠ THE ONE PLACE THE COUNTER IS SET RATHER THAN STEPPED, and the reason is that a reset
+      // releases every write handle, so none of them will ever reach a settle call. A decrement
+      // would subtract one from a counter standing at several and leave the store permanently
+      // claiming to be saving — every form on it disabled for the rest of the session.
+      store.updateProfileDefinition(1, definitionWriteFixture());
+      store.updateProfileDefinition(2, definitionWriteFixture());
+      store.updateProfileDefinition(3, definitionWriteFixture());
+
+      const writes = httpMock.match(
+        (candidate) => candidate.method === 'PUT' && candidate.url.includes('/profile-definitions/'),
+      );
+
+      expect(writes.length).toBe(3);
+      expect(store.writesInFlight()).toBe(3);
+
+      store.reset();
+
+      expect(store.writesInFlight()).toBe(0);
+      expect(store.saving()).toBeFalse();
+
+      // The handles were released, so every one of them is abandoned rather than merely ignored —
+      // which is what makes the zeroing correct: none of them can ever reach a settle call.
+      for (const write of writes) {
+        expect(write.cancelled).toBeTrue();
+      }
+    });
+
+    it('keeps accepting writes after a reset, at an honest count', () => {
+      store.updateProfileDefinition(1, definitionWriteFixture());
+
+      const abandoned = httpMock.expectOne(
+        (candidate) => candidate.method === 'PUT' && candidate.url.endsWith('/profile-definitions/1'),
+      );
+
+      store.reset();
+
+      expect(abandoned.cancelled).toBeTrue();
+
+      store.updateProfileDefinition(2, definitionWriteFixture());
+
+      expect(store.writesInFlight())
+        .withContext('one write, counted once — not zero and not two')
+        .toBe(1);
+
+      const write = httpMock.expectOne(
+        (candidate) => candidate.method === 'PUT' && candidate.url.endsWith('/profile-definitions/2'),
+      );
+
+      write.flush(envelope(definitionFixture({ propertyDefinitionId: 2 })));
+
+      expect(store.writesInFlight()).toBe(0);
+
+      for (const reread of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === DEFINITIONS_URL,
+      )) {
+        if (!reread.cancelled) {
+          reread.flush(envelope([definitionFixture()]));
+        }
+      }
+    });
+  });
 
   describe('failures', () => {
     it('records which command failed, so several panes cannot show one message', () => {
@@ -2741,6 +4065,314 @@ describe('UserStore', () => {
   });
 
   // =========================================================================
+  // THE ACCOUNT'S OWN SUBSCRIPTIONS
+  //
+  // `Website/admin/Users/MemberServices.ascx` and its 530-line code-behind. The panel was
+  // SELF-SERVICE throughout: every operation passed `UserInfo.UserID` — the signed-in
+  // account — even though its container assigned it a user identifier
+  // (`manageusers.ascx.vb` L517), and the container hid the tab whenever an administrator
+  // reached the screen (L61-L66). Each of its handlers re-bound the grid after acting
+  // (L118, L133, L430), which is the behaviour every command below reproduces.
+  // =========================================================================
+
+  describe("the account's own subscriptions", () => {
+    it('reads the catalogue unpaged and publishes the account it belongs to', () => {
+      store.loadMemberServices(7);
+
+      const request = expectRequest('GET', SERVICES_URL);
+
+      // No page coordinate, no ordering, no filter: the legacy grid bound the whole answer in
+      // one pass, and the endpoint reads no parameter.
+      expect(request.request.params.keys()).toEqual([]);
+      expect(store.memberServicesLoading()).toBeTrue();
+
+      request.flush(envelope([serviceFixture(), serviceFixture({ roleId: 9, isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]));
+
+      expect(store.memberServices().length).toBe(2);
+      expect(store.memberServicesAccountId())
+        .withContext('a catalogue is meaningless without the account it belongs to')
+        .toBe(7);
+      expect(store.memberServicesLoading()).toBeFalse();
+      expect(store.hasMemberServices()).toBeTrue();
+    });
+
+    it('derives held and lapsed sets from the rows rather than from a second request', () => {
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(
+        envelope([
+          serviceFixture(),
+          serviceFixture({ roleId: 9, isSubscribed: true, isExpired: false }),
+          serviceFixture({ roleId: 11, isSubscribed: false, isExpired: false }),
+        ]),
+      );
+
+      expect(store.heldMemberServices().map((offer: MemberService) => offer.roleId)).toEqual([
+        0, 9,
+      ]);
+
+      // The lapsed test is the SERVER'S, carried per row. Nothing here compares a date against
+      // the browser's clock, which would disagree with the server that refuses the command.
+      expect(store.lapsedMemberServices().map((offer: MemberService) => offer.roleId)).toEqual([
+        0,
+      ]);
+    });
+
+    it('reports a tenant that offers nothing as an empty catalogue, not as a failure', () => {
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(envelope([]));
+
+      expect(store.memberServices()).toEqual([]);
+      expect(store.hasMemberServices()).toBeFalse();
+      expect(store.failure()).toBeNull();
+    });
+
+    it('clears the rows when the account changes, and keeps them when it does not', () => {
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+
+      // A refresh of the SAME account keeps what is on screen: blanking it would flicker a grid
+      // that is about to answer with almost the same rows.
+      store.loadMemberServices(7);
+      expect(store.memberServices().length)
+        .withContext('a refresh of the same account keeps the rows in hand')
+        .toBe(1);
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+
+      // A DIFFERENT account clears them at once, because rendering one account's subscriptions
+      // under another account's key is the one outcome that cannot be allowed even briefly.
+      store.loadMemberServices(11);
+      expect(store.memberServices())
+        .withContext("another account's catalogue is never shown while the read is in flight")
+        .toEqual([]);
+      expect(store.memberServicesAccountId()).toBe(11);
+      expectRequest('GET', '/api/v1/users/11/services').flush(envelope([]));
+    });
+
+    it('keeps the rows in hand when a read fails, and records the failure by name', () => {
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(problemFixture({ status: 500, title: 'Server' }), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      expect(store.memberServices().length)
+        .withContext('an empty grid beside a message would read as "you are offered nothing"')
+        .toBe(1);
+      expect(store.failure()?.operation).toBe('loadMemberServices');
+      expect(store.memberServicesLoading()).toBeFalse();
+    });
+
+    it('subscribes with no body and re-reads the catalogue afterwards', () => {
+      store.subscribeToService(7, 0);
+
+      const command = expectRequest('POST', SERVICE_SUBSCRIPTION_URL);
+
+      expect(command.request.body).toBeNull();
+      expect(store.saving()).toBeTrue();
+
+      command.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.saving()).toBeFalse();
+
+      // The command answers with no body, so the state on screen can only come from a re-read.
+      expectRequest('GET', SERVICES_URL).flush(
+        envelope([serviceFixture({ isExpired: false, subscriptionAction: 'Unsubscribe' })]),
+      );
+
+      expect(store.memberServices()[0].subscriptionAction).toBe('Unsubscribe');
+      expect(store.lapsedMemberServices()).toEqual([]);
+    });
+
+    it('records a refusal to subscribe and issues no re-read at all', () => {
+      store.subscribeToService(7, 0);
+
+      expectRequest('POST', SERVICE_SUBSCRIPTION_URL).flush(
+        problemFixture({
+          type: `${FAILURE_TYPE}user.service.payment-required-forbidden`,
+          status: 403,
+          title: 'Forbidden',
+          detail: 'This service requires payment, which this application cannot take.',
+        }),
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expect(store.failure()?.operation).toBe('subscribeToService');
+      // ⚠ READ AS THE CLIENT NORMALISES IT, NOT AS THE SERVER SPELLS IT. `failureCode`
+      // lower-cases the reason and rewrites every hyphen as an underscore, deliberately
+      // mirroring what `GlobalExceptionHandler` does before it chooses a status — so one
+      // spelling difference cannot make a client and a server disagree about a reason.
+      expect(store.failureReasonCode())
+        .withContext('the excluded payment path is reported by its own reason')
+        .toBe('user.service.payment_required_forbidden');
+      expect(store.saving()).toBeFalse();
+
+      // Nothing to verify but the absence: the closing verification of this suite fails if a
+      // re-read was dispatched, because it would be left outstanding.
+    });
+
+    it('cancels at the subscription address with the removing verb, then re-reads', () => {
+      store.cancelService(7, 0);
+
+      const command = expectRequest('DELETE', SERVICE_SUBSCRIPTION_URL);
+
+      expect(command.request.body).toBeNull();
+      command.flush(null, { status: 204, statusText: 'No Content' });
+
+      // The server may EXPIRE the assignment rather than remove it — `RoleController.vb`
+      // L494-L496 expires one whose role charges a fee — and both are successes answering 204.
+      // Re-reading is what shows which happened, which is why the row's own state is the answer.
+      expectRequest('GET', SERVICES_URL).flush(
+        envelope([serviceFixture({ isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]),
+      );
+
+      expect(store.heldMemberServices()).toEqual([]);
+      expect(store.failure()).toBeNull();
+    });
+
+    it('takes a trial at its own address, then re-reads', () => {
+      store.startServiceTrial(7, 0);
+
+      const command = expectRequest('POST', SERVICE_TRIAL_URL);
+
+      expect(command.request.body).toBeNull();
+      command.flush(null, { status: 204, statusText: 'No Content' });
+
+      expectRequest('GET', SERVICES_URL).flush(
+        envelope([serviceFixture({ trialOffered: false, isExpired: false })]),
+      );
+
+      expect(store.memberServices()[0].trialOffered).toBeFalse();
+    });
+
+    it('records a refusal of a trial the service does not offer', () => {
+      store.startServiceTrial(7, 0);
+
+      expectRequest('POST', SERVICE_TRIAL_URL).flush(
+        problemFixture({
+          type: `${FAILURE_TYPE}user.service.trial-not-offered-forbidden`,
+          status: 403,
+          title: 'Forbidden',
+        }),
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expect(store.failure()?.operation).toBe('startServiceTrial');
+      expect(store.failureReasonCode()).toBe('user.service.trial_not_offered_forbidden');
+    });
+
+    it('redeems a code as typed, reports every role it joined, and re-reads', () => {
+      store.redeemServiceCode(7, '  Founders-2026  ');
+
+      const command = expectRequest('POST', SERVICE_REDEMPTIONS_URL);
+
+      // ⚠ UNTRIMMED AND UNFOLDED. The legacy comparison was ordinary string equality against
+      // the stored code (`MemberServices.ascx.vb` L410), so leading space and case both
+      // mattered; trimming here would admit codes the legacy application refused.
+      expect(command.request.body).toEqual({ code: '  Founders-2026  ' });
+
+      command.flush(
+        envelope({
+          roles: [
+            { roleId: 0, roleName: 'Premium Members' },
+            { roleId: 7, roleName: 'Founders' },
+          ],
+        } satisfies RedeemServiceCodeResult),
+      );
+
+      expect(store.lastRedemption()?.roles.length)
+        .withContext('the legacy walk had no early exit, so one code may join several roles')
+        .toBe(2);
+
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+
+      expect(store.memberServices().length).toBe(1);
+    });
+
+    it('reports a code that matched nothing as a refusal, with no redemption recorded', () => {
+      store.redeemServiceCode(7, 'nope');
+
+      expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
+        problemFixture({
+          type: `${FAILURE_TYPE}user.service.code-not-matched`,
+          status: 400,
+          title: 'Bad Request',
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+
+      // The legacy screen had two distinct messages for the two outcomes, so an empty success
+      // would report a failure as a success.
+      expect(store.lastRedemption()).toBeNull();
+      expect(store.failure()?.operation).toBe('redeemServiceCode');
+      expect(store.failureReasonCode()).toBe('user.service.code_not_matched');
+    });
+
+    it('discards a redemption report once a later command changes the state it described', () => {
+      store.redeemServiceCode(7, 'Founders-2026');
+      expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
+        envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
+      );
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+
+      expect(store.lastRedemption()).not.toBeNull();
+
+      store.cancelService(7, 0);
+
+      expect(store.lastRedemption())
+        .withContext('a report of what a code joined is no longer true once one is cancelled')
+        .toBeNull();
+
+      expectRequest('DELETE', SERVICE_SUBSCRIPTION_URL).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      expectRequest('GET', SERVICES_URL).flush(envelope([]));
+    });
+
+    it('dismisses its own redemption report without touching the catalogue', () => {
+      store.redeemServiceCode(7, 'Founders-2026');
+      expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
+        envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
+      );
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+
+      store.clearRedemption();
+
+      expect(store.lastRedemption()).toBeNull();
+      expect(store.memberServices().length)
+        .withContext('dismissing a message is not a reason to discard the rows')
+        .toBe(1);
+    });
+
+    it('discards the catalogue, its account and its report when the session ends', () => {
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      store.redeemServiceCode(7, 'Founders-2026');
+      expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
+        envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
+      );
+
+      const followUp = expectRequest('GET', SERVICES_URL);
+
+      store.reset();
+
+      // A catalogue is the personal subscription state of ONE account, and every endpoint that
+      // produces it is gated on ownership — so nothing about it may survive a session boundary.
+      expect(store.memberServices()).toEqual([]);
+      expect(store.memberServicesAccountId()).toBeUndefined();
+      expect(store.lastRedemption()).toBeNull();
+      expect(store.memberServicesLoading()).toBeFalse();
+      expect(followUp.cancelled)
+        .withContext('the read in flight is released rather than allowed to repopulate')
+        .toBeTrue();
+    });
+  });
+
+
+  // =========================================================================
   // THE PUBLISHED SURFACE
   // =========================================================================
 
@@ -2762,6 +4394,7 @@ describe('UserStore', () => {
         store.failure,
         store.saving,
         store.usersLoading,
+        store.profileDefinitionBatchRemaining,
       ];
 
       for (const slice of published) {
@@ -2858,6 +4491,7 @@ describe('UserStore', () => {
       expect(store.hasProfileDefinitions()).toBeFalse();
       expect(store.busy()).toBeFalse();
       expect(store.saving()).toBeFalse();
+      expect(store.profileDefinitionBatchRemaining()).toBe(0);
       expect(store.searchMode()).toBe('none');
       expect(store.requestedPageIndex()).toBe(0);
     });
@@ -2983,6 +4617,46 @@ describe('UserStore', () => {
       expect(store.saving()).toBeFalse();
     });
 
+    it('releases a BATCH in flight on reset, so the next operator is not refused', () => {
+      // ⚠ A CANCELLED STREAM NEVER COMPLETES, so the arm that lowers the batch count never runs.
+      // Left standing, that count would refuse the FIRST batch the next operator staged - silently,
+      // and for the remaining life of the store, because nothing else lowers it.
+      store.applyProfileDefinitionEdits([
+        { propertyDefinitionId: 4, request: definitionWriteFixture() },
+        { propertyDefinitionId: 7, request: definitionWriteFixture() },
+      ]);
+
+      const pending = expectRequest('PUT', `${DEFINITIONS_URL}/4`);
+
+      expect(store.profileDefinitionBatchRemaining()).toBe(2);
+
+      store.reset();
+
+      expect(pending.cancelled)
+        .withContext('a batch must not outlive the session that staged it')
+        .toBeTrue();
+      expect(store.profileDefinitionBatchRemaining())
+        .withContext('released where the writes are released, not on completion')
+        .toBe(0);
+      expect(store.saving()).toBeFalse();
+
+      // The second row is never written, because the concatenation that would have composed it
+      // was abandoned - and the next batch is accepted, which a standing count would have refused.
+      store.applyProfileDefinitionEdits([
+        { propertyDefinitionId: 9, request: definitionWriteFixture() },
+      ]);
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/9`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 9 })),
+      );
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+
+      httpMock.expectNone(
+        (request) => request.url === `${DEFINITIONS_URL}/7`,
+        'the row behind the cancelled one was never composed',
+      );
+    });
+
     it('discards every account-scoped slice on reset', () => {
       store.loadMembershipSettings();
       expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 25 })));
@@ -3063,4 +4737,212 @@ describe('UserStore', () => {
         .toBeTrue();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // WRITE IDENTITY, AND WHY AN AGGREGATE FLAG COULD NOT SETTLE A WRITE
+  //
+  // This store published ONE boolean for "a write is in flight" and ONE failure slot, and it is
+  // provided at the application root. Every screen that dispatched a write therefore watched the
+  // same boolean fall and then read the same slot to learn its own outcome. Three distinct wrong
+  // answers follow, and none is visible from inside one screen:
+  //
+  //   (a) TWO WRITES, ONE FLAG. The account list dispatches a removal, a settings pane dispatches a
+  //       save, the save settles first — the flag falls and BOTH conclude their own write is done.
+  //       The list clears the marker naming the row it was deleting, so the refusal that arrives
+  //       afterwards has nothing to attribute itself to and the row silently stays.
+  //   (b) SOMEBODY ELSE'S FAILURE. One write succeeds and another is refused; the successful one
+  //       reads the slot, finds the other's refusal and reports it as its own outcome.
+  //   (c) A REFUSAL SEEN AS A SUCCESS. Every dispatch clears the slot, so whether a screen sees its
+  //       own refusal depends on what else the application happened to do next.
+  //
+  // The profile-declaration screen made (a) routine rather than occasional: its Apply command
+  // dispatches one write per edited row, in parallel, all against the one flag and the one slot.
+  //
+  // NOTE ON WHAT THESE CASES DO NOT ANSWER. Several of these writes ask the store to re-read the
+  // account listing once they land, but a store that has never been given a query issues no listing
+  // request at all — `dispatchUsers` returns early for the no-query state, exactly as the legacy
+  // screen left its grid unbound. None of these cases sets a query, so none of them answers a
+  // listing read, and that is deliberate: write identity is a property of the write, and mixing a
+  // listing read into every case would only add an address to keep in step with the transport.
+  // -------------------------------------------------------------------------
+  describe('every write is settled by identity rather than by an aggregate flag', () => {
+    it('hands back a distinct identifier for every write, and never the absent value', () => {
+      // Zero is reserved as "no write awaited" by the screens that hold one of these, so the FIRST
+      // identifier must not be zero. The counter therefore pre-increments, asserted here rather
+      // than left to a comment.
+      const first = store.createUser(createRequestFixture());
+      const second = store.unlockUser(7);
+
+      expect(first).withContext('the absent marker must never be issued').not.toBe(0);
+      expect(second).not.toBe(first);
+      expect(second).toBeGreaterThan(first);
+
+      expectRequest('POST', USERS_URL).flush(envelope(detailFixture({ userId: 91 })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expectRequest('POST', `${USERS_URL}/7/unlock`).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+    });
+
+    it('publishes a result naming the write that settled, its operation and its own outcome', () => {
+      const issued = store.unlockUser(7);
+
+      expect(store.mutation())
+        .withContext('nothing is published while the write is open')
+        .toBeNull();
+
+      expectRequest('POST', `${USERS_URL}/7/unlock`).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+
+      const settled = store.mutation();
+
+      if (settled === null) {
+        throw new Error('expected the write to have settled');
+      }
+
+      expect(settled.id).toBe(issued);
+      expect(settled.operation).toBe('unlockUser');
+      expect(settled.failure)
+        .withContext('a success settles with no failure attached')
+        .toBeNull();
+    });
+
+    it('carries a refusal ON the settled result, so no screen reads it out of shared state', () => {
+      const issued = store.deleteUser(7);
+
+      expectRequest('DELETE', `${USERS_URL}/7`).flush(
+        problemFixture({ status: 409, detail: 'The last administrator cannot be removed.' }),
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      const settled = store.mutation();
+
+      if (settled === null || settled.failure === null) {
+        throw new Error('expected the refusal to travel on the settled result');
+      }
+
+      expect(settled.id).toBe(issued);
+      expect(settled.operation).toBe('deleteUser');
+      expect(settled.failure.operation).toBe('deleteUser');
+      expect(settled.failure.problem?.status).toBe(409);
+    });
+
+    it('settles the first of two open writes without settling the second', () => {
+      // ⚠ DEFECT (a), AND THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. Both writes are open; the
+      // second answers first. The result must name the SECOND, and the aggregate must stay raised
+      // because the first is still open.
+      const firstWrite = store.deleteUser(7);
+      const secondWrite = store.unlockUser(8);
+
+      const removal = expectRequest('DELETE', `${USERS_URL}/7`);
+
+      expectRequest('POST', `${USERS_URL}/8/unlock`).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+
+      expect(store.mutation()?.id).toBe(secondWrite);
+      expect(store.saving())
+        .withContext('one write settling must not report the other as settled')
+        .toBeTrue();
+
+      removal.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.mutation()?.id).toBe(firstWrite);
+      expect(store.saving())
+        .withContext('the aggregate falls only once every write has settled')
+        .toBeFalse();
+    });
+
+    it('does not attach one write\u2019s refusal to another write\u2019s result', () => {
+      // ⚠ DEFECT (b). The refused write and the successful one overlap, and the successful one
+      // settles LAST — so the shared failure slot holds a refusal at the very moment the successful
+      // write's result is published. The result must still carry no failure.
+      store.deleteUser(7);
+
+      const refused = expectRequest('DELETE', `${USERS_URL}/7`);
+      const succeeding = store.unlockUser(8);
+      const unlock = expectRequest('POST', `${USERS_URL}/8/unlock`);
+
+      refused.flush(problemFixture({ status: 409, detail: 'That account cannot be removed.' }), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+
+      expect(store.failure()?.operation)
+        .withContext('the slot does hold the refusal at this instant')
+        .toBe('deleteUser');
+
+      unlock.flush(null, { status: 204, statusText: 'No Content' });
+
+      const settled = store.mutation();
+
+      if (settled === null) {
+        throw new Error('expected the successful write to have settled');
+      }
+
+      expect(settled.id).toBe(succeeding);
+      expect(settled.failure)
+        .withContext('a successful write must not inherit the other write\u2019s refusal')
+        .toBeNull();
+
+      // ⚠ AND DEFECT (c) IN THE SAME BREATH. Every command on this store opens by clearing the
+      // shared slot, so a screen holding the refusal there loses it the moment ANY other screen
+      // dispatches anything at all. Here the settings pane simply reads — no write, no failure, no
+      // relationship to the removal — and the refusal is gone. A screen that had read its outcome
+      // from the slot would now conclude the REFUSED removal succeeded, purely because of what the
+      // application happened to do next. The published result is unaffected, which is the point.
+      store.loadMembershipSettings();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+
+      expect(store.failure())
+        .withContext('the shared slot cannot be relied on to still hold the refusal')
+        .toBeNull();
+      expect(store.mutation()?.id)
+        .withContext('while the settled result still names the write it belongs to')
+        .toBe(succeeding);
+    });
+
+    it('clears the published result and the pending count on a session boundary', () => {
+      store.unlockUser(7);
+      expectRequest('POST', `${USERS_URL}/7/unlock`).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+
+      expect(store.mutation()).not.toBeNull();
+
+      store.reset();
+
+      expect(store.mutation())
+        .withContext('a result from the ended session must not settle a new one\u2019s write')
+        .toBeNull();
+      expect(store.saving()).toBeFalse();
+    });
+
+    it('lowers the pending count when a write is released rather than answered', () => {
+      // ⚠ THE CASE A PAIR OF CALLBACKS CANNOT SEE, WHICH IS WHY THE COUNT IS LOWERED FROM
+      // `finalize`. Neither the next nor the error path runs for a subscription that is simply
+      // unsubscribed, so a write released by a session boundary would otherwise leave the count
+      // raised for the life of the application and the store would report itself busy for ever.
+      store.createUser(createRequestFixture());
+
+      const pending = expectRequest('POST', USERS_URL);
+
+      expect(store.saving()).toBeTrue();
+
+      store.reset();
+
+      expect(pending.cancelled).withContext('the request is abandoned').toBeTrue();
+      expect(store.saving())
+        .withContext('a released write must not leave the store permanently busy')
+        .toBeFalse();
+    });
+  });
+
 });

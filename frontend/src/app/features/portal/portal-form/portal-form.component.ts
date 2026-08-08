@@ -2,6 +2,7 @@ import { DOCUMENT } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   computed,
   effect,
   inject,
@@ -1057,6 +1058,18 @@ export class PortalFormComponent {
   private readonly router = inject(Router);
 
   /**
+   * Binds this screen's write subscriptions to its own lifetime.
+   *
+   * ⚠ THE EXPLICIT REFERENCE IS REQUIRED, not a stylistic choice over the argument-less
+   * form used in the field initialiser above. `takeUntilDestroyed()` with no argument
+   * resolves its reference from the ambient INJECTION CONTEXT, which exists while fields
+   * and the constructor run and NOT inside an event handler. The write subscriptions below
+   * are opened from a submission, so they must be handed the reference explicitly or the
+   * call throws at the moment an operator presses save.
+   */
+  private readonly destroyRef = inject(DestroyRef);
+
+  /**
    * The host name a child portal's alias is prefixed with.
    *
    * Read from the injected document rather than from the global object, so the value
@@ -1901,9 +1914,31 @@ export class PortalFormComponent {
    *      duplicate-alias lookup. All three are gone: the first two touch a file system
    *      that is out of scope, and the third is the server's `409`.
    *
-   * Normalisation cannot turn a valid alias invalid, so no second validity test is
-   * needed after step 2: lower-casing is lossless against character sets that are lower
-   * case only, and removing the scheme prefix can only shorten the value.
+   * ⚠ THE FORM IS RE-VALIDATED AFTER NORMALISATION, AND IT MUST BE. An earlier revision
+   * of this method asserted the opposite — "normalisation cannot turn a valid alias
+   * invalid … removing the scheme prefix can only shorten the value" — and that sentence
+   * contains its own refutation: shortening a value TO THE EMPTY STRING is precisely what
+   * turns it invalid, because the alias control is `Validators.required`.
+   *
+   * The reachable input is the bare scheme, `http://`, and every gate passes it:
+   *
+   *   - `Validators.required` sees the RAW value, which is seven characters long;
+   *   - `Validators.maxLength` is satisfied for the same reason;
+   *   - {@link aliasCharactersValidator} normalises INTERNALLY, gets the empty string, and
+   *     then deliberately declines to report — "requiredness is reported once, by the rule
+   *     that owns it" — which is correct in isolation and is the other half of the hole.
+   *
+   * So no rule ever inspects the empty normalised value at validation time: the rule that
+   * owns requiredness judged the raw value, and the rule that saw the normalised value
+   * does not own requiredness. Step 2 then writes the empty string into the control and
+   * the request went out with `portalAlias: ""` — a portal reachable at no host name,
+   * created successfully and reported as a success.
+   *
+   * `setValue` re-runs the control's validators, so by the time the second gate below is
+   * evaluated the group already reflects the normalised value; the gate merely stops
+   * ignoring it. The legacy ordering of steps 1 and 2 is therefore preserved exactly — the
+   * normalisation still happens before any inspection of content — and what changes is
+   * only that the outcome of the normalisation is now checked as well.
    */
   private submitCreate(): void {
     if (this.saving()) {
@@ -1918,10 +1953,22 @@ export class PortalFormComponent {
 
     this.normaliseAliasControl();
 
+    // The second gate. Marking touched is what makes the requirement's message visible
+    // beside a field the operator did fill in — they typed something, and they are owed an
+    // explanation of why what they typed amounts to nothing.
+    if (this.createForm.invalid) {
+      this.createForm.markAllAsTouched();
+
+      return;
+    }
+
     this.saveRequested.set(true);
-    this.portalStore.createPortal(this.toCreateRequest(), (): void => {
-      this.afterWrite(CREATE_SUCCEEDED_MESSAGE);
-    });
+    this.portalStore
+      .createPortal(this.toCreateRequest())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.afterWrite(CREATE_SUCCEEDED_MESSAGE);
+      });
   }
 
   /**
@@ -1960,9 +2007,12 @@ export class PortalFormComponent {
     );
 
     this.saveRequested.set(true);
-    this.portalStore.updatePortal(id, request, (): void => {
-      this.afterWrite(UPDATE_SUCCEEDED_MESSAGE);
-    });
+    this.portalStore
+      .updatePortal(id, request)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.afterWrite(UPDATE_SUCCEEDED_MESSAGE);
+      });
   }
 
   /**

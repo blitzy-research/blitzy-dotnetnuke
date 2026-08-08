@@ -1,12 +1,19 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
+import { AUTH_ENDPOINTS } from '../../core/config/api-endpoints';
+import { TokenStorageService } from '../../core/services/token-storage.service';
+import { AuthStore } from '../../core/state/auth.store';
+import { SessionLifecycleService } from '../../core/state/session-lifecycle.service';
 import { FooterComponent } from '../footer/footer.component';
 import { HeaderComponent } from '../header/header.component';
 import { SidebarComponent } from '../sidebar/sidebar.component';
 import { ShellComponent } from './shell.component';
+
+import type { AuthSession } from '../../core/models/auth.model';
 
 /**
  * SPECIFICATION FOR THE APPLICATION SHELL
@@ -24,33 +31,38 @@ import { ShellComponent } from './shell.component';
  * SOURCE ORDER is what the Tab key follows and what a screen reader in document-order
  * mode follows, so source order is asserted here and is never a matter of taste.
  *
- * ## WHAT IS ASSERTED IN TWO ARRANGEMENTS, AND WHY
+ * ## THE RAIL IS OWNED, NOT PROJECTED, AND THAT IS ASSERTED IN ONE ARRANGEMENT
  *
- * The navigation rail is NOT imported by the shell. The template publishes the region
- * as a projection slot — `<div class="shell__sidebar"><ng-content /></div>` — so the
- * rail is supplied by whichever component mounts `<app-shell>`. That single design
- * decision means the landmark inventory has two legitimate answers, and asserting
- * only one of them would be wrong:
+ * The shell imports `SidebarComponent` and renders `<app-sidebar class="shell__sidebar" />`
+ * itself. There is no projection slot and no `<ng-content />` anywhere in the component,
+ * so the landmark inventory has exactly ONE legitimate answer: a bare mount of the shell
+ * contains one `<header>`, one `<footer>`, one `<main>`, one `<nav>` and one
+ * `<router-outlet>`.
  *
- * - Mounted bare, the composed tree contains one `<header>`, one `<footer>`, one
- *   `<main>` and ZERO `<nav>`, because nothing has been projected.
- * - Mounted with the real rail projected, it contains exactly one `<nav>`.
+ * That is a correction rather than a preference. The region used to be a slot filled by
+ * whichever component mounted the shell, and its failure mode was silent: with nothing
+ * projected the region matched the stylesheet's `:empty` collapse rule, so a console with
+ * NO navigation rendered without a raise, a warning or a compile error. Owning the rail
+ * makes that state unreachable, and the single inventory below is what pins it.
  *
- * Both are asserted. The first pins the projection seam and the `:empty` collapse the
- * stylesheet relies on; the second pins the arrangement that actually ships.
+ * ## THE SESSION BOUNDARY IS ASSERTED HERE, BECAUSE IT LIVES HERE
  *
- * ## NO HTTP PROVIDER IS CONFIGURED, AND THAT IS THE POINT
+ * The shell reads the signed-in identity from the session store, hands the banner the name
+ * and the in-flight flag, and turns the banner's gesture into an ended session followed by
+ * a navigation. Those decisions used to sit in the root component; they are asserted here
+ * now, against the REAL store graph rather than stubs, because the defect worth catching
+ * lives in the seam between the shell and that graph.
  *
- * The shell injects no service and issues no request. Its composed children are the
- * same: the banner and footer take inputs only, and the notification surface reads a
- * zero-dependency signal store. The cleanest available proof that nothing in this
- * render graph performs data access is that this specification needs no HTTP provider
- * whatsoever and still renders — so none is configured, and none may be added without
- * a change in the components themselves that would deserve scrutiny.
+ * An HTTP provider is therefore configured — the store graph reaches the HTTP client — and
+ * the testing backend replaces the real one so that no request escapes. `httpMock.verify()`
+ * after every case is what turns "the shell issues exactly one revocation" into a checked
+ * claim rather than a described one. The shell itself still injects no transport and reads
+ * no domain slice.
  *
- * A router IS required, twice over: the shell renders a router outlet and the banner
- * it composes renders a router link. An empty route table satisfies both, and no
- * navigation occurs.
+ * A router IS required, three times over: the shell renders a router outlet, the banner it
+ * composes renders a router link, and the rail renders router links of its own. An empty
+ * route table satisfies all three, and the sign-out navigation is asserted through a spy
+ * rather than by resolving a route.
  *
  * ## NO EFFECTS, SO NO EFFECT FLUSHING
  *
@@ -112,37 +124,46 @@ import { ShellComponent } from './shell.component';
  */
 
 /**
- * A host that mounts the shell with the real navigation rail projected into it.
+ * A held session, exactly as the sign-in endpoint answers one.
  *
- * The projection contract can only be observed from OUTSIDE the shell. A fixture
- * created directly on the shell has no content children to project, so its navigation
- * region is necessarily empty, and an assertion made there would prove only that the
- * region exists. Projecting the real rail — rather than a stand-in `<nav>` — is what
- * makes the second half of the landmark inventory meaningful: it proves that the
- * arrangement which actually ships yields exactly one navigation landmark.
+ * Written through the token custodian rather than by posting credentials, because every
+ * assertion here is about the CHROME reading a session rather than about acquiring one, and
+ * staging one through the sign-in endpoint would add a request each case would then have to
+ * account for.
  *
- * The import list is written across several lines deliberately. It keeps the shell's
- * single canonical registration, in the testing module below, unambiguous to the
- * mechanical checks applied to this file.
+ * The display name is deliberately distinct from the account key so that the fallback
+ * assertions below cannot pass by coincidence.
  */
-@Component({
-  standalone: true,
-  imports: [
-    ShellComponent,
-    SidebarComponent,
-  ],
-  template: `
-    <app-shell>
-      <app-sidebar />
-    </app-shell>
-  `,
-  changeDetection: ChangeDetectionStrategy.OnPush,
-})
-class ProjectingHostComponent {}
+const SESSION_BODY: AuthSession = {
+  accessToken: 'operator-access-token',
+  refreshToken: 'operator-refresh-token',
+  expiresAtUtc: '2030-01-01T00:00:00Z',
+  mustChangePassword: false,
+  mustUpdateProfile: false,
+  passwordExpiring: false,
+  user: {
+    userId: 0,
+    portalId: -1,
+    portalName: 'Measured Portal',
+    username: 'operator.a',
+    displayName: 'Operator A',
+    email: 'operator.a@example.test',
+    isSuperUser: false,
+    isPortalAdministrator: false,
+    roles: [],
+    permissions: [],
+  },
+};
 
 describe('ShellComponent', () => {
   let fixture: ComponentFixture<ShellComponent>;
   let component: ShellComponent;
+  let httpMock: HttpTestingController;
+  let tokens: TokenStorageService;
+  let authStore: AuthStore;
+  let session: SessionLifecycleService;
+  let router: Router;
+  let navigate: jasmine.Spy;
 
   /**
    * Returns the shell's host element.
@@ -197,7 +218,7 @@ describe('ShellComponent', () => {
    * @param name The input to set.
    * @param value The value to set it to, before any declared transform.
    */
-  function setInput(name: 'applicationName' | 'userName' | 'signingOut', value: unknown): void {
+  function setInput(name: 'applicationName', value: unknown): void {
     fixture.componentRef.setInput(name, value);
     fixture.detectChanges();
   }
@@ -256,17 +277,61 @@ describe('ShellComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [ShellComponent],
-      // A router is required twice over: the shell renders a router outlet and the
-      // banner it composes renders a router link. An empty route table satisfies both
-      // without any navigation occurring. No HTTP provider appears here, and none is
-      // needed — see the note on data access in this file's header.
-      providers: [provideRouter([])],
+      providers: [
+        // A router is required three times over: the shell renders a router outlet, the
+        // banner it composes renders a router link, and the rail renders router links. An
+        // empty route table satisfies all three without any navigation occurring.
+        provideRouter([]),
+        // The real client FIRST and the testing backend SECOND: `provideHttpClientTesting()`
+        // REPLACES the backend the real client installed, so reversing the two would leave
+        // the live backend in place and every expectation below would find nothing.
+        //
+        // Present because the shell owns the session boundary, and the graph beneath it —
+        // the session store, the authentication service, the four domain stores the
+        // lifecycle service discards — reaches the HTTP client. Nothing is stubbed: the real
+        // graph is what makes "asking to sign out actually ends the session" assertable.
+        provideHttpClient(),
+        provideHttpClientTesting(),
+      ],
     }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
+    tokens = TestBed.inject(TokenStorageService);
+    authStore = TestBed.inject(AuthStore);
+    session = TestBed.inject(SessionLifecycleService);
+    router = TestBed.inject(Router);
+
+    // Spied before the component is created so that no navigation can escape into the empty
+    // route table. `resolveTo` rather than `stub`, because the component chains a `catch`
+    // onto the returned promise and an undefined return would throw there.
+    navigate = spyOn(router, 'navigate').and.resolveTo(true);
 
     fixture = TestBed.createComponent(ShellComponent);
     component = fixture.componentInstance;
     fixture.detectChanges();
   });
+
+  afterEach(() => {
+    // Proves no request was left outstanding by any case, which is the assertion that
+    // catches a revocation issued twice as reliably as a count does.
+    httpMock.verify();
+  });
+
+  /**
+   * Establishes a held session, exactly as the sign-in flow would, and renders it.
+   *
+   * @param overrides Identity members to replace on the stored session.
+   */
+  function holdSession(overrides: Partial<AuthSession['user']> = {}): void {
+    tokens.store({ ...SESSION_BODY, user: { ...SESSION_BODY.user, ...overrides } });
+    fixture.detectChanges();
+  }
+
+  /** Activates the banner's sign-out control the way an operator does. */
+  function clickSignOut(): void {
+    host().querySelector<HTMLButtonElement>('button.app-header__logout')?.click();
+    fixture.detectChanges();
+  }
 
   describe('component definition', () => {
     it('creates', () => {
@@ -320,6 +385,11 @@ describe('ShellComponent', () => {
       expect(regions[2]).toContain('shell__sidebar');
       expect(regions[3]).toContain('shell__main');
       expect(regions[4]).toContain('shell__footer');
+
+      // The navigation region is the rail's OWN host rather than a wrapper around it, so
+      // the grid places the rail directly. A wrapper would satisfy the class assertion
+      // above and still break the layout, which is why the element is named here.
+      expect(host().children[2].tagName.toLowerCase()).toBe('app-sidebar');
     });
 
     it('renders exactly one router outlet, which is the application\'s only outlet', () => {
@@ -341,8 +411,9 @@ describe('ShellComponent', () => {
       expect(outletWithinMain).not.toBeNull();
     });
 
-    it('composes the banner and the footer exactly once each', () => {
+    it('composes the banner, the rail and the footer exactly once each', () => {
       expect(count('app-header')).toBe(1);
+      expect(count('app-sidebar')).toBe(1);
       expect(count('app-footer')).toBe(1);
     });
 
@@ -368,13 +439,31 @@ describe('ShellComponent', () => {
       expect(count('footer')).toBe(1);
     });
 
-    it('emits no navigation landmark of its own when nothing is projected', () => {
-      // MEASURED, not assumed. The rail is a projection slot rather than an import, so
-      // a shell mounted with no content children legitimately has no navigation
-      // landmark at all. The complementary assertion — that the shipping arrangement
-      // yields exactly one — is made against the projecting host further below.
-      expect(count('nav')).toBe(0);
-      expect(count('app-sidebar')).toBe(0);
+    it('emits exactly one navigation landmark, which the rail it owns supplies', () => {
+      // ONE ANSWER, BECAUSE THERE IS ONE ARRANGEMENT. The rail is imported and rendered by
+      // the shell rather than projected into it, so the element is present at a bare mount and
+      // the landmark comes from the rail rather than from this component's own markup.
+      expect(count('app-sidebar')).toBe(1);
+
+      // ⚠ AND THE LANDMARK IS CONDITIONAL ON THE SESSION, WHICH IS WHY THIS CASE HOLDS ONE. Every
+      // destination the rail offers is an administration screen, so the rail withholds the
+      // landmark entirely rather than announcing a region a reader can navigate to and find
+      // nothing in. A bare mount therefore has the ELEMENT and no landmark, which is asserted
+      // first so the conditionality is proved here rather than inferred from the rail's own file.
+      expect(count('nav'))
+        .withContext('no landmark stands over a rail with nothing in it')
+        .toBe(0);
+
+      holdSession({ isPortalAdministrator: true });
+
+      expect(count('nav')).toBe(1);
+      expect(count('app-sidebar')).toBe(1);
+
+      // The landmark is NAMED, which is what makes it announceable as the console's
+      // navigation rather than as an anonymous region.
+      const navigation = requireElement('nav');
+
+      expect(navigation.getAttribute('aria-label')?.trim().length ?? 0).toBeGreaterThan(0);
     });
 
     it('emits no landmark twice over, so nothing is announced as a duplicate', () => {
@@ -466,7 +555,7 @@ describe('ShellComponent', () => {
       // sit last.
       const link = requireElement('a.shell__skip-link');
       const bannerHost = requireElement('app-header');
-      const navigationRegion = requireElement('div.shell__sidebar');
+      const navigationRegion = requireElement('app-sidebar.shell__sidebar');
       const region = requireElement('main');
       const footerHost = requireElement('app-footer');
 
@@ -528,67 +617,50 @@ describe('ShellComponent', () => {
   });
 
   describe('secondary navigation region', () => {
-    it('is a plain element that writes no landmark of its own', () => {
-      // The region delegates BOTH the landmark and the accessible name to whatever is
-      // projected into it. Writing either here would produce a nameless landmark on a
-      // shell mounted without navigation, or two competing names on one that has it.
-      const region = requireElement('div.shell__sidebar');
+    it('is the rail itself, carrying the region class on its own host', () => {
+      // The region is no longer a wrapper with a projection slot. The rail's host IS the
+      // grid child, so the class and the component are the same element — which is what
+      // keeps the grid placing a direct child of the shell.
+      const region = requireElement('.shell__sidebar');
 
-      expect(region.tagName.toLowerCase()).toBe('div');
+      expect(region.tagName.toLowerCase()).toBe('app-sidebar');
+      expect(count('div.shell__sidebar')).toBe(0);
+    });
+
+    it('mounts the real rail component, not merely an element so named', () => {
+      // Resolving by directive rather than by element name is the difference between
+      // proving the component is mounted and proving a tag exists.
+      const node = fixture.debugElement.query(By.directive(SidebarComponent));
+
+      expect(node).not.toBeNull();
+      expect(node.injector.get(SidebarComponent)).toBeInstanceOf(SidebarComponent);
+    });
+
+    it('writes no landmark and no accessible name of its own, leaving both to the rail', () => {
+      // The shell must not annotate the region: the rail renders its own labelled
+      // navigation landmark, and a second role or name here would compete with it.
+      const region = requireElement('.shell__sidebar');
+
       expect(region.hasAttribute('role')).toBeFalse();
       expect(region.hasAttribute('aria-label')).toBeFalse();
     });
 
-    it('renders with no child nodes at all when nothing is projected', () => {
-      // The stylesheet collapses this region with an `:empty` branch so that a shell
-      // with no navigation contributes no width and is not announced. `:empty` matches
-      // only when there are NO child nodes, text nodes included, which is why the
-      // template keeps the element on a single line — a line break inside the tag
-      // would introduce a text node and silently defeat the collapse. Asserting on
-      // child NODES rather than child ELEMENTS is what makes this test able to catch
-      // that.
-      expect(requireElement('div.shell__sidebar').childNodes.length).toBe(0);
-    });
-
-    it('receives projected content into the navigation region', () => {
-      const hosted = TestBed.createComponent(ProjectingHostComponent);
-      hosted.detectChanges();
-
-      const hostedElement = hosted.nativeElement as HTMLElement;
-      const region = hostedElement.querySelector('div.shell__sidebar');
-      const rail = hostedElement.querySelector('app-sidebar');
-
-      expect(region).not.toBeNull();
-      expect(rail).not.toBeNull();
-      expect(region?.contains(rail)).withContext('rail projected into the region').toBeTrue();
-    });
-
-    it('yields exactly one navigation landmark once the real rail is projected', () => {
-      // THE COMPLEMENT TO THE BARE-MOUNT INVENTORY. Mounted bare the shell has no
-      // navigation landmark; mounted the way the console actually mounts it, it has
-      // exactly one. Both numbers are correct, and asserting only one of them would
-      // misrepresent the projection seam.
-      const hosted = TestBed.createComponent(ProjectingHostComponent);
-      hosted.detectChanges();
-
-      const hostedElement = hosted.nativeElement as HTMLElement;
-
-      expect(hostedElement.querySelectorAll('nav').length).toBe(1);
-      expect(hostedElement.querySelectorAll('app-sidebar').length).toBe(1);
-      // Still exactly one of each of the other landmarks: projecting a rail must not
-      // duplicate the banner, the main region or the footer.
-      expect(hostedElement.querySelectorAll('header').length).toBe(1);
-      expect(hostedElement.querySelectorAll('main').length).toBe(1);
-      expect(hostedElement.querySelectorAll('footer').length).toBe(1);
-      expect(hostedElement.querySelectorAll('router-outlet').length).toBe(1);
+    it('renders no projection slot anywhere, so navigation cannot be omitted silently', () => {
+      // THE REGRESSION THIS OWNERSHIP EXISTS TO PREVENT. A slot rendered nothing when a
+      // mount site supplied nothing, and the stylesheet's `:empty` branch then collapsed
+      // the region — shipping a console with no navigation, with no raise and no warning.
+      // A shell that owns the rail cannot reach that state, and the absence of any
+      // projected content is what proves the slot is gone.
+      expect(host().querySelectorAll('ng-content').length).toBe(0);
+      expect(requireElement('.shell__sidebar').childNodes.length).toBeGreaterThan(0);
     });
   });
 
-  describe('session forwarding', () => {
-    // These specifications assert on the banner's INPUTS rather than on the banner's
-    // markup. The shell's contribution is the binding, not the rendering, and the
-    // banner is another component's file: asserting on its class names from here would
-    // fail on a cosmetic change there and would test that component twice.
+  describe('session — the boundary this component owns', () => {
+    // These specifications drive the REAL session store rather than component inputs,
+    // because the shell resolves the session itself now. The banner's INPUTS are what is
+    // asserted, not the banner's markup: the shell's contribution is the binding, and the
+    // banner is another component's file.
 
     it('forwards a build-time application name when nothing is bound', () => {
       // The default is read from the component rather than from a literal or from the
@@ -604,51 +676,167 @@ describe('ShellComponent', () => {
       expect(banner().applicationName).toBe('Administration');
     });
 
-    it('forwards no display name while no account is signed in', () => {
+    it('resolves no display name while no account is signed in', () => {
       expect(banner().userName).toBeUndefined();
     });
 
-    it('forwards the signed-in display name verbatim', () => {
-      setInput('userName', 'host');
+    it('resolves the signed-in display name from the session store', () => {
+      holdSession();
 
-      expect(banner().userName).toBe('host');
+      expect(banner().userName).toBe('Operator A');
     });
 
-    it('forwards a blank display name unchanged, applying no interpretation of its own', () => {
-      // The banner's own rule is that a blank name means no session. The shell must not
-      // pre-empt that by substituting a placeholder, so the blank value is asserted to
-      // arrive intact.
-      setInput('userName', '');
+    it('falls back to the account key when the display name is blank', () => {
+      // THE PUBLISHED CONTRACT, and it guards a concrete defect. The banner decides
+      // whether an account is signed in by testing the name it was given, and the
+      // sign-out control lives inside that cluster — so passing a blank name through
+      // would leave an operator signed in with no way to sign out.
+      holdSession({ displayName: '' });
 
-      expect(banner().userName).toBe('');
+      expect(banner().userName).toBe('operator.a');
     });
 
-    it('forwards the in-flight flag, including through the bare-attribute transform', () => {
+    it('treats a whitespace-only display name as absent, not as a name', () => {
+      holdSession({ displayName: '   ' });
+
+      expect(banner().userName).toBe('operator.a');
+    });
+
+    it('reports no name at all when neither the display name nor the account key is usable', () => {
+      holdSession({ displayName: '  ', username: '  ' });
+
+      expect(banner().userName).toBeUndefined();
+    });
+
+    it('forwards the in-flight flag from the store rather than from a local mirror', () => {
+      holdSession();
+
       expect(banner().signingOut).toBeFalse();
 
-      // The empty string is what a bare attribute produces in a template. The declared
-      // transform is expected to read it as true, and the transformed value is what
-      // must reach the banner.
-      setInput('signingOut', '');
+      clickSignOut();
 
       expect(banner().signingOut).toBeTrue();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(banner().signingOut).toBeFalse();
     });
 
-    it('re-emits the sign-out gesture the banner raises, adding nothing of its own', () => {
-      let emissions = 0;
-      let payload: unknown = 'unset';
+    it('offers no account address while no session is held', () => {
+      expect(banner().accountServicesLink).toBeUndefined();
+    });
 
-      component.signOut.subscribe((value: void) => {
-        emissions += 1;
-        payload = value;
-      });
+    it("composes the signed-in account's own subscriptions address", () => {
+      // MIGRATION: this is the one account-scoped affordance in the console's chrome, and the only
+      // route an ordinary account holder has to a screen it operates on its own behalf.
+      // `Website/admin/Users/MemberServices.ascx` was a tab an administrator never saw
+      // (`ManageUsers.ascx.vb` L61-L66), reached by the signed-in account from the portal's own user
+      // affordance - a skin object, and skinning is out of scope - so this band is the equivalent.
+      holdSession({ userId: 7 });
 
-      banner().signOut.emit();
+      expect(banner().accountServicesLink).toBe('/users/7/services');
+    });
 
-      // The shell owns no session, so it must not interpret the gesture: no
-      // confirmation, no state change and no payload of its own.
-      expect(emissions).toBe(1);
-      expect(payload).toBeUndefined();
+    it('composes an address naming account zero unchanged', () => {
+      // ⚠ SENTINEL DISCIPLINE. The fixture's account key is zero, so this is a sentinel proof as
+      // well as a composition one: a truthiness test or a `> 0` guard anywhere on the path from the
+      // session to the rendered address would drop the affordance entirely for the first account the
+      // installer creates. Account, role, page and module keys all seed at zero or below in this
+      // schema, so that is a defect class rather than a preference.
+      holdSession({ userId: 0 });
+
+      expect(banner().accountServicesLink).toBe('/users/0/services');
+    });
+
+    it('revokes the session server-side when the operator asks to sign out', () => {
+      holdSession();
+
+      clickSignOut();
+
+      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout);
+
+      expect(revocation.request.method).toBe('POST');
+
+      revocation.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('ends the session through the lifecycle service rather than through the session store', () => {
+      // ⚠ THE DISTINCTION IS THE WHOLE POINT. The store's own sign-out discards the
+      // credentials and the identity and knows nothing about the portals, accounts, roles
+      // or exported module documents the domain stores still hold. Calling the store would
+      // leave every one of those resident and legible to whoever signs in next.
+      const endSession = spyOn(session, 'endSession').and.callThrough();
+
+      holdSession();
+      clickSignOut();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(endSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the application unauthenticated once the revocation settles', () => {
+      holdSession();
+
+      expect(authStore.isAuthenticated()).toBeTrue();
+
+      clickSignOut();
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(authStore.isAuthenticated()).toBeFalse();
+      expect(authStore.currentUser()).toBeNull();
+      expect(banner().userName).toBeUndefined();
+    });
+
+    it('sends the operator to the sign-in screen, carrying no return address', () => {
+      // NO RETURN ADDRESS, DELIBERATELY. The route gates attach one when they INTERRUPT a
+      // navigation; signing out is not an interruption, and restoring an address that named
+      // a record the next operator has no right to know exists would defeat the discard.
+      holdSession();
+      clickSignOut();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
+    });
+
+    it('still reaches the sign-in screen when the revocation request fails', () => {
+      // The session has already been discarded by the time the failure arrives, so leaving
+      // the operator on an administration screen would strand them on a view whose every
+      // request is about to be refused.
+      holdSession();
+      clickSignOut();
+
+      httpMock
+        .expectOne(AUTH_ENDPOINTS.logout)
+        .flush({ title: 'Refused' }, { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+
+      expect(navigate).toHaveBeenCalledOnceWith(['/login']);
+      expect(authStore.isAuthenticated()).toBeFalse();
+    });
+
+    it('issues one revocation only, however many times the gesture arrives in a single tick', () => {
+      // The re-entry guard closes a window the markup cannot: both of the banner's guards
+      // read the flag as it stood at the last change detection, whereas the store sets the
+      // phase synchronously at subscribe time.
+      holdSession();
+
+      const control = host().querySelector<HTMLButtonElement>('button.app-header__logout');
+
+      control?.click();
+      control?.click();
+      fixture.detectChanges();
+
+      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('issues nothing at all when no session is held', () => {
+      // With no session the banner renders no sign-out control, so the gesture cannot even
+      // be made. `httpMock.verify()` in the teardown is what proves nothing was sent.
+      expect(host().querySelector('button.app-header__logout')).toBeNull();
     });
   });
 
@@ -674,8 +862,7 @@ describe('ShellComponent', () => {
       const probeElement = probe.nativeElement as HTMLElement;
       probeElement.querySelector<HTMLElement>('a.shell__skip-link')?.click();
 
-      probe.componentRef.setInput('userName', 'host');
-      probe.componentRef.setInput('signingOut', true);
+      probe.componentRef.setInput('applicationName', 'Administration');
       probe.detectChanges();
 
       expect(logSpy).not.toHaveBeenCalled();

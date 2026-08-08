@@ -122,6 +122,26 @@
 }
 
 // -----------------------------------------------------------------------------
+//  THE PICKER'S SIZE, STATED
+// -----------------------------------------------------------------------------
+//  Standing context about the control above it, not a message and not a
+//  failure, so it takes the muted text colour and the smaller step of the type
+//  scale rather than anything that reads as an alert. Every value is a token;
+//  nothing here is a literal.
+//
+//  Pulled UP against the field it describes by cancelling the form's gap on its
+//  own block-start, which is what visually attaches it to that control instead
+//  of leaving it floating between two fields at the same spacing as a sibling
+//  field. The block-end restores the form's own rhythm below it, because a flex
+//  gap and a margin do not collapse — the same arithmetic the field-margin note
+//  above records.
+.module-import__choice-summary {
+  margin-block: calc(var(--space-1) - var(--space-3)) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// -----------------------------------------------------------------------------
 //  THE COMMAND ROW
 // -----------------------------------------------------------------------------
 //  A real gap rather than spacing characters, so the separation survives the

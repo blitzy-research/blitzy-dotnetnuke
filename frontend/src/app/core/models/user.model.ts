@@ -244,13 +244,18 @@ import {
   decodeBoolean,
   decodeDateString,
   decodeInteger,
+  decodeNumber,
   decodeString,
   nullable,
   objectOf,
+  oneOf,
   type Decoder,
 } from '../utils/decode.util';
 
+import { decodeStoredFrequency } from './role.model';
+
 import type { PagedRequest, PagedResult } from './paged-result.model';
+import type { StoredBillingFrequency } from './role.model';
 
 /**
  * One row of the account listing.
@@ -326,6 +331,27 @@ export interface UserListItem {
 
   /** Whether repeated failures have locked the account out. */
   readonly isLockedOut: boolean;
+
+  /**
+   * Whether the removal operation will accept this account.
+   *
+   * ADVISORY, FOR RENDERING ONLY. The server re-checks on the request itself and refuses
+   * with a `403` regardless of what this flag said, so a client that ignored it would be
+   * safe but would offer commands that cannot succeed. It exists so the affordance can be
+   * withheld rather than offered and then refused.
+   *
+   * False for two accounts. An account that administers the INSTALLATION cannot be removed
+   * through a tenant at all. The account a tenant designates as ITS administrator cannot be
+   * removed either — the tenant would be left with no administrator.
+   *
+   * MIGRATION: the legacy grid decided the same thing in markup, at
+   * `Website/admin/Users/Users.ascx.vb:L691-L692`. The tenant's designated administrator was
+   * hidden on exactly these terms; the installation-wide case is deliberately WIDER here,
+   * because the legacy predicate only hid it when the row also matched the identifier the
+   * container had been handed — which on the listing was the absent marker, so in ordinary
+   * use the command was offered and then refused. This reports what the server will do.
+   */
+  readonly canDelete: boolean;
 }
 
 /**
@@ -671,6 +697,40 @@ export interface MembershipSettings {
 }
 
 /**
+ * What a policy write actually did, beyond storing the values it was given.
+ *
+ * Adopting a new display-name format has a TENANT-WIDE side effect the caller cannot
+ * predict from its own request: every account's stored display name is recomposed from
+ * the new format. The write therefore answers with a body rather than with an empty
+ * `204`, and this is that body.
+ *
+ * MIGRATION: the legacy screen at `Website/admin/Users/UserSettings.ascx.vb:L175-L182`
+ * compared the submitted format against the stored one and, when they differed, spawned
+ * `UserController.UpdateDisplayNames` (`Library/Components/Users/UserController.vb:L1259-L1268`)
+ * on a BACKGROUND THREAD. The operator was told nothing at all — not that a sweep had
+ * started, not how many accounts it touched, and not whether it finished. The sweep is
+ * part of the write now, and this report is what replaces that silence.
+ *
+ * ⚠ THE TWO MEMBERS ARE NOT REDUNDANT. A format left unchanged reports `false` and zero
+ * because no sweep ran; a format that changed on a tenant whose accounts already carried
+ * the resulting names reports `true` and zero because the sweep ran and found nothing to
+ * alter. Collapsing them would make "nothing happened" indistinguishable from "nothing
+ * needed to happen", which is exactly the difference an operator is looking for.
+ */
+export interface MembershipSettingsUpdateResult {
+  /** Whether the submitted display-name format differed from the one already stored. */
+  readonly displayNameFormatChanged: boolean;
+
+  /**
+   * How many accounts had their stored display name rewritten.
+   *
+   * Counts names that CHANGED, not accounts examined — so a tenant whose accounts already
+   * read the way the new format composes them reports zero rather than its whole size.
+   */
+  readonly displayNamesRewritten: number;
+}
+
+/**
  * The fields the account listing may be ordered by.
  *
  * This is the exact set the server validates against, narrowed to a union so that an
@@ -747,6 +807,177 @@ export interface UserListQuery extends PagedRequest {
  * One page of the account listing: the rows plus the envelope carrying the total.
  */
 export type PagedUserList = PagedResult<UserListItem>;
+
+/**
+ * The closed vocabulary of {@link MemberService.subscriptionAction}.
+ *
+ * The three spellings the API publishes, held as an array so that the decoder validates
+ * against the same list the type is derived from. They are also the three resource keys the
+ * legacy screen resolved its link caption from — `Subscribe.Text`, `Unsubscribe.Text` and
+ * `Renew.Text` in `Website/admin/Users/App_LocalResources/MemberServices.ascx.resx` — so the
+ * correspondence between a wire code and the wording a screen renders is checkable rather
+ * than asserted.
+ */
+export const MEMBER_SERVICE_ACTIONS = ['Subscribe', 'Unsubscribe', 'Renew'] as const;
+
+/**
+ * The one subscription command a catalogue row offers.
+ *
+ * MIGRATION: this travels as a CODE where the legacy value was the localised label itself.
+ * `MemberServices.ascx:L34-L35` bound `ServiceText(...)` to BOTH the link's text and its
+ * `CommandName`, and the code-behind then dispatched on that text (`:L439-L452`) — so a
+ * translated installation dispatched on translated words, and adding a language changed which
+ * branch ran. The code is stable and the wording is the client's.
+ */
+export type MemberServiceAction = (typeof MEMBER_SERVICE_ACTIONS)[number];
+
+/**
+ * One row of the account's member-services catalogue: a public role of the tenant, together
+ * with whatever the account already holds against it.
+ *
+ * Replaces the seven-column `grdServices` data grid of `Website/admin/Users/MemberServices.ascx`
+ * (L26-L71). Every presentation decision the legacy markup made through a code-behind helper is
+ * a MEMBER here rather than a rule this client re-derives: the command label came from
+ * `ServiceText`, the two link visibilities from `ShowSubscribe` and `ShowTrial`, and the lapsed
+ * test from `FormatExpiryDate`. The server computes all four, because all four read stored role
+ * terms and stored assignment dates that only the server holds.
+ *
+ * ⚠ THE FEE MEMBERS ARE NULLABLE AND `null` MEANS "NOT RECORDED", NOT "FREE". The legacy
+ * projection could not express the distinction: `GetServices`
+ * (`Website/Providers/DataProviders/SqlDataProvider/04.06.00.SqlDataProvider:L993-L1013`)
+ * selected the fee only when `convert(int, R.ServiceFee) <> 0`, so a fee of `0.50` arrived as
+ * `null` and the grid rendered "Free" for a role the subscribe path still handed to a payment
+ * page. The catalogue publishes the stored value, and a client renders "Free" from
+ * {@link subscriptionRequiresPayment} rather than from the absence of a number.
+ *
+ * ⚠ SENTINEL DISCIPLINE. `roleId` is decoded as a plain integer with no positivity test:
+ * `Roles.RoleID` seeds `IDENTITY(0, 1)`
+ * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L114`), so role
+ * zero is the administrator role of every shipped installation and a truthiness test on this
+ * member would drop it from the catalogue.
+ */
+export interface MemberService {
+  /** The role this row offers. Zero is a real role — see the sentinel note above. */
+  readonly roleId: number;
+
+  /** The role's name, as the legacy `Name` column rendered it. */
+  readonly roleName: string;
+
+  /** The role's description, or `null` when none is recorded. */
+  readonly description: string | null;
+
+  /** The recurring fee, or `null` when none is recorded. Not the same as free. */
+  readonly serviceFee: number | null;
+
+  /** How many {@link billingFrequency} units one billing cycle spans, or `null`. */
+  readonly billingPeriod: number | null;
+
+  /** The billing frequency code, or `null`. One character; `N` means no recurring charge. */
+  readonly billingFrequency: StoredBillingFrequency | null;
+
+  /** The trial fee, or `null` when none is recorded. */
+  readonly trialFee: number | null;
+
+  /** How many {@link trialFrequency} units the trial spans, or `null`. */
+  readonly trialPeriod: number | null;
+
+  /** The trial frequency code, or `null`. `N` means no trial is offered. */
+  readonly trialFrequency: StoredBillingFrequency | null;
+
+  /**
+   * When the account's assignment takes effect, or `null` — either because the account holds
+   * no assignment or because the assignment carries no start date, which is the ordinary case
+   * for one created by a subscription.
+   */
+  readonly effectiveDate: string | null;
+
+  /**
+   * When the account's assignment lapses, or `null` for an assignment with no expiry.
+   *
+   * ⚠ `null` HERE IS "NEVER EXPIRES", AND IS NOT INTERCHANGEABLE WITH AN EXPIRY IN THE PAST.
+   * {@link isExpired} carries the lapsed test, which the server performs against its own clock.
+   */
+  readonly expiryDate: string | null;
+
+  /** Whether the account holds an assignment to this role at all. */
+  readonly isSubscribed: boolean;
+
+  /**
+   * Whether the assignment records the trial as already consumed.
+   *
+   * ⚠ NEVER SET BY THIS APPLICATION. Neither terminal write procedure wrote the column and no
+   * in-scope legacy code assigned it, so it reads as `false` for every assignment this
+   * application creates. It is honoured on the read exactly as `ShowTrial` honoured it, so a
+   * row set out of band still suppresses the trial.
+   */
+  readonly isTrialUsed: boolean;
+
+  /** Whether the account holds this service AND its expiry has already passed. */
+  readonly isExpired: boolean;
+
+  /** The one command this row offers, whether or not {@link subscriptionOffered} allows it. */
+  readonly subscriptionAction: MemberServiceAction;
+
+  /** Whether the subscription command is offered for this row. */
+  readonly subscriptionOffered: boolean;
+
+  /**
+   * Whether completing the subscription command would require taking payment.
+   *
+   * ⚠ WHEN TRUE, BOTH THE SUBSCRIBE AND THE CANCEL COMMAND ARE REFUSED. The legacy screen sent
+   * either one to `~/admin/Sales/PayPalSubscription.aspx` (`MemberServices.ascx.vb:L113` and
+   * `:L115`, the second appending `&cancel=1` to the same address); sales administration is
+   * outside this migration, so the operations refuse rather than pretend. A client must
+   * therefore explain the refusal rather than offering a command that cannot complete.
+   */
+  readonly subscriptionRequiresPayment: boolean;
+
+  /** Whether the trial command is offered for this row. A trial that is offered is performable. */
+  readonly trialOffered: boolean;
+}
+
+/**
+ * A submission of the invitation code the legacy screen called an RSVP code.
+ *
+ * One field, because that is the whole of the legacy affordance: a fifty-character text box and
+ * a subscribe command (`MemberServices.ascx:L14-L15`).
+ */
+export interface RedeemServiceCodeRequest {
+  /**
+   * The code as typed.
+   *
+   * ⚠ SENT UNTRIMMED AND UNFOLDED. The legacy comparison was an ordinary VB string equality
+   * against the stored `RSVPCode` (`MemberServices.ascx.vb:L410`), so leading space and case
+   * both mattered; trimming here would admit codes the legacy application refused and would
+   * make this client's behaviour depend on which screen a code was typed into.
+   */
+  readonly code: string;
+}
+
+/** One role an invitation code admitted the account to. */
+export interface RedeemedService {
+  /** The role joined. Zero is a real role. */
+  readonly roleId: number;
+
+  /** The role's name, for reporting what the code did. */
+  readonly roleName: string;
+}
+
+/**
+ * What an invitation code admitted the account to.
+ *
+ * ⚠ AN EMPTY LIST IS NOT A SUCCESS. A code that matched nothing is refused by the API with a
+ * problem document, because the legacy screen distinguished the two outcomes with two different
+ * messages — `RSVPSuccess.Text` and `RSVPFailure.Text` — and a caller that treated an empty
+ * list as a quiet success would report the failure as a success. The list can hold MORE than
+ * one role, because the legacy walk had no early exit (`MemberServices.ascx.vb:L397-L433`): one
+ * code may be recorded against several roles, and every match subscribed.
+ */
+export interface RedeemServiceCodeResult {
+  /** The roles the code admitted the account to. Never empty on a successful answer. */
+  readonly roles: readonly RedeemedService[];
+}
+
 
 /**
  * The outcome vocabulary of the legacy account-creation routine.
@@ -890,6 +1121,7 @@ export const decodeUserListItem: Decoder<UserListItem> = objectOf<UserListItem>(
   isOnline: decodeBoolean,
   isSuperUser: decodeBoolean,
   isLockedOut: decodeBoolean,
+  canDelete: decodeBoolean,
 });
 
 /**
@@ -966,3 +1198,75 @@ export const decodeMembershipSettings: Decoder<MembershipSettings> =
     securityUsersControl: decodeInteger,
     securityDisplayNameFormat: decodeString,
   });
+
+/**
+ * Decodes the report a policy write answers with.
+ *
+ * Both members are REQUIRED rather than optional. The server always states both, and a
+ * decoder that tolerated their absence would let a stale server — one that still answers
+ * `204` with no body — read as "nothing was rewritten" when what actually happened is that
+ * the client cannot tell. Refusing the shape says so.
+ */
+export const decodeMembershipSettingsUpdateResult: Decoder<MembershipSettingsUpdateResult> =
+  objectOf<MembershipSettingsUpdateResult>({
+    displayNameFormatChanged: decodeBoolean,
+    displayNamesRewritten: decodeInteger,
+  });
+
+/**
+ * Decodes one row of the account's member-services catalogue.
+ *
+ * The nine role-term members are nullable and the six flags are not, and the split is the
+ * contract's own: a role may record no fee, no period and no frequency, but the server always
+ * decides each of the four presentation questions and always names one command.
+ *
+ * `roleName` is a plain string and `description` is nullable, matching the columns —
+ * `Roles.RoleName` is `NOT NULL` while `Description` is not.
+ *
+ * ⚠ `subscriptionAction` IS VALIDATED AGAINST THE CLOSED THREE-MEMBER VOCABULARY, unlike the
+ * frequency codes beside it, which are validated for shape only. The difference is deliberate
+ * and follows what each side publishes: the API pins the command vocabulary in a constants class
+ * of exactly three, whereas a frequency code is `char(1)` data whose fourth value a later
+ * release may add. A command this client does not understand has no wording and no handler, so
+ * refusing it as drift is more honest than rendering a blank link.
+ */
+export const decodeMemberService: Decoder<MemberService> = objectOf<MemberService>({
+  roleId: decodeInteger,
+  roleName: decodeString,
+  description: nullable(decodeString),
+  serviceFee: nullable(decodeNumber),
+  billingPeriod: nullable(decodeInteger),
+  billingFrequency: nullable(decodeStoredFrequency),
+  trialFee: nullable(decodeNumber),
+  trialPeriod: nullable(decodeInteger),
+  trialFrequency: nullable(decodeStoredFrequency),
+  effectiveDate: nullable(decodeDateString),
+  expiryDate: nullable(decodeDateString),
+  isSubscribed: decodeBoolean,
+  isTrialUsed: decodeBoolean,
+  isExpired: decodeBoolean,
+  subscriptionAction: oneOf(MEMBER_SERVICE_ACTIONS),
+  subscriptionOffered: decodeBoolean,
+  subscriptionRequiresPayment: decodeBoolean,
+  trialOffered: decodeBoolean,
+});
+
+/** Decodes one role an invitation code admitted the account to. */
+export const decodeRedeemedService: Decoder<RedeemedService> = objectOf<RedeemedService>({
+  roleId: decodeInteger,
+  roleName: decodeString,
+});
+
+/**
+ * Decodes what an invitation code admitted the account to.
+ *
+ * `roles` is required and is decoded as an array. It is never empty on a successful answer — a
+ * code that matched nothing is a refusal, not an empty success — but no emptiness test is
+ * applied here, because a decoder's job is the shape and inventing a shape rule the server does
+ * not publish would refuse a conforming body.
+ */
+export const decodeRedeemServiceCodeResult: Decoder<RedeemServiceCodeResult> =
+  objectOf<RedeemServiceCodeResult>({
+    roles: arrayOf(decodeRedeemedService),
+  });
+

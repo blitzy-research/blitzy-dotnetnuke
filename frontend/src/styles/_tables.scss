@@ -151,6 +151,16 @@ tbody > tr[aria-selected='true'] {
 // Matching the bare attribute rather than one of its values covers a row that is
 // selectable but not currently selected, which is the ordinary case. The pointer
 // is the affordance for a mouse and the ring for a keyboard.
+//
+// ⚠⚠ THE ATTRIBUTE'S PRESENCE IS THE SELECTABILITY CONTRACT, and this rule is why that
+// contract has teeth. The shared table component emits `aria-selected` only when a
+// consumer binds its row-selection output — six of the seven grids in this application
+// bind nothing — so a row in a non-selecting grid matches neither this rule nor the tint
+// above. Before that condition existed, every row in every grid carried the attribute and
+// therefore carried a pointer cursor and a focus ring, promising an action that did not
+// happen. Do not loosen this selector to `tbody > tr`: the attribute is what ties the
+// visible affordance to the announced one, and a class or an element selector would let
+// the two drift apart again.
 tbody > tr[aria-selected] {
   cursor: pointer;
 

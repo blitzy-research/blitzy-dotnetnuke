@@ -1047,11 +1047,13 @@ describe('errorInterceptor', () => {
   // in-scope administration pages matches nothing at all, so the limiter itself is
   // net-new.
   //
-  // The compensating control is the API's ADDRESS-PARTITIONED limiter applied ONLY to
-  // the credential endpoints - a named policy attached to that controller, admitting a
-  // fixed permit count per window and refusing with this status. There is deliberately
-  // no global limiter and no default policy, which is why the health endpoint the
-  // container health check probes is never throttled.
+  // The compensating control is the API's ADDRESS-PARTITIONED credential window, applied
+  // by a GLOBAL limiter that classifies each request from endpoint metadata - the
+  // `[CredentialEndpoint]` marker on the action - falling back to a whole credential path
+  // segment on a body-carrying method. It admits a fixed permit count per window and
+  // refuses beyond it with this status. The health endpoint the container health check
+  // probes is never throttled because a GET carries no marker and the fall-back matcher
+  // considers only POST, PUT and PATCH, so it resolves to the shared no-limit partition.
 
   describe('a rate-limit refusal', () => {
     it('is announced calmly, because nothing failed and the caller is simply early', async () => {

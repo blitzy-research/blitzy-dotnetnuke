@@ -5,7 +5,7 @@
  *
  * ## Why this file exists at all
  *
- * The transport beside it is deliberately dull — nineteen methods, one endpoint each,
+ * The transport beside it is deliberately dull — twenty-four methods, one endpoint each,
  * every one returning a stream that it never subscribes to. That leaves exactly one
  * thing unowned, and this file owns it: COMPOSITION. Sequencing two calls so that the
  * second can use what the first returned, holding what came back, recording what
@@ -136,7 +136,7 @@
  */
 
 import { Injectable, type OnDestroy, computed, inject, signal } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { Subscription, catchError, concatMap, finalize, from, of, tap, type Observable } from 'rxjs';
 
 import {
   DEFAULT_PAGE_SIZE,
@@ -165,7 +165,10 @@ import type {
 import type {
   ChangePasswordRequest,
   CreateUserRequest,
+  MemberService,
   MembershipSettings,
+  MembershipSettingsUpdateResult,
+  RedeemServiceCodeResult,
   UpdateUserRequest,
   UserDetail,
   UserListItem,
@@ -181,8 +184,53 @@ import {
 
 
 // ---------------------------------------------------------------------------
+// THE TENANT'S OPENING-VIEW POLICY
+// ---------------------------------------------------------------------------
+//
+// The three values `Display_Mode` may hold, named rather than left as integers at the one
+// place that branches on them. They are the members of the legacy `DisplayMode` enumeration
+// in their declared order, and the server publishes the setting as a plain integer because
+// it publishes no closed code table for it - so the names live on the side that interprets
+// the value.
+
+/** `DisplayMode.All`: open on every account, paged and unfiltered. */
+const DISPLAY_MODE_ALL = 0;
+
+/** `DisplayMode.FirstLetter`: open on the first letter of the alphabet strip. */
+const DISPLAY_MODE_FIRST_LETTER = 1;
+
+/**
+ * `DisplayMode.None`: open with no query at all.
+ *
+ * The default the legacy applied when the setting was absent
+ * (`Library/Components/Users/UserModuleBase.vb` L126-L130), and the server reproduces that
+ * default - so this is the mode a tenant that has configured nothing is published as having.
+ */
+const DISPLAY_MODE_NONE = 2;
+
+/**
+ * The letter the first-letter mode opens on.
+ *
+ * `Website/admin/Users/Users.ascx.vb` L502 took `Localization.GetString("Filter.Text")` and
+ * kept its FIRST CHARACTER; the resource value in
+ * `Website/admin/Users/App_LocalResources/Users.ascx.resx` is `"A,B,C,D,…,Z"`, so the
+ * character is `A`. Held here rather than derived from a strip this store does not own, and
+ * cited so the provenance is checkable.
+ */
+const OPENING_LETTER = 'A';
+
+// ---------------------------------------------------------------------------
 // THE SEARCH AXIS, AS A TYPED DISCRIMINATOR
 // ---------------------------------------------------------------------------
+
+/**
+ * The letter a `FirstLetter` tenant's listing opens on.
+ *
+ * `A`, matching the legacy screen, which opened its alphabet strip on the first letter rather
+ * than on a remembered one. Upper case because that is what the strip renders and what the
+ * server's prefix comparison is insensitive to.
+ */
+const FIRST_LETTER_SEARCH_TEXT = 'A';
 
 /**
  * Which search the account listing is currently applying.
@@ -309,7 +357,31 @@ export type UserOperation =
   | 'loadProfileDefinition'
   | 'createProfileDefinition'
   | 'updateProfileDefinition'
-  | 'deleteProfileDefinition';
+  | 'applyProfileDefinitionEdits'
+  | 'deleteProfileDefinition'
+  | 'loadMemberServices'
+  | 'subscribeToService'
+  | 'cancelService'
+  | 'startServiceTrial'
+  | 'redeemServiceCode';
+
+/**
+ * One staged replacement in a profile-declaration batch.
+ *
+ * The pairing of an identifier with the members to write, because the endpoint addresses the
+ * declaration in its path and carries the members in its body. Position is one of those
+ * members, which is why re-ordering a set of declarations is expressed as a batch of
+ * replacements rather than as a move command: `Website/admin/Users/ProfileDefinitions.ascx.vb`
+ * L176-L193 swapped two positions and L326 renumbered a whole set, and both are the same write
+ * seen from different distances.
+ */
+export interface ProfileDefinitionEdit {
+  /** The declaration to replace. Passed on exactly as supplied. */
+  readonly propertyDefinitionId: number;
+
+  /** The members to write, position included. */
+  readonly request: UpdateProfilePropertyDefinitionRequest;
+}
 
 /**
  * A failure, as this store records it.
@@ -326,6 +398,24 @@ export type UserOperation =
  * decoded before showing it. Nothing here is ever handed to a template as trusted
  * markup, and no sanitiser is involved, because nothing is treated as markup at all.
  */
+/**
+ * One row of a profile-declaration batch that the server refused, with the row it belongs to.
+ *
+ * ⚠ WHY A LIST AND NOT JUST THE SETTLED OUTCOME. The batch is ONE store command with ONE settled
+ * result, which is what stops a screen mistaking a sibling's outcome for its own — but a batch can
+ * refuse SEVERAL rows, and an operator told only "something was refused" cannot tell which of five
+ * declarations to correct. The rows are independent and the batch is not a transaction, so each
+ * refusal is a fact of its own and is kept as one. The screen names the property and announces one
+ * sentence per entry.
+ */
+export interface ProfileDefinitionBatchRefusal {
+  /** The declaration whose write was refused. */
+  readonly propertyDefinitionId: number;
+
+  /** The refusal, described but never published into the store's one shared failure slot. */
+  readonly failure: UserFailure;
+}
+
 export interface UserFailure {
   /** The command that failed. */
   readonly operation: UserOperation;
@@ -378,6 +468,60 @@ export interface UserFailure {
    * status and a code string, and that is what this member holds.
    */
   readonly code: string | null;
+}
+
+/**
+ * One settled write, identified.
+ *
+ * ## The defect this closes
+ *
+ * This store used to publish ONE boolean for "a write is in flight" and ONE failure slot, and it is
+ * provided at the application root. Every screen that dispatched a write therefore watched the same
+ * boolean fall and then read the same slot to learn its own outcome. Three distinct wrong answers
+ * follow from that, and not one of them is visible from inside a single screen:
+ *
+ * - TWO WRITES, ONE FLAG. The account list dispatches a removal; a settings pane dispatches a save;
+ *   the save settles first. The flag falls, and BOTH screens conclude their own write is done. The
+ *   list clears the marker naming the row it was deleting, so the refusal that arrives afterwards has
+ *   nothing left to attribute itself to and the row silently stays.
+ * - SOMEBODY ELSE'S FAILURE. One write succeeds and another is refused. The successful one reads the
+ *   shared slot, finds the other's refusal in it, and reports the refusal as its own outcome — so an
+ *   operator is told the thing that worked did not.
+ * - A REFUSAL SEEN AS A SUCCESS. Every dispatch clears the slot, so a refusal recorded by one write is
+ *   erased by the next command anything issues. Whether a screen sees its own refusal at all depends
+ *   on what else the application happened to do next, which is not a property of the write.
+ *
+ * The profile-declaration screen made the first of those routine rather than occasional: it launches a
+ * BATCH of parallel writes, all against the one flag and the one slot.
+ *
+ * ## The correction
+ *
+ * Every write command returns the identifier it was issued, and the settled outcome is published under
+ * that identifier carrying THAT WRITE'S OWN failure. A caller keeps the identifier it was handed and
+ * acts only when the published result names it. The aggregate remains, because "is the store busy" is
+ * a real question, but it can no longer be mistaken for "did my write finish": it is a count, so it
+ * stays raised while anything is open.
+ */
+export interface UserMutation {
+  /**
+   * The identifier the store issued when this write was dispatched.
+   *
+   * Never zero. The counter pre-increments so that a caller may use zero to mean "no write of mine is
+   * outstanding" without colliding with a real write.
+   */
+  readonly id: number;
+
+  /** Which command settled. */
+  readonly operation: UserOperation;
+
+  /**
+   * This write's own failure, or null when it succeeded.
+   *
+   * ⚠ READ THIS, NOT {@link UserStore.failure}, TO SETTLE A WRITE. This member is captured by the
+   * write it belongs to and cannot be affected by anything another screen does. The shared slot is one
+   * slot for the whole store and is cleared at every dispatch.
+   */
+  readonly failure: UserFailure | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -784,14 +928,101 @@ export class UserStore implements OnDestroy {
   /** The selected profile declaration in full, or null when none has been read. */
   private readonly _selectedProfileDefinition = signal<ProfilePropertyDefinition | null>(null);
 
+  /**
+   * The services offered to the account named by {@link _memberServicesAccountId}, with
+   * whatever that account already holds against each of them.
+   *
+   * Replaces the `grdServices` grid of `Website/admin/Users/MemberServices.ascx`. Held as
+   * one array rather than as two - offered and held - because the legacy grid was one grid:
+   * a row carried both the service's terms and the account's assignment to it, and splitting
+   * them here would need a join to render a row.
+   */
+  private readonly _memberServices = signal<readonly MemberService[]>([]);
+
+  /**
+   * The account the catalogue in hand belongs to, or `undefined` before one has been read.
+   *
+   * ⚠ HELD SO THAT A CATALOGUE CANNOT BE SHOWN AGAINST THE WRONG ACCOUNT. Every one of these
+   * five endpoints is gated on account ownership, so a catalogue read for one account is
+   * meaningless for another; publishing the account alongside the rows lets a screen assert
+   * that what it is rendering is what it asked for. `undefined` and never a numeric marker,
+   * because zero and minus one are both real identifiers in this schema.
+   */
+  private readonly _memberServicesAccountId = signal<number | undefined>(undefined);
+
+  /**
+   * What the last invitation code admitted the account to, or `null` when none has been
+   * redeemed since the slice was last cleared.
+   *
+   * Retained because the legacy screen reported the outcome in words - `RSVPSuccess.Text`
+   * against `RSVPFailure.Text` - and the successful half of that report is a LIST: one code
+   * may join several roles, since the legacy walk had no early exit
+   * (`MemberServices.ascx.vb:L397-L433`). A screen that only re-read the catalogue could say
+   * that something changed but not what.
+   */
+  private readonly _lastRedemption = signal<RedeemServiceCodeResult | null>(null);
+
+  /**
+   * What the last account-policy write did beyond storing the values it was given, or `null`
+   * when none has been written since the slice was last cleared.
+   *
+   * ⚠ RETAINED BECAUSE THE WRITE HAS AN EFFECT THE CALLER CANNOT PREDICT. Adopting a new
+   * display-name format recomposes every account's stored display name in the tenant, so the
+   * operator who saved the settings screen needs to be told that it happened and to how many
+   * accounts. The legacy screen ran that sweep on a background thread
+   * (`Website/admin/Users/UserSettings.ascx.vb:L175-L182` ->
+   * `Library/Components/Users/UserController.vb:L1259-L1268`) and reported nothing at all.
+   */
+  private readonly _lastSettingsWrite = signal<MembershipSettingsUpdateResult | null>(null);
+
   private readonly _usersLoading = signal<boolean>(false);
   private readonly _selectedUserLoading = signal<boolean>(false);
   private readonly _profileLoading = signal<boolean>(false);
   private readonly _membershipSettingsLoading = signal<boolean>(false);
   private readonly _profileDefinitionsLoading = signal<boolean>(false);
+  private readonly _memberServicesLoading = signal<boolean>(false);
 
-  /** Whether a write is in flight. Distinct from a read, so a form can disable itself. */
-  private readonly _saving = signal<boolean>(false);
+  /**
+   * How many writes are in flight.
+   *
+   * A COUNT AND NOT A FLAG, because this store is provided at the application root and several
+   * screens write through it at once. See {@link UserMutation} for the three wrong answers the flag
+   * gave; the short version is that a boolean cannot say WHICH write settled, so the first write to
+   * finish reported every open write as finished.
+   */
+  private readonly _pendingWrites = signal<number>(0);
+
+  /**
+   * The most recently settled write, identified, or null when none has settled since the last reset.
+   */
+  private readonly _mutation = signal<UserMutation | null>(null);
+
+  /**
+   * The identifier last issued to a write.
+   *
+   * Pre-incremented, so the first identifier ever issued is 1 and zero is free for a caller to use
+   * as "no write of mine is outstanding" without colliding with a real one.
+   */
+  private nextMutationId = 0;
+
+  /**
+   * How many staged replacements of the current declaration batch have still to be written.
+   *
+   * ⚠ A COUNT RATHER THAN A FLAG, and the count is what makes the batch's progress observable and
+   * its overlap impossible. A single boolean cannot say how much of a batch is left, and the
+   * defect this replaces was exactly that: one write per row, each lowering the shared saving flag
+   * as it landed, so the flag fell on the FIRST completion while the rest were still in flight and
+   * a second batch could be started on top of the first.
+   *
+   * Zero means no batch is running. It is never negative, because it is set from the size of the
+   * batch and decremented once per settled row.
+   */
+  private readonly _profileDefinitionBatchRemaining = signal<number>(0);
+
+  /** Backing state for {@link UserStore.profileDefinitionBatchRefusals}. */
+  private readonly _profileDefinitionBatchRefusals = signal<readonly ProfileDefinitionBatchRefusal[]>(
+    [],
+  );
 
   /** The most recent failure, or null when nothing has failed since it was last cleared. */
   private readonly _failure = signal<UserFailure | null>(null);
@@ -811,6 +1042,7 @@ export class UserStore implements OnDestroy {
   private settingsRequest: Subscription | null = null;
   private definitionsRequest: Subscription | null = null;
   private definitionRequest: Subscription | null = null;
+  private memberServicesRequest: Subscription | null = null;
 
   /*
    * Every WRITE still outstanding. A write is never superseded by a later one: abandoning a
@@ -868,6 +1100,18 @@ export class UserStore implements OnDestroy {
   /** The selected profile declaration in full, or null when none has been read. */
   readonly selectedProfileDefinition = this._selectedProfileDefinition.asReadonly();
 
+  /** The services offered to {@link memberServicesAccountId}, with what that account holds. */
+  readonly memberServices = this._memberServices.asReadonly();
+
+  /** The account the catalogue in hand belongs to. `undefined` before one has been read. */
+  readonly memberServicesAccountId = this._memberServicesAccountId.asReadonly();
+
+  /** What the last invitation code admitted the account to, or `null`. */
+  readonly lastRedemption = this._lastRedemption.asReadonly();
+
+  /** What the last account-policy write did beyond storing its values, or `null`. */
+  readonly lastSettingsWrite = this._lastSettingsWrite.asReadonly();
+
   /** Whether the listing is being read. */
   readonly usersLoading = this._usersLoading.asReadonly();
 
@@ -883,8 +1127,62 @@ export class UserStore implements OnDestroy {
   /** Whether the profile declarations are being read. */
   readonly profileDefinitionsLoading = this._profileDefinitionsLoading.asReadonly();
 
-  /** Whether a write is in flight. */
-  readonly saving = this._saving.asReadonly();
+  /** Whether the member-services catalogue is being read. */
+  readonly memberServicesLoading = this._memberServicesLoading.asReadonly();
+
+  /**
+   * Whether ANY write is in flight.
+   *
+   * ⚠ AN AGGREGATE, AND IT MUST NOT BE USED TO SETTLE A PARTICULAR WRITE. It answers "is this store
+   * busy writing", which is the right question for a global busy indicator and the wrong question for
+   * "has my write finished" — several screens write through this store at once, so it falls when the
+   * FIRST of them settles. A caller waiting on its own write holds the identifier that command
+   * returned and watches {@link UserStore.mutation}.
+   */
+  readonly saving = computed<boolean>(() => this._pendingWrites() > 0);
+
+  /**
+   * The most recently settled write: its identifier, its operation and its own outcome.
+   *
+   * The only correct way to settle a write. A caller compares the identifier against the one the
+   * command handed it, and reads the failure from HERE rather than from {@link UserStore.failure} —
+   * see {@link UserMutation}.
+   */
+  readonly mutation = this._mutation.asReadonly();
+
+  /**
+   * HOW MANY writes are in flight, not merely whether one is.
+   *
+   * A view over the same counter {@link UserStore.saving} reduces to a boolean. Exposed because the
+   * count itself is the evidence that a shared flag was the wrong shape here, and the screen that
+   * proves it is the profile declaration list: this store is provided at the root and every one of
+   * its writes reports through one slice, so a boolean answers "is anybody writing", which is
+   * indistinguishable from "is MY write finished" only while at most one write can be outstanding.
+   * With a flag the FIRST write to answer set it false and every flag-watching flow concluded its
+   * own write had finished, while the rest were still on the wire.
+   *
+   * A caller settling its OWN write still watches {@link UserStore.mutation} and compares the
+   * identifier its command returned; this member is for asserting and displaying the aggregate.
+   */
+  readonly writesInFlight = this._pendingWrites.asReadonly();
+
+  /**
+   * How many staged replacements of the current declaration batch remain unwritten.
+   *
+   * Zero when no batch is running, so a screen can both report progress and refuse to start a
+   * second batch. See {@link UserStore.applyProfileDefinitionEdits}.
+   */
+  readonly profileDefinitionBatchRemaining = this._profileDefinitionBatchRemaining.asReadonly();
+
+  /**
+   * Every row of the most recent profile-declaration batch that the server refused, in the order the
+   * refusals arrived.
+   *
+   * Emptied when a batch is dispatched, so it always describes the latest one and never accumulates
+   * across attempts. A batch that was wholly accepted leaves it empty, which is what lets a screen
+   * announce nothing on a clean run.
+   */
+  readonly profileDefinitionBatchRefusals = this._profileDefinitionBatchRefusals.asReadonly();
 
   /** The most recent failure, or null when nothing has failed. */
   readonly failure = this._failure.asReadonly();
@@ -984,6 +1282,24 @@ export class UserStore implements OnDestroy {
    */
   readonly isEmptyResult = computed<boolean>(() => this._users().meta.totalCount === 0);
 
+  /**
+   * Whether the listing has been asked for NOTHING, as distinct from having asked and matched
+   * nothing.
+   *
+   * The two look identical on screen and mean opposite things: an empty match set says the tenant
+   * has no account answering the query, while this says no query was ever issued and the tenant's
+   * accounts are simply unrequested. A screen that showed the same "nothing found" wording for
+   * both would state a falsehood in the second case, and the operator would act on it.
+   *
+   * MIGRATION: this is the state `Website/admin/Users/Users.ascx.vb` L266 left its grid in - every
+   * branch of `BindData` excluded the bare marker `"None"`, so `grdUsers.DataSource` was assigned
+   * `Nothing` and the grid rendered unbound with no message of any kind. It is reachable two ways:
+   * a tenant whose `Display_Mode` selects it, which is also the default the legacy applied to an
+   * absent setting (`Library/Components/Users/UserModuleBase.vb` L126-L130), and a caller that has
+   * {@link reset} the store.
+   */
+  readonly noQueryIssued = computed<boolean>(() => this._search().mode === 'none');
+
   /** Whether the requested page lies beyond a match set that is not itself empty. */
   readonly isPastEnd = computed<boolean>(() => {
     const page = this._users();
@@ -1040,6 +1356,35 @@ export class UserStore implements OnDestroy {
   /** Whether the tenant has declared any profile property. */
   readonly hasProfileDefinitions = computed<boolean>(
     () => this._profileDefinitions().length > 0,
+  );
+
+  /**
+   * Whether the account is offered any service at all.
+   *
+   * A tenant that publishes no public role offers nothing, which is an ordinary state and not
+   * a failure - the legacy screen simply rendered an empty grid for it.
+   */
+  readonly hasMemberServices = computed<boolean>(() => this._memberServices().length > 0);
+
+  /**
+   * The services the account currently holds, lapsed ones included.
+   *
+   * Derived rather than read separately, because the catalogue already carries the assignment
+   * state per row and a second request would be a second opinion about it.
+   */
+  readonly heldMemberServices = computed<readonly MemberService[]>(() =>
+    this._memberServices().filter((offer: MemberService) => offer.isSubscribed),
+  );
+
+  /**
+   * The services the account holds whose subscription has lapsed.
+   *
+   * The set the legacy screen labelled `Renew` rather than `Unsubscribe`
+   * (`MemberServices.ascx.vb:L288-L305`). The lapsed test is the SERVER'S - each row carries
+   * it decided - so nothing here compares a date against the browser's clock.
+   */
+  readonly lapsedMemberServices = computed<readonly MemberService[]>(() =>
+    this._memberServices().filter((offer: MemberService) => offer.isExpired),
   );
 
   /**
@@ -1115,7 +1460,8 @@ export class UserStore implements OnDestroy {
       this._profileLoading() ||
       this._membershipSettingsLoading() ||
       this._profileDefinitionsLoading() ||
-      this._saving(),
+      this._memberServicesLoading() ||
+      this.saving(),
   );
 
   /**
@@ -1443,25 +1789,27 @@ export class UserStore implements OnDestroy {
    *
    * @param request The account to create.
    */
-  createUser(request: CreateUserRequest): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  createUser(request: CreateUserRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.create(request).subscribe({
-        next: (created: UserDetail) => {
-          this._saving.set(false);
-          this._selectedUserId.set(created.userId);
-          this._selectedUser.set(created);
-          this._profile.set(null);
-          this.dispatchUsers();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('createUser', cause);
-        },
-      }),
+      this.transport.create(request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'createUser', failure)))
+        .subscribe({
+          next: (created: UserDetail) => {
+            this._selectedUserId.set(created.userId);
+            this._selectedUser.set(created);
+            this._profile.set(null);
+            this.dispatchUsers();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('createUser', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1487,27 +1835,28 @@ export class UserStore implements OnDestroy {
    * @param userId The account to update. Passed on exactly as supplied.
    * @param request The members to write.
    */
-  updateUser(userId: number, request: UpdateUserRequest): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  updateUser(userId: number, request: UpdateUserRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.update(userId, request).subscribe({
-        next: (written: UserDetail) => {
-          this._saving.set(false);
+      this.transport.update(userId, request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'updateUser', failure)))
+        .subscribe({
+          next: (written: UserDetail) => {
+            if (this._selectedUserId() === userId) {
+              this._selectedUser.set(written);
+            }
 
-          if (this._selectedUserId() === userId) {
-            this._selectedUser.set(written);
-          }
-
-          this.dispatchUsers();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('updateUser', cause);
-        },
-      }),
+            this.dispatchUsers();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('updateUser', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1527,27 +1876,28 @@ export class UserStore implements OnDestroy {
    *
    * @param userId The account to remove. Passed on exactly as supplied.
    */
-  deleteUser(userId: number): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  deleteUser(userId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.delete(userId).subscribe({
-        next: () => {
-          this._saving.set(false);
+      this.transport.delete(userId)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'deleteUser', failure)))
+        .subscribe({
+          next: () => {
+            if (this._selectedUserId() === userId) {
+              this.clearSelectedUser();
+            }
 
-          if (this._selectedUserId() === userId) {
-            this.clearSelectedUser();
-          }
-
-          this.dispatchUsers();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('deleteUser', cause);
-        },
-      }),
+            this.dispatchUsers();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('deleteUser', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -1580,22 +1930,24 @@ export class UserStore implements OnDestroy {
    * @param userId The account whose profile to write. Passed on exactly as supplied.
    * @param submission The values to write, each with the visibility to apply.
    */
-  saveProfile(userId: number, submission: UserProfileSubmission): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  saveProfile(userId: number, submission: UserProfileSubmission): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.updateProfile(userId, submission).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.dispatchProfile(userId);
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('saveProfile', cause);
-        },
-      }),
+      this.transport.updateProfile(userId, submission)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'saveProfile', failure)))
+        .subscribe({
+          next: () => {
+            this.dispatchProfile(userId);
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('saveProfile', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -1632,22 +1984,24 @@ export class UserStore implements OnDestroy {
    * @param userId The account whose credential to change. Passed on exactly as supplied.
    * @param request The credential in force and its replacement.
    */
-  changePassword(userId: number, request: ChangePasswordRequest): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  changePassword(userId: number, request: ChangePasswordRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.changePassword(userId, request).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.reconcileSelectedAccount(userId);
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('changePassword', cause);
-        },
-      }),
+      this.transport.changePassword(userId, request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'changePassword', failure)))
+        .subscribe({
+          next: () => {
+            this.reconcileSelectedAccount(userId);
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('changePassword', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1666,22 +2020,24 @@ export class UserStore implements OnDestroy {
    * @param userId The account whose credential to reset. Passed on exactly as supplied.
    * @param request The replacement credential.
    */
-  resetPassword(userId: number, request: ChangePasswordRequest): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  resetPassword(userId: number, request: ChangePasswordRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.passwordReset(userId, request).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.reconcileSelectedAccount(userId);
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('resetPassword', cause);
-        },
-      }),
+      this.transport.passwordReset(userId, request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'resetPassword', failure)))
+        .subscribe({
+          next: () => {
+            this.reconcileSelectedAccount(userId);
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('resetPassword', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -1702,23 +2058,25 @@ export class UserStore implements OnDestroy {
    * @param isApproved The state to set. Transmitted either way; false is DATA here, not
    * an absence.
    */
-  setApproval(userId: number, isApproved: boolean): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  setApproval(userId: number, isApproved: boolean): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.setApproval(userId, isApproved).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.reconcileSelectedAccount(userId);
-          this.dispatchUsers();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('setApproval', cause);
-        },
-      }),
+      this.transport.setApproval(userId, isApproved)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'setApproval', failure)))
+        .subscribe({
+          next: () => {
+            this.reconcileSelectedAccount(userId);
+            this.dispatchUsers();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('setApproval', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1729,23 +2087,25 @@ export class UserStore implements OnDestroy {
    *
    * @param userId The account to release. Passed on exactly as supplied.
    */
-  unlockUser(userId: number): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  unlockUser(userId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.unlock(userId).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.reconcileSelectedAccount(userId);
-          this.dispatchUsers();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('unlockUser', cause);
-        },
-      }),
+      this.transport.unlock(userId)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'unlockUser', failure)))
+        .subscribe({
+          next: () => {
+            this.reconcileSelectedAccount(userId);
+            this.dispatchUsers();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('unlockUser', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1769,22 +2129,24 @@ export class UserStore implements OnDestroy {
    *
    * @param userId The account to oblige. Passed on exactly as supplied.
    */
-  requirePasswordChange(userId: number): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  requirePasswordChange(userId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.requirePasswordChange(userId).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.reconcileSelectedAccount(userId);
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('requirePasswordChange', cause);
-        },
-      }),
+      this.transport.requirePasswordChange(userId)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'requirePasswordChange', failure)))
+        .subscribe({
+          next: () => {
+            this.reconcileSelectedAccount(userId);
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('requirePasswordChange', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   // -------------------------------------------------------------------------
@@ -1808,10 +2170,23 @@ export class UserStore implements OnDestroy {
   /**
    * Writes the tenant's account policy.
    *
-   * The response carries no body, so the policy is re-read afterwards. The listing is
-   * re-read as well, because the policy declares the size of a page and the listing in
-   * hand was fetched at the previous size — leaving it alone would show a page whose size
-   * contradicts the setting that was just saved.
+   * The policy is re-read afterwards rather than assembled from the request, because the
+   * server normalises several members on the way in. The listing is re-read as well, because
+   * the policy declares the size of a page and the listing in hand was fetched at the previous
+   * size — leaving it alone would show a page whose size contradicts the setting that was just
+   * saved.
+   *
+   * ⚠ THE RESPONSE CARRIES A REPORT, AND IT IS KEPT. Adopting a new display-name format
+   * rewrites every account's stored display name in the tenant, which the caller cannot infer
+   * from its own request; {@link lastSettingsWrite} is how a screen tells the operator what
+   * happened. The report is retained even when it says nothing was rewritten, because "the
+   * sweep ran and changed nothing" and "no sweep ran" are different answers and the operator
+   * is looking for the difference.
+   *
+   * The re-read is dispatched BEFORE the report is published, for the same reason the
+   * redemption command does it in that order: a re-read clears state that belongs to a
+   * previous answer, and publishing first would let it discard the report it was meant to
+   * accompany.
    *
    * MIGRATION: the credential policy is NOT part of this contract. Minimum length, the
    * non-alphanumeric requirement and the address-uniqueness rule are server-side options
@@ -1820,22 +2195,37 @@ export class UserStore implements OnDestroy {
    *
    * @param request The policy to write.
    */
-  saveMembershipSettings(request: MembershipSettings): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  saveMembershipSettings(request: MembershipSettings): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
+    this._lastSettingsWrite.set(null);
 
     this.track(
-      this.transport.updateMembershipSettings(request).subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.dispatchSettings(true);
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('saveMembershipSettings', cause);
-        },
-      }),
+      this.transport
+        .updateMembershipSettings(request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'saveMembershipSettings', failure)))
+        .subscribe({
+          next: (report: MembershipSettingsUpdateResult) => {
+            this.dispatchSettings(true);
+            this._lastSettingsWrite.set(report);
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('saveMembershipSettings', cause);
+          },
+        }),
     );
+
+    return mutationId;
+  }
+
+  /**
+   * Discards the report of the last account-policy write.
+   *
+   * Exists so a screen can dismiss the notice it raised without re-reading anything. Separate
+   * from {@link reset} because dismissing a notice is not abandoning the screen.
+   */
+  clearSettingsWriteReport(): void {
+    this._lastSettingsWrite.set(null);
   }
 
   // -------------------------------------------------------------------------
@@ -1902,24 +2292,26 @@ export class UserStore implements OnDestroy {
    *
    * @param request The declaration to create, position included.
    */
-  createProfileDefinition(request: CreateProfilePropertyDefinitionRequest): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  createProfileDefinition(request: CreateProfilePropertyDefinitionRequest): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.createProfileDefinition(request).subscribe({
-        next: (created: ProfilePropertyDefinition) => {
-          this._saving.set(false);
-          this._selectedPropertyDefinitionId.set(created.propertyDefinitionId);
-          this._selectedProfileDefinition.set(created);
-          this.dispatchDefinitions();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('createProfileDefinition', cause);
-        },
-      }),
+      this.transport.createProfileDefinition(request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'createProfileDefinition', failure)))
+        .subscribe({
+          next: (created: ProfilePropertyDefinition) => {
+            this._selectedPropertyDefinitionId.set(created.propertyDefinitionId);
+            this._selectedProfileDefinition.set(created);
+            this.dispatchDefinitions();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('createProfileDefinition', cause);
+          },
+        }),
     );
+
+    return mutationId;
   }
 
   /**
@@ -1943,27 +2335,170 @@ export class UserStore implements OnDestroy {
   updateProfileDefinition(
     propertyDefinitionId: number,
     request: UpdateProfilePropertyDefinitionRequest,
-  ): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  ): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.updateProfileDefinition(propertyDefinitionId, request).subscribe({
-        next: (written: ProfilePropertyDefinition) => {
-          this._saving.set(false);
+      this.transport.updateProfileDefinition(propertyDefinitionId, request)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'updateProfileDefinition', failure)))
+        .subscribe({
+          next: (written: ProfilePropertyDefinition) => {
+            if (this._selectedPropertyDefinitionId() === propertyDefinitionId) {
+              this._selectedProfileDefinition.set(written);
+            }
 
-          if (this._selectedPropertyDefinitionId() === propertyDefinitionId) {
-            this._selectedProfileDefinition.set(written);
-          }
-
-          this.dispatchDefinitions();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('updateProfileDefinition', cause);
-        },
-      }),
+            this.dispatchDefinitions();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('updateProfileDefinition', cause);
+          },
+        }),
     );
+
+    return mutationId;
+  }
+
+  /**
+   * Writes a batch of staged declaration replacements, ONE AT A TIME, then re-reads the
+   * catalogue ONCE.
+   *
+   * Legacy: `Website/admin/Users/ProfileDefinitions.ascx.vb` L446-L448 — the Apply handler called
+   * `UpdateProperties()` and then `RefreshGrid()`. `UpdateProperties` (L291-L298) walked the
+   * collection and called the update for each row whose dirty flag was up, SEQUENTIALLY, because
+   * that is all a `For Each` inside one post-back can be; and the grid was rebound exactly once
+   * afterwards. This method is that shape, restated for an asynchronous transport.
+   *
+   * ⚠ THIS EXISTS BECAUSE THE PER-ROW COMMAND WAS THE WRONG UNIT FOR A BATCH. A screen applying
+   * N staged edits by calling {@link UserStore.updateProfileDefinition} N times produced N
+   * concurrent writes AND up to N full catalogue re-reads — each write refreshing the whole
+   * catalogue on its own completion — while the shared saving flag fell on the first write to
+   * land, leaving a second batch startable on top of the first. Concurrency is bounded to ONE
+   * here, the catalogue is read once after the last row settles, and the flag stays raised for
+   * the whole batch.
+   *
+   * ⚠ THE BATCH IS NOT ATOMIC, AND THAT IS REPORTED RATHER THAN HIDDEN. The rows address
+   * different declarations, so the server applies each on its own merits and a refusal of one
+   * leaves the others applied. Every row is attempted — a refusal does not abandon the rows
+   * behind it, which would strand work the operator asked for — and the FIRST failure is the one
+   * recorded, because the failure slot holds one document and the first refusal is the one whose
+   * cause the operator has to deal with. The single re-read afterwards is what lets a screen
+   * derive exactly which rows are still outstanding: whatever still differs from the server.
+   *
+   * A second batch is REFUSED while one is running, silently and without contacting the server,
+   * for the same reason the count exists — see
+   * {@link UserStore.profileDefinitionBatchRemaining}. An empty batch is likewise a no-op: nothing
+   * staged is nothing to write, and re-reading the catalogue to prove it would be a request
+   * spent to change nothing.
+   *
+   * @param edits The staged replacements, applied in the order supplied.
+   */
+  applyProfileDefinitionEdits(edits: readonly ProfileDefinitionEdit[]): number {
+    // ⚠ ZERO IS RETURNED WHEN NOTHING IS DISPATCHED, and zero is an identifier no write ever
+    // holds, so a caller can hold the return value unconditionally: an empty batch and a batch
+    // refused because one is already running are both "no write of mine is outstanding".
+    if (edits.length === 0 || this._profileDefinitionBatchRemaining() > 0) {
+      return 0;
+    }
+
+    this._profileDefinitionBatchRemaining.set(edits.length);
+    this._profileDefinitionBatchRefusals.set([]);
+
+    // ⚠ THE BATCH IS ONE WRITE AS FAR AS THE STORE IS CONCERNED, and it is opened through the
+    // same accounting every other write uses. The count rises once here and falls once when the last
+    // row has settled, so the aggregate busy read stays true for the WHOLE batch rather than for each
+    // row, and the outcome is published under one identifier a caller can compare against - so a
+    // screen settles on ITS batch rather than on whichever write in the store answered last.
+    const mutationId = this.beginWrite();
+
+    // The first refusal, held until the batch settles so that the single recorded failure is the
+    // one the operator has to act on rather than whichever row happened to answer last.
+    let firstRefusal: unknown = null;
+    let refused = false;
+    let batchFailure: UserFailure | null = null;
+
+    this.track(
+      from(edits)
+        .pipe(
+          // ⚠ `concatMap`, NEVER `mergeMap`. This is the whole bound: the next request is neither
+          // composed nor issued until the previous one has settled, because a concatenation
+          // subscribes to one inner stream at a time and a transport call is cold until subscribed.
+          // A batch of any size is therefore one request in flight, whatever its length.
+          concatMap((edit: ProfileDefinitionEdit) =>
+            this.transport.updateProfileDefinition(edit.propertyDefinitionId, edit.request).pipe(
+              tap((written: ProfilePropertyDefinition) => {
+                // The selected declaration is reconciled from the server's own answer, exactly as
+                // the single-row command does, so a screen showing one row beside the grid cannot
+                // drift from it.
+                if (this._selectedPropertyDefinitionId() === edit.propertyDefinitionId) {
+                  this._selectedProfileDefinition.set(written);
+                }
+              }),
+              // A refused row is CAUGHT rather than allowed to end the batch, and the rows behind
+              // it are still attempted.
+              catchError((cause: unknown) => {
+                if (!refused) {
+                  refused = true;
+                  firstRefusal = cause;
+                }
+
+                // ⚠ EVERY REFUSED ROW IS KEPT, NOT ONLY THE FIRST, AND IT IS KEPT WITH ITS ROW. The
+                // rows are independent and the batch is not a transaction, so a five-row apply can
+                // come back with three refusals and an operator told only that "something" was
+                // refused cannot tell which declarations to correct. Described rather than recorded:
+                // publishing each one into the store's single failure slot would leave only the last
+                // standing and would clear whatever another screen was showing.
+                this._profileDefinitionBatchRefusals.update((refusals) => [
+                  ...refusals,
+                  {
+                    propertyDefinitionId: edit.propertyDefinitionId,
+                    failure: this.describeFailure('applyProfileDefinitionEdits', cause),
+                  },
+                ]);
+
+                return of(null);
+              }),
+              tap(() => {
+                this._profileDefinitionBatchRemaining.update((remaining) => remaining - 1);
+              }),
+            ),
+          ),
+        )
+        // ⚠ SETTLED FROM `finalize`, NOT FROM `complete`. `finalize` also runs when the batch is
+        // ABANDONED - by a session boundary or by teardown - which is the one path a completion
+        // handler cannot see, and without it an abandoned batch would leave both the pending-write
+        // count and the remaining-row count standing, so the store would report itself permanently
+        // busy and refuse the next operator's first batch.
+        .pipe(
+          finalize(() => {
+            // ⚠ THE REFUSAL LIST IS NOT CLEARED HERE, AND MUST NOT BE. It is what the screen reads to
+            // report the batch, and this runs immediately before the settled result is published — so
+            // emptying it here would leave every refusal unreported. It is emptied when the NEXT batch
+            // is dispatched, and by teardown.
+            this._profileDefinitionBatchRemaining.set(0);
+            this.settleWrite(mutationId, 'applyProfileDefinitionEdits', batchFailure);
+          }),
+        )
+        .subscribe({
+          // Deliberately EMPTY. Nothing is committed per row: the catalogue is read once when the
+          // batch completes, because where each declaration falls depends on its position and on
+          // the server's ordering, neither of which this store may re-derive.
+          next: () => undefined,
+          complete: () => {
+            if (refused) {
+              // Captured as well as published, so the settled result below carries this batch's own
+              // refusal rather than whatever the shared slot happens to hold by then.
+              batchFailure = this.recordFailure('applyProfileDefinitionEdits', firstRefusal);
+            }
+
+            // ONE read, after the last row has settled, on both outcomes - the legacy handler
+            // rebound its grid unconditionally too.
+            this.dispatchDefinitions();
+          },
+        }),
+    );
+
+    return mutationId;
   }
 
   /**
@@ -1975,27 +2510,167 @@ export class UserStore implements OnDestroy {
    *
    * @param propertyDefinitionId The declaration to remove. Passed on exactly as supplied.
    */
-  deleteProfileDefinition(propertyDefinitionId: number): void {
-    this._failure.set(null);
-    this._saving.set(true);
+  deleteProfileDefinition(propertyDefinitionId: number): number {
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.deleteProfileDefinition(propertyDefinitionId).subscribe({
-        next: () => {
-          this._saving.set(false);
+      this.transport.deleteProfileDefinition(propertyDefinitionId)
+        .pipe(finalize(() => this.settleWrite(mutationId, 'deleteProfileDefinition', failure)))
+        .subscribe({
+          next: () => {
+            if (this._selectedPropertyDefinitionId() === propertyDefinitionId) {
+              this.clearSelectedProfileDefinition();
+            }
 
-          if (this._selectedPropertyDefinitionId() === propertyDefinitionId) {
-            this.clearSelectedProfileDefinition();
-          }
-
-          this.dispatchDefinitions();
-        },
-        error: (cause: unknown) => {
-          this._saving.set(false);
-          this.recordFailure('deleteProfileDefinition', cause);
-        },
-      }),
+            this.dispatchDefinitions();
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('deleteProfileDefinition', cause);
+          },
+        }),
     );
+
+    return mutationId;
+  }
+
+
+  // -------------------------------------------------------------------------
+  // COMMANDS — THE ACCOUNT'S OWN SUBSCRIPTIONS
+  //
+  // The four affordances of `Website/admin/Users/MemberServices.ascx`, which was
+  // SELF-SERVICE throughout: every operation it performed passed `UserInfo.UserID` — the
+  // signed-in account (`PortalModuleBase.vb:L319-L323`) — even though its container assigned
+  // it a user identifier at `manageusers.ascx.vb:L517`, and the container hid the tab
+  // outright whenever an administrator reached the screen (`:L61-L66`). The API gates all
+  // five endpoints on account ownership for that reason, so the identifier a caller passes
+  // here is its own.
+  //
+  // EVERY COMMAND RE-READS THE CATALOGUE ON SUCCESS, and that is the legacy behaviour rather
+  // than caution: each command answers with no body, and the legacy handlers re-bound the
+  // grid after acting (`MemberServices.ascx.vb:L118`, `:L133`, `:L430`). One row's state is
+  // not the only thing a command can change — a redemption may join several roles at once —
+  // so nothing is patched locally in place of the read.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reads the services offered to one account.
+   *
+   * @param userId The account whose catalogue to read. Passed on exactly as supplied; zero
+   * and minus one are real identifiers and are never treated as absence.
+   */
+  loadMemberServices(userId: number): void {
+    this._failure.set(null);
+    this.dispatchMemberServices(userId);
+  }
+
+  /**
+   * Subscribes the account to one service, or renews a subscription that has lapsed.
+   *
+   * ONE command for both, because the legacy screen had one link for both: `ServiceText`
+   * returned `Subscribe` or `Renew` from the same row state and the same handler ran. The
+   * catalogue row says which word to render; this command is the same request either way.
+   *
+   * ⚠ A SERVICE THAT CHARGES A FEE IS REFUSED BY THE SERVER, NOT CHARGED. The legacy path
+   * handed such a role to a payment page, which this migration excludes, so the refusal
+   * reaches the failure slot with its own reason and the catalogue is left as it was.
+   *
+   * @param userId The account to subscribe.
+   * @param roleId The service to subscribe to. Zero is a real service.
+   */
+  subscribeToService(userId: number, roleId: number): void {
+    this.dispatchServiceCommand(
+      'subscribeToService',
+      userId,
+      this.transport.subscribeToService(userId, roleId),
+    );
+  }
+
+  /**
+   * Cancels the account's subscription to one service.
+   *
+   * The server may EXPIRE the assignment rather than remove it — `RoleController.vb:L494-L496`
+   * expires an assignment whose role charges a fee, so a paid history is not destroyed by a
+   * cancellation — and either outcome is a success. Re-reading the catalogue is what shows
+   * which one happened, because the row's own state is the answer.
+   *
+   * @param userId The account to cancel for.
+   * @param roleId The service to cancel.
+   */
+  cancelService(userId: number, roleId: number): void {
+    this.dispatchServiceCommand(
+      'cancelService',
+      userId,
+      this.transport.cancelService(userId, roleId),
+    );
+  }
+
+  /**
+   * Takes one service's trial period on the account's behalf.
+   *
+   * Separately gated from the subscription, as the legacy screen gated it: `ShowTrial`
+   * (`MemberServices.ascx.vb:L325-L342`) offered a trial only for a public role that DOES
+   * charge a service fee, charges nothing for its trial, and has not already been tried by
+   * this account. A trial the catalogue offers is always performable.
+   *
+   * @param userId The account taking the trial.
+   * @param roleId The service whose trial to take.
+   */
+  startServiceTrial(userId: number, roleId: number): void {
+    this.dispatchServiceCommand(
+      'startServiceTrial',
+      userId,
+      this.transport.startServiceTrial(userId, roleId),
+    );
+  }
+
+  /**
+   * Redeems an invitation code, joining the account to every role recorded against it.
+   *
+   * The one command here that answers with a payload, and it is retained: the legacy screen
+   * reported the outcome in words, and the successful half of that report is a list of roles
+   * rather than a single fact. A code that matched nothing is a REFUSAL rather than an empty
+   * success, so it lands in the failure slot; the previous outcome is discarded first, so a
+   * refusal cannot be read alongside an earlier success.
+   *
+   * ⚠ THE CODE IS PASSED ON AS TYPED. The legacy comparison was ordinary string equality
+   * against the stored code, so leading space and case both mattered. Nothing is trimmed,
+   * folded or rejected here — including the empty string, which the server refuses with a
+   * reason of its own. A form may of course decline to submit one.
+   *
+   * @param userId The account redeeming the code.
+   * @param code The code as typed.
+   */
+  redeemServiceCode(userId: number, code: string): void {
+    this._lastRedemption.set(null);
+
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
+
+    this.track(
+      this.transport
+        .redeemServiceCode(userId, { code })
+        .pipe(finalize(() => this.settleWrite(mutationId, 'redeemServiceCode', failure)))
+        .subscribe({
+          next: (joined: RedeemServiceCodeResult) => {
+            // ⚠ THE RE-READ IS DISPATCHED BEFORE THE REPORT IS RECORDED, AND THE ORDER IS
+            // LOAD-BEARING. The read adopts this account and discards a report belonging to a
+            // different one (see {@link dispatchMemberServices}); recording first would hand it
+            // the report it has just been given and clear it on the very first redemption, when
+            // no catalogue had yet been read and the account was therefore "changing".
+            this.dispatchMemberServices(userId);
+            this._lastRedemption.set(joined);
+          },
+          error: (cause: unknown) => {
+            failure = this.recordFailure('redeemServiceCode', cause);
+          },
+        }),
+    );
+  }
+
+  /** Discards the last redemption outcome, so a screen can dismiss its report. */
+  clearRedemption(): void {
+    this._lastRedemption.set(null);
   }
 
   // -------------------------------------------------------------------------
@@ -2037,13 +2712,27 @@ export class UserStore implements OnDestroy {
     this._profileDefinitions.set([]);
     this._selectedPropertyDefinitionId.set(undefined);
     this._selectedProfileDefinition.set(null);
+    // ⚠ THE CATALOGUE AND ITS ACCOUNT ARE CLEARED TOGETHER. A catalogue is the personal
+    // subscription state of ONE account, and every endpoint that produces it is gated on
+    // ownership — so leaving either behind across a session boundary would show the previous
+    // operator's subscriptions, or worse, show them under the new operator's account key.
+    this._memberServices.set([]);
+    this._memberServicesAccountId.set(undefined);
+    this._lastRedemption.set(null);
+    this._lastSettingsWrite.set(null);
 
     this._usersLoading.set(false);
     this._selectedUserLoading.set(false);
     this._profileLoading.set(false);
     this._membershipSettingsLoading.set(false);
     this._profileDefinitionsLoading.set(false);
-    this._saving.set(false);
+    this._pendingWrites.set(0);
+    this._mutation.set(null);
+    // Released with the writes above, so a batch abandoned at a session boundary cannot leave a
+    // count standing that would refuse the next operator's first batch.
+    this._profileDefinitionBatchRemaining.set(0);
+    this._profileDefinitionBatchRefusals.set([]);
+    this._memberServicesLoading.set(false);
     this._failure.set(null);
   }
 
@@ -2234,22 +2923,104 @@ export class UserStore implements OnDestroy {
   }
 
   /**
-   * Reads the listing once the policy has been resolved, promoting the no-query state to
-   * the unfiltered listing so that the first page actually appears.
+   * Reads the listing once the policy has been resolved, opening it in the presentation the
+   * TENANT'S POLICY selects rather than in one fixed view.
    *
-   * MIGRATION: this is where the fourth legacy branch is chosen. `Users.ascx.vb`
-   * L264-L265 listed everything, paged and unfiltered, and that is the sensible opening
-   * state for a listing screen; the no-query fall-through at L266 is the state a caller
-   * reaches deliberately, through {@link reset}, and is not what a screen should open in.
-   * A search already chosen is left exactly as it is.
+   * MIGRATION: this reproduces `Website/admin/Users/Users.ascx.vb` L494-L506, which is where the
+   * legacy screen chose its opening filter. It read `Display_Mode` and set `Filter` from it, and
+   * the value of `Filter` then decided which branch of `BindData` (L248-L290) ran:
+   *
+   *  * `DisplayMode.All` set `Filter` to the localised word "All", which took the L264 branch and
+   *    listed every account, paged and unfiltered.
+   *  * `DisplayMode.FirstLetter` set `Filter` to the FIRST CHARACTER of the alphabet strip -
+   *    `Localization.GetString("Filter.Text").Substring(0, 1)`, and the resource value is
+   *    `"A,B,C,…"`, so the character is `A`. That fell through to the search-axis switch at L267
+   *    with `ddlSearchType.SelectedItem.Value`, whose first-added item was `"Username"` (L577), so
+   *    the screen opened on accounts whose name began with A.
+   *  * `DisplayMode.None` set `Filter` to the bare marker `"None"`, which every branch of
+   *    `BindData` excluded - so NO QUERY WAS ISSUED and the grid stayed unbound until the operator
+   *    pressed a letter or searched. `UserModuleBase.vb` L126-L130 defaulted the setting to this
+   *    mode, which is why a tenant that has configured nothing opens with no rows.
+   *
+   * ⚠ AN EARLIER REVISION PROMOTED THE NO-QUERY STATE TO THE UNFILTERED LISTING UNCONDITIONALLY,
+   * which discarded the policy entirely: the mode a tenant had chosen made no difference to what
+   * the screen did. That is the behaviour being corrected here. The no-query state is not a defect
+   * to be worked around - it is the deliberate choice a large tenant makes so that opening the
+   * screen does not page through a hundred thousand accounts, and the alphabet strip and the
+   * unfiltered affordance are both on the screen for the operator to act on.
+   *
+   * A search already chosen is left exactly as it is: the policy decides how the screen OPENS, not
+   * what it shows after an operator has asked for something.
+   *
+   * @remarks
+   * An unreadable policy opens on the unfiltered listing rather than on the legacy default. The
+   * two situations differ: the legacy default applied when a KEY WAS ABSENT from a policy it could
+   * still read, whereas here the whole policy could not be read, and the page size falls back for
+   * exactly the same reason - a tenant whose policy is unavailable still has accounts. The failure
+   * remains recorded, so nothing is concealed.
    */
   private readListingAfterSettings(): void {
-    if (this._search().mode === 'none') {
-      this._search.set({ mode: 'all' });
-      this.returnToFirstPage();
+    if (this._search().mode !== 'none') {
+      // A search chosen before the policy arrived outranks the policy's opening view.
+      this.dispatchUsers();
+
+      return;
     }
 
+    const opening: UserSearch | null = this.openingSearchForPolicy();
+
+    // `None` yields no opening search, and nothing is dispatched. The mode is already 'none',
+    // so there is nothing to write either — the screen simply waits to be asked.
+    if (opening === null) {
+      return;
+    }
+
+    this._search.set(opening);
+    this.returnToFirstPage();
     this.dispatchUsers();
+  }
+
+  /**
+   * The search the tenant's display-mode policy opens the listing on.
+   *
+   * @returns The opening search, or `null` to leave the store in its no-query state - which is
+   * what the policy's third mode asks for and what its own default is.
+   */
+  private openingSearchForPolicy(): UserSearch | null {
+    const policy: MembershipSettings | null = this._membershipSettings();
+
+    if (policy === null) {
+      // The whole policy is unavailable. See the remark on the caller.
+      return { mode: 'all' };
+    }
+
+    // ⚠ COMPARED AGAINST EACH MODE EXPLICITLY, NEVER TESTED FOR TRUTHINESS. Nought is the "list
+    // everything" mode, so a falsy test would send the most permissive setting down the same path
+    // as an unrecognised one.
+    switch (policy.displayMode) {
+      case DISPLAY_MODE_ALL:
+        return { mode: 'all' };
+
+      case DISPLAY_MODE_FIRST_LETTER:
+        return { mode: 'username', text: OPENING_LETTER };
+
+      case DISPLAY_MODE_NONE:
+        return null;
+
+      default:
+        // MIGRATION: the legacy `Select Case` had no `Case Else`, so an unrecognised mode left
+        // `Filter` as the empty string - which was not the "All" word, was not "None", and
+        // therefore fell through to the search-axis switch and queried `GetUsersByUserName(…, "%")`.
+        // An empty prefix plus the server's own trailing wildcard matches every account, so the
+        // legacy outcome was the unfiltered listing, and that is what is reproduced.
+        //
+        // ⚠ REPRODUCED AS THE UNFILTERED LISTING RATHER THAN AS AN EMPTY-PREFIX NAME SEARCH. The
+        // target endpoint refuses a filter that was supplied but blank - "omit it to search
+        // without it" - so sending the legacy's literal empty prefix would be a refused request
+        // where the legacy served a page. The RESULT SET is identical; only the way of asking for
+        // it differs.
+        return { mode: 'all' };
+    }
   }
 
   /**
@@ -2268,6 +3039,83 @@ export class UserStore implements OnDestroy {
         this.recordFailure('loadProfileDefinitions', cause);
       },
     });
+  }
+
+  /**
+   * Reads the member-services catalogue of one account, replacing whatever was held.
+   *
+   * The account is recorded ALONGSIDE the rows, and on the request rather than on the
+   * response, so that a screen can tell whose catalogue it is rendering even while the read
+   * is in flight. A previous read is abandoned first: two catalogues for two accounts must
+   * never be able to settle in either order.
+   *
+   * ⚠ THE ROWS ARE CLEARED WHEN THE ACCOUNT CHANGES, AND ONLY THEN. Clearing on every read
+   * would blank the grid on a refresh that is about to answer with almost the same rows;
+   * NOT clearing on an account change would show one account's subscriptions under another
+   * account's key for as long as the request takes.
+   *
+   * A failed read leaves the rows in hand rather than emptying them, for the reason the
+   * failure slot exists: an empty grid beside a message reads as "you are offered nothing",
+   * which is a different and false statement.
+   *
+   * @param userId The account whose catalogue to read.
+   */
+  private dispatchMemberServices(userId: number): void {
+    if (this._memberServicesAccountId() !== userId) {
+      this._memberServices.set([]);
+      this._lastRedemption.set(null);
+    }
+
+    this._memberServicesAccountId.set(userId);
+    this._memberServicesLoading.set(true);
+    this.memberServicesRequest?.unsubscribe();
+    this.memberServicesRequest = this.transport.listMemberServices(userId).subscribe({
+      next: (offered: readonly MemberService[]) => {
+        this._memberServices.set(offered);
+        this._memberServicesLoading.set(false);
+      },
+      error: (cause: unknown) => {
+        this._memberServicesLoading.set(false);
+        this.recordFailure('loadMemberServices', cause);
+      },
+    });
+  }
+
+  /**
+   * Runs one payload-free subscription command and re-reads the catalogue on success.
+   *
+   * The three commands differ only in which request they issue and which operation name a
+   * failure is recorded under, so they share one body: a divergence between them would be a
+   * divergence in how a refusal is reported, which is precisely what a caller relies on to
+   * explain one.
+   *
+   * The previous redemption report is discarded, because a subscription changed after a code
+   * was redeemed makes that report no longer a description of the state on screen.
+   *
+   * @param operation The command name a failure is recorded under.
+   * @param userId The account the command acts on, and whose catalogue is re-read.
+   * @param request The transport call to run. Subscribed exactly once, here.
+   */
+  private dispatchServiceCommand(
+    operation: UserOperation,
+    userId: number,
+    request: Observable<void>,
+  ): void {
+    this._lastRedemption.set(null);
+
+    const mutationId = this.beginWrite();
+    let failure: UserFailure | null = null;
+
+    this.track(
+      request.pipe(finalize(() => this.settleWrite(mutationId, operation, failure))).subscribe({
+        next: () => {
+          this.dispatchMemberServices(userId);
+        },
+        error: (cause: unknown) => {
+          failure = this.recordFailure(operation, cause);
+        },
+      }),
+    );
   }
 
   /**
@@ -2298,17 +3146,98 @@ export class UserStore implements OnDestroy {
    * @param operation The command that failed.
    * @param cause The value the subscriber's error path received.
    */
-  private recordFailure(operation: UserOperation, cause: unknown): void {
+  /**
+   * Opens a write and returns the identifier the caller settles it by.
+   *
+   * Pre-increments, so the first identifier ever issued is 1. That is what lets a caller hold zero as
+   * "no write of mine is outstanding" without the value colliding with a real write — a collision that
+   * would make the very first write on a fresh store settle something that was never dispatched.
+   *
+   * @returns The identifier issued to this write.
+   */
+  private beginWrite(): number {
+    // ⚠ THE SHARED FAILURE SLOT IS EMPTIED ONLY WHEN NOTHING ELSE IS OUTSTANDING, and that is the
+    // second half of the race the count fixes. There is ONE slot, and a write that emptied it as it
+    // started erased a refusal an earlier, still-open write had already recorded - discarded by a
+    // sibling request rather than by anything the operator did, leaving the refused row looking as
+    // though it had been written. Clearing only when the store is idle preserves the behaviour a
+    // single write has always had (a fresh attempt starts from a clean slot) while letting a batch's
+    // refusals survive the batch. A caller settling its OWN write still reads the failure from the
+    // published result rather than from here; see {@link UserStore.mutation}.
+    if (this._pendingWrites() === 0) {
+      this._failure.set(null);
+    }
+
+    // ⚠ AND NO WRITE COMMAND MAY EMPTY THE SLOT ITSELF. Fourteen of them used to, on the line after
+    // the one that calls this — which made the guard above dead code and left the defect it exists to
+    // close fully open. The clearing belongs HERE, once, because only this method knows whether
+    // anything else is outstanding; a command clearing on its own behalf cannot know.
+
+    this.nextMutationId += 1;
+    this._pendingWrites.update((open) => open + 1);
+
+    return this.nextMutationId;
+  }
+
+  /**
+   * Settles one write: lowers the pending count and publishes the outcome under its identifier.
+   *
+   * ⚠ CALLED FROM `finalize` RATHER THAN FROM THE TWO CALLBACKS. `finalize` runs on completion, on
+   * error AND on unsubscription, which is the only one of the three that a pair of callbacks cannot
+   * see: a write released by a session boundary or by teardown would otherwise leave the count raised
+   * for the life of the application, and the store would report itself permanently busy.
+   *
+   * ⚠ THE COUNT IS FLOORED AT ZERO. `finalize` runs exactly once per subscription, so it cannot
+   * legitimately go negative — but a negative count would make the aggregate read false while a write
+   * was still open, which is the one failure mode this whole mechanism exists to remove, so it is made
+   * unrepresentable rather than merely unlikely.
+   *
+   * @param id The identifier this write was issued.
+   * @param operation Which command settled.
+   * @param failure This write's own failure, or null when it succeeded.
+   */
+  private settleWrite(id: number, operation: UserOperation, failure: UserFailure | null): void {
+    this._pendingWrites.update((open) => (open > 0 ? open - 1 : 0));
+    this._mutation.set({ id, operation, failure });
+  }
+
+  /**
+   * Describes a refusal WITHOUT publishing it anywhere.
+   *
+   * ⚠ EXTRACTED SO THAT A PER-ROW REFUSAL CAN BE DESCRIBED WITHOUT TOUCHING THE SHARED SLOT. There is
+   * one failure slot for the whole store, so a batch that published each refused row into it would
+   * leave only the last one standing and would clear whatever another screen was showing. A batch
+   * describes each refused row with this, keeps the descriptions in its own list, and publishes just
+   * one of them — the first — as the batch's settled outcome.
+   *
+   * @param operation The command the refusal belongs to.
+   * @param cause The refusal as the transport delivered it.
+   * @returns The described failure.
+   */
+  private describeFailure(operation: UserOperation, cause: unknown): UserFailure {
     const document: ProblemDetails | null = readProblemDetails(cause);
     const status: number | null = resolveStatus(document, readTransportStatus(cause));
     const problem: ProblemDetails | null = withObservedStatus(document, status);
 
-    this._failure.set({
+    return {
       operation,
       problem,
       summary: summarizeProblem(problem),
       code: failureCode(problem),
-    });
+    };
+  }
+
+  private recordFailure(operation: UserOperation, cause: unknown): UserFailure {
+    const failure: UserFailure = this.describeFailure(operation, cause);
+
+    this._failure.set(failure);
+
+    // ⚠ RETURNED AS WELL AS PUBLISHED, AND THE RETURN IS WHAT A WRITE MUST USE. The slot below is one
+    // slot for the whole store and every dispatch clears it, so by the time a write settles it may
+    // hold another operation's refusal or nothing at all. A write captures the value returned here and
+    // publishes it on its own settled result; the slot remains for the surfaces that legitimately want
+    // "the most recent failure, whatever it was".
+    return failure;
   }
 
   /**
@@ -2348,6 +3277,10 @@ export class UserStore implements OnDestroy {
     }
 
     this.writeRequests.clear();
+    // A batch abandoned mid-flight lowers its own count here, because a cancelled stream never
+    // completes and so never reaches the arm that would lower it.
+    this._profileDefinitionBatchRemaining.set(0);
+    this._profileDefinitionBatchRefusals.set([]);
   }
 
   /** Abandons every read in flight, leaving writes alone. */
@@ -2360,6 +3293,9 @@ export class UserStore implements OnDestroy {
     this.definitionsRequest = null;
     this.definitionRequest?.unsubscribe();
     this.definitionRequest = null;
+    this.memberServicesRequest?.unsubscribe();
+    this.memberServicesRequest = null;
+    this._memberServicesLoading.set(false);
     this.cancelDetailReads();
   }
 

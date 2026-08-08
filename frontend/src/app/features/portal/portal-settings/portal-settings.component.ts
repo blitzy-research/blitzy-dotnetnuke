@@ -199,7 +199,11 @@ import { LoadingSpinnerComponent } from '../../../shared/components/loading-spin
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 
 import type { AbstractControl, ValidationErrors } from '@angular/forms';
-import type { PortalSettings, UpdatePortalSettingsRequest } from '../../../core/models/portal.model';
+import type {
+  PortalAdministrator,
+  PortalSettings,
+  UpdatePortalSettingsRequest,
+} from '../../../core/models/portal.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { TabListItem } from '../../../core/models/tab.model';
 import type { PortalFailure } from '../../../core/state/portal.store';
@@ -299,6 +303,24 @@ const NO_PAGE_SELECTED = -1;
  * the legacy display string, not markup.
  */
 const NO_PAGE_SELECTED_LABEL = '<None Specified>';
+
+/**
+ * The administrator selector's value when no account is chosen.
+ *
+ * ⚠ NOT A LEGACY SENTINEL, AND NOT A LEGAL ACCOUNT KEY. `Users.UserID` seeds
+ * `IDENTITY(1, 1)` (`01.00.00.SqlDataProvider:L98`), so no real account can ever carry
+ * minus one and no stored administrator can be mistaken for "none". A select must hold the
+ * value of the option it shows, and the wire contract's absence is `null`, so a sentinel is
+ * needed to stand in for it inside a `FormControl<number>`; minus one is chosen to match the
+ * page selector directly above rather than to mean anything of its own.
+ *
+ * MIGRATION: the legacy selector had NO empty entry - `SiteSettings.ascx.vb:L331-L336` added
+ * one item per role member and nothing else - so the option carrying this value is offered
+ * only when the portal designates no administrator at all. That mirrors the server's own
+ * rule, which permits absence on a portal that already has none and refuses an update that
+ * would clear a designation.
+ */
+const NO_ADMINISTRATOR_SELECTED = -1;
 
 /** One indent step. `Globals.vb:L835` appends exactly this, once per level. */
 const INDENT_STEP = '...';
@@ -476,6 +498,32 @@ const FORM_INVALID_MESSAGE = 'Correct the highlighted fields and try again.';
 const PAGES_UNAVAILABLE_MESSAGE =
   'The list of pages could not be loaded, so the page selectors show only the pages already chosen.';
 
+/**
+ * Shown when the administrator candidates cannot be read, so the selector knowingly holds only
+ * the account already designated.
+ *
+ * Says what the operator has LOST rather than merely that something failed: without naming the
+ * consequence, a selector holding one entry looks like a site with one eligible administrator.
+ */
+const ADMINISTRATORS_UNAVAILABLE_MESSAGE =
+  'The list of eligible administrators could not be loaded, so the administrator cannot be changed here. Every other setting still saves.';
+
+/** Shown while the administrator candidates are being read. */
+const ADMINISTRATORS_LOADING_MESSAGE = 'Loading the accounts that may administer this site…';
+
+/**
+ * The wording of the entry standing in for an administrator the candidate list does not hold.
+ *
+ * `{0}` is the account key, which is the only thing this screen knows about them: the settings
+ * projection publishes the identifier and no name, and the candidate read — which is where the
+ * names come from — is precisely the read that did not return this account.
+ *
+ * It exists so that a designated administrator who has since been removed from the administrator
+ * role can be RETAINED. Dropping them from the selector would silently reassign the portal on the
+ * next save, which is the one outcome an operator could not have intended.
+ */
+const RETAINED_ADMINISTRATOR_LABEL = 'Current administrator (account {0})';
+
 /** Shown when the address carries no usable portal identifier. */
 const PORTAL_ID_MISSING_MESSAGE = 'This address does not identify a portal to configure.';
 
@@ -515,6 +563,20 @@ interface PageOption {
 }
 
 /**
+ * One option in the administrator selector.
+ *
+ * Structurally identical to {@link PageOption} and deliberately declared separately, for the
+ * reason that shape gives for not being the shared contract: the two lists are composed by
+ * different rules — one carries a legacy indent and a filter on the administration band, the
+ * other carries a login name for disambiguation and may include an entry for an account the
+ * candidate read did not return — and one name for both would invite one composer for both.
+ */
+interface AdministratorOption {
+  readonly value: number;
+  readonly label: string;
+}
+
+/**
  * The typed control set.
  *
  * It carries MORE members than the screen renders, and that is deliberate rather than
@@ -541,8 +603,9 @@ interface PortalSettingsFormModel {
   loginTabId: FormControl<number>;
   userTabId: FormControl<number>;
 
-  // Other Settings. The time zone is an offset in whole minutes; the administrator is
-  // displayed but not editable, for the reason recorded on the component.
+  // Other Settings. The time zone is an offset in whole minutes; the administrator holds an
+  // account key, with `NO_ADMINISTRATOR_SELECTED` standing in for the wire contract's absence.
+  administratorId: FormControl<number>;
   timeZoneOffset: FormControl<string>;
 
   // Host Settings — rendered only for a host account, always hydrated.
@@ -556,7 +619,6 @@ interface PortalSettingsFormModel {
 /** The members this screen preserves without showing. */
 type PreservedMembers = Pick<
   PortalSettings,
-  | 'administratorId'
   | 'backgroundFile'
   | 'currency'
   | 'defaultLanguage'
@@ -741,6 +803,34 @@ function selectedPageToWire(value: number): number | null {
  */
 function wirePageToSelected(value: number | null): number {
   return value === null ? NO_PAGE_SELECTED : value;
+}
+
+/**
+ * Maps the administrator selector's value onto the wire contract.
+ *
+ * The sentinel becomes absence, which the server permits only for a portal that already
+ * designates no administrator — and the selector offers the option carrying it only in that
+ * case, so the two rules agree by construction rather than by the operator's restraint.
+ *
+ * ⚠ EVERY OTHER NUMBER IS SENT AS IT STANDS, including zero. Zero is not a legal
+ * `Users.UserID` today, since the column seeds `IDENTITY(1, 1)`, but a magnitude test here
+ * would be a second rule about which account keys are real — and this screen's four page
+ * selectors sit directly above, where zero IS an ordinary identifier. One rule, applied to
+ * one sentinel value, is what keeps the two from drifting apart.
+ */
+function selectedAdministratorToWire(value: number): number | null {
+  return value === NO_ADMINISTRATOR_SELECTED ? null : value;
+}
+
+/**
+ * Maps a stored administrator reference onto the selector.
+ *
+ * Absence becomes the sentinel, so the empty option genuinely appears chosen rather than
+ * leaving the select on whatever happened to be first — which on this field would designate
+ * an administrator the operator never picked.
+ */
+function wireAdministratorToSelected(value: number | null): number {
+  return value === null ? NO_ADMINISTRATOR_SELECTED : value;
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,6 +1190,13 @@ export class PortalSettingsComponent {
     homeTabId: new FormControl(NO_PAGE_SELECTED, { nonNullable: true }),
     loginTabId: new FormControl(NO_PAGE_SELECTED, { nonNullable: true }),
     userTabId: new FormControl(NO_PAGE_SELECTED, { nonNullable: true }),
+
+    // NO VALIDATOR, and that is measured rather than assumed: a full case-insensitive sweep of
+    // the 568-line legacy markup finds exactly two validators on the whole screen, both
+    // data-type comparisons, and neither is on this field. The invariant that a portal keeps an
+    // administrator is the SERVER's, enforced on both write paths, and reproducing it as a
+    // client rule would put a second authority on it that could disagree.
+    administratorId: new FormControl(NO_ADMINISTRATOR_SELECTED, { nonNullable: true }),
     timeZoneOffset: new FormControl('', {
       nonNullable: true,
       validators: [timeZoneOffsetCheck],
@@ -1143,6 +1240,12 @@ export class PortalSettingsComponent {
   protected readonly deleteConfirmLabel = DELETE_CONFIRM_LABEL;
   protected readonly formInvalidMessage = FORM_INVALID_MESSAGE;
   protected readonly pagesUnavailableMessage = PAGES_UNAVAILABLE_MESSAGE;
+
+  /** The wording shown when the administrator candidates could not be read. */
+  protected readonly administratorsUnavailableMessage = ADMINISTRATORS_UNAVAILABLE_MESSAGE;
+
+  /** The wording shown while the administrator candidates are being read. */
+  protected readonly administratorsLoadingMessage = ADMINISTRATORS_LOADING_MESSAGE;
   protected readonly portalIdMissingMessage = PORTAL_ID_MISSING_MESSAGE;
   protected readonly noPageSelectedLabel = NO_PAGE_SELECTED_LABEL;
 
@@ -1222,6 +1325,7 @@ export class PortalSettingsComponent {
     // legacy screen had the whole portal in hand for exactly the same reason.
     this.portals.loadSettings(resolved);
     this.portals.loadPortal(resolved);
+    this.portals.loadAdministrators(resolved);
     this.loadPages(resolved);
   }
 
@@ -1451,23 +1555,104 @@ export class PortalSettingsComponent {
   });
 
   /**
-   * The administrator account identifier, shown read-only.
+   * The accounts the administrator selector offers.
    *
-   * MIGRATION: THE ADMINISTRATOR SELECTOR IS READ-ONLY, AND NO ENDPOINT IS INVENTED FOR IT.
-   *   The legacy screen filled it by listing the members of the portal's Administrators
-   *   role. No equivalent read exists to call: the role endpoints resolve their tenant from
-   *   the caller's own context rather than from a path segment, so they cannot enumerate
-   *   another portal's administrators, and the lookup contract declared in the model layer
-   *   has no service member behind it. The stored account is therefore displayed and
-   *   returned unchanged, which keeps the value visible and keeps the portal's
-   *   administrator intact — the server refuses an update that would clear it. Reassigning
-   *   the administrator is the one legacy affordance on this screen that is not reachable
-   *   here, and it is reported rather than approximated.
+   * MIGRATION: reproduces `Website/admin/Portal/SiteSettings.ascx.vb:L329-L339`. The legacy
+   * screen listed the members of the portal's own administrator role and pre-selected the entry
+   * matching the stored `AdministratorId`; the chosen value became argument nine of the portal
+   * update at `:L775`. This screen previously showed the stored identifier read-only, because no
+   * read existed that could enumerate the administrators of the portal the ROUTE names — every
+   * role read resolves its tenant from the caller's own context. That read now exists on the
+   * portal resource, so the affordance is restored rather than approximated.
+   *
+   * Three rules compose the list, and each closes a way the selector could otherwise mislead:
+   *
+   * - THE CANDIDATES ARE GATED ON THE PORTAL THEY WERE READ FOR. A screen moved to another
+   *   portal would otherwise offer the previous portal's accounts for as long as the new read
+   *   took — long enough to submit one, which the server would refuse for a reason the operator
+   *   could not see.
+   * - THE STORED ADMINISTRATOR IS ALWAYS PRESENT, even when the candidate read has not arrived
+   *   or does not contain them. An account removed from the administrator role while still
+   *   designated is a real state, and a selector that dropped them would silently reassign the
+   *   portal on the next save. Its wording says what it is rather than pretending to be a name
+   *   this screen does not hold.
+   * - THE EMPTY OPTION IS OFFERED ONLY WHEN THE PORTAL DESIGNATES NOBODY. The legacy selector
+   *   had no empty entry at all, and the server refuses an update that would clear a
+   *   designation, so offering it otherwise would be an option whose only outcome is a refusal.
    */
-  protected readonly administratorId = computed<number | null>(() => {
-    const held = this.portals.settings();
+  protected readonly administratorOptions = computed<readonly AdministratorOption[]>(() => {
+    const stored: number | null = this.portals.settings()?.administratorId ?? null;
+    const options: AdministratorOption[] = [];
+    const seen = new Set<number>();
 
-    return held === null ? null : held.administratorId;
+    if (stored === null) {
+      options.push({
+        value: NO_ADMINISTRATOR_SELECTED,
+        label: NO_PAGE_SELECTED_LABEL,
+      });
+      seen.add(NO_ADMINISTRATOR_SELECTED);
+    }
+
+    for (const candidate of this.administratorCandidates()) {
+      if (seen.has(candidate.userId)) {
+        continue;
+      }
+
+      seen.add(candidate.userId);
+      options.push({
+        value: candidate.userId,
+        // Both names, because the display name is the one account field a tenant may compose
+        // from a format string and two administrators can therefore legitimately share one. The
+        // login name is unique within a portal, so the pair is always distinguishable.
+        label: `${candidate.displayName} (${candidate.username})`,
+      });
+    }
+
+    if (stored !== null && !seen.has(stored)) {
+      options.push({
+        value: stored,
+        label: RETAINED_ADMINISTRATOR_LABEL.replace('{0}', String(stored)),
+      });
+    }
+
+    return options;
+  });
+
+  /**
+   * The candidate accounts, but only when they belong to the portal this screen is showing.
+   *
+   * The gate is the whole value of the store recording which portal it read for: without it, the
+   * held list is simply "the last list read", which during a move between portals is the wrong
+   * one and is indistinguishable from the right one.
+   */
+  private readonly administratorCandidates = computed<readonly PortalAdministrator[]>(() => {
+    const wanted = this._portalId();
+    if (wanted === undefined || this.portals.administratorsPortalId() !== wanted) {
+      return [];
+    }
+
+    return this.portals.administrators() ?? [];
+  });
+
+  /** Whether the candidate read is in flight, so the template can say the list is coming. */
+  protected readonly administratorsLoading = computed<boolean>(() =>
+    this.portals.administratorsLoading(),
+  );
+
+  /**
+   * Whether the candidate read failed, so the template can say why the list is short.
+   *
+   * Reported rather than escalated, on the same terms as the page listing beside it: the field
+   * still holds the stored administrator and still round-trips it, and the other seventeen
+   * fields still save. What is lost is the ability to REASSIGN, and saying so is what stops that
+   * looking like a screen that simply has one option.
+   */
+  protected readonly administratorsFailed = computed<boolean>(() => {
+    if (this.portals.administratorsFailure() === null) {
+      return false;
+    }
+
+    return this.portals.administratorsLoading() === false;
   });
 
   /**
@@ -1627,7 +1812,7 @@ export class PortalSettingsComponent {
    * @param name The control, or one of the two read-only rows that have no control.
    * @returns The identifier.
    */
-  protected controlId(name: keyof PortalSettingsFormModel | 'guid' | 'administratorId'): string {
+  protected controlId(name: keyof PortalSettingsFormModel | 'guid'): string {
     return `portal-settings-${name}`;
   }
 
@@ -1714,13 +1899,16 @@ export class PortalSettingsComponent {
     this._submitRejected.set(false);
     this.portals.clearFailures();
 
-    this.portals.saveSettings(target, this.toRequest(this.hydratedFrom), (stored: PortalSettings) => {
-      // The store has already replaced its slice with the stored resource, and the
-      // hydration effect will move it into the form. Recording it here as well keeps the
-      // preserved-member source in step even if the effect has not run yet.
-      this.hydratedFrom = stored;
-      this.notifications.success(SAVE_SUCCEEDED_MESSAGE);
-    });
+    this.portals
+      .saveSettings(target, this.toRequest(this.hydratedFrom))
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((stored: PortalSettings) => {
+        // The store has already replaced its slice with the stored resource, and the
+        // hydration effect will move it into the form. Recording it here as well keeps the
+        // preserved-member source in step even if the effect has not run yet.
+        this.hydratedFrom = stored;
+        this.notifications.success(SAVE_SUCCEEDED_MESSAGE);
+      });
   }
 
   /**
@@ -1771,10 +1959,13 @@ export class PortalSettingsComponent {
 
     this.portals.clearFailures();
 
-    this.portals.deletePortal(target, () => {
-      this.notifications.success(DELETE_SUCCEEDED_MESSAGE);
-      void this.router.navigateByUrl(PORTAL_LIST_PATH);
-    });
+    this.portals
+      .deletePortal(target)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.notifications.success(DELETE_SUCCEEDED_MESSAGE);
+        void this.router.navigateByUrl(PORTAL_LIST_PATH);
+      });
   }
 
   // -------------------------------------------------------------------------
@@ -1863,6 +2054,7 @@ export class PortalSettingsComponent {
       homeTabId: wirePageToSelected(source.homeTabId),
       loginTabId: wirePageToSelected(source.loginTabId),
       userTabId: wirePageToSelected(source.userTabId),
+      administratorId: wireAdministratorToSelected(source.administratorId),
       timeZoneOffset: numberToText(source.timeZoneOffset),
       expiryDate: instantToDateInput(source.expiryDate),
       hostFee: numberToText(source.hostFee),
@@ -1910,7 +2102,6 @@ export class PortalSettingsComponent {
   private toRequest(source: PortalSettings): UpdatePortalSettingsRequest {
     const edited = this.form.getRawValue();
     const preserved: PreservedMembers = {
-      administratorId: source.administratorId,
       backgroundFile: source.backgroundFile,
       currency: source.currency,
       defaultLanguage: source.defaultLanguage,
@@ -1939,7 +2130,9 @@ export class PortalSettingsComponent {
       userTabId: selectedPageToWire(edited.userTabId),
 
       // Other Settings. The offset is a whole number of minutes; a blank box means the
-      // portal keeps no explicit offset.
+      // portal keeps no explicit offset. The administrator's sentinel becomes absence on the
+      // wire, which the server permits only for a portal that already designates none.
+      administratorId: selectedAdministratorToWire(edited.administratorId),
       timeZoneOffset: this.optionalWholeNumber(edited.timeZoneOffset),
 
       // Host Settings. A blank box saves ZERO for the fee and the three quotas, which is

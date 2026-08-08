@@ -37,19 +37,22 @@
 //  The bands deliberately reuse the shared error banner's own band vocabulary, so
 //  that one application does not paint the same condition two ways:
 //
-//    error    danger accent + accessible danger ink on the page background.
-//             `--color-danger` (#FF0000, the measured legacy error red) renders at
-//             4.0:1 on the background — clear of the 3:1 floor for a non-text UI
-//             component such as a border, and BELOW the 4.5:1 minimum for normal
-//             text — so the border takes it and the TEXT takes
-//             `--color-danger-text` instead, measured at 7.20:1 on
-//             `--color-background`. This is the same split, for the same reason, as
-//             `error-banner.component.scss`.
+//    error    danger accent and danger ink, both `--color-danger` (#FF0000, the
+//             measured legacy error red). It renders at 4.00:1 on the background —
+//             clear of the 3:1 floor for a non-text component such as the border, and
+//             BELOW the 4.5:1 minimum for normal text. That ratio is RECORDED rather
+//             than repaired with a new colour: the vocabulary is closed at nine and
+//             admits no hue on accessibility grounds. What carries the obligation is
+//             the severity NAMED IN TEXT in a live region, so the state never depends
+//             on the hue. Same position, same reason, as `error-banner.component.scss`.
 //
-//    warning  brand accent + the informational hint surface. Measured: the legacy
+//    warning  brand accent + the vocabulary's secondary surface. Measured: the legacy
 //             `YellowWarning` styled its message with the ordinary `.Normal` class
-//             rather than the red one, so a refusal was deliberately NOT painted as
-//             a fault, and the pale yellow is the measured legacy hint surface.
+//             rather than the red one, so a refusal was deliberately NOT painted as a
+//             fault. The legacy hint colour was pale yellow and is NOT tokenised — it
+//             is absent from the specification's nine — so this band is grey, which is
+//             a recorded visible divergence. The brand accent and the severity word
+//             carry the distinction.
 //
 //    info     the quiet band: the neutral border and the secondary surface, with
 //             inherited ink. It has no legacy counterpart — the legacy
@@ -132,17 +135,18 @@
   line-height: var(--line-height-base);
 }
 
-// The danger band. Both the accent and the ink change, for the contrast reason
-// recorded in the band table above.
+// The danger band. Accent and ink are the same token, for the reason recorded in the band
+// table above; the severity word in the live region is what a reader who perceives no red
+// receives instead.
 .notification-list__item[data-severity='error'] {
   border-color: var(--color-danger);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
-// The refusal band: brand accent, hint surface, inherited ink.
+// The refusal band: brand accent, secondary surface, inherited ink.
 .notification-list__item[data-severity='warning'] {
   border-inline-start-color: var(--color-primary);
-  background-color: var(--color-surface-hint);
+  background-color: var(--color-surface);
 }
 
 // The quiet band.

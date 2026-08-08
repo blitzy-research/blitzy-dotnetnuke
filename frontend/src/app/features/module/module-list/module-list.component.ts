@@ -411,8 +411,16 @@ const ROUTE = Object.freeze({
   // This screen's template renders the row commands unconditionally, so neither
   // `NgTemplateOutlet` nor `HasPermissionDirective` is listed: Angular reports an import a
   // template never uses, and declaring one for a gate this markup does not apply would be a
-  // claim the template contradicts. The shared directive's production usage lives on the role
-  // listing, and `holdsAdministration` remains published for a consumer that needs the fact.
+  // claim the template contradicts.
+  //
+  // ⚠ THE SHARED DIRECTIVE NOW HAS NO FEATURE CONSUMER AT ALL, and that is the correct outcome
+  // rather than an orphaning. Every affordance that once took it addressed a route declared under
+  // the `PortalAdministrator` POLICY, which is answered from `Portals.AdministratorRoleId` and not
+  // from a persisted grant row — so those screens gate on the store's tenant-administration
+  // determination instead. The directive remains the shared library's documented instrument for the
+  // four PERSISTED keys (`VIEW`, `EDIT`, `READ`, `WRITE`), which are grants over a module or page
+  // INSTANCE, and this screen's row commands are the one place where that vocabulary genuinely
+  // applies — they are `ModuleEdit` on the API, answered from `ModulePermissions`.
   imports: [
     RouterLink,
     PageHeaderComponent,

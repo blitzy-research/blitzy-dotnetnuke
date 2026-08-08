@@ -7,7 +7,8 @@ import {
 import { TestBed } from '@angular/core/testing';
 
 import { ModuleVisibility } from '../models/module.model';
-import { ModuleStore } from './module.store';
+import { MAX_PAGE_SIZE } from '../models/paged-result.model';
+import { MAXIMUM_CHOICE_PAGES, ModuleStore } from './module.store';
 
 import type { TabHierarchy, TabTreeNode } from './module.store';
 import type {
@@ -20,6 +21,7 @@ import type {
   ModuleSettingsBag,
   UpdateModuleRequest,
 } from '../models/module.model';
+
 import type { ApiResponse, PagedResult } from '../models/paged-result.model';
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
 import type { TabListItem } from '../models/tab.model';
@@ -478,6 +480,53 @@ function pagedBody(
       totalPages: items.length === 0 ? 0 : 1,
     },
   };
+}
+
+/**
+ * A page whose reported total is set INDEPENDENTLY of the rows it carries.
+ *
+ * {@link pagedBody} derives the total from the row count, which is right for a single-page answer and
+ * useless for the walk: every interesting property of a walk is about the relationship between the rows
+ * in hand and the total the server claims, and a helper that keeps the two equal by construction cannot
+ * express a partial page at all.
+ *
+ * @param items The rows this page carries.
+ * @param totalCount What the server claims exists across every page.
+ * @param pageIndex The zero-based index this page answers for.
+ */
+function walkPage(
+  items: readonly ModuleListItem[],
+  totalCount: number,
+  pageIndex = 0,
+): PagedResult<ModuleListItem> {
+  return {
+    items,
+    meta: {
+      totalCount,
+      pageIndex,
+      pageSize: MAX_PAGE_SIZE,
+      totalPages: Math.ceil(totalCount / MAX_PAGE_SIZE),
+    },
+  };
+}
+
+/**
+ * A full page of distinct rows, so a walk has a reason to ask for another.
+ *
+ * Every row carries its own placement identifier, because the picker de-duplicates on the module and a
+ * page of identical rows would collapse to one choice and hide whether the walk gathered them all.
+ *
+ * @param count How many rows to build.
+ * @param startingAt The first placement identifier to use.
+ */
+function distinctRows(count: number, startingAt = 1): readonly ModuleListItem[] {
+  return Array.from({ length: count }, (_unused, offset) =>
+    listRow({
+      moduleId: startingAt + offset,
+      tabModuleId: startingAt + offset,
+      moduleTitle: `Module ${startingAt + offset}`,
+    }),
+  );
 }
 
 /** Wraps a payload in the single-item envelope every non-paged read answers with. */
@@ -1486,6 +1535,193 @@ describe('ModuleStore', () => {
   // definitions of one deployed bundle. The page listing is unpaged for a stated reason - "a hierarchy is
   // read whole because a partially fetched tree cannot be indented correctly" - and the catalogue is small,
   // bounded reference data the upgrade scripts seed, whose endpoint accepts no query parameter at all.
+  describe('the picker choice set is complete, or it is a refusal', () => {
+    /**
+     * A paged envelope whose total is stated independently of the page's length.
+     *
+     * Distinct from {@link pagedBody}, which derives the total FROM the rows and so can never
+     * describe a multi-page result. Every case below turns on exactly that distinction.
+     *
+     * @param items The page's rows.
+     * @param totalCount The total across every page, as the server states it.
+     * @param pageIndex The zero-based index of this page.
+     * @returns The envelope.
+     */
+    function choicePage(
+      items: readonly ModuleListItem[],
+      totalCount: number,
+      pageIndex = 0,
+    ): PagedResult<ModuleListItem> {
+      return {
+        items,
+        meta: {
+          totalCount,
+          pageIndex,
+          pageSize: MAX_PAGE_SIZE,
+          totalPages: totalCount === 0 ? 0 : Math.ceil(totalCount / MAX_PAGE_SIZE),
+        },
+      };
+    }
+
+    /** Every outstanding module-listing request, so concurrency can be counted rather than assumed. */
+    function outstandingListings(): readonly TestRequest[] {
+      return httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+    }
+
+    it('costs exactly one request when the tenant fits inside one page', () => {
+      store.loadChoices();
+
+      const only = expectRequest('GET', '/api/v1/modules');
+
+      expect(only.request.params.get('pageIndex')).toBe('0');
+      expect(only.request.params.get('pageSize'))
+        .withContext('the widest page the paging validator accepts')
+        .toBe(String(MAX_PAGE_SIZE));
+
+      only.flush(choicePage([listRow({ moduleId: 1 }), listRow({ moduleId: 2 })], 2));
+
+      // No follow-on: the server's own total is satisfied, so the ordinary case is no slower than
+      // the single read this walk replaced.
+      httpMock.verify();
+
+      expect(store.choices().map((row) => row.moduleId)).toEqual([1, 2]);
+      expect(store.choicesTotal()).toBe(2);
+      expect(store.choicesLoading()).toBeFalse();
+      expect(store.failure()).toBeNull();
+    });
+
+    it('walks every page so no placement is silently left out of the picker', () => {
+      // ⚠ THE M-1 REGRESSION, PINNED. The previous implementation issued ONE request at the widest
+      // page size and published its rows as the choice set, so the hundred-and-first placement in a
+      // tenant simply could not be chosen and nothing said so.
+      const firstPage: readonly ModuleListItem[] = Array.from(
+        { length: MAX_PAGE_SIZE },
+        (_unused, index) => listRow({ moduleId: index }),
+      );
+
+      store.loadChoices();
+      expectRequest('GET', '/api/v1/modules').flush(choicePage(firstPage, MAX_PAGE_SIZE + 2));
+
+      const second = expectRequest('GET', '/api/v1/modules');
+
+      expect(second.request.params.get('pageIndex'))
+        .withContext('the walk continues past the first window')
+        .toBe('1');
+      second.flush(
+        choicePage(
+          [listRow({ moduleId: 500 }), listRow({ moduleId: 501 })],
+          MAX_PAGE_SIZE + 2,
+          1,
+        ),
+      );
+
+      httpMock.verify();
+
+      expect(store.choices().length).toBe(MAX_PAGE_SIZE + 2);
+      expect(store.choices()[MAX_PAGE_SIZE + 1]?.moduleId)
+        .withContext('a placement beyond the first window is choosable rather than truncated away')
+        .toBe(501);
+      expect(store.choicesTotal()).toBe(MAX_PAGE_SIZE + 2);
+    });
+
+    it('requests one page at a time rather than fanning them out', () => {
+      store.loadChoices();
+
+      let maximumInFlight = 0;
+      let issued = 0;
+
+      for (let page = 0; page < 3; page += 1) {
+        const outstanding = outstandingListings();
+
+        maximumInFlight = Math.max(maximumInFlight, outstanding.length);
+        issued += outstanding.length;
+
+        outstanding.forEach((request) =>
+          request.flush(choicePage([listRow({ moduleId: page })], 3, page)),
+        );
+      }
+
+      expect(maximumInFlight)
+        .withContext('a picker opening must not become a burst against the tenant API')
+        .toBe(1);
+      expect(issued).toBe(3);
+      expect(store.choices().length).toBe(3);
+    });
+
+    it('refuses the choice set rather than publishing a subset when the server stops short', () => {
+      store.loadChoices();
+      expectRequest('GET', '/api/v1/modules').flush(choicePage([listRow({ moduleId: 1 })], 90));
+      expectRequest('GET', '/api/v1/modules').flush(choicePage([], 90, 1));
+
+      expect(store.choices())
+        .withContext('an incomplete choice set that looks complete is the defect being removed')
+        .toEqual([]);
+      expect(store.choicesTotal()).toBe(0);
+      expect(store.choicesLoading()).toBeFalse();
+      // The picker read's own failure identity, not the route's: the grid read addresses the same
+      // endpoint, and the transfer screens filter their refusal surface on this name.
+      expect(store.failure()?.operation).toBe('loadChoices');
+    });
+
+    it('stops at the page ceiling by refusing rather than by truncating', () => {
+      store.loadChoices();
+
+      let issued = 0;
+      let maximumInFlight = 0;
+
+      for (;;) {
+        const outstanding = outstandingListings();
+
+        if (outstanding.length === 0) {
+          break;
+        }
+
+        maximumInFlight = Math.max(maximumInFlight, outstanding.length);
+        issued += outstanding.length;
+        outstanding.forEach((request) => {
+          const pageIndex = Number(request.request.params.get('pageIndex') ?? '0');
+
+          // One row per page against an unreachable total, which is what keeps the walk going: the
+          // walk continues on the TOTAL rather than on a full page.
+          request.flush(
+            choicePage([listRow({ moduleId: pageIndex })], Number.MAX_SAFE_INTEGER, pageIndex),
+          );
+        });
+      }
+
+      expect(maximumInFlight).toBe(1);
+      expect(issued).toBe(MAXIMUM_CHOICE_PAGES);
+      expect(store.choices()).toEqual([]);
+      expect(store.choicesTotal()).toBe(0);
+      // ⚠ THE PICKER READ HAS ITS OWN FAILURE IDENTITY. It shares an endpoint with the grid read, so
+      // naming the route would make a picker refusal indistinguishable from any listing refusal
+      // anywhere in the application — and the transfer screens filter their refusal surface on exactly
+      // this name. `module-import.component.ts` names `loadChoices` in its own operation list.
+      expect(store.failure()?.operation).toBe('loadChoices');
+      expect(store.choicesLoading()).toBeFalse();
+    });
+
+    it('leaves the browsable listing entirely alone', () => {
+      // The separation the choices slice exists for: opening a picker must not resize, re-order or
+      // repaginate a listing a sibling screen is showing.
+      // The size is set FIRST: changing it deliberately returns to the first page, so the reverse
+      // order would leave the coordinate at zero and prove nothing.
+      store.setPageSize(25);
+      store.setPageIndex(3);
+      loadListWith([listRow({ moduleId: 7 })], 3, 25);
+
+      store.loadChoices();
+      expectRequest('GET', '/api/v1/modules').flush(choicePage([listRow({ moduleId: 9 })], 1));
+
+      expect(store.query().pageIndex).toBe(3);
+      expect(store.query().pageSize).toBe(25);
+      expect(store.page().items.map((row) => row.moduleId)).toEqual([7]);
+      expect(store.choices().map((row) => row.moduleId)).toEqual([9]);
+    });
+  });
+
   describe('unpaged lookups', () => {
     it('sends NO paging, ordering or filtering parameter when reading the pages of a portal', () => {
       // The listing's own paging arguments must not leak onto a different request. Absence is asserted with
@@ -2106,9 +2342,11 @@ describe('ModuleStore', () => {
   // perform no permission check of their own and render BOTH of their branches as a yellow warning, with the
   // untrusted message HTML-encoded before display.
   //
-  // The rate-limit status does not arise on any endpoint in this feature. That policy is partitioned by
-  // address and applied to the authentication routes alone, so no specification here asserts one - writing a
-  // case for a status no request can elicit would mislead a reader more than saying nothing would.
+  // The rate-limit status does not arise on any endpoint in this feature. The server's limiter is global and
+  // classifies a request from endpoint metadata - the `[CredentialEndpoint]` marker - falling back to a whole
+  // credential path segment on a body-carrying method, and the module actions carry neither, so no
+  // specification here asserts one: writing a case for a status no request can elicit would mislead a reader
+  // more than saying nothing would.
   describe('failure handling', () => {
     it('records a refusal on an all-pages replacement at WARNING severity, not as an error', () => {
       // The server enforces a rule of its own on the all-pages flag and no check anticipating it exists in
@@ -2575,6 +2813,251 @@ describe('ModuleStore', () => {
       expect(store.selectedTabModuleId()).toBeUndefined();
     });
   });
+  // ===================================================================================================
+  // THE PICKER READS EVERY PAGE, BECAUSE IT OFFERS NO PAGER
+  // ===================================================================================================
+  //
+  // `loadChoices` used to issue ONE request for the widest page the endpoint accepts and publish its
+  // items as the whole set. The prose defended that as "a documented limit of a picker rather than a
+  // silent truncation" — documented in a source comment, which is not a place an operator can read, so
+  // it was a silent truncation.
+  //
+  // The consumer is what makes it serious. This slice feeds the import screen's TARGET picker, so on a
+  // tenant with more placements than one page the modules past the boundary could not be chosen as an
+  // import target at all: absent from the list, no pager to reach them, no indication anything had been
+  // left out, and nothing an operator could do about it. It is a data-loss defect wearing the costume of
+  // a page size.
+  //
+  // Every property below is about the walk's TERMINATION or about the total it publishes, because those
+  // are the two things that decide whether a shortfall stays visible.
+  describe('the picker walks every page', () => {
+    /** Consumes one page request of the walk, asserted by index and by the width it asks for. */
+    function expectChoicePage(pageIndex: number): TestRequest {
+      const call = httpMock.expectOne(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === '/api/v1/modules' &&
+          candidate.params.get('pageIndex') === String(pageIndex),
+        `the picker's page ${pageIndex}`,
+      );
+
+      // The widest page the validator admits, every time. Narrowing a later request would multiply the
+      // round trips for no benefit; widening one would be refused at field level by the server.
+      expect(call.request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+
+      return call;
+    }
+
+    it('asks for ONE page when the first page is short, which is the ordinary case', () => {
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(3), 3));
+
+      // A short page is the last page by definition, so no second request is made. The common case must
+      // not have been made more expensive by the walk: a tenant whose modules fit on one page still costs
+      // exactly one round trip.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+
+      expect(store.choices().length).toBe(3);
+      expect(store.choicesTotalCount()).toBe(3);
+      expect(store.choicesComplete()).toBeTrue();
+      expect(store.choicesLoading()).toBeFalse();
+    });
+
+    it('walks on past a FULL page and joins every page into one set', () => {
+      // ⚠ THE DEFECT, EXPRESSED AS A TEST. Before the walk this store published the first page's rows and
+      // stopped, so the assertion below would have found MAX_PAGE_SIZE choices and reported success.
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE + 7));
+      expectChoicePage(1).flush(walkPage(distinctRows(7, MAX_PAGE_SIZE + 1), MAX_PAGE_SIZE + 7, 1));
+
+      expect(store.choices().length).toBe(MAX_PAGE_SIZE + 7);
+
+      // Joined in REQUEST ORDER, so the assembled order is the server's rather than a second, disagreeing
+      // client-side opinion about an ordering the API already owns.
+      expect(store.choices()[0].moduleId).toBe(1);
+      expect(store.choices()[MAX_PAGE_SIZE].moduleId).toBe(MAX_PAGE_SIZE + 1);
+      expect(store.choicesComplete()).toBeTrue();
+      expect(store.choicesLoading()).toBeFalse();
+    });
+
+    it('crosses THREE pages, so the walk is a loop rather than one extra request', () => {
+      store.loadChoices();
+
+      const total = MAX_PAGE_SIZE * 2 + 1;
+
+      expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), total));
+      expectChoicePage(1).flush(walkPage(distinctRows(MAX_PAGE_SIZE, MAX_PAGE_SIZE + 1), total, 1));
+      expectChoicePage(2).flush(walkPage(distinctRows(1, total), total, 2));
+
+      expect(store.choices().length).toBe(total);
+      expect(store.choicesComplete()).toBeTrue();
+    });
+
+    it("stops on the SERVER'S OWN TOTAL when a final page is padded to full width", () => {
+      // Belt and braces against a server that answers a full page even though it has nothing more. Without
+      // this condition the walk would keep asking while the row count kept rising, and the short-page test
+      // would never fire.
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE));
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+
+      expect(store.choices().length).toBe(MAX_PAGE_SIZE);
+      expect(store.choicesComplete()).toBeTrue();
+    });
+
+    it("publishes the SERVER'S total and not the row count", () => {
+      // ⚠ THE TOTAL IS REPORTED, NEVER RECOMPUTED, and this is the case that tells the two apart. The
+      // server contradicts itself in the one direction that still completes a walk: it supplies THREE
+      // placements while claiming there are two. The walk ends — everything claimed has been gathered —
+      // and the store publishes the claim rather than the row count it could have counted for itself.
+      //
+      // ⚠ THE OPPOSITE DISCREPANCY IS NOT ASSERTED HERE BECAUSE IT CANNOT REACH THIS SLICE AT ALL.
+      // A server claiming MORE than it supplies no longer produces a published-but-short set for a
+      // reader to detect: the walk asks for the next page and, if the server has nothing further,
+      // REFUSES — see the case above, where the choice set comes back empty with a failure recorded.
+      // Detecting a truncated set was the earlier answer to that defect; not publishing one is the
+      // present answer, and it subsumes it.
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(3), 2));
+
+      expect(store.choices().length).toBe(3);
+      expect(store.choicesTotalCount())
+        .withContext("the server's claim, reported even when the rows contradict it")
+        .toBe(2);
+      expect(store.choicesTotal())
+        .withContext('both published names answer from the one slice')
+        .toBe(2);
+
+      // Nothing further is asked: everything the server claimed has been gathered.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+    });
+
+    it('sends NO narrowing, ordering or free-text filter on any page of the walk', () => {
+      // The picker wants every placement, so it sends the paging pair and nothing else. Sending the
+      // browsable listing's coordinates would make opening a picker depend on whichever page a sibling
+      // listing happened to be on.
+      // ⚠ THE ORDER OF THESE FIVE CALLS IS LOAD-BEARING, and getting it wrong is what this note prevents
+      // a later edit from doing. `setSort`, `setQuery` and `setIncludeDeleted` each RETURN TO THE FIRST
+      // PAGE by design — a narrowing that kept the operator on page four of a result set that now has two
+      // would show them an empty grid — so every one of them must be set BEFORE the page index, or the
+      // index asserted below is reset by the store's own correct behaviour rather than by the walk.
+      store.setSort('moduleTitle', 'Descending');
+      store.setQuery('news');
+      store.setIncludeDeleted(true);
+      store.setPageSize(50);
+      store.setPageIndex(3);
+
+      store.loadChoices();
+
+      const first = expectChoicePage(0);
+
+      expect(first.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize']);
+
+      first.flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE + 1));
+
+      const second = expectChoicePage(1);
+
+      // Asserted on the SECOND page too: a walk that assembled its first request correctly and then
+      // widened later ones would leak the listing's state on every page but the first.
+      expect(second.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize']);
+
+      second.flush(walkPage(distinctRows(1, MAX_PAGE_SIZE + 1), MAX_PAGE_SIZE + 1, 1));
+
+      // And the listing this store also holds is untouched by the whole walk.
+      expect(store.query().pageIndex).toBe(3);
+      expect(store.query().pageSize).toBe(50);
+      expect(store.modules().length).toBe(0);
+    });
+
+    it('reports a mid-walk failure once and stops asking', () => {
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE + 5));
+      expectChoicePage(1).flush(problem('server_error', 500, 'The listing could not be read.'), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      // An error terminates the whole stream, so no third page is requested and the partial rows are NOT
+      // published as though the walk had succeeded — a half-walk committed as a complete set would be the
+      // original defect with extra steps.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+
+      expect(store.choices().length).toBe(0);
+      expect(store.choicesLoading()).toBeFalse();
+      // The picker read's own identity — see the note on the shortfall case above.
+      expect(store.failure()?.operation).toBe('loadChoices');
+    });
+
+    it('cancels the WHOLE walk from one handle, mid-flight', () => {
+      // The walk is one cold observable behind one subscription, so the handle the store keeps releases
+      // whichever page is outstanding. Holding a handle per page would leave the walk able to continue
+      // requesting after a reset.
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE + 5));
+
+      const second = expectChoicePage(1);
+
+      store.reset();
+
+      expect(second.cancelled)
+        .withContext('the page in flight is abandoned, not merely ignored')
+        .toBeTrue();
+      expect(store.choices().length).toBe(0);
+      expect(store.choicesTotalCount())
+        .withContext("the previous session's total must not outlive its rows")
+        .toBe(0);
+      expect(store.choicesLoading()).toBeFalse();
+    });
+
+    it('abandons an earlier walk when a second is issued', () => {
+      store.loadChoices();
+
+      const first = expectChoicePage(0);
+
+      store.loadChoices();
+
+      const second = expectChoicePage(0);
+
+      expect(first.cancelled).toBeTrue();
+      expect(second.cancelled).toBeFalse();
+
+      second.flush(walkPage(distinctRows(2), 2));
+
+      expect(store.choices().length).toBe(2);
+    });
+
+    it('publishes an unpaged envelope, so no consumer can build a pager from it', () => {
+      // The joined result reports the coordinates the paging contract publishes for an unpaged answer, and
+      // this slice deliberately exposes no page index and no page size of its own — the walk has already
+      // been past every page there is, so a pager over it could not change anything.
+      store.loadChoices();
+
+      expectChoicePage(0).flush(walkPage(distinctRows(4), 4));
+
+      expect('choicesPageIndex' in store).toBeFalse();
+      expect('choicesPageSize' in store).toBeFalse();
+      expect('setChoicesPageIndex' in store).toBeFalse();
+
+      // The browsable listing's own coordinates remain the only paging state in this store.
+      expect(store.meta().totalCount).toBe(0);
+    });
+  });
+
   // ---------------------------------------------------------------------------------------------------
   // SESSION ISOLATION AND READ CONCURRENCY
   //
@@ -2741,6 +3224,134 @@ describe('ModuleStore', () => {
       expect(store.moduleLoading()).toBeFalse();
     });
 
+    it('does NOT abandon the definition CATALOGUE when a single definition is read', () => {
+      // ⚠ CANCELLATION IS PER SLICE, AND THIS IS THE CASE THAT PROVES IT. The catalogue and the one
+      // addressed definition are two slices answered by two endpoints, and a read of the second used to
+      // release the first's handle as well. The consequence was silent and unrecoverable from the
+      // screen: a pane that had dispatched the catalogue read got no rows, no failure and no request
+      // outstanding to fill them, so it would sit empty until something told it to read again — and
+      // nothing ever learned it had been interrupted.
+      store.loadDefinitions();
+
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions');
+
+      store.loadDefinition(4);
+
+      const one = expectRequest('GET', '/api/v1/module-definitions/4');
+
+      expect(catalogue.cancelled)
+        .withContext('reading one definition must not abort the catalogue read')
+        .toBeFalse();
+      expect(one.cancelled).toBeFalse();
+
+      one.flush(envelope(definition({ moduleDefId: 4 })));
+      catalogue.flush(envelope([definition({ moduleDefId: 4 }), definition({ moduleDefId: 5 })]));
+
+      expect(store.definition()?.moduleDefId).toBe(4);
+      expect(store.definitions().length)
+        .withContext('the catalogue answered, because it was never abandoned')
+        .toBe(2);
+    });
+
+    it("does NOT abandon the definition CATALOGUE when a bundle's definitions are read", () => {
+      // The same defect, on the other of the two commands that carried it. The bundle's definitions are
+      // a third slice with a third handle.
+      store.loadDefinitions();
+
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions');
+
+      store.loadDesktopDefinitions(2);
+
+      const bundle = expectRequest('GET', '/api/v1/module-definitions/desktop-modules/2');
+
+      expect(catalogue.cancelled)
+        .withContext("reading a bundle's definitions must not abort the catalogue read")
+        .toBeFalse();
+
+      bundle.flush(envelope([definition({ moduleDefId: 7 })]));
+      catalogue.flush(envelope([definition({ moduleDefId: 7 })]));
+
+      expect(store.desktopDefinitions().length).toBe(1);
+      expect(store.definitions().length).toBe(1);
+    });
+
+    it('abandons the earlier SINGLE-definition read when a second is issued', () => {
+      // Own-slice supersession still applies, which is the other half of the same rule: each read
+      // cancels its own predecessor and nothing else.
+      store.loadDefinition(4);
+
+      const first = expectRequest('GET', '/api/v1/module-definitions/4');
+
+      store.loadDefinition(5);
+
+      const second = expectRequest('GET', '/api/v1/module-definitions/5');
+
+      expect(first.cancelled).toBeTrue();
+      expect(second.cancelled).toBeFalse();
+
+      second.flush(envelope(definition({ moduleDefId: 5 })));
+
+      expect(store.definition()?.moduleDefId).toBe(5);
+    });
+
+    it('abandons the earlier BUNDLE-definitions read when a second is issued', () => {
+      store.loadDesktopDefinitions(2);
+
+      const first = expectRequest('GET', '/api/v1/module-definitions/desktop-modules/2');
+
+      store.loadDesktopDefinitions(3);
+
+      const second = expectRequest('GET', '/api/v1/module-definitions/desktop-modules/3');
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(envelope([definition({ moduleDefId: 9 })]));
+
+      expect(store.desktopDefinitions().length).toBe(1);
+      expect(store.desktopDefinitions()[0].moduleDefId).toBe(9);
+    });
+
+    it('runs a listing, a hierarchy, a module, a settings and a definition read side by side', () => {
+      // ⚠ THE WHOLE INVARIANT IN ONE CASE. Five different reads, five different handles, all in the air
+      // at once: none may abort another, because a screen composed of several panes dispatches exactly
+      // this way and each pane owns its own slice.
+      store.loadModules();
+      const listing = expectRequest('GET', '/api/v1/modules');
+
+      store.loadTabs(0);
+      const hierarchy = expectRequest('GET', '/api/v1/portals/0/tabs');
+
+      store.loadModule(1);
+      const module = expectRequest('GET', '/api/v1/modules/1');
+
+      store.loadSettings(1);
+      const settings = expectRequest('GET', '/api/v1/modules/1/settings');
+
+      store.loadDefinitions();
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions');
+
+      for (const request of [listing, hierarchy, module, settings, catalogue]) {
+        expect(request.cancelled)
+          .withContext(`${request.request.urlWithParams} was aborted by a read of another slice`)
+          .toBeFalse();
+      }
+
+      listing.flush(pagedBody([listRow({ moduleId: 1 })], 0, 10));
+      hierarchy.flush(envelope([tabRow({ tabId: 11 })]));
+      module.flush(envelope(detail({ moduleId: 1 })));
+      settings.flush(envelope(settingsBag()));
+      catalogue.flush(envelope([definition({ moduleDefId: 4 })]));
+
+      expect(store.modules().length).toBe(1);
+      expect(store.tabs().length).toBe(1);
+      expect(store.module()?.moduleId).toBe(1);
+      expect(store.settings()).not.toBeNull();
+      expect(store.definitions().length).toBe(1);
+      expect(store.busy())
+        .withContext('every read settled, so nothing is still reported as in flight')
+        .toBeFalse();
+    });
+
     it('does NOT abandon a write when a second write is issued', () => {
       // The asymmetry with reads, asserted rather than assumed. Two writes are two distinct
       // instructions, so abandoning the first because a second was issued would drop an outcome the
@@ -2774,6 +3385,217 @@ describe('ModuleStore', () => {
           request.flush(pagedBody([], 0, 10));
         }
       }
+    });
+  });
+
+  // ===================================================================================================
+  // PROOF - REQUEST-HANDLE OWNERSHIP, PICKER LIFETIME AND THE UNREACHABLE-SERVER CASE
+  // ===================================================================================================
+  //
+  // Three defects that were invisible to every specification above, because each one produced a
+  // plausible-looking state rather than an error: a read cancelled by an unrelated command, a read
+  // outliving the screen that started it, and an unreachable server reported as a refusal.
+
+  describe('request-handle ownership', () => {
+    it('does not cancel the definition catalogue when one definition is read', () => {
+      // ⚠ THE DEFECT: `loadDefinition` released `definitionsRequest` — the CATALOGUE handle it does
+      // not own. Because a cancelled subscription delivers NEITHER a value NOR an error, the screen
+      // waiting on the catalogue was left with an empty list, no failure to explain it, and no
+      // request in flight to finish it.
+      store.loadDefinitions();
+
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions');
+
+      store.loadDefinition(3);
+
+      const single = expectRequest('GET', '/api/v1/module-definitions/3');
+
+      expect(catalogue.cancelled)
+        .withContext('reading one definition must not abandon the catalogue read')
+        .toBeFalse();
+
+      single.flush(envelope(definition({ moduleDefId: 3 })));
+      catalogue.flush(envelope([definition({ moduleDefId: 9 })]));
+
+      expect(store.definitions().length).toBe(1);
+      expect(store.definition()?.moduleDefId).toBe(3);
+    });
+
+    it('does not cancel the definition catalogue when a bundle\'s definitions are read', () => {
+      store.loadDefinitions();
+
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions');
+
+      store.loadDesktopDefinitions(5);
+
+      const bundle = expectRequest('GET', '/api/v1/module-definitions/desktop-modules/5');
+
+      expect(catalogue.cancelled)
+        .withContext('reading one bundle must not abandon the catalogue read')
+        .toBeFalse();
+
+      bundle.flush(envelope([definition({ moduleDefId: 5 })]));
+      catalogue.flush(envelope([definition({ moduleDefId: 9 })]));
+
+      expect(store.desktopDefinitions().length).toBe(1);
+      expect(store.definitions().length).toBe(1);
+    });
+
+    it('does not cancel the browsable listing when the picker choices are read', () => {
+      // The complement on the listing side: the two reads address one endpoint but own separate
+      // handles, so opening a picker must not abandon a grid read.
+      store.loadModules();
+
+      const grid = expectRequest('GET', '/api/v1/modules');
+
+      store.loadChoices();
+
+      const both = httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+
+      expect(grid.cancelled).toBeFalse();
+
+      for (const request of both) {
+        if (!request.cancelled) {
+          request.flush(pagedBody([], 0, 10));
+        }
+      }
+    });
+
+    it('supersedes only its own slice when the same read is restarted', () => {
+      // The invariant's other half: one cancellation per method, and it must still happen.
+      store.loadDefinitions();
+
+      const first = expectRequest('GET', '/api/v1/module-definitions');
+
+      store.loadDefinitions();
+
+      const second = expectRequest('GET', '/api/v1/module-definitions');
+
+      expect(first.cancelled).toBeTrue();
+
+      second.flush(envelope([definition()]));
+    });
+  });
+
+  describe('the picker-choice read', () => {
+    it('records its failure against its own command rather than the listing', () => {
+      // ⚠ THE DEFECT: the choice read recorded `listModules`, so a screen filtering the failure slot
+      // for its own work claimed every grid read in the application, and a listing screen was shown
+      // refusals raised by a picker it knows nothing about.
+      store.loadChoices();
+
+      expectRequest('GET', '/api/v1/modules').flush(
+        { title: 'Forbidden', status: 403 },
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expect(store.failure()?.operation).toBe('loadChoices');
+    });
+
+    it('releases the read and lowers its busy term when the screen lets it go', () => {
+      // The lease. Without it the store reported itself busy on account of a destroyed component, so
+      // whatever screen replaced it had its affordances disabled for a read nobody was waiting on.
+      store.loadChoices();
+
+      const pending = expectRequest('GET', '/api/v1/modules');
+
+      expect(store.choicesLoading()).toBeTrue();
+      expect(store.busy()).toBeTrue();
+
+      store.cancelChoices();
+
+      expect(pending.cancelled)
+        .withContext('the request is abandoned, not merely ignored')
+        .toBeTrue();
+      expect(store.choicesLoading()).toBeFalse();
+      expect(store.busy()).toBeFalse();
+    });
+
+    it('leaves a sibling read untouched when the picker releases its own', () => {
+      store.loadDefinitions();
+
+      const catalogue = expectRequest('GET', '/api/v1/module-definitions');
+
+      store.loadChoices();
+
+      const choices = httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+      );
+
+      store.cancelChoices();
+
+      expect(catalogue.cancelled)
+        .withContext('releasing the picker must not release a sibling slice')
+        .toBeFalse();
+
+      catalogue.flush(envelope([definition()]));
+
+      for (const request of choices) {
+        if (!request.cancelled) {
+          request.flush(pagedBody([], 0, 10));
+        }
+      }
+    });
+
+    it('keeps the choices it already holds, because they are a lookup and not a selection', () => {
+      store.loadChoices();
+      expectRequest('GET', '/api/v1/modules').flush(
+        pagedBody([listRow({ moduleId: 0, moduleTitle: 'Announcements' })], 0, 200),
+      );
+
+      store.cancelChoices();
+
+      expect(store.choices().length).toBe(1);
+    });
+
+    it('is idempotent with nothing outstanding', () => {
+      expect(() => {
+        store.cancelChoices();
+        store.cancelChoices();
+      }).not.toThrow();
+      expect(store.choicesLoading()).toBeFalse();
+    });
+  });
+
+  describe('an unreachable server', () => {
+    it('publishes the transport status alone rather than the progress event in the body slot', () => {
+      // ⚠ THE DEFECT: the body was inspected first, and when no response arrives the framework puts a
+      // DOM `ProgressEvent` in the body slot. A progress event carries a string `type`, and the
+      // problem-document predicate is permissive about absence, so the event was accepted AS the
+      // document — the failure-code parser then read `'error'` as a candidate failure type and the
+      // severity and sentence were chosen for a response that never existed.
+      store.loadModules();
+
+      expectRequest('GET', '/api/v1/modules').error(new ProgressEvent('error'), {
+        status: 0,
+        statusText: 'Unknown Error',
+      });
+
+      const failure = store.failure();
+
+      expect(failure?.operation).toBe('listModules');
+      expect(failure?.problem).toEqual({ status: 0 });
+      expect(failure?.problem?.type)
+        .withContext('a progress event type must never be published as a problem type')
+        .toBeUndefined();
+      expect(failure?.code)
+        .withContext('an unreachable server publishes no application failure code')
+        .toBeNull();
+    });
+
+    it('still resolves a real problem document when the server did answer', () => {
+      // The complement: the status-first ordering must not shadow a genuine body.
+      store.loadModules();
+
+      expectRequest('GET', '/api/v1/modules').flush(
+        { type: 'urn:dnnmigration:error:module.not_portable', title: 'Refused', status: 409 },
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      expect(store.failure()?.problem?.status).toBe(409);
+      expect(store.failure()?.code).toBe('module.not_portable');
     });
   });
 });

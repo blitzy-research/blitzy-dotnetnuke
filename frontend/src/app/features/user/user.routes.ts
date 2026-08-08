@@ -1,48 +1,53 @@
 /**
- * The account administration feature's lazy route barrel: five child routes, no logic.
+ * The account administration feature's lazy route barrel: six child routes, no logic.
  *
- * LEGACY LINEAGE, MEASURED
- * ------------------------
- * Two legacy controls are replaced by the five children below.
+ * MIGRATION: the legacy five-tab container is replaced by ROUTING, and the tab set is deliberately not
+ * reproduced one-for-one. `cmdUser` becomes `:userId`, `cmdProfile` becomes `:userId/profile` and
+ * `cmdPassword` becomes `:userId/password`; `cmdRoles` becomes no route here at all, and `cmdServices` and
+ * the sixth `pnlRegister` panel are DROPPED, because there is no member-services endpoint server-side and
+ * public self-registration is not part of an administration console. Dropping a tab is a functional reduction
+ * rather than a re-arrangement, which is why it is recorded rather than left to be inferred from an absence.
  *
- * `Website/admin/Users/manageusers.ascx` (83 lines) is the true analogue of this file. It
- * is a TABBED CONTAINER rather than a form: `pnlTabs` (L11-L47) holds five
- * `dnn:commandbutton` tabs — `cmdUser` (L15), `cmdRoles` (L21), `cmdPassword` (L27),
- * `cmdProfile` (L33) and `cmdServices` (L39), every one of them
- * `causesvalidation="False"` — and each toggles the visibility of one of six server-side
- * panels: `pnlUser` (L48-L66), `pnlRoles` (L67), `pnlPassword` (L70), `pnlProfile` (L73),
- * `pnlServices` (L76) and `pnlRegister` (L79). Its workflow authority is the code-behind
- * alongside it (973 lines), whose entire tab-switching apparatus the router now performs.
+ * MIGRATION: no per-account roles route exists in the application's closed route table, so the legacy
+ * `cmdRoles` tab and the grid's role-membership column have no counterpart here. Role membership is reached
+ * from the ROLE side, at `/roles/:roleId/users`, and the listing screen therefore emits a plain address
+ * string to it. Features are strict siblings that never import one another, so nothing here references the
+ * role feature and no route is added for it.
  *
- * `Website/admin/Users/users.ascx` (83 lines) is the account listing: an `asp:datagrid`
- * (`grdUsers`, L22) with three image command columns — Edit (L32), Delete (L33) and
- * UserRoles (L34) — plus a paging control (L83). Its navigation is measured in
- * `Website/admin/Users/Users.ascx.vb`: L530 builds the Edit address with
- * `EditUrl("UserId", "KEYFIELD", "Edit", UserFilter(False))` and L542 builds the
- * role-membership address with `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)`.
+ * MIGRATION: the two remaining account screens - the tenant's membership settings and the profile-property
+ * declarations - are mounted by `app.routes.ts` as top-level leaves of its own. They are deliberately NOT
+ * children of this barrel even though their components live in this feature folder, because they configure
+ * the TENANT rather than one account, and mounting them here would publish each screen at two addresses and
+ * mount each component twice.
  *
  * MIGRATION: the five-tab `pnlTabs` container is replaced by ROUTING, and the tab set is
  * deliberately not reproduced one-for-one. `cmdUser` becomes `:userId`, `cmdProfile`
- * becomes `:userId/profile`, `cmdPassword` becomes `:userId/password`. `cmdRoles` becomes
- * no route here at all — see the next note. `cmdServices` and the sixth panel
- * `pnlRegister` are DROPPED: there is no member-services endpoint server-side, and public
- * self-registration is not part of an administration console. Dropping a tab is a
- * functional reduction rather than a re-arrangement, which is why it is recorded here
- * instead of being left to be inferred from an absence.
+ * becomes `:userId/profile`, `cmdPassword` becomes `:userId/password`, and `cmdServices`
+ * becomes `:userId/services`. `cmdRoles` becomes no route here at all — see the next note.
+ * The sixth panel `pnlRegister` is DROPPED: public self-registration is not part of an
+ * administration console. Dropping a tab is a functional reduction rather than a
+ * re-arrangement, which is why it is recorded here instead of being left to be inferred
+ * from an absence.
  *
- * MIGRATION: no per-account roles route exists in the application's closed route table, so
- * the legacy `cmdRoles` tab and the grid's `UserRoles` column (`users.ascx:L34`) have no
- * counterpart in this barrel. Role membership is reached from the ROLE side, at
- * `/roles/:roleId/users`, and the listing screen therefore emits a plain address string to
- * it. Features are strict siblings that never import one another, so nothing here
- * references the role feature and no route is added for it.
+ * ⚠ THE SERVICES ROUTE WAS ITSELF A DOCUMENTED OMISSION UNTIL THE ENDPOINTS EXISTED. An
+ * earlier revision of this note recorded `cmdServices` as dropped "because there is no
+ * member-services endpoint server-side", which was true of the API as it then stood; the
+ * account resource now publishes the five self-service endpoints the legacy panel needed,
+ * so the omission is withdrawn and the tab has a route again.
  *
- * MIGRATION: the two remaining account screens — the tenant's membership settings and the
- * profile-property declarations — are mounted by `app.routes.ts` as top-level leaves of its
- * own, at L240 and L262. They are deliberately NOT children of this barrel even though
- * their components live in this feature folder, because they configure the TENANT rather
- * than one account. Adding them here would publish each screen at two addresses and mount
- * each component twice.
+ * Declaration order is load-bearing. The router matches in declaration order and takes the first match, and
+ * `:userId` matches ANY single segment - including the literal `new`. `'new'` must therefore stay above
+ * `':userId'`, or `/users/new` resolves to the edit screen carrying the string `"new"` as an account key,
+ * which the API answers with a refusal rather than a form.
+ *
+ * MIGRATION: the legacy imperative, per-page access test is replaced by a declarative policy declaration, and
+ * the policy vocabulary is CLOSED. A child either names one policy the client gate has registered or names
+ * none at all, and naming one is always paired with attaching the gate - a policy without a gate declares an
+ * intention nothing acts on, and a gate without a policy fails closed and refuses everybody. Account
+ * administration maps to the tenant-administration policy declared on the four children below, which asks
+ * about the caller WITHIN a tenant and resolves without needing a subject identifier. The gate is advisory
+ * and the server is the authority: every address below is re-authorised server-side and refused with HTTP 403
+ * on its own account, so admission here never implies the next request will succeed.
  *
  * HOW THIS BARREL IS MOUNTED, AND WHY EVERY PATH BELOW IS RELATIVE
  * ---------------------------------------------------------------
@@ -70,15 +75,48 @@
  * the client gate has registered or names none at all, and naming one is always paired with
  * attaching the gate — the two travel together, because a policy without a gate declares an
  * intention nothing acts on, and a gate without a policy fails closed and refuses
- * everybody. Account administration maps to the tenant-administration policy declared on
- * the four children below, which asks about the caller WITHIN a tenant and resolves
- * without needing a subject identifier.
+ * everybody.
  *
- * The legacy predicate is measured rather than assumed:
+ * ⚠ EACH CHILD DECLARES THE POLICY ITS OWN PRIMARY ENDPOINT DECLARES, READ FROM THE
+ * CONTROLLER. That rule is what makes these declarations useful rather than merely present,
+ * and getting it wrong is silent in the worst direction: a route that declares a NARROWER
+ * policy than its endpoint refuses a caller the server would have admitted, and the caller
+ * never reaches the screen to find out. Three of the four children below are administrative
+ * and declare tenant administration, matching `UsersController.cs:L451` (create), `:L493`
+ * (update) and `:L541` (delete). The two SELF-SERVICE children do not, because their
+ * endpoints do not:
+ *
+ *   * `:userId/profile` declares `AccountOwnerOrPortalAdministrator`, matching
+ *     `UsersController.cs:L888` (read) and `:L927` (write). The profile is a resource the
+ *     account holder and its tenant's administrator both legitimately reach.
+ *   * `:userId/password` declares `AccountOwner`, matching `UsersController.cs:L576`. A
+ *     credential CHANGE presents the current credential, so only its holder can perform
+ *     one; an administrator who must intervene uses the reset, which is a different
+ *     endpoint (`:L627`) carrying tenant administration and recorded as its own act.
+ *
+ * MIGRATION: a previous revision declared tenant administration on BOTH self-service
+ * children. That was a defect rather than a conservative choice, and it is worth recording
+ * because the failure was invisible from this file: an ordinary account holder was turned
+ * away from its own profile and its own password change — the two screens a blocking
+ * remediation exists to send it to — while the server would have admitted it. The gate
+ * being advisory does not soften that: an advisory gate that refuses is the only thing
+ * standing between the caller and a screen it is entitled to, because the request the
+ * server would have allowed is never issued.
+ *
+ * Both policies resolve their subject from the `:userId` segment, which is the name the
+ * server reads (`PortalAdministrationEvaluator.cs:L84`) and the name the gate resolves
+ * (`permission.guard.ts` `ACCOUNT_SCOPE_PARAM`). The segment is therefore load-bearing for
+ * authorisation as well as for loading, and renaming it would make the gate refuse both
+ * screens outright.
+ *
+ * The legacy predicate behind the ADMINISTRATIVE arm is measured rather than assumed:
  * `Library/Components/Users/UserModuleBase.vb:L287-L291` defines `IsAdmin` as
  * `UserInfo.IsInRole(PortalSettings.AdministratorRoleName)` combined with the host-account
- * flag, which is exactly what the client gate derives, and the code-behind refuses at L440 a caller who is
- * `Not IsAdmin And Not IsUser`.
+ * flag, which is exactly what the client gate derives. And the legacy screen itself had the
+ * self-service arm too: the code-behind refuses at L440 a caller who is
+ * `Not IsAdmin And Not IsUser` — an OR of administration and ownership, not administration
+ * alone — so admitting the account holder to its own screens is parity rather than a
+ * relaxation.
  *
  * ⚠ THE GATE IS ADVISORY AND THE SERVER IS THE AUTHORITY. Every address below is
  * re-authorised server-side against stored state and refused with HTTP 403 on its own
@@ -106,30 +144,38 @@ import type { Routes } from '@angular/router';
 import { permissionGuard } from '../../core/guards/permission.guard';
 
 /**
- * The five child routes mounted beneath `/users`.
+ * The six child routes mounted beneath `/users`.
  *
- * Named exactly as `app.routes.ts` resolves it — `m.USER_ROUTES` — and exported by name
- * rather than as a default: a rename would leave the dynamic import resolving to
- * `undefined` and take the whole `/users` tree to the catch-all, with no compile error to
- * report it.
+ * Named exactly as `app.routes.ts` resolves it — `m.USER_ROUTES` — and exported by name rather than as a
+ * default: a rename would leave the dynamic import resolving to `undefined` and take the whole `/users` tree
+ * to the catch-all, with no compile error to report it.
  */
 export const USER_ROUTES: Routes = [
   {
     /**
-     * `/users` — the account listing, replacing the `grdUsers` data grid of
-     * `Website/admin/Users/users.ascx` (L22) and its paging control (L83).
+     * This address is a live navigation target from three places that already exist: the account form
+     * navigates here after a record is created and again after one is deleted — the second reproducing the
+     * measured legacy redirect of the code-behind — and the membership settings screen links here from its
+     * header action slot. It is also the rail's entry for account administration.
      *
-     * This address is a live navigation target from three places that already exist: the
-     * account form navigates here after a record is created and again after one is deleted
-     * — the second reproducing the measured legacy redirect at L900 of the code-behind —
-     * and the membership settings screen links here from its header action slot. It is also
-     * the rail's entry for account administration.
+     * Carries no `canActivate` and names no policy: reading the listing is admitted to any signed-in
+     * operator by the parent's session gate, exactly as the sibling role barrel leaves its own listing
+     * ungated and gates only its writes. The mutating affordances inside the screen are gated by the
+     * permission directive, and the server answers 403 regardless — which is the only authority.
      *
      * ⚠ Carries no `canActivate` and names no policy: reading the listing is admitted to
-     * any signed-in operator by the parent's session gate, exactly as the sibling role
-     * barrel leaves its own listing ungated and gates only its writes. The mutating
-     * affordances inside the screen are gated by the permission directive, and the server
-     * answers 403 regardless — which is the only authority.
+     * any signed-in operator by the parent's session gate. The mutating affordances inside
+     * the screen are gated by the permission directive, and the server answers 403
+     * regardless — which is the only authority.
+     *
+     * ⚠ AND THAT IS A KNOWN DIVERGENCE FROM THE ENDPOINT, RECORDED RATHER THAN LEFT TO BE
+     * INFERRED. `UsersController.cs:L450` gates `GET /users` on tenant administration, so a
+     * caller without it reaches this screen and its first request is refused. An earlier
+     * revision of this note justified the omission by pointing at the sibling role barrel
+     * "leaving its own listing ungated" — that is no longer true; the role listing now
+     * declares the policy its class-gated controller requires. The claim was removed rather
+     * than restated because a justification that rests on another file's behaviour stops
+     * being a justification the moment that file changes.
      *
      * ⚠ Resolved by NAME, not as a default export: a rename would leave the dynamic import
      * yielding `undefined` and take the address to the catch-all with no compile error to
@@ -137,6 +183,8 @@ export const USER_ROUTES: Routes = [
      */
     path: '',
     title: 'User Accounts',
+    canActivate: [permissionGuard],
+    data: { permission: 'PortalAdministrator' },
     loadComponent: () =>
       import('./user-list/user-list.component').then((m) => m.UserListComponent),
   },
@@ -144,18 +192,17 @@ export const USER_ROUTES: Routes = [
     /**
      * `/users/new` — account creation, gated on the policy the create endpoint declares.
      *
-     * ⚠ MUST STAY ABOVE `':userId'`; see the ordering note in the file header. This is the
-     * literal segment the parameter route would otherwise swallow.
+     * MUST STAY ABOVE `':userId'`; see the ordering note in the file header. This is the literal segment the
+     * parameter route would otherwise swallow.
      *
-     * Reaches the same component as the edit route below: create and edit are unified into
-     * one screen, exactly as the legacy container hosted a single `dnn:user ctlUser`
-     * control (`manageusers.ascx:L60`) for both. The component chooses between its two
-     * measured headings — `Add New User` and `Edit User Accounts` — from whether an
+     * Reaches the same component as the edit route below: create and edit are unified into one screen,
+     * exactly as the legacy container hosted a single `dnn:user ctlUser` control for both. The component
+     * chooses between its two measured headings — `Add New User` and `Edit User Accounts` — from whether an
      * identifier arrived, so no mode flag is passed and none may be added.
      *
-     * Titled from the value the legacy screen actually rendered: `AddUser.Text` in the
-     * control's own resource file reads "Add New User", and its code-behind assigns exactly
-     * that resource to the screen title in create mode at L252-L253.
+     * Titled from the value the legacy screen actually rendered: `AddUser.Text` in the control's own
+     * resource file reads "Add New User", and its code-behind assigns exactly that resource to the screen
+     * title in create mode.
      */
     path: 'new',
     title: 'Add New User',
@@ -167,16 +214,13 @@ export const USER_ROUTES: Routes = [
     /**
      * `/users/{userId}` — account credentials; the legacy `cmdUser` tab.
      *
-     * Gated on tenant administration, the policy the update and delete endpoints declare.
-     * The legacy screen paired `dnn:user ctlUser` with `dnn:membership ctlMembership` in
-     * ONE row (`manageusers.ascx:L59-L63`), which is the measured evidence that the
-     * per-account membership actions — authorise, unauthorise, unlock and force a password
+     * Gated on tenant administration, the policy the update and delete endpoints declare. The legacy screen
+     * paired `dnn:user ctlUser` with `dnn:membership ctlMembership` in ONE row, which is the measured
+     * evidence that the per-account membership actions — authorise, unauthorise, unlock and force a password
      * change — belong on this detail screen rather than on a tenant-level settings page.
      *
-     * No custom matching and no coercion on the parameter: the component takes the raw
-     * string, and
-     * the sentinel discipline in the file header forbids reading any numeric value as
-     * absence.
+     * No custom matching and no coercion on the parameter: the component takes the raw string, and the
+     * sentinel discipline in the file header forbids reading any numeric value as absence.
      *
      * Titled from `ControlTitle_edit.Text` = "Edit User Accounts".
      */
@@ -188,23 +232,30 @@ export const USER_ROUTES: Routes = [
   },
   {
     /**
-     * `/users/{userId}/profile` — the account's profile properties; the legacy `cmdProfile`
-     * tab.
+     * `/users/{userId}/profile` — the account's profile properties; the legacy `cmdProfile` tab.
      *
-     * Gated on tenant administration. The component declares its own view-or-edit `mode`
-     * input WITH a default, and that default is the mode this administrative address wants,
-     * so no `mode` key is declared here — the router's input binder turns every additional
-     * data key into an implicit input binding, which is why `permission` is the only one
-     * present. The toggle is in-component state; there is deliberately no second,
-     * view-only profile route.
+     * Gated on OWNERSHIP-OR-TENANT-ADMINISTRATION, which is exactly what
+     * `UsersController.cs:L888` and `:L927` declare for the read and the write behind this
+     * screen. Declaring tenant administration alone here would refuse every account holder
+     * its own profile while the server stood ready to serve it.
      *
-     * Titled from `ControlTitle_profile.Text` = "Manage Profile", which is also the
-     * measured `cmdProfile.Text` tab label.
+     * The subject is the `:userId` segment: the gate resolves ownership by comparing that
+     * value against the signed-in account's own key and admits the tenant administrator on
+     * the other arm, in the same order the server evaluates them.
+     *
+     * The component declares its own view-or-edit `mode` input WITH a default, and that
+     * default is the mode this address wants, so no `mode` key is declared here — the
+     * router's input binder turns every additional data key into an implicit input binding,
+     * which is why `permission` is the only one present. The toggle is in-component state;
+     * there is deliberately no second, view-only profile route.
+     *
+     * Titled from `ControlTitle_profile.Text` = "Manage Profile", which is also the measured
+     * `cmdProfile.Text` tab label.
      */
     path: ':userId/profile',
     title: 'Manage Profile',
     canActivate: [permissionGuard],
-    data: { permission: 'PortalAdministrator' },
+    data: { permission: 'AccountOwnerOrPortalAdministrator' },
     loadComponent: () =>
       import('./user-profile/user-profile.component').then((m) => m.UserProfileComponent),
   },
@@ -212,27 +263,73 @@ export const USER_ROUTES: Routes = [
     /**
      * `/users/{userId}/password` — the account's password; the legacy `cmdPassword` tab.
      *
-     * Gated on tenant administration. The component documents this expectation of its own
-     * route in as many words — that the route reaching it "carries a tenant-administration
-     * permission and is guarded" — and still derives the predicate rather than assuming it,
+     * Gated on OWNERSHIP ALONE, with no administrator arm, because that is precisely what
+     * `UsersController.cs:L576` declares for the change endpoint this screen posts to. The
+     * policy catalogue records why the administrator arm is absent rather than overlooked:
+     * admitting one would collapse the change and the reset into a single operation whose
+     * effect depended on which fields were populated, which is the shape that previously
+     * allowed a credential to be overwritten with no proof of entitlement. An administrator
+     * who must intervene uses `POST {userId}/password-reset` (`:L627`), which carries tenant
+     * administration and is recorded as its own act.
+     *
+     * ⚠ THE POLICY IS DELIBERATELY NARROWER THAN THE OTHER FOUR CHILDREN, so a tenant
+     * administrator is refused HERE and admitted there. That asymmetry is the server's and
+     * is reproduced rather than smoothed over: declaring tenant administration would admit
+     * an operator to a form whose only endpoint would refuse them, and declaring it INSTEAD
+     * of ownership — which a previous revision did — refused the one caller the screen
+     * exists for.
+     *
+     * The component still derives its own predicate rather than trusting this declaration,
      * precisely because the gate is advisory and the server is the authority.
      *
-     * The component declares its `userId` input as REQUIRED, so this address can never be
-     * reached without the parameter; that is why there is no sibling route at
-     * `users/password`.
+     * The component declares its `userId` input as REQUIRED, so this address can never be reached without
+     * the parameter; that is why there is no sibling route at `users/password`.
      *
-     * Titled from the measured `cmdPassword.Text` tab label = "Manage Password". The
-     * nearer resource, `Password.ascx.resx` → `PasswordTitle.Text`, reads
-     * "Manage Password - {0} (Id: {1})" and is deliberately NOT used: a format string
-     * carrying placeholders cannot serve as a static document title, and inventing
-     * replacement wording would be worse than reusing the tab label the screen was reached
-     * by.
+     * Titled from the measured `cmdPassword.Text` tab label = "Manage Password". The nearer resource,
+     * `Password.ascx.resx` → `PasswordTitle.Text`, reads "Manage Password - {0} (Id: {1})" and is
+     * deliberately NOT used: a format string carrying placeholders cannot serve as a static document title,
+     * and inventing replacement wording would be worse than reusing the tab label the screen was reached by.
      */
     path: ':userId/password',
     title: 'Manage Password',
     canActivate: [permissionGuard],
-    data: { permission: 'PortalAdministrator' },
+    data: { permission: 'AccountOwner' },
     loadComponent: () =>
       import('./user-password/user-password.component').then((m) => m.UserPasswordComponent),
+  },
+  {
+    /**
+     * `/users/{userId}/services` — the account's own subscriptions; the legacy `cmdServices`
+     * tab.
+     *
+     * ⚠ GATED ON OWNERSHIP ALONE, WITH NO ADMINISTRATOR ARM, which is what all five of its
+     * endpoints declare. See the policy note in the file header for the measurement behind
+     * that: the legacy panel operated on the signed-in account and its container hid the tab
+     * from an administrator, so the union policy would publish an affordance the legacy
+     * application refused. An administrator's route to the same underlying rows is the role
+     * resource, at `/roles/:roleId/users`, where effective and expiry dates are administered.
+     *
+     * The component lives in the `membership-settings` folder rather than in one named after
+     * itself, because that is the folder the transformation plan maps
+     * `Website/admin/Users/MemberServices.ascx.vb` into. It is nevertheless a separate
+     * component from the tenant's account policy screen: the two differ in whose data they
+     * show and in who may see it, and one route cannot satisfy two authorisation policies.
+     *
+     * No custom matching and no coercion on the parameter: the component parses it with the
+     * shared route-identifier grammar, and the sentinel discipline in the file header forbids
+     * reading any numeric value as absence.
+     *
+     * Titled from the measured `cmdServices.Text` tab label = "Manage Services". The panel's
+     * own resource file declares no title, because it was a tab inside a container that
+     * supplied one.
+     */
+    path: ':userId/services',
+    title: 'Manage Services',
+    canActivate: [permissionGuard],
+    data: { permission: 'AccountOwner' },
+    loadComponent: () =>
+      import('./membership-settings/member-services/member-services.component').then(
+        (m) => m.MemberServicesComponent,
+      ),
   },
 ];

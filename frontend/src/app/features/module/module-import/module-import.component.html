@@ -122,7 +122,14 @@
       announcing behaviour is net-new for the same reason: neither legacy tree contains a single
       announcing attribute of any kind.
   -->
-  <app-error-banner [problem]="problem()" />
+  <!--
+    Both inputs are bound, and they are ORDERED. A failure carrying a problem document shows the
+    server's own explanation; a failure carrying none — which is what a contract-violating `200`
+    produces, because the decoders run downstream of the interceptor — shows the store's authored
+    summary instead. Before the second input existed a malformed picker listing left this screen with
+    no choices, no way to submit and no diagnostic anywhere.
+  -->
+  <app-error-banner [problem]="problem()" [fallbackMessage]="failureSummary()" />
 
   <!--
     MIGRATION: THERE IS A FORM ELEMENT NOW, WHERE THERE WAS NONE. The legacy markup declared no form of
@@ -180,11 +187,26 @@
           returning to it, would otherwise find a field giving no indication of being in error. It is
           bound only once the operator has engaged with the field, so an untouched field is never
           pre-emptively marked wrong, and it changes no rendered pixel.
+
+        BOTH CONTROLS ARE LOCKED WHILE THE SCREEN IS BUSY, AND THE BINDING IS `attr.disabled` RATHER THAN
+        `disabled` FOR A REASON THAT IS NOT STYLISTIC. A reactive form's disabled state belongs to the
+        FormControl, and a disabled control is EXCLUDED from `form.value` and from `form.valid` — so
+        locking through the directive would make the paired class's validity gate report a form with no
+        module and no document as valid, and Angular additionally warns that the two mechanisms are being
+        mixed. Setting the DOM attribute leaves the control's own state untouched: the field stops
+        accepting input and stops being reachable by keyboard, while the form still knows what is in it.
+
+        WHY LOCK AT ALL, given the paired class now refuses a stale dispatch outright: refusing is
+        correctness, and this is the affordance. An operator who can still edit the fields during a read
+        has every reason to expect the edit to take effect, and it does not — the attempt is abandoned
+        instead, silently and correctly. Removing the ability to make that edit is what stops it being
+        offered in the first place, so the two work together rather than one substituting for the other.
         -->
         <select
           [id]="moduleFieldId"
           formControlName="moduleId"
           (change)="onModuleSelected()"
+          [attr.disabled]="busy() ? '' : null"
           [attr.aria-invalid]="
             (form.controls.moduleId.touched || form.controls.moduleId.dirty) &&
             form.controls.moduleId.invalid
@@ -195,6 +217,25 @@
           }
         </select>
       </app-form-field>
+
+      @if (moduleChoiceSummary() !== null) {
+        <!--
+          ⚠ THE COUNT IS WHAT MAKES THE PICKER'S COMPLETENESS VISIBLE RATHER THAN MERELY PROMISED, and
+          it exists because an earlier revision of this screen offered a set that could silently omit
+          every placement after the hundredth. The store now walks every page and refuses instead of
+          truncating, so a rendered picker is a COMPLETE picker; this line states the size of the set so
+          an operator can tell at a glance that the module they are looking for should be in it.
+
+          Deliberately NOT a live region, and deliberately not inside the field's message slot. It is
+          neither an error nor a change worth interrupting a reader for - it is standing context about
+          the control above - and putting it in the field's error slot would make an ordinary fact look
+          like a failure and would compete with the real refusal for the same region.
+
+          Interpolated plain text, like every other string this template renders. The wording is
+          composed by the paired class, so no sentence is authored in this file.
+        -->
+        <p class="module-import__choice-summary">{{ moduleChoiceSummary() }}</p>
+      }
     } @else if (!loadingModules()) {
       <!--
         Shown in place of the picker when the tenant offers nothing to import into, rather than an
@@ -259,12 +300,18 @@
         natively and it is reachable and operable from the keyboard with no scripting. The global form
         stylesheet gives it the focus ring and the invalid appearance, so it needs no class here and no
         icon asset of any kind is referenced.
+
+        IT IS LOCKED WHILE THE SCREEN IS BUSY, through the DOM attribute for the same reason the module
+        picker above is - and here the reason is stronger still, because this control carries no form
+        directive at all: its value is written by the paired class from the change event, so the
+        directive-based disabled state was never available to it in the first place.
       -->
       <input
         [id]="fileFieldId"
         type="file"
         [attr.accept]="fileAccept"
         (change)="onFileSelected($event)"
+        [attr.disabled]="busy() ? '' : null"
         [attr.aria-invalid]="
           (form.controls.file.touched || form.controls.file.dirty) &&
           form.controls.file.invalid

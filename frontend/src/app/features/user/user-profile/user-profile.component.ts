@@ -8,6 +8,7 @@ import {
   input,
   signal,
   untracked,
+  type OnInit,
   type Signal,
 } from '@angular/core';
 import {
@@ -33,6 +34,7 @@ import {
 } from '../../../core/models/profile.model';
 import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
 import { UserStore, type UserFailure } from '../../../core/state/user.store';
 import { parseRouteId } from '../../../core/utils/route-id.util';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
@@ -83,6 +85,48 @@ const MULTILINE_LENGTH_THRESHOLD = 250;
 
 /** Rows rendered by a multi-line control. */
 const MULTILINE_ROWS = 4;
+
+/**
+ * The legacy-seeded properties the installer gave the RICH-TEXT data type.
+ *
+ * ONE MEMBER, AND THE COUNT IS MEASURED RATHER THAN ASSUMED. The installer's
+ * `AddDefaultPropertyDefinitions` seeds nineteen properties and passes
+ * `@RichTextDataType` to exactly one of them:
+ * `Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider` L1330
+ * (`… @RichTextDataType, '', 'Preferences','Biography' ,0, '', 33, 1, 0`), which the
+ * earlier `03.02.03.SqlDataProvider` L1284 seeds identically. Every other seeded
+ * property is text, country, region, time-zone or locale.
+ *
+ * WHY THIS EXISTS AT ALL, GIVEN {@link MULTILINE_LENGTH_THRESHOLD}
+ * ---------------------------------------------------------------
+ * The length rule cannot reach this property. The installer passes `@Length = 0` for
+ * every property it gave a specialised data type, Biography included, and zero is the
+ * ABSENCE of a bound rather than a large one — so a purely length-driven choice renders
+ * the one property that is unambiguously prose as a single-line box, which is the
+ * opposite of what a biography needs and contradicts this migration's own recorded
+ * decision that rich text is reduced to a plain multi-line control.
+ *
+ * WHY IT IS KEYED ON THE NAME AND NOT ON `dataType`
+ * -------------------------------------------------
+ * Because `dataType` cannot be read. It is a foreign key into the excluded `Lists`
+ * table, resolved BY NAME by the installer, so the stored integer is database-assigned
+ * and differs between installations; an integer-to-control map would silently render the
+ * wrong control wherever the list seeded in a different order. See the note on
+ * {@link UserProfileComponent}. The property NAME is the stable identifier for a seeded
+ * property, and this file already depends on that fact for every label, help string and
+ * required message in {@link LEGACY_PROFILE_WORDING} — including Biography's own help,
+ * which reads "Use the Editor to enter a short Biography".
+ *
+ * WHY "LENGTH ZERO MEANS PROSE" WAS REJECTED as the rule instead. Region, Country,
+ * TimeZone and PreferredLocale are all seeded with `@Length = 0` too, so that reading
+ * would put a country and a time zone in four-row text areas. The set is deliberately
+ * narrow: it names the properties measured as rich text, and nothing else.
+ *
+ * A tenant-added property is unaffected, and a tenant that RENAMES Biography simply
+ * falls back to the length rule — the same fallback its label and help text already
+ * take.
+ */
+const LEGACY_RICH_TEXT_PROPERTIES: ReadonlySet<string> = new Set(['Biography']);
 
 /**
  * What is shown when the tenant has declared no profile property at all.
@@ -658,15 +702,21 @@ function resolveUserId(raw: string | number | undefined): number | null {
  * `EntryID` that is not stable between installations. Hard-coding an identifier-to-control
  * map would therefore be a guess that silently renders the wrong control on any
  * installation whose list seeded in a different order. Every property is consequently
- * rendered as a text field, which is what the legacy editor did for every type it had no
- * specialised control for, and the declared LENGTH — not the type — decides between a
- * single-line and a multi-line control. This is a known, reported functional reduction:
+ * rendered as a plain text field, which is what the legacy editor did for every type it
+ * had no specialised control for. Whether that field is single-line or multi-line is
+ * decided by two things and never by the type: the declared LENGTH, and membership of the
+ * measured set of legacy-seeded RICH-TEXT properties in
+ * {@link LEGACY_RICH_TEXT_PROPERTIES}. This is a known, reported functional reduction:
  * the thirteen legacy control kinds (time zone, locale, country, region, list, date,
  * date-time, true/false, integer, rich text, page) are not offered.
  *
  * MIGRATION: rich text is reduced to a plain multi-line text box. The legacy
- * `Biography` property used the FCK editor provider, which is out of scope, and no
- * rich-text control is substituted for it.
+ * `Biography` property used the FCK editor provider, which is out of scope, so it is
+ * rendered as a `<textarea>` and no rich-text control, toolbar or trusted-HTML path is
+ * substituted for it. The seeded set is what carries that decision, because the
+ * installer declares Biography's length as zero — the ABSENCE of a bound — so a
+ * length-driven choice alone would have given the one property that is unambiguously
+ * prose a single-line box.
  *
  * MIGRATION: the legacy view page identified its subject through an ENCRYPTED query
  * parameter — `ViewProfile.ascx.vb` L61-L63 read `userticket` and passed it through
@@ -701,9 +751,18 @@ function resolveUserId(raw: string | number | undefined): number | null {
   styleUrl: './user-profile.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class UserProfileComponent {
+export class UserProfileComponent implements OnInit {
   private readonly store = inject(UserStore);
   private readonly notifications = inject(NotificationService);
+
+  /**
+   * The signed-in session, read for ONE fact: whether the caller is the account on screen.
+   *
+   * `core/state` rather than another feature's state, so this is a shared dependency rather than a
+   * layering violation - the credential screen beside this one reads the same store for the same
+   * predicate.
+   */
+  private readonly auth = inject(AuthStore);
 
   /**
    * The account whose profile is edited.
@@ -728,17 +787,14 @@ export class UserProfileComponent {
   readonly mode = input<UserProfileMode>(DEFAULT_MODE);
 
   /**
-   * Whether the per-property visibility control is offered.
+   * Forces the per-property visibility control ON, whatever the tenant's policy says.
    *
-   * MIGRATION: DEFAULTS TO OFF, and the default is the legacy outcome rather than a
-   * simplification. `Profile.ascx.vb` L58-L63 computed
-   * `CType(setting, Boolean) And IsUser` — the tenant's `Profile_DisplayVisibility`
-   * setting AND the viewer being the subject of the profile. On this route an
-   * administrator edits ANOTHER account, so `IsUser` is false and the legacy affordance
-   * was HIDDEN however the tenant had set the setting. The conservative resolution is
-   * adopted, and it remains an input so the case the legacy code did allow — an operator
-   * editing their own profile with the setting enabled — is reachable without changing
-   * this file.
+   * ⚠ AN OVERRIDE FOR AN EMBEDDING CALLER, NOT THE ROUTED BEHAVIOUR. On the routed path the
+   * affordance is resolved from the tenant's policy and the caller's identity — see
+   * {@link visibilityOffered}, which is what the template binds — because a route supplies
+   * neither. This input exists so a caller that embeds this component in a context of its own
+   * can still assert the affordance, and it can only ever turn it ON: a false here defers to
+   * the resolved answer rather than suppressing it.
    *
    * MIGRATION: `CType(setting, Boolean)` over an `Object` is an Option Strict OFF
    * coercion, legal only because `Website/release.config` L125 compiled the admin pages
@@ -779,6 +835,63 @@ export class UserProfileComponent {
   protected readonly resolvedUserId: Signal<number | null> = computed(() =>
     resolveUserId(this.userId()),
   );
+
+  /**
+   * Whether the CALLER is the account whose profile is on screen.
+   *
+   * Reproduces `UserModuleBase.IsUser` (`Library/Components/Users/UserModuleBase.vb` L399-L406)
+   * including its behaviour for an unauthenticated caller: the legacy property returned false
+   * without comparing, and an unresolved identity resolves to false here for the same reason.
+   *
+   * ⚠ COMPARED WITH STRICT EQUALITY AGAINST AN EXPLICITLY RESOLVED KEY. A truthiness test would
+   * report false for the account key zero, and a `?? -1` fallback would make an absent route
+   * parameter match a real key.
+   */
+  protected readonly isSelf: Signal<boolean> = computed(() => {
+    const key = this.resolvedUserId();
+    const caller = this.auth.currentUser();
+
+    if (key === null || caller === null) {
+      return false;
+    }
+
+    return caller.userId === key;
+  });
+
+  /**
+   * Whether the per-property visibility control is offered.
+   *
+   * MIGRATION: THIS IS `Profile.ascx.vb` L58-L63, REPRODUCED RATHER THAN DEFERRED. That property
+   * computed `CType(UserModuleBase.GetSetting(PortalId, "Profile_DisplayVisibility"), Boolean) And
+   * IsUser` — the tenant's policy AND the viewer being the subject of the profile — and both halves
+   * are resolved here. An earlier revision of this component took the affordance from an input
+   * alone, which no route supplies, so the routed screen never offered it whatever the tenant had
+   * configured: the setting was stored, published and inert.
+   *
+   * ⚠ BOTH HALVES ARE REQUIRED, AND THE SECOND IS WHY AN ADMINISTRATOR NEVER SEES THE CONTROL.
+   * Visibility is a choice the account holder makes about their OWN data; an administrator editing
+   * somebody else's profile could otherwise silently change who can see it. The legacy hid the
+   * affordance for exactly that caller, however the tenant had set the policy.
+   *
+   * The policy defaults to enabled when the tenant has stored nothing, which is the default the
+   * server publishes (`UserModuleBase.vb` L143-L145), and it is read as FALSE while the policy is
+   * still unresolved — the conservative posture, since offering a control that then disappears is
+   * worse than offering it a moment late.
+   *
+   * {@link manageVisibility} can force it on for an embedding caller and can never force it off.
+   */
+  protected readonly visibilityOffered: Signal<boolean> = computed(() => {
+    if (this.manageVisibility()) {
+      return true;
+    }
+
+    const policy = this.store.membershipSettings();
+
+    // Compared explicitly against true rather than tested for truthiness, because an unresolved
+    // policy is null and must not be read as a stored false - the two mean different things and
+    // only one of them is the tenant's answer.
+    return policy !== null && policy.profileDisplayVisibility && this.isSelf();
+  });
 
   /** The profile as the store holds it. */
   protected readonly profile: Signal<UserProfile | null> = this.store.profile;
@@ -959,6 +1072,23 @@ export class UserProfileComponent {
   }
 
   /**
+   * Reads the tenant's account policy, which is what decides whether the visibility control is
+   * offered.
+   *
+   * A LIFECYCLE HOOK RATHER THAN AN EFFECT, and once per screen rather than once per account. The
+   * policy is tenant-wide, so it does not change when the route moves from one account to another,
+   * and the account-scoped reads live in the constructor's effect for the opposite reason.
+   *
+   * MIGRATION: `Profile.ascx.vb` L60 read `Profile_DisplayVisibility` inside a property getter, so
+   * it was fetched on every render of every field. It is read once here, and the store's own read
+   * is idempotent, so arriving on this screen from the listing - which has already read the policy
+   * - costs one request that answers from the same endpoint rather than a request per property.
+   */
+  ngOnInit(): void {
+    this.store.loadMembershipSettings();
+  }
+
+  /**
    * Reports whether a section is collapsed.
    *
    * @param key The section key.
@@ -1056,11 +1186,24 @@ export class UserProfileComponent {
   /**
    * Whether a property is rendered with a multi-line control.
    *
+   * TWO INPUTS, AND THEY ANSWER TWO DIFFERENT QUESTIONS. A property the installer seeded
+   * as RICH TEXT is prose by declaration — see {@link LEGACY_RICH_TEXT_PROPERTIES} — and a
+   * property the tenant gave a large declared bound is prose by size. Either is enough.
+   *
+   * The seeded test comes first because it is the one the length test cannot answer: the
+   * installer passes a declared length of zero for every specialised data type, so the
+   * length rule alone renders the seeded rich-text property single-line. Both remain
+   * PRESENTATION ONLY — the same string is submitted either way, and the same validators
+   * apply.
+   *
    * @param value The property.
    * @returns `true` when a multi-line control is used.
    */
   protected isMultiline(value: UserProfileValue): boolean {
-    return value.definition.length > MULTILINE_LENGTH_THRESHOLD;
+    return (
+      LEGACY_RICH_TEXT_PROPERTIES.has(value.definition.propertyName) ||
+      value.definition.length > MULTILINE_LENGTH_THRESHOLD
+    );
   }
 
   /** The number of rows a multi-line control is given. */

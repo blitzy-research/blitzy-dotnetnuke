@@ -165,6 +165,38 @@
 // MIGRATION:      L158 before the provider is even invoked. PasswordUpdateStatus (8 members),
 // MIGRATION:      UserValidStatus (5 members) and UserRegistrationStatus (negative values) are
 // MIGRATION:      likewise mapped to failure codes rather than exposed.
+//
+// MIGRATION: (22) The member-services panel is SELF-SERVICE and belongs to this contract, not to
+// MIGRATION:      the role contract. Website/admin/Users/MemberServices.ascx.vb is one of the nine
+// MIGRATION:      account screens AAP 0.5.1.4 maps into the account resource, and it operated on
+// MIGRATION:      the SIGNED-IN account rather than on the account its container was managing:
+// MIGRATION:      DataBind at L150, Subscribe at L106, UseTrial at L125 and cmdRSVP_Click at L413
+// MIGRATION:      every one of them pass UserInfo.UserID, which PortalModuleBase.vb L319-L323
+// MIGRATION:      resolves as UserController.GetCurrentUserInfo, while the subject account the
+// MIGRATION:      container assigned at ManageUsers.ascx.vb L517 is never read. The container
+// MIGRATION:      hid the tab whenever an administrator reached the screen at all - DisplayServices
+// MIGRATION:      at L61-L66 is the tenant's Profile_ManageServices setting AND NOT (IsEdit Or
+// MIGRATION:      User.IsSuperUser), and IsEdit at UserModuleBase.vb L329-L340 is the
+// MIGRATION:      administrative "ctl=Edit" entry point. So the five members below are addressed by
+// MIGRATION:      account and the API gates every one of them on account ownership alone.
+// MIGRATION:      An earlier revision of this contract, and of the role contract beside it, recorded
+// MIGRATION:      that self-service subscription "maps onto the two membership actions" of the role
+// MIGRATION:      resource and needed no surface of its own. That is withdrawn. Those two actions are
+// MIGRATION:      the right PRIMITIVES and are reused verbatim - the implementation delegates to them
+// MIGRATION:      so the expiry derivation, the protected-assignment refusals and the
+// MIGRATION:      expire-rather-than-delete rule keep exactly one implementation - but they are gated
+// MIGRATION:      on tenant administration, so an account holder could never reach them; and three of
+// MIGRATION:      the five operations here are not assignments at all. The catalogue read, the trial
+// MIGRATION:      predicate and the invitation-code redemption have no counterpart on that resource.
+//
+// MIGRATION: (23) The paid-subscription payment redirect is NOT ported, and the refusal is explicit.
+// MIGRATION:      Subscribe at L113 and L115, and UseTrial at L131, each ended in
+// MIGRATION:      Response.Redirect("~/admin/Sales/PayPalSubscription.aspx?…") whenever the role's
+// MIGRATION:      terms required payment. AAP 0.2.2.4 excludes sales administration, so no member
+// MIGRATION:      below completes such an operation: the catalogue still reports the offer the legacy
+// MIGRATION:      screen displayed and says that payment is required, and the write members refuse it
+// MIGRATION:      with a stable code. A free trial on a paid role remains fully performable, because
+// MIGRATION:      the legacy trial gate is the TRIAL fee rather than the service fee.
 
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
@@ -179,9 +211,10 @@ namespace DnnMigration.Application.Abstractions;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>What this contract owns.</b> It is the single entry point for the seven client routes
+/// <b>What this contract owns.</b> It is the single entry point for the eight client routes
 /// that administer accounts: the account list, account creation, the account editor, the
-/// profile editor, the credential screen, the tenant membership settings and the profile
+/// profile editor, the credential screen, the account's own member-services catalogue, the tenant
+/// membership settings and the profile
 /// definition catalogue. It replaces the whole administrative half of the legacy
 /// <c>UserController</c>, whose 64 public members are enumerated with their disposition in the
 /// annotation block at the head of this file. There is deliberately no separate profile
@@ -933,13 +966,19 @@ public interface IUserService
     /// </param>
     /// <param name="cancellationToken">Token observed while the settings are written.</param>
     /// <returns>
-    /// A successful result with no value. Two failure codes are documented.
+    /// A successful result carrying what the write did BEYOND storing the policy - whether the
+    /// display-name format changed, and how many accounts were consequently rewritten. Three failure
+    /// codes are documented.
     /// <c>user.membership-settings.source-missing</c> is raised when the tenant has no settings
     /// source to write to - the same condition that makes the read above answer with a
     /// <see langword="null"/> value; absence is a legitimate answer to a read and an
     /// impossibility for a write, which is why the two members treat it differently.
     /// <c>user.membership-settings.redirect_not_in_portal</c> is raised when one of the three
     /// redirect members names a page the tenant does not own.
+    /// <c>user.display-name.too-long</c> is raised when the submitted display-name format would
+    /// compose a name longer than the stored column for at least one account in the tenant; the
+    /// policy is then NOT stored, because a format that breaks the accounts it governs is worse
+    /// than a refusal.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -964,7 +1003,22 @@ public interface IUserService
     /// could only offer the portal's own pages (<c>UserSettings.ascx.vb:L80-L82</c>).
     /// </para>
     /// </remarks>
-    Task<Result> UpdateMembershipSettingsAsync(
+    /// <remarks>
+    /// <para>
+    /// MIGRATION (24): CHANGING THE DISPLAY-NAME FORMAT REWRITES EVERY ACCOUNT IN THE TENANT, and this
+    /// member owns that sweep. The legacy screen compared the submitted format against the stored one and,
+    /// when they differed, started a BACKGROUND THREAD running
+    /// <c>UserController.UpdateDisplayNames</c> (<c>UserSettings.ascx.vb</c> L175-L182;
+    /// <c>UserController.vb</c> L1259-L1268), which walked the tenant's accounts issuing one update each.
+    /// Three properties of that arrangement are deliberately not reproduced: the operator was told
+    /// nothing, a failure part way through left the tenant half formatted, and abandoning the request
+    /// abandoned the sweep. Here the sweep is inside the same transaction as the policy write, so the two
+    /// commit together or neither does, and the count is returned. An operator therefore waits where the
+    /// legacy operator did not - which is the cost of an atomic outcome, and is recorded as a divergence
+    /// rather than absorbed.
+    /// </para>
+    /// </remarks>
+    Task<Result<MembershipSettingsUpdateResultDto>> UpdateMembershipSettingsAsync(
         int portalId,
         UpdateMembershipSettingsRequest request,
         CancellationToken cancellationToken = default);
@@ -1293,5 +1347,245 @@ public interface IUserService
     Task<Result> DeleteProfilePropertyDefinitionAsync(
         int portalId,
         int propertyDefinitionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the member-services catalogue an account sees: every role the tenant publishes for
+    /// self-service subscription, on the terms it is offered, annotated with that account's own
+    /// subscription state and with the commands the legacy panel would have offered for each.
+    /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the tenant whose published services are listed. Always a real identifier -
+    /// <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c> - so neither minus one nor zero means
+    /// "unspecified".
+    /// </param>
+    /// <param name="userId">
+    /// Identifier of the account whose subscription state annotates each row. The legacy panel always
+    /// used the signed-in account, so the API admits nobody else; this parameter is explicit so the
+    /// member is testable without a request in flight.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the catalogue is read.</param>
+    /// <returns>
+    /// A successful result carrying the catalogue, which is EMPTY - not absent - when the tenant
+    /// publishes no services. Documented failure codes are <c>portal.not-found</c>,
+    /// <c>user.not-found</c> and <c>user.service.disabled-forbidden</c>, the last when the tenant has
+    /// switched self-service subscription off.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces <c>MemberServices.ascx.vb</c> <c>DataBind</c> at L147-L157, whose data source is
+    /// <c>GetRoles(PortalId, UserInfo.UserID)</c> at L94-L99 - that is,
+    /// <c>RoleController.GetUserRoles(portalId, userId, includePrivate:False)</c>, which reaches
+    /// <c>dataProvider.GetServices</c> (<c>DNNRoleProvider.vb:L481-L488</c>). The terminal statement
+    /// selects <c>from Roles R where R.PortalId = @PortalId and R.IsPublic = 1</c>
+    /// (<c>04.06.00.SqlDataProvider:L993-L1013</c>), so the catalogue is the tenant's PUBLIC roles and
+    /// an unsubscribed offer appears exactly as a subscribed one does.
+    /// </para>
+    /// <para>
+    /// The three per-row predicates the legacy markup bound - the command label, whether the
+    /// subscription command was rendered and whether the trial command was - are computed by the
+    /// implementation and travel as data, because they are business rules and Rule T2 keeps them
+    /// beneath the transport. Each of them read the FULL role rather than the suppressed projection,
+    /// and so does this member.
+    /// </para>
+    /// <para>
+    /// The read is deliberately UNPAGED, because the read it replaces was: the legacy grid bound the
+    /// whole result and hid itself when the count was zero (<c>:L154</c>). A tenant's set of public
+    /// roles is small by construction - it is a published price list, not a data set.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the tenant's own switch is enforced HERE and is not merely advisory. The legacy
+    /// container hid the whole tab when <c>Profile_ManageServices</c> was off
+    /// (<c>ManageUsers.ascx.vb:L61-L66</c>), and in Web Forms an unrendered control was an unreachable
+    /// handler. An HTTP resource has no tab to hide, so the setting becomes a refusal on this member
+    /// and on the four write members below. Its default when the tenant stores no value is
+    /// <see langword="true"/>, exactly as <c>UserModuleBase.vb:L146-L147</c> applied it.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<MemberServiceDto>>> ListMemberServicesAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Subscribes an account to one of the tenant's published services, or renews a subscription that
+    /// has lapsed.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant that publishes the service.</param>
+    /// <param name="userId">Identifier of the account being subscribed.</param>
+    /// <param name="roleId">
+    /// Identifier of the role the service is expressed as. <b>Zero is a real key</b>:
+    /// <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the subscription is written.</param>
+    /// <returns>
+    /// A successful result with no value, which is what lets the API layer answer 204 No Content.
+    /// Documented failure codes are <c>portal.not-found</c>, <c>user.not-found</c>,
+    /// <c>role.not-found</c>, <c>user.service.disabled-forbidden</c> when the tenant has switched
+    /// self-service subscription off, <c>user.service.not-offered-forbidden</c> when the role is not
+    /// published for self-service, and <c>user.service.payment-required-forbidden</c> when completing
+    /// the subscription would require taking payment.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces <c>Subscribe(roleID, cancel:False)</c> (<c>MemberServices.ascx.vb:L101-L118</c>),
+    /// which the grid reached under BOTH the subscribe and the renew command
+    /// (<c>:L440-L442</c>) - one operation with two labels, which is why there is one member here and
+    /// not two. Its gate is <c>objRole.IsPublic And objRole.ServiceFee = 0.0</c> (<c>:L105</c>), and
+    /// the else-branch is the excluded payment redirect, so a fee-bearing role is refused rather than
+    /// half served.
+    /// </para>
+    /// <para>
+    /// The write itself is the ordinary role assignment, delegated so that the expiry derivation - the
+    /// trial-versus-billing term selection, the six frequency codes and the perpetual one-time
+    /// sentinel at <c>RoleController.vb:L503-L558</c> - keeps exactly one implementation. Neither date
+    /// is caller-supplied: the legacy path took no date arguments at all and derived both from the
+    /// role's stored terms.
+    /// </para>
+    /// <para>
+    /// Idempotent in the way the legacy member was: subscribing an account that already holds the
+    /// service revises its expiry rather than failing, which is precisely how a renewal was performed.
+    /// </para>
+    /// </remarks>
+    Task<Result> SubscribeToServiceAsync(
+        int portalId,
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Cancels an account's subscription to one of the tenant's published services.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant that publishes the service.</param>
+    /// <param name="userId">Identifier of the account whose subscription is cancelled.</param>
+    /// <param name="roleId">Identifier of the role the service is expressed as.</param>
+    /// <param name="cancellationToken">Token observed while the cancellation is written.</param>
+    /// <returns>
+    /// A successful result with no value. When the subscription was expired rather than withdrawn -
+    /// the paid-trial retention rule - the success carries the reason
+    /// <c>role_assignment.expired_not_removed</c>, so a caller can say which happened. Documented
+    /// failure codes are <c>portal.not-found</c>, <c>user.not-found</c>, <c>role.not-found</c>,
+    /// <c>role_assignment.not-found</c> when the account does not hold the service,
+    /// <c>role_assignment.protected</c> when the assignment may not be withdrawn at all,
+    /// <c>user.service.disabled-forbidden</c>, <c>user.service.not-offered-forbidden</c> and
+    /// <c>user.service.payment-required-forbidden</c>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces <c>Subscribe(roleID, cancel:True)</c> (<c>MemberServices.ascx.vb:L101-L118</c>),
+    /// reached under the unsubscribe command (<c>:L443-L445</c>). Note that the legacy gate is the
+    /// SAME as the subscribe gate - the cancel path redirected a fee-bearing role to the payment page
+    /// too, with <c>&amp;cancel=1</c> appended (<c>:L115</c>) - so this member refuses a fee-bearing
+    /// role for the same excluded reason and not by oversight.
+    /// </para>
+    /// <para>
+    /// The removal is the ordinary membership removal, delegated so that the expire-rather-than-delete
+    /// rule (<c>RoleController.vb:L494-L496</c>, which back-dates the expiry when a paid trial has
+    /// been consumed so the trial-used fact survives) and the two protected refusals - the portal
+    /// administrator's own administrator membership, and any membership of the registered-members role
+    /// - keep exactly one implementation.
+    /// </para>
+    /// </remarks>
+    Task<Result> CancelServiceAsync(
+        int portalId,
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Starts an account's free trial of one of the tenant's published paid services.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant that publishes the service.</param>
+    /// <param name="userId">Identifier of the account starting the trial.</param>
+    /// <param name="roleId">Identifier of the role the service is expressed as.</param>
+    /// <param name="cancellationToken">Token observed while the trial subscription is written.</param>
+    /// <returns>
+    /// A successful result with no value. Documented failure codes are <c>portal.not-found</c>,
+    /// <c>user.not-found</c>, <c>role.not-found</c>, <c>user.service.disabled-forbidden</c> and
+    /// <c>user.service.trial-not-offered-forbidden</c>, the last covering every reason the legacy
+    /// panel would not have rendered the command: the service is free and so has no trial to take,
+    /// its trial itself carries a fee, or this account has already consumed it.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces <c>UseTrial(roleID)</c> (<c>MemberServices.ascx.vb:L120-L133</c>). It is a separate
+    /// member from the subscription above because the two gates genuinely differ: subscribing requires
+    /// a zero SERVICE fee while trialling requires a zero TRIAL fee, so a paid service with a free
+    /// trial can be trialled here even though it cannot be subscribed to. Folding them into one
+    /// operation that chose between them by reading a body field would make the effect depend on the
+    /// payload rather than on the address.
+    /// </para>
+    /// <para>
+    /// The write is the same role assignment the subscription performs, because the legacy member
+    /// called the same operation (<c>:L125</c>); which of the two terms governs the derived expiry is
+    /// decided inside that operation from the role's trial frequency and the stored trial-used flag,
+    /// exactly as <c>RoleController.vb:L521-L527</c> decided it. Nothing here computes a date.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the trial-used flag is never written, because the legacy application never wrote it
+    /// either. The terminal <c>AddUserRole</c> and <c>UpdateUserRole</c> procedures
+    /// (<c>04.00.04.SqlDataProvider</c>) set only the two dates, and no in-scope legacy code assigns
+    /// <c>UserRoleInfo.IsTrialUsed</c> - it is read at <c>RoleController.vb:L494</c> and
+    /// <c>:L515</c> and at <c>MemberServices.ascx.vb:L336</c> and assigned nowhere. Setting it here
+    /// would be a new behaviour, and the consequence of not setting it - a trial that can be taken
+    /// again - is the legacy behaviour and is recorded in <c>MIGRATION_NOTES.md</c> rather than
+    /// silently corrected.
+    /// </para>
+    /// </remarks>
+    Task<Result> StartServiceTrialAsync(
+        int portalId,
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Redeems a service invitation code, subscribing an account to every role of the tenant that bears
+    /// it.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant whose roles are searched for the code.</param>
+    /// <param name="userId">Identifier of the account being subscribed.</param>
+    /// <param name="request">The submitted code.</param>
+    /// <param name="cancellationToken">Token observed while the subscriptions are written.</param>
+    /// <returns>
+    /// A successful result naming the services the code enrolled the account in, never empty.
+    /// Documented failure codes are <c>portal.not-found</c>, <c>user.not-found</c>,
+    /// <c>user.service.disabled-forbidden</c>, <c>user.service.code-required</c> when the submission
+    /// carries no code, and <c>user.service.code-not-matched</c> when no role bears it.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces <c>cmdRSVP_Click</c> (<c>MemberServices.ascx.vb:L397-L433</c>). Three properties of
+    /// that handler are load-bearing and are preserved exactly.
+    /// </para>
+    /// <para>
+    /// First, it searched EVERY role of the tenant - <c>GetPortalRoles(PortalSettings.PortalId)</c> at
+    /// <c>:L407</c> - and applied neither the public-role test nor the fee test that the grid's own
+    /// commands applied. An invitation code is precisely the bypass for a service that is not
+    /// published, so narrowing the search to public or free roles here would break the feature's whole
+    /// purpose. It follows that this member does not refuse a fee-bearing role: no payment was taken
+    /// on the legacy path either.
+    /// </para>
+    /// <para>
+    /// Second, the loop had NO early exit (<c>:L410-L420</c>), so one code legitimately enrolls an
+    /// account in several services and the result carries a collection.
+    /// </para>
+    /// <para>
+    /// Third, the comparison was an in-memory Visual Basic string equality with no
+    /// <c>Option Compare Text</c> in the file, so it was ordinal and untrimmed. Both properties are
+    /// preserved: widening the comparison would let a code match a role its issuer did not intend.
+    /// Roles that carry no code are skipped, which the legacy guard <c>If code &lt;&gt; ""</c>
+    /// (<c>:L403</c>) achieved indirectly - an absent <c>RSVPCode</c> reached the comparison as the
+    /// EMPTY STRING rather than null.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an unmatched code is a FAILED outcome rather than a successful empty result, and an
+    /// empty submission is refused rather than ignored. The legacy handler posted one of two fixed
+    /// sentences and, for an empty box, posted nothing at all.
+    /// </para>
+    /// </remarks>
+    Task<Result<RedeemServiceCodeResultDto>> RedeemServiceCodeAsync(
+        int portalId,
+        int userId,
+        RedeemServiceCodeRequest request,
         CancellationToken cancellationToken = default);
 }

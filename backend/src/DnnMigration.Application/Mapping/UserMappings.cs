@@ -1,5 +1,6 @@
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Domain.Entities;
+using RoleEntity = DnnMigration.Domain.Entities.Role;
 using UserEntity = DnnMigration.Domain.Entities.User;
 
 namespace DnnMigration.Application.Mapping;
@@ -195,6 +196,10 @@ public static class UserMappings
     /// <param name="portalId">The tenant the account is being listed within.</param>
     /// <param name="address">The account's postal address profile value, or <see langword="null"/> when unset.</param>
     /// <param name="telephone">The account's telephone profile value, or <see langword="null"/> when unset.</param>
+    /// <param name="portalAdministratorId">
+    /// The account named by the tenant's <c>Portals.AdministratorId</c>, or <see langword="null"/> when the
+    /// tenant designates nobody. Used only to compute <see cref="UserListItemDto.CanDelete"/>.
+    /// </param>
     /// <returns>The list row.</returns>
     /// <remarks>
     /// The tenant is an argument rather than a property read because the aggregate has no portal
@@ -202,7 +207,12 @@ public static class UserMappings
     /// portal created by the <c>IDENTITY(-1, 1)</c> seed on <c>Portals.PortalID</c> and 0 is the
     /// shipped <c>_default</c> portal. Neither may be mistaken for an absent value.
     /// </remarks>
-    public static UserListItemDto ToListItem(UserEntity user, int portalId, string? address, string? telephone)
+    public static UserListItemDto ToListItem(
+        UserEntity user,
+        int portalId,
+        string? address,
+        string? telephone,
+        int? portalAdministratorId)
     {
         ArgumentNullException.ThrowIfNull(user);
 
@@ -236,6 +246,20 @@ public static class UserMappings
             IsOnline = user.IsOnline ?? false,
             IsSuperUser = user.IsSuperUser,
             IsLockedOut = user.IsLockedOut ?? false,
+
+            // THE DELETE CAPABILITY, computed from the same two protections the delete operation
+            // enforces rather than from a rule of the mapper's own. An account that is a host account,
+            // or that is the one named by this portal's AdministratorId, cannot be deleted through
+            // portal administration - so a client that offers the command would be offering a refusal.
+            //
+            // ⚠ THE ADMINISTRATOR COMPARISON IS AN EQUALITY AND MUST STAY ONE. Users.UserID seeds
+            // IDENTITY(1, 1), but Portals.AdministratorId is an ordinary nullable integer column and the
+            // legacy null contract spells a missing integer as MINUS ONE - so a portal that designates
+            // nobody may hold either null or -1, and neither may be read as "matches this row". A null
+            // administrator therefore protects nothing, which is the correct reading: there is no
+            // designated administrator to protect.
+            CanDelete = !user.IsSuperUser
+                && (portalAdministratorId is not { } designated || designated != user.UserId),
         };
     }
 
@@ -719,5 +743,132 @@ public static class UserMappings
         definition.ValidationExpression = request.ValidationExpression;
         definition.ViewOrder = request.ViewOrder;
         definition.IsVisible = request.Visible;
+    }
+
+    /// <summary>
+    /// Projects one published role, and the account's own assignment to it, onto a member-services
+    /// catalogue row.
+    /// </summary>
+    /// <param name="role">The published role the service is expressed as.</param>
+    /// <param name="assignment">
+    /// The account's assignment to that role, or <see langword="null"/> when it holds none.
+    /// </param>
+    /// <param name="today">
+    /// The current date, supplied by the caller from the injected clock, against which a lapsed
+    /// subscription is recognised.
+    /// </param>
+    /// <param name="tenantTakesPayment">
+    /// Whether the tenant has a payment processor account configured, which is the second arm of the
+    /// legacy subscribe predicate.
+    /// </param>
+    /// <returns>The catalogue row.</returns>
+    /// <remarks>
+    /// <para>
+    /// Reproduces the three predicates the legacy grid bound, all three of which read the FULL role
+    /// rather than the suppressed <c>GetServices</c> projection:
+    /// <c>ServiceText</c> (<c>Website/admin/Users/MemberServices.ascx.vb:L288-L305</c>),
+    /// <c>ShowSubscribe</c> (<c>:L307-L323</c>) and <c>ShowTrial</c> (<c>:L325-L342</c>).
+    /// </para>
+    /// <para>
+    /// The current date is a PARAMETER rather than a reading taken here, for two reasons. A mapper that
+    /// read a clock would be untestable, and - the substantive one - one row's classification must not
+    /// be able to disagree with the next row's because the two were mapped either side of midnight.
+    /// The caller reads the clock once for the whole catalogue.
+    /// </para>
+    /// <para>
+    /// MIGRATION: a fee is "charged" only when it is present AND greater than zero, and the legacy
+    /// sentinel is why that has to be said. <c>RoleInfo.ServiceFee</c> was a non-nullable
+    /// <c>Single</c>, so a stored <c>NULL</c> reached the legacy predicates through
+    /// <c>Null.SetNull</c> as <c>Single.MinValue</c> - which is NOT zero, so
+    /// <c>objRole.ServiceFee = 0.0</c> was FALSE for a role with no fee at all and such a role was
+    /// handed to the payment page. Reading absence as "no fee" is the Rule T7 translation of the
+    /// evident intent and matches the sibling cancellation rule in <c>RoleService</c>, which already
+    /// tests <c>role.ServiceFee is decimal fee &amp;&amp; fee &gt; 0m</c>. The divergence is recorded
+    /// in <c>MIGRATION_NOTES.md</c>.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the trial-used flag is a nullable bit and an absent value is read as "not used",
+    /// which is exactly the collapse the legacy predicate performed with
+    /// <c>(objUserRole Is Nothing) OrElse (Not objUserRole.IsTrialUsed)</c> (<c>:L336</c>).
+    /// </para>
+    /// </remarks>
+    public static MemberServiceDto ToMemberService(
+        RoleEntity role,
+        UserRole? assignment,
+        DateTime today,
+        bool tenantTakesPayment)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        bool subscribed = assignment is not null;
+        bool trialUsed = assignment?.IsTrialUsed ?? false;
+
+        // ServiceText's own two tests, in its own order: not subscribed at all, otherwise subscribed
+        // with an expiry strictly in the past. The legacy comparison is `expiryDate < Date.Today`
+        // guarded by `Not Null.IsNull(expiryDate)`, so an assignment with no expiry never reads as
+        // lapsed however old it is - a perpetual membership is not an expired one.
+        bool expired = subscribed
+            && assignment!.ExpiryDate is DateTime expiry
+            && expiry.Date < today.Date;
+
+        bool chargesFee = role.ServiceFee is decimal serviceFee && serviceFee > 0m;
+        bool chargesTrialFee = role.TrialFee is decimal trialFee && trialFee > 0m;
+
+        return new MemberServiceDto
+        {
+            RoleId = role.RoleId,
+            RoleName = role.RoleName,
+            Description = role.Description,
+            ServiceFee = role.ServiceFee,
+            BillingPeriod = role.BillingPeriod,
+            BillingFrequency = role.BillingFrequency,
+            TrialFee = role.TrialFee,
+            TrialPeriod = role.TrialPeriod,
+            TrialFrequency = role.TrialFrequency,
+            EffectiveDate = assignment?.EffectiveDate,
+            ExpiryDate = assignment?.ExpiryDate,
+            IsSubscribed = subscribed,
+            IsTrialUsed = trialUsed,
+            IsExpired = expired,
+            SubscriptionAction = !subscribed
+                ? MemberServiceActions.Subscribe
+                : expired
+                    ? MemberServiceActions.Renew
+                    : MemberServiceActions.Unsubscribe,
+
+            // ShowSubscribe: public - which every row of this catalogue is, since the read selects on
+            // IsPublic - and either no fee to take or a processor account to take it with. The role's
+            // own flag is still tested rather than assumed, so this mapper is correct for any caller.
+            SubscriptionOffered = role.IsPublic && (!chargesFee || tenantTakesPayment),
+            SubscriptionRequiresPayment = chargesFee,
+
+            // ShowTrial: its first arm returns FALSE for a public role with no fee - a free service has
+            // nothing to trial - and its second offers the trial only when the trial itself is free and
+            // this account has not already consumed it.
+            TrialOffered = role.IsPublic && chargesFee && !chargesTrialFee && !trialUsed,
+        };
+    }
+
+    /// <summary>
+    /// Projects a role an invitation code enrolled an account in onto the redemption result row.
+    /// </summary>
+    /// <param name="role">The role the account was enrolled in.</param>
+    /// <returns>The result row.</returns>
+    /// <remarks>
+    /// Deliberately two members. The legacy container's confirmation interpolated the role NAME
+    /// (<c>Website/admin/Users/ManageUsers.ascx.vb:L847</c>, reached through the event argument the
+    /// panel raised at <c>MemberServices.ascx.vb:L418</c>), and the key is carried so a client can
+    /// locate the affected row in the catalogue it already holds. Everything else about the service is
+    /// in that catalogue, and a thinner second copy here would be a second thing to keep consistent.
+    /// </remarks>
+    public static RedeemedServiceDto ToRedeemedService(RoleEntity role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        return new RedeemedServiceDto
+        {
+            RoleId = role.RoleId,
+            RoleName = role.RoleName,
+        };
     }
 }

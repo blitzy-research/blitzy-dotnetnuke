@@ -67,22 +67,27 @@ import type { CanActivateFn, UrlTree } from '@angular/router';
 import { catchError, map, of } from 'rxjs';
 import type { Observable } from 'rxjs';
 
+import { SIGN_IN_ROUTE } from '../config/app-routes.config';
 import { TokenStorageService } from '../services/token-storage.service';
 import { AuthStore } from '../state/auth.store';
 
-/**
- * The route the gate redirects an unauthenticated caller to.
+/*
+ * The sign-in destination is IMPORTED from `core/config/app-routes.config.ts` rather than
+ * held privately here.
  *
- * Spelled here as a leading-slash absolute path because that is what
- * {@link Router.createUrlTree} is handed. `core/interceptors/auth.interceptor.ts`
- * declares the identical destination for the case where an in-flight request cannot
- * be renewed; the two are deliberately independent constants rather than one shared
- * export, because the interceptor does not export its copy and reaching across to it
- * would couple a navigation gate to a transport concern for the sake of one string.
- * A rename on either side is caught by the specifications, which spell the path
- * again rather than importing it.
+ * MIGRATION: this file, the permission gate, the bearer interceptor and the root component
+ * each held a private copy, and the comment that used to stand here argued for the
+ * duplication: the interceptor "does not export its copy", so reaching across to it "would
+ * couple a navigation gate to a transport concern for the sake of one string". Avoiding
+ * that coupling was right; four uncoupled copies of one value was the wrong way to get it.
+ * The constants module is neutral — it imports nothing and injects nothing — so importing
+ * from it couples this gate to no peer at all, while making the four values one value.
+ *
+ * The comment also claimed a rename would be caught because the specifications spell the
+ * path again. They do, and that is still true of the SPECIFICATIONS; it was never true of
+ * the four production copies, which nothing compared. See the constants module for what a
+ * mismatch actually does — the navigation resolves to the catch-all, silently.
  */
-const SIGN_IN_ROUTE = '/login';
 
 /** The query parameter key carrying the address the caller was trying to reach. */
 const RETURN_URL_KEY = 'returnUrl';

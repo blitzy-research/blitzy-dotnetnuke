@@ -96,6 +96,7 @@ import { NotificationService } from '../services/notification.service';
 import type { LoginPortalSelector } from '../utils/http-params.util';
 import { TokenStorageService } from '../services/token-storage.service';
 import { SessionTeardownService } from './session-teardown.service';
+import type { SessionResetReason } from './session-teardown.service';
 import {
   failureCode,
   isAuthFailureCode,
@@ -103,6 +104,8 @@ import {
   problemSeverity,
   problemSupportReference,
   resolveVerificationPrompt,
+  statusMessage,
+  summarizeProblem,
 } from '../utils/form-errors.util';
 import type { ProblemSeverity, VerificationPrompt } from '../utils/form-errors.util';
 
@@ -182,6 +185,15 @@ const NO_RENEWAL_CREDENTIAL_MESSAGE =
  * because nothing has broken.
  */
 const RATE_LIMITED_STATUS = 429;
+
+/**
+ * The status a refused credential is answered with.
+ *
+ * Named here because {@link AuthStore.announceRenewalRefusal} has to recognise it and stay silent:
+ * a terminal refusal of authority is owned by `core/interceptors/auth.interceptor.ts`, which ends
+ * the session and sends the operator to the sign-in screen. Arriving there is the report.
+ */
+const UNAUTHORIZED_STATUS = 401;
 
 /**
  * The signed-in session, the state of the verification ladder, and the outcome of
@@ -575,6 +587,48 @@ export class AuthStore {
     return user === null ? false : user.isSuperUser;
   });
 
+  /**
+   * Whether the caller may administer the tenant it is signed in to — THE ONE ANSWER THE
+   * APPLICATION ASKS.
+   *
+   * ⚠ THIS IS THE ONLY PLACE THE QUESTION IS DECIDED, AND CENTRALISING IT REPLACED A
+   * DEFECT RATHER THAN TIDYING A DUPLICATE. The route gate, the credential screen and
+   * several list screens each used to answer it for themselves by testing {@link roles}
+   * for the literal name `Administrators`, which is wrong three times over: the
+   * designation is a per-tenant COLUMN (`Portals.AdministratorRoleId`) naming whichever
+   * role confers administration, so it is fixed to no name at all; `Roles.RoleName` is an
+   * ordinary updatable column, so renaming the role silently stripped every administrator
+   * of their affordances; and a role of the same name may belong to a DIFFERENT tenant,
+   * which makes a name match right about the word and wrong about the portal. A
+   * legitimate administrator was therefore refused by every screen that asked.
+   *
+   * ⚠ THE HOST ARM IS PART OF THE RULE, NOT A COURTESY, AND IT IS WHY THIS IS NOT SIMPLY
+   * {@link holdsPortalAdministration}. The API's own handler opens with
+   * `if (account.IsSuperUser) return true` — a host account administers every tenant,
+   * which is the same answer the enforcing policy gives — and it also publishes the
+   * derived fact as `true` for a host account on the current-account read. But the
+   * sign-in and renewal responses carry an authority-minimised snapshot in which the
+   * derived fact is `false` while the host flag is present and true, so reading the
+   * derived fact alone would withhold every administrative affordance from a host account
+   * between signing in and the current-account read completing. Taking both arms matches
+   * the server in every state the client can be in.
+   *
+   * ⚠ ADVISORY, LIKE EVERYTHING ELSE HERE. It exists so a screen can avoid offering an
+   * action the server would refuse, and it unlocks nothing: every tenant-scoped decision
+   * is re-evaluated server-side against stored state on every request, so an
+   * administrator demoted a moment ago is refused however recently this said otherwise.
+   *
+   * ⚠ NOT A PERMISSION KEY, AND NOT INTERCHANGEABLE WITH ONE. The persisted permission
+   * keys are `VIEW`, `EDIT`, `READ` and `WRITE`; this answers the server's
+   * `PortalAdministrator` POLICY. A screen that gated an administrative action with a
+   * permission key was asking a different question of a different vocabulary — the union
+   * of page and module keys the caller happens to hold — and could both hide an action
+   * the caller may take and offer one the server will refuse.
+   */
+  readonly administersCurrentPortal: Signal<boolean> = computed(
+    () => this.isSuperUser() || this.holdsPortalAdministration(),
+  );
+
   // -------------------------------------------------------------------------
   // ADVISORY PROJECTIONS
   // -------------------------------------------------------------------------
@@ -634,11 +688,23 @@ export class AuthStore {
    * A BOOLEAN, deliberately, and not the failure. The status code, the server's wording and the
    * credential itself are all withheld: a screen needs only to know that the withdrawal is
    * unconfirmed in order to say so, and anything richer would put failure detail about a
-   * credential operation into a template or a log. Reset by the next sign-out that succeeds.
+   * credential operation into a template or a log.
    *
    * It exists so the sign-in screen can say so. Sign-out sends the operator there, which makes
    * it the one place the report is certain to be seen, and a warning nothing renders is the
    * same silence it was meant to replace.
+   *
+   * ⚠ ITS LIFETIME IS ONE SESSION BOUNDARY, AND IT USED TO HAVE NONE. Three things retire it
+   * now: a later sign-out that CONFIRMS the withdrawal, any discard of the session, and the
+   * start of the next sign-in attempt. Previously only the first of those did, so a single
+   * failed withdrawal left the report standing on the sign-in screen indefinitely — through the
+   * next successful sign-in, and in front of whoever typed there next, describing a session that
+   * was not theirs. The report is about one session and must not outlive it.
+   *
+   * The one-time warning immediately after a failed withdrawal is preserved by ORDERING rather
+   * than by exception: {@link AuthStore.logout} discards the session before posting the
+   * withdrawal and raises this only in that request's own failure handler, so nothing that
+   * clears it can run afterwards.
    *
    * MIGRATION: this was re-published from the authentication client, which both held the flag and
    *   decided when to raise it. Both halves moved here with the sign-out policy they belong to —
@@ -934,6 +1000,31 @@ export class AuthStore {
       this.clearFailure();
 
       /*
+       * ⚠ THE UNCONFIRMED-WITHDRAWAL REPORT BELONGS TO THE SESSION THAT RAISED IT, AND THIS IS
+       * WHERE IT STOPS.
+       *
+       * The flag records that a sign-out could not confirm the server had withdrawn the refresh
+       * credential, and the sign-in screen renders it — which is right, because sign-out sends
+       * the operator there and it is the one place the report is certain to be seen. But it was
+       * cleared ONLY by a later sign-out that succeeded, so nothing else in the application
+       * retired it: after one failed withdrawal the warning stood on the sign-in screen
+       * indefinitely, and it was still standing after the next successful sign-in, after the
+       * next expiry returned somebody to that screen, and in front of whoever typed there next.
+       * A sentence about a session two boundaries ago, attributed to the one in front of them.
+       *
+       * Cleared HERE — at the start of the attempt rather than on its success — for two reasons.
+       * The report has already been displayed by the time anyone submits credentials, so it has
+       * served its purpose; and clearing only on success would leave a refused attempt still
+       * carrying somebody else's warning above the form.
+       *
+       * ⚠ THE ONE-TIME WARNING IS PRESERVED, and the ordering is what preserves it.
+       * {@link AuthStore.logout} discards the session — which clears this flag — BEFORE it posts
+       * the withdrawal, and sets the flag only in that request's own failure handler. So the
+       * clear can never race ahead of the report it is meant to retire.
+       */
+      this._revocationOutstanding.set(false);
+
+      /*
        * ⚠ THE DOMAIN STORES ARE EMPTIED BEFORE THE ATTEMPT, NOT AFTER IT SUCCEEDS.
        *
        * This is the ACCOUNT-REPLACEMENT path, and it does not pass through
@@ -953,7 +1044,7 @@ export class AuthStore {
        * Every `reset()` this calls also cancels that store's in-flight requests, so a read
        * belonging to the previous session cannot land afterwards and repopulate it.
        */
-      this.sessionTeardown.purge();
+      this.sessionTeardown.purge('signedIn');
 
       /*
        * ⚠ THE HELD SESSION IS DISCARDED BEFORE THE ATTEMPT IS ISSUED, AND THE EPOCH IS CAPTURED
@@ -1120,7 +1211,7 @@ export class AuthStore {
           // recorded second, because discarding resets the ladder while recording sets
           // the problem. Reversing the two would clear the very problem a sign-in screen
           // needs in order to explain why the caller is back at it.
-          this.discardSession();
+          this.discardSession('renewalRefused');
           this.recordFailure(error);
 
           return throwError(() => error);
@@ -1223,6 +1314,8 @@ export class AuthStore {
         // from a superseded session must not clear the session that superseded it.
         if (this.tokenStorage.isCurrentGeneration(startedAt)) {
           this.tokenStorage.clear();
+
+          this.announceRenewalRefusal(error);
         }
 
         return throwError(() => error);
@@ -1345,7 +1438,7 @@ export class AuthStore {
        */
       this.renewalInFlight = null;
 
-      this.discardSession();
+      this.discardSession('signedOut');
       this.clearFailure();
 
       if (refreshToken === null || refreshToken.length === 0) {
@@ -1466,7 +1559,7 @@ export class AuthStore {
    * should be told.
    */
   reset(): void {
-    this.discardSession();
+    this.discardSession('signedOut');
     this.clearFailure();
   }
 
@@ -1492,7 +1585,7 @@ export class AuthStore {
    * ticket exists to prevent; that command's own `finalize` releases it.
    */
   endSession(): void {
-    this.discardSession();
+    this.discardSession('renewalRefused');
   }
 
 
@@ -1577,6 +1670,46 @@ export class AuthStore {
    *
    * @param error The value the observable failed with, of unknown type by contract.
    */
+  /**
+   * Announces a refused renewal, for the refusals that no other surface reports.
+   *
+   * ⚠ THIS EXISTS BECAUSE A RENEWAL HAS NO SCREEN. Every other credential operation is reported by
+   * something an operator is looking at - a sign-in by the sign-in screen's banner and sentence, a
+   * sign-out by {@link REVOCATION_FAILED_MESSAGE} - but a renewal happens behind whatever the
+   * operator is doing, so nothing binds its outcome. While the transport left its requests unmarked
+   * the global announcer in `core/interceptors/error.interceptor.ts` reported it; marking them made
+   * this store the owner, and an owner that says nothing would have turned a duplicate report into
+   * no report at all.
+   *
+   * ⚠ A TERMINAL REFUSAL OF AUTHORITY IS DELIBERATELY SILENT HERE, and it always was: the global
+   * announcer returns early on that status too, on the documented grounds that
+   * `core/interceptors/auth.interceptor.ts` owns the lifecycle of a refused credential. What that
+   * owner does is end the session and send the operator to the sign-in screen, and arriving at the
+   * sign-in screen IS the report - a queued sentence saying the same thing would arrive alongside
+   * it, and the queue is cleared by the teardown that accompanies it in any case.
+   *
+   * No wording is authored here. Severity and sentence both come from the shared summariser, so a
+   * renewal refused for a reason the operator has seen elsewhere - a spent request budget, an
+   * unreachable server - is described in the same words wherever it is met.
+   *
+   * @param error The value the renewal failed with.
+   */
+  private announceRenewalRefusal(error: unknown): void {
+    const status: number | null = readTransportStatus(error);
+
+    if (status === UNAUTHORIZED_STATUS) {
+      return;
+    }
+
+    const summary = summarizeProblem(readProblemDocument(error), statusMessage(status));
+
+    this.notifications.notify(
+      problemSeverity(status),
+      summary.message,
+      summary.supportReference,
+    );
+  }
+
   private recordFailure(error: unknown): void {
     this._failureStatus.set(readTransportStatus(error));
     this._problem.set(readProblemDocument(error));
@@ -1622,11 +1755,12 @@ export class AuthStore {
    * explicit sign-out, a refresh that could not be completed, and a `401` the interceptor
    * could not recover — each call it without checking whether another already had.
    */
-  private discardSession(): void {
+  private discardSession(reason: SessionResetReason): void {
     this.tokenStorage.clear();
     this._identity.set(null);
     this.resetVerificationLadder();
-    this.sessionTeardown.purge();
+    this._revocationOutstanding.set(false);
+    this.sessionTeardown.purge(reason);
   }
 
   /**

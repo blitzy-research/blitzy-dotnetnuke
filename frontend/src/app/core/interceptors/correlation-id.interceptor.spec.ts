@@ -673,6 +673,147 @@ describe('correlationIdInterceptor', () => {
     });
   });
 
+  describe('the request boundary', () => {
+    /*
+     * The scope of the header, asserted in its own right because the defect it closes was
+     * one of BREADTH rather than of behaviour on any single request.
+     *
+     * The interceptor used to stamp, or preserve, the header on every request the client
+     * issued. Two things followed. A caller-supplied identifier was forwarded to a foreign
+     * origin, disclosing a value only this API has any use for; and because
+     * `X-Correlation-Id` is not a CORS-safelisted request header, adding it turned an
+     * otherwise simple cross-origin request into one requiring a preflight, which a
+     * third-party endpoint not listing the name in `Access-Control-Allow-Headers` refuses
+     * outright. The scope is now the same one the bearer interceptor uses.
+     */
+
+    let httpClient: HttpClient;
+    let httpMock: HttpTestingController;
+
+    /** A third-party address on an origin this application does not own. */
+    const FOREIGN_URL = 'https://third-party.example/collect';
+
+    /** A same-origin address that is not beneath the configured API base. */
+    const NON_API_SAME_ORIGIN_URL = '/assets/config.json';
+
+    /** The liveness probe, published at the host root rather than under the API base. */
+    const HEALTH_URL = '/health';
+
+    beforeEach(() => {
+      TestBed.configureTestingModule({
+        providers: [
+          provideHttpClient(withInterceptors([correlationIdInterceptor])),
+          provideHttpClientTesting(),
+        ],
+      });
+
+      httpClient = TestBed.inject(HttpClient);
+      httpMock = TestBed.inject(HttpTestingController);
+    });
+
+    afterEach(() => {
+      httpMock.verify();
+    });
+
+    it('stamps a request addressed to this API', () => {
+      httpClient.get(PORTAL_LIST_URL).subscribe();
+
+      expect(httpMock.expectOne(PORTAL_LIST_URL).request.headers.has(CORRELATION_ID_HEADER)).toBeTrue();
+    });
+
+    it('leaves a foreign origin unstamped', () => {
+      httpClient.get(FOREIGN_URL).subscribe();
+
+      expect(httpMock.expectOne(FOREIGN_URL).request.headers.has(CORRELATION_ID_HEADER)).toBeFalse();
+    });
+
+    it('leaves a same-origin address outside the API base unstamped', () => {
+      httpClient.get(NON_API_SAME_ORIGIN_URL).subscribe();
+
+      expect(
+        httpMock.expectOne(NON_API_SAME_ORIGIN_URL).request.headers.has(CORRELATION_ID_HEADER),
+      ).toBeFalse();
+    });
+
+    it('does not carry a caller-supplied identifier to a foreign origin', () => {
+      // The leak, asserted directly. Preservation is the branch that made the unscoped
+      // version disclose rather than merely add.
+      httpClient
+        .get(FOREIGN_URL, { headers: { [CORRELATION_ID_HEADER]: 'caller-supplied-identifier' } })
+        .subscribe();
+
+      const forwarded = httpMock.expectOne(FOREIGN_URL).request;
+
+      // The caller's own header is not STRIPPED either - the interceptor removes nothing it
+      // did not add - so what is asserted is that the interceptor neither replaced it nor
+      // took any part in sending it.
+      expect(forwarded.headers.get(CORRELATION_ID_HEADER)).toBe('caller-supplied-identifier');
+    });
+
+    it('forwards a non-API request as the very same object rather than a clone', () => {
+      // Evidence that the exclusion is a pass-through: a clone would mean the interceptor
+      // had rebuilt the request, and anything it rebuilt it could also change.
+      const observed: HttpRequest<unknown>[] = [];
+
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        providers: [
+          provideHttpClient(
+            withInterceptors([
+              correlationIdInterceptor,
+              (req, next) => {
+                observed.push(req);
+
+                return next(req);
+              },
+            ]),
+          ),
+          provideHttpClientTesting(),
+        ],
+      });
+
+      const client = TestBed.inject(HttpClient);
+      const mock = TestBed.inject(HttpTestingController);
+
+      client.get(FOREIGN_URL).subscribe();
+
+      const dispatched = mock.expectOne(FOREIGN_URL).request;
+
+      expect(observed.length).toBe(1);
+      expect(observed[0]).toBe(dispatched);
+      mock.verify();
+    });
+
+    it('stamps the health probes even though they sit outside the API base', () => {
+      // The one explicit inclusion. The probes are this API's own endpoints and its
+      // correlation middleware runs for them, so a probe must stay traceable - the address
+      // test alone would exclude them because they are published at the host root.
+      for (const probe of ['/health', '/health/live', '/health/ready']) {
+        httpClient.get(probe).subscribe();
+
+        expect(httpMock.expectOne(probe).request.headers.has(CORRELATION_ID_HEADER))
+          .withContext(`probe ${probe}`)
+          .toBeTrue();
+      }
+    });
+
+    it('recognises a probe addressed with a trailing separator', () => {
+      httpClient.get(`${HEALTH_URL}/`).subscribe();
+
+      expect(
+        httpMock.expectOne(`${HEALTH_URL}/`).request.headers.has(CORRELATION_ID_HEADER),
+      ).toBeTrue();
+    });
+
+    it('does not treat a foreign host as a probe merely because its path matches', () => {
+      const impostor = `https://third-party.example${HEALTH_URL}`;
+
+      httpClient.get(impostor).subscribe();
+
+      expect(httpMock.expectOne(impostor).request.headers.has(CORRELATION_ID_HEADER)).toBeFalse();
+    });
+  });
+
   describe('registration through withInterceptors', () => {
     let httpClient: HttpClient;
     let httpMock: HttpTestingController;

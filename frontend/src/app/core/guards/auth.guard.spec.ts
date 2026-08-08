@@ -811,13 +811,15 @@ describe('authGuard', () => {
       // image-based human-verification challenge — `Login.ascx.vb:L162` wrapped the entire
       // handler in `If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha) Then` —
       // and the control providing it lives in a tree this migration excludes wholesale. Its
-      // removal is a deliberate functional reduction, and the named replacement is a rate
-      // limiter on the credential endpoints partitioned by calling address: policy `auth`,
-      // ten requests per sixty seconds, rejection `429`, scoped to `/api/v1/auth/*` and to
-      // nothing else.
+      // removal is a deliberate functional reduction, and the named replacement is the API's
+      // credential window: thirty requests a minute per partition, partitioned by the caller's
+      // observable address, rejection `429`, applied by the global limiter to every request the
+      // server classifies as credential-bearing from the `[CredentialEndpoint]` marker on the
+      // action, with a whole credential path segment on a body-carrying method as a fall-back.
       //
       // That control is precisely why a gate must not revalidate a live session on every
-      // navigation: doing so would spend an operator's OWN budget and lock them out of the
+      // navigation: the caller-description read carries a named policy with a budget of its own,
+      // so revalidating would spend an operator's OWN budget and lock them out of the
       // application by navigating around it — a self-inflicted denial of service that no
       // compiler, build or deployment would report. So the gate reads the store and asks the
       // server nothing at all.

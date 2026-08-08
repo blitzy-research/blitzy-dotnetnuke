@@ -55,15 +55,15 @@
 // grid item is blockified automatically, so no `display` declaration is needed on any region, and
 // the skip link's `href` is a fragment naming the main region's `id`.
 //
-// The sidebar region is a plain element that projects whatever the shell's host supplies, so it
-// collapses to nothing whenever a screen contributes no navigation - which is what the `:empty`
-// branch below is for. No sidebar component exists in this workspace, and the region is deliberately
-// agnostic about whether one ever does.
+// The sidebar region is the navigation rail's OWN host: the shell imports `SidebarComponent` and
+// renders it directly, so the region class sits on `app-sidebar` and the grid places the rail itself
+// rather than a wrapper around it. The `:empty` branch below is retained as a guard rather than as a
+// live case - see its own note.
 //
 //     <div class="shell">
 //       <a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)">Skip to main content</a>
 //       <app-header class="shell__header" />
-//       <div class="shell__sidebar"><ng-content /></div>
+//       <app-sidebar class="shell__sidebar" />
 //       <main class="shell__main" [id]="mainRegionId" tabindex="-1">
 //         <div class="layout-container">
 //           <div class="content-region">
@@ -174,15 +174,18 @@
 
   // PLACEMENT ONLY, with no inline size, which is why this rule has no breakpoint branch at all. The
   // shell's `auto` track measures this region intrinsically, so the width it occupies is decided by
-  // the projected content's own box, in the scoped stylesheet of whichever component supplies it,
-  // where a width can be expressed against whatever tokens actually exist. Declaring a width here
-  // would also be the one appearance-adjacent value in a section whose entire contract is placement.
+  // the rail's own box, in the rail's own scoped stylesheet, where a width can be expressed against
+  // whatever tokens actually exist. Declaring a width here would also be the one appearance-adjacent
+  // value in a section whose entire contract is placement.
 
   // Taking the region out of flow rather than merely zeroing its width is what lets the shell's
   // `auto` column collapse with it; a zero width alone would leave the region's own padding standing
-  // and the column open. This is the live case rather than a hypothetical one: nothing is projected
-  // into the region today, so the element has no child nodes and this branch is what keeps the
-  // column closed. A zero-RESULTS affordance inside a populated region is a different concern.
+  // and the column open. ⚠ THIS IS NOW A GUARD, NOT THE LIVE CASE. The shell renders the rail
+  // itself, so the region always has content and this branch never matches in the shipping
+  // arrangement - which is the point: an empty navigation region used to be reachable by simply not
+  // supplying a rail, and that failed silently. It is kept because a region that somehow rendered
+  // nothing must still not hold a column open. A zero-RESULTS affordance inside a populated region is
+  // a different concern.
   &:empty {
     display: none;
   }

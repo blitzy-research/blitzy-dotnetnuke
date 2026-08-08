@@ -1,35 +1,24 @@
-# Build-context hygiene for a frontend-rooted context only. Both shipped images
-# build from the repository root, so the root .dockerignore is what Docker
-# consults for them; this list applies when a build is invoked against this
-# directory instead.
-#
-# Because it is not load-bearing for the shipped images, an over-exclusion here
-# fails silently and late. Only generated, transient and machine-local material
-# is listed: nothing that `npm ci`, `ng build` or `ng test` reads may be added,
-# and version-control patterns are enumerated rather than globbed so no `.git*`
-# wildcard can reach an asset under public/. There are no negation entries, so
-# no later line can shadow an earlier one.
+# Build-context hygiene for a frontend-rooted context. Both shipped images build from the
+# repository root, so the root .dockerignore is what Docker consults for them and this list
+# applies only when a build is invoked against this directory. Only generated, transient and
+# machine-local material is listed - nothing `npm ci`, `ng build` or `ng test` reads - and
+# there are no negation entries, so no later line can shadow an earlier one.
 
-# Installed dependencies - the single most important entry. The frontend image
-# runs `npm ci` inside its build stage, so a host tree copied in would ship
+# The frontend image runs `npm ci` inside its build stage, so a host tree copied in would ship
 # wrong-platform native bindings and defeat the deterministic lockfile install.
 **/node_modules/
 
-# Build output and compiler caches. The production bundle is produced inside the
-# image, never copied in; out-tsc/ is the TypeScript outDir.
 **/dist/
 **/.angular/
 out-tsc/
 **/*.tsbuildinfo
 
-# Test and coverage output.
 **/coverage/
 **/.nyc_output/
 karma-results*
 chrome-profiler-events*.json
 speed-measure-plugin*.json
 
-# Logs and package-manager caches.
 **/*.log
 npm-debug.log*
 yarn-error.log*
@@ -37,12 +26,12 @@ yarn-error.log*
 .eslintcache
 .npm/
 
-# Version-control metadata, enumerated exactly and anchored at the context root.
+# Version-control metadata, enumerated rather than globbed so that no `.git*` wildcard can
+# reach an asset under public/.
 .git/
 .gitignore
 .gitattributes
 
-# Editor and operating-system noise.
 .vscode/
 .idea/
 **/*.swp
@@ -53,21 +42,10 @@ yarn-error.log*
 **/ehthumbs.db
 **/Desktop.ini
 
-# -----------------------------------------------------------------------------
-# Machine-local environment overrides and credentials.
-#
-# Matched by FAMILY, never by enumerated suffix: `**/.env*` closes the whole
-# family at every depth, including `.env.production` and `.env.development`,
-# and mirrors the repository-root .dockerignore that governs the context
-# docker/frontend.Dockerfile actually builds from.
-#
-# The workspace's real committed configuration lives in src/environments/
-# (environment.ts and environment.development.ts) and is deliberately NOT
-# matched: `**/.env*` requires a basename beginning with a literal dot, which
-# those files do not have, so the production build keeps every file it needs.
-# Every other pattern in this group is keyed to a credential extension that no
-# workspace source file uses.
-# -----------------------------------------------------------------------------
+# Machine-local environment overrides and credentials. `**/.env*` closes that family at every
+# depth, and it requires a basename beginning with a literal dot - so the workspace's real
+# committed configuration under src/environments/ is deliberately NOT matched and the
+# production build keeps every file it needs.
 .env*
 *.pem
 *.key
@@ -86,9 +64,3 @@ yarn-error.log*
 **/*.jks
 **/*.keystore
 **/*.ppk
-
-# -----------------------------------------------------------------------------
-# .editorconfig, README.md and this file itself stay in the context. Every
-# additional entry here is one more chance to silently drop something a
-# frontend-rooted build needs.
-# -----------------------------------------------------------------------------

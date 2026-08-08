@@ -149,11 +149,33 @@
      break deep linking. The address is kept regardless, for the two reasons above. -->
 <a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)">Skip to main content</a>
 
+<!--
+  THE THREE BINDINGS BELOW ARE THE WHOLE OF THE SESSION SEAM, AND EACH FORM IS
+  LOAD-BEARING.
+
+  `[userName]` is a property binding and must stay one. The banner declares its input as
+  optional and this component supplies `undefined` when no account is signed in, which is
+  what the banner tests for in order to render no session cluster at all. An attribute
+  form would pass the literal string "userName" and leave a phantom account signed in
+  forever.
+
+  `[signingOut]` likewise. The banner coerces this input from an attribute, so an
+  attribute written without a value would read as `true` and permanently disable the
+  sign-out control.
+
+  `(signOut)` is subscribed exactly once, here. The lifecycle command behind it is cold,
+  so a gesture nobody listens for revokes nothing.
+
+  `applicationName` is forwarded from this component's own input, which defaults to the
+  build-time application name — so the banner is correct whether or not a mount site
+  supplies one, and the value has exactly one home either way.
+-->
 <app-header
   class="shell__header"
   [applicationName]="applicationName"
-  [userName]="userName"
-  [signingOut]="signingOut"
+  [userName]="userName()"
+  [accountServicesLink]="accountServicesLink()"
+  [signingOut]="signingOut()"
   (signOut)="onSignOut()"
 />
 
@@ -175,23 +197,28 @@
      indirection, no per-node class vocabulary, no fly-out submenu and no child
      indicator.
 
-     ⚠ THE REGION IS A PROJECTION SLOT, NOT A COMPONENT REFERENCE, AND THAT IS
-     DELIBERATE. The rail is supplied as projected content by whichever component
-     mounts this shell, so the shell holds no knowledge of what navigation exists.
-     Four files independently fix this arrangement: the component's own import list
-     omits the rail and documents why, the layout partial records this exact markup as
-     the intended shape, the rail's own documentation publishes this slot as its
-     mounting contract, and two specifications assert the region renders empty by
-     default. Whoever supplies the rail projects it from the mounting component and
-     updates those expectations in the same change; this file needs no edit for it.
+     ⚠ THE RAIL IS MOUNTED HERE, NOT PROJECTED INTO HERE, AND THE CHANGE IS A
+     CORRECTION. This region used to be `<div class="shell__sidebar"><ng-content /></div>`,
+     which left the console's navigation dependent on whichever component mounted the
+     shell and failed SILENTLY when nothing was supplied: with no projected content the
+     region matched the stylesheet's `:empty` collapse rule, so a console with no
+     navigation at all rendered without a raise, a warning or a compile error. The shell
+     composes banner, rail, routed outlet and footer, so it owns the rail — and the only
+     way to ship without navigation is now to delete an import, which strict template
+     checking turns into a compile error rather than a blank column.
 
-     Consequently the region renders empty today and the stylesheet collapses it with
-     an `:empty` branch, so it contributes no width and is not announced as a
-     nameless landmark. ⚠ KEEP THIS ELEMENT ON ONE LINE: `:empty` matches only when
-     the element has NO child nodes at all, text nodes included, so breaking the tag
-     across lines would defeat the collapse. The region writes no landmark and no
-     accessible name of its own, leaving both to whatever is projected. -->
-<div class="shell__sidebar"><ng-content /></div>
+     The rail carries the region class on its own host, so no wrapper element is
+     interposed: the grid places the shell's DIRECT children, and a wrapper would sever
+     that relationship. The region writes no landmark and no accessible name of its own —
+     the rail renders its own labelled navigation landmark, which is what makes the
+     console's navigation announceable to assistive technology. The rail resolves its own
+     entries and its own gating, so this file holds no knowledge of what the navigation
+     contains. -->
+<app-sidebar
+  class="shell__sidebar"
+  [hostAccount]="hostAccount()"
+  [administersTenant]="administersTenant()"
+/>
 
 <!-- MIGRATION: the main landmark is a NET ADDITION. No legacy page emitted one; the
      legacy content region was the hidden table cell at index.ascx L91, whose class

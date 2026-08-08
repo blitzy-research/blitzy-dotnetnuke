@@ -588,10 +588,12 @@
                 MIGRATION: THE SECURITY CODE FIELD IS DROPPED. `trCaptcha`, `plCaptcha` and
                 `ctlCaptcha` at `User.ascx` L63-L66 rely on the legacy captcha control, one
                 of the 102 excluded files under the legacy control library. The COMPENSATING
-                CONTROL is server-side and already in place: the API applies an
-                IP-partitioned rate limiter to the authentication routes under the `auth`
-                policy, 10 requests per 60 seconds, which is the only place the interface
-                answers with a too-many-requests status. Measured wording now unused:
+                CONTROL is server-side and already in place, and it covers THIS screen's own
+                write: the API's global limiter classifies a request as credential-bearing from
+                endpoint metadata rather than from its path, and `UsersController.CreateAsync`
+                carries `[CredentialEndpoint]`, so account creation draws the credential budget
+                of thirty requests a minute per partition and can be answered
+                `429 Too Many Requests`. Measured wording now unused:
                 `plCaptcha.Text` 'Security Code:', `CaptchaText.Text` 'Enter the code shown
                 above in the box below', `InvalidCaptcha.Text` 'Incorrect Security Code'.
 

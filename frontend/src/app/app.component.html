@@ -23,17 +23,27 @@
   skins rather than master pages, so there is no master-page-to-layout mapping owed here
   or anywhere else in the workspace.
 
-  WHY THE ROOT IS THIS THIN
-  -------------------------
-  The shell owns every fixed region and the router owns everything inside its outlet, so
-  there is nothing for the root to add. NO wrapper element is emitted, and that is a
-  requirement rather than a preference for brevity:
+  WHY THE ROOT IS ONE ELEMENT WITH NO BINDING
+  -------------------------------------------
+  The shell owns every fixed region, the session those regions present, and — through
+  the router — everything inside its outlet. There is nothing left for the root to add,
+  so this template is a single element carrying NO attribute, NO binding and NO
+  projected content:
 
-    * The shell's host IS the layout grid container — it carries `.shell` from its own
-      host metadata and `styles/_layout.scss` keys the grid off that class. An interposed
-      element would sever the parent-child relationship the grid depends on and every
-      region would stack at full width regardless of viewport.
-    * `app.component.scss` is written to exactly this expectation. Its own comment
+    * ⚠ NO SESSION BINDING. An earlier revision bound a display name, an in-flight
+      sign-out flag and a sign-out handler here, which put the chrome's state boundary
+      one level above the chrome. The shell resolves all three from the session store
+      itself now, so restating any of them here would create a second authority for a
+      decision that has exactly one.
+    * ⚠ NO PROJECTED NAVIGATION. The rail used to be projected into a slot the shell
+      published; the shell imports and renders it directly now. Projecting it again
+      would mount the region twice.
+    * NO WRAPPER ELEMENT, and that is a requirement rather than a preference for
+      brevity. The shell's host IS the layout grid container — it carries `.shell` from
+      its own host metadata and `styles/_layout.scss` keys the grid off that class. An
+      interposed element would sever the parent-child relationship the grid depends on
+      and every region would stack at full width regardless of viewport.
+      `app.component.scss` is written to exactly this expectation; its own comment
       records that "the template mounts a single element", which is why it styles the
       host box and nothing else.
     * The singular landmarks — banner, main region and footer band — are each rendered
@@ -83,66 +93,4 @@
      have no counterpart because the defect they reported cannot reach a running
      application. The empty script-disabled element at L22 is not reproduced here either:
      it belongs to the single static document, `src/index.html`. -->
-
-<!-- MIGRATION: the session seam below is a NET ADDITION with no legacy counterpart. The
-     legacy chrome read the signed-in identity out of ambient per-request state that the
-     framework made available anywhere, so no wiring was visible in the markup and no
-     component published a contract for it. Here the chrome resolves nothing: the shell
-     FORWARDS these three facts to the banner and re-emits the sign-out gesture, and the
-     banner ends no session and navigates nowhere. This template is therefore the ONLY
-     place in the workspace where the chrome meets the session store, which is what keeps
-     the chain from the token custodian to the rendered name down to three links and
-     leaves one authority for the decision to sign out. Signing out changes mechanism
-     with it: clearing one authentication cookie used to be enough because the next
-     request rebuilt every page on the server, whereas a signed bearer token cannot be
-     recalled, so signing out is now revocation plus a client-side discard — and the
-     discard is the part with no legacy equivalent at all. -->
-
-<!--
-  THE THREE BINDINGS ARE THE WHOLE OF THE SESSION SEAM, AND EACH FORM IS LOAD-BEARING.
-
-  `[userName]` is a property binding and must stay one. The shell declares its input as
-  optional and this component supplies `undefined` when no account is signed in, which is
-  what the banner tests for in order to render no session cluster at all. An attribute
-  form would pass the literal string "userName" and leave a phantom account signed in
-  forever.
-
-  `[signingOut]` likewise. The shell coerces this input from an attribute, so an attribute
-  written without a value would read as `true` and permanently disable the sign-out
-  control.
-
-  `(signOut)` is subscribed exactly once, here. The coordinator behind it is cold, so a
-  gesture nobody listens for revokes nothing.
-
-  `applicationName` is DELIBERATELY NOT BOUND. The shell's input defaults to the
-  build-time application name, so the banner is already correct with no binding, and
-  restating the value here would create a second place it could drift from.
--->
-
-<!--
-  THE PROJECTED CHILD IS THE PRIMARY NAVIGATION RAIL, AND IT IS REQUIRED.
-
-  The shell publishes its navigation region as a content-projection slot and assigns the
-  mounting decision to whichever component mounts `app-shell`, precisely so that the
-  shell holds no knowledge of what navigation exists. This is that mounting component, so
-  the rail is supplied here. It is standalone, declares no input and emits nothing, so
-  projecting it needs no binding.
-
-  ⚠ DO NOT REMOVE IT. The shell's region is collapsed by an `:empty` branch in its
-  stylesheet when nothing is projected — correct for a shell mounted with no navigation,
-  and asserted as such by the shell's own specification — but at the application root it
-  would mean shipping a console with NO navigation at all, and it would do so SILENTLY:
-  nothing raises and nothing warns, the rail simply never renders. `app.component.spec.ts`
-  asserts the projection precisely to close that gap.
-
-  The region itself writes no landmark and no accessible name, leaving both to whatever is
-  projected, so the rail's own labelled navigation landmark is what makes the console's
-  navigation announceable to assistive technology.
--->
-<app-shell
-  [userName]="userName()"
-  [signingOut]="signingOut()"
-  (signOut)="onSignOut()"
->
-  <app-sidebar />
-</app-shell>
+<app-shell />

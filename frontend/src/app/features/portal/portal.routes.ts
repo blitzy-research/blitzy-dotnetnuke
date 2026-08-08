@@ -44,40 +44,53 @@ import { permissionGuard } from '../../core/guards/permission.guard';
  * because the API registers no policy provider that could invent one on demand and would
  * therefore throw while authorising rather than answer with a tidy refusal.
  *
- * ⚠ THE CLIENT'S ROUTE VOCABULARY IS NARROWER THAN THE API'S, AND THE GAP IS REAL
- * RATHER THAN AN OVERSIGHT. Of the eight policies the API registers, a route in this
- * workspace may declare only the five the client's route contract admits — the four
- * record-scoped names and `PortalAdministrator` — a restriction asserted directly in
- * `app.routes.spec.ts:L275`. Two of this feature's endpoints sit outside that five:
+ * ⚠ THE CLIENT'S ROUTE VOCABULARY IS THE API'S, ALL EIGHT NAMES, AND NO APPROXIMATION IS
+ * SUBSTITUTED FOR ANY OF THEM. A previous revision of this file asserted the opposite —
+ * that a route here could declare only five of the eight — and declared the tenant-scoped
+ * policy on tenant CREATION as the "closest declarable" stand-in for the host policy the
+ * endpoint really requires. That claim was false in both halves. The gate registers all
+ * eight names, resolves the scope each one needs, and answers the host question from the
+ * caller's host flag alone; the only thing that had ever restricted this table was a
+ * specification pinning a five-name list, which was itself wrong and has been corrected.
  *
- *   * `PortalsController.cs:L241` (list) and `:L389` (create) require
- *     `HostAdministrator`, because the portal COLLECTION addresses no single tenant.
- *     `PolicyNames.cs:L120-L130` records why that is not interchangeable with portal
+ * The substitution mattered rather than being a documentation slip. Approximating the host
+ * rule with the tenant rule errs toward ADMITTING, so it offered tenant creation to every
+ * portal administrator in the installation — a screen whose one endpoint is guaranteed to
+ * refuse them, reached through a form they can fill in completely before being told. That
+ * is the opposite of what a navigation affordance is for.
+ *
+ * So each route below declares the policy ITS OWN primary endpoint declares, read from the
+ * controller:
+ *
+ *   * `PortalsController.cs:L389` (create) requires `HostAdministrator`, and the `new`
+ *     route declares exactly that. `:L241` (list) and `:L569` (delete) require it too,
+ *     because the portal COLLECTION addresses no single tenant.
+ *     `PolicyNames.cs:L120-L130` records why it is not interchangeable with portal
  *     administration: the tenant-scoped policy falls back to the tenant the caller
  *     arrived through, so asking it about a tenant-wide operation is a truthful but
  *     irrelevant question that would let an administrator of one tenant enumerate or
  *     create tenants.
- *   * `PortalsController.cs:L569` requires it for deletion too, which is why the list
- *     screen's delete affordance can be refused by the server on a screen this table
- *     admitted.
+ *   * Everything else is genuinely tenant-scoped and declares `PortalAdministrator`:
+ *     `PortalsController.cs:L291`, `:L500`, `:L615` and `:L658`, plus all five actions of
+ *     `PortalAliasesController.cs` (L233, L304, L370, L421, L475).
  *
- * Everything else is genuinely tenant-scoped and declares `PortalAdministrator`:
- * `PortalsController.cs:L291`, `:L500`, `:L615` and `:L658`, plus all five actions of
- * `PortalAliasesController.cs` (L233, L304, L370, L421, L475).
+ * The LISTING declares `HostAdministrator` for the same reason `new` does, and that was a
+ * separate decision from the vocabulary question — an earlier revision left it ungated on
+ * the reasoning that a listing mutates nothing, and the note on the route itself records
+ * why that reasoning is withdrawn, what the objection to gating was, and how it is
+ * answered.
  *
- * Where an endpoint's real policy is not declarable, this table declares the closest
- * policy that IS — never a name outside the contract, which the gate would refuse
- * outright (`permission.guard.ts:L589-L595`) and the API would throw on. That is safe in
- * one specific direction worth stating: a host account satisfies portal administration
- * as well (`permission.guard.ts:L539-L540` resolves it through the caller's host flag),
- * so approximating a host rule with the tenant rule NEVER locks out the operator the
- * server intends to admit — it only admits some it will then refuse.
+ * A name outside the registered eight would still be refused outright by the gate
+ * (`permission.guard.ts` fails closed on an unregistered declaration) and the API would
+ * throw while authorising, so no such name may be invented here.
  *
- * That residue is acceptable because A GATE IS A NAVIGATION AFFORDANCE AND NEVER AN
- * ENFORCEMENT POINT. The server is the authority and answers 403 regardless of what
- * happened here, so no route below is made safe by its gate; the gate exists to keep the
- * client from offering screens it can already tell are unusable, and the API's refusal
- * is surfaced through the shared error banner when the approximation lets one through.
+ * A GATE REMAINS A NAVIGATION AFFORDANCE AND NEVER AN ENFORCEMENT POINT. The server is the
+ * authority and answers 403 regardless of what happened here, so no route below is made
+ * safe by its gate; the gate exists to keep the client from offering screens it can already
+ * tell are unusable, and the API's refusal is surfaced through the shared error banner
+ * whenever one gets through — which here means the window before a fetched identity has
+ * resolved, since the gate deliberately admits while it is unknown, and any record-scoped
+ * question the client cannot pre-judge at all.
  *
  * MIGRATION: navigation gating moves from an IMPERATIVE test inside the page's own load
  * handler to declarative route data answered in one place. `Portals.ascx.vb:L339-L341`
@@ -85,14 +98,16 @@ import { permissionGuard } from '../../core/guards/permission.guard';
  * which navigated away by side effect, so the protected set could only be discovered by
  * reading every screen. It is now readable from this table.
  *
- * MIGRATION: the authorisation GRANULARITY narrows deliberately. The legacy console
- * admitted only a host account to the portal list (`Portals.ascx.vb:L339-L341`) and
- * separated its actions by two access levels — `SecurityAccessLevel.Host` for adding a
- * portal (`Portals.ascx.vb:L435`) and `SecurityAccessLevel.Admin` for the two actions
- * dropped below (`:L436`, `:L437`). The target expresses the host/tenant split through
- * the two policies named above and has no `SuperUser` or per-action access-level
- * concept; nothing here reconstructs one, because inventing a policy the API does not
- * register would be refused by the gate and would throw at the endpoint.
+ * MIGRATION: the authorisation GRANULARITY is preserved rather than narrowed. The legacy
+ * console admitted only a host account to the portal list (`Portals.ascx.vb:L339-L341`)
+ * and separated its actions by two access levels — `SecurityAccessLevel.Host` for adding
+ * a portal (`Portals.ascx.vb:L435`) and `SecurityAccessLevel.Admin` for the two actions
+ * dropped below (`:L436`, `:L437`). The host tier maps to `HostAdministrator` and the
+ * tenant tier to `PortalAdministrator`, so the split survives; what does not survive is
+ * the per-action access-level CONCEPT, because the target authorises per endpoint rather
+ * than per grid action. Nothing here invents a `SuperUser` policy: the API registers none,
+ * and a name outside the registered eight would be refused by the gate
+ * (`permission.guard.ts:L589-L595`) and would throw while the endpoint was authorised.
  *
  * MIGRATION: the legacy list's Edit affordance did NOT open an edit page of its own — it
  * opened SITE SETTINGS carrying the tenant key. `Portals.ascx.vb:L308-L310` builds the
@@ -131,13 +146,46 @@ export const PORTAL_ROUTES: Routes = [
      * empty path cannot swallow `/portals/new`. Setting the flag would be inert here and
      * would suggest a hazard that does not exist.
      *
-     * UNGATED, and the omission is reasoned rather than skipped. `PortalsController.cs:L241`
-     * requires host authority to enumerate tenants, which is a policy this route COULD
-     * declare — but a listing mutates nothing, the inherited session gate already excludes
-     * anonymous callers, and gating it would hide the feature's only entry point behind a
-     * check the server repeats anyway. A caller without host authority reaches the screen
-     * and the API's refusal is surfaced through the shared error banner, which tells them
-     * what a silent redirect would not.
+     * GATED ON `HostAdministrator`, WHICH IS THE POLICY THE ENDPOINT ITSELF DECLARES, so
+     * this listing follows the same rule as every other one in the workspace
+     * (`module.routes.ts:L108-L111`, and `user.routes.ts` and `role.routes.ts` at their own
+     * `''` routes) rather than standing as an exception to it.
+     * `PortalsController.cs:L241` requires host authority to enumerate tenants and this
+     * screen exists to render that enumeration, so a caller who cannot make the call has
+     * nothing to look at. The route also carries the delete affordance, whose endpoint is
+     * host-gated too (`:L569`), so an open screen offered tenant enumeration AND tenant
+     * deletion to every signed-in caller and relied entirely on the server to say no.
+     *
+     * MIGRATION: this restores the legacy reachability exactly rather than narrowing it.
+     * `Portals.ascx.vb:L339-L341` opened with
+     * `If Not UserInfo.IsSuperUser Then Response.Redirect(NavigateURL("Access Denied"), True)`,
+     * so the legacy portal list was HOST-ONLY, and the host flag the gate reads is the same
+     * fact that predicate read.
+     *
+     * ⚠ AN UNGATED LISTING WAS CONSIDERED AND IS WITHDRAWN, AND THE OBJECTION TO GATING
+     * IS ANSWERED RATHER THAN OVERRULED. That objection was real: this screen is the only
+     * navigation entry the rail offers into the whole portal feature, so gating it removes
+     * every rail path to `:portalId/settings` and `:portalId/aliases` — screens
+     * `PortalsController.cs:L615` and every action of `PortalAliasesController` grant a
+     * TENANT administrator by right — and denying access the server would have granted is
+     * the opposite failure from the one an advisory gate exists to prevent. Three things
+     * settle it. The rail entry for this address declares `HostAdministrator` in its own
+     * right (`layout/sidebar/sidebar.component.ts`), so the entry is already withheld from
+     * a non-host whatever this route says, and an ungated route would only mean an operator
+     * who typed the address reached a screen whose one read is refused 403. Leaving it open
+     * did not restore the children either: the listing a non-host sees is empty, so there
+     * was never a row to navigate from. And the legacy console answered this exact question
+     * by redirecting rather than by rendering a refusal. What gating must NOT do is strand a
+     * caller who never asked for this screen, which is why `app.routes.ts` resolves the
+     * application root per authority instead of sending everyone here — see
+     * `rootLandingRedirect`, which exists because a static root redirect to this address
+     * left every tenant administrator sitting on the sign-in screen after a successful
+     * sign-in.
+     *
+     * THE GATE IS STILL ADVISORY AND THE SERVER IS STILL THE AUTHORITY. Nothing here is
+     * made safe by this declaration; it exists so the client does not navigate an operator
+     * into a screen it can already tell is unusable, and the API's refusal is surfaced
+     * through the shared error banner in the cases the client cannot pre-judge.
      *
      * The title is the legacy control's own, so the browser tab reads as it did:
      * `ControlTitle_.Text` in `Website/admin/Portal/App_LocalResources/Portals.ascx.resx:L144-L145`
@@ -145,6 +193,8 @@ export const PORTAL_ROUTES: Routes = [
      */
     path: '',
     title: 'Portals',
+    canActivate: [permissionGuard],
+    data: { permission: 'HostAdministrator' },
     loadComponent: () =>
       import('./portal-list/portal-list.component').then((m) => m.PortalListComponent),
   },
@@ -154,15 +204,20 @@ export const PORTAL_ROUTES: Routes = [
      *
      * ⚠ MUST REMAIN ABOVE `:portalId`. See the ordering note at the head of this file.
      *
-     * GATED, AND GATED WITH AN APPROXIMATION THAT IS RECORDED RATHER THAN HIDDEN.
-     * `PortalsController.cs:L389` requires host authority for `POST /portals`, which is
-     * not a name a route here may declare (see the vocabulary note above), so this route
-     * declares the nearest policy it can. The approximation errs only toward admitting: a
-     * host account satisfies portal administration too, so the operator the server means
-     * to admit is never turned away here, while a portal administrator who is admitted
-     * meets the server's narrower rule on submission and sees it reported. Leaving the
-     * route ungated instead would be strictly worse — it would offer tenant creation to
-     * every signed-in caller.
+     * GATED ON HOST AUTHORITY, WHICH IS WHAT THE ENDPOINT ITSELF REQUIRES.
+     * `PortalsController.cs:L389` declares `HostAdministrator` for `POST /portals`, and
+     * this route declares the same name. The gate resolves it from the caller's host flag
+     * alone, with no tenant reasoning of any kind, because the policy has no portal binding
+     * by design — reading a portal to answer it would reintroduce the very question
+     * `PolicyNames.cs:L120-L130` says the policy exists to avoid asking.
+     *
+     * MIGRATION: a previous revision declared `PortalAdministrator` here as the "nearest
+     * declarable" policy, on the reasoning that erring toward admitting is harmless because
+     * the server refuses anyway. It is not harmless. Every portal administrator in the
+     * installation was admitted to a creation form whose only endpoint is certain to refuse
+     * them, and learned that after filling it in. The narrower name is the correct one, it
+     * is registered, and it turns nobody away that the server would have admitted: a host
+     * account satisfies it directly.
      *
      * Reaches the same component as the edit route below. The form decides which heading
      * to render from whether an identifier arrived, so the distinction between creating
@@ -178,7 +233,7 @@ export const PORTAL_ROUTES: Routes = [
     path: 'new',
     title: 'Add New Portal',
     canActivate: [permissionGuard],
-    data: { permission: 'PortalAdministrator' },
+    data: { permission: 'HostAdministrator' },
     loadComponent: () =>
       import('./portal-form/portal-form.component').then((m) => m.PortalFormComponent),
   },

@@ -1144,9 +1144,13 @@ describe('form-errors.util', () => {
 
       const registrationError = userCreateMessage('user.create.provider_error');
 
+      // "Futher" is the measured spelling in `SharedResources.resx` line 301 and is
+      // reproduced verbatim: a discovered defect is annotated rather than repaired, and the
+      // operator must read the sentence they already know. See the note on
+      // `REGISTRATION_ERROR`.
       expect(registrationError).toBe(
         'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
-          'Administrator For Further Information.',
+          'Administrator For Futher Information.',
       );
       expect(userCreateMessage('user.create.portal_assignment_failed')).toBe(registrationError);
     });
@@ -1225,7 +1229,7 @@ describe('form-errors.util', () => {
       );
       expect(userCreateMessage('user.create.provider_error')).toBe(
         'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
-          'Administrator For Further Information.',
+          'Administrator For Futher Information.',
       );
       expect(passwordUpdateMessage('user.password.invalid')).toBe(
         'You must enter a valid password. Please check with the Portal Administrator if you ' +

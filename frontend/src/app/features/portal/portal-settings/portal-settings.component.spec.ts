@@ -136,6 +136,7 @@ import { PortalSettingsComponent } from './portal-settings.component';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { Signal, WritableSignal } from '@angular/core';
 import type {
+  PortalAdministrator,
   PortalDetail,
   PortalSettings,
   UpdatePortalSettingsRequest,
@@ -170,6 +171,18 @@ function portalUrl(portalId: number): string {
 /** One portal's configuration projection: read with GET, replaced whole with PUT. */
 function settingsUrl(portalId: number): string {
   return `${PORTALS_URL}/${portalId}/settings`;
+}
+
+/**
+ * The accounts one portal may designate as its administrator.
+ *
+ * MIGRATION: this read lives on the PORTAL resource because the portal has to come from the
+ * path. Every role read resolves its tenant from the caller's own context, so none of them can
+ * enumerate the administrators of the portal a settings screen is addressing — which is what left
+ * the administrator displayable and not reassignable.
+ */
+function administratorsUrl(portalId: number): string {
+  return `${PORTALS_URL}/${portalId}/administrators`;
 }
 
 /**
@@ -384,6 +397,21 @@ function pageListing(): readonly TabListItem[] {
     }),
     pageRow({ tabId: 90, tabName: 'Admin', level: 0, parentId: null }),
     pageRow({ tabId: 91, tabName: 'Site Settings', level: 1, parentId: 90 }),
+  ];
+}
+
+/**
+ * The accounts the administrator selector offers by default.
+ *
+ * Account `2` is the one {@link settingsBody} designates, so the ordinary case has a stored value
+ * that the list can select. Account `3` is a second eligible administrator, which is what makes a
+ * REASSIGNMENT expressible — a single-entry list could not distinguish "the selector works" from
+ * "the selector happens to hold the value it started with".
+ */
+function administratorListing(): readonly PortalAdministrator[] {
+  return [
+    { userId: 2, username: 'ada', displayName: 'Ada Lovelace' },
+    { userId: 3, username: 'grace', displayName: 'Grace Hopper' },
   ];
 }
 
@@ -662,12 +690,17 @@ describe('PortalSettingsComponent', () => {
   // -------------------------------------------------------------------------
 
   /**
-   * Answers the three reads a portal identifier starts, and renders the result.
+   * Answers the four reads a portal identifier starts, and renders the result.
    *
-   * The identifier setter issues exactly three: the configuration projection it edits, the
-   * portal detail that supplies the administration page, and the portal's pages. They are
-   * matched by URL rather than by arrival order, because the order is the setter's business
-   * and not a contract worth freezing here.
+   * The identifier setter issues exactly four: the configuration projection it edits, the portal
+   * detail that supplies the administration page, the portal's pages, and the accounts eligible to
+   * administer it. They are matched by URL rather than by arrival order, because the order is the
+   * setter's business and not a contract worth freezing here.
+   *
+   * `administrators` defaults to the two candidates {@link administratorListing} defines, one of
+   * which is the administrator {@link settingsBody} designates — so a case that says nothing about
+   * the selector still gets a list that can select the stored value, which is the ordinary state.
+   * Pass `null` to refuse the read instead.
    */
   function arrive(
     portalId: number,
@@ -675,6 +708,7 @@ describe('PortalSettingsComponent', () => {
       readonly settings?: PortalSettings;
       readonly detail?: PortalDetail;
       readonly pages?: readonly TabListItem[];
+      readonly administrators?: readonly PortalAdministrator[] | null;
     } = {},
   ): void {
     fixture.componentRef.setInput('portalId', portalId);
@@ -683,7 +717,38 @@ describe('PortalSettingsComponent', () => {
     http.expectOne(portalUrl(portalId)).flush(envelope(options.detail ?? detailBody()));
     http.expectOne(tabsUrl(portalId)).flush(envelope(options.pages ?? pageListing()));
 
+    const candidates =
+      options.administrators === undefined ? administratorListing() : options.administrators;
+    const candidateRead = http.expectOne(administratorsUrl(portalId));
+
+    if (candidates === null) {
+      candidateRead.flush(
+        { type: 'about:blank', title: 'Server error', status: 500 },
+        { status: 500, statusText: 'Server Error' },
+      );
+    } else {
+      candidateRead.flush(envelope(candidates));
+    }
+
     fixture.detectChanges();
+  }
+
+  /**
+   * Answers the administrator-candidate read for one portal.
+   *
+   * ⚠ EVERY MOUNT ISSUES IT, because the selector cannot be offered without it. A case that
+   * drives the identifier setter by hand rather than through {@link arrive} therefore has to
+   * settle it too, or the unconditional verification in `afterEach` reports it as an unexpected
+   * outstanding request rather than failing on the case's own subject.
+   *
+   * @param portalId The portal whose candidates to answer.
+   * @param candidates The accounts to answer with.
+   */
+  function answerAdministrators(
+    portalId: number,
+    candidates: readonly PortalAdministrator[] = administratorListing(),
+  ): void {
+    http.expectOne(administratorsUrl(portalId)).flush(envelope(candidates));
   }
 
   /** The portal listing re-read the store performs after every successful write. */
@@ -843,6 +908,7 @@ describe('PortalSettingsComponent', () => {
       forZero.flush(envelope(settingsBody()));
       http.expectOne(`${API}/portals/0`).flush(envelope(detailBody()));
       http.expectOne(`${API}/portals/0/tabs`).flush(envelope([]));
+      answerAdministrators(0);
 
       fixture.componentRef.setInput('portalId', -1);
 
@@ -853,6 +919,7 @@ describe('PortalSettingsComponent', () => {
       forMinusOne.flush(envelope(settingsBody({ portalId: -1 })));
       http.expectOne(`${API}/portals/-1`).flush(envelope(detailBody({ portalId: -1 })));
       http.expectOne(`${API}/portals/-1/tabs`).flush(envelope([]));
+      answerAdministrators(-1);
 
       fixture.detectChanges();
     });
@@ -882,6 +949,7 @@ describe('PortalSettingsComponent', () => {
       http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
       http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
       http.expectOne(tabsUrl(0)).flush(envelope([]));
+      answerAdministrators(0);
 
       fixture.componentRef.setInput('portalId', '-1');
 
@@ -889,6 +957,7 @@ describe('PortalSettingsComponent', () => {
       http.expectOne(settingsUrl(-1)).flush(envelope(settingsBody({ portalId: -1 })));
       http.expectOne(portalUrl(-1)).flush(envelope(detailBody({ portalId: -1 })));
       http.expectOne(tabsUrl(-1)).flush(envelope([]));
+      answerAdministrators(-1);
     });
 
     it('reports absence rather than guessing when the segment is not a whole number', () => {
@@ -1089,6 +1158,7 @@ describe('PortalSettingsComponent', () => {
       listings[0].flush(envelope(pageListing()));
       http.expectOne(settingsUrl(7)).flush(envelope(settingsBody({ portalId: 7 })));
       http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
+      answerAdministrators(7);
       fixture.detectChanges();
 
       // And rendering all four selectors off that single answer issues nothing further, which
@@ -1295,6 +1365,7 @@ describe('PortalSettingsComponent', () => {
           status: 404,
           statusText: 'Not Found',
         });
+      answerAdministrators(3);
       fixture.detectChanges();
       showAdvanced();
 
@@ -2594,6 +2665,7 @@ describe('PortalSettingsComponent', () => {
         });
       http.expectOne(portalUrl(42)).flush(envelope(detailBody({ portalId: 42 })));
       http.expectOne(tabsUrl(42)).flush(envelope([]));
+      answerAdministrators(42);
       fixture.detectChanges();
 
       expect(text(required(query('app-error-banner'), 'the failure banner'))).toContain(
@@ -2840,6 +2912,288 @@ describe('PortalSettingsComponent', () => {
   // holds a live third-party advertising SCRIPT block with a remote source, stored XML-escaped so
   // a naive search clears it wrongly. Nothing on this screen may render it, and nothing on this
   // screen binds any string as markup.
+
+  // =========================================================================
+  // O2. THE ADMINISTRATOR SELECTOR
+  // =========================================================================
+  //
+  // Measured at `SiteSettings.ascx.vb:L329-L339`: the legacy screen asked the role controller for
+  // the members of the portal's own administrator role, added one entry per member as
+  // `New ListItem(objUser.FullName, objUser.UserID.ToString)`, and pre-selected the entry matching
+  // the stored `AdministratorId`. The chosen value became argument nine of the portal update at
+  // `:L775`.
+  //
+  // ⚠ THIS SCREEN PREVIOUSLY RENDERED THE STORED IDENTIFIER AS A READ-ONLY `output`, and the
+  // affordance was absent altogether: no read existed that could enumerate the administrators of
+  // the portal the ROUTE names, because every role read resolves its tenant from the caller's own
+  // context. The read now exists on the portal resource, so the whole legacy affordance is back.
+
+  describe('O2. the administrator selector', () => {
+    /** Chooses an option the way a browser does, then settles the view. */
+    function chooseAdministrator(value: number): void {
+      form().controls.administratorId.setValue(value);
+      fixture.detectChanges();
+    }
+
+    it('reads the candidates for the portal the ROUTE names, not the caller\u2019s own', () => {
+      // The whole reason the read lives on the portal resource. A host account configuring one of
+      // several tenants must see THAT tenant's administrators, which a caller-scoped read cannot
+      // answer - and the request proves the portal travels in the path.
+      fixture.componentRef.setInput('portalId', 7);
+      http.expectOne(settingsUrl(7)).flush(envelope(settingsBody({ portalId: 7 })));
+      http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
+      http.expectOne(tabsUrl(7)).flush(envelope([]));
+
+      const read: TestRequest = http.expectOne(administratorsUrl(7));
+
+      expect(read.request.method).toBe('GET');
+      expect(read.request.url).toBe(`${API}/portals/7/administrators`);
+      expect(read.request.url.startsWith('http')).toBeFalse();
+      // UNPAGED, matching the legacy read: `GetUserRolesByRoleName` returned every member and the
+      // selector held them all, so there is no page coordinate to send.
+      expect(read.request.params.keys()).toEqual([]);
+
+      read.flush(envelope(administratorListing()));
+      fixture.detectChanges();
+    });
+
+    it('offers a real selector, and no read-only display, carrying every candidate', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      const control = required(selector('administratorId'), 'the administrator selector');
+
+      expect(control.disabled).toBeFalse();
+      expect(optionValuesOf('administratorId')).toEqual(['2', '3']);
+      // BOTH NAMES on each entry. The display name is the one account field a tenant may compose
+      // from a format string, so two administrators can legitimately share one; the login name is
+      // unique within a portal, so the pair is always distinguishable.
+      expect(optionsOf('administratorId')).toEqual([
+        'Ada Lovelace (ada)',
+        'Grace Hopper (grace)',
+      ]);
+    });
+
+    it('pre-selects the stored administrator, reproducing the legacy pre-selection', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      expect(selectedValueOf('administratorId')).toBe('2');
+      expect(form().controls.administratorId.value).toBe(2);
+    });
+
+    it('offers NO empty entry when the portal already designates an administrator', () => {
+      // MIGRATION: the legacy selector had no empty entry at all - it added one item per role
+      // member and nothing else - and the server refuses an update that would clear a designation.
+      // An empty option here would therefore be an option whose only outcome is a refusal.
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      expect(optionsOf('administratorId')).not.toContain('<None Specified>');
+      expect(optionValuesOf('administratorId')).not.toContain('-1');
+    });
+
+    it('offers the empty entry only when the portal designates nobody', () => {
+      // The one case in which absence is a legal value: the server's guard permits it for a portal
+      // that already has none. The option carries the sentinel, and the sentinel is what becomes
+      // absence on the wire.
+      arrive(0, { settings: settingsBody({ administratorId: null }) });
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      expect(optionsOf('administratorId')[0]).toBe('<None Specified>');
+      expect(selectedValueOf('administratorId')).toBe('-1');
+    });
+
+    it('sends the chosen account, so the administrator can actually be reassigned', () => {
+      // ⚠ THE FINDING, STATED AS A CASE. The value used to be returned unchanged from the loaded
+      // resource whatever the operator did, because there was no control to change it with.
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      chooseAdministrator(3);
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).administratorId).toBe(3);
+      completeSave(write, settingsBody({ administratorId: 3 }));
+    });
+
+    it('round-trips the stored administrator untouched when the operator changes nothing', () => {
+      // The other half of the same guarantee: a save of the other seventeen fields must not move
+      // the administrator. It is now sent from the CONTROL rather than from the loaded resource, so
+      // this is the case that proves the control was seeded correctly.
+      arrive(0);
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).administratorId).toBe(2);
+      completeSave(write);
+    });
+
+    it('sends ABSENCE for the empty entry, never the sentinel', () => {
+      // The sentinel exists only inside the form, because a select must hold the value of the
+      // option it shows and the wire contract's absence is `null`. Minus one is not a legal
+      // `Users.UserID` - the column seeds `IDENTITY(1, 1)` - so sending it would name no account.
+      arrive(0, { settings: settingsBody({ administratorId: null }) });
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).administratorId).toBeNull();
+      expect(keysOf(write)).toContain('administratorId');
+      completeSave(write, settingsBody({ administratorId: null }));
+    });
+
+    it('retains a designated administrator the candidate list no longer holds', () => {
+      // ⚠ A REAL STATE, AND THE ONE MISTAKE AN OPERATOR COULD NOT HAVE INTENDED. An account removed
+      // from the administrator role while still designated is absent from the candidates; a selector
+      // that dropped them would silently reassign the portal on the next save. The entry names the
+      // account key because that is all this screen knows - the settings projection publishes the
+      // identifier and no name, and the candidate read is precisely the read that omitted it.
+      arrive(0, { administrators: [{ userId: 3, username: 'grace', displayName: 'Grace Hopper' }] });
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      expect(optionValuesOf('administratorId')).toEqual(['3', '2']);
+      expect(optionsOf('administratorId')).toContain('Current administrator (account 2)');
+      expect(selectedValueOf('administratorId')).toBe('2');
+
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).administratorId)
+        .withContext('the designation survives a save that did not touch it')
+        .toBe(2);
+      completeSave(write);
+    });
+
+    it('says so, and keeps the stored administrator, when the candidates cannot be read', () => {
+      // Reported rather than escalated, on the same terms as the page listing: the field still holds
+      // the stored administrator and still round-trips it, and the other seventeen fields still
+      // save. Saying what was LOST is what stops a one-entry selector looking like a site with one
+      // eligible administrator.
+      arrive(0, { administrators: null });
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      expect(screenText()).toContain('The list of eligible administrators could not be loaded');
+      expect(optionValuesOf('administratorId')).toEqual(['2']);
+      expect(selectedValueOf('administratorId')).toBe('2');
+
+      submit();
+      const write = takeSave(0);
+
+      expect(bodyOf(write).administratorId).toBe(2);
+      completeSave(write);
+    });
+
+    it('offers no candidates at all while the read is still in flight, and says so', () => {
+      // The selector must not offer the previous portal's accounts, nor an empty list that looks
+      // settled. Until the read lands the only entry is the stored administrator, and the screen
+      // says the list is coming.
+      fixture.componentRef.setInput('portalId', 5);
+      http.expectOne(settingsUrl(5)).flush(envelope(settingsBody({ portalId: 5 })));
+      http.expectOne(portalUrl(5)).flush(envelope(detailBody({ portalId: 5 })));
+      http.expectOne(tabsUrl(5)).flush(envelope([]));
+      fixture.detectChanges();
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      expect(screenText()).toContain('Loading the accounts that may administer this site');
+      expect(optionValuesOf('administratorId')).toEqual(['2']);
+
+      answerAdministrators(5);
+      fixture.detectChanges();
+
+      expect(screenText()).not.toContain('Loading the accounts that may administer this site');
+      expect(optionValuesOf('administratorId')).toEqual(['2', '3']);
+    });
+
+    it('offers no candidate belonging to a portal the screen has moved away from', () => {
+      // ⚠ THE GATE ON THE RECORDED PORTAL. Without it the held list is simply "the last list read",
+      // which during a move between portals is the wrong one and is indistinguishable from the
+      // right one - long enough to submit an account the new portal has never heard of.
+      arrive(0);
+
+      fixture.componentRef.setInput('portalId', 9);
+      http.expectOne(settingsUrl(9)).flush(envelope(settingsBody({ portalId: 9, administratorId: 8 })));
+      http.expectOne(portalUrl(9)).flush(envelope(detailBody({ portalId: 9 })));
+      http.expectOne(tabsUrl(9)).flush(envelope([]));
+      fixture.detectChanges();
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      // Portal 0's two candidates are gone even though the read for portal 9 has not answered.
+      expect(optionValuesOf('administratorId')).toEqual(['8']);
+
+      answerAdministrators(9, [{ userId: 8, username: 'newadmin', displayName: 'New Admin' }]);
+      fixture.detectChanges();
+
+      expect(optionValuesOf('administratorId')).toEqual(['8']);
+      expect(optionsOf('administratorId')).toEqual(['New Admin (newadmin)']);
+    });
+
+    it('names the field from the resource wording and associates the label with the control', () => {
+      // `plAdministrator.Text` is 'Administrator:' and `plAdministrator.Help` is 'The Administrator
+      // User for the site.' Both are supplied verbatim.
+      //
+      // ⚠ THE RENDERED LABEL HAS NO TRAILING COLON, and that is the SHARED wrapper's own documented
+      // rule rather than a divergence here: it normalises every label it is given. So the colon is
+      // asserted on what this screen supplies and its absence on what reaches the document -
+      // asserting only the rendered form would let a screen that dropped the colon itself pass.
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      const control = required(selector('administratorId'), 'the administrator selector');
+      const field = required(control.closest('app-form-field'), 'the administrator field');
+
+      expect(member<Record<string, string>>('fieldLabel')['administratorId']).toBe('Administrator:');
+      expect(member<Record<string, string>>('fieldHelp')['administratorId']).toBe(
+        'The Administrator User for the site.',
+      );
+
+      expect(text(required(field.querySelector('label'), 'the label')).trim()).toBe('Administrator');
+      expect(control.id).toBe('portal-settings-administratorId');
+      expect(field.querySelector('label')?.getAttribute('for')).toBe(
+        'portal-settings-administratorId',
+      );
+
+      // The help sits behind the shared disclosure, which removes the block while it is closed.
+      field.querySelector<HTMLButtonElement>('.form-field__help-toggle')?.click();
+      fixture.detectChanges();
+
+      expect(text(required(field.querySelector('.form-field__help'), 'the help')).trim()).toBe(
+        'The Administrator User for the site.',
+      );
+    });
+
+    it('carries no client-side required rule, because the invariant is the server\u2019s', () => {
+      // Measured: a full case-insensitive sweep of the 568-line legacy markup finds exactly two
+      // validators on the whole screen, both data-type comparisons, and neither is on this field.
+      // The rule that a portal keeps an administrator is enforced on both server write paths, and a
+      // second authority for it here could disagree with the first.
+      arrive(0);
+
+      // Asserted through the control's own state rather than by naming the validator function,
+      // which would require importing it here purely to compare an identity: a control that is
+      // valid holding the sentinel is a control with no required rule on it.
+      form().controls.administratorId.setValue(-1);
+      fixture.detectChanges();
+
+      expect(form().controls.administratorId.errors).toBeNull();
+      expect(form().controls.administratorId.valid).toBeTrue();
+      expect(form().valid).toBeTrue();
+    });
+  });
 
   describe('P. the dropped fields', () => {
     beforeEach(() => {
@@ -3285,6 +3639,7 @@ describe('PortalSettingsComponent', () => {
       http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
       http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
       http.expectOne(tabsUrl(0)).flush(envelope([]));
+      answerAdministrators(0);
       fixture.detectChanges();
     });
 
@@ -3320,7 +3675,7 @@ describe('PortalSettingsComponent', () => {
 
       const raw = form().getRawValue();
 
-      expect(Object.keys(raw).length).toBe(16);
+      expect(Object.keys(raw).length).toBe(17);
       for (const value of Object.values(raw)) {
         expect(value).not.toBeNull();
         expect(value).not.toBeUndefined();
@@ -3370,6 +3725,7 @@ describe('PortalSettingsComponent', () => {
       http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
       http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
       http.expectOne(tabsUrl(0)).flush(envelope(pageListing()));
+      answerAdministrators(0);
       fixture.detectChanges();
 
       expect(query('app-loading-spinner')).toBeNull();
@@ -3520,4 +3876,3 @@ describe('PortalSettingsComponent selector and change-detection contract', () =>
     expect(rendered).toContain('This address does not identify a portal to configure.');
   });
 });
-

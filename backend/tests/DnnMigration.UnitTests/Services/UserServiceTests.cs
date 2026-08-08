@@ -1,6 +1,7 @@
 using System.Reflection;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
+using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
@@ -196,10 +197,30 @@ public class UserServiceTests
 
     private const string ProfileDefinitionNotFoundCode = "profile-definition.not-found";
 
+    /// <summary>
+    /// The tenant has switched self-service subscription off - <c>Profile_ManageServices</c>.
+    /// </summary>
+    private const string ServiceDisabledCode = "user.service.disabled-forbidden";
+
+    /// <summary>The addressed role is not one the tenant publishes for self-service.</summary>
+    private const string ServiceNotOfferedCode = "user.service.not-offered-forbidden";
+
+    /// <summary>Completing the operation would require taking payment, which is out of scope.</summary>
+    private const string ServicePaymentRequiredCode = "user.service.payment-required-forbidden";
+
+    /// <summary>The addressed role offers this account no free trial, for any of four reasons.</summary>
+    private const string ServiceTrialNotOfferedCode = "user.service.trial-not-offered-forbidden";
+
+    /// <summary>The invitation-code submission carries no code.</summary>
+    private const string ServiceCodeRequiredCode = "user.service.code-required";
+
+    /// <summary>No role in the tenant bears the submitted invitation code.</summary>
+    private const string ServiceCodeNotMatchedCode = "user.service.code-not-matched";
+
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The account contract exposes exactly twenty-one named asynchronous operations, every one of them scoped
+    /// The account contract exposes exactly twenty-six named asynchronous operations, every one of them scoped
     /// to a tenant.
     /// </summary>
     /// <remarks>
@@ -210,7 +231,7 @@ public class UserServiceTests
     /// message.
     /// </para>
     /// <para>
-    /// Two of the twenty are recent and both are named deliberately.
+    /// Two of them are recent and both are named deliberately.
     /// <c>RequiresProfileCompletionAsync</c> lets the sign-in path evaluate the legacy profile gate without
     /// the completeness rule acquiring a second implementation. <c>ResetPasswordAsync</c> exists because the
     /// self-service credential change and the administrative reset were once a single member that chose
@@ -218,9 +239,21 @@ public class UserServiceTests
     /// decide whether the current credential had to be proved; they are two members now precisely so the two
     /// authorisation policies can differ, and this inventory asserts that the split is still in place.
     /// </para>
+    /// <para>
+    /// FIVE of them are the member-services surface, and the count moved from twenty-one to twenty-six when
+    /// they were added. They belong to THIS contract rather than to the role contract because the legacy
+    /// panel operated on the SIGNED-IN account and on nothing else -
+    /// <c>Website/admin/Users/MemberServices.ascx.vb</c> passes <c>UserInfo.UserID</c> at L150, L106, L125
+    /// and L413, and <c>PortalModuleBase.vb:L319-L323</c> resolves that as the current account - and
+    /// because the role resource's own membership actions are gated on tenant administration and so could
+    /// never admit that caller. Three of the five are not membership writes at all: the catalogue read, the
+    /// trial gate and the invitation-code redemption have no counterpart on the role contract. The two that
+    /// are writes still have one implementation, because the service delegates them, which is what the
+    /// delegation facts in this suite pin.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void UserContract_OffersExactlyTwentyOneNamedTenantScopedOperations()
+    public void UserContract_OffersExactlyTwentySixNamedTenantScopedOperations()
     {
         MethodInfo[] members = typeof(IUserService).GetMethods();
 
@@ -247,6 +280,11 @@ public class UserServiceTests
             "CreateProfilePropertyDefinitionAsync",
             "UpdateProfilePropertyDefinitionAsync",
             "DeleteProfilePropertyDefinitionAsync",
+            "ListMemberServicesAsync",
+            "SubscribeToServiceAsync",
+            "CancelServiceAsync",
+            "StartServiceTrialAsync",
+            "RedeemServiceCodeAsync",
         ]);
 
         foreach (MethodInfo member in members)
@@ -268,6 +306,7 @@ public class UserServiceTests
         var profiles = new Mock<IUserProfileRepository>().Object;
         var roles = new Mock<IRoleRepository>().Object;
         var permissions = new Mock<IPermissionService>().Object;
+        var roleService = new Mock<IRoleService>().Object;
         var portals = new Mock<IPortalRepository>().Object;
         var modules = new Mock<IModuleRepository>().Object;
         var definitions = new Mock<IModuleDefinitionRepository>().Object;
@@ -284,71 +323,75 @@ public class UserServiceTests
 
         Assert.Throws<ArgumentNullException>("users", () =>
         {
-            _ = new UserService(null!, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(null!, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("profiles", () =>
         {
-            _ = new UserService(users, null!, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, null!, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
-            _ = new UserService(users, profiles, null!, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, null!, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
-            _ = new UserService(users, profiles, roles, null!, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, null!, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+        });
+        Assert.Throws<ArgumentNullException>("roleService", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, null!, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, null!, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, null!, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("modules", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, null!, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, null!, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("definitions", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, null!, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, null!, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, null!, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, null!, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, null!, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, null!, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, null!, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, null!, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("tokens", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, null!, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, null!, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordPolicy", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, null!);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, null!);
         });
     }
 
@@ -1610,6 +1653,262 @@ public class UserServiceTests
         outcome.Value.IsLockedOut.Should().BeFalse();
         harness.InvalidatedPortalIds.Should().Equal(new[] { PortalId });
         harness.InvalidatedUsers.Should().Equal(new[] { (PortalId, Username) });
+    }
+
+    /// <summary>
+    /// The listing publishes, per row, whether the removal operation will accept that account - so a client
+    /// can withhold the affordance rather than offering a command the server refuses.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy grid decided this in markup, at
+    /// <c>Website/admin/Users/Users.ascx.vb:L691-L692</c>. The capability now travels on the row, because
+    /// the client cannot know which account a tenant designates as its administrator without being told.
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_PublishesWhetherEachAccountMayBeRemoved()
+    {
+        Harness harness = Harness.Ready();
+        harness.UserPage = PagedResult<User>.Unpaged(
+        [
+            StoredUser(),
+            StoredUser(AdministratorId, "portal_admin"),
+        ]);
+        harness.PortalRow!.AdministratorId = AdministratorId;
+
+        Result<PagedResult<UserListItemDto>> outcome = await harness.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        outcome.Value.Items.Single(row => row.UserId == UserId)
+            .CanDelete.Should().BeTrue("an ordinary account of the tenant may be removed");
+        outcome.Value.Items.Single(row => row.UserId == AdministratorId)
+            .CanDelete.Should().BeFalse("the tenant designates this account as its administrator");
+    }
+
+    /// <summary>
+    /// The tenant is read ONCE for the whole page rather than once per row, and not at all for a page that
+    /// matched nothing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The deletion capability needs one fact about the tenant, and a listing renders up to a hundred rows.
+    /// Reading per row would turn one query into a hundred; reading for an empty page would spend a query to
+    /// decide nothing. Both are asserted because both are silent regressions.
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_ReadsTheTenantOncePerPageAndNotAtAllForAnEmptyOne()
+    {
+        Harness populated = Harness.Ready();
+        populated.UserPage = PagedResult<User>.Unpaged(
+        [
+            StoredUser(),
+            StoredUser(OtherUserId, "ada"),
+            StoredUser(AdministratorId, "portal_admin"),
+        ]);
+
+        await populated.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        populated.Portals.Verify(
+            portals => portals.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            Times.Once());
+
+        Harness empty = Harness.Ready();
+
+        await empty.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        empty.Portals.Verify(
+            portals => portals.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// A tenant whose row cannot be read, or which designates nobody, still publishes a usable listing and
+    /// protects no account.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The capability is advisory - the operation itself re-checks - so an unreadable tenant row must not
+    /// fail the listing. It must also not be read as "everybody is protected", which would leave an operator
+    /// with a grid on which nothing can be removed and no explanation.
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_ProtectsNoAccountWhenTheTenantRowIsAbsentOrDesignatesNobody()
+    {
+        Harness absent = Harness.Ready();
+        absent.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+        absent.PortalRow = null;
+
+        Result<PagedResult<UserListItemDto>> unreadable = await absent.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        unreadable.IsSuccess.Should().BeTrue();
+        unreadable.Value.Items.Should().ContainSingle().Which.CanDelete.Should().BeTrue();
+
+        Harness undesignated = Harness.Ready();
+        undesignated.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+        undesignated.PortalRow!.AdministratorId = null;
+
+        Result<PagedResult<UserListItemDto>> nobody = await undesignated.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            cancellationToken: CancellationToken.None);
+
+        nobody.Value.Items.Should().ContainSingle().Which.CanDelete.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A tenant that configured a display-name format has it applied to a NEWLY CREATED account too, not
+    /// only to an edited one.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy editor did this at <c>Website/admin/Users/User.ascx.vb:L212</c>, where
+    /// <c>CreateUser()</c> calls <c>UpdateDisplayName()</c> as its first statement. An earlier revision of
+    /// this service applied the format on update alone, so a tenant with a configured format got a formatted
+    /// name on every edit and an unformatted one on every creation - the same account presenting two ways
+    /// depending on which screen last touched it.
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_AppliesTheTenantsDisplayNameFormat()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_DisplayNameFormat", "[LASTNAME], [FIRSTNAME] ([USERNAME])");
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.DisplayName.Should().Be($"Hopper, Grace ({Username})");
+        harness.AddedUsers.Should().ContainSingle().Which
+            .DisplayName.Should().Be($"Hopper, Grace ({Username})");
+    }
+
+    /// <summary>
+    /// The identifier token resolves to the key the INSERT issued, which is the one divergence this path
+    /// takes from the legacy screen.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>UserInfo.UpdateDisplayName</c> (<c>Library/Components/Users/UserInfo.vb:L358-L368</c>)
+    /// substitutes <c>Me.UserID.ToString()</c> for <c>[USERID]</c>, and <c>User.ascx.vb:L212</c> called it
+    /// BEFORE <c>AddUser</c> - while the property still held the legacy absent marker. Every account a
+    /// tenant created under such a format therefore stored the literal text "-1" as its display name, for
+    /// every account. The identifier does not exist until the insert commits, so the only position at which
+    /// the token can name the account it belongs to is after that commit. The divergence is recorded in
+    /// MIGRATION_NOTES.md.
+    /// </para>
+    /// <para>
+    /// The second commit is asserted, and asserted to fall BEFORE the credential write, because both writes
+    /// belong to the one transaction that publishes the account: a formatted name that could not be stored
+    /// must take the account with it rather than leaving one behind unformatted.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_ResolvesTheIdentifierTokenFromTheKeyTheInsertIssued()
+    {
+        const int issuedKey = 4242;
+
+        Harness harness = Harness.Ready();
+        harness.IssuedUserIdOnCommit = issuedKey;
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_DisplayNameFormat", "[USERNAME]#[USERID]");
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.DisplayName.Should().Be($"{Username}#{issuedKey}");
+        outcome.Value.DisplayName.Should().NotContain(
+            "-1",
+            "the legacy substituted the absent marker here, and that is the defect this position corrects");
+
+        harness.Commits.Should().Be(2, "the row is inserted, then the name the insert made resolvable");
+        harness.CommitsBeforeCredential.Should().Be(2);
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A tenant that configured no format leaves the submitted display name alone and issues no second
+    /// write, and neither does a format whose tokens resolve to exactly what was submitted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The two cases share a fact because they share the consequence being measured: one commit rather than
+    /// two. A second round trip that changes nothing is a cost every creation would pay for a value the
+    /// caller already supplied.
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_IssuesNoSecondWriteWhenTheFormatChangesNothing()
+    {
+        Harness unconfigured = Harness.Ready();
+
+        Result<UserDetailDto> submitted = await unconfigured.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        submitted.IsSuccess.Should().BeTrue();
+        submitted.Value.DisplayName.Should().Be("Grace Hopper", "the submitted name stands");
+        unconfigured.Commits.Should().Be(1);
+
+        Harness agreeing = Harness.Ready();
+        agreeing.AddMembershipSettingsSource();
+        agreeing.StoreSetting("Security_DisplayNameFormat", "[FIRSTNAME] [LASTNAME]");
+
+        Result<UserDetailDto> unchanged = await agreeing.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        unchanged.IsSuccess.Should().BeTrue();
+        unchanged.Value.DisplayName.Should().Be("Grace Hopper");
+        agreeing.Commits.Should().Be(1, "the format resolved to the value already staged");
+    }
+
+    /// <summary>
+    /// A format that expands past the stored width rolls the whole creation back: no credential is written
+    /// and the transaction is never committed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The same guard, the same code and the same message shape as the update path, because it is the same
+    /// 128-character column being protected. Refusing rather than truncating matters more here than on an
+    /// update: a silently shortened name would be the account's first and only display name.
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_RollsBackWhenTheConfiguredDisplayNameExpandsPastTheStoredWidth()
+    {
+        CreateUserRequest request = ValidCreateRequest();
+        request.Username = new string('u', 70);
+
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_DisplayNameFormat", "[USERNAME][USERNAME]");
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(DisplayNameTooLongCode);
+        outcome.Reason.Message.Should().Be(
+            "The tenant's display-name format produces 140 characters for account 0; the stored limit is 128.");
+
+        harness.CreatedCredentials.Should().BeEmpty("the credential is written after the formatted name");
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.AuditRecords.Should().BeEmpty();
+        harness.InvalidatedPortalIds.Should().BeEmpty();
     }
 
     /// <summary>
@@ -3861,6 +4160,286 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// Adopting a new display-name format rewrites every account in the tenant, and reports how many names
+    /// it changed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: reproduces <c>Website/admin/Users/UserSettings.ascx.vb:L175-L182</c>, which compared the
+    /// submitted format against the stored one and, when they differed, called
+    /// <c>UserController.UpdateDisplayNames</c> (<c>Library/Components/Users/UserController.vb:L1259-L1268</c>)
+    /// to walk the tenant's accounts applying it. The legacy ran that walk on a BACKGROUND THREAD and told
+    /// the operator nothing; here it is part of the write and the count is answered. The divergence is
+    /// recorded in MIGRATION_NOTES.md.
+    /// </para>
+    /// <para>
+    /// The per-account cache is keyed by username rather than by tenant, so the tenant-wide eviction does not
+    /// reach it - each rewritten account is therefore evicted by name, which the last assertion measures.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_RewritesEveryAccountWhenTheFormatChanges()
+    {
+        var grace = StoredUser();
+        var ada = StoredUser(OtherUserId, "ada");
+        ada.FirstName = "Ada";
+        ada.LastName = "Lovelace";
+        ada.DisplayName = "Ada Lovelace";
+
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.UserPage = PagedResult<User>.Unpaged([grace, ada]);
+
+        Result<MembershipSettingsUpdateResultDto> outcome = await harness.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[LASTNAME], [FIRSTNAME]" },
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.DisplayNameFormatChanged.Should().BeTrue();
+        outcome.Value.DisplayNamesRewritten.Should().Be(2);
+
+        grace.DisplayName.Should().Be("Hopper, Grace");
+        ada.DisplayName.Should().Be("Lovelace, Ada");
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.InvalidatedUsers.Should().Equal(new[] { (PortalId, Username), (PortalId, "ada") });
+    }
+
+    /// <summary>
+    /// Resubmitting an unchanged format sweeps nothing, and neither does clearing the format to blank.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The unchanged case is the legacy comparison: an operator who saves the settings screen without
+    /// touching the format must not trigger a tenant-wide rewrite. The cleared case is a genuine change of
+    /// policy - the tenant no longer formats names - but there is no format to apply, and the names already
+    /// stored are what the accounts have; erasing them would destroy data the tenant never asked to lose.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_SweepsNothingForAnUnchangedOrClearedFormat()
+    {
+        Harness unchanged = Harness.Ready();
+        unchanged.AddMembershipSettingsSource();
+        unchanged.StoreSetting("Security_DisplayNameFormat", "[LASTNAME]");
+        unchanged.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+
+        Result<MembershipSettingsUpdateResultDto> resubmitted = await unchanged.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[LASTNAME]" },
+                CancellationToken.None);
+
+        resubmitted.IsSuccess.Should().BeTrue();
+        resubmitted.Value!.DisplayNameFormatChanged.Should().BeFalse();
+        resubmitted.Value.DisplayNamesRewritten.Should().Be(0);
+        unchanged.InvalidatedUsers.Should().BeEmpty();
+
+        Harness cleared = Harness.Ready();
+        cleared.AddMembershipSettingsSource();
+        cleared.StoreSetting("Security_DisplayNameFormat", "[LASTNAME]");
+        User untouched = StoredUser();
+        cleared.UserPage = PagedResult<User>.Unpaged([untouched]);
+
+        Result<MembershipSettingsUpdateResultDto> blanked = await cleared.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = string.Empty },
+                CancellationToken.None);
+
+        blanked.IsSuccess.Should().BeTrue();
+        blanked.Value!.DisplayNameFormatChanged.Should().BeTrue("the tenant did change its policy");
+        blanked.Value.DisplayNamesRewritten.Should().Be(0, "there is no format left to apply");
+        untouched.DisplayName.Should().Be("Grace B Hopper", "a stored name is not erased by clearing a format");
+        cleared.InvalidatedUsers.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The format comparison is ordinal, so a change of case is a change of format.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The value is a TEMPLATE rather than prose. <c>UserInfo.UpdateDisplayName</c> substitutes the
+    /// upper-case token names literally (<c>Library/Components/Users/UserInfo.vb:L358-L368</c>), so
+    /// "[firstname]" is not a differently-spelled "[FIRSTNAME]" - it is a format that substitutes nothing and
+    /// renders the bracketed text. Two spellings are therefore two policies, and the sweep must run.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_ComparesTheFormatOrdinally()
+    {
+        User account = StoredUser();
+
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_DisplayNameFormat", "[FIRSTNAME]");
+        harness.UserPage = PagedResult<User>.Unpaged([account]);
+
+        Result<MembershipSettingsUpdateResultDto> outcome = await harness.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[firstname]" },
+                CancellationToken.None);
+
+        outcome.Value!.DisplayNameFormatChanged.Should().BeTrue();
+        outcome.Value.DisplayNamesRewritten.Should().Be(1);
+        account.DisplayName.Should().Be("[firstname]", "an unrecognised token is not a token");
+    }
+
+    /// <summary>
+    /// The reported number counts names that CHANGED, not accounts examined.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// An operator reads this number as "how much of my tenant did this alter". Counting accounts examined
+    /// would report a tenant-wide change to an operator who caused none, which is worse than reporting
+    /// nothing.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_CountsChangedNamesRatherThanAccountsExamined()
+    {
+        var alreadyFormatted = StoredUser();
+        alreadyFormatted.DisplayName = "Hopper";
+        var stale = StoredUser(OtherUserId, "ada");
+        stale.LastName = "Lovelace";
+
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.UserPage = PagedResult<User>.Unpaged([alreadyFormatted, stale]);
+
+        Result<MembershipSettingsUpdateResultDto> outcome = await harness.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[LASTNAME]" },
+                CancellationToken.None);
+
+        outcome.Value!.DisplayNamesRewritten.Should().Be(1);
+        harness.InvalidatedUsers.Should().Equal(new[] { (PortalId, "ada") });
+    }
+
+    /// <summary>
+    /// The sweep reads the tenant's accounts unpaged and WITHOUT host accounts, which is the population the
+    /// legacy walk covered.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A host account belongs to no single tenant - it is read without a tenant scope
+    /// (<c>03.03.03.SqlDataProvider:L74-L83</c> established the host scope as a SQL NULL portal) - so one
+    /// tenant's presentation policy has no business rewriting its name. The read is unpaged because the sweep
+    /// is tenant-wide by definition; paging it would only decide how many round trips it took.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_SweepsTheTenantsAccountsUnpagedAndExcludesHostAccounts()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+
+        await harness.Service.UpdateMembershipSettingsAsync(
+            PortalId,
+            new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[LASTNAME]" },
+            CancellationToken.None);
+
+        harness.Users.Verify(
+            users => users.ListAsync(
+                PortalId,
+                0,
+                0,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                true,
+                false,
+                null,
+                false,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A format that would overflow the stored column for any one account refuses the WHOLE write: neither
+    /// the policy nor any rewritten name is committed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Storing a policy that cannot be applied to every account would leave the tenant in a state where each
+    /// subsequent edit of the offending account is refused by the same width guard - a policy that silently
+    /// breaks the accounts it governs. The failure names the first account that overflows, which is the one
+    /// an operator needs in order to understand the refusal.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateMembershipSettings_RefusesTheWholeWriteWhenTheFormatOverflowsForAnyAccount()
+    {
+        var fits = StoredUser();
+        var overflows = StoredUser(OtherUserId, new string('u', 70));
+
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.UserPage = PagedResult<User>.Unpaged([fits, overflows]);
+
+        Result<MembershipSettingsUpdateResultDto> outcome = await harness.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[USERNAME][USERNAME]" },
+                CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(DisplayNameTooLongCode);
+        outcome.Reason.Message.Should().Be(
+            $"The submitted display-name format produces 140 characters for account {OtherUserId}; "
+            + "the stored limit is 128.");
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+        harness.InvalidatedUsers.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The policy and the sweep it causes share ONE transaction boundary, joined rather than begun so a
+    /// caller that already opened a scope keeps a single one.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateMembershipSettings_WritesThePolicyAndTheSweepInOneTransaction()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+
+        Result<MembershipSettingsUpdateResultDto> outcome = await harness.Service
+            .UpdateMembershipSettingsAsync(
+                PortalId,
+                new UpdateMembershipSettingsRequest { SecurityDisplayNameFormat = "[LASTNAME]" },
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
+                TransactionIsolation.Default,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.BeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
     /// The out-of-range cases exercised by <see cref="UpdateMembershipSettings_RefusesAValueOutsideItsRange"/>.
     /// </summary>
     /// <returns>One mutation per bounded member, above and below where both bounds exist.</returns>
@@ -4369,6 +4948,641 @@ public class UserServiceTests
             CancellationToken.None);
 
         outcome.Value.Should().BeTrue();
+    }
+
+    // =============================================================================================
+    // MEMBER SERVICES. Replaces Website/admin/Users/MemberServices.ascx.vb - the self-service role
+    // subscription panel. Five operations, three per-row predicates and one invitation code.
+    //
+    // WHAT THESE FACTS OWN, AND WHAT THEY DELIBERATELY DO NOT. The account service owns the GATES and the
+    // catalogue projection; the role service owns the assignment itself, including the expiry derivation
+    // from the role's trial and billing terms, the protected bounds and the expire-rather-than-delete
+    // retention. So these facts assert which gate fired, what the catalogue said, and whether the delegate
+    // was asked and with what - never a derived date, which would be asserting a mock's own arithmetic.
+    // The derivation is pinned by the role suite against the real implementation.
+    // =============================================================================================
+
+    /// <summary>The published service the catalogue facts below are built around.</summary>
+    private const int FreeServiceRoleId = 40;
+
+    /// <summary>A published service that charges a recurring fee and offers a free trial.</summary>
+    private const int PaidServiceRoleId = 41;
+
+    /// <summary>A role the tenant does not publish, reachable only by invitation code.</summary>
+    private const int PrivateServiceRoleId = 42;
+
+    /// <summary>The invitation code the private role bears.</summary>
+    private const string InvitationCode = "Founders-2026";
+
+    /// <summary>
+    /// The catalogue is the tenant's PUBLIC roles, whether or not the account holds them, and every row
+    /// carries the three predicates the legacy grid bound.
+    /// </summary>
+    /// <remarks>
+    /// The legacy data source selects <c>where R.PortalId = @PortalId and R.IsPublic = 1</c>
+    /// (<c>04.06.00.SqlDataProvider:L993-L1013</c>) and annotates each row with the account's own expiry and
+    /// assignment key, so an offer not taken up appears exactly as one that has been.
+    /// </remarks>
+    [Fact]
+    public async Task ListMemberServices_PublishesEveryPublicRoleWithThisAccountsOwnState()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+        harness.PublishPaidServiceWithFreeTrial();
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Select(row => row.RoleId).Should().Equal(FreeServiceRoleId, PaidServiceRoleId);
+
+        MemberServiceDto free = outcome.Value.Single(row => row.RoleId == FreeServiceRoleId);
+        free.IsSubscribed.Should().BeFalse();
+        free.SubscriptionAction.Should().Be(MemberServiceActions.Subscribe);
+        free.SubscriptionOffered.Should().BeTrue("a free public service was always offered");
+        free.SubscriptionRequiresPayment.Should().BeFalse();
+        free.TrialOffered.Should().BeFalse("ShowTrial's first arm returns false for a free service");
+        free.ExpiryDate.Should().BeNull();
+        free.EffectiveDate.Should().BeNull();
+
+        MemberServiceDto paid = outcome.Value.Single(row => row.RoleId == PaidServiceRoleId);
+        paid.SubscriptionRequiresPayment.Should().BeTrue();
+        paid.TrialOffered.Should().BeTrue("the service fee is non-zero and the trial fee is zero");
+    }
+
+    /// <summary>
+    /// The fee and trial values published are the role's OWN STORED VALUES, not the legacy projection's
+    /// truncated suppression of them.
+    /// </summary>
+    /// <remarks>
+    /// The terminal statement wrapped each in <c>case when convert(int, R.ServiceFee) &lt;&gt; 0 …</c>, and
+    /// <c>convert(int, …)</c> truncates - so a service priced at 0.50 came back with a null fee and an empty
+    /// frequency, which the screen rendered as "Free" while the subscription still refused to complete
+    /// without payment. The stored value is published instead, which keeps this contract in agreement with
+    /// the role listing and is recorded as a presentation divergence.
+    /// </remarks>
+    [Fact]
+    public async Task ListMemberServices_PublishesASubUnitFeeRatherThanSuppressingItAsFree()
+    {
+        Harness harness = Harness.Ready();
+        Role fractional = harness.PublishPaidServiceWithFreeTrial();
+        fractional.ServiceFee = 0.50m;
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+
+        MemberServiceDto row = outcome.Value.Single(entry => entry.RoleId == PaidServiceRoleId);
+        row.ServiceFee.Should().Be(0.50m);
+        row.BillingFrequency.Should().Be(BillingFrequency.Month);
+        row.BillingPeriod.Should().Be(1);
+        row.SubscriptionRequiresPayment.Should().BeTrue("a fee of 0.50 is still a fee");
+    }
+
+    /// <summary>
+    /// The command label is the legacy <c>ServiceText</c> ladder: subscribe, unsubscribe, or renew once the
+    /// subscription has lapsed.
+    /// </summary>
+    /// <remarks>
+    /// <c>MemberServices.ascx.vb:L288-L305</c>. The lapsed arm is guarded by
+    /// <c>Not Null.IsNull(expiryDate)</c>, so a subscription with no expiry never reads as lapsed however
+    /// old it is - a perpetual membership is not an expired one.
+    /// </remarks>
+    [Theory]
+    [InlineData(false, null, MemberServiceActions.Subscribe)]
+    [InlineData(true, null, MemberServiceActions.Unsubscribe)]
+    [InlineData(true, 30, MemberServiceActions.Unsubscribe)]
+    [InlineData(true, -1, MemberServiceActions.Renew)]
+    public async Task ListMemberServices_ReportsTheLegacyCommandLadder(
+        bool subscribed,
+        int? expiryOffsetInDays,
+        string expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+
+        if (subscribed)
+        {
+            harness.Subscribe(
+                FreeServiceRoleId,
+                expiryOffsetInDays is int offset ? Now.Date.AddDays(offset) : null);
+        }
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+
+        MemberServiceDto row = outcome.Value.Single();
+        row.IsSubscribed.Should().Be(subscribed);
+        row.IsExpired.Should().Be(expected == MemberServiceActions.Renew);
+        row.SubscriptionAction.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// A paid service is offered only when the tenant has a payment processor account, which is the second
+    /// arm of the legacy subscribe predicate.
+    /// </summary>
+    /// <remarks>
+    /// <c>ShowSubscribe</c> at <c>MemberServices.ascx.vb:L307-L323</c>. The row is still LISTED either way -
+    /// dropping it would silently erase a tenant's paid offering - and the payment flag says why this
+    /// application cannot complete it.
+    /// </remarks>
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    [InlineData("merchant@example.com", true)]
+    public async Task ListMemberServices_OffersAPaidServiceOnlyWhereTheTenantCanTakePayment(
+        string? processorUserId,
+        bool expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPaidServiceWithFreeTrial();
+        harness.PortalRow!.ProcessorUserId = processorUserId;
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+
+        MemberServiceDto row = outcome.Value.Single();
+        row.SubscriptionOffered.Should().Be(expected);
+        row.SubscriptionRequiresPayment.Should().BeTrue("the offer's terms do not change with the tenant's");
+    }
+
+    /// <summary>A trial already consumed is no longer offered.</summary>
+    /// <remarks>
+    /// <c>ShowTrial</c>'s final test, <c>(objUserRole Is Nothing) OrElse (Not objUserRole.IsTrialUsed)</c>
+    /// (<c>MemberServices.ascx.vb:L336</c>). The flag is a nullable bit, and an absent value reads as "not
+    /// used" - which is the collapse that expression performed.
+    /// </remarks>
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task ListMemberServices_WithdrawsATrialThisAccountHasAlreadyConsumed(
+        bool? trialUsed,
+        bool expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPaidServiceWithFreeTrial();
+        harness.Subscribe(PaidServiceRoleId, expiry: null, trialUsed: trialUsed);
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+
+        MemberServiceDto row = outcome.Value.Single();
+        row.IsTrialUsed.Should().Be(trialUsed ?? false);
+        row.TrialOffered.Should().Be(expected);
+    }
+
+    /// <summary>A tenant publishing no services answers an EMPTY catalogue rather than a refusal.</summary>
+    [Fact]
+    public async Task ListMemberServices_AnswersAnEmptyCatalogueRatherThanAnAbsentOne()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The tenant's own switch refuses every one of the five operations, and it defaults to ENABLED.
+    /// </summary>
+    /// <remarks>
+    /// <c>DisplayServices</c> at <c>ManageUsers.ascx.vb:L61-L66</c> hid the whole tab when
+    /// <c>Profile_ManageServices</c> was off, and in Web Forms an unrendered control was an unreachable
+    /// handler - so the setting WAS the enforcement. An HTTP resource has no tab to hide, so it becomes a
+    /// refusal. The default when nothing is stored is true (<c>UserModuleBase.vb:L146-L147</c>), and a
+    /// tenant with no account module at all reads as enabled rather than as broken.
+    /// </remarks>
+    [Fact]
+    public async Task MemberServices_AreRefusedEntirelyWhenTheTenantHasSwitchedThemOff()
+    {
+        Harness enabled = Harness.Ready();
+        enabled.PublishFreeService();
+        enabled.AddMembershipSettingsSource();
+
+        (await enabled.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+            .IsSuccess.Should().BeTrue("the stored default is enabled");
+
+        Harness noModule = Harness.Ready();
+        noModule.PublishFreeService();
+
+        (await noModule.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+            .IsSuccess.Should().BeTrue("a tenant with no account module reads as enabled, not as broken");
+
+        Harness disabled = Harness.Ready();
+        disabled.PublishFreeService();
+        disabled.AddMembershipSettingsSource();
+        disabled.StoreSetting("Profile_ManageServices", bool.FalseString);
+
+        (await disabled.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceDisabledCode);
+        (await disabled.Service.SubscribeToServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceDisabledCode);
+        (await disabled.Service.CancelServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceDisabledCode);
+        (await disabled.Service.StartServiceTrialAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceDisabledCode);
+        (await disabled.Service.RedeemServiceCodeAsync(
+                PortalId,
+                UserId,
+                new RedeemServiceCodeRequest { Code = InvitationCode },
+                CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceDisabledCode);
+
+        disabled.DelegatedAssignments.Should().BeEmpty("a refused operation must reach no write");
+        disabled.DelegatedRemovals.Should().BeEmpty();
+    }
+
+    /// <summary>An unknown tenant and an unknown account are each reported as absent.</summary>
+    [Fact]
+    public async Task MemberServices_ReportAnUnknownTenantAndAnUnknownAccountSeparately()
+    {
+        Harness noTenant = Harness.Ready();
+        noTenant.PortalRow = null;
+
+        (await noTenant.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+            .Error!.Code.Should().Be("portal.not_found");
+
+        Harness noAccount = Harness.Ready();
+        noAccount.LookupUser = null;
+
+        (await noAccount.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+            .Error!.Code.Should().Be(NotFoundCode);
+    }
+
+    /// <summary>
+    /// Subscribing delegates the write, and submits NO date, so the role service's own derivation governs
+    /// both bounds.
+    /// </summary>
+    /// <remarks>
+    /// The legacy path reached <c>UpdateUserRole(portalId, userId, roleId, cancel)</c>
+    /// (<c>RoleController.vb:L489</c>), which takes no date arguments at all; the seven-argument overload
+    /// that stores a caller's dates verbatim was the administration screen's member. Leaving both request
+    /// members absent is precisely what selects the derivation inside the delegate.
+    /// </remarks>
+    [Fact]
+    public async Task SubscribeToService_DelegatesTheAssignmentAndSubmitsNoBound()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+
+        Result outcome = await harness.Service
+            .SubscribeToServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.DelegatedAssignments.Should().HaveCount(1);
+        (int portalId, int roleId, RoleAssignmentRequest request) = harness.DelegatedAssignments[0];
+        portalId.Should().Be(PortalId);
+        roleId.Should().Be(FreeServiceRoleId);
+        request.UserId.Should().Be(UserId);
+        request.EffectiveDate.Should().BeNull("the derivation runs only where the caller submitted nothing");
+        request.ExpiryDate.Should().BeNull();
+        request.NotifyUser.Should().BeFalse("the legacy panel sent no notification and the mail subsystem is excluded");
+    }
+
+    /// <summary>Renewing a lapsed subscription is the SAME operation, reached at the same address.</summary>
+    /// <remarks>
+    /// The legacy grid bound <c>ServiceText</c> to both the link's text and its <c>CommandName</c>, and the
+    /// dispatcher sent the subscribe and renew names to one member (<c>:L440-L442</c>). The delegate is
+    /// idempotent in the same way: it revises the expiry rather than failing.
+    /// </remarks>
+    [Fact]
+    public async Task SubscribeToService_RenewsALapsedSubscriptionThroughTheSameOperation()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+        harness.Subscribe(FreeServiceRoleId, Now.Date.AddDays(-1));
+
+        Result<IReadOnlyList<MemberServiceDto>> before = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        before.Value.Single().SubscriptionAction.Should().Be(MemberServiceActions.Renew);
+
+        Result outcome = await harness.Service
+            .SubscribeToServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.DelegatedAssignments.Should().HaveCount(1);
+    }
+
+    /// <summary>
+    /// A service that charges a fee is refused on BOTH the subscribe and the cancel path, because the legacy
+    /// cancel path shared the subscribe gate.
+    /// </summary>
+    /// <remarks>
+    /// <c>Subscribe(roleID, cancel)</c> tests the fee once and branches on <c>cancel</c> only inside the
+    /// payment redirect, appending <c>&amp;cancel=1</c> at <c>MemberServices.ascx.vb:L115</c>. AAP 0.2.2.4
+    /// excludes sales administration, so neither direction can be completed here.
+    /// </remarks>
+    [Fact]
+    public async Task SubscribeAndCancel_RefuseAServiceThatWouldRequirePayment()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPaidServiceWithFreeTrial();
+        harness.Subscribe(PaidServiceRoleId, expiry: null);
+
+        (await harness.Service.SubscribeToServiceAsync(PortalId, UserId, PaidServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServicePaymentRequiredCode);
+        (await harness.Service.CancelServiceAsync(PortalId, UserId, PaidServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServicePaymentRequiredCode);
+
+        harness.DelegatedAssignments.Should().BeEmpty();
+        harness.DelegatedRemovals.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An ABSENT fee is read as no fee, which the legacy comparison could not do.
+    /// </summary>
+    /// <remarks>
+    /// <c>RoleInfo.ServiceFee</c> was a non-nullable <c>Single</c>, so a stored <c>NULL</c> arrived through
+    /// <c>Null.SetNull</c> as <c>Single.MinValue</c> - not zero - and <c>objRole.ServiceFee = 0.0</c> was
+    /// therefore FALSE for a role with no fee at all, handing such a role to the payment page. Reading
+    /// absence as "no fee" is the Rule T7 translation and matches the role service's own cancellation test.
+    /// </remarks>
+    [Fact]
+    public async Task SubscribeToService_TreatsAnAbsentFeeAsNoFee()
+    {
+        Harness harness = Harness.Ready();
+        Role role = harness.PublishFreeService();
+        role.ServiceFee = null;
+
+        Result outcome = await harness.Service
+            .SubscribeToServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.DelegatedAssignments.Should().HaveCount(1);
+    }
+
+    /// <summary>
+    /// A role the tenant does not publish is refused for self-service, and an unknown role is reported as
+    /// absent rather than as unpublished.
+    /// </summary>
+    /// <remarks>
+    /// The first arm of both legacy gates is <c>objRole.IsPublic</c> (<c>:L105</c> and <c>:L124</c>).
+    /// Answering "not published" for a role of another tenant would confirm that the identifier exists
+    /// somewhere, so an unresolvable role is absent.
+    /// </remarks>
+    [Fact]
+    public async Task MemberServiceWrites_SeparateAnUnpublishedRoleFromAnUnknownOne()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPrivateInvitationOnlyService();
+
+        (await harness.Service.SubscribeToServiceAsync(PortalId, UserId, PrivateServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceNotOfferedCode);
+        (await harness.Service.CancelServiceAsync(PortalId, UserId, PrivateServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceNotOfferedCode);
+
+        // The trial path reports the SAME condition under the trial code, because a caller of that
+        // operation asked about a trial and ShowTrial's first arm is the same test.
+        (await harness.Service.StartServiceTrialAsync(PortalId, UserId, PrivateServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceTrialNotOfferedCode);
+
+        const int unknownRoleId = 4242;
+        (await harness.Service.SubscribeToServiceAsync(PortalId, UserId, unknownRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be("role.not_found");
+        (await harness.Service.StartServiceTrialAsync(PortalId, UserId, unknownRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be("role.not_found", "an unknown role is absent on every path");
+
+        harness.DelegatedAssignments.Should().BeEmpty();
+        harness.DelegatedRemovals.Should().BeEmpty();
+    }
+
+    /// <summary>Cancelling delegates the removal and passes its outcome through unchanged.</summary>
+    /// <remarks>
+    /// The delegate decides between withdrawing the row and back-dating its expiry to retain a consumed paid
+    /// trial (<c>RoleController.vb:L494-L496</c>), and reports which as a reason on the successful outcome.
+    /// That reason survives this boundary, so a caller can still say which happened.
+    /// </remarks>
+    [Fact]
+    public async Task CancelService_DelegatesTheRemovalAndPreservesItsReportedOutcome()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+        harness.Subscribe(FreeServiceRoleId, expiry: null);
+        harness.DelegatedRemovalResult = Result.Success(new ResultReason(
+            "role_assignment.expired_not_removed",
+            "The assignment was expired rather than deleted."));
+
+        Result outcome = await harness.Service
+            .CancelServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("role_assignment.expired_not_removed");
+        harness.DelegatedRemovals.Should().Equal((PortalId, FreeServiceRoleId, UserId));
+    }
+
+    /// <summary>The delegate's own refusals reach the caller unchanged.</summary>
+    /// <remarks>
+    /// Not holding the service, and holding one that may not be withdrawn at all, are the delegate's rules
+    /// and are not restated here: the codes travel through so the API edge answers 404 and 403 respectively.
+    /// </remarks>
+    [Fact]
+    public async Task CancelService_SurfacesTheDelegatesOwnRefusalsWithoutRewritingThem()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+        harness.DelegatedRemovalResult = Result.Failure(
+            "role_assignment.not_found",
+            "Member does not hold this role.");
+
+        (await harness.Service.CancelServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be("role_assignment.not_found");
+
+        harness.DelegatedRemovalResult = Result.Failure(
+            "role_assignment.protected",
+            "This assignment is protected.");
+
+        (await harness.Service.CancelServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be("role_assignment.protected");
+    }
+
+    /// <summary>
+    /// A trial is performable on a PAID service whose trial is free, which the subscription itself is not -
+    /// the two gates genuinely differ.
+    /// </summary>
+    /// <remarks>
+    /// Subscribing requires a zero SERVICE fee (<c>MemberServices.ascx.vb:L105</c>) while trialling requires
+    /// a zero TRIAL fee (<c>:L124</c>). That difference is why the two are separate operations rather than
+    /// one that reads a discriminator out of a body.
+    /// </remarks>
+    [Fact]
+    public async Task StartServiceTrial_SucceedsOnAPaidServiceThatCannotBeSubscribedTo()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPaidServiceWithFreeTrial();
+
+        (await harness.Service.SubscribeToServiceAsync(PortalId, UserId, PaidServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServicePaymentRequiredCode);
+
+        Result trial = await harness.Service
+            .StartServiceTrialAsync(PortalId, UserId, PaidServiceRoleId, CancellationToken.None);
+
+        trial.IsSuccess.Should().BeTrue();
+        harness.DelegatedAssignments.Should().HaveCount(1);
+        harness.DelegatedAssignments[0].RoleId.Should().Be(PaidServiceRoleId);
+    }
+
+    /// <summary>
+    /// Every reason a trial is unavailable answers ONE code, and none of them reaches a write.
+    /// </summary>
+    /// <remarks>
+    /// The four conditions are <c>ShowTrial</c>'s own: the service charges nothing and so has nothing to
+    /// trial, its trial itself carries a fee, or this account has already consumed it - plus the unpublished
+    /// case asserted separately. Distinguishing them would tell a caller which of a tenant's commercial
+    /// terms it had guessed wrong about.
+    /// </remarks>
+    [Fact]
+    public async Task StartServiceTrial_RefusesEveryUnavailableTrialUnderOneCode()
+    {
+        Harness free = Harness.Ready();
+        free.PublishFreeService();
+
+        (await free.Service.StartServiceTrialAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceTrialNotOfferedCode, "a free service has nothing to trial");
+
+        Harness paidTrial = Harness.Ready();
+        Role charged = paidTrial.PublishPaidServiceWithFreeTrial();
+        charged.TrialFee = 5m;
+
+        (await paidTrial.Service.StartServiceTrialAsync(PortalId, UserId, PaidServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceTrialNotOfferedCode, "the trial itself carries a fee");
+
+        Harness consumed = Harness.Ready();
+        consumed.PublishPaidServiceWithFreeTrial();
+        consumed.Subscribe(PaidServiceRoleId, expiry: null, trialUsed: true);
+
+        (await consumed.Service.StartServiceTrialAsync(PortalId, UserId, PaidServiceRoleId, CancellationToken.None))
+            .Error!.Code.Should().Be(ServiceTrialNotOfferedCode, "the trial has already been consumed");
+
+        free.DelegatedAssignments.Should().BeEmpty();
+        paidTrial.DelegatedAssignments.Should().BeEmpty();
+        consumed.DelegatedAssignments.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An invitation code searches EVERY role of the tenant, published or not, free or not, and enrols the
+    /// account in every one that bears it.
+    /// </summary>
+    /// <remarks>
+    /// The legacy handler read <c>GetPortalRoles(PortalSettings.PortalId)</c> at
+    /// <c>MemberServices.ascx.vb:L407</c> and applied neither the public test nor the fee test the grid's own
+    /// commands applied - an invitation code IS the bypass for an unpublished service - and its loop had no
+    /// early exit, so one code legitimately enrols an account in several services.
+    /// </remarks>
+    [Fact]
+    public async Task RedeemServiceCode_EnrolsEveryRoleBearingTheCodeIncludingUnpublishedAndPaidOnes()
+    {
+        Harness harness = Harness.Ready();
+        Role privateRole = harness.PublishPrivateInvitationOnlyService();
+        Role paid = harness.PublishPaidServiceWithFreeTrial();
+        paid.RsvpCode = InvitationCode;
+        harness.PublishFreeService();
+
+        Result<RedeemServiceCodeResultDto> outcome = await harness.Service.RedeemServiceCodeAsync(
+            PortalId,
+            UserId,
+            new RedeemServiceCodeRequest { Code = InvitationCode },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Roles.Select(role => role.RoleId).Should().BeEquivalentTo(
+            new[] { privateRole.RoleId, paid.RoleId },
+            "the loop has no early exit and neither the public nor the fee test applies");
+        outcome.Value.Roles.Select(role => role.RoleName).Should().OnlyHaveUniqueItems();
+
+        harness.DelegatedAssignments.Select(assignment => assignment.RoleId)
+            .Should().BeEquivalentTo(new[] { privateRole.RoleId, paid.RoleId });
+        harness.DelegatedAssignments.Should().OnlyContain(assignment => assignment.Request.UserId == UserId);
+    }
+
+    /// <summary>
+    /// The comparison is ORDINAL and the submission is not trimmed, and a role carrying no code never
+    /// matches.
+    /// </summary>
+    /// <remarks>
+    /// <c>objRole.RSVPCode = code</c> (<c>:L411</c>) is a Visual Basic string equality in memory and the
+    /// file declares no <c>Option Compare Text</c>, so it compared byte for byte. Widening it would let a
+    /// code match a role its issuer did not intend. The empty-code guard is load-bearing for the same
+    /// reason: an absent stored code reached that comparison as the EMPTY STRING.
+    /// </remarks>
+    [Theory]
+    [InlineData("founders-2026")]
+    [InlineData("FOUNDERS-2026")]
+    [InlineData(" Founders-2026")]
+    [InlineData("Founders-2026 ")]
+    [InlineData("Founders")]
+    public async Task RedeemServiceCode_MatchesOrdinallyAndWithoutTrimming(string submitted)
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPrivateInvitationOnlyService();
+        harness.PublishFreeService();
+
+        Result<RedeemServiceCodeResultDto> outcome = await harness.Service.RedeemServiceCodeAsync(
+            PortalId,
+            UserId,
+            new RedeemServiceCodeRequest { Code = submitted },
+            CancellationToken.None);
+
+        outcome.Error!.Code.Should().Be(ServiceCodeNotMatchedCode);
+        harness.DelegatedAssignments.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An empty submission is REFUSED rather than silently matching every role that carries no code.
+    /// </summary>
+    /// <remarks>
+    /// The legacy guard <c>If code &lt;&gt; ""</c> (<c>:L403</c>) did nothing at all for an empty box and
+    /// posted no message, so an account could not tell a rejected code from an unread one. The guard itself
+    /// could not be dropped: an absent <c>Roles.RSVPCode</c> reached the comparison as
+    /// <c>Null.NullString</c>, the empty string, so without it an empty submission would have enrolled the
+    /// account in every codeless role in the tenant. The service repeats the validator's rule so it holds
+    /// for a caller that reached it without the pipeline.
+    /// </remarks>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RedeemServiceCode_RefusesAnEmptySubmissionRatherThanMatchingCodelessRoles(string? submitted)
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishFreeService();
+
+        Result<RedeemServiceCodeResultDto> outcome = await harness.Service.RedeemServiceCodeAsync(
+            PortalId,
+            UserId,
+            new RedeemServiceCodeRequest { Code = submitted },
+            CancellationToken.None);
+
+        outcome.Error!.Code.Should().Be(ServiceCodeRequiredCode);
+        harness.DelegatedAssignments.Should().BeEmpty();
+    }
+
+    /// <summary>A refusal on one match abandons the redemption rather than reporting a partial success.</summary>
+    /// <remarks>
+    /// A caller told "you were enrolled in these two" when a third was refused has no way to learn about the
+    /// third, so the failure surfaces. Matches already committed stand, exactly as the legacy loop's
+    /// per-iteration writes did, and a retry is idempotent for them because the delegate revises an existing
+    /// membership rather than failing on it.
+    /// </remarks>
+    [Fact]
+    public async Task RedeemServiceCode_AbandonsTheRedemptionWhenAMatchIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPrivateInvitationOnlyService();
+        harness.DelegatedAssignmentResult = Result.Failure(
+            "persistence.conflict",
+            "A concurrent request changed the assignment.");
+
+        Result<RedeemServiceCodeResultDto> outcome = await harness.Service.RedeemServiceCodeAsync(
+            PortalId,
+            UserId,
+            new RedeemServiceCodeRequest { Code = InvitationCode },
+            CancellationToken.None);
+
+        outcome.Error!.Code.Should().Be("persistence.conflict");
+        harness.DelegatedAssignments.Should().HaveCount(1, "the walk stops at the first refusal");
     }
 
     /// <summary>Account creation and deletion each own exactly one outer transaction.</summary>
@@ -5327,6 +6541,9 @@ public class UserServiceTests
 
             AddedUsers = [];
             RemovedUsers = [];
+            PublishedServices = [];
+            DelegatedAssignments = [];
+            DelegatedRemovals = [];
             RemovedMemberships = [];
             RemovedAssignments = [];
             AddedValues = [];
@@ -5350,6 +6567,7 @@ public class UserServiceTests
             Profiles = new Mock<IUserProfileRepository>(MockBehavior.Loose);
             Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
+            RoleService = new Mock<IRoleService>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
             ModuleDefinitions = new Mock<IModuleDefinitionRepository>(MockBehavior.Loose);
@@ -5386,6 +6604,7 @@ public class UserServiceTests
                 Profiles.Object,
                 Roles.Object,
                 Permissions.Object,
+                RoleService.Object,
                 Portals.Object,
                 Modules.Object,
                 ModuleDefinitions.Object,
@@ -5410,6 +6629,13 @@ public class UserServiceTests
         public Mock<IRoleRepository> Roles { get; }
 
         public Mock<IPermissionService> Permissions { get; }
+
+        /// <summary>
+        /// The role contract, reached only by the member-services operations and only for the two
+        /// membership primitives they delegate: the assignment and the removal. Loose by default, so a
+        /// delegated write answers a default outcome unless a test says otherwise.
+        /// </summary>
+        public Mock<IRoleService> RoleService { get; }
 
         public Mock<IPortalRepository> Portals { get; }
 
@@ -5485,6 +6711,38 @@ public class UserServiceTests
 
         public List<Role> AutoAssigned { get; }
 
+        /// <summary>
+        /// The tenant's PUBLIC roles - the member-services catalogue, which the subscribable-role read
+        /// returns. Kept separate from <see cref="AutoAssigned"/>, which publishes the tenant's whole role
+        /// set to the auto-enrolment read, so a test can describe a published service without also making
+        /// it auto-assigned at account creation. A role placed in either list resolves through the
+        /// by-identifier lookup.
+        /// </summary>
+        public List<Role> PublishedServices { get; }
+
+        /// <summary>
+        /// Every assignment the account service DELEGATED to the role service, in order: the tenant, the
+        /// role and the request it built. A subscription, a renewal, a trial and each match of a redeemed
+        /// invitation code all arrive here.
+        /// </summary>
+        public List<(int PortalId, int RoleId, RoleAssignmentRequest Request)> DelegatedAssignments { get; }
+
+        /// <summary>
+        /// Every removal the account service delegated to the role service, in order.
+        /// </summary>
+        public List<(int PortalId, int RoleId, int UserId)> DelegatedRemovals { get; }
+
+        /// <summary>
+        /// What the delegated assignment answers. Successful by default; a test that needs the delegate's
+        /// own refusal to surface sets it.
+        /// </summary>
+        public Result DelegatedAssignmentResult { get; set; } = Result.Success();
+
+        /// <summary>
+        /// What the delegated removal answers. Successful by default.
+        /// </summary>
+        public Result DelegatedRemovalResult { get; set; } = Result.Success();
+
         public List<ProfilePropertyDefinition> Definitions { get; }
 
         public ProfilePropertyDefinition? LookupDefinition { get; set; }
@@ -5537,6 +6795,18 @@ public class UserServiceTests
         public Exception? CommitFault { get; set; }
 
         public int Commits { get; private set; }
+
+        /// <summary>
+        /// The key the store issues to a newly added account when the first commit lands, or
+        /// <see langword="null"/> to leave added accounts keyless.
+        /// </summary>
+        /// <remarks>
+        /// Models the one property of a real store that a mocked repository otherwise loses: an identity key
+        /// does not exist until the insert commits. The display-name format may substitute the account's
+        /// identifier, so a test measuring WHEN the format is applied needs the key to appear at the same
+        /// moment it appears in production. Null by default, so every existing fact is untouched.
+        /// </remarks>
+        public int? IssuedUserIdOnCommit { get; set; }
 
         public int CommitsBeforeCredential { get; private set; }
 
@@ -5635,6 +6905,119 @@ public class UserServiceTests
                 ModuleDefinitionId = AccountsModuleDefinitionId,
             });
             StoredModuleSettings[ModuleId] = [];
+        }
+
+        /// <summary>
+        /// Publishes a free public service - a role the account may subscribe itself to at no charge.
+        /// </summary>
+        /// <returns>The published role, so a test may adjust its terms.</returns>
+        /// <remarks>
+        /// The billing terms are the ones portal provisioning gives a tenant's own system roles, a monthly
+        /// frequency with a period, so the role is realistic rather than minimal. The fee is explicitly zero
+        /// rather than absent, because a test that needs absence says so.
+        /// </remarks>
+        public Role PublishFreeService()
+        {
+            var role = new Role
+            {
+                RoleId = FreeServiceRoleId,
+                PortalId = PortalId,
+                RoleName = "Newsletter",
+                Description = "Free announcements",
+                IsPublic = true,
+                ServiceFee = 0m,
+                BillingPeriod = 1,
+                BillingFrequency = BillingFrequency.Month,
+                TrialFee = 0m,
+                TrialPeriod = 0,
+                TrialFrequency = BillingFrequency.None,
+            };
+
+            PublishedServices.Add(role);
+            return role;
+        }
+
+        /// <summary>
+        /// Publishes a public service that charges a recurring fee and offers a free trial - the only shape
+        /// for which the legacy trial command was ever rendered.
+        /// </summary>
+        /// <returns>The published role, so a test may adjust its terms.</returns>
+        /// <remarks>
+        /// The tenant is also given a payment-processor account, because <c>ShowSubscribe</c>'s second arm
+        /// requires one before a paid offer is presented at all; a test asserting the absent case clears it.
+        /// </remarks>
+        public Role PublishPaidServiceWithFreeTrial()
+        {
+            var role = new Role
+            {
+                RoleId = PaidServiceRoleId,
+                PortalId = PortalId,
+                RoleName = "Premium",
+                Description = "Paid membership",
+                IsPublic = true,
+                ServiceFee = 12m,
+                BillingPeriod = 1,
+                BillingFrequency = BillingFrequency.Month,
+                TrialFee = 0m,
+                TrialPeriod = 14,
+                TrialFrequency = BillingFrequency.Day,
+            };
+
+            PublishedServices.Add(role);
+            PortalRow!.ProcessorUserId = "merchant@example.com";
+            return role;
+        }
+
+        /// <summary>
+        /// Adds a role the tenant does NOT publish but which bears an invitation code, which is the only way
+        /// an account can reach it.
+        /// </summary>
+        /// <returns>The role, so a test may adjust its terms.</returns>
+        /// <remarks>
+        /// Placed in the tenant's whole-role list rather than in the published catalogue, so it is invisible
+        /// to the catalogue read and to the by-identifier lookup's publication test while remaining
+        /// resolvable - which is exactly the state the legacy invitation-code search operated on.
+        /// </remarks>
+        public Role PublishPrivateInvitationOnlyService()
+        {
+            var role = new Role
+            {
+                RoleId = PrivateServiceRoleId,
+                PortalId = PortalId,
+                RoleName = "Founders",
+                Description = "By invitation",
+                IsPublic = false,
+                ServiceFee = 0m,
+                BillingPeriod = 1,
+                BillingFrequency = BillingFrequency.Year,
+                TrialFrequency = BillingFrequency.None,
+                RsvpCode = InvitationCode,
+            };
+
+            AutoAssigned.Add(role);
+            return role;
+        }
+
+        /// <summary>
+        /// Records that the account under test already holds a service.
+        /// </summary>
+        /// <param name="roleId">The role the service is expressed as.</param>
+        /// <param name="expiry">When the subscription lapses, or <see langword="null"/> for never.</param>
+        /// <param name="trialUsed">
+        /// The nullable trial-used flag exactly as the column holds it: absent, false or true, all three of
+        /// which the legacy predicate distinguished only as "used" against "not used".
+        /// </param>
+        public void Subscribe(int roleId, DateTime? expiry, bool? trialUsed = null)
+        {
+            UserAssignments.Add(new UserRole
+            {
+                UserRoleId = 500 + roleId,
+                UserId = UserId,
+                RoleId = roleId,
+                EffectiveDate = Now.Date.AddDays(-7),
+                ExpiryDate = expiry,
+                IsTrialUsed = trialUsed,
+            });
         }
 
         /// <summary>
@@ -6034,9 +7417,15 @@ public class UserServiceTests
             // is what the legacy caller did over GetPortalRoles - the membership provider had no
             // auto-assigned procedure. The harness therefore publishes the portal's roles and lets the
             // service apply the flag, so AutoAssigned still describes the world the test intends.
+            //
+            // It returns the tenant's WHOLE role set, which is both lists, because the real repository
+            // filters on the portal alone - `Where(r => r.PortalId == portalId)`. That matters for the
+            // invitation-code redemption, whose legacy handler read the same member and deliberately
+            // searched published and unpublished roles alike; a stub answering only one list would have made
+            // a published role unreachable by code and hidden the difference.
             harness.Roles
                 .Setup(r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.AutoAssigned.ToList());
+                .ReturnsAsync(() => harness.AutoAssigned.Concat(harness.PublishedServices).ToList());
             harness.Roles
                 .Setup(r => r.GetUserRolesAsync(
                     It.IsAny<int>(),
@@ -6057,6 +7446,67 @@ public class UserServiceTests
                     harness.RemovedAssignments.Add(matched ?? new UserRole { UserId = userId, RoleId = roleId });
                 })
                 .Returns(Task.CompletedTask);
+
+            // The member-services catalogue read. The contract's own remarks state that the account
+            // argument neither widens nor narrows the set - it identifies whose subscription state the
+            // caller will pair with these roles - so the harness ignores it too, exactly as the real
+            // repository does.
+            harness.Roles
+                .Setup(r => r.GetSubscribableRolesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.PublishedServices.ToList());
+
+            // A role is resolved from the world the test described, whichever list it was placed in, so a
+            // test that publishes a service does not also have to register it as a lookup.
+            harness.Roles
+                .Setup(r => r.GetByIdAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int roleId, int portalId, CancellationToken _) =>
+                    portalId == PortalId
+                        ? harness.PublishedServices.Concat(harness.AutoAssigned)
+                            .FirstOrDefault(role => role.RoleId == roleId)
+                        : null);
+
+            harness.Roles
+                .Setup(r => r.GetUserRoleAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, int userId, int roleId, CancellationToken _) =>
+                    harness.UserAssignments
+                        .FirstOrDefault(a => a.UserId == userId && a.RoleId == roleId));
+
+            // THE TWO DELEGATED MEMBERSHIP PRIMITIVES. The account service owns none of the assignment
+            // rules - the expiry derivation, the protected bounds, the expire-rather-than-delete retention
+            // and the two protected refusals all live on the role service - so what these record is that it
+            // asks, with exactly which arguments, and that it never asks when its own gate refuses first.
+            // Asserting the derived dates here would be asserting a mock's own arithmetic, which is why the
+            // facts below assert the CALL and the role suite asserts the outcome.
+            harness.RoleService
+                .Setup(r => r.AssignUserToRoleAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<RoleAssignmentRequest>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, int roleId, RoleAssignmentRequest request, CancellationToken _) =>
+                {
+                    harness.DelegatedAssignments.Add((portalId, roleId, request));
+                    return harness.DelegatedAssignmentResult;
+                });
+
+            harness.RoleService
+                .Setup(r => r.RemoveUserFromRoleAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, int roleId, int userId, CancellationToken _) =>
+                {
+                    harness.DelegatedRemovals.Add((portalId, roleId, userId));
+                    return harness.DelegatedRemovalResult;
+                });
 
             // MIGRATION: the account's direct grants live in two tables and the legacy provider declared
             //            two members to clear them - DeleteModulePermissionsByUserID, reached from
@@ -6195,6 +7645,20 @@ public class UserServiceTests
                     if (harness.CommitFault is Exception fault)
                     {
                         throw fault;
+                    }
+
+                    // The store issues an identity key AT THE COMMIT, not when the row is staged. A test
+                    // that asked for one gets it here, so any work the service does with the key after this
+                    // point is measured against a real key rather than against the default zero.
+                    if (harness.IssuedUserIdOnCommit is int issued)
+                    {
+                        foreach (User staged in harness.AddedUsers)
+                        {
+                            if (staged.UserId == 0)
+                            {
+                                staged.UserId = issued;
+                            }
+                        }
                     }
 
                     return Task.FromResult(1);

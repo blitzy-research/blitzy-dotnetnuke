@@ -14380,20 +14380,35 @@ operator. And no screen re-reads after a write any more, because the store alrea
 would not merely be wasteful, it would RACE the store's, and whichever answered last would decide what
 the operator saw.
 
-### The membership grid is read whole, and the store remembers that it was asked to
+### WITHDRAWN — the membership grid is NOT read whole, and no read scope is remembered
 
-The legacy membership grid was unpaged — `Website/admin/Security/securityroles.ascx:L56` declares no
-`AllowPaging`, no pager style and `enableviewstate="false"` — so a first page would put an eleventh
-member's Delete command out of reach on a grid with no way to reach it. The store therefore gained a
-COMPLETE read alongside its paged one: it requests the widest page the paging contract publishes,
-follows every further page the server's own metadata reports, and publishes the result as an unpaged
-envelope whose page count is one, because one set now holds everything.
+This entry previously recorded that the store had gained a COMPLETE membership read alongside its
+paged one — that it requested the widest page the paging contract publishes, followed every further
+page the server's metadata reported, published the union as an unpaged envelope, and REMEMBERED that
+scope so a write's re-read would not narrow it back to one page. **None of that is true of the
+delivered code, and the description is withdrawn rather than left standing.**
 
-The scope is REMEMBERED rather than passed per call, and that is the point. Both membership writes
-re-read the listing themselves, so a caller that asked for the whole set and then wrote would
-otherwise have the whole set silently replaced by its first page. The follow-on page count is capped so
-that a mis-reported total cannot turn one screen into unbounded traffic; at the published maximum page
-size the cap covers a hundred thousand memberships of a single role.
+It was a description of a defect, not of a decision. Reading the widest legal page and then following
+every further page concurrently is a fan-out: the listing behind it counts and windows in SQL per
+request, so following N pages costs N windowed queries whose retained result grows without bound, a
+mis-reported page count turns one screen into unbounded traffic, and remembering the scope repeated
+the whole walk after every membership write. The ceiling that bounded it — a thousand pages at the
+published maximum page size — bounded it at a hundred thousand retained rows per role, which is not a
+bound a screen should have.
+
+**What the delivered code does instead is recorded in full under "The role membership grid is paged,
+and the legacy grid was not" later in this file**, which is the authoritative entry for this screen:
+one active page at the workspace default page size, the shared pager reaching the rest, no pager at
+all for a role small enough to have fitted the legacy grid, the action's label and the date prefill
+answered by one narrow keyed read rather than by scanning rendered rows, and a coordinate left past
+the end by a removal corrected with exactly one further read.
+
+The legacy fact that motivated the walk is real and unchanged — `Website/admin/Security/securityroles.ascx:L56`
+declares `grdUserRoles` with no `AllowPaging`, no pager style and `enableviewstate="false"`, so the
+legacy grid rendered every membership. What follows from it is that every membership must remain
+ADDRESSABLE, and no Delete command may be out of reach; it does not follow that every membership must
+be resident. Reaching the eleventh member takes a pager click, and that difference is stated in the
+authoritative entry as the observable divergence it is.
 
 ### The picker on the import screen no longer resizes a listing somebody else is reading
 
@@ -15382,3 +15397,411 @@ plus a 64 KiB envelope, because the default JSON encoder escapes every non-ASCII
 characters to a six-byte `\uXXXX` form; the global 1 MiB limit is untouched, which was verified at runtime
 — an oversized sign-in request is still refused at 413 while an import of the same size is read and bound.
 The proxy now carries the identical literal, so no layer refuses what the layer inside it accepts.
+
+## QA remediation: the administrator a site could display and never change
+
+Site Settings rendered the designated administrator as a read-only value. Its own note explained why, and
+the explanation was accurate: the legacy screen filled `cboAdministratorId` from the members of the portal's
+administrator role (`SiteSettings.ascx.vb:L331-L336`) and wrote the chosen entry as argument nine of the
+portal update (`:L775`), and no read in the target could produce that list. Every role read resolves its
+tenant from the CALLER's own context rather than from a route segment, so none of them can enumerate the
+administrators of the portal a settings screen happens to be addressing — which for a host account
+configuring one of several tenants is the only question worth asking.
+
+So the affordance was not approximated in the browser; the missing read was added where the portal comes from
+the path. `GET /api/v1/portals/{portalId}/administrators` answers the members of that portal's administrator
+role, gated on the same policy as the settings resource it serves, and the selector is a real control again.
+
+The candidate list is keyed off the portal's stored `AdministratorRoleId` rather than off a literal role
+name. The legacy screen passed `objPortal.AdministratorRoleName`, a value the terminal read view supplies
+through a join precisely because a tenant may rename the role, so starting from the stored key reproduces it
+and cannot be defeated by a rename. The membership read itself is the same one the legacy reached for:
+`GetUserRolesByRoleName(portalId, roleName)`, which in the target is the login-name-null form of the
+assignments read.
+
+⚠ THE LIST IS NARROWER THAN THE WRITE PATH'S OWN RULE, AND THE TWO ARE DELIBERATELY NOT RECONCILED. The
+server requires only that a designated administrator belong to the addressed portal; the list offers only
+members of the administrator role, which is what the legacy selector offered. A narrower list can never let
+through a designation the server would refuse, whereas widening it would offer accounts the legacy screen
+never did.
+
+Three states the legacy screen never had are stated rather than absorbed:
+
+- **A designated administrator the candidate list does not hold is RETAINED.** An account removed from the
+  administrator role while still designated is a real state, and a selector that dropped them would silently
+  reassign the portal on the next save — the one outcome an operator could not have intended. The entry names
+  the account key, which is all the screen knows: the settings projection publishes the identifier and no
+  name, and the candidate read is precisely the read that omitted this account.
+- **The empty entry is offered only when the portal designates nobody.** The legacy selector had no empty
+  entry at all, and the server refuses an update that would clear a designation, so offering it otherwise
+  would be an option whose only outcome is a refusal.
+- **A failed candidate read says what was lost.** The field still holds the stored administrator, still
+  round-trips it and still saves the other seventeen fields; what is unavailable is the reassignment. Saying
+  so is what stops a one-entry selector looking like a site with one eligible administrator.
+
+⚠ NO MAGNITUDE TEST GUARDS ANY IDENTIFIER ON THIS PATH. `Roles.RoleID` is `IDENTITY(0, 1)`, so the
+administrator role of the shipped installation is role ZERO and a truthiness or greater-than-zero test on
+`AdministratorRoleId` would report the one portal that matters as having no administrator role at all. The
+selector's own "nothing chosen" value is minus one, which is not a legal `Users.UserID` — that column seeds
+`IDENTITY(1, 1)` — so it exists only inside the form and becomes absence on the wire; every other number,
+zero included, is sent as it stands.
+
+The candidate list is not cached, for the same reason the settings read beside it is not: it backs an editing
+form, and a stale list would either hide an administrator promoted a moment ago or offer one just removed
+from the role, inviting the operator to save the stale choice back over their own change.
+
+## QA remediation: the services an account could hold and never manage
+
+Membership Settings carried a note stating that role subscription, invitation codes and trials had no
+endpoint in this API at all, "so there is nothing for a screen to call". The note was true when it was
+written and it is the reason the omission survived review: nothing in the target was wrong, something was
+absent. `MemberServices.ascx` is seventy-seven lines of markup over a five-hundred-and-thirty-line
+code-behind, and the whole of it is self-service — the one screen in the account module that an ordinary
+account holder operated on their own behalf. It is now reachable, and this section records what it does
+differently from the panel it replaces.
+
+The surface is five addresses on the account resource, because the operations are scoped to an account and
+name a role, not the other way round:
+
+| Operation | Address | Success |
+|---|---|---|
+| Catalogue | `GET /api/v1/users/{userId}/services` | 200, one entry per offered service |
+| Subscribe or renew | `POST /api/v1/users/{userId}/services/{roleId}/subscription` | 204 |
+| Cancel | `DELETE /api/v1/users/{userId}/services/{roleId}/subscription` | 204 |
+| Take the trial | `POST /api/v1/users/{userId}/services/{roleId}/trial` | 204 |
+| Redeem an invitation code | `POST /api/v1/users/{userId}/services/redemptions` | 200, the roles the code admitted |
+
+⚠ EVERY ONE OF THE FIVE IS GATED ON ACCOUNT OWNERSHIP ALONE, WHICH IS NARROWER THAN THE POLICY THE PLAN
+SUGGESTED, AND THE NARROWNESS IS THE POINT. The legacy panel was hosted by `manageusers.ascx:L77` and handed
+a user identifier at `ManageUsers.ascx.vb:L517` — and never read it. Subscribe, cancel, trial and redemption
+each pass `UserInfo.UserID`, which `PortalModuleBase.vb:L319-L323` resolves as the SIGNED-IN account, so the
+identifier the container assigned could not have changed whose membership was written. The container agreed:
+`ManageUsers.ascx.vb:L61-L66` computes the tab's visibility as the tenant's manage-services setting AND NOT
+the administrative edit entry point (`UserModuleBase.vb:L329-L340`), so an administrator reaching an account
+through the console never saw the tab. An administrator-inclusive policy here would therefore have created an
+affordance the legacy application refused, on the strength of an identifier the legacy application ignored.
+Administrators keep the affordance they actually had — role assignment on the role resource, with its
+effective and expiry dates.
+
+⚠ THE PAYMENT PROCESSOR REDIRECT IS NOT REPRODUCED, SO A PAID SERVICE IS LISTED AND REFUSED RATHER THAN
+HIDDEN. `Subscribe` (`MemberServices.ascx.vb:L101-L118`) admits the operation only when the role is public
+AND its service fee is zero, and otherwise redirects to `~/admin/Sales/PayPalSubscription.aspx`; `UseTrial`
+(`:L120-L133`) applies the same test to the trial fee and redirects to the same page. Sales administration is
+outside the scope of this migration, and there is no payment page to redirect to. Three consequences are
+stated rather than absorbed:
+
+- **A paid public service still appears in the catalogue**, carrying its fee, billing period and frequency,
+  with the subscription action the legacy `ServiceText` would have shown and an explicit flag saying that
+  payment is required. Dropping it would have made a fee-bearing service indistinguishable from one the
+  tenant does not offer, and the legacy grid listed it.
+- **Subscribe refuses it**, with a distinct reason rather than a generic one, so a client can say what is
+  missing instead of implying the account holder is not entitled.
+- **Cancel refuses it too, and that is not an oversight.** The legacy cancel arm went through the same gate
+  and reached the same page, appending `&cancel=1` at `:L115`. A cancel that succeeded locally while the
+  legacy one negotiated with a processor would leave the two systems disagreeing about a paying subscriber,
+  which is worse than refusing.
+
+⚠ THE FEE TRUNCATION IN THE LEGACY PROJECTION IS NOT REPRODUCED. The terminal `GetServices`
+(`04.06.00.SqlDataProvider:L993-L1013`) publishes the fee and billing period only when
+`convert(int, R.ServiceFee) <> 0`, and nulls the trial columns when the trial frequency is `N`. The integer
+conversion means a stored fee of 0.50 was published as no fee — the grid said "Free" — while `Subscribe`,
+which tested the unconverted `Single`, still routed the same role to the payment page. The catalogue publishes
+the stored values, so a sub-unit fee is shown as a fee and refused as a fee. This also keeps the member
+services projection in agreement with the role projection beside it, which has always published the stored
+value.
+
+⚠ AN ABSENT FEE READS AS NO FEE, WHICH INVERTS A LEGACY OUTCOME. `RoleInfo.ServiceFee` is a non-nullable
+`Single`, so a stored NULL arrived through `Null.SetNull` as `Single.MinValue` rather than zero, and
+`objRole.ServiceFee = 0.0` was therefore FALSE for a role with no fee recorded at all — handing a fee-less
+role to the payment page. The target treats an absent fee as no fee, which is the Rule T7 boundary
+translation of the sentinel and is the same test the role service already applies to its own write path. A
+tenant with fee-less roles gains subscribable services it previously could not subscribe to; that is the
+behaviour the column means, and it is recorded here because it is not the behaviour the legacy code produced.
+
+⚠ THE TRIAL-CONSUMED FLAG IS PUBLISHED AND NEVER WRITTEN, SO A TRIAL CAN BE TAKEN AGAIN. `UserRoleInfo`
+carries `IsTrialUsed` and `ShowTrial` (`:L325-L342`) tests it, but neither terminal write procedure —
+`AddUserRole` nor `UpdateUserRole` at `04.00.04.SqlDataProvider` — sets the column, and no in-scope legacy
+code assigns the property. The flag was readable, respected, and never set. It is mapped and honoured on the
+read so that a row where it IS set (by an installation that wrote it out of band) suppresses the trial
+exactly as the legacy screen did, and the target does not start writing it, because writing it would be new
+behaviour dressed as parity.
+
+⚠ THE MANAGE-SERVICES SETTING IS ENFORCED AS A REFUSAL RATHER THAN AS A HIDDEN TAB. The legacy tenant setting
+suppressed the panel's visibility; here it is checked on the server for all five operations, so a tenant that
+has switched self-service off refuses the request rather than relying on the client not to make it. Where the
+setting has never been written, it reads as enabled, which is how the legacy container's boolean coercion of
+a missing setting behaved for every tenant that had not visited the settings screen.
+
+Two smaller alignments, both measured rather than assumed:
+
+- **The lapsed test reads the injected clock, once per catalogue.** `ServiceText` (`:L288-L305`) compares the
+  expiry date against `Date.Today`; the catalogue takes one reading of the clock's date and applies it to
+  every entry, so a catalogue cannot describe two services as of two different days.
+- **Invitation-code redemption searches every role of the tenant, published or not, free or not, with no
+  early exit.** `cmdRSVP_Click` (`:L397-L433`) walks the tenant's whole role set and subscribes on each
+  matching code, and it is the only path by which a private role could be joined — which is why the search is
+  deliberately not narrowed to the catalogue's own published set. The comparison is ordinal and untrimmed,
+  matching the legacy string equality. The legacy guard that ignored an empty submission is instead a stated
+  refusal: an absent code compared as the empty string, so the guard was load-bearing, and an operator who
+  submits an empty box has made a mistake worth reporting rather than an action worth silently discarding.
+
+
+## QA remediation: settings a site could store and nothing would read
+
+Six members of the account policy were stored, published and inert. An operator could set a display mode, a
+profile visibility default, a manage-services switch, three landing pages and a display-name format, save the
+screen, and nothing anywhere would behave differently — the values round-tripped and stopped there. Two of the
+six have since been wired by earlier remediation work (the account picker the role-assignment screen offers,
+and the manage-services switch, now enforced on all five member-service endpoints). This section records what
+closing the rest changed, and it records one member that is deliberately still not acted on here, with the
+reason.
+
+### The opening view a site chose, and never got
+
+`Users.ascx.vb:L494-L506` read `Display_Mode` and set the screen's opening `Filter` from it, and `BindData`
+(`:L248-L290`) then branched on that filter. The three modes produced three genuinely different screens:
+
+| Mode | Legacy filter | Legacy branch | Target opening search |
+|---|---|---|---|
+| `All` | the localised word "All" | `:L264` `GetUsers(...)`, paged and unfiltered | every account, unfiltered |
+| `FirstLetter` | `Localization.GetString("Filter.Text").Substring(0, 1)` | falls to the axis switch at `:L267` | accounts whose name starts with `A` |
+| `None` | the bare marker `"None"` | matches no branch; `grdUsers.DataSource = Nothing` | no query at all |
+
+The letter is `A` because the resource value is `"A,B,C,…,Z"` and the legacy kept its first character; the
+axis is the account name because the legacy search selector's first-added item was `"Username"` (`:L577`) and
+the first-letter filter fell through to that switch. Both are reproduced from the source rather than chosen.
+
+An earlier revision promoted the no-query state to the unfiltered listing unconditionally, and documented
+that choice at length. It is withdrawn. The tenant's setting made no difference to what the screen did, which
+is the definition of an inert setting, and the no-query state is not a defect to be worked around: it is the
+deliberate choice a large tenant makes so that opening the screen does not page a hundred thousand accounts.
+It is also the DEFAULT — `UserModuleBase.vb:L126-L130` defaulted the absent setting to `DisplayMode.None`, and
+the account resource reproduces that default — so every tenant that has configured nothing opens with no rows.
+
+⚠ THE NO-QUERY STATE NOW CARRIES A NOTICE, WHICH THE LEGACY DID NOT. The legacy rendered an unbound grid and
+said nothing at all, leaving an operator to work out that the accounts were merely unrequested. Without a
+notice the shared grid renders its own empty state, whose wording reports that nothing was *found* — and
+nothing was *looked for*. The notice is authored, names the two affordances that resolve it in the wording
+those controls actually carry, and appears in no other state.
+
+⚠ AN UNRECOGNISED MODE IS ANSWERED AS THE UNFILTERED LISTING, WHICH IS THE LEGACY OUTCOME REACHED A DIFFERENT
+WAY. The legacy `Select Case` had no `Case Else`, so an unrecognised value left `Filter` as the empty string —
+not the "All" word, not `"None"` — and it fell through to the axis switch and queried
+`GetUsersByUserName(…, "" & "%")`. An empty prefix plus the provider's own trailing wildcard matched every
+account. The target asks for the unfiltered listing instead of sending a literal empty prefix, because the
+account endpoint refuses a filter that was supplied but blank ("omit it to search without it") — so the legacy
+request shape would be a refusal where the legacy served a page. The result set is identical; only the way of
+asking differs.
+
+An unreadable policy — as distinct from an absent key — also opens on the unfiltered listing. The legacy
+default applied to a key missing from a policy it could still read; here the whole policy is gone, the page
+size falls back for exactly the same reason, and a tenant whose policy is unavailable still has accounts. The
+failure remains recorded.
+
+### The visibility control a profile would never offer
+
+`Profile.ascx.vb:L58-L63` computed `CType(GetSetting(PortalId, "Profile_DisplayVisibility"), Boolean) And
+IsUser` — the tenant's policy AND the viewer being the subject of the profile, the second half being
+`UserModuleBase.IsUser` (`:L399-L406`), which compared the signed-in account against the profile's account and
+returned false for an unauthenticated caller without comparing.
+
+The profile screen took that affordance from a component input alone. No route supplies one, so the routed
+screen never offered the control whatever the tenant had configured. Both halves are now resolved: the policy
+from the account-policy read, the identity from the signed-in session.
+
+⚠ AN ADMINISTRATOR EDITING SOMEBODY ELSE'S PROFILE STILL NEVER SEES IT, and the second half of the legacy
+predicate is why. Visibility is a choice the account holder makes about their own data; an administrator could
+otherwise change who can see it without the holder knowing. The input survives as an override that can only
+turn the affordance ON, so an embedding caller cannot suppress a policy the tenant enabled.
+
+The policy is read once per mount rather than once per property. `Profile.ascx.vb:L60` read the setting inside
+a property GETTER, so it was fetched on every render of every field; it is tenant-wide and does not change as
+the route moves from one account to another. An unresolved policy reads as "not offered", which is the
+conservative posture: offering a control that then disappears is worse than offering it a moment late.
+
+### The display-name format that applied to every account except a new one
+
+`User.ascx.vb:L212` called `UpdateDisplayName()` as the FIRST statement of `CreateUser()`, before the account
+was added, and `UserInfo.UpdateDisplayName` (`UserInfo.vb:L358-L368`) substitutes `Me.UserID.ToString()` for
+`[USERID]`. The identifier does not exist until the insert commits, so a tenant whose format named the
+identifier stored the literal text `-1` as the display name of every account it ever created.
+
+⚠ THE FORMAT IS NOW APPLIED AFTER THE INSERT, WHICH REPRODUCES THE LEGACY INTENT AND CORRECTS A LEGACY DEFECT.
+It is the one position at which the token can resolve to the account it names. The second write is inside the
+same transaction as the first, so a formatted name the store cannot accept — or one the width guard refuses —
+rolls the account back entirely rather than leaving one behind with an unformatted name. A format that resolves
+to exactly what was submitted issues no second write at all.
+
+An earlier revision applied the format on update alone, so a tenant with a configured format got a formatted
+name on every edit and an unformatted one on every creation: the same account presented two ways depending on
+which screen last touched it.
+
+### The tenant-wide rename that nobody was told about
+
+`UserSettings.ascx.vb:L175-L182` compared the submitted display-name format against the stored one and, when
+they differed, called `UserController.UpdateDisplayNames` (`UserController.vb:L1259-L1268`) — which walked
+`GetUsers(PortalId)` applying the format to each account — **on a background thread**. Three properties of that
+arrangement were defects and are deliberately not reproduced:
+
+- the operator was told nothing: not that a sweep had started, not how many accounts it touched, not whether
+  it finished;
+- a failure part way through left some accounts renamed and the rest not;
+- a request the operator abandoned took the sweep with it.
+
+⚠ THE SWEEP IS NOW PART OF THE WRITE. The policy and every rename it causes commit together inside one
+transaction, or neither does. The cost is that the operator waits for it, which is a deliberate trade: a rename
+of every account in a tenant is not something to discover afterwards.
+
+⚠ `PUT /api/v1/users/settings` ANSWERS `200` WITH A BODY WHERE EVERY OTHER SETTINGS WRITE IN THIS API ANSWERS
+`204`. The body carries two members — whether the format changed, and how many accounts were renamed — and
+they are not redundant: a format left alone reports `false` and zero because no sweep ran, while a format that
+changed on a tenant whose accounts already read that way reports `true` and zero because the sweep ran and
+found nothing to alter. Collapsing them would make "nothing happened" indistinguishable from "nothing needed
+to happen", which is exactly the difference an operator is looking for. The count reports names that CHANGED,
+not accounts examined, so a tenant whose accounts already match reports zero rather than its own size.
+
+Four further properties of the sweep, each measured:
+
+- **The format comparison is ordinal.** The value is a template, and `UpdateDisplayName` substitutes the
+  upper-case token names literally, so `[firstname]` is not a differently-spelled `[FIRSTNAME]` — it is a
+  format that substitutes nothing and renders the bracketed text. Two spellings are two policies.
+- **Clearing the format to blank sweeps nothing.** It is a genuine change of policy, and it is reported as one,
+  but there is no format to apply and the names already stored are what the accounts have; erasing them would
+  destroy data the tenant never asked to lose.
+- **Host accounts are excluded.** A host account is read without a tenant scope and belongs to no single
+  tenant, so one tenant's presentation policy has no business renaming it.
+- ⚠ **The width guard refuses the WHOLE write rather than skipping the offending account.** The stored column
+  is 128 characters. A format that overflows it for one account would be stored as the tenant's policy and
+  would then refuse every subsequent edit of that account — a policy that silently breaks the accounts it
+  governs. The failure names the first account that overflows, which is the one an operator needs in order to
+  understand the refusal. The account is refused at creation on the same terms and with the same code.
+
+The screen that writes the policy now warns before the value is edited rather than after: the display-name
+format's help text carries an authored final sentence stating that changing it renames every account in the
+site. That sentence is not in the legacy resource file. The legacy never warned, and the sweep is transactional
+with no undo, so afterwards is too late.
+
+### The delete command a protected row was offered anyway
+
+`Users.ascx.vb:L691-L692` read, verbatim:
+
+```
+delImage.Visible = Not (user.UserID = PortalSettings.AdministratorId) _
+                   AndAlso Not (user.UserID = Me.UserId And user.IsSuperUser)
+```
+
+Neither fact was reachable from the account listing in the target: the tenant's designated administrator is
+not a column on the account row, and the caller's own identifier lives in the session rather than in the
+listing. So the command was offered for every row and the server refused it — safe, but an affordance that
+cannot succeed.
+
+The capability now travels ON THE ROW, published by the server that enforces it, and the row is not rendered a
+command it cannot use. It is rendered as nothing rather than as a disabled control, matching the legacy's own
+`Visible = False`: a disabled button occupies the column, reaches assistive technology as an inoperable control
+that destroys a record, and invites a reader to work out why.
+
+⚠ THE PREDICATE IS DELIBERATELY WIDER THAN THE LEGACY MARKUP'S FOR A HOST ACCOUNT. The legacy hid the command
+for an installation administrator only when the row was ALSO the identifier the container had been handed —
+which on the listing was the absent marker, so in ordinary use the command was offered and then refused. The
+flag reports what a removal request actually does, and a removal request refuses every host account. The
+administrator arm is reproduced exactly, and it stays an EQUALITY against the designated identifier: a tenant
+that designates nobody protects nobody, and `Portals.AdministratorId` is a nullable integer whose legacy
+absent spelling is `-1`, so neither may be read as matching a row.
+
+The flag is advisory. The operation re-checks and answers `403` regardless of what was rendered, and the
+listing still guards on the flag before dispatching — not as a security boundary, but so a stale row cannot
+issue a request that can only fail. The tenant is read ONCE for a whole page and not at all for a page that
+matched nothing.
+
+### The three landing pages, maintained here and acted on elsewhere
+
+`Redirect_AfterLogin`, `Redirect_AfterRegistration` and `Redirect_AfterLogout` are the one part of this policy
+that no screen in this application consults, and the reason is structural rather than an omission: **each names
+a DotNetNuke page, and this application renders no DotNetNuke page.** Page rendering — skins, containers, the
+whole server-rendered page surface — is excluded by AAP 0.2.2.2 and 0.2.2.4, and the page resource in this API
+is deliberately narrow, offering a tenant's page list and one page's detail and nothing that renders one. A
+destination recorded here is not somewhere this console can send anybody.
+
+That is not a lost capability, because the policy has a live consumer. The migration is side by side (AAP
+0.1.1): the DotNetNuke application remains deployed and reads all three —
+`Website/admin/Authentication/Login.ascx.vb:L147-L177` after a sign-in,
+`Website/admin/Users/ManageUsers.ascx.vb:L80-L98` after a registration, and
+`Library/Components/Authentication/AuthenticationController.vb:L251-L270` after a sign-out. This console is
+the screen that MAINTAINS that policy, exactly as it maintains every other member of it. What it does not do
+is act on it, and it now says so on the fields themselves rather than leaving the legacy help text to imply an
+effect it cannot have.
+
+The after-registration destination has no local consumer even in principle: this application has no
+self-registration flow and no register route in its closed route set. The account form is administrative.
+
+Two details of the fields survive from the earlier work and are restated because they are easy to lose. A page
+CHOOSER is not offered and a page identifier is taken instead, because the page lookup a chooser would need is
+not among the settings screen's declared dependencies. And zero is a REAL page — the page table's identity
+seeds at zero — so an empty field is the only expression of "no destination", and the legacy marker `-1` is
+never sent: the target refuses a negative identifier and models absence as null.
+
+### The profile visibility default, which was never inert
+
+For completeness, because it appears in the same group and a reader checking this list will look for it:
+`Profile_DefaultVisibility` IS consumed, and was already. It is the visibility a profile value that has never
+been set reads as, applied server-side onto every unset value and every declaration the account resource
+projects — reproducing both legacy consumers, `ProfilePropertyDefinition.Initialize` (`:L348-L359`), which
+seeded a new declaration's visibility from it, and `ProfileController.FillCollection` (`:L109-L112`), which
+stamped it onto every declaration it read back. Nothing on the client re-derives it, which is what stops a
+second opinion about it existing.
+
+## QA remediation: the landing screen that only a host account could open
+
+### The application root resolves per authority, and one static destination could not
+
+The application root — `/` — is target-only plumbing. The legacy application had no route table at all: every
+request arrived at `Website/Default.aspx` and the page resolved its content from a numeric `TabId`, so there is
+no legacy behaviour for "the root of the console" to preserve. What the root DOES have to satisfy is a hard
+requirement of the router: an address with no match raises `NG04002` on the first navigation of every page load,
+so `/` must resolve to something. It resolved to the tenant listing, `/portals`.
+
+That destination is only correct for one of the console's authorities, and the reason is a genuine split rather
+than a nuance. Enumerating tenants is a HOST operation — `PortalsController.cs:L241` gates `GET /api/v1/portals`
+on host authority, and the legacy screen agreed emphatically, opening with
+`If Not UserInfo.IsSuperUser Then Response.Redirect(NavigateURL("Access Denied"), True)`
+(`Website/admin/Portal/Portals.ascx.vb:L339-L341`). The portal listing route therefore declares
+`HostAdministrator`, and its navigation-rail entry declares the same, so neither offers itself to a tenant
+administrator. With a static root redirect, though, every caller was still SENT there: a tenant administrator
+who signed in correctly was navigated to the one screen the client can prove they may not open, the policy gate
+refused it, a refused navigation is cancelled rather than redirected, and the operator was left standing on
+`/login?returnUrl=%2Fportals` — holding a valid token, with the sign-in form still mounted and a warning about
+content they had never asked for. Measured in a browser against the running stack with the seeded tenant
+administrator, and reproduced identically twice; the same sign-in aimed at `/roles` landed correctly, which is
+what isolated the destination rather than the sign-in as the fault.
+
+The root now resolves the landing screen from the caller's own authority (`app.routes.ts`,
+`rootLandingRedirect`): a host account opens on the tenant listing exactly as before; a tenant administrator
+opens on the first screen the navigation rail offers their authority, the module listing, which is gated
+`PortalAdministrator` and which a host satisfies too; and any other signed-in account opens on its own account
+services, the same address the header's account affordance already points at, whose `AccountOwner` policy the
+caller satisfies by construction because the identifier comes from their own identity. An unresolved identity
+behind a held session keeps the previous destination, because the policy gate deliberately admits while the
+identity is unknown and nothing better is knowable in that window.
+
+Two smaller consequences are recorded because they are behavioural. The root no longer captures a `returnUrl`
+for an unauthenticated caller: someone who typed the root asked for the application rather than for a screen,
+and capturing `/portals` there is precisely what baked an unreachable destination into the sign-in that
+followed. And the sign-in screen's own default destination is now the root rather than the portals list, so
+there is one answer to "where does a completed sign-in go" instead of two that could disagree.
+
+### Two runtime observations that are NOT defects in this application
+
+Recorded so that a reader who reproduces them does not go looking for a fault that is not there.
+
+`GET /api/v1/users/settings` answers **404** against a database whose `Modules` table is empty. That is the
+documented contract rather than a failure: the tenant's membership policy is stored as module settings against
+the tenant's account module instance — precisely where the legacy screen wrote it
+(`Website/admin/Users/UserSettings.ascx.vb:L183`) — so absence of that module is a legitimate answer to a read,
+the service returns a null payload, and the API renders a null read as `resource.not_found`. A tenant that has
+never had the account module installed therefore has no membership settings to return, and the account listing
+surfaces the refusal in its read banner while the grid itself renders normally.
+
+Notifications persist until they are dismissed, including across in-application route changes. That is the
+notification surface's design and not a leak: it is a single labelled live region with an explicit dismiss
+control on every entry, cleared wholesale only when a session ends, which is what keeps a warning from vanishing
+before it has been read by someone using a screen reader.

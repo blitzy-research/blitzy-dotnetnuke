@@ -47,11 +47,14 @@
  * collection, so the store filters locally and re-reads nothing. Each is asserted as measured.
  *
  * ⚠ RATE LIMITING IS NOT MODELLED, AND THAT OMISSION IS DELIBERATE. See the note above
- * {@link problemDocument} — the limiter is registered against the authentication routes alone,
- * so `429` cannot arise from a portal-alias request and no case pretends otherwise.
+ * {@link problemDocument} — the alias actions carry no `[CredentialEndpoint]` marker and no alias
+ * path names a credential concern, so `429` cannot arise from a portal-alias request and no case
+ * pretends otherwise.
  */
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
+import { EMPTY } from 'rxjs';
+
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 
@@ -255,11 +258,15 @@ const MODEL_STATE_ALIAS_KEY = 'HttpAlias';
 // member, because every call site supplies null and the serialiser omits it.
 //
 // MIGRATION: `429` IS DELIBERATELY NOT TESTED, AND THE OMISSION IS REASONED RATHER THAN AN
-// OVERSIGHT. Rate limiting is registered against `/api/v1/auth/*` alone — one named policy, ten
-// requests per sixty seconds, partitioned by address — so a portal-alias request cannot be
-// throttled at all. A case asserting that it can would assert a behaviour the application does not
-// have, and would then keep passing after the behaviour it claims to guard was removed. The legacy
-// screen had no throttling of any kind either, so there is nothing to preserve.
+// OVERSIGHT. The API's rate limiter is global and classifies each request from ENDPOINT METADATA -
+// the `[CredentialEndpoint]` marker - falling back to a whole credential path segment on a
+// body-carrying method. The alias actions carry no marker and no alias path names a credential
+// concern, so an alias request resolves to the shared no-limit partition and cannot be throttled.
+// Note that the exemption is per ACTION rather than per area: `POST /api/v1/portals` IS marked, so a
+// sibling screen in this same feature can be refused with `429`. A case asserting throttling here
+// would assert a behaviour the application does not have, and would then keep passing after the
+// behaviour it claims to guard was removed. The legacy screen had no throttling of any kind either,
+// so there is nothing to preserve.
 // =====================================================================================================
 
 /** The published prefix every application failure code is namespaced under. */
@@ -1987,7 +1994,13 @@ describe('PortalAliasListComponent', () => {
     it('forwards a creation to the store with the portal from the address and the normalised value', () => {
       arrive([alias(7, 'localhost')]);
 
-      const createSpy = spyOn(store, 'createAlias').and.callFake(() => undefined);
+      // ⚠ THE FAKE MUST RETURN A TICKET, and `EMPTY` is the faithful stand-in rather than a
+      // convenience. The command now answers with an outcome observable that the screen pipes,
+      // and `EMPTY` completes WITHOUT EMITTING — which is exactly what the previous
+      // `() => undefined` fake amounted to: the command was silenced, so the screen's success
+      // continuation never ran. Returning `of(...)` instead would run it, and this case is about
+      // what is FORWARDED to the store, not about what happens afterwards.
+      const createSpy = spyOn(store, 'createAlias').and.returnValue(EMPTY);
 
       press(ADD_ACTION_LABEL);
       type(withScheme(SECURE_SCHEME, 'example.com'));
@@ -1996,10 +2009,11 @@ describe('PortalAliasListComponent', () => {
       // `jasmine.objectContaining` rather than a whole-object comparison, so the assertion is about
       // the member that matters and does not silently accept a second member appearing beside it —
       // the exact member set is proved on the wire by {@link isAliasWriteBody}.
+      // Two arguments now, not three: the trailing continuation is gone from the contract, and
+      // asserting the exact arity is what would catch a callback creeping back in.
       expect(createSpy).toHaveBeenCalledWith(
         -1,
         jasmine.objectContaining({ httpAlias: 'example.com' }),
-        jasmine.any(Function),
       );
     });
   });

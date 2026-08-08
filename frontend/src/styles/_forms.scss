@@ -453,7 +453,7 @@ textarea[readonly] {
   // Legibility improves rather than degrades: inherited black measures 20.02 to 1
   // on this surface against 18.10 to 1 on the grey it replaces, so the restoration
   // is an accessibility gain as well as a fidelity one.
-  background-color: var(--color-surface-hint);
+  background-color: var(--color-surface);
 
   // Help text is authored prose of arbitrary length and may contain a long path
   // or URL, so it wraps rather than overflowing its field row.

@@ -49,6 +49,7 @@
 //      <a class="app-header__brand">          the identity affordance
 //      <div class="app-header__actions">      the trailing session cluster
 //        <span class="app-header__user">      the signed-in user's display name
+//        <a class="app-header__account-link"> the account's own subscriptions
 //        <button class="app-header__logout">  the sign-out control
 //
 //  The split between type and class selectors is deliberate and load-bearing.
@@ -541,6 +542,26 @@ header a {
 .app-header__user {
   min-inline-size: 0;
   overflow-wrap: break-word;
+}
+
+//  The account's own subscriptions
+//
+//  Declares ONE property, and the reason it needs no more is the type/class split above: the
+//  `header a` rule already gives it the chrome-link ink, the absent underline, the focus ring
+//  and the hover, press and unavailable treatments, so restating any of them here would put two
+//  authorities on one appearance.
+//
+//  MIGRATION: the weight is pinned to the bold token for the same measured reason as the two
+//  members beside it. The legacy portal's user affordance is declared in
+//  `Website/admin/Skins/user.ascx` line 2 with `cssclass="SkinObject"`, and `.SkinObject`
+//  (`default.css` lines 18-25) opens with `font-weight: bold` — so every member of the legacy
+//  session cluster was bold, and a link at normal weight beside a bold name and a bold sign-out
+//  control would be an invented de-emphasis rather than a measured one. Unlike the button rule,
+//  which has to overcome a `_forms.scss` declaration, an anchor inherits weight freely; it is
+//  still stated rather than inherited from the band, because the band's own weight is not
+//  declared for this purpose and a later change there would silently change this affordance.
+.app-header__account-link {
+  font-weight: var(--font-weight-bold);
 }
 
 //  Every button in the band — the text-link control treatment

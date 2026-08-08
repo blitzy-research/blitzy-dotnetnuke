@@ -32,14 +32,21 @@
  * are still in flight means a response that was already on the wire repopulates exactly
  * what was cleared — the same disclosure with a delay in front of it. Cancelling the
  * requests without clearing the slices leaves the disclosure as it was. So each store's
- * `reset()` does both, in that order, and this service's whole job is to make sure every
- * one of them is called, every time, from the three places a session can end:
+ * `reset()` does both, in that order, and every one of them must be called, every time, from
+ * the three places a session can end:
  *
- *   1. an explicit sign-out, which the application shell performs;
+ *   1. an explicit sign-out, which the application shell performs — the path THIS service
+ *      serves;
  *   2. a TERMINAL refusal, which `core/interceptors/auth.interceptor.ts` reaches when a
  *      request is refused and no renewal can recover it;
  *   3. an identity or tenant REPLACEMENT, where the credentials remain valid but no longer
  *      describe the same operator or the same portal.
+ *
+ * ⚠ THE DISCARD ITSELF IS NOT DUPLICATED HERE. All three paths run one fan-out, owned by
+ * `core/state/session-teardown.service.ts`, which this service delegates to. It used to be
+ * written out in both files and the two drifted — see {@link SessionLifecycleService.teardown}.
+ * What this service still owns is the sign-out path specifically: the revocation request, and
+ * the authentication store's own reset, which the fan-out must not perform.
  *
  * ---------------------------------------------------------------------------
  * WHAT IT DELIBERATELY DOES NOT DO
@@ -71,11 +78,7 @@ import { Injectable, inject } from '@angular/core';
 import { finalize } from 'rxjs';
 
 import { AuthStore } from './auth.store';
-import { ModuleStore } from './module.store';
-import { NotificationService } from '../services/notification.service';
-import { PortalStore } from './portal.store';
-import { RoleStore } from './role.store';
-import { UserStore } from './user.store';
+import { SessionTeardownService } from './session-teardown.service';
 
 import type { Observable } from 'rxjs';
 
@@ -94,50 +97,29 @@ export class SessionLifecycleService {
   private readonly authStore = inject(AuthStore);
 
   /**
-   * The four domain stores, in the order their screens are reached.
+   * The domain teardown authority.
    *
-   * ⚠ THE LIST IS EXHAUSTIVE, AND KEEPING IT SO IS THIS FILE'S STANDING OBLIGATION. A store
-   * added to `core/state/` and not added here is a store whose contents survive a sign-out,
-   * which is the defect this service exists to prevent rather than a missing nicety. The
-   * paired specification asserts the count for exactly that reason.
+   * ⚠ THERE IS EXACTLY ONE LIST OF SLICES TO DISCARD, AND IT IS NOT IN THIS FILE.
+   * `SessionTeardownService.purge()` holds it — the four tenant stores and the transient
+   * message queue — and the bearer interceptor and the session store already reach the same
+   * method. Restating that list here would give the application two teardown authorities for
+   * one invariant, so that a store added to `core/state/` and enrolled in one of them would
+   * survive a sign-out through the other. Keeping the list exhaustive is therefore the
+   * teardown service's standing obligation, and this service's obligation is to call it.
    *
-   * Injected as fields rather than resolved lazily inside {@link endSession}. Resolving them
-   * on demand would construct a store during a failing request's error path, which is the
-   * worst possible moment to run a constructor, and every one of these is a root singleton
-   * that the application has almost certainly built already.
+   * ⚠ THE DIRECTION MUST NOT BE REVERSED. Having each store enrol itself from its own
+   * constructor looks tidier and closes a dependency cycle the injector refuses at run time:
+   * the authentication store injects `SessionTeardownService`, that service injects all four
+   * stores, and a store that reached back for either service would arrive at the
+   * authentication store again. Angular answers that with NG0200 on the first screen that
+   * mounts, and no compiler catches it.
+   *
+   * Injected as a field rather than resolved lazily inside {@link endSession}. Resolving on
+   * demand would construct the graph during a failing request's error path, which is the
+   * worst possible moment to run a constructor, and every participant is a root singleton the
+   * application has almost certainly built already.
    */
-  // ⚠ THE FOUR TENANT STORES ARE INJECTED HERE, AND THE DIRECTION MUST NOT BE REVERSED.
-  //
-  // Having each store enrol itself from its own constructor instead looks tidier and closes a
-  // dependency cycle the injector refuses at runtime: the authentication store injects
-  // `SessionTeardownService`, that service injects all four stores, and a store that reached back
-  // for this coordinator would arrive at the authentication store again. Angular answers that with
-  // NG0200 on the first screen that mounts, and no compiler catches it.
-  //
-  // Nothing is gained by the reversal either. `SessionTeardownService` already imports all four
-  // stores and is itself reached from the bearer interceptor and the authentication store, both of
-  // which are in the initial bundle - so the stores are in that bundle whichever way this reference
-  // points.
-  private readonly portalStore = inject(PortalStore);
-
-  /** @see {@link portalStore} for why every store is injected eagerly. */
-  private readonly userStore = inject(UserStore);
-
-  /** @see {@link portalStore} for why every store is injected eagerly. */
-  private readonly roleStore = inject(RoleStore);
-
-  /** @see {@link portalStore} for why every store is injected eagerly. */
-  private readonly moduleStore = inject(ModuleStore);
-
-  /**
-   * The transient-message channel.
-   *
-   * Cleared with the rest, because a queued notification is session content: it can name a
-   * portal, an account or a role the next operator has no right to know exists, and a
-   * success message about somebody else's action is confusing even when it discloses
-   * nothing.
-   */
-  private readonly notifications = inject(NotificationService);
+  private readonly teardown = inject(SessionTeardownService);
 
   /**
    * Discards every trace of the current session from this browser.
@@ -157,18 +139,25 @@ export class SessionLifecycleService {
    * exclude sensitive data from structured logging.
    */
   endSession(): void {
-    // Each `reset()` cancels that store's in-flight reads and writes and then returns every
-    // slice to the value a freshly constructed store holds. See each store's own reset for
-    // why the cancellation has to come first.
-    this.portalStore.reset();
-    this.userStore.reset();
-    this.roleStore.reset();
-    this.moduleStore.reset();
-
-    this.notifications.clear();
+    // The domain slices, the queued notices and the in-flight requests that would refill them,
+    // discarded by the one owner of that fan-out. Each store's own `reset()` cancels its reads
+    // and writes BEFORE returning its slices to their initial values, which is the ordering that
+    // makes the discard effective: a response already on the wire would otherwise land afterwards
+    // and repopulate precisely what had just been cleared.
+    //
+    // ⚠ THE REASON IS `signedOut`, AND IT IS RECORDED RATHER THAN INFERRED. This method is
+    // reached when the operator asked, which is a different boundary from a renewal the server
+    // refused, and the owner publishes which one was crossed so a consumer — a specification most
+    // of all — can tell them apart. It does not change what is discarded.
+    this.teardown.purge('signedOut');
 
     // Last, and deliberately: this is the call that makes the application unauthenticated,
     // so everything that could still have issued a request has already been stopped.
+    //
+    // ⚠ THIS PURGES A SECOND TIME, THROUGH THE STORE'S OWN DISCARD, AND THAT IS HARMLESS BY
+    // CONSTRUCTION. The purge is idempotent — every `reset()` it calls writes fixed initial
+    // values and cancels handles it then nulls — so the repetition changes nothing and is far
+    // cheaper than either owner trying to detect the other's work.
     this.authStore.reset();
   }
 

@@ -699,6 +699,16 @@ describe('ErrorBannerComponent', () => {
     fixture.detectChanges();
   }
 
+  /**
+   * Binds the fallback sentence and settles the view.
+   *
+   * @param fallback The sentence to bind, or null for none.
+   */
+  function bindFallback(fallback: string | null): void {
+    fixture.componentRef.setInput('fallbackMessage', fallback);
+    fixture.detectChanges();
+  }
+
   /** The band the banner is currently painting, or null when no banner is shown. */
   function band(): string | null {
     const banner: Element | null = host.querySelector(BANNER);
@@ -797,6 +807,111 @@ describe('ErrorBannerComponent', () => {
       const region = requireElement(host, LIVE_REGION);
 
       expect(region.getBoundingClientRect().height).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE FAILURE THAT CARRIES NO DOCUMENT
+  //
+  // A class of failure this banner could not previously show AT ALL, and the invisibility was the
+  // whole defect. The runtime decoders that check each response against its published contract run
+  // inside each service's own mapping, which is DOWNSTREAM of the interceptor's error handling — so a
+  // `200` whose body does not match its contract throws a plain error carrying no problem document,
+  // no status and no support reference. Every screen binds a nullable document, so such a failure
+  // rendered nothing: a listing became permanently empty, a form became permanently unusable, and no
+  // surface anywhere said why.
+  //
+  // The second input is what makes that failure presentable. It is ORDERED BENEATH the document
+  // rather than merged with it, so a real document's own explanation always wins.
+  // -------------------------------------------------------------------------
+
+  describe('a failure carrying no document', () => {
+    it('shows the bound sentence when there is no document at all', () => {
+      bindFallback('The account listing could not be read.');
+
+      expect(component.hasProblem())
+        .withContext('a sentence with no document is still something to show')
+        .toBeTrue();
+      expect(requireElement(host, MESSAGE).textContent?.trim()).toBe(
+        'The account listing could not be read.',
+      );
+    });
+
+    it('announces it through the same region, so it is not a second-class surface', () => {
+      bindFallback('The account listing could not be read.');
+
+      const region = requireElement(host, LIVE_REGION);
+
+      expect(region.getAttribute('role')).toBe('alert');
+      expect(region.getAttribute('aria-live')).toBe('assertive');
+      expect(region.contains(requireElement(host, BANNER)))
+        .withContext('the banner is inside the region, so its content is announced')
+        .toBeTrue();
+    });
+
+    it('presents it at the default band, because no status resolved a severity', () => {
+      // ⚠ THE STRONGEST BAND, NOT A CALMER ONE. A failure nobody anticipated is the one most worth
+      // showing, and a decoder failure means the server and the client disagree about a published
+      // contract — which is a fault rather than a refusal. There is no status to resolve a severity
+      // from, so the band must come from the default rather than from a guess.
+      bindFallback('The account listing could not be read.');
+
+      expect(band()).toBe('danger');
+      expect(component.severityLabel())
+        .withContext('and the band is named in words, never carried by colour alone')
+        .toBe('Error');
+    });
+
+    it('carries no support reference, because there is none to carry', () => {
+      // The response was a success as far as the transport was concerned, so the server logged no
+      // failure and published no correlation identifier for one. Inventing a reference would send an
+      // operator to a support desk with a value that appears in no log.
+      bindFallback('The account listing could not be read.');
+
+      expect(hasElement(host, TRACE)).toBeFalse();
+      expect(component.hasSupportReference()).toBeFalse();
+    });
+
+    it('lets a real document win, so the server\u2019s own explanation is never displaced', () => {
+      bindFallback('The account listing could not be read.');
+      bind(NOT_FOUND_WITH_DETAIL);
+
+      const shown = requireElement(host, MESSAGE).textContent?.trim() ?? '';
+
+      expect(shown).not.toBe('The account listing could not be read.');
+      expect(shown.length).withContext('the document says something').toBeGreaterThan(0);
+      expect(band())
+        .withContext('and the document\u2019s own status resolves the band')
+        .toBe('warning');
+    });
+
+    it('stays silent for an empty sentence, which is a caller with nothing to say', () => {
+      // ⚠ EMPTINESS IS TESTED EXPLICITLY RATHER THAN BY TRUTHINESS ANYWHERE ELSE IN THIS DATA, and
+      // here it is the one place emptiness legitimately means absence: a consumer binding a store
+      // slice that has authored no sentence must produce no banner rather than an empty one.
+      bindFallback('');
+
+      expect(component.hasProblem()).toBeFalse();
+      expect(hasElement(host, BANNER)).toBeFalse();
+    });
+
+    it('stays silent for a null sentence, which is every existing consumer', () => {
+      // The default, so binding nothing keeps the previous behaviour exactly.
+      bindFallback(null);
+
+      expect(component.hasProblem()).toBeFalse();
+      expect(hasElement(host, BANNER)).toBeFalse();
+    });
+
+    it('strips legacy break markup from the sentence, as it does from a document', () => {
+      // The fallback travels through the SAME resolution the document's own detail does, so a
+      // sentence carrying legacy markup is normalised once rather than twice or not at all.
+      bindFallback('<br>The account listing could not be read.');
+
+      const shown = requireElement(host, MESSAGE).textContent?.trim() ?? '';
+
+      expect(shown).toBe('The account listing could not be read.');
+      expect(shown).not.toContain('<br>');
     });
   });
 
@@ -1512,6 +1627,7 @@ describe('ErrorBannerComponent', () => {
       readonly color: string;
       readonly border: string;
       readonly background: string;
+      readonly accent: string;
     } {
       bind(problem);
 
@@ -1521,45 +1637,126 @@ describe('ErrorBannerComponent', () => {
         color: style.color,
         border: style.borderTopColor,
         background: style.backgroundColor,
+
+        // The ACCENT EDGE, read as the physical left border because the component declares
+        // it logically and the document is left-to-right here. It is the one border the
+        // component widens, and with two of the three bands now sharing a surface it is the
+        // property that separates all three.
+        accent: style.borderLeftColor,
       };
     }
 
-    it('paints only the danger band in the error colour, across TWO tokens', () => {
+    it('paints only the danger band in the error colour, from ONE token', () => {
       // Measured provenance: the legacy renderer gave `RedError` the `NormalRed`
       // heading class - the sole pure-red declaration, sitting under the comment "text
       // style used for error messages" - and gave `YellowWarning` the ordinary
-      // `Normal` class. The role is split across two tokens because the measured
-      // legacy red reads 4.0:1 on the page background: sufficient for the 3:1 that
-      // governs a non-text boundary, short of the 4.5:1 that governs the text inside
-      // it. So the BORDER keeps the legacy value and the TEXT resolves to the same hue
-      // at a lower lightness. A reader still sees one red family in both places.
+      // `Normal` class.
+      //
+      // ⚠ ONE TOKEN, NOT TWO, AND THIS CASE USED TO REQUIRE TWO. An earlier revision split
+      // the role across `--color-danger` for the border and a darkened `#B30000` for the
+      // text, on the ground that the measured legacy red reads 4.00:1 on the page
+      // background - enough for the 3:1 that governs a non-text boundary, short of the
+      // 4.5:1 that governs the text inside it. That second token has been WITHDRAWN: the
+      // colour vocabulary is closed at the nine values the design specification enumerates,
+      // and the specification ranks accessibility THIRD, after design-system compliance and
+      // legacy continuity, to be achieved "with zero visual change" - so a new hue is
+      // precisely what may not be introduced on that ground. The measured legacy value is
+      // also what the legacy screens wired, so the two higher rules agree.
+      //
+      // The residual text ratio is a recorded divergence, and what discharges the
+      // obligation is asserted separately below: the severity is announced as a WORD inside
+      // the live region, so the state never depends on the hue.
       const danger = paintOf(SERVER_FAULT);
 
-      expect(danger.color).toBe('rgb(179, 0, 0)');
+      expect(danger.color).toBe('rgb(255, 0, 0)');
       expect(danger.border).toBe('rgb(255, 0, 0)');
+      expect(danger.color)
+        .withContext('the border and the text are one token, so they cannot drift apart')
+        .toBe(danger.border);
 
-      // Neither red reaches a refusal or a rate-limit band, which is the point the
+      // The red reaches neither a refusal nor a rate-limit band, which is the point the
       // legacy provenance establishes.
       const warning = paintOf(PERMISSION_REFUSED);
       const calm = paintOf(RATE_LIMITED);
 
-      expect(warning.color).not.toBe('rgb(179, 0, 0)');
       expect(warning.color).not.toBe('rgb(255, 0, 0)');
-      expect(calm.color).not.toBe('rgb(179, 0, 0)');
       expect(calm.color).not.toBe('rgb(255, 0, 0)');
+
+      // And the withdrawn token's value appears nowhere at all.
+      expect(danger.color).not.toBe('rgb(179, 0, 0)');
+      expect(warning.color).not.toBe('rgb(179, 0, 0)');
+      expect(calm.color).not.toBe('rgb(179, 0, 0)');
     });
 
-    it('gives the three bands mutually distinct surfaces', () => {
+    it('distinguishes the three bands from one another within the closed palette', () => {
+      // ⚠ THE SURFACE ALONE CANNOT SEPARATE ALL THREE, AND THIS CASE USED TO REQUIRE THAT
+      // IT DID. It asserted the warning band's surface was the legacy pale yellow
+      // `rgb(255, 255, 153)`, which was reached through a tenth token that has since been
+      // withdrawn - the value is absent from the design specification's nine-colour table.
+      // The palette holds exactly two neutral surfaces, the page background and the
+      // secondary surface, and its third fill is the selected-row tint whose documented role
+      // is a selected grid row; painting a warning with it would make a refusal look like a
+      // selection. So the warning and the calm band share a surface, which is a recorded
+      // visible divergence rather than a defect.
+      //
+      // What is asserted instead is what is actually true and what actually orients a
+      // reader: every PAIR of bands differs in at least one colour property, and the accent
+      // edge - the one border the component widens - differs across all three.
       const danger = paintOf(SERVER_FAULT);
       const warning = paintOf(PERMISSION_REFUSED);
       const calm = paintOf(RATE_LIMITED);
 
-      expect(warning.background)
-        .withContext('stands in for the legacy yellow warning icon')
-        .toBe('rgb(255, 255, 153)');
-      expect(calm.background).toBe('rgb(238, 238, 238)');
-      expect(danger.background).not.toBe(warning.background);
-      expect(warning.background).not.toBe(calm.background);
+      // The accent edge separates all three, from three different palette members.
+      expect(danger.accent).toBe('rgb(255, 0, 0)');
+      expect(warning.accent).toBe('rgb(0, 51, 102)');
+      expect(calm.accent).toBe('rgb(105, 105, 105)');
+      expect(new Set([danger.accent, warning.accent, calm.accent]).size).toBe(3);
+
+      // And each pair differs somewhere, so no two bands are painted identically.
+      const paints = [danger, warning, calm].map(
+        (paint) => `${paint.color}|${paint.border}|${paint.background}|${paint.accent}`,
+      );
+
+      expect(new Set(paints).size)
+        .withContext('no two severity bands may be painted identically')
+        .toBe(3);
+
+      // The withdrawn pale yellow appears nowhere.
+      expect(warning.background).not.toBe('rgb(255, 255, 153)');
+      expect(danger.background).not.toBe('rgb(255, 255, 153)');
+      expect(calm.background).not.toBe('rgb(255, 255, 153)');
+    });
+
+    it('carries the severity as a WORD, which is what a reader who perceives no colour gets', () => {
+      // ⚠ THE NON-COLOUR CUE IS NOW LOAD-BEARING, and it is asserted here rather than
+      // assumed. With the danger text at 4.00:1 on the page background - below the 4.5:1
+      // minimum for normal text, a ratio the closed palette leaves in place - the word is
+      // what makes the state perceivable without perceiving the hue. It must be real text
+      // in the document, and it must sit inside the live region so it is announced with the
+      // message rather than after it.
+      for (const problem of [SERVER_FAULT, PERMISSION_REFUSED, RATE_LIMITED]) {
+        bind(problem);
+
+        const live = requireElement(host, LIVE_REGION);
+        const severity = live.querySelector('.error-banner__severity');
+
+        expect(severity)
+          .withContext('every band must name its severity in text')
+          .not.toBeNull();
+        expect((severity?.textContent ?? '').trim().length)
+          .withContext('the severity word must not be empty')
+          .toBeGreaterThan(0);
+
+        // ⚠ INSIDE THE LIVE REGION, not merely somewhere in the document. The announcement
+        // semantics sit on the wrapper, and the region is atomic — so a severity word placed
+        // outside it would be visible but never spoken with the message it qualifies.
+        expect(live.getAttribute('role'))
+          .withContext('the region carrying the word must be the announced one')
+          .toBe('alert');
+        expect(live.getAttribute('aria-atomic'))
+          .withContext('so the word and the message are announced together')
+          .toBe('true');
+      }
     });
 
     it('resolves every token it references, so no property falls back to an initial value', () => {

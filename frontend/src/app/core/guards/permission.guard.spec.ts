@@ -106,14 +106,19 @@ const SIGN_IN_PATH = '/login';
 const RETURN_URL_KEY = 'returnUrl';
 
 /**
- * The tenant administrator role name.
+ * The name of the role `Library/Components/Portal/PortalController.vb:L1390` creates for a
+ * new tenant — held here ONLY as the negative fixture the gate must ignore.
  *
- * ⚠ PLURAL, AND MATCHED EXACTLY. `Library/Components/Portal/PortalController.vb:L1390`
- * creates it as `CreateRole(PortalId, "Administrators", "Portal Administrators", …)`, so
- * `Administrators` is the role NAME while `Portal Administrators` is merely its
- * description. The singular-adjacent misspelling is asserted against separately below,
- * because a one-character slip here would refuse every administrator in the product and
- * would compile, build and deploy without complaint.
+ * ⚠ THIS NAME CONFERS NOTHING, AND PROVING THAT IS THE POINT OF KEEPING IT. The gate used
+ * to admit the tenant-administration policy on `roles().includes('Administrators')`, which
+ * was wrong three ways: administration is conferred by `Portals.AdministratorRoleId`, a
+ * per-tenant COLUMN naming whichever role administers that tenant; `Roles.RoleName` is an
+ * ordinary updatable column, so renaming the role stripped every administrator of their
+ * screens; and a role of the same name may belong to a DIFFERENT tenant, which makes a name
+ * match right about the word and wrong about the portal. The gate now reads the server's own
+ * derived determination, and the specifications below hold this name on both sides of the
+ * correction: a caller carrying it whose derived fact is false is REFUSED, and a caller
+ * carrying no role at all whose derived fact is true is ADMITTED.
  */
 const PORTAL_ADMINISTRATOR_ROLE = 'Administrators';
 
@@ -215,16 +220,24 @@ const CURRENT_USER_URL = '/api/v1/auth/me';
  * arbitrate. Installing the member as a spy is what makes "the gate adds no interpretation
  * of its own" an executable assertion rather than a comment.
  *
- * `holdsPortalAdministration` is off limits for a subtler reason: the store offers it, but
- * the gate deliberately derives the same fact locally so that the role name it matches is
- * the one spelled in THIS layer. Reaching for the store's version would silently couple the
- * two.
+ * ⚠ `roles` IS THE ONE THAT RECORDS A CORRECTED DEFECT. The gate used to decide tenant
+ * administration by testing the role list for a literal name; it now reads the store's
+ * `administersCurrentPortal`, which is the server's own determination. Spying on `roles`
+ * means any return to name matching fails here by name rather than surviving as a passing
+ * test with a wrong premise.
+ *
+ * `holdsPortalAdministration` is off limits for a related reason. It is one ARM of the
+ * answer — the derived fact alone, which the sign-in and renewal snapshots leave false for a
+ * host account — and reading it directly would withhold every administrative screen from a
+ * host account until the current-account read completed. The gate must take the combined
+ * projection, never this arm on its own.
  *
  * The command members are off limits because a navigation gate must not mutate session
  * state as a side effect of deciding a route.
  */
 const STORE_MEMBERS_OFF_LIMITS: readonly string[] = [
   'permissions',
+  'roles',
   'holdsPortalAdministration',
   'login',
   'logout',
@@ -324,18 +337,27 @@ interface AuthStoreDouble {
   readonly isAuthenticated: WritableSignal<boolean>;
   /** The fetched identity, which is null until it arrives even while a session is held. */
   readonly currentUser: WritableSignal<Identity | null>;
-  /** The host-account flag, derived from the identity in the real store. */
+  /** The host-account flag, which alone confers the host-administration policy. */
   readonly isSuperUser: WritableSignal<boolean>;
-  /** The caller's role names, matched with exact equality. */
-  readonly roles: WritableSignal<readonly string[]>;
+  /**
+   * Whether the caller administers the tenant it is signed in to.
+   *
+   * ⚠ WRITABLE INDEPENDENTLY OF THE ROLE LIST, WHICH IS WHAT MAKES THE CORRECTION
+   * TESTABLE. The real store computes this as the host flag OR the API's derived
+   * `isPortalAdministrator`, and consults no role name on the way. Holding it as its own
+   * signal here lets a specification state the two combinations that the previous
+   * name-matching gate got wrong: carrying the role name while the fact is false, and
+   * carrying no role at all while the fact is true.
+   */
+  readonly administersCurrentPortal: WritableSignal<boolean>;
 }
 
 /**
  * A store double in the least-privileged state that still reports a session.
  *
- * Defaulted to "signed in, identity not yet resolved, no roles, not a host account" so
- * that a test which forgets to state an identity exercises the deferred-identity path
- * rather than being admitted by an accidentally generous default.
+ * Defaulted to "signed in, identity not yet resolved, administers nothing, not a host
+ * account" so that a test which forgets to state an identity exercises the
+ * deferred-identity path rather than being admitted by an accidentally generous default.
  *
  * @returns Four independently writable signals.
  */
@@ -344,7 +366,7 @@ function authStoreDouble(): AuthStoreDouble {
     isAuthenticated: signal(true),
     currentUser: signal<Identity | null>(null),
     isSuperUser: signal(false),
-    roles: signal<readonly string[]>([]),
+    administersCurrentPortal: signal(false),
   };
 }
 
@@ -497,7 +519,7 @@ describe('permissionGuard', () => {
             isAuthenticated: store.isAuthenticated,
             currentUser: store.currentUser,
             isSuperUser: store.isSuperUser,
-            roles: store.roles,
+            administersCurrentPortal: store.administersCurrentPortal,
             ...storeOffLimits,
           },
         },
@@ -524,6 +546,12 @@ describe('permissionGuard', () => {
   /**
    * Puts the store into the state of a fully resolved ordinary account.
    *
+   * The two projections are derived from the identity's OWN members rather than set
+   * independently, so a fixture cannot accidentally describe a store that disagrees with the
+   * identity it is holding — which is the drift that let a role list and an administration
+   * flag tell two different stories. The one test that needs them to disagree stages that
+   * deliberately, by writing the projection directly.
+   *
    * @param overrides The identity members a test cares about.
    */
   function signInAs(overrides: Partial<Identity> = {}): void {
@@ -532,7 +560,11 @@ describe('permissionGuard', () => {
     store.isAuthenticated.set(true);
     store.currentUser.set(resolved);
     store.isSuperUser.set(resolved.isSuperUser);
-    store.roles.set(resolved.roles);
+
+    // Mirrors the real store's own computation — the host flag OR the API's derived fact —
+    // so a test states an IDENTITY and the projection follows from it, exactly as it does in
+    // the application. Note what is absent: the role list contributes nothing.
+    store.administersCurrentPortal.set(resolved.isSuperUser || resolved.isPortalAdministrator);
   }
 
   /** Puts the store into the state of a resolved host account. */
@@ -540,9 +572,15 @@ describe('permissionGuard', () => {
     signInAs({ isSuperUser: true });
   }
 
-  /** Puts the store into the state of a resolved administrator of the current tenant. */
+  /**
+   * Puts the store into the state of a resolved administrator of the current tenant.
+   *
+   * ⚠ NO ROLE NAME IS SUPPLIED, and that is deliberate. Administration is carried by the
+   * server's derived fact; a fixture that also handed over the role name would let a gate
+   * that had quietly returned to name matching keep passing.
+   */
   function signInAsPortalAdministrator(): void {
-    signInAs({ roles: [PORTAL_ADMINISTRATOR_ROLE], isPortalAdministrator: true });
+    signInAs({ isPortalAdministrator: true });
   }
 
   /**
@@ -554,11 +592,27 @@ describe('permissionGuard', () => {
    * the address, a refused one leaves the previous address standing, and a redirect lands
    * on the sign-in screen with the attempt preserved.
    *
+   * ⚠ THE REJECTION IS DELIBERATELY NOT CAUGHT, AND THAT IS A CORRECTNESS PROPERTY OF THIS
+   * WHOLE FILE RATHER THAN A STYLE CHOICE. Nothing the gate legitimately does rejects this
+   * promise: the installed harness awaits `Router.navigateByUrl`, a gate returning `false`
+   * raises `NavigationCancel` and RESOLVES `false`, and a gate returning a `UrlTree`
+   * performs the redirect and resolves once it settles. Only a genuine `NavigationError` —
+   * a component that throws while activating, a lazy import that fails, an unmatched
+   * address — rejects.
+   *
+   * Swallowing that rejection would leave `router.url` standing at the PREVIOUS address,
+   * which is the exact observation a refusal produces. Every case below that expects
+   * `/start` would therefore pass on a crash it had nothing to do with, and the file's
+   * central claim — that these addresses are refused BY THE GATE — would be unfalsifiable.
+   * An unexpected failure is allowed to reject and fail the case that provoked it. If a
+   * particular known cancellation ever needs special handling, it is narrowed to that exact
+   * condition at that one call site rather than absorbed here for all fifteen.
+   *
    * @param url The address to attempt.
    * @returns The router's address once the navigation has settled.
    */
   async function attempt(url: string): Promise<string> {
-    await harness.navigateByUrl(url).catch(() => undefined);
+    await harness.navigateByUrl(url);
 
     return router.url;
   }
@@ -1377,7 +1431,7 @@ describe('permissionGuard', () => {
   });
 
   // =========================================================================
-  // 14 — THE COARSE ENTITLEMENT CHECKS, AND THE ROLE NAME THEY MATCH
+  // 14 — THE COARSE ENTITLEMENT CHECKS, AND THE AUTHORITY THEY READ THEM FROM
   // =========================================================================
   describe('the coarse entitlement checks', () => {
     it('admits an administrator of the tenant to the tenant administration policy', () => {
@@ -1389,35 +1443,107 @@ describe('permissionGuard', () => {
       );
     });
 
-    it('matches the administrator role name in the PLURAL, and only in the plural', () => {
-      // ⚠ A ONE-CHARACTER SLIP HERE WOULD REFUSE EVERY ADMINISTRATOR IN THE PRODUCT, and it
-      // would compile, build and deploy in silence. The product creates the role at
-      // `Library/Components/Portal/PortalController.vb:L1390` as
-      // `CreateRole(PortalId, "Administrators", "Portal Administrators", …)` — so
-      // `Administrators` is the role NAME while `Portal Administrators` is only its
-      // description. The legacy comparison is `=` under Visual Basic's default binary
-      // comparison, which is case-sensitive, so this is exact equality and never case-folded.
-      expect(PORTAL_ADMINISTRATOR_ROLE).toBe('Administrators');
+    it('refuses a caller holding the administrator role NAME when the server says otherwise', () => {
+      // ⚠ THE REGRESSION TEST FOR THE DEFECT THIS GATE CARRIED. It used to decide tenant
+      // administration with `roles().includes('Administrators')`. That reading was wrong three
+      // ways at once: administration is conferred by `Portals.AdministratorRoleId`, a per-tenant
+      // COLUMN naming whichever role administers that tenant; `Roles.RoleName` is an ordinary
+      // updatable column, so renaming the role stripped every administrator of their screens;
+      // and a role of the same name may belong to a DIFFERENT tenant, which makes a name match
+      // right about the word and wrong about the portal.
+      //
+      // Stated here in the direction that a name-matching gate CANNOT pass: the caller carries
+      // the exact role name the product creates, and the server's derived fact is false — a role
+      // named `Administrators` in a tenant that designates a different role, which is precisely
+      // the arrangement the old comparison mis-read.
+      signInAs({ roles: [PORTAL_ADMINISTRATOR_ROLE], isPortalAdministrator: false });
 
-      // The near-miss spellings a change is most likely to introduce: the singular, the
-      // description mistaken for the name, a case fold, and the misspelling that has
-      // appeared in prose about this migration.
-      for (const misspelling of [
+      expectRefused(
+        makeRoute({ permission: 'PortalAdministrator' }),
+        'a role NAME confers no administration; the server\u2019s determination decides',
+      );
+
+      // And every near-miss spelling is equally irrelevant, for the same reason: the gate reads
+      // no role name at all, so none of these can admit or refuse anything.
+      for (const name of [
         'Administrator',
         'Administrations',
         'Portal Administrators',
         'administrators',
         'ADMINISTRATORS',
       ]) {
-        store.currentUser.set(identity({ roles: [misspelling] }));
-        store.roles.set([misspelling]);
-        store.isSuperUser.set(false);
+        signInAs({ roles: [name], isPortalAdministrator: false });
 
         expectRefused(
           makeRoute({ permission: 'PortalAdministrator' }),
-          `"${misspelling}" is not the role the product creates`,
+          `"${name}" is not consulted, so it cannot admit`,
         );
       }
+    });
+
+    it('admits a RENAMED administrator role, because the name is not the authority', () => {
+      // ⚠ THE CASE THE ROLE-NAME MATCH GOT WRONG IN THE FIRST DIRECTION. The administrator
+      // role is designated per tenant BY IDENTIFIER, and its name is an ordinary editable
+      // field the role editor exposes — so a tenant that renames it keeps exactly the same
+      // administrators. The gate used to compare the literal `Administrators`, so every one
+      // of those administrators was refused here while the API admitted them: an
+      // administration console its own administrators could not navigate.
+      //
+      // The server's verdict is affirmative and the role list says something else entirely,
+      // which is the whole point of the fixture.
+      signInAs({ roles: ['Tenant Owners', 'Editors'], isPortalAdministrator: true });
+
+      expectAdmitted(
+        makeRoute({ permission: 'PortalAdministrator' }),
+        'a renamed administrator role must not cost an administrator its own console',
+      );
+    });
+
+    it('refuses an unrelated role that merely SHARES the administrator name', () => {
+      // ⚠ THE SAME DEFECT IN THE OTHER DIRECTION, AND THE MORE DANGEROUS ONE. A role name is
+      // not unique across the product — a tenant may give any role any name, so a caller can
+      // legitimately hold a role called `Administrators` that carries no administration at
+      // all, and the designation of another tenant's administrator role has nothing to do with
+      // it. Matching the name showed that caller every administrative route.
+      //
+      // The identity states the colliding name and the server states the truth. The gate must
+      // believe the server.
+      signInAs({ roles: [PORTAL_ADMINISTRATOR_ROLE], isPortalAdministrator: false });
+
+      expectRefused(
+        makeRoute({ permission: 'PortalAdministrator' }),
+        'holding a role that shares the name is not holding the administration',
+      );
+    });
+
+    it('derives administration from the projection alone, never from the role list', () => {
+      // The executable form of the correction, asserted as the absence of a read rather than
+      // as an outcome. `roles` is installed as a spy on the off-limits list, so any
+      // reintroduction of name matching — however it is spelled, and whatever result it
+      // happens to produce — is recorded here.
+      signInAsPortalAdministrator();
+
+      runGuard(makeRoute({ permission: 'PortalAdministrator' }));
+      runGuard(makeRoute({ permission: 'HostAdministrator' }));
+      runGuard(makeRoute({ permission: 'AccountOwnerOrPortalAdministrator' }, { userId: '7' }));
+
+      expect(storeOffLimits['roles'])
+        .withContext('administration must come from the server projection, not a role name')
+        .not.toHaveBeenCalled();
+      expect(store.administersCurrentPortal()).toBeTrue();
+    });
+
+    it('admits a caller holding NO role at all when the server says it administers the tenant', () => {
+      // ⚠ THE OTHER HALF OF THE CORRECTION, and the half that was breaking working screens. A
+      // tenant may designate any role as its administrator — the designation is a column, and
+      // the role is renameable — so a legitimate administrator routinely holds a role list that
+      // contains nothing called `Administrators`. The old gate refused every one of them.
+      signInAs({ roles: [], isPortalAdministrator: true });
+
+      expectAdmitted(
+        makeRoute({ permission: 'PortalAdministrator' }),
+        'the server\u2019s derived determination is the authority, not a name',
+      );
     });
 
     it('admits a host account to the tenant administration policy', () => {
@@ -1551,16 +1677,14 @@ describe('permissionGuard', () => {
     });
 
     it('admits a held session whose identity has not yet resolved, and lets the API decide', () => {
-      // ⚠ PREVENTS A REAL DEFECT rather than guarding a hypothetical one. The store reports a
-      // held session from the token custodian, but derives the account key, the role list and
-      // the host flag from a FETCHED identity that is null until it arrives. In that window a
-      // genuine administrator reports an empty role list and a false host flag, and a genuine
-      // account holder reports no key at all — so refusing on that evidence would lock the
-      // very operators these screens exist for out of them, and would refuse an account
-      // holder its own credential change.
+      // ⚠ PREVENTS A REAL DEFECT rather than guarding a hypothetical one. A session can be
+      // held while the identity behind it is not yet known, and on that evidence a genuine
+      // administrator reports no administration and a genuine account holder reports no key at
+      // all — so refusing there would lock the very operators these screens exist for out of
+      // them, and would refuse an account holder its own credential change.
       store.isAuthenticated.set(true);
       store.currentUser.set(null);
-      store.roles.set([]);
+      store.administersCurrentPortal.set(false);
       store.isSuperUser.set(false);
 
       for (const policy of SERVER_POLICY_NAMES) {
@@ -1619,7 +1743,9 @@ describe('permissionGuard', () => {
     }
 
     beforeEach(() => {
-      signInAs({ userId: 7, roles: [PORTAL_ADMINISTRATOR_ROLE] });
+      // An administering identity, so `exerciseEveryPath` drives ADMISSIONS as well as
+      // refusals and the purity assertions below cover both directions.
+      signInAs({ userId: 7, isPortalAdministrator: true });
     });
 
     it('issues no HTTP request on any decision path', () => {

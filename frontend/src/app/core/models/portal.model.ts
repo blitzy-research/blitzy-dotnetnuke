@@ -299,6 +299,44 @@ export interface PortalAlias {
 }
 
 /**
+ * One account the portal may designate as its administrator, as returned by
+ * `GET /api/v1/portals/{portalId}/administrators`.
+ *
+ * Mirrors `Dtos/Portal/PortalAdministratorDto.cs`. The server answers the members of the
+ * portal's own administrator role, which is exactly the list the legacy screen built at
+ * `Website/admin/Portal/SiteSettings.ascx.vb:L331-L336` from
+ * `GetUserRolesByRoleName(portalId, objPortal.AdministratorRoleName)`, adding one entry per
+ * member as `New ListItem(objUser.FullName, objUser.UserID.ToString)`.
+ *
+ * MIGRATION: THE PORTAL COMES FROM THE PATH, which is why this read exists on the portal
+ * resource rather than on a role one. Every role read resolves its tenant from the caller's
+ * own context, so none of them can enumerate the administrators of the portal a settings
+ * screen happens to be addressing — which is what previously left the administrator
+ * displayable and not reassignable.
+ */
+export interface PortalAdministrator {
+  /**
+   * The account key, which is the value the selector submits as
+   * {@link UpdatePortalSettingsRequest.administratorId}.
+   */
+  readonly userId: number;
+
+  /**
+   * The account's login name.
+   *
+   * MIGRATION: NOT part of the legacy list item, which carried the display name alone. It is
+   * published because the display name is the one account field a tenant may compose from a
+   * format string, so two administrators can legitimately share one — and a selector
+   * offering two identical entries cannot be used to choose between them. The login name is
+   * unique within a portal.
+   */
+  readonly username: string;
+
+  /** The account's display name, which is the text the legacy selector showed. */
+  readonly displayName: string;
+}
+
+/**
  * One row of the portal list, as returned by `GET /api/v1/portals`.
  *
  * Mirrors `Dtos/Portal/PortalListItemDto.cs`, whose eight members are the eight
@@ -1194,6 +1232,26 @@ export const decodePortalAlias: Decoder<PortalAlias> = objectOf<PortalAlias>({
   // an operator the means to delete the address they are working through.
   isCurrent: decodeBoolean,
 });
+
+/**
+ * Decodes one account the settings screen may designate as the portal's administrator.
+ *
+ * Every member is required and non-nullable, because the server projects all three from a
+ * materialised account row and refuses to publish an entry whose account did not
+ * materialise. A tolerant decoder here would let a nameless option reach the selector,
+ * which an operator could select without being able to read whom they had chosen.
+ *
+ * The identifier uses {@link decodeInteger} with no positivity test. `Users.UserID` seeds
+ * `IDENTITY(1,1)` so no legal account key collides with the legacy absent-integer
+ * sentinel, but the discipline is applied anyway: the sibling keys this screen handles —
+ * portal, role and page — are seeded at zero or minus one and are read by the same code.
+ */
+export const decodePortalAdministrator: Decoder<PortalAdministrator> =
+  objectOf<PortalAdministrator>({
+    userId: decodeInteger,
+    username: decodeString,
+    displayName: decodeString,
+  });
 
 /**
  * Decodes one listed portal row.

@@ -139,14 +139,22 @@ public class PortalServiceTests
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The tenant contract exposes twelve asynchronous operations and nothing else.
+    /// The tenant contract exposes thirteen asynchronous operations and nothing else.
     /// </summary>
+    /// <remarks>
+    /// The thirteenth is <c>ListAdministratorCandidatesAsync</c>, which fills the administrator selector
+    /// on the settings screen (<c>Website/admin/Portal/SiteSettings.ascx.vb:L329-L339</c>). It has to
+    /// live on THIS contract rather than on the role contract: every role read resolves its tenant from
+    /// the caller's own context rather than from a route segment, so none of them can enumerate the
+    /// administrators of the portal a settings screen happens to be addressing, and without it the
+    /// administrator could be displayed and never reassigned.
+    /// </remarks>
     [Fact]
-    public void PortalContract_OffersExactlyTwelveOperations()
+    public void PortalContract_OffersExactlyThirteenOperations()
     {
         MethodInfo[] members = typeof(IPortalService).GetMethods();
 
-        members.Should().HaveCount(12);
+        members.Should().HaveCount(13);
         foreach (MethodInfo member in members)
         {
             member.Name.Should().EndWith("Async");

@@ -690,6 +690,203 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// The administrator selector's candidates are the members of the portal's administrator role,
+    /// ordered by the name the selector shows.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Reproduces <c>Website/admin/Portal/SiteSettings.ascx.vb:L329-L339</c>. The seed is what makes this
+    /// discriminating: the host account and the portal administrator both hold the Administrators role
+    /// while the ordinary member holds Registered Users, so a read that returned every account in the
+    /// portal - the obvious wrong implementation, and the one the write path's own broader guard would
+    /// permit - would return three rows here instead of two.
+    /// </para>
+    /// <para>
+    /// The ordering is asserted rather than the mere membership. The underlying membership read orders by
+    /// role and then by assignment key, which is right for a membership grid and wrong for a name picker,
+    /// so an unordered projection would put the host first purely because it was inserted first.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListPortalAdministrators_ReturnsTheAdministratorRolesMembersInDisplayOrder()
+    {
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/administrators", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        IReadOnlyList<PortalAdministratorDto>? candidates = await response.Content
+            .ReadEnvelopeAsync<IReadOnlyList<PortalAdministratorDto>>();
+
+        candidates.Should().NotBeNull();
+
+        IReadOnlyList<PortalAdministratorDto> offered = candidates!;
+        offered.Select(candidate => candidate.Username)
+            .Should().Equal(
+                [IntegrationSeed.AdminUserName, IntegrationSeed.HostUserName],
+                "the two Administrators-role members are offered, ordered by display name - 'Integration "
+                + "Administrator' before 'Integration Host' - and the Registered Users member is not");
+
+        offered.Select(candidate => candidate.UserId)
+            .Should().Equal(_fixture.Seed.AdminUserId, _fixture.Seed.HostUserId);
+        offered.Should().OnlyContain(
+            candidate => candidate.DisplayName.Length > 0,
+            "the selector shows the display name, so an entry without one would render as a blank option");
+    }
+
+    /// <summary>
+    /// The stored administrator is among the candidates, so the selector can pre-select it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The legacy screen pre-selected the entry matching <c>objPortal.AdministratorId</c> at
+    /// <c>SiteSettings.ascx.vb:L337-L339</c>, and it could only do so because the stored administrator was
+    /// necessarily a member of the role the list was built from. That relationship is asserted here rather
+    /// than assumed, because a candidate list that excluded the current holder would silently offer the
+    /// operator a form whose only options all CHANGE the administrator.
+    /// </remarks>
+    [Fact]
+    public async Task ListPortalAdministrators_IncludesTheStoredAdministratorSoItCanBePreSelected()
+    {
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage settingsResponse = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings", UriKind.Relative));
+        PortalSettingsDto settings = (await settingsResponse.Content
+            .ReadEnvelopeAsync<PortalSettingsDto>())!;
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/administrators", UriKind.Relative));
+        IReadOnlyList<PortalAdministratorDto> candidates = (await response.Content
+            .ReadEnvelopeAsync<IReadOnlyList<PortalAdministratorDto>>())!;
+
+        settings.AdministratorId.Should().NotBeNull();
+        candidates.Select(candidate => candidate.UserId)
+            .Should().Contain(settings.AdministratorId!.Value);
+    }
+
+    /// <summary>An unknown portal answers <c>404 Not Found</c> rather than an empty list.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The distinction matters to the screen: an empty list means "this portal has no eligible
+    /// administrators", which is a state it must render, whereas a missing portal is not a state it can
+    /// render at all.
+    /// </remarks>
+    [Fact]
+    public async Task ListPortalAdministrators_ForUnknownPortal_ReturnsNotFound()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(UnknownPortalId)}/administrators", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>The candidate list of another tenant is refused to a portal administrator.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The read discloses account names, so it is gated exactly as the settings resource it serves is. The
+    /// route-supplied portal is what made the action possible in the first place; this proves the route
+    /// does not thereby become a way to read another tenant's accounts.
+    /// </remarks>
+    [Fact]
+    public async Task ListPortalAdministrators_AsAdministratorOfAnotherTenant_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto other = await CreatePortalAsync(host);
+
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(other.PortalId)}/administrators", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>An anonymous caller is refused the candidate list.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Two distinct refusals, asserted together because accepting either for either caller would let the
+    /// weaker one pass for the wrong reason. An ANONYMOUS caller gets 401, because there is no credential to
+    /// evaluate a policy against; an authenticated ordinary member gets 403, because the policy was
+    /// evaluated and refused. The read discloses account names, so neither may reach it.
+    /// </remarks>
+    [Fact]
+    public async Task ListPortalAdministrators_WithoutAdministrativeEntitlement_IsRefused()
+    {
+        var route = new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/administrators",
+            UriKind.Relative);
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+        using HttpResponseMessage unauthenticated = await anonymous.GetAsync(route);
+        unauthenticated.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
+        using HttpResponseMessage refused = await member.GetAsync(route);
+        refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// A chosen candidate can be stored through the settings resource and is served back by it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The whole point of the finding, end to end: the legacy screen read the candidates at
+    /// <c>SiteSettings.ascx.vb:L331-L336</c> and wrote the chosen one as argument nine of the portal
+    /// update at <c>:L775</c>. This drives both halves against the real database, so a candidate the read
+    /// offers is provably a value the write accepts - the two contracts cannot drift apart unnoticed.
+    /// </remarks>
+    [Fact]
+    public async Task ListPortalAdministrators_OffersValuesTheSettingsWriteAccepts()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage candidatesResponse = await host.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/administrators", UriKind.Relative));
+        IReadOnlyList<PortalAdministratorDto> candidates = (await candidatesResponse.Content
+            .ReadEnvelopeAsync<IReadOnlyList<PortalAdministratorDto>>())!;
+
+        using HttpResponseMessage read = await host.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings", UriKind.Relative));
+        PortalSettingsDto stored = (await read.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+
+        // A candidate OTHER than the one already designated, so the write is a genuine reassignment rather
+        // than a re-save of the same value.
+        PortalAdministratorDto replacement = candidates
+            .First(candidate => candidate.UserId != stored.AdministratorId);
+
+        UpdatePortalSettingsRequest request = SettingsUpdateFrom(stored);
+        request.AdministratorId = replacement.UserId;
+
+        using HttpResponseMessage written = await host.PutAsJsonAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings", UriKind.Relative),
+            request);
+
+        written.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalSettingsDto updated = (await written.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        updated.AdministratorId.Should().Be(replacement.UserId);
+
+        // Read back, so the value is proven stored rather than merely echoed.
+        using HttpResponseMessage reread = await host.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings", UriKind.Relative));
+        PortalSettingsDto served = (await reread.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        served.AdministratorId.Should().Be(replacement.UserId);
+
+        // Restored, so the ordering of this suite's cases cannot matter.
+        UpdatePortalSettingsRequest restore = SettingsUpdateFrom(served);
+        restore.AdministratorId = stored.AdministratorId;
+        using HttpResponseMessage restored = await host.PutAsJsonAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/settings", UriKind.Relative),
+            restore);
+        restored.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
     /// The settings resource accepts a complete replacement, returns the updated projection and serves the
     /// same values from its GET representation afterwards.
     /// </summary>

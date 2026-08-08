@@ -64,7 +64,7 @@
  * server holds rather than what the browser guessed, which matters because a `204` from the removal
  * does not promise the row is gone.
  */
-import { LOCALE_ID } from '@angular/core';
+import { LOCALE_ID, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
@@ -73,15 +73,27 @@ import { provideRouter } from '@angular/router';
 import { NotificationService } from '../../../core/services/notification.service';
 import { RoleAssignmentComponent } from './role-assignment.component';
 import { API_ENDPOINTS } from '../../../core/config/api-endpoints';
-import { MAX_PAGE_SIZE } from '../../../core/models/paged-result.model';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../../core/models/paged-result.model';
+import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { RoleStore } from '../../../core/state/role.store';
 
+import type { WritableSignal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
 import type { ApiResponse, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { Role, UserRole } from '../../../core/models/role.model';
-import type { UserListItem } from '../../../core/models/user.model';
+import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
+
+/**
+ * The tenant the doubled identity reports.
+ *
+ * `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant a schema ever creates carries -1 —
+ * which is also the legacy absent-integer marker. Using it here is what proves the request is issued
+ * for a real tenant rather than skipped by a truthiness test.
+ */
+const TENANT_ID = -1;
 
 // ==================================================================================================
 // ADDRESSES — RELATIVE, ALWAYS
@@ -97,6 +109,27 @@ import type { UserListItem } from '../../../core/models/user.model';
 const ROLES_URL = '/api/v1/roles';
 const USERS_URL = '/api/v1/users';
 
+/**
+ * The body-bound account search, which is what this screen's lookup uses.
+ *
+ * ⚠ THE LOOKUP FILTERS BY USER NAME, WHICH IDENTIFIES A PERSON, so it may not travel in a request
+ * target — the browser's history, every proxy's access log, the server's access log and any
+ * URL-sampling telemetry all record one, and each of those sits at an END of the encrypted channel
+ * rather than in the middle of it. That is CWE-598. The screen does nothing special to obtain this:
+ * it calls the shared account transport, which chooses the body whenever the query names somebody,
+ * so the property holds here BECAUSE it holds there.
+ */
+const USERS_SEARCH_URL = '/api/v1/users/search';
+
+/**
+ * The role-group collection, addressed by the cases that stand a SIBLING screen's write alongside
+ * this screen's own.
+ *
+ * Written out for the same reason as its two neighbours rather than derived from the endpoint table:
+ * the point of stating an address literally is that a change to it fails here.
+ */
+const ROLE_GROUPS_URL = '/api/v1/role-groups';
+
 function roleUrl(roleId: number): string {
   return `${ROLES_URL}/${roleId}`;
 }
@@ -111,8 +144,50 @@ function memberUrl(roleId: number, userId: number): string {
 
 
 
-/** The page size the account lookup asks for. */
-const LOOKUP_PAGE_SIZE = '10';
+/** Where the tenant's account policy is read from, which is what selects the account control. */
+const MEMBERSHIP_SETTINGS_URL = `${USERS_URL}/settings`;
+
+/**
+ * The page size the account lookup asks for.
+ *
+ * ⚠ THE SERVER'S MAXIMUM, NOT THE SHARED DEFAULT OF TEN. The lookup walks pages until it finds the
+ * exact name, so it asks for the widest page the listing's own paging rules permit — the fewer
+ * requests one walk makes, the sooner the answer arrives. Restated as the literal the request
+ * carries rather than derived, so a change to it is detected here.
+ */
+const LOOKUP_PAGE_SIZE = '100';
+
+/**
+ * How many pages one account lookup will request before it stops and says so.
+ *
+ * Restated rather than imported for the same reason as the page size. It is also why the ceiling
+ * case below drives every one of those pages by hand: proving the walk stops requires reaching the
+ * stop, and a mocked constant would prove only that the mock was honoured.
+ */
+const LOOKUP_PAGE_CEILING = 20;
+
+/**
+ * The order the lookup asks the account listing for, which is what makes the ordinary case one
+ * request.
+ *
+ * The filter is a literal PREFIX match, so every account returned begins with the typed term;
+ * ascending by login name therefore puts the shortest match first, and the shortest possible match
+ * is the term itself. Asserted on the request rather than assumed, because the guarantee is the
+ * server's ordering and a silently dropped sort parameter would remove it without failing anything
+ * else.
+ */
+const LOOKUP_SORT_FIELD = 'Username';
+const LOOKUP_SORT_DIRECTION = 'Ascending';
+
+/**
+ * The two values of the tenant's account-control policy, as the legacy `UsersControl` enumeration
+ * numbered them (`UserModuleBase.vb:L42-L45`).
+ *
+ * Restated rather than imported for the reason the wording block below gives: a change to either
+ * number is a change to the contract and must be noticed here.
+ */
+const USERS_CONTROL_COMBO = 0;
+const USERS_CONTROL_TEXT_BOX = 1;
 
 // ==================================================================================================
 // THE WORDING THIS SCREEN PUBLISHES
@@ -132,6 +207,14 @@ const CANCEL_LABEL = 'Cancel';
 const CONFIRM_REMOVAL_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 const NO_MATCHING_USERS = 'No accounts match that name.';
 const ROLE_UNRESOLVED = 'No security role was addressed, so no memberships can be shown.';
+const USER_HELP = 'Enter The User Name and click Validate to confirm';
+const USER_CHOICE_HELP = 'Choose an account from every account in this site.';
+const USER_CHOICE_PROMPT = '<None Specified>';
+const ACCOUNT_CHOICES_EMPTY = 'This site holds no accounts to choose from.';
+const ACCOUNT_CHOICES_UNAVAILABLE =
+  'Every account in this site could not be listed, so the name box is offered instead.';
+const ACCOUNT_POLICY_UNAVAILABLE =
+  "This site's preferred account selector could not be read, so the name box is offered.";
 
 /**
  * The three validator messages, as the resource file holds them AFTER the shared field wrapper has
@@ -413,6 +496,46 @@ function account(overrides: Partial<UserListItem> = {}): UserListItem {
     isOnline: false,
     isSuperUser: false,
     isLockedOut: false,
+    canDelete: true,
+    ...overrides,
+  };
+}
+
+/**
+ * The tenant's account policy, of which exactly one member matters to this screen.
+ *
+ * Every member is present because the contract's decoder requires them all; `securityUsersControl`
+ * is the one that decides which account control is rendered, and it defaults to the name box so that
+ * a case saying nothing about the policy exercises the affordance the legacy help text described.
+ *
+ * @param overrides Members to replace.
+ * @returns The policy.
+ */
+function membershipSettings(overrides: Partial<MembershipSettings> = {}): MembershipSettings {
+  return {
+    columnFirstName: true,
+    columnLastName: true,
+    columnDisplayName: true,
+    columnAddress: true,
+    columnTelephone: true,
+    columnEmail: true,
+    columnCreatedDate: true,
+    columnLastLogin: true,
+    columnAuthorized: true,
+    displayMode: 0,
+    displaySuppressPager: false,
+    recordsPerPage: 10,
+    profileDefaultVisibility: 2,
+    profileDisplayVisibility: true,
+    profileManageServices: false,
+    redirectAfterLogin: null,
+    redirectAfterRegistration: null,
+    redirectAfterLogout: null,
+    securityEmailValidation: '',
+    securityRequireValidProfile: false,
+    securityRequireValidProfileAtLogin: false,
+    securityUsersControl: USERS_CONTROL_TEXT_BOX,
+    securityDisplayNameFormat: '',
     ...overrides,
   };
 }
@@ -444,8 +567,38 @@ describe('RoleAssignmentComponent', () => {
   let fixture: ComponentFixture<RoleAssignmentComponent>;
   let httpMock: HttpTestingController;
   let notifySpy: jasmine.Spy;
+  let designatedAdministrator: WritableSignal<number | null>;
+  let administratorRole: WritableSignal<number | null>;
+  let registeredRole: WritableSignal<number | null>;
+  let loadCurrentPortalContext: jasmine.Spy;
 
   beforeEach(async () => {
+    /*
+     * THE TENANT'S PROTECTED PAIRING, HELD IN SIGNALS THE CASES CAN MOVE.
+     *
+     * ⚠ THESE USED TO BE THREE COMPONENT INPUTS, AND THE CHANGE IS THE POINT. They were declared as
+     * optional inputs on the reasoning that "the tenant's settings are not part of this screen's
+     * contract", and NOTHING in the application ever supplied one — no route, no parent template —
+     * so the removal guard shipped permanently disarmed and the server's refusal was the only thing
+     * protecting the membership that makes an account part of the tenant. The facts are now read
+     * from the portal store, which is CORE state every feature may inject.
+     *
+     * Each opens ABSENT, so the ordinary cases below describe a screen whose tenant record has not
+     * arrived — which is the fail-safe direction: the command is offered and the API's refusal
+     * governs, exactly the behaviour that shipped. The guard itself is proved by supplying the facts.
+     */
+    designatedAdministrator = signal<number | null>(null);
+    administratorRole = signal<number | null>(null);
+    registeredRole = signal<number | null>(null);
+
+    /*
+     * The request for those facts, spied rather than served. The real portal store would issue a
+     * tenant read on arrival that every case in this file would have to answer, and the spy is the
+     * sharper assertion in any event: it records which tenant was asked for, and whether it was
+     * asked at all.
+     */
+    loadCurrentPortalContext = jasmine.createSpy('loadCurrentPortalContext');
+
     await TestBed.configureTestingModule({
       // The component is STANDALONE, so it is imported rather than declared. There is no
       // `declarations` array anywhere in this file and there is no module to build one in.
@@ -463,6 +616,25 @@ describe('RoleAssignmentComponent', () => {
         // through the framework's own formatter, so without this pin every rendered date would
         // depend on the machine's locale and the sentinel cases would prove nothing portable.
         { provide: LOCALE_ID, useValue: 'en-US' },
+        /*
+         * The identity, doubled for ONE fact: which tenant the caller belongs to. The tenant is read
+         * from the caller rather than from a route, because this screen addresses a ROLE and names no
+         * portal — and must never be able to protect one tenant's membership with another's keys.
+         */
+        {
+          provide: AuthStore,
+          useValue: { currentUser: signal({ portalId: TENANT_ID }) },
+        },
+        /* The tenant's record, doubled to the three facts this screen reads plus the request for them. */
+        {
+          provide: PortalStore,
+          useValue: {
+            administratorUserId: designatedAdministrator,
+            administratorRoleId: administratorRole,
+            registeredRoleId: registeredRole,
+            loadCurrentPortalContext,
+          },
+        },
       ],
     }).compileComponents();
 
@@ -482,10 +654,11 @@ describe('RoleAssignmentComponent', () => {
   //
   // Signal note: the version of the framework installed here exposes `TestBed.flushEffects()` and no
   // `TestBed.tick()`, which was verified against the installed typings rather than assumed. It is not
-  // reached for below, and deliberately so: this component holds no `effect()` at all — every derived
-  // view is a `computed()`, which is pull-based — and its form snapshot is kept current by one plain
-  // subscription to the control event stream. `fixture.detectChanges()` is therefore what settles the
-  // view, and the polyfills are zone-based, so it behaves conventionally.
+  // reached for below, and deliberately so: every one of this component's `effect()`s is created in
+  // its constructor and is therefore a COMPONENT effect, which the framework runs as part of change
+  // detection. `fixture.detectChanges()` is what settles both those and the pull-based `computed()`
+  // views, the polyfills are zone-based, so it behaves conventionally, and reaching for the explicit
+  // flush would settle the effects at a different point in the cycle than production does.
   // -------------------------------------------------------------------------------------------------
 
   /** The component under test, for the few assertions that are about its state rather than its view. */
@@ -496,34 +669,105 @@ describe('RoleAssignmentComponent', () => {
   /**
    * Mounts the screen.
    *
-   * The identifiers are delivered as the STRINGS route parameters are, so each input's own strict
-   * parsing runs. Setting the role identifier is what starts both opening reads, so it is set LAST —
-   * the other three are tenant context those reads do not need.
+   * The role identifier is delivered as the STRING a route parameter is, so the input's own strict
+   * parsing runs. It is set LAST because setting it is what starts both opening reads.
+   *
+   * ⚠ THE TENANT CONTEXT IS PUT IN THE STORE, NOT PASSED IN. It used to arrive as three optional
+   * inputs that nothing in the application ever supplied; it is now read from the portal store, so a
+   * case that wants the guard armed writes the facts into the doubled signals BEFORE the component
+   * reads them — which is before the first change detection, since every consumer is a `computed`.
    */
   function create(
     roleId: string | null,
     context: {
-      readonly administratorUserId?: string;
-      readonly administratorRoleId?: string;
-      readonly registeredRoleId?: string;
+      readonly administratorUserId?: number;
+      readonly administratorRoleId?: number;
+      readonly registeredRoleId?: number;
+
+      /**
+       * The account policy to answer the opening read with, or `null` to refuse it.
+       *
+       * Omitted means the name-box policy, which is what every case predating the policy wiring
+       * asserted against.
+       */
+      readonly usersControl?: number | null;
     } = {},
   ): void {
-    fixture = TestBed.createComponent(RoleAssignmentComponent);
-
     if (context.administratorUserId !== undefined) {
-      fixture.componentRef.setInput('administratorUserId', context.administratorUserId);
+      designatedAdministrator.set(context.administratorUserId);
     }
 
     if (context.administratorRoleId !== undefined) {
-      fixture.componentRef.setInput('administratorRoleId', context.administratorRoleId);
+      administratorRole.set(context.administratorRoleId);
     }
 
     if (context.registeredRoleId !== undefined) {
-      fixture.componentRef.setInput('registeredRoleId', context.registeredRoleId);
+      registeredRole.set(context.registeredRoleId);
     }
 
+    fixture = TestBed.createComponent(RoleAssignmentComponent);
     fixture.componentRef.setInput('roleId', roleId);
     fixture.detectChanges();
+
+    // ⚠ ANSWERED FOR EVERY MOUNT, BECAUSE THE POLICY READ IS UNCONDITIONAL. The screen asks which
+    // account control the tenant wants before it offers either one, so a case that left this
+    // outstanding would fail the unconditional verification in `afterEach` rather than on its own
+    // assertion. It is settled here, in the mount, so no case has to know the read exists.
+    answerAccountPolicy(
+      context.usersControl === undefined ? USERS_CONTROL_TEXT_BOX : context.usersControl,
+    );
+  }
+
+  /**
+   * Answers the account-policy read, or refuses it.
+   *
+   * @param usersControl The policy value to answer with, or `null` to answer with a server fault.
+   */
+  function answerAccountPolicy(usersControl: number | null): TestRequest {
+    const call = expectRequest('GET', MEMBERSHIP_SETTINGS_URL, 'the account policy read');
+
+    if (usersControl === null) {
+      call.flush(
+        { type: 'about:blank', title: 'Server error', status: 500 },
+        { status: 500, statusText: 'Server Error' },
+      );
+    } else {
+      call.flush(envelope(membershipSettings({ securityUsersControl: usersControl })));
+    }
+
+    fixture.detectChanges();
+
+    return call;
+  }
+
+  /**
+   * Answers the complete-account-list walk the drop-down policy triggers.
+   *
+   * One call per page, so a case can prove the walk followed every page the server reported rather
+   * than stopping at the first — the defect this screen's lookup was corrected for.
+   *
+   * @param accounts The accounts this page carries.
+   * @param totalCount The server's own count of the whole list.
+   * @param pageIndex The page being answered.
+   */
+  function answerAccountChoicesPage(
+    accounts: readonly UserListItem[],
+    totalCount: number = accounts.length,
+    pageIndex = 0,
+  ): TestRequest {
+    const call = httpMock.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === USERS_URL &&
+        candidate.params.get('userName') === null &&
+        candidate.params.get('pageIndex') === String(pageIndex),
+      `the account list, page ${pageIndex}`,
+    );
+
+    call.flush(pageOf(accounts, totalCount, pageIndex, Number(LOOKUP_PAGE_SIZE)));
+    fixture.detectChanges();
+
+    return call;
   }
 
   /** Consumes exactly one pending request, asserted by verb AND address. */
@@ -532,6 +776,26 @@ describe('RoleAssignmentComponent', () => {
       (candidate) => candidate.method === method && candidate.url === url,
       typeof description === 'string' ? description : `${method} ${url}`,
     );
+  }
+
+  /**
+   * The body a lookup transmitted, narrowed by throwing rather than asserted.
+   *
+   * The transport types a request body as `unknown` and the workspace forbids the assertion that
+   * would silence that, so absence is narrowed by throwing — which fails the case with a message
+   * naming what was missing instead of hiding the distinction behind a cast.
+   *
+   * @param request The lookup whose body to read.
+   * @returns The body as a keyed record.
+   */
+  function lookupBody(request: TestRequest): Readonly<Record<string, unknown>> {
+    const body: unknown = request.request.body;
+
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      throw new Error('the lookup did not transmit a JSON object body');
+    }
+
+    return { ...body };
   }
 
   /** Answers the role read. */
@@ -567,10 +831,44 @@ describe('RoleAssignmentComponent', () => {
       'the membership read',
     );
 
-    call.flush(pageOf(rows, totalCount));
+    // ⚠ THE ANSWER ECHOES THE COORDINATE THAT WAS ASKED FOR, as the API does: the applied size and the
+    // index are facts about the response, and the screen binds the SERVER's figures to its pager. A
+    // fixture that answered with a size nobody requested would make the pager compute a page count the
+    // server never published, and the pager cases would then prove nothing about production.
+    const askedIndex: number = Number(call.request.params.get('pageIndex') ?? '0');
+    const askedSize: number = Number(call.request.params.get('pageSize') ?? String(DEFAULT_PAGE_SIZE));
+
+    call.flush(pageOf(rows, totalCount, askedIndex, askedSize));
     fixture.detectChanges();
 
     return call;
+  }
+
+  /**
+   * Settles the keyed probe that a SUCCESSFUL write re-asks.
+   *
+   * A write is exactly what can change whether the chosen account holds the role, so the fact is
+   * re-asked once the write settles — the legacy rebind refreshed the same fact as a side effect of
+   * rebuilding the grid it scanned (`SecurityRoles.ascx.vb:L546`), and with a paged grid the fact has
+   * its own request. It carries NO prefill, which is why every case that uses this also proves the two
+   * date boxes were left exactly as the operator left them.
+   *
+   * A refused write re-asks nothing, so this is never reached from a failure case.
+   *
+   * @param held The memberships the probe finds for the chosen account's login name.
+   */
+  function answerReprobe(held: readonly UserRole[] = []): void {
+    const probes: readonly TestRequest[] = httpMock.match(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url.endsWith('/users') &&
+        candidate.params.get('query') !== null,
+    );
+
+    expect(probes).withContext('a settled write re-asks the keyed probe exactly once').toHaveSize(1);
+
+    probes[0].flush(pageOf(held, held.length, 0, MAX_PAGE_SIZE));
+    fixture.detectChanges();
   }
 
 
@@ -586,9 +884,9 @@ describe('RoleAssignmentComponent', () => {
     roleId = 0,
     rows: readonly UserRole[] = [membership()],
     context: {
-      readonly administratorUserId?: string;
-      readonly administratorRoleId?: string;
-      readonly registeredRoleId?: string;
+      readonly administratorUserId?: number;
+      readonly administratorRoleId?: number;
+      readonly registeredRoleId?: number;
     } = {},
     totalCount: number = rows.length,
   ): void {
@@ -700,14 +998,94 @@ describe('RoleAssignmentComponent', () => {
     fixture.detectChanges();
   }
 
-  /** Answers the account lookup. */
-  function answerLookup(matches: readonly UserListItem[]): TestRequest {
-    const call = expectRequest('GET', USERS_URL, 'the account lookup');
+  /**
+   * One member of a transmitted search body, or `undefined` when it is absent.
+   *
+   * Kept deliberately tolerant of a non-object body: this is used inside a request MATCHER, which
+   * every outstanding request is offered, so it must answer rather than raise for a request that is
+   * not a search at all.
+   *
+   * @param body The request body as transmitted.
+   * @param name The member to read.
+   * @returns The member's value, or undefined.
+   */
+  function searchMember(body: unknown, name: string): unknown {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return undefined;
+    }
 
-    call.flush(pageOf(matches, matches.length, 0, 10));
+    return (body as Record<string, unknown>)[name];
+  }
+
+  /**
+   * Answers the account lookup with a single, complete page.
+   *
+   * The reported total equals what is supplied, which is what tells the walk it has seen the whole
+   * match set and may stop. A case that wants to prove the walk FOLLOWS pages uses
+   * {@link answerLookupPage} instead and reports a larger total.
+   */
+  function answerLookup(matches: readonly UserListItem[]): TestRequest {
+    const call = expectRequest('POST', USERS_SEARCH_URL, 'the account lookup');
+
+    call.flush(pageOf(matches, matches.length, 0, Number(LOOKUP_PAGE_SIZE)));
     fixture.detectChanges();
 
     return call;
+  }
+
+  /**
+   * Answers ONE page of the account-lookup walk, identified by the page coordinate it asked for.
+   *
+   * Matched on `pageIndex` rather than by consuming whatever is outstanding, so a case proves the
+   * walk asked for the page it claims to have asked for. The `userName` test is what keeps this from
+   * matching the complete-account-list walk, which carries no name.
+   *
+   * @param matches The accounts this page carries.
+   * @param totalCount The server's own count of the whole match set.
+   * @param pageIndex The page being answered.
+   */
+  function answerLookupPage(
+    matches: readonly UserListItem[],
+    totalCount: number,
+    pageIndex: number,
+  ): TestRequest {
+    // ⚠ THE BODY, NOT THE QUERY STRING. The lookup searches by ACCOUNT NAME, which identifies a
+    // person, so it is issued as `POST /api/v1/users/search` — a query parameter travels in the
+    // request target, which the browser's history, every proxy's access log, the server's own log
+    // and URL-sampling telemetry all keep, none of which HTTPS protects. The page coordinate and
+    // the name are therefore read out of the transmitted body, exactly as {@link answerLookup}
+    // matches the same address for the single-page case.
+    const call = httpMock.expectOne(
+      (candidate) =>
+        candidate.method === 'POST' &&
+        candidate.url === USERS_SEARCH_URL &&
+        searchMember(candidate.body, 'userName') !== undefined &&
+        String(searchMember(candidate.body, 'pageIndex')) === String(pageIndex),
+      `the account lookup, page ${pageIndex}`,
+    );
+
+    call.flush(pageOf(matches, totalCount, pageIndex, Number(LOOKUP_PAGE_SIZE)));
+    fixture.detectChanges();
+
+    return call;
+  }
+
+  /**
+   * A page's worth of accounts sharing one prefix, none of which is the name being searched for.
+   *
+   * @param prefix The shared prefix.
+   * @param count How many to make.
+   * @param firstId The identifier of the first, so successive pages do not collide.
+   * @returns The accounts.
+   */
+  function accountRun(prefix: string, count: number, firstId: number): readonly UserListItem[] {
+    return Array.from({ length: count }, (_unused, offset) =>
+      account({
+        userId: firstId + offset,
+        username: `${prefix}${String(firstId + offset)}`,
+        displayName: `${prefix} ${String(firstId + offset)}`,
+      }),
+    );
   }
 
   /**
@@ -731,29 +1109,33 @@ describe('RoleAssignmentComponent', () => {
   (control as HTMLButtonElement).click();
   fixture.detectChanges();
 
-  // ⚠ CHOOSING AN ACCOUNT ASKS THE SERVER NOTHING, and neither does releasing one. The membership
-  // is read WHOLE - the store follows every page the listing reports - so "does this person already
-  // hold the role?" is answered from the rows in hand. A keyed probe would re-ask a question the
-  // screen can already answer, and its answer would arrive after the wording it was meant to decide.
-  expect(
-    httpMock.match(
-      (candidate) =>
-        candidate.method === 'GET' &&
-        candidate.url.endsWith('/users') &&
-        candidate.params.get('query') !== null,
-    ),
-  )
-    .withContext('choosing an account issues no further read')
-    .toHaveSize(0);
+  // ⚠ CHOOSING AN ACCOUNT ASKS EXACTLY ONE QUESTION, AND IT IS A NARROW ONE. The grid holds ONE
+  // page, so "does this person already hold the role?" cannot be answered from the rows on screen -
+  // the account's row may sit on another page, and answering from the page in hand would relabel the
+  // action according to which page happens to be visible. One keyed probe settles it: the same
+  // listing filtered to the account's login name, matched afterwards by identifier. Releasing an
+  // account asks nothing at all.
+  const probes: readonly TestRequest[] = httpMock.match(
+    (candidate) =>
+      candidate.method === 'GET' &&
+      candidate.url.endsWith('/users') &&
+      candidate.params.get('query') !== null,
+  );
 
-  // `held` states, at the point of choosing, which memberships that account holds. Those rows must
-  // already have been delivered by the opening read, so this asserts they were rather than letting a
-  // case smuggle them in behind a second request.
-  for (const row of held) {
-    expect(component().assignments().some((candidate) => candidate.userId === row.userId))
-      .withContext('the memberships the case names are already in hand')
-      .toBeTrue();
+  if (probes.length === 0) {
+    expect(held).withContext('releasing an account asks nothing, so it holds nothing here').toHaveSize(0);
+    return;
   }
+
+  expect(probes).withContext('choosing an account issues exactly one keyed probe').toHaveSize(1);
+  // BOUNDED, and asserted here so every case that chooses an account proves it: one request, at the
+  // widest page the contract allows, and never a walk.
+  expect(probes[0].request.params.get('pageIndex')).toBe('0');
+  expect(probes[0].request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+
+  // `held` states which memberships the probe finds for that account's login name.
+  probes[0].flush(pageOf(held, held.length, 0, MAX_PAGE_SIZE));
+  fixture.detectChanges();
   }
 
   /** Whether the account is currently held, read off the toggle's own pressed state. */
@@ -898,7 +1280,10 @@ describe('RoleAssignmentComponent', () => {
       expect(component().resolvedRoleId()).toBe(0);
       // The paging coordinate is zero-based on the wire and is transmitted rather than adjusted.
       expect(listRead.request.params.get('pageIndex')).toBe('0');
-      expect(listRead.request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+      // ONE PAGE, at the size every other listing in the workspace opens at. The widest legal page
+      // would be a window too, one order of magnitude further out, and asking for it here is what an
+      // earlier revision did before following every further page the metadata reported.
+      expect(listRead.request.params.get('pageSize')).toBe(String(DEFAULT_PAGE_SIZE));
       // The page read carries no free-text filter; only the keyed probe does.
       expect(listRead.request.params.has('query')).toBeFalse();
 
@@ -1192,6 +1577,12 @@ describe('RoleAssignmentComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
       answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
+
+      // The bounds the operator typed are still the bounds on screen: the re-probe moves the label and
+      // never the boxes.
+      expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe(EFFECTIVE_DATE);
+      expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value).toBe(EXPIRY_DATE);
     });
 
     it('SKIPS when only the effective bound is given', () => {
@@ -1268,6 +1659,7 @@ describe('RoleAssignmentComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
       answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
     });
 
     /**
@@ -1321,13 +1713,28 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('ada');
 
-      const call = expectRequest('GET', USERS_URL, 'the account lookup');
+      const call = expectRequest('POST', USERS_SEARCH_URL, 'the account lookup');
 
       // The term is sent RAW: the listing matches on a prefix, so appending a wildcard would search
       // for the wildcard itself.
-      expect(call.request.params.get('userName')).toBe('ada');
-      expect(call.request.params.get('pageIndex')).toBe('0');
-      expect(call.request.params.get('pageSize')).toBe(LOOKUP_PAGE_SIZE);
+      const sent = lookupBody(call);
+
+      expect(sent['userName']).toBe('ada');
+      expect(sent['pageIndex']).toBe(0);
+      expect(sent['pageSize']).toBe(Number(LOOKUP_PAGE_SIZE));
+
+      // ⚠ AND NOT IN THE TARGET. The name is the operator's search term and identifies a person;
+      // see {@link USERS_SEARCH_URL}.
+      expect(call.request.urlWithParams)
+        .withContext('a searched name must never reach a request target')
+        .not.toContain('ada');
+
+      // ⚠ AND THE ORDER, which is what makes an exact match reachable in one request. Ascending by
+      // LOGIN NAME over a prefix-matched set puts the shortest match first, and the shortest match
+      // is the typed name itself. The listing's own default orders by DISPLAY name — unrelated to
+      // what was searched for — which is precisely how an exact match ended up unreachable.
+      expect(searchMember(call.request.body, 'sortBy')).toBe(LOOKUP_SORT_FIELD);
+      expect(searchMember(call.request.body, 'sortDir')).toBe(LOOKUP_SORT_DIRECTION);
 
       call.flush(pageOf([account()], 1, 0, 10));
       fixture.detectChanges();
@@ -1381,9 +1788,9 @@ describe('RoleAssignmentComponent', () => {
 
       expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe('');
       expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value).toBe('');
-      // The window is prefilled from the memberships the screen holds, so "nothing to prefill"
-      // is the absence of a row for the chosen account rather than a separate published slice.
-      expect(component().assignments().find((row) => row.userId === 42)).toBeUndefined();
+      // "Nothing to prefill" is the PROBE finding no row for the chosen account - a settled answer of
+      // its own, not the absence of a row from the page on screen.
+      expect(component().selectedMembership()).toBeNull();
     });
 
     it('clears the chosen account and its window on demand', () => {
@@ -1405,7 +1812,563 @@ describe('RoleAssignmentComponent', () => {
       expect(button(ADD_USER_LABEL)?.disabled).withContext('nobody chosen again').toBeTrue();
       httpMock.expectNone(() => true);
     });
+
+    it('says it is searching, so a walk in progress is not mistaken for no match', () => {
+      // ⚠ THE TWO STATES RENDER IDENTICALLY WITHOUT THIS: an empty match list and no message. A walk
+      // takes visibly longer than the single read it replaced, so the distinction stopped being
+      // theoretical. The wording is the LOOKUP'S own and not the account list's — telling somebody
+      // who typed a name that the site is being enumerated would describe a different operation.
+      arrive(0, []);
+
+      lookUp('sm');
+
+      expect(component().userLookupLoading()).toBeTrue();
+      expect(textIn(query('app-loading-spinner'))).toContain('Searching for matching accounts');
+      expect(component().showNoMatchingUsers())
+        .withContext('not yet a no-match state')
+        .toBeFalse();
+
+      answerLookupPage([], 0, 0);
+
+      expect(component().userLookupLoading()).toBeFalse();
+      expect(query('app-loading-spinner')).withContext('withdrawn once settled').toBeNull();
+      expect(component().showNoMatchingUsers()).withContext('now a no-match state').toBeTrue();
+    });
+
+    it('offers no pager, because walking the match set is what the operator no longer has to do', () => {
+      // MIGRATION: `securityroles.ascx` declares no pager on this control at all. A pager would also
+      // reintroduce exactly the ambiguity the walk removes — a window with page controls is what a
+      // truncated answer looks like — so the totals are stated in words instead.
+      arrive(0, []);
+
+      lookUp('sm');
+      answerLookupPage(accountRun('sm', 100, 1), 150, 0);
+      answerLookupPage(accountRun('sm', 50, 101), 150, 1);
+
+      expect(queryAll('app-pagination')).withContext('the shared pager').toHaveSize(0);
+
+      // And nothing hand-rolled stands in for one. Every control inside the account field is either
+      // one of the offered accounts or part of the shared search box itself — the search box's own
+      // submit button is why this is filtered by ancestry rather than counted outright.
+      const strays = queryAll<HTMLButtonElement>('app-form-field button').filter(
+        (control) =>
+          control.classList.contains('role-assignment__match-action') === false &&
+          control.closest('app-search-input') === null &&
+          control.classList.contains('form-field__help-toggle') === false,
+      );
+
+      expect(strays.map((control) => textIn(control).trim())).toEqual([]);
+    });
+
+    it('follows page after page until it finds the exact account, which one page would have missed', () => {
+      // ⚠ THE DEFECT THIS SCREEN WAS CORRECTED FOR, stated as a case. The lookup read page zero
+      // alone, so an account was selectable only when it happened to fall in the first page of
+      // everything sharing its prefix. Here 'sm' matches 250 accounts and 'smithson' is the 201st,
+      // so the old behaviour could not reach it at ANY page size the paging rules allow - and an
+      // account that cannot be selected cannot be enrolled, which is the whole purpose of the screen.
+      arrive(0, []);
+
+      lookUp('smithson');
+
+      answerLookupPage(accountRun('sm', 100, 1), 250, 0);
+      answerLookupPage(accountRun('sm', 100, 101), 250, 1);
+      answerLookupPage(
+        [account({ userId: 500, username: 'smithson', displayName: 'Ada Smithson' })],
+        250,
+        2,
+      );
+
+      expect(
+        component()
+          .userMatches()
+          .map((match) => match.username),
+      ).toContain('smithson');
+    });
+
+    it('stops the moment the exact account is in hand, however many pages remain', () => {
+      // Once the named account is found nothing a later page could carry would improve the answer, so
+      // every remaining request would be work nobody needed. The server reports 250 matches and only
+      // one page is asked for.
+      arrive(0, []);
+
+      lookUp('ada');
+      answerLookupPage([account({ username: 'ada' })], 250, 0);
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+      expect(component().userMatches()).toHaveSize(1);
+    });
+
+    it('does NOT treat a page shorter than requested as the end of the match set', () => {
+      // ⚠ THE TERMINATION RULE, AND THE ONE THAT IS EASY TO GET WRONG. A short page is what a
+      // filtered listing produces mid-set, so ending on it is precisely how a truncated answer
+      // passes for a complete one. The server's own total is what ends the walk: three matches are
+      // reported, the first page carries one, and the walk asks again.
+      arrive(0, []);
+
+      lookUp('sm');
+
+      answerLookupPage([account({ userId: 1, username: 'sm1', displayName: 'One' })], 3, 0);
+      answerLookupPage(
+        [
+          account({ userId: 2, username: 'sm2', displayName: 'Two' }),
+          account({ userId: 3, username: 'sm3', displayName: 'Three' }),
+        ],
+        3,
+        1,
+      );
+
+      expect(
+        component()
+          .userMatches()
+          .map((match) => match.displayName),
+      ).toEqual(['One', 'Two', 'Three']);
+      expect(component().userLookupSummary()).withContext('nothing left unsaid').toBeNull();
+    });
+
+    it('ends the walk on an empty page rather than asking for the same total for ever', () => {
+      // A server that reports more matches than it will supply cannot be waited out: an empty page
+      // can only be followed by another empty one. What was gathered is every account it was willing
+      // to supply for this name, so it is published rather than refused.
+      arrive(0, []);
+
+      lookUp('sm');
+
+      answerLookupPage([account({ userId: 1, username: 'sm1', displayName: 'One' })], 99, 0);
+      answerLookupPage([], 99, 1);
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+      expect(component().userMatches()).toHaveSize(1);
+    });
+
+    it('matches the exact account without regard to case, the way the legacy lookup did', () => {
+      // MIGRATION: `GetUserByName` at `SecurityRoles.ascx.vb:L480` resolved through a SQL Server
+      // lookup under the database's own collation, which for a default installation does not
+      // distinguish case - so an operator who typed 'Ada' found 'ada'. A case-sensitive test here
+      // would refuse a name the legacy screen accepted, and would keep walking past the answer.
+      arrive(0, []);
+
+      lookUp('ADA');
+      answerLookupPage([account({ username: 'ada' })], 250, 0);
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+      expect(component().userMatches()).toHaveSize(1);
+    });
+
+    it('reports the server\u2019s own total when more accounts match than it can offer', () => {
+      // The walk examines the whole match set; only so many of it can reasonably become buttons. The
+      // difference is STATED rather than hidden, because the shorter list would otherwise read as the
+      // whole answer - which is the same misreading the first-page-only read invited.
+      arrive(0, []);
+
+      lookUp('sm');
+
+      // 150 matches reported, the first page carries 100 and holds no exact name, so the second is
+      // followed; 150 are then examined and 100 offered.
+      answerLookupPage(accountRun('sm', 100, 1), 150, 0);
+      answerLookupPage(accountRun('sm', 50, 101), 150, 1);
+
+      expect(component().userMatches()).toHaveSize(100);
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
+        'Showing 100 of 150 matching accounts. Type more of the name to narrow the list.',
+      );
+    });
+
+    it('offers the exact account even when it falls beyond what can be shown', () => {
+      // ⚠ THE UNREACHABLE-ACCOUNT DEFECT, ONE LAYER UP. The walk stops on the page holding the exact
+      // name, so a name found on the third page would be examined and then dropped from the very
+      // list it ended the search. It is hoisted to the FRONT instead, and the note says how many
+      // were examined.
+      arrive(0, []);
+
+      lookUp('smithson');
+
+      answerLookupPage(accountRun('sm', 100, 1), 400, 0);
+      answerLookupPage(accountRun('sm', 100, 101), 400, 1);
+      answerLookupPage(
+        [
+          ...accountRun('sm', 99, 201),
+          account({ userId: 500, username: 'smithson', displayName: 'Ada Smithson' }),
+        ],
+        400,
+        2,
+      );
+
+      const offered = component().userMatches();
+
+      expect(offered).toHaveSize(100);
+      expect(offered[0].username).withContext('hoisted to the front').toBe('smithson');
+      // The SERVER'S total is reported — 400 match, 100 are offered — not the 300 the walk happened
+      // to examine before the exact name ended it. And the wording drops the "type more of the name"
+      // advice, which would be advice against a search that already succeeded exactly.
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
+        'The exact match is offered first. Showing 100 of 400 matching accounts.',
+      );
+    });
+
+    it('abandons a walk in flight when a newer term supersedes it, rather than paging on', () => {
+      // A walk nobody is waiting for is a sequence of requests the tenant pays for, and its answer
+      // would repopulate a list the operator has already replaced. With a walk rather than a single
+      // read this matters more than it did: the abandoned one would keep asking for pages.
+      arrive(0, []);
+
+      lookUp('sm');
+      answerLookupPage(accountRun('sm', 100, 1), 500, 0);
+
+      // Page one is outstanding for 'sm' when the narrower term arrives.
+      lookUp('smithson');
+
+      // ⚠ A CANCELLED REQUEST IS STILL A MATCHABLE ONE, so the proof is the cancellation flag rather
+      // than a count: the testing backend marks an abandoned request cancelled and leaves it in its
+      // open set. Both are claimed here, in the order they were issued.
+      const [abandoned, restarted] = httpMock.match(
+        (candidate) => candidate.method === 'POST' && candidate.url === USERS_SEARCH_URL,
+      );
+
+      // The superseded walk's page ONE is the request that was in flight, and it is dead.
+      expect(searchMember(abandoned.request.body, 'userName'))
+        .withContext('the superseded term')
+        .toBe('sm');
+      expect(String(searchMember(abandoned.request.body, 'pageIndex')))
+        .withContext('mid-walk')
+        .toBe('1');
+      expect(abandoned.cancelled).withContext('superseded').toBeTrue();
+
+      // And the new walk starts from the beginning rather than continuing the old coordinate.
+      expect(searchMember(restarted.request.body, 'userName')).toBe('smithson');
+      expect(String(searchMember(restarted.request.body, 'pageIndex'))).toBe('0');
+      expect(restarted.cancelled).withContext('current').toBeFalse();
+
+      restarted.flush(pageOf([account({ username: 'smithson' })], 1, 0, 100));
+      fixture.detectChanges();
+
+      // Nothing further is asked: the abandoned walk cannot resume, so no page two of 'sm' appears.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'POST' && candidate.url === USERS_SEARCH_URL,
+      );
+      expect(component().userMatches()).toHaveSize(1);
+    });
+
+    it('says the search was cut short rather than passing a partial sweep off as complete', () => {
+      // The ceiling is a REPORTED stop rather than a refusal, and the asymmetry with the store's
+      // walks is deliberate: those answer "every module" and "every membership", where a partial
+      // answer masquerading as complete is the defect. This one answers "does this name exist",
+      // where what was examined is genuinely useful and the operator's next move - typing more of
+      // the name - is both obvious and offered.
+      arrive(0, []);
+
+      lookUp('s');
+
+      // Reported total is never reached, so only the ceiling can end it. Every page is answered by
+      // the same criteria, which is why the page coordinate is read back from the request.
+      for (let page = 0; page < LOOKUP_PAGE_CEILING; page += 1) {
+        answerLookupPage(accountRun('s', 1, page + 1), 1_000_000, page);
+      }
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
+        `The search examined ${String(LOOKUP_PAGE_CEILING)} of 1000000 matching accounts without ` +
+          'finding an exact match and stopped there. Type more of the name to narrow it.',
+      );
+    });
   });
+
+  describe("the tenant's account-selection policy", () => {
+    /**
+     * MIGRATION: `Security_UsersControl`, read at `SecurityRoles.ascx.vb:L133-L136` and acted on at
+     * `:L202-L221`. `UsersControl.Combo` bound `cboUsers` to the tenant's whole account listing and
+     * hid the name box; the other value did the reverse. `:L106-L109` then read the chosen account
+     * from whichever control was live.
+     *
+     * The setting was previously read, written and validated end to end and then consumed by
+     * nothing — a screen that offered the name box whatever the tenant chose. Every case here is
+     * about the consumption.
+     */
+
+    /** The account dropdown, or `null` when the name box is what is rendered. */
+    function choices(): HTMLSelectElement | null {
+      return query<HTMLSelectElement>('select.role-assignment__choices');
+    }
+
+    /** The wording of every entry the dropdown offers, prompt included. */
+    function choiceLabels(): readonly string[] {
+      return queryAll<HTMLOptionElement>('select.role-assignment__choices option').map((option) =>
+        textIn(option).trim(),
+      );
+    }
+
+    /** The name box, or `null` when the dropdown is what is rendered. */
+    function nameBox(): HTMLInputElement | null {
+      return query<HTMLInputElement>('input[type="search"]');
+    }
+
+    /** Chooses an entry of the dropdown the way a browser does, by value and a change event. */
+    function chooseFromDropdown(value: string, held: readonly UserRole[] = []): void {
+      const control = choices();
+
+      expect(control).withContext('the dropdown is rendered').not.toBeNull();
+
+      (control as HTMLSelectElement).value = value;
+      (control as HTMLSelectElement).dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+
+      // ⚠ CHOOSING FROM THE DROPDOWN ASKS THE SAME ONE QUESTION THE NAME-BOX PATH ASKS, and it must,
+      // because the answer does not come from the rows on screen. The membership grid holds ONE PAGE
+      // — reading a role's whole membership was withdrawn, so a chosen account's row may sit on a
+      // page nobody is looking at — and answering "does this person already hold the role?" from the
+      // visible page would relabel the action according to which page happened to be showing. One
+      // keyed probe settles it: the same listing filtered to the account's login name. Releasing a
+      // choice asks nothing, so the empty-prompt path finds no probe outstanding and says so.
+      const probes: readonly TestRequest[] = httpMock.match(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url.endsWith('/users') &&
+          candidate.params.get('query') !== null,
+      );
+
+      if (probes.length === 0) {
+        expect(held)
+          .withContext('releasing a choice asks nothing, so it holds nothing here')
+          .toHaveSize(0);
+
+        return;
+      }
+
+      expect(probes).withContext('choosing an account issues exactly one keyed probe').toHaveSize(1);
+      expect(probes[0].request.params.get('pageIndex')).toBe('0');
+      expect(probes[0].request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+
+      probes[0].flush(pageOf(held, held.length, 0, MAX_PAGE_SIZE));
+      fixture.detectChanges();
+    }
+
+    it('offers the dropdown, holding every account, when the tenant asks for it', () => {
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()]);
+      answerAccountChoicesPage([
+        account({ userId: 42, username: 'ada', displayName: 'Ada Lovelace' }),
+        account({ userId: 43, username: 'grace', displayName: 'Grace Hopper' }),
+      ]);
+
+      expect(choices()).withContext('the dropdown').not.toBeNull();
+      // ⚠ AND THE NAME BOX IS GONE. The legacy screen hid one control when it showed the other
+      // (`:L206` and `:L214`), so offering both would be a screen the legacy never rendered.
+      expect(nameBox()).withContext('the name box').toBeNull();
+      expect(choiceLabels()).toEqual([
+        USER_CHOICE_PROMPT,
+        'Ada Lovelace (ada)',
+        'Grace Hopper (grace)',
+      ]);
+    });
+
+    it('describes the dropdown with its own help, not the name box\u2019s instruction', () => {
+      // MIGRATION: `plUsers.HelpText` says 'Enter The User Name and click Validate to confirm',
+      // which is untrue of a dropdown. The legacy screen carried one help string for both controls
+      // only because both shared one label cell (`securityroles.ascx:L14`).
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()]);
+      answerAccountChoicesPage([account()]);
+
+      // The help sits behind the shared field's own disclosure, so it is revealed rather than read
+      // from the collapsed document — the wrapper removes the block entirely while it is closed.
+      const field = choices()?.closest('app-form-field');
+
+      field?.querySelector<HTMLButtonElement>('.form-field__help-toggle')?.click();
+      fixture.detectChanges();
+
+      expect(textIn(field?.querySelector('.form-field__help')).trim()).toBe(USER_CHOICE_HELP);
+      // And the name box's instruction appears nowhere, revealed or not.
+      expect(host().textContent).not.toContain(USER_HELP);
+    });
+
+    it('follows every page of the account list, so no account is missing from the dropdown', () => {
+      // The dropdown claims to hold EVERY account, so a first-page-only read would hide the accounts
+      // it dropped and an operator could not tell a missing account from an absent one.
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()]);
+
+      const first = answerAccountChoicesPage(accountRun('a', 100, 1), 150, 0);
+      answerAccountChoicesPage(accountRun('b', 50, 101), 150, 1);
+
+      expect(component().accountChoices()).toHaveSize(150);
+      expect(choiceLabels()).toHaveSize(151);
+
+      // ⚠ AND NO SORT IS ASKED FOR, unlike the lookup's request. The listing's default orders by
+      // DISPLAY name, which is what these entries are captioned with, so they read in the order they
+      // are shown; asking for the lookup's login-name order would sort the list by a value the
+      // operator cannot see.
+      expect(first.request.params.get('sortBy')).toBeNull();
+      expect(first.request.params.get('userName')).toBeNull();
+    });
+
+    it('chooses an account from the dropdown and prefills its window', () => {
+      // MIGRATION: `cboUsers` carried `autopostback="True"` (`securityroles.ascx:L26`), so choosing an
+      // entry round-tripped the whole page to reach the prefill at `:L273-L303`. It happens without
+      // one, from the memberships already in hand.
+      const held = membership({
+        userId: 42,
+        effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
+        expiryDate: `${EXPIRY_DATE}T00:00:00Z`,
+      });
+
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [held]);
+      answerAccountChoicesPage([account({ userId: 42 })]);
+
+      // ⚠ THE PREFILL COMES FROM THE KEYED PROBE, NOT FROM A WHOLE-SET READ, and that is the point of
+      // passing the membership here. Reading a role's entire membership was WITHDRAWN — it retained
+      // the whole set and re-read it on every write — so the rows in hand are one page and the
+      // account chosen from a dropdown of every account may well not be on it. The probe asks the one
+      // narrow question the prefill needs, and it is bounded to a single request.
+      chooseFromDropdown('42', [held]);
+
+      expect(component().formState().userId).toBe(42);
+      expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe(EFFECTIVE_DATE);
+      expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value).toBe(EXPIRY_DATE);
+      // And nothing FURTHER is asked: one probe, already settled above, and no second request of any
+      // kind — no re-read of the page, no walk, no second probe.
+      httpMock.expectNone(() => true);
+    });
+
+    it('releases the choice when the empty prompt is chosen again', () => {
+      // `<None Specified>` is what the legacy prompt entry meant. The raw value is MATCHED rather
+      // than parsed, so the empty value simply matches no account and the choice is cleared.
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [
+        membership({ userId: 42, effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z` }),
+      ]);
+      answerAccountChoicesPage([account({ userId: 42 })]);
+
+      chooseFromDropdown('42', [
+        membership({ userId: 42, effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z` }),
+      ]);
+      expect(component().formState().userId).withContext('chosen').toBe(42);
+
+      // Releasing asks nothing, which the helper asserts by finding no probe outstanding.
+      chooseFromDropdown('');
+
+      expect(component().formState().userId).withContext('released').toBeNull();
+      expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe('');
+      expect(button(ADD_USER_LABEL)?.disabled).toBeTrue();
+    });
+
+    it('offers the name box, and walks no account list at all, when the tenant asks for it', () => {
+      // The other branch, and the one that keeps a large tenant from paying for a walk of every
+      // account it holds. `create` answers the policy with the name-box value by default.
+      arrive(0, [membership()]);
+
+      expect(nameBox()).withContext('the name box').not.toBeNull();
+      expect(choices()).withContext('the dropdown').toBeNull();
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+    });
+
+    it('offers neither control until the policy has answered', () => {
+      // The legacy screen decided during page load and rendered exactly one control, so it never had
+      // this state. Reproducing that means HOLDING the field rather than guessing and correcting -
+      // a control swapped underneath an operator mid-interaction is worse than a moment's wait.
+      fixture = TestBed.createComponent(RoleAssignmentComponent);
+      fixture.componentRef.setInput('roleId', '0');
+      fixture.detectChanges();
+
+      expect(nameBox()).withContext('the name box').toBeNull();
+      expect(choices()).withContext('the dropdown').toBeNull();
+      expect(component().accountPolicyPending()).toBeTrue();
+
+      // Settled so the unconditional verification has nothing left outstanding.
+      answerAccountPolicy(USERS_CONTROL_TEXT_BOX);
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(nameBox()).withContext('the name box, once the policy arrived').not.toBeNull();
+    });
+
+    it('falls back to the name box when the policy cannot be read, and says why', () => {
+      // The name box needs no tenant-wide read, so it is the affordance that survives an unreadable
+      // policy. Saying why matters: without it the operator sees a control the site's own settings
+      // may say should not be there and has no way to know the difference.
+      create('0', { usersControl: null });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(component().usersControlMode()).toBe('lookup');
+      expect(nameBox()).not.toBeNull();
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
+        ACCOUNT_POLICY_UNAVAILABLE,
+      );
+    });
+
+    it('falls back to the name box when the account list cannot be completed, and says why', () => {
+      // ⚠ A REFUSAL RATHER THAN A TRUNCATION, and the remedy is what makes the refusal affordable.
+      // A dropdown claiming to hold every account while holding some of them hides the ones it
+      // dropped; the name box reaches any account by name, so nothing the operator could do with a
+      // complete dropdown is lost.
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      // The server reports 150 accounts, supplies 100, and then answers the second page with nothing.
+      answerAccountChoicesPage(accountRun('a', 100, 1), 150, 0);
+      answerAccountChoicesPage([], 150, 1);
+
+      expect(component().accountChoicesUnavailable()).toBeTrue();
+      expect(component().usersControlMode()).toBe('lookup');
+      expect(choices()).withContext('no partial dropdown').toBeNull();
+      expect(nameBox()).withContext('the name box instead').not.toBeNull();
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
+        ACCOUNT_CHOICES_UNAVAILABLE,
+      );
+      // The fault itself is announced as well, so a server error does not read as a policy choice.
+      expect(notifySpy).toHaveBeenCalled();
+    });
+
+    it('says the site holds no accounts rather than offering an empty dropdown in silence', () => {
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, []);
+      answerAccountChoicesPage([]);
+
+      expect(component().accountChoicesEmpty()).toBeTrue();
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(ACCOUNT_CHOICES_EMPTY);
+      // The dropdown stays, holding only its prompt: the tenant asked for it and it is not broken,
+      // it is empty.
+      expect(choiceLabels()).toEqual([USER_CHOICE_PROMPT]);
+    });
+
+    it('walks the account list ONCE, not again for every notification the screen raises', () => {
+      // The walk is triggered from a derived view, so it has to fire on the policy arriving and not
+      // on every unrelated settling. Proven by moving the screen to another role - tenant-scoped
+      // state is deliberately kept across that - and asserting no second walk.
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()]);
+      answerAccountChoicesPage([account()]);
+
+      fixture.componentRef.setInput('roleId', '5');
+      fixture.detectChanges();
+      answerRole(role(5));
+      answerMemberships(5, []);
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+      expect(component().accountChoices()).toHaveSize(1);
+    });
+  });
+
 
   describe("the action's wording", () => {
     /**
@@ -1495,11 +2458,14 @@ describe('RoleAssignmentComponent', () => {
       fixture.detectChanges();
 
       // MIGRATION: the listing is RE-READ, reproducing the unconditional rebind at
-      // `SecurityRoles.ascx.vb:L546`. ONE read, issued by the store and still at the complete scope -
-      // which is also what lets the action's wording follow a write that turned an addition into a
-      // replacement, because the rows it is decided from have just been refreshed.
+      // `SecurityRoles.ascx.vb:L546`. ONE page read, issued by the store, plus the keyed probe that
+      // re-asks whether the chosen account now holds the role - which is what lets the action's wording
+      // follow a write that turned an addition into a replacement, without the whole membership having
+      // to be fetched to decide it.
       answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
 
+      expect(component().actionLabel()).toBe(UPDATE_USER_ROLE_LABEL);
       expect(rows()).toHaveSize(1);
       // Nothing is announced on success, and in particular nothing is announced as a failure.
       expect(notifications()).toHaveSize(0);
@@ -1530,6 +2496,7 @@ describe('RoleAssignmentComponent', () => {
       fixture.detectChanges();
 
       answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
 
       expect(rows()).withContext('the success path was taken').toHaveSize(1);
       expect(notifications()).withContext('and nothing was reported as a failure').toHaveSize(0);
@@ -1560,6 +2527,7 @@ describe('RoleAssignmentComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
       answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
     });
 
     it('reports a refused assignment and does not re-read the list', () => {
@@ -1863,7 +2831,7 @@ describe('RoleAssignmentComponent', () => {
             displayName: 'Grace Hopper',
           }),
         ],
-        { administratorUserId: '42', administratorRoleId: '0' },
+        { administratorUserId: 42, administratorRoleId: 0 },
       );
 
       expect(rows()).withContext('both rows are painted').toHaveSize(2);
@@ -1881,19 +2849,85 @@ describe('RoleAssignmentComponent', () => {
     it('withholds the command for the registered-users role', () => {
       // Every authenticated account holds this role, so removing anybody from it would take their
       // authentication away; the legacy rule refused it for the same reason.
-      arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: '1' });
+      arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
 
       expect(button(DELETE_LABEL)).withContext('withheld for registered users').toBeUndefined();
     });
 
     it('offers the command when no protection applies', () => {
       arrive(7, [membership({ userId: 42, roleId: 7 })], {
-        administratorUserId: '1',
-        administratorRoleId: '0',
-        registeredRoleId: '1',
+        administratorUserId: 1,
+        administratorRoleId: 0,
+        registeredRoleId: 1,
       });
 
       expect(button(DELETE_LABEL)).withContext('offered').not.toBeUndefined();
+    });
+
+    it('ASKS FOR THE TENANT\u2019S OWN RECORD on arrival, for the caller\u2019s tenant', () => {
+      // ⚠ THE FACTS ARE READ, NOT AWAITED FROM A CALLER. They were three optional inputs that nothing
+      // in the application supplied, so this guard shipped permanently disarmed. The tenant comes from
+      // the caller's identity because this screen addresses a ROLE and names no portal, and the key is
+      // passed through untouched: `Portals.PortalID` is `IDENTITY(-1, 1)`, so -1 and 0 are both real
+      // tenants and a truthiness test would skip the request for either.
+      arrive(0, [membership({ userId: 42 })]);
+
+      expect(loadCurrentPortalContext).toHaveBeenCalledWith(TENANT_ID);
+      expect(loadCurrentPortalContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('OFFERS the command while the tenant record is still outstanding, deferring to the API', () => {
+      // ⚠ THE FAIL-SAFE DIRECTION, AND IT IS DELIBERATE. Until the record arrives each key is absent,
+      // every comparison is false, the command is offered and the server's refusal governs — exactly
+      // the behaviour that shipped. Withholding it until the read completed would take a capability
+      // away from every row for the duration of a request.
+      arrive(0, [membership({ userId: 42, roleId: 0 })]);
+
+      expect(button(DELETE_LABEL))
+        .withContext('nothing on the membership itself discriminates it, so nothing is guessed')
+        .not.toBeUndefined();
+    });
+
+    it('ARMS the guard as the tenant record arrives, without the screen being remounted', () => {
+      // The record arrives after the grid is already painted, which is the ordinary sequence: the
+      // request is issued on construction and answers a moment later. `canRemove` reads the store's
+      // signals, so the transition needs no reload and no second visit.
+      arrive(0, [membership({ userId: 42, roleId: 0 })]);
+
+      expect(button(DELETE_LABEL)).not.toBeUndefined();
+
+      designatedAdministrator.set(42);
+      administratorRole.set(0);
+      fixture.detectChanges();
+
+      expect(button(DELETE_LABEL))
+        .withContext('withdrawn the moment the tenant names this pairing as its administrator\u2019s')
+        .toBeUndefined();
+    });
+
+    it('protects the pairing whose ROLE key is nought, which the identity seed makes real', () => {
+      // ⚠ `Roles.RoleID` is `IDENTITY(0, 1)`, so the administrator role of a freshly created tenant
+      // genuinely carries nought — and a guard that tested either side for truthiness would leave
+      // exactly that pairing unprotected.
+      arrive(0, [membership({ userId: 42, roleId: 0 })], {
+        administratorUserId: 42,
+        administratorRoleId: 0,
+      });
+
+      expect(button(DELETE_LABEL)).toBeUndefined();
+    });
+
+    it('needs BOTH halves of the pairing, so the same account in another role is removable', () => {
+      // The rule is a PAIRING and not an account: `RoleController.vb:L745` protects the designated
+      // administrator's hold on the ADMINISTRATOR role, and nothing else about that account.
+      arrive(7, [membership({ userId: 42, roleId: 7 })], {
+        administratorUserId: 42,
+        administratorRoleId: 0,
+      });
+
+      expect(button(DELETE_LABEL))
+        .withContext('the administrator\u2019s membership of an ORDINARY role is removable')
+        .not.toBeUndefined();
     });
 
     /**
@@ -2095,6 +3129,248 @@ describe('RoleAssignmentComponent', () => {
   // editor adding any of these would be adding something the legacy screen did not have.
   // -------------------------------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------------------------------
+  // THE ACCOUNT LOOKUP UNDER SUPERSESSION
+  //
+  // The lookup is the one read this screen issues itself, and it is issued from a text box the
+  // operator retypes. Three ways it went wrong, all invisible from a single interaction:
+  //
+  //   - the matches for the PREVIOUS term stayed on screen for the whole of the next lookup, so the
+  //     offered list could disagree with the box that produced it — and choosing from it prefilled
+  //     the enrolment form from an account the operator was no longer looking for;
+  //   - a refusal from a superseded lookup stayed rendered beside a lookup that had not failed;
+  //   - the addressed role could change while a lookup was outstanding, and the answer then
+  //     populated the list under a role it was never asked about.
+  //
+  // Cancellation alone does not close the last two: a response already scheduled to commit is not
+  // recalled by releasing its handle, which is why the callbacks are fenced by generation as well.
+  // -------------------------------------------------------------------------------------------------
+
+  describe('the account lookup under supersession', () => {
+    it('discards the previous term\u2019s matches at dispatch rather than on arrival', () => {
+      arrive(0, []);
+
+      lookUp('ada');
+      answerLookup([account()]);
+
+      expect(component().userMatches()).toHaveSize(1);
+
+      // The next term is dispatched and NOT answered. The previous matches must already be gone: for
+      // as long as they are rendered, the offered list contradicts the box above it.
+      lookUp('bab');
+
+      expect(component().userMatches())
+        .withContext('the list shows matches for the term on screen, or nothing')
+        .toHaveSize(0);
+
+      answerLookup([]);
+    });
+
+    it('clears a previous lookup\u2019s refusal at the next dispatch', () => {
+      arrive(0, []);
+
+      lookUp('ada');
+      expectRequest('POST', USERS_SEARCH_URL, 'the account lookup').flush(
+        problem('users.unavailable', 503, 'The directory is unavailable.'),
+        { status: 503, statusText: 'Service Unavailable' },
+      );
+      fixture.detectChanges();
+
+      expect(component().problem()).not.toBeNull();
+
+      lookUp('bab');
+
+      expect(component().problem())
+        .withContext('a refusal from a superseded lookup is not a refusal of this one')
+        .toBeNull();
+
+      answerLookup([]);
+    });
+
+    it('refuses a superseded answer that arrives after the term moved on', () => {
+      // ⚠ THE ORDER IS THE POINT. Both lookups are open, and the FIRST answers LAST. Nothing about
+      // the network guarantees otherwise, and the wider match set must not land under the narrower
+      // term.
+      arrive(0, []);
+
+      lookUp('a');
+
+      const wide = expectRequest('POST', USERS_SEARCH_URL, 'the wide lookup');
+
+      lookUp('ada');
+
+      const narrow = expectRequest('POST', USERS_SEARCH_URL, 'the narrow lookup');
+
+      expect(wide.cancelled)
+        .withContext('the superseded lookup is abandoned, not merely ignored')
+        .toBeTrue();
+
+      narrow.flush(pageOf([account()], 1, 0, 10));
+      fixture.detectChanges();
+
+      expect(component().userMatches()).toHaveSize(1);
+      expect(component().userLookupLoading()).toBeFalse();
+    });
+
+    it('refuses a superseded refusal, so the banner speaks for the current term only', () => {
+      arrive(0, []);
+
+      lookUp('a');
+
+      const wide = expectRequest('POST', USERS_SEARCH_URL, 'the wide lookup');
+
+      lookUp('ada');
+
+      const narrow = expectRequest('POST', USERS_SEARCH_URL, 'the narrow lookup');
+
+      narrow.flush(pageOf([account()], 1, 0, 10));
+      fixture.detectChanges();
+
+      // The superseded lookup is already released, so its refusal cannot be delivered at all. This
+      // states the outcome the release exists to produce.
+      expect(wide.cancelled).toBeTrue();
+      expect(component().problem()).toBeNull();
+      expect(component().userMatches()).toHaveSize(1);
+    });
+
+    it('abandons an outstanding lookup when the addressed role changes', () => {
+      // ⚠ THE ROUTE REUSES ONE COMPONENT INSTANCE, so moving between roles runs the reset while a
+      // lookup started under the previous role may still be outstanding. Left alone it landed under
+      // the new role, and choosing from it prefilled the enrolment form from a membership of the
+      // OTHER role.
+      arrive(0, []);
+
+      lookUp('ada');
+
+      const stale = expectRequest('POST', USERS_SEARCH_URL, 'the lookup under the first role');
+
+      fixture.componentRef.setInput('roleId', '1');
+      fixture.detectChanges();
+
+      expect(stale.cancelled)
+        .withContext('a lookup for the role being left is abandoned')
+        .toBeTrue();
+      expect(component().userMatches()).toHaveSize(0);
+      expect(component().userLookupLoading()).toBeFalse();
+
+      // The role change starts its own two reads, answered here so nothing is left outstanding.
+      answerRole(role(1));
+      answerMemberships(1, []);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------------
+  // WHOSE WRITE SETTLED
+  //
+  // The store is provided at the application root, so every role write in the application used to
+  // settle the same aggregate flag this screen watched. Watching it fall released this screen's
+  // enrolment lock and consumed its outstanding-removal marker whenever an UNRELATED write finished:
+  // a second enrolment could be submitted while the first was still in the air, and a refusal
+  // arriving afterwards had no marker left to be attributed to.
+  // -------------------------------------------------------------------------------------------------
+
+  describe('whose write settled', () => {
+    it('stays held when an unrelated role write settles', () => {
+      arriveAndChoose();
+
+      press(ADD_USER_LABEL);
+
+      const enrolment = httpMock.expectOne(
+        (candidate) => candidate.method === 'POST' && candidate.url === membersUrl(0),
+        'the enrolment',
+      );
+
+      expect(component().saving()).withContext('our write is open').toBeTrue();
+
+      // A sibling screen's write, dispatched straight at the shared store and settled while ours is
+      // still in the air. Ours must remain held and nothing must be announced.
+      const store = TestBed.inject(RoleStore);
+
+      store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
+      httpMock
+        .expectOne(
+          (candidate) => candidate.method === 'POST' && candidate.url === ROLE_GROUPS_URL,
+          'the sibling write',
+        )
+        .flush(
+          {
+            data: {
+              roleGroupId: 3,
+              portalId: -1,
+              roleGroupName: 'Paid Services',
+              description: null,
+            },
+            meta: null,
+          },
+          { status: 201, statusText: 'Created' },
+        );
+      httpMock
+        .expectOne(
+          (candidate) => candidate.method === 'GET' && candidate.url === ROLE_GROUPS_URL,
+          'the sibling re-read',
+        )
+        .flush({ data: [], meta: null });
+      fixture.detectChanges();
+
+      expect(component().saving())
+        .withContext('another screen\u2019s write must not release our lock')
+        .toBeTrue();
+
+      enrolment.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(component().saving()).withContext('our own write releases it').toBeFalse();
+
+      // The store re-reads the membership itself once the enrolment succeeds — the PAGE in hand,
+      // and then the keyed probe for the chosen account, which is what moves the action's label.
+      // Reading the role's whole membership was withdrawn, so both are needed and neither is a walk.
+      answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
+    });
+
+    it('does not attribute an unrelated write\u2019s refusal to its own enrolment', () => {
+      arriveAndChoose();
+
+      press(ADD_USER_LABEL);
+
+      const enrolment = httpMock.expectOne(
+        (candidate) => candidate.method === 'POST' && candidate.url === membersUrl(0),
+        'the enrolment',
+      );
+
+      const store = TestBed.inject(RoleStore);
+
+      store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
+      httpMock
+        .expectOne(
+          (candidate) => candidate.method === 'POST' && candidate.url === ROLE_GROUPS_URL,
+          'the sibling write',
+        )
+        .flush(problem('role_group.duplicate_name', 409, 'That group already exists.'), {
+          status: 409,
+          statusText: 'Conflict',
+        });
+      fixture.detectChanges();
+
+      // The shared failure slot now holds a refusal that is not ours. Our enrolment then SUCCEEDS,
+      // and nothing may be raised about it.
+      enrolment.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      // Both follow-ups the success dispatches are settled: the page in hand, and the keyed probe
+      // for the chosen account. Leaving either outstanding would fail verification rather than
+      // anything this case is about.
+      answerMemberships(0, [membership()]);
+      answerReprobe([membership()]);
+
+      expect(notifySpy.calls.allArgs().map((args) => String(args[1])))
+        .withContext('a successful enrolment announces nothing at all')
+        .toEqual([]);
+      expect(component().saving()).toBeFalse();
+    });
+  });
+
+
   describe('parity guards', () => {
     /**
      * ⚠ FOUR VISIBLE COLUMNS, NOT FIVE. `securityroles.ascx:L76` declares
@@ -2117,17 +3393,68 @@ describe('RoleAssignmentComponent', () => {
 
     /**
      * The legacy grid was UNPAGED — `securityroles.ascx:L56` declares no `AllowPaging`, no pager style
-     * and no footer style — and the successor keeps it that way: the membership is read whole through
-     * the role store, so whatever the size of the role, the grid renders every row it holds and no
-     * pager is in sight.
+     * and no footer style — so a role whose members fit on one page must render exactly what it
+     * rendered: the bare grid, with no pager in sight. The pager is drawn on the tenant-wide
+     * predicate, more memberships than fit on one page, and on nothing else.
      */
-    it('renders no pager, because the membership is read whole', () => {
+    it('renders no pager for a role whose members fit on one page', () => {
       arrive(0, [membership()]);
 
-      // No page index, page size, total or page-change handler is declared by this screen, so the
-      // absence is structural rather than conditional: there is no size of role that would mount one.
+      expect(component().pagerRequired()).withContext('nothing to move through').toBeFalse();
       expect(query('app-pagination')).withContext('not mounted').toBeNull();
       expect(query('.pagination')).toBeNull();
+    });
+
+    /**
+     * ⚠ THE REGRESSION THIS PINS DOWN. An earlier revision read page zero at the widest legal size and
+     * then fetched every further page the metadata reported, together, joining them into one set — a
+     * burst of concurrent requests, the whole membership of a role retained in memory, and a DOM
+     * proportional to it. ONE page is read instead, and the pager is what keeps the rest reachable, so
+     * this case asserts both halves: exactly one request per read, and a pager that moves.
+     */
+    it('renders a pager when the role has more members than one page, and moves pages through it', () => {
+      // Eleven members at ten to a page. The response's own metadata is what the pager is bound to.
+      arrive(0, [membership()], {}, 11);
+
+      expect(component().pagerRequired()).withContext('a further page exists').toBeTrue();
+      expect(component().pageIndex()).toBe(0);
+      expect(component().pageSize()).toBe(DEFAULT_PAGE_SIZE);
+      expect(component().totalCount()).toBe(11);
+      expect(query('app-pagination')).withContext('mounted').not.toBeNull();
+
+      // No walk followed the first page: the read that arrived is the only one outstanding.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === membersUrl(0),
+      );
+
+      component().onPageChange(1);
+      fixture.detectChanges();
+
+      const second = httpMock.expectOne(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === membersUrl(0) &&
+          candidate.params.get('query') === null,
+        'the second page',
+      );
+
+      // The index travels as the pager reported it. No base conversion happens on either side.
+      expect(second.request.params.get('pageIndex')).toBe('1');
+      expect(second.request.params.get('pageSize')).toBe(String(DEFAULT_PAGE_SIZE));
+
+      second.flush({
+        items: [membership({ userRoleId: 12, userId: 43, displayName: 'Grace Hopper' })],
+        meta: { totalCount: 11, pageIndex: 1, pageSize: DEFAULT_PAGE_SIZE, totalPages: 2 },
+      });
+      fixture.detectChanges();
+
+      expect(component().pageIndex()).toBe(1);
+      expect(rows()).toHaveSize(1);
+
+      // Asking for the page already on screen asks the server nothing, so a repeated click cannot
+      // re-issue a read.
+      component().onPageChange(1);
+      fixture.detectChanges();
     });
 
     /**
@@ -2136,11 +3463,28 @@ describe('RoleAssignmentComponent', () => {
      * and then hid BOTH the dropdown and its label at `:L195` and `:L196`. The role is fixed by the
      * route and named in the heading.
      */
-    it('renders no role picker, and no dropdown of any kind', () => {
+    it('renders no role picker, whichever account control the tenant asked for', () => {
       arrive(0, [membership()]);
 
-      // The account picker was replaced by a lookup for the same reason, so no `select` survives at all.
+      // Under the name-box policy nothing on the screen is a dropdown at all, so counting them is
+      // enough to prove the role picker is absent.
       expect(queryAll('select')).toHaveSize(0);
+    });
+
+    it('renders no role picker even when a dropdown IS rendered for the account', () => {
+      // The sharper form of the guard above. The tenant's policy can ask for an account dropdown, so
+      // "no `select` exists" stops proving anything about the ROLE picker — the count has to be one,
+      // and the one has to be the account control. Named by its own class rather than by position,
+      // because a second dropdown appearing anywhere would then fail this rather than shift an index.
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()]);
+      answerAccountChoicesPage([account()]);
+
+      const dropdowns = queryAll<HTMLSelectElement>('select');
+
+      expect(dropdowns).toHaveSize(1);
+      expect(dropdowns[0].classList).toContain('role-assignment__choices');
     });
 
     /**
@@ -2303,17 +3647,18 @@ describe('RoleAssignmentComponent', () => {
 
       call.flush(null, { status: 204, statusText: 'No Content' });
 
-      // And the store re-reads on the write's success, screen or no screen, so that the slice a sibling
-      // reads reflects the enrolment. Settled here for the verification in `afterEach`.
-      httpMock
-        .expectOne(
-          (candidate) =>
-            candidate.method === 'GET' &&
-            candidate.url === membersUrl(0) &&
-            candidate.params.get('query') === null,
-          "the store's re-read",
-        )
-        .flush(pageOf([membership()], 1));
+      // ⚠ AND NO RE-READ FOLLOWS, WHICH IS A CORRECTION TO WHAT THIS CASE USED TO ASSERT. It expected
+      // the store to re-read "screen or no screen, so that the slice a sibling reads reflects the
+      // enrolment" — but there is no sibling: this screen is the only consumer of the membership
+      // slice, and runtime validation caught the re-read going out for a grid that had already been
+      // destroyed, three times out of three, on the ordinary path back through the role listing. It is
+      // not a harmless spare round trip either, because the re-read clears the store's shared failure
+      // slot and would erase a message the screen that replaced this one is showing.
+      //
+      // The write itself is still honoured to the end — that is what the assertions above pin — so
+      // what changed is only who is told about it, not whether it completes. Destroying the screen
+      // closes its claim on the listing through `RoleStore.closeAssignmentsView`.
+      httpMock.verify();
     });
 
     it('abandons an outstanding account lookup when the screen goes away', () => {
@@ -2321,7 +3666,7 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('ada');
 
-      const call = expectRequest('GET', USERS_URL, 'the account lookup');
+      const call = expectRequest('POST', USERS_SEARCH_URL, 'the account lookup');
 
       expect(call.cancelled).toBeFalse();
 
@@ -2340,15 +3685,15 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('a');
 
-      const first = expectRequest('GET', USERS_URL, 'the first lookup');
+      const first = expectRequest('POST', USERS_SEARCH_URL, 'the first lookup');
 
       lookUp('ann');
 
-      const second = expectRequest('GET', USERS_URL, 'the narrower lookup');
+      const second = expectRequest('POST', USERS_SEARCH_URL, 'the narrower lookup');
 
       expect(first.cancelled).withContext('superseded').toBeTrue();
       expect(second.cancelled).withContext('current').toBeFalse();
-      expect(second.request.params.get('userName')).toBe('ann');
+      expect(lookupBody(second)['userName']).toBe('ann');
 
       second.flush(pageOf([], 0, 0, 10));
       fixture.detectChanges();
@@ -2365,16 +3710,17 @@ describe('RoleAssignmentComponent', () => {
  * This screen called the role transport directly for the role, the membership listing and both
  * membership writes, while the shared role store held its own copy of all three — so a removal
  * accepted here left a sibling screen's listing showing the row. Every read and both writes now go
- * through the store, and the membership is read at the COMPLETE scope because the legacy grid was
- * unpaged (`securityroles.ascx:L56` declares no pager).
+ * through the store, and the listing is read ONE PAGE AT A TIME: the legacy grid declared no pager
+ * (`securityroles.ascx:L56`), and a first port reproduced that by walking every page the server
+ * reported and joining them, which turned one screen into a burst of concurrent requests and held a
+ * role's whole membership in memory. The pager keeps every membership reachable instead.
  *
  * Each case fails for a different reason if the wiring regresses:
  *
- *   - the listing is read at the widest page and every further page the server reports is followed,
- *     so an eleventh member's Delete command is reachable;
+ *   - the listing is read with exactly ONE request per read, and no further page is followed;
  *   - the store holds the rows, which is what a sibling screen reads;
- *   - a write is followed by exactly ONE re-read, issued by the store, and that re-read stays at the
- *     COMPLETE scope rather than collapsing to the first page;
+ *   - a write is followed by exactly ONE re-read, issued by the store, and it re-reads the page the
+ *     operator is standing on rather than throwing them back to the first;
  *   - a refused removal raises its message AFTER the listing has refreshed, which is the order
  *     `SecurityRoles.ascx.vb:L579-L584` fixes, and remembers the pairing so the command stops being
  *     offered;
@@ -2426,27 +3772,35 @@ describe('RoleAssignmentComponent (store delegation)', () => {
   const MEMBERS_URL = API_ENDPOINTS.roles.forCurrentPortal.members(0);
 
   /**
-   * Answers every outstanding membership read, page by page.
+   * Answers every outstanding membership PAGE read.
    *
-   * @param pages One row list per page, in page order.
-   * @returns The page sizes the requests asked for, in the order they were matched.
+   * The answer echoes the coordinate that was asked for and reports a total that may exceed the rows
+   * it carries, which is how a listing says "there is another page". Returning the sizes requested is
+   * what lets a case assert that exactly one request was made and at which size — the property an
+   * earlier revision's page walk violated.
+   *
+   * @param rows The rows the page carries.
+   * @param totalCount The total across every page, defaulting to the rows supplied.
+   * @returns The page sizes the matched requests asked for, in the order they were matched.
    */
-  function answerMembership(pages: readonly (readonly UserRole[])[]): readonly string[] {
+  function answerMembership(rows: readonly UserRole[], totalCount: number = rows.length): readonly string[] {
     const requests = httpMock.match(
       (candidate) => candidate.method === 'GET' && candidate.url === MEMBERS_URL,
     );
     const askedFor = requests.map((request) => request.request.params.get('pageSize') ?? '');
 
-    requests.forEach((request, index) => {
-      const rows = pages[index] ?? [];
+    requests.forEach((request) => {
+      const askedSize: number = Number(
+        request.request.params.get('pageSize') ?? String(DEFAULT_PAGE_SIZE),
+      );
 
       request.flush({
         items: rows,
         meta: {
-          totalCount: pages.reduce((total, page) => total + page.length, 0),
+          totalCount,
           pageIndex: Number(request.request.params.get('pageIndex') ?? '0'),
-          pageSize: MAX_PAGE_SIZE,
-          totalPages: pages.length,
+          pageSize: askedSize,
+          totalPages: askedSize > 0 ? Math.ceil(totalCount / askedSize) : 0,
         },
       });
     });
@@ -2456,7 +3810,13 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     return askedFor;
   }
 
-  /** Renders the screen addressed at the role above and answers its role read. */
+  /**
+   * Renders the screen addressed at the role above and answers its role and account-policy reads.
+   *
+   * The account policy is answered with the NAME-BOX value, so this block exercises the account
+   * lookup rather than the drop-down. Which control the tenant asks for is not what these cases are
+   * about; that it is asked at all is why the read has to be settled here.
+   */
   function render(): void {
     fixture = TestBed.createComponent(RoleAssignmentComponent);
     component = fixture.componentInstance;
@@ -2470,6 +3830,40 @@ describe('RoleAssignmentComponent (store delegation)', () => {
       )
       .forEach((read) => read.flush({ data: ROLE }));
 
+    httpMock
+      .match(
+        (request) => request.method === 'GET' && request.url === API_ENDPOINTS.users.membershipSettings(),
+      )
+      .forEach((read) =>
+        read.flush({
+          data: {
+            columnFirstName: true,
+            columnLastName: true,
+            columnDisplayName: true,
+            columnAddress: true,
+            columnTelephone: true,
+            columnEmail: true,
+            columnCreatedDate: true,
+            columnLastLogin: true,
+            columnAuthorized: true,
+            displayMode: 0,
+            displaySuppressPager: false,
+            recordsPerPage: 10,
+            profileDefaultVisibility: 2,
+            profileDisplayVisibility: true,
+            profileManageServices: false,
+            redirectAfterLogin: null,
+            redirectAfterRegistration: null,
+            redirectAfterLogout: null,
+            securityEmailValidation: '',
+            securityRequireValidProfile: false,
+            securityRequireValidProfileAtLogin: false,
+            securityUsersControl: 1,
+            securityDisplayNameFormat: '',
+          },
+        }),
+      );
+
     fixture.detectChanges();
   }
 
@@ -2481,7 +3875,24 @@ describe('RoleAssignmentComponent (store delegation)', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
       imports: [RoleAssignmentComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        // The tenant context this screen now reads. Doubled to absent facts and a spied request,
+        // because these cases are about what the screen delegates to the store and not about the
+        // removal guard — and the real portal store would add a tenant read to every one of them.
+        { provide: AuthStore, useValue: { currentUser: signal({ portalId: TENANT_ID }) } },
+        {
+          provide: PortalStore,
+          useValue: {
+            administratorUserId: signal<number | null>(null),
+            administratorRoleId: signal<number | null>(null),
+            registeredRoleId: signal<number | null>(null),
+            loadCurrentPortalContext: jasmine.createSpy('loadCurrentPortalContext'),
+          },
+        },
+      ],
     });
 
     httpMock = TestBed.inject(HttpTestingController);
@@ -2494,37 +3905,65 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     httpMock.verify();
   });
 
-  it('reads the whole membership, following every page the server reports', () => {
+  it('reads ONE page per read and follows no further page, however many the server reports', () => {
     render();
 
-    // The first page, at the widest size the paging contract publishes.
-    expect(answerMembership([[membership(1, 'First')], [membership(2, 'Second')]])).toEqual([
-      String(MAX_PAGE_SIZE),
-    ]);
+    // One request, at the shared default size.
+    expect(answerMembership([membership(1, 'First')], 2)).toEqual([String(DEFAULT_PAGE_SIZE)]);
 
-    // Two pages were reported, so the second is followed. A first-page-only read would put the
-    // second member's Delete command out of reach on a grid that has no pager.
-    expect(answerMembership([[membership(2, 'Second')]])).toEqual([String(MAX_PAGE_SIZE)]);
+    // ⚠ THE REGRESSION THIS PINS DOWN. The answer reported a total of two against a page holding one,
+    // which is a listing saying "there is more". An earlier revision took that as an instruction to
+    // fetch every remaining page and join them; nothing further may be requested here, because the
+    // pager is what reaches the rest and it does so one page at a time, when the operator asks.
+    httpMock.expectNone((candidate) => candidate.method === 'GET' && candidate.url === MEMBERS_URL);
 
-    expect(component.assignments().map((row) => row.displayName)).toEqual(['First', 'Second']);
+    expect(component.assignments().map((row) => row.displayName)).toEqual(['First']);
+    expect(component.pagerRequired()).withContext('the pager reaches the rest').toBeFalse();
+    expect(component.totalCount()).withContext("the SERVER's total is kept intact").toBe(2);
+  });
+
+  it('moves to another page through the store, with one request and no accumulation', () => {
+    render();
+    answerMembership([membership(1, 'First')], 24);
+
+    component.onPageChange(2);
+    fixture.detectChanges();
+
+    const requests = httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === MEMBERS_URL,
+    );
+
+    expect(requests).withContext('exactly one page read').toHaveSize(1);
+    expect(requests[0].request.params.get('pageIndex')).toBe('2');
+
+    requests[0].flush({
+      items: [membership(2, 'Second')],
+      meta: { totalCount: 24, pageIndex: 2, pageSize: DEFAULT_PAGE_SIZE, totalPages: 3 },
+    });
+    fixture.detectChanges();
+
+    // The page REPLACES what was held; nothing is appended, so the slice never grows past one page.
+    expect(component.assignments().map((row) => row.displayName)).toEqual(['Second']);
+    expect(store.assignmentsPage().pageIndex).toBe(2);
   });
 
   it('leaves the rows in the store, which is what a sibling screen reads', () => {
     render();
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     expect(store.assignmentsRoleId()).toBe(0);
     expect(store.assignmentItems().map((row) => row.displayName)).toEqual(['First']);
 
-    // The whole set is held, so the published metadata describes ONE page rather than a window the
-    // screen offers no way to move through.
+    // The metadata the SERVER published is held as it stands - the coordinate that was applied and
+    // the total across every page - because that is what a pager is bound to.
+    expect(store.assignmentsMeta().pageIndex).toBe(0);
+    expect(store.assignmentsMeta().pageSize).toBe(DEFAULT_PAGE_SIZE);
     expect(store.assignmentsMeta().totalPages).toBe(1);
-    expect(store.assignmentsScope()).toBe('complete');
   });
 
-  it('writes an enrolment through the store and lets the store re-read, at the complete scope', () => {
+  it('writes an enrolment through the store and lets the store re-read the page in hand', () => {
     render();
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     component.form.controls.userId.setValue(2);
     component.submit();
@@ -2546,18 +3985,19 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     written.flush(null, { status: 204, statusText: 'No Content' });
     fixture.detectChanges();
 
-    // ONE re-read, issued by the store, and still at the complete scope. A second read asked for here
-    // would race the store's; a paged re-read would silently shrink the grid.
-    expect(answerMembership([[membership(1, 'First'), membership(2, 'Second')]])).toEqual([
-      String(MAX_PAGE_SIZE),
+    // ONE re-read, issued by the store, at the same coordinate. A second read asked for here would
+    // race the store's; a re-read that reset the index would throw the operator back to page one.
+    expect(answerMembership([membership(1, 'First'), membership(2, 'Second')])).toEqual([
+      String(DEFAULT_PAGE_SIZE),
     ]);
 
     expect(component.assignments().length).toBe(2);
+    expect(store.assignmentsPage().pageIndex).toBe(0);
   });
 
   it('raises a refused removal only after the listing has refreshed, and remembers the pairing', () => {
     render();
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     const target = component.assignments()[0];
     expect(component.canRemove(target)).toBeTrue();
@@ -2586,7 +4026,7 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     // afterwards, so the operator read it against a refreshed grid.
     expect(announcements()).toEqual([]);
 
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     // The legacy refusal WORDING, at the severity the shared summariser reads from the status.
     //
@@ -2606,18 +4046,28 @@ describe('RoleAssignmentComponent (store delegation)', () => {
 
   it('keeps the account lookup off the shared listing, because its matches belong to nobody else', () => {
     render();
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     component.onUserSearch('sec');
     fixture.detectChanges();
 
     const lookup = httpMock.expectOne(
-      (request) => request.method === 'GET' && request.url === API_ENDPOINTS.users.collection(),
+      (request) => request.method === 'POST' && request.url === API_ENDPOINTS.users.search(),
     );
 
     // The term travels RAW, because the listing matches on a prefix and a wildcard would be searched
-    // for literally.
-    expect(lookup.request.params.get('userName')).toBe('sec');
+    // for literally — and it travels in the BODY, because a searched name identifies a person and a
+    // request target is recorded by the browser, by every proxy and by the server.
+    const sent: unknown = lookup.request.body;
+
+    if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
+      throw new Error('the lookup did not transmit a JSON object body');
+    }
+
+    const sentMembers: Readonly<Record<string, unknown>> = { ...sent };
+
+    expect(sentMembers['userName']).toBe('sec');
+    expect(lookup.request.urlWithParams).not.toContain('sec');
 
     lookup.flush({
       items: [],
@@ -2625,14 +4075,14 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     });
     fixture.detectChanges();
 
-    // The membership slice is untouched by a lookup, and so is its scope.
+    // The membership slice is untouched by a lookup, and so is its page coordinate.
     expect(store.assignmentItems().length).toBe(1);
-    expect(store.assignmentsScope()).toBe('complete');
+    expect(store.assignmentsPage().pageIndex).toBe(0);
   });
 
   it('writes once however many times the action is pressed while a write is outstanding', () => {
     render();
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     component.form.controls.userId.setValue(2);
     component.submit();
@@ -2646,7 +4096,7 @@ describe('RoleAssignmentComponent (store delegation)', () => {
 
   it('offers no notification choice, because nothing can send one', () => {
     render();
-    answerMembership([[membership(1, 'First')]]);
+    answerMembership([membership(1, 'First')]);
 
     const notifyBox = (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>(
       '#role-assignment-notify',

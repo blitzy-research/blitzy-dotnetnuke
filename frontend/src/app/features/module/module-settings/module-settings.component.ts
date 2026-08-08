@@ -2212,8 +2212,10 @@ export class ModuleSettingsComponent {
    *
    * A rejected write keeps its problem document so the banner can show the per-field messages; a refusal, a
    * missing module and a conflict are announced as advisories, at warning severity for the refusal and at
-   * error severity for the rest. The 429 status is deliberately not handled: rate limiting applies to the
-   * authentication endpoints alone, so it cannot arise on this screen and a branch for it would be dead code.
+   * error severity for the rest. The 429 status is deliberately not handled: the server's global limiter
+   * classifies a request from endpoint metadata - the `[CredentialEndpoint]` marker - falling back to a whole
+   * credential path segment, and the module actions carry no marker and no such segment, so it cannot arise
+   * on this screen. Verify the marker before adding a branch, because that is what would make it reachable.
    *
    * @param operation The command that failed.
    * @param problem The problem document, or `null` when the response carried none.

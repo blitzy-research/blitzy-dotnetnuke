@@ -147,7 +147,7 @@ describe('SessionTeardownService', () => {
     const roleReset = spyOn(roleStore, 'reset').and.callThrough();
     const moduleReset = spyOn(moduleStore, 'reset').and.callThrough();
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(portalReset).withContext('the portal store is purged').toHaveBeenCalledTimes(1);
     expect(userReset).withContext('the user store is purged').toHaveBeenCalledTimes(1);
@@ -169,9 +169,9 @@ describe('SessionTeardownService', () => {
     const moduleReset = spyOn(moduleStore, 'reset').and.callThrough();
 
     expect(() => {
-      teardown.purge();
-      teardown.purge();
-      teardown.purge();
+      teardown.purge('signedOut');
+      teardown.purge('signedOut');
+      teardown.purge('signedOut');
     })
       .withContext('a repeated purge is a no-op rather than a fault')
       .not.toThrow();
@@ -225,7 +225,7 @@ describe('SessionTeardownService', () => {
       .withContext('precondition: the page hierarchy is genuinely held')
       .toBe(1);
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(moduleStore.modules()).withContext('no rows survive').toEqual([]);
     expect(moduleStore.tabs()).withContext('no tenant page hierarchy survives').toEqual([]);
@@ -252,7 +252,7 @@ describe('SessionTeardownService', () => {
       .withContext('precondition: the export is genuinely held before the purge')
       .not.toBeNull();
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(moduleStore.exportedContent())
       .withContext('the export does not survive the session that produced it')
@@ -267,7 +267,7 @@ describe('SessionTeardownService', () => {
     roleStore.loadRoles();
     userStore.loadUsers();
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(moduleStore.listLoading()).withContext('the module listing is at rest').toBeFalse();
     expect(moduleStore.saving()).withContext('no module write is reported in flight').toBeFalse();
@@ -284,7 +284,7 @@ describe('SessionTeardownService', () => {
 
     const inFlight = httpMock.expectOne((request) => request.url === MODULES_URL);
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(inFlight.cancelled)
       .withContext('the read is cancelled rather than merely ignored')
@@ -305,7 +305,7 @@ describe('SessionTeardownService', () => {
 
     const inFlight = httpMock.expectOne((request) => request.url === ROLES_URL);
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(inFlight.cancelled).withContext('the role read is cancelled').toBeTrue();
     expect(roleStore.roles().items).toEqual([]);
@@ -319,7 +319,7 @@ describe('SessionTeardownService', () => {
 
     const outstanding = httpMock.match(() => true);
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     for (const request of outstanding) {
       expect(request.cancelled)
@@ -336,7 +336,7 @@ describe('SessionTeardownService', () => {
   // -----------------------------------------------------------------------------------------------
 
   it('issues no request of its own', () => {
-    teardown.purge();
+    teardown.purge('signedOut');
 
     // Any request at all would mean the purge had an opinion about the network. Revocation
     // belongs to the auth store's sign-out command, which issues it through
@@ -351,7 +351,7 @@ describe('SessionTeardownService', () => {
     const router = TestBed.inject(Router);
     const navigate = spyOn(router, 'navigate').and.resolveTo(true);
 
-    teardown.purge();
+    teardown.purge('signedOut');
 
     expect(navigate)
       .withContext('the interceptor and the shell each choose their own destination')
@@ -362,7 +362,7 @@ describe('SessionTeardownService', () => {
     // The teardown paths do not know whether a screen was ever opened, so the purge must be
     // safe on a completely cold application — this is the state after a failed first sign-in.
     expect(() => {
-      teardown.purge();
+      teardown.purge('signedOut');
     }).not.toThrow();
 
     expect(moduleStore.modules()).toEqual([]);

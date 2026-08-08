@@ -134,36 +134,25 @@
  */
 
 /**
- * The shape this module must satisfy, restated inline for the reason given in the
- * header: importing it from `./environment` cannot work under the very build
- * configuration that substitutes this file.
+ * The shape this module must satisfy, imported from the ONE place it is declared.
  *
- * It is a structural mirror of the `AppEnvironment` interface that `environment.ts`
- * exports — same member names, same types, same `readonly` modifiers, same order.
- * TypeScript is structurally typed, so a value annotated with this declaration
- * remains assignment-compatible with the exported one, which is what keeps the two
- * twins interchangeable under substitution. It is deliberately NOT exported: no
- * consumer imports the type (verified — all six consumers import only the
- * `environment` value), so exporting a second, separately-declared `AppEnvironment`
- * would add a symbol that resolves to a DIFFERENT declaration depending on the
- * build configuration, which is a trap rather than a convenience.
+ * MIGRATION: this used to be a second `AppEnvironment` interface restated inline, on
+ * the reasoning that importing it from `./environment` cannot work under the very
+ * build configuration that substitutes this file. That reasoning was correct about
+ * `./environment` and wrong about the conclusion. The contract now lives in
+ * `./app-environment`, which declares no value and is NEVER substituted, so the
+ * type-only import below erases at compile time, leaves nothing in the bundle under
+ * either configuration, and cannot interact with the replacement at all.
  *
- * Drift between the twins is still a compile error, just detected at the consumer
- * sites instead of here: under the development build `core/config/api-endpoints.ts`
- * reads `apiBaseUrl` while `layout/header/header.component.ts` and
- * `layout/shell/shell.component.ts` read `applicationName`, so dropping or
- * retyping a member fails the build there.
+ * What the inline copy actually cost is worth recording, because it looked harmless.
+ * Two independent declarations of one name are compared by the compiler only where a
+ * value crosses between them — and no value ever does, because every consumer imports
+ * the `environment` VALUE and not the type. So a member added to one twin, dropped from
+ * one twin or retyped in one twin produced no diagnostic anywhere, and the drift
+ * surfaced only if some consumer happened to read the diverged member. The one member
+ * whose correctness nothing can detect that way is `apiBaseUrl`.
  */
-interface AppEnvironment {
-  /** Whether this bundle was produced by the production configuration. */
-  readonly production: boolean;
-
-  /** The base path every API request is issued against. */
-  readonly apiBaseUrl: string;
-
-  /** The application name rendered in the shell's banner band. */
-  readonly applicationName: string;
-}
+import type { AppEnvironment } from './app-environment';
 
 /**
  * The development environment: the values `ng serve` and

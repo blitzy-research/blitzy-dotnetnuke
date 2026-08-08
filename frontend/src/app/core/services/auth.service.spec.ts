@@ -118,6 +118,7 @@ import { firstValueFrom } from 'rxjs';
 
 import type { CurrentUser, LoginResponse } from '../models/auth.model';
 import { isContractViolation } from '../utils/decode.util';
+import { PRESENTED_IN_CONTEXT } from './notification.service';
 import { AuthService } from './auth.service';
 // A value import, unlike the type-only import above: the custodian is resolved from the same
 // injector in order to prove that it stays EMPTY across every operation. This service used to
@@ -1255,6 +1256,88 @@ describe('AuthService', () => {
       await signOut;
 
       expectNothingHeld();
+    });
+  });
+  // =========================================================================
+  // WHO REPORTS A REFUSED CREDENTIAL OPERATION
+  //
+  // `PRESENTED_IN_CONTEXT` is the workspace's single arbitration rule for failure reporting: a
+  // marked request is reported by whoever issued it, an unmarked one by the global announcer in
+  // `core/interceptors/error.interceptor.ts`. Every other service in `core/services/` marked its
+  // requests; these four were the last that did not, so a refused sign-in was reported TWICE and a
+  // rate-limited one THREE TIMES - the shared banner from the server's document, the form-level
+  // sentence on the sign-in screen, and a queued notification worded differently again. The legacy
+  // screen had one message surface, so three preserves nothing.
+  //
+  // The marker is asserted HERE, on the request, rather than by driving an interceptor: this file
+  // installs no interceptor chain deliberately, and the marker is a property of the request the
+  // transport builds. Who then does the reporting is asserted beside each owner - the sign-in
+  // screen's specification for sign-in, the lifecycle owner's for renewal and sign-out.
+  // =========================================================================
+
+  describe('marks every request as reported by its caller', () => {
+    it('marks the credential exchange', async () => {
+      const pending = firstValueFrom(
+        service.login({ username: 'admin', password: FAKE_PASSWORD }),
+      );
+      const request = httpMock.expectOne(
+        (candidate) => candidate.method === 'POST' && candidate.url === LOGIN_URL,
+      );
+
+      expect(request.request.context.get(PRESENTED_IN_CONTEXT))
+        .withContext('a refused sign-in is reported by the sign-in screen, and only there')
+        .toBeTrue();
+
+      request.flush(credentialResponse());
+      await pending;
+    });
+
+    it('marks the renewal', async () => {
+      const pending = firstValueFrom(service.refresh({ refreshToken: FAKE_RENEWAL_TOKEN }));
+      const request = httpMock.expectOne(REFRESH_URL);
+
+      expect(request.request.context.get(PRESENTED_IN_CONTEXT))
+        .withContext('a refused renewal is reported by the lifecycle owner')
+        .toBeTrue();
+
+      request.flush(credentialResponse(FAKE_ACCESS_TOKEN_ROTATED, FAKE_RENEWAL_TOKEN_ROTATED));
+      await pending;
+    });
+
+    it('marks the revocation', async () => {
+      const pending = firstValueFrom(service.logout({ refreshToken: FAKE_RENEWAL_TOKEN }));
+      const request = httpMock.expectOne(LOGOUT_URL);
+
+      expect(request.request.context.get(PRESENTED_IN_CONTEXT))
+        .withContext('a refused revocation is announced by the lifecycle owner')
+        .toBeTrue();
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+      await pending;
+    });
+
+    it('marks the identity read, with and without an explicitly presented credential', async () => {
+      // Both call shapes, because the credential argument builds a DIFFERENT options object and a
+      // marker applied to only one of them would be invisible on the other.
+      const bootstrap = firstValueFrom(service.me(FAKE_ACCESS_TOKEN));
+      const withCredential = httpMock.expectOne(ME_URL);
+
+      expect(withCredential.request.context.get(PRESENTED_IN_CONTEXT))
+        .withContext('the bootstrap read is part of the operation that owns the report')
+        .toBeTrue();
+
+      withCredential.flush(identityResponse());
+      await bootstrap;
+
+      const ordinary = firstValueFrom(service.me());
+      const withoutCredential = httpMock.expectOne(ME_URL);
+
+      expect(withoutCredential.request.context.get(PRESENTED_IN_CONTEXT))
+        .withContext('and so is an ordinary one')
+        .toBeTrue();
+
+      withoutCredential.flush(identityResponse());
+      await ordinary;
     });
   });
 });

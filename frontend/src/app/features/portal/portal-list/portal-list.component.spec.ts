@@ -1,58 +1,41 @@
 //
 // Specification for the portal (tenant) listing screen at /portals.
 //
-// WHAT IS EXERCISED, AND WHY THESE THINGS. Every expectation below pins a MEASURED legacy
-// behaviour that a refactor could plausibly get wrong without any compiler or linter
-// noticing:
+// Every expectation below pins a MEASURED legacy behaviour that a refactor could plausibly get wrong without
+// any compiler or linter noticing:
 //
-//   * the filter strip holds twenty-seven entries, A to Z with the clear-filter entry
-//     APPENDED AFTER Z, and the twenty-eighth legacy entry is absent;
+//   * the filter strip holds twenty-seven entries, a to Z with the clear-filter entry APPENDED AFTER Z, and
+//     the twenty-eighth legacy entry is absent;
 //   * the clear-filter entry sends no filter value rather than its own label;
-//   * a filter change returns to the first page;
-//   * the free-text filter is forwarded byte for byte with no pattern character;
-//   * the ten columns are in legacy order, with keys distinct from labels and alignment
-//     declared per column rather than once for the grid;
-//   * both `0` and `-1` survive as portal identifiers, in the rendered cell and in the
-//     route the row's affordance targets;
-//   * the account and page counts render the legacy absent-integer marker as received;
-//   * the fee carries exactly two decimals and no group separator;
-//   * an absent or marker expiry renders as an empty cell;
-//   * host names become real anchors with a scheme, and an already-absolute one is left
-//     alone;
-//   * the delete affordance is withheld from the row for the tenant being browsed;
-//   * a successful deletion announces the legacy success wording at success severity, and a
-//     refusal announces the legacy refusal wording at error severity;
-//   * the pager is a SIBLING BELOW the grid, drawn only when the total exceeds the served
-//     page, and reports a zero-based index;
-//   * the ONE surviving header action targets the create route, and the TWO the legacy screen
-//     published behind endpoints that no longer exist are absent.
+//   * a filter change returns to the first page, and the free-text filter is forwarded byte for byte with no
+//     pattern character;
+//   * the ten columns are in legacy order, with keys distinct from labels and alignment declared per column
+//     rather than once for the grid;
+//   * both `0` and `-1` survive as portal identifiers, in the rendered cell and in the route the row's
+//     affordance targets;
+//   * the account and page counts render the legacy absent-integer marker as received; the fee carries
+//     exactly two decimals and no group separator; an absent or marker expiry renders as an empty cell;
+//   * host names become real anchors with a scheme, and an already-absolute one is left alone;
+//   * the delete affordance is withheld from the row for the tenant being browsed, and a deletion announces
+//     the legacy success or refusal wording at the matching severity;
+//   * the pager is a SIBLING BELOW the grid, drawn only when the total exceeds the served page, and reports a
+//     zero-based index.
 //
-// WHAT IS ASSERTED NEGATIVELY, AND WHY THAT MATTERS AS MUCH. Four expectations below assert
-// that something is NOT there: no `Expired` filter entry, no portal-template action, no bulk
-// expired-portal deletion, and no raw resource markup. Each names an affordance the legacy
-// screen genuinely offered and whose endpoint this API deliberately does not expose, so each
-// one is what stops a later author "restoring" a control that can only ever fail. A fifth
-// guards the design system: this feature contributes no bare table and no bare text control,
-// because a shared component covers both.
+// Five expectations assert that something is NOT there: no `Expired` filter entry, no portal-template action,
+// no bulk expired-portal deletion, no raw resource markup, and no bare table or text control. The first three
+// name affordances the legacy screen genuinely offered and whose endpoints this API deliberately does not
+// expose, so each is what stops a later author "restoring" a control that can only ever fail.
 //
-// The listing is driven through the real store and the real transport with the HTTP layer
-// under test control, so the request the screen actually causes is asserted rather than
-// assumed. The test target declares no environment file replacement, so the transport
-// resolves the PRODUCTION base - a RELATIVE `/api/v1` - and every expectation below is
-// written against a relative address for that reason.
+// The listing is driven through the real store and the real transport with the HTTP layer under test control,
+// so the request the screen actually causes is asserted rather than assumed. The test target declares no
+// environment file replacement, so the transport resolves the PRODUCTION base - a RELATIVE `/api/v1` - and
+// every expectation is written against a relative address for that reason.
 //
-// WORDING AUTHORITY. Every string asserted here is a RESOURCE VALUE and never a markup
-// attribute, and the legacy application proves that is the right way round rather than a
-// preference: `Portals.ascx.vb:L357` calls `Localization.LocalizeDataGrid`, which overwrote
-// every heading at run time by looking the column's own `HeaderText` up as a resource key. So
-// the markup reads `PortalId`, `DiskSpace` and `HostingFee` while the screen PAINTED
-// `Portal Id`, `Disk Space` and `Hosting Fee`. The local file
-// `Website/admin/Portal/App_LocalResources/Portals.ascx.resx` holds SEVENTEEN real entries - a
-// raw count of its `<data name=` occurrences returns twenty-one, four of which sit inside the
-// leading XML comment block and are schema boilerplate rather than wording - and the global
-// `Website/App_GlobalResources/SharedResources.resx` supplies the confirmation, the delete and
-// cancel labels, and the last-portal refusal. Resource keys may contain spaces:
-// `Portal Aliases.Header` is a measured example in this very screen.
+// Every string asserted here is a RESOURCE VALUE and never a markup attribute, and the legacy application
+// proves that is the right way round: the legacy screen localised its grid at run time by looking each
+// column's own header text up as a resource key, so the markup read `PortalId`, `DiskSpace` and `HostingFee`
+// while the screen PAINTED `Portal Id`, `Disk Space` and `Hosting Fee`. Resource keys may also contain
+// spaces - `Portal Aliases.Header` is a measured example in this very screen.
 //
 
 import { TestBed } from '@angular/core/testing';
@@ -80,37 +63,53 @@ import type {
   DataTableTextColumn,
 } from '../../../shared/components/data-table/data-table.component';
 
-/** The collection address, relative because the production environment is relative. */
+/**
+ * The collection address, relative because the production environment is relative.
+ */
 const PORTALS_URL = '/api/v1/portals';
 
-/** The legacy absent-integer marker, and simultaneously the portal identity seed. */
+/**
+ * The legacy absent-integer marker, and simultaneously the portal identity seed.
+ */
 const FIRST_PORTAL_ID = -1;
 
-/** The second portal an installation ever creates. Zero is a real portal. */
+/**
+ * The second portal an installation ever creates. Zero is a real portal.
+ */
 const SECOND_PORTAL_ID = 0;
 
-/** The legacy absent-date marker, which survives on the wire. */
+/**
+ * The legacy absent-date marker, which survives on the wire.
+ */
 const NULL_DATE = '0001-01-01T00:00:00';
 
 /**
  * A real expiry, chosen so its rendering cannot be mistaken for a coincidence.
  *
- * The day is past the twelfth, so a month/day transposition changes the answer rather than
- * yielding a plausible alternative date; and the instant is midnight, which is where a
- * renderer that resolved the date in a westward local zone instead of UTC would slip a day.
+ * The day is past the twelfth, so a month/day transposition changes the answer rather than yielding a
+ * plausible alternative date; and the instant is midnight, which is where a renderer that resolved the date
+ * in a westward local zone instead of UTC would slip a day.
  */
 const REAL_EXPIRY_DATE = '2027-03-15T00:00:00';
 
-/** The URN prefix every failure code this API publishes is carried behind. */
+/**
+ * The URN prefix every failure code this API publishes is carried behind.
+ */
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
-/** A fixed trace identifier, shaped like the trace parent the server derives one from. */
+/**
+ * A fixed trace identifier, shaped like the trace parent the server derives one from.
+ */
 const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
 
-/** A fixed correlation identifier - the value an operator quotes when reporting a refusal. */
+/**
+ * A fixed correlation identifier - the value an operator quotes when reporting a refusal.
+ */
 const CORRELATION_ID = '0f7d3c81-9a24-4b6e-8c5d-2e91b7a40f36';
 
-/** The reason phrase the API publishes as the problem `title`, keyed by status. */
+/**
+ * The reason phrase the API publishes as the problem `title`, keyed by status.
+ */
 const STATUS_TITLE: Readonly<Record<number, string>> = Object.freeze({
   400: 'Bad Request',
   401: 'Unauthorized',
@@ -123,17 +122,16 @@ const STATUS_TITLE: Readonly<Record<number, string>> = Object.freeze({
 /**
  * A problem document as this API publishes one.
  *
- * ⚠️ FOUR THINGS AN EARLIER REVISION OF THESE FIXTURES GOT WRONG, EACH OF WHICH LETS A DEFECT
- * PASS. They wrote `type: 'about:blank'`, which this API never sends: a refusal reaches the wire
- * through one shared problem factory that fills an unspecified type from the status vocabulary,
- * so the type is ALWAYS a `urn:dnnmigration:error:` code and a screen branching on the code
- * would have been tested against a document from which no code can be read. They wrote titles
- * such as `'Server Error'` that belong to no status. They omitted both identifiers, so nothing
- * proved the support reference survives. And they omitted `detail` on the conflict, which meant
- * the message-precedence rule fell through to the title instead of exercising the real path.
+ * They wrote `type: 'about:blank'`, which this API never sends: a refusal reaches the wire through one
+ * shared problem factory that fills an unspecified type from the status vocabulary, so the type is ALWAYS a
+ * `urn:dnnmigration:error:` code and a screen branching on the code would have been tested against a
+ * document from which no code can be read. They wrote titles such as `'Server Error'` that belong to no
+ * status. They omitted both identifiers, so nothing proved the support reference survives. And they omitted
+ * `detail` on the conflict, which meant the message-precedence rule fell through to the title instead of
+ * exercising the real path.
  *
- * There is deliberately NO `instance` member: every call site in the API supplies null for it and
- * the framework's problem type omits a null one per member, so a live document has none.
+ * There is deliberately NO `instance` member: every call site in the API supplies null for it and the
+ * framework's problem type omits a null one per member, so a live document has none.
  *
  * @param status The status the server answered with.
  * @param code The failure code, published behind the URN prefix.
@@ -165,7 +163,9 @@ function portalRow(overrides: Partial<PortalListItem> = {}): PortalListItem {
   };
 }
 
-/** The shape a collection endpoint answers with, as the paging contract publishes it. */
+/**
+ * The shape a collection endpoint answers with, as the paging contract publishes it.
+ */
 interface PortalPageBody {
   readonly items: readonly PortalListItem[];
   readonly meta: {
@@ -202,15 +202,17 @@ describe('PortalListComponent', () => {
   /**
    * The tenant the signed-in session is scoped to, under test control.
    *
-   * The screen consults exactly ONE fact from the session store - the browsed tenant - so
-   * the collaborator is stood in for by a value carrying exactly that one signal. Driving
-   * it through the real store would mean seeding a credential store, which would couple
-   * this specification to how a session is persisted rather than to what this screen does
-   * with it. `null` is the default, which is the "nobody is signed in" state.
+   * The screen consults exactly ONE fact from the session store - the browsed tenant - so the collaborator
+   * is stood in for by a value carrying exactly that one signal. Driving it through the real store would
+   * mean seeding a credential store, which would couple this specification to how a session is persisted
+   * rather than to what this screen does with it. `null` is the default, which is the "nobody is signed in"
+   * state.
    */
   let sessionPortalId: ReturnType<typeof signal<number | null>>;
 
-  /** Reads a protected member without widening it to the forbidden catch-all type. */
+  /**
+   * Reads a protected member without widening it to the forbidden catch-all type.
+   */
   function member<T>(name: string): T {
     return (component as unknown as Record<string, T>)[name];
   }
@@ -224,9 +226,9 @@ describe('PortalListComponent', () => {
   /**
    * The rendered host element, typed.
    *
-   * `ComponentFixture.nativeElement` is deliberately untyped by the framework, and an
-   * untyped receiver cannot take the type argument the query helpers below need, so the
-   * narrowing happens once here rather than at every call site.
+   * `ComponentFixture.nativeElement` is deliberately untyped by the framework, and an untyped receiver
+   * cannot take the type argument the query helpers below need, so the narrowing happens once here rather
+   * than at every call site.
    */
   function host(): HTMLElement {
     return fixture.nativeElement as HTMLElement;
@@ -268,17 +270,16 @@ describe('PortalListComponent', () => {
         provideRouter([]),
         {
           provide: AuthStore,
-          // This screen reads exactly ONE member of the identity store — the browsed tenant's
-          // identifier — so that is all the double supplies.
+          // This screen reads exactly ONE member of the identity store — the browsed tenant's identifier —
+          // so that is all the double supplies.
           //
-          // ⚠ AND NOTHING MORE, DELIBERATELY. `useValue` is not checked against the token it
-          // stands in for, so a member added here "just in case" is never reported as unused and
-          // survives long after the code that wanted it has gone. This double previously carried a
-          // session-boundary callback for a coordinator the stores registered themselves with;
-          // teardown is now driven from `session-teardown.service.ts` and
-          // `session-lifecycle.service.ts`, which call each store's own `reset()`, and no domain
-          // store imports the identity store at all. Keeping the member would have described an
-          // arrangement that no longer exists.
+          // And nothing more, deliberately. `useValue` is not checked against the token it stands in for, so
+          // a member added here "just in case" is never reported as unused and survives long after the code
+          // that wanted it has gone. This double previously carried a session-boundary callback for a
+          // coordinator the stores registered themselves with; teardown is now driven from
+          // `session-teardown.service.ts` and `session-lifecycle.service.ts`, which call each store's own
+          // `reset()`, and no domain store imports the identity store at all. Keeping the member would have
+          // described an arrangement that no longer exists.
           useValue: {
             portalId: sessionPortalId.asReadonly(),
           },
@@ -297,9 +298,7 @@ describe('PortalListComponent', () => {
     http.verify();
   });
 
-  // -------------------------------------------------------------------------
-  // CREATION AND THE INITIAL READ
-  // -------------------------------------------------------------------------
+  // Creation and the initial read
 
   it('creates and reads the first page from the relative collection address', () => {
     expect(component).toBeTruthy();
@@ -325,9 +324,7 @@ describe('PortalListComponent', () => {
     expect(heading?.textContent?.trim()).toBe('Portals');
   });
 
-  // -------------------------------------------------------------------------
   // THE FILTER STRIP
-  // -------------------------------------------------------------------------
 
   describe('the first-letter filter strip', () => {
     it('holds twenty-seven entries: A to Z, then the clear-filter entry appended last', () => {
@@ -358,13 +355,12 @@ describe('PortalListComponent', () => {
       expect(request.request.params.get('name')).toBe('B');
       expect(request.request.params.get('name')).not.toContain('%');
 
-      // MIGRATION: NO EXPIRY PARAMETER IS SENT, IN ANY SPELLING. `Portals.ascx.vb:L138-L140`
-      //   special-cased one entry of the strip by calling a different reader altogether -
-      //   `PortalController.GetExpiredPortals()` - and hiding the pager alongside it. That
-      //   reader has no successor endpoint, and the collection endpoint accepts no expiry
-      //   filter, so a request carrying one would be silently ignored rather than refused.
-      //   The absent parameter is asserted in three spellings because the wrong one would
-      //   look plausible in review.
+      // MIGRATION: no expiry parameter is sent, in any spelling. `Portals.ascx.vb` special-cased one entry
+      // of the strip by calling a different reader altogether - `PortalController.GetExpiredPortals()` -
+      // and hiding the pager alongside it. That reader has no successor endpoint, and the collection
+      // endpoint accepts no expiry filter, so a request carrying one would be silently ignored rather than
+      // refused. The absent parameter is asserted in three spellings because the wrong one would look
+      // plausible in review.
       expect(request.request.params.has('expired')).toBeFalse();
       expect(request.request.params.has('isExpired')).toBeFalse();
       expect(request.request.params.has('expiryDate')).toBeFalse();
@@ -438,9 +434,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // THE FREE-TEXT FILTER
-  // -------------------------------------------------------------------------
+  // The free-text filter
 
   describe('the free-text name filter', () => {
     it('forwards the text byte for byte, untrimmed and with its case unchanged', () => {
@@ -466,9 +460,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE COLUMN SET
-  // -------------------------------------------------------------------------
 
   describe('the column set', () => {
     beforeEach(() => {
@@ -513,9 +505,9 @@ describe('PortalListComponent', () => {
       expect(keys).toContain('hostSpace');
       expect(keys).toContain('hostFee');
 
-      // No key is its own label. Keying a column by the words it paints looks harmless and is
-      // not: the wording is a resource value that may be reworded, and duplicate labels do
-      // occur across this legacy administration set, so a label-derived key can collide.
+      // No key is its own label. Keying a column by the words it paints looks harmless and is not: the
+      // wording is a resource value that may be reworded, and duplicate labels do occur across this legacy
+      // administration set, so a label-derived key can collide.
       for (const column of columns()) {
         expect(column.key).not.toBe(column.label);
       }
@@ -525,20 +517,15 @@ describe('PortalListComponent', () => {
       const byKey = new Map(columns().map((column) => [column.key, column]));
       const title = byKey.get('portalName');
 
-      // The HEADING is `Title` - the local `Title.Header` value - while the bound member is
-      // `PortalName` (`portals.ascx:L34`). The two differ, and following the heading instead
-      // of the markup would read a member that does not exist on the contract: `undefined`
-      // at run time with no compile error to warn of it.
+      // The HEADING is `Title` - the local `Title.Header` value - while the bound member is `PortalName`.
+      // The two differ, and following the heading instead of the markup would read a member that does not
+      // exist on the contract: `undefined` at run time with no compile error to warn of it.
       expect(title?.label).toBe('Title');
       expect((title as DataTableTextColumn<PortalListItem>).field).toBe('portalName');
       expect(byKey.has('title')).toBeFalse();
     });
 
     it('renders the per-column alignment onto the header and body cells alike', () => {
-      // The descriptor expectation above is one half; this is the other - that the grid
-      // actually applies each column's own alignment rather than one setting for the whole
-      // table, which is what the legacy markup declared at `portals.ascx:L24-L25`, `L31-L32`
-      // and `L38-L39` against the grid-level defaults at `L15-L16`.
       const headerAligns: readonly (string | null)[] = queryAll<HTMLElement>('thead th').map(
         (cell) => cell.getAttribute('data-align'),
       );
@@ -592,16 +579,16 @@ describe('PortalListComponent', () => {
       expect(byKey.get('delete')?.width).toBe('min-content');
     });
 
-    // The descriptor set is one half of the claim; the other half is that the grid actually
-    // PAINTS those values. Asserted separately because a correct descriptor handed to a
-    // mis-wired grid input renders nothing at all, and only the rendered heading catches that.
+    // The descriptor set is one half of the claim; the other half is that the grid actually PAINTS those
+    // values. Asserted separately because a correct descriptor handed to a mis-wired grid input renders
+    // nothing at all, and only the rendered heading catches that.
 
     it('paints the eight data headings in legacy order, with the resource wording', () => {
       const headings: readonly string[] = textOf('thead th');
 
       expect(headings).toEqual([
-        // The two command columns declare `headerHidden`, so their heading is NAMED but not
-        // PAINTED - see the expectation below, which pins that distinction.
+        // The two command columns declare `headerHidden`, so their heading is NAMED but not PAINTED - see
+        // the expectation below, which pins that distinction.
         'Edit this Portal',
         'Delete',
         'Portal Id',
@@ -625,12 +612,11 @@ describe('PortalListComponent', () => {
 
       expect(labels.length).toBe(10);
 
-      // MIGRATION: THE COMMAND COLUMNS GAIN A NAME THEY NEVER HAD. The legacy image columns
-      //   (`portals.ascx:L21-L22`) rendered no heading text at all, so a screen-reader user
-      //   reading the header row heard two unnamed columns. Both now carry the wording the
-      //   legacy column would have resolved - the local `Edit.Text` phrase and, for delete,
-      //   the global `cmdDelete.Text` word, since `Portals.ascx.resx` declares no entry of
-      //   that name - clipped rather than removed, so the header row looks unchanged.
+      // MIGRATION: the command columns gain a name they never had. The legacy image columns rendered no
+      // heading text at all, so a screen-reader user reading the header row heard two unnamed columns. Both
+      // now carry the wording the legacy column would have resolved - the local `Edit.Text` phrase and, for
+      // delete, the global `cmdDelete.Text` word, since `Portals.ascx.resx` declares no entry of that name -
+      // clipped rather than removed, so the header row looks unchanged.
       expect(labels[0]?.classList.contains('data-table__label--hidden')).toBeTrue();
       expect(labels[1]?.classList.contains('data-table__label--hidden')).toBeTrue();
 
@@ -653,9 +639,9 @@ describe('PortalListComponent', () => {
     });
 
     it('binds the disk-space and hosting-fee columns to their unrenamed model members', () => {
-      // The HEADING changed wording between the markup and the resource file; the MODEL FIELD
-      // did not. This pins both halves at once: the descriptor still reads the original member
-      // name, and the value it reads reaches the cell that sits under the reworded heading.
+      // The HEADING changed wording between the markup and the resource file; the MODEL FIELD did not. This
+      // pins both halves at once: the descriptor still reads the original member name, and the value it
+      // reads reaches the cell that sits under the reworded heading.
       const headings: readonly string[] = textOf('thead th');
       const cells: readonly string[] = textOf('tbody td');
 
@@ -666,22 +652,19 @@ describe('PortalListComponent', () => {
       expect(headings.indexOf('Disk Space')).toBe(7);
       expect(cells[7]).toBe('0');
 
-      // The fee column is a formatted column rather than a field column, because the legacy
-      // grid attached a format string to it and to no other; the fee it formats is `hostFee`.
+      // The fee column is a formatted column rather than a field column, because the legacy grid attached a
+      // format string to it and to no other; the fee it formats is `hostFee`.
       expect(headings.indexOf('Hosting Fee')).toBe(8);
       expect(cells[8]).toBe('0.00');
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE HEADER ACTIONS
-  // -------------------------------------------------------------------------
   //
-  // The legacy screen published THREE actions from one property
-  // (`Portals.ascx.vb:L432-L440`). One survives; two are withheld, and the two negative
-  // expectations below are the most durable part of this block: they are what stops a later
-  // author restoring an affordance whose endpoint does not exist, which would present the
-  // operator with a control that can only ever fail.
+  //  The legacy screen published THREE actions from one property. One survives; two are withheld, and the two
+  //  negative expectations below are the most durable part of this block: they are what stops a later author
+  //  restoring an affordance whose endpoint does not exist, which would present the operator with a control
+  //  that can only ever fail.
 
   describe('the header actions', () => {
     beforeEach(() => {
@@ -693,18 +676,18 @@ describe('PortalListComponent', () => {
         'app-page-header a.portal-list__action',
       );
 
-      // The wording is the local resource value for the add-content action key
-      // (`AddContent.Action`), which the legacy property read at L435.
+      // The wording is the local resource value for the add-content action key (`AddContent.Action`), which
+      // the legacy property read.
       expect(action?.textContent?.trim()).toBe('Add New Portal');
-      // L435 targeted the signup page; the target here is the create route of this feature.
+      // targeted the signup page; the target here is the create route of this feature.
       expect(action?.getAttribute('href')).toBe('/portals/new');
     });
 
-    // MIGRATION: THE TEMPLATE-EXPORT ACTION IS WITHHELD. `Portals.ascx.vb:L436` published an
-    //   action reading the local `ExportTemplate.Action` value and targeting the template page.
-    //   No portal-template endpoint exists on the API, so the affordance would have no
-    //   destination; `core/config/api-endpoints.ts` declares the portal group closed for that
-    //   reason. Withheld rather than disabled, so nothing advertises a capability that is absent.
+    // MIGRATION: the template-export action is withheld. `Portals.ascx.vb` published an action reading the
+    // local `ExportTemplate.Action` value and targeting the template page. No portal-template endpoint
+    // exists on the API, so the affordance would have no destination; `core/config/api-endpoints.ts`
+    // declares the portal group closed for that reason. Withheld rather than disabled, so nothing
+    // advertises a capability that is absent.
     it('publishes no portal-template action, which has no endpoint behind it', () => {
       const painted: string = host().textContent ?? '';
 
@@ -712,13 +695,12 @@ describe('PortalListComponent', () => {
       expect(painted).not.toContain('Template');
     });
 
-    // MIGRATION: THE BULK EXPIRED-PORTAL DELETION IS WITHHELD. `Portals.ascx.vb:L437` published
-    //   an action reading the local `DeleteExpired.Action` value, guarded only by a scripted
-    //   confirmation carrying the plural global wording `DeleteItems.Confirm`, and reaching
-    //   `DeleteExpiredPortals` at L189-L198 - which iterated the expired listing and destroyed
-    //   an unbounded number of portals from one click, with no per-row confirmation and no way
-    //   to review the set first. The API exposes no bulk operation on any resource, so removal
-    //   is per-portal and each one is confirmed on its own row.
+    // MIGRATION: the bulk expired-portal deletion is withheld. `Portals.ascx.vb` published an action reading
+    // the local `DeleteExpired.Action` value, guarded only by a scripted confirmation carrying the plural
+    // global wording `DeleteItems.Confirm`, and reaching `DeleteExpiredPortals` - which iterated the expired
+    // listing and destroyed an unbounded number of portals from one click, with no per-row confirmation and
+    // no way to review the set first. The API exposes no bulk operation on any resource, so removal is
+    // per-portal and each one is confirmed on its own row.
     it('publishes no bulk expired-portal deletion, and never the plural confirmation', () => {
       const painted: string = host().textContent ?? '';
 
@@ -727,15 +709,13 @@ describe('PortalListComponent', () => {
     });
 
     it('publishes exactly one header action', () => {
-      // A count, so an action added without a corresponding endpoint fails here even if its
-      // wording is not one of the two named above.
+      // A count, so an action added without a corresponding endpoint fails here even if its wording is not
+      // one of the two named above.
       expect(queryAll<Element>('app-page-header a, app-page-header button').length).toBe(1);
     });
   });
 
-  // -------------------------------------------------------------------------
   // SENTINEL DISCIPLINE
-  // -------------------------------------------------------------------------
 
   describe('sentinel discipline', () => {
     it('renders a portal identifier of -1 and of 0 as received', () => {
@@ -757,8 +737,8 @@ describe('PortalListComponent', () => {
         portalRow({ portalId: SECOND_PORTAL_ID }),
       ]);
 
-      // Read through the precomputed lookup the template indexes, so the assertion exercises
-      // the same path the rendered link takes. A NEGATIVE key is a legitimate key here.
+      // Read through the precomputed lookup the template indexes, so the assertion exercises the same path
+      // the rendered link takes. A NEGATIVE key is a legitimate key here.
       const links: Record<number, (string | number)[]> =
         member<() => Record<number, (string | number)[]>>('editSettingsLinks')();
 
@@ -792,9 +772,9 @@ describe('PortalListComponent', () => {
         () => Record<number, (string | number)[]>
       >('editSettingsLinks')()[FIRST_PORTAL_ID];
 
-      // Identity, not equality. A link array rebuilt per row per pass would satisfy `toEqual`
-      // and fail this, and it is identity that decides whether the router re-parses a target
-      // that has not changed - once per row, on every pass, under push change detection.
+      // Identity, not equality. A link array rebuilt per row per pass would satisfy `toEqual` and fail this,
+      // and it is identity that decides whether the router re-parses a target that has not changed - once
+      // per row, on every pass, under push change detection.
       expect(after).toBe(before);
     });
 
@@ -808,11 +788,10 @@ describe('PortalListComponent', () => {
     });
 
     it('drops no row and coerces no identifier across the whole sentinel range', () => {
-      // THE HIGHEST-VALUE EXPECTATION IN THIS FILE. Each of `if (id)`, `id > 0` and
-      // `id ?? -1` compiles cleanly, passes every other expectation here, and silently
-      // loses a row or renames a portal. The identifier column is read back in full and
-      // compared as a sequence, so a dropped row changes the length and a coerced
-      // identifier changes a member.
+      // The highest-value expectation in this file. Each of `if (id)`, `id > 0` and `id ?? -1` compiles
+      // cleanly, passes every other expectation here, and silently loses a row or renames a portal. The
+      // identifier column is read back in full and compared as a sequence, so a dropped row changes the
+      // length and a coerced identifier changes a member.
       settleFirstPage([
         portalRow({ portalId: FIRST_PORTAL_ID, portalName: 'Seed Portal' }),
         portalRow({ portalId: SECOND_PORTAL_ID, portalName: 'Second Portal' }),
@@ -836,9 +815,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // FORMATTING
-  // -------------------------------------------------------------------------
 
   describe('formatting', () => {
     beforeEach(() => {
@@ -872,8 +849,8 @@ describe('PortalListComponent', () => {
       invoke<void>('onRetry');
       expect(rendered(NULL_DATE)).toBe('');
 
-      // And the three wrong answers a naive renderer gives, named so a regression is
-      // unambiguous rather than merely "not empty".
+      // And the three wrong answers a naive renderer gives, named so a regression is unambiguous rather than
+      // merely "not empty".
       const painted: string = host().textContent ?? '';
       expect(painted).not.toContain('01/01/0001');
       expect(painted).not.toContain('1/1/1');
@@ -882,8 +859,8 @@ describe('PortalListComponent', () => {
     });
 
     it('renders a real expiry in short-date form', () => {
-      // The legacy cell called `ToShortDateString` once the marker test had passed
-      // (`Portals.ascx.vb:L253-L254`), so a real expiry is a DATE and never a timestamp.
+      // The legacy cell called `ToShortDateString` once the marker test had passed, so a real expiry is a
+      // DATE and never a timestamp.
       invoke<void>('onRetry');
       settleFirstPage([portalRow({ expiryDate: REAL_EXPIRY_DATE })]);
 
@@ -896,9 +873,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // HOST NAMES
-  // -------------------------------------------------------------------------
 
   describe('host names', () => {
     /**
@@ -938,28 +913,27 @@ describe('PortalListComponent', () => {
       expect(anchors.length).toBe(2);
       expect(anchors[0]?.getAttribute('href')).toBe('http://localhost:4200');
       // Already absolute - left exactly as stored, not re-serialised by the parser: normalising would
-      // lower-case the host and append a trailing slash, so the address in the status bar would stop
-      // being the value the operator actually stored.
+      // lower-case the host and append a trailing slash, so the address in the status bar would stop being
+      // the value the operator actually stored.
       expect(anchors[1]?.getAttribute('href')).toBe('https://secure.example');
-      // The empty host name produced NO entry, where the legacy screen appended an empty anchor with
-      // no emptiness test — a focusable, unlabelled link pointing at the current page.
-      // The host name is the anchor's TEXT, escaped by interpolation. Read WITHOUT the visually-hidden
-      // new-context phrase, which is part of the accessible name and not part of the host name.
+      // The empty host name produced NO entry, where the legacy screen appended an empty anchor with no
+      // emptiness test — a focusable, unlabelled link pointing at the current page. The host name is the
+      // anchor's TEXT, escaped by interpolation. Read WITHOUT the visually-hidden new-context phrase, which
+      // is part of the accessible name and not part of the host name.
       expect(visibleLabel(anchors[0])).toBe('localhost:4200');
     });
 
     it('renders a host name whose scheme is not http as INERT TEXT rather than as a link', () => {
-      // ⚠ AN ALLOWLIST OF TWO SCHEMES, AND THE REFUSED VALUES REACH THE DOM AS TEXT. The legacy screen
-      // built the anchor by string concatenation at `Portals.ascx.vb:L282` and assigned the result to a
-      // label's `Text`, so a stored host name became markup unexamined and unescaped. Enumerating the
-      // schemes to refuse is a losing game — `javascript:`, `data:`, `vbscript:`, `blob:` and `file:`
-      // are merely the ones anybody thinks of, and mixed case or percent-encoding slips past a
-      // fragment test — so exactly `http:` and `https:` are admitted and everything else yields no
-      // href at all.
+      // An allowlist of two schemes, and the refused values reach the dom as text. The legacy screen built
+      // the anchor by string concatenation at `Portals.ascx.vb` and assigned the result to a label's `Text`,
+      // so a stored host name became markup unexamined and unescaped. Enumerating the schemes to refuse is a
+      // losing game — `javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are merely the ones anybody
+      // thinks of, and mixed case or percent-encoding slips past a fragment test — so exactly `http:` and
+      // `https:` are admitted and everything else yields no href at all.
       //
-      // ⚠ AND THE VALUE IS STILL SHOWN. Dropping it would hide stored state from the operator
-      // administering it, which is the one thing this screen exists to report. It is shown as text,
-      // which the framework escapes through an ordinary interpolation, so it is readable and inert.
+      // And the value is still shown. Dropping it would hide stored state from the operator administering
+      // it, which is the one thing this screen exists to report. It is shown as text, which the framework
+      // escapes through an ordinary interpolation, so it is readable and inert.
       settleFirstPage([
         portalRow({
           portalId: SECOND_PORTAL_ID,
@@ -991,11 +965,12 @@ describe('PortalListComponent', () => {
     });
 
     it('opens a host name in a new context, and says so in the accessible name', () => {
-      // MIGRATION - ⚠ THE `target` IS THE HALF TO ADD, NOT THE `rel` THE HALF TO DELETE. The address leaves
+      // MIGRATION - THE `target` IS THE HALF TO ADD, NOT THE `rel` THE HALF TO DELETE. The address leaves
       // this application entirely, and the session's token is held in memory alone, so a same-tab navigation
-      // signs the operator out of the console they were administering. `rel` states BOTH keywords rather than
-      // relying on a modern browser's implicit `noopener`: `noreferrer` additionally withholds the console's
-      // own address from the site being opened, which is a tenant's public site and not necessarily trusted.
+      // signs the operator out of the console they were administering. `rel` states BOTH keywords rather
+      // than relying on a modern browser's implicit `noopener`: `noreferrer` additionally withholds the
+      // console's own address from the site being opened, which is a tenant's public site and not
+      // necessarily trusted.
       settleFirstPage([
         portalRow({ portalId: SECOND_PORTAL_ID, aliases: ['localhost:4200'] }),
       ]);
@@ -1024,24 +999,23 @@ describe('PortalListComponent', () => {
       ).toBe(0);
     });
 
-    // ⚠️ HOSTILE HOST NAMES. `dbo.PortalAlias.HTTPAlias` is an operator-supplied string with no
-    // scheme constraint on it, so a host name is UNTRUSTED INPUT that reaches an anchor's `href`
-    // and its text. The cases below are the security half of this group, and they exist because
-    // the cases above cover only well-formed values - which is exactly the coverage that lets an
-    // injection through.
+    // HOSTILE HOST NAMES. `dbo.PortalAlias.HTTPAlias` is an operator-supplied string with no scheme
+    // constraint on it, so a host name is UNTRUSTED INPUT that reaches an anchor's `href` and its text. The
+    // cases below are the security half of this group, and they exist because the cases above cover only
+    // well-formed values - which is exactly the coverage that lets an injection through.
     //
-    // ONE mechanism defends this, and it is an ALLOWLIST rather than a denylist. The projection
-    // prefixes `http://` unless the value already carries `mailto:`, `://`, `~` or a double
-    // backslash, and then requires the result to PARSE as a URL whose protocol is exactly `http:`
-    // or `https:` and whose host is non-empty. Everything else projects a null href, and a null
-    // href renders no anchor at all - the stored value still appears, as interpolated text.
+    // ONE mechanism defends this, and it is an ALLOWLIST rather than a denylist. The projection prefixes
+    // `http://` unless the value already carries `mailto:`, `://`, `~` or a double backslash, and then
+    // requires the result to PARSE as a URL whose protocol is exactly `http:` or `https:` and whose host is
+    // non-empty. Everything else projects a null href, and a null href renders no anchor at all - the stored
+    // value still appears, as interpolated text.
     //
-    // That is deliberately stronger than demoting a hostile value to a path under an http origin,
-    // and stronger than leaning on the framework's URL sanitiser to mark an executable scheme
-    // `unsafe:`. Both of those still emit a focusable anchor pointing somewhere; this emits none.
+    // That is deliberately stronger than demoting a hostile value to a path under an http origin, and
+    // stronger than leaning on the framework's URL sanitiser to mark an executable scheme `unsafe:`. Both of
+    // those still emit a focusable anchor pointing somewhere; this emits none.
     //
-    // In every case below the value must therefore render with NO anchor, its label must be TEXT
-    // rather than markup, and no `innerHTML` may appear anywhere in the template.
+    // In every case below the value must therefore render with NO anchor, its label must be TEXT rather than
+    // markup, and no `innerHTML` may appear anywhere in the template.
 
     it('renders a bare javascript scheme with no anchor at all, and shows it as text', () => {
       settleFirstPage([
@@ -1049,8 +1023,8 @@ describe('PortalListComponent', () => {
       ]);
 
       // The value carries none of the four markers, so `http://` is prefixed - and
-      // `http://javascript:alert(1)` does not parse, because `alert(1)` is not a port. No address
-      // is projected, so nothing is navigable.
+      // `http://javascript:alert(1)` does not parse, because `alert(1)` is not a port. No address is
+      // projected, so nothing is navigable.
       expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a'))
         .withContext('nothing navigable')
         .toHaveSize(0);
@@ -1062,9 +1036,9 @@ describe('PortalListComponent', () => {
     });
 
     it('renders a javascript scheme that carries the address marker with no anchor either', () => {
-      // `javascript://` contains `://`, so it is taken as already absolute and parsed as stored. It
-      // parses - and its protocol is `javascript:`, which the allowlist does not admit. Nothing here
-      // relies on the framework rewriting an executable attribute, because no attribute is emitted.
+      // `javascript://` contains `://`, so it is taken as already absolute and parsed as stored. It parses -
+      // and its protocol is `javascript:`, which the allowlist does not admit. Nothing here relies on the
+      // framework rewriting an executable attribute, because no attribute is emitted.
       settleFirstPage([
         portalRow({
           portalId: SECOND_PORTAL_ID,
@@ -1089,16 +1063,15 @@ describe('PortalListComponent', () => {
 
       const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
 
-      // The script text is TEXT: the cell holds no child element at all, so nothing was parsed as
-      // markup on its way to the DOM.
+      // The script text is TEXT: the cell holds no child element at all, so nothing was parsed as markup on
+      // its way to the DOM.
       expect(cell?.querySelector('script')).toBeNull();
       expect(cell?.children.length).toBe(0);
       expect(cell?.textContent).toContain('<script>alert(1)</script>');
     });
 
     it('renders a markup label as text, with no element parsed out of it', () => {
-      // Measured across the in-scope resource files: values carrying an HTML tag are common and four
-      // carry a script element. A host name is operator-supplied, so it is treated the same way.
+      // A host name is operator-supplied, so it is treated the same way.
       settleFirstPage([
         portalRow({
           portalId: SECOND_PORTAL_ID,
@@ -1108,8 +1081,8 @@ describe('PortalListComponent', () => {
 
       const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
 
-      // Prefixing yields `http://<img …>host.example`, which is not a host, so no address is
-      // projected and the value is shown as it was stored.
+      // Prefixing yields `http://<img …>host.example`, which is not a host, so no address is projected and
+      // the value is shown as it was stored.
       expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
       expect(cell?.querySelector('img'))
         .withContext('interpolation escapes it; nothing is parsed as an element')
@@ -1120,9 +1093,9 @@ describe('PortalListComponent', () => {
 
     it('shows a network share and an application-relative path exactly as stored, unlinked', () => {
       // The two legacy exclusions, and they are exclusions rather than oversights: a share and a
-      // tilde-rooted path are addresses in their own right, so no scheme is prefixed - and neither
-      // parses as an http address, so neither becomes a link. Rewriting either would produce a value
-      // that resolves nowhere and would make this row disagree with the edit screen.
+      // tilde-rooted path are addresses in their own right, so no scheme is prefixed - and neither parses as
+      // an http address, so neither becomes a link. Rewriting either would produce a value that resolves
+      // nowhere and would make this row disagree with the edit screen.
       settleFirstPage([
         portalRow({
           portalId: SECOND_PORTAL_ID,
@@ -1141,9 +1114,9 @@ describe('PortalListComponent', () => {
     });
 
     it('carries a control character into the label as text and into no address at all', () => {
-      // C0 controls and DEL can be stored in the column, and a control embedded in a scheme is the
-      // classic way of smuggling one past a naive prefix test. Here there is no prefix test to pass:
-      // the prefixed value has to parse as an http address, and this one does not.
+      // C0 controls and DEL can be stored in the column, and a control embedded in a scheme is the classic
+      // way of smuggling one past a naive prefix test. Here there is no prefix test to pass: the prefixed
+      // value has to parse as an http address, and this one does not.
       const hostile = 'java\u0000script\u0009:alert(1)\u007f';
 
       settleFirstPage([portalRow({ portalId: SECOND_PORTAL_ID, aliases: [hostile] })]);
@@ -1156,11 +1129,11 @@ describe('PortalListComponent', () => {
     });
 
     it('renders NOTHING for an empty host name, and the handling is stable across rows', () => {
-      // ⚠️ THE EMPTY STRING IS THE LEGACY SPELLING OF AN ABSENT STRING, so it arrives often. The
-      // legacy screen appended an anchor per row with no emptiness test, producing `<a href=""></a>`
-      // - a focusable, unlabelled link pointing at the current page. Rendering nothing is the honest
-      // representation, and it is asserted alongside a real host name in the same row so that the
-      // empty value is proved to be DROPPED rather than to have suppressed the row.
+      // The empty string is the legacy spelling of an absent string, so it arrives often. The legacy screen
+      // appended an anchor per row with no emptiness test, producing `<a href=""></a>` - a focusable,
+      // unlabelled link pointing at the current page. Rendering nothing is the honest representation, and it
+      // is asserted alongside a real host name in the same row so that the empty value is proved to be
+      // DROPPED rather than to have suppressed the row.
       settleFirstPage([
         portalRow({ portalId: SECOND_PORTAL_ID, aliases: ['', 'one.example', '', ''] }),
       ]);
@@ -1178,13 +1151,13 @@ describe('PortalListComponent', () => {
     });
 
     it('uses no innerHTML anywhere in the rendered host-name cell', () => {
-      // The class-level guarantee behind every case above: the template interpolates and binds, and
-      // nothing in it assigns markup. Asserted structurally - a cell whose only element child is the
-      // visually-hidden new-context phrase, with everything else a text node, cannot have been
-      // produced by an assignment of markup.
+      // The class-level guarantee behind every case above: the template interpolates and binds, and nothing
+      // in it assigns markup. Asserted structurally - a cell whose only element child is the visually-hidden
+      // new-context phrase, with everything else a text node, cannot have been produced by an assignment of
+      // markup.
       //
-      // Both arms are exercised in one row: the markup-bearing value is refused by the address
-      // allowlist and rendered as text, and the well-formed one becomes an anchor.
+      // Both arms are exercised in one row: the markup-bearing value is refused by the address allowlist and
+      // rendered as text, and the well-formed one becomes an anchor.
       settleFirstPage([
         portalRow({
           portalId: SECOND_PORTAL_ID,
@@ -1228,8 +1201,8 @@ describe('PortalListComponent', () => {
     it('answers a row that is not on the page in hand with no host names', () => {
       settleFirstPage([portalRow({ portalId: 1, aliases: ['one.example'] })]);
 
-      // A row absent from the projection can only mean the page has changed since it was
-      // built; an empty list is the safe reading and no identifier is defaulted to reach it.
+      // A row absent from the projection can only mean the page has changed since it was built; an empty
+      // list is the safe reading and no identifier is defaulted to reach it.
       expect(
         invoke<readonly unknown[]>('aliasLinks', portalRow({ portalId: 99, aliases: [] })),
       ).toEqual([]);
@@ -1239,9 +1212,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE DELETE FLOW
-  // -------------------------------------------------------------------------
 
   describe('the delete flow', () => {
     it('keeps the affordance on every row when no tenant is resolved', () => {
@@ -1253,8 +1224,8 @@ describe('PortalListComponent', () => {
     });
 
     it('withholds the delete affordance from the row for the tenant being browsed', () => {
-      // Zero is a real tenant, and the row rule has to work for it: a truthiness test on
-      // the identifier would classify it as "no tenant" and leave the affordance in place.
+      // Zero is a real tenant, and the row rule has to work for it: a truthiness test on the identifier
+      // would classify it as "no tenant" and leave the affordance in place.
       sessionPortalId.set(SECOND_PORTAL_ID);
 
       settleFirstPage([
@@ -1265,15 +1236,15 @@ describe('PortalListComponent', () => {
       expect(invoke<boolean>('canDelete', portalRow({ portalId: SECOND_PORTAL_ID }))).toBeFalse();
       expect(invoke<boolean>('canDelete', portalRow({ portalId: FIRST_PORTAL_ID }))).toBeTrue();
 
-      // Withheld from the DOM entirely rather than disabled, because the legacy rule set
-      // the control's visibility to false: one row of two offers the command.
+      // Withheld from the DOM entirely rather than disabled, because the legacy rule set the control's
+      // visibility to false: one row of two offers the command.
       const commands: readonly string[] = textOf('.portal-list__row-command--danger');
       expect(commands.length).toBe(1);
     });
 
     it('withholds the affordance for a browsed tenant numbered -1', () => {
-      // -1 is simultaneously a real tenant and the legacy absent-integer marker, so a
-      // comparison against the marker would misclassify this exact case.
+      // -1 is simultaneously a real tenant and the legacy absent-integer marker, so a comparison against the
+      // marker would misclassify this exact case.
       sessionPortalId.set(FIRST_PORTAL_ID);
 
       settleFirstPage([portalRow({ portalId: FIRST_PORTAL_ID })]);
@@ -1344,9 +1315,9 @@ describe('PortalListComponent', () => {
       invoke<void>('requestDeletion', portalRow({ portalId: 7 }));
       invoke<void>('onDeletionConfirmed');
 
-      // The live refusal, complete: the code the server publishes, the title that belongs to the
-      // status, the authored sentence, and both identifiers. `last_remaining` is the token the
-      // shared status translator reads to answer 409.
+      // The live refusal, complete: the code the server publishes, the title that belongs to the status, the
+      // authored sentence, and both identifiers. `last_remaining` is the token the shared status translator
+      // reads to answer 409.
       http.expectOne(`${PORTALS_URL}/7`).flush(
         problemOf(
           409,
@@ -1359,15 +1330,15 @@ describe('PortalListComponent', () => {
 
       const queued: readonly AppNotification[] = notifications.notifications();
       expect(queued.length).toBe(1);
-      // The legacy screen surfaced this at RedError, not at the success severity - and 409 is one
-      // of the statuses that stays an error, since only 401, 403, 404 and 429 soften to a warning.
+      // The legacy screen surfaced this at RedError, not at the success severity - and 409 is one of the
+      // statuses that stays an error, since only 401, 403, 404 and 429 soften to a warning.
       expect(queued[0]?.severity).toBe('error');
       expect(queued[0]?.message).toBe(
         'You Can Not Delete The Last Portal In Your Database',
       );
 
-      // The row survives, because nothing was deleted. A screen that removed it optimistically
-      // would show the operator an empty installation it still has.
+      // The row survives, because nothing was deleted. A screen that removed it optimistically would show
+      // the operator an empty installation it still has.
       expect(host().querySelectorAll('tbody tr').length).toBe(1);
     });
 
@@ -1377,9 +1348,8 @@ describe('PortalListComponent', () => {
       invoke<void>('requestDeletion', portalRow({ portalId: 9 }));
       invoke<void>('onDeletionConfirmed');
 
-      // `auth.not_permitted` is the code the authorisation result handler publishes for every
-      // refused policy in this API; the leading break tag is a legacy wording artefact that the
-      // shared summariser strips.
+      // `auth.not_permitted` is the code the authorisation result handler publishes for every refused policy
+      // in this API; the leading break tag is a legacy wording artefact that the shared summariser strips.
       http.expectOne(`${PORTALS_URL}/9`).flush(
         problemOf(
           403,
@@ -1392,8 +1362,8 @@ describe('PortalListComponent', () => {
 
       const queued: readonly AppNotification[] = notifications.notifications();
       expect(queued.length).toBe(1);
-      // The legacy access-denied surface used a warning, not an error: the system is
-      // working exactly as configured.
+      // The legacy access-denied surface used a warning, not an error: the system is working exactly as
+      // configured.
       expect(queued[0]?.severity).toBe('warning');
       // The leading break tag is stripped rather than painted as literal characters.
       expect(queued[0]?.message).toBe('You do not have permission to perform this action.');
@@ -1429,9 +1399,9 @@ describe('PortalListComponent', () => {
       invoke<void>('onDeletionCancelled');
       fixture.detectChanges();
 
-      // Stated positively rather than left to the teardown verification, so a failure names
-      // the defect - a screen that removed the row before the operator agreed - instead of
-      // reporting an unexpected open request from another expectation's teardown.
+      // Stated positively rather than left to the teardown verification, so a failure names the defect - a
+      // screen that removed the row before the operator agreed - instead of reporting an unexpected open
+      // request from another expectation's teardown.
       http.expectNone(`${PORTALS_URL}/11`);
       http.expectNone((candidate) => candidate.url === PORTALS_URL);
 
@@ -1448,11 +1418,11 @@ describe('PortalListComponent', () => {
       const dialog: HTMLDialogElement | null =
         host().querySelector<HTMLDialogElement>('app-confirm-dialog dialog');
 
-      // MIGRATION: THE BROWSER CONFIRMATION BECOMES A REAL DIALOGUE. `Portals.ascx.vb:L299-L300`
-      //   attached the global `DeleteItem.Text` wording to the delete column as a scripted
-      //   `confirm()`, which offered no focus management, no escape handling and no nameable
-      //   cancel affordance. The contract of the shared component is asserted here - not its
-      //   internals - because those three properties are what the replacement buys.
+      // MIGRATION: the browser confirmation becomes a real dialogue. `Portals.ascx.vb` attached the global
+      // `DeleteItem.Text` wording to the delete column as a scripted `confirm()`, which offered no focus
+      // management, no escape handling and no nameable cancel affordance. The contract of the shared
+      // component is asserted here - not its internals - because those three properties are what the
+      // replacement buys.
       expect(dialog).not.toBeNull();
       // A modal dialogue, which is what confines focus: the platform's own focus trap.
       expect(dialog?.open).toBeTrue();
@@ -1464,10 +1434,9 @@ describe('PortalListComponent', () => {
       // A nameable cancel affordance, whose wording is the global `cmdCancel.Text` value.
       const buttons: readonly string[] = textOf('app-confirm-dialog button');
       expect(buttons).toContain('Cancel');
-      // And a confirm affordance labelled with the global `cmdDelete.Text` value, which is
-      // also why the delete COLUMN carries that same word: `Portals.ascx.vb:L314-L316`
-      // localised each image column by its command name, and no local entry of that name
-      // exists in `Portals.ascx.resx` to override the global one.
+      // And a confirm affordance labelled with the global `cmdDelete.Text` value, which is also why the
+      // delete COLUMN carries that same word: `Portals.ascx.vb` localised each image column by its command
+      // name, and no local entry of that name exists in `Portals.ascx.resx` to override the global one.
       expect(buttons.some((label) => label.includes('Delete'))).toBeTrue();
     });
 
@@ -1481,9 +1450,9 @@ describe('PortalListComponent', () => {
         host().querySelector<HTMLDialogElement>('app-confirm-dialog dialog');
       expect(dialog).not.toBeNull();
 
-      // The platform answers Escape on a modal dialogue with its `cancel` event, which the
-      // shared component forwards as a cancellation. Dispatched rather than simulated with a
-      // key press, because that event IS the platform's Escape contract.
+      // The platform answers Escape on a modal dialogue with its `cancel` event, which the shared component
+      // forwards as a cancellation. Dispatched rather than simulated with a key press, because that event IS
+      // the platform's Escape contract.
       dialog?.dispatchEvent(new Event('cancel'));
       fixture.detectChanges();
 
@@ -1494,9 +1463,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // EMPTY, PAST-THE-END AND FAILURE SURFACES
-  // -------------------------------------------------------------------------
+  // Empty, past-the-end and failure surfaces
 
   describe('the non-grid surfaces', () => {
     it('shows the empty surface with the add action when nothing matched', () => {
@@ -1613,9 +1580,7 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE PAGER
-  // -------------------------------------------------------------------------
 
   describe('the pager', () => {
     it('sits BELOW the grid as a sibling, and never as a row inside it', () => {
@@ -1627,24 +1592,22 @@ describe('PortalListComponent', () => {
       expect(grid).not.toBeNull();
       expect(pager).not.toBeNull();
 
-      // Measured placement: `portals.ascx:L56` closes the grid, `:L57` is a pair of line
-      // breaks and `:L58` declares the paging control after both. So the pager FOLLOWS the
-      // grid in document order and shares its parent.
+      // So the pager FOLLOWS the grid in document order and shares its parent.
       expect(pager?.parentElement).toBe(grid?.parentElement ?? null);
       expect(grid?.compareDocumentPosition(pager as Node)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
 
-      // Never a table row: a pager inside the grid would be announced as data, and would be
-      // swept away by the grid's own empty and loading states.
+      // Never a table row: a pager inside the grid would be announced as data, and would be swept away by
+      // the grid's own empty and loading states.
       expect(host().querySelector('tfoot')).toBeNull();
       expect(host().querySelector('app-data-table app-pagination')).toBeNull();
       expect(host().querySelector('table app-pagination')).toBeNull();
     });
 
     it('is drawn only when the total exceeds the page the server served', () => {
-      // The legacy predicate verbatim: `PageSize < TotalRecords` (`Portals.ascx.vb:L155-L157`),
-      // under unconditional suppression. Equality is therefore NOT a reason to draw it.
+      // The legacy predicate verbatim: `PageSize < TotalRecords`, under unconditional suppression. Equality
+      // is therefore NOT a reason to draw it.
       settleFirstPage([portalRow()], 10, 0);
       expect(host().querySelector('app-pagination')).toBeNull();
 
@@ -1657,9 +1620,8 @@ describe('PortalListComponent', () => {
     it('requests the page the operator asked for, zero-based, through the pager itself', () => {
       settleFirstPage([portalRow()], 40, 0);
 
-      // Driven through the RENDERED control rather than the component method, so the
-      // output binding is exercised too - a pager wired to nothing would pass the
-      // method-level expectation and fail this one.
+      // Driven through the RENDERED control rather than the component method, so the output binding is
+      // exercised too - a pager wired to nothing would pass the method-level expectation and fail this one.
       const next: HTMLButtonElement | null = host().querySelector<HTMLButtonElement>(
         'app-pagination button[aria-label="Next page"]',
       );
@@ -1669,8 +1631,8 @@ describe('PortalListComponent', () => {
 
       const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
 
-      // Zero-based, matching the legacy reader's own `CurrentPage - 1` at
-      // `Portals.ascx.vb:L142`: the second page is index one.
+      // Zero-based, matching the legacy reader's own `CurrentPage - 1` at `Portals.ascx.vb`: the second page
+      // is index one.
       expect(request.request.params.get('pageIndex')).toBe('1');
       request.flush(pageOf([portalRow()], 40, 1));
       fixture.detectChanges();
@@ -1679,11 +1641,10 @@ describe('PortalListComponent', () => {
     it('returns to the first page from the pager, still zero-based', () => {
       settleFirstPage([portalRow()], 40, 0);
 
-      // Walk forward first, because the pager reads the page the screen ASKED for and the
-      // backward affordances are correctly inert on the first page. Reaching page three by
-      // flushing a response that merely SAYS it is page three would leave the request the
-      // screen made at zero, and the click under test would be a no-op that this expectation
-      // could not distinguish from a broken binding.
+      // Walk forward first, because the pager reads the page the screen ASKED for and the backward
+      // affordances are correctly inert on the first page. Reaching page three by flushing a response that
+      // merely SAYS it is page three would leave the request the screen made at zero, and the click under
+      // test would be a no-op that this expectation could not distinguish from a broken binding.
       invoke<void>('onPageChange', 3);
       http
         .expectOne((candidate) => candidate.params.get('pageIndex') === '3')
@@ -1706,15 +1667,13 @@ describe('PortalListComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // THE SHARED COMPONENT SET
-  // -------------------------------------------------------------------------
+  // The shared component set
   //
-  // The design-system rule this block enforces: a feature template composes shared
-  // components and contributes no raw control that one of them already covers. Written as
-  // expectations rather than left to review because the failure mode is silent - a bare
-  // control renders, looks approximately right, and quietly loses the label association,
-  // the keyboard behaviour and the token vocabulary the shared component carries.
+  //  The design-system rule this block enforces: a feature template composes shared components and
+  //  contributes no raw control that one of them already covers. Written as expectations rather than left to
+  //  review because the failure mode is silent - a bare control renders, looks approximately right, and
+  //  quietly loses the label association, the keyboard behaviour and the token vocabulary the shared
+  //  component carries.
 
   describe('the shared component set', () => {
     it('composes the grid, the pager and the header from shared components', () => {
@@ -1739,8 +1698,8 @@ describe('PortalListComponent', () => {
     it('contributes no bare text control of its own: the only one is the shared filter', () => {
       settleFirstPage([portalRow()], 40);
 
-      // No select at all - this screen offers no dropdown, and the legacy one offered none
-      // either. Every input belongs to the shared filter component.
+      // No select at all - this screen offers no dropdown, and the legacy one offered none either. Every
+      // input belongs to the shared filter component.
       expect(queryAll<Element>('select').length).toBe(0);
       for (const control of queryAll<Element>('input')) {
         expect(control.closest('app-search-input')).not.toBeNull();
@@ -1748,12 +1707,11 @@ describe('PortalListComponent', () => {
     });
 
     it('renders no raw resource markup anywhere, in any state', () => {
-      // MIGRATION: RESOURCE TEXT IS TREATED AS UNTRUSTED HTML AND RENDERED AS PLAIN TEXT.
-      //   A substantial minority of the in-scope resource values carry HTML tags, stored
-      //   escaped and so invisible to a naive search; this screen's own `ModuleHelp.Text`
-      //   opens with a heading tag, and a sibling portal screen's `Advertising.Text` carries
-      //   a literal script block. Nothing on this screen binds a raw-HTML property or a
-      //   trusted-HTML wrapper, so a value like that cannot execute or restructure the page.
+      // MIGRATION: resource text is treated as untrusted HTML and rendered as plain text. A substantial
+      // minority of the in-scope resource values carry HTML tags, stored escaped and so invisible to a naive
+      // search; this screen's own `ModuleHelp.Text` opens with a heading tag, and a sibling portal screen's
+      // `Advertising.Text` carries a literal script block. Nothing on this screen binds a raw-HTML property
+      // or a trusted-HTML wrapper, so a value like that cannot execute or restructure the page.
       settleFirstPage([
         portalRow({ portalName: '<script>window.__portalListXss = true;</script>' }),
         portalRow({ portalId: 21, portalName: '<img src="x" onerror="window.__portalListXss">' }),
@@ -1764,20 +1722,15 @@ describe('PortalListComponent', () => {
       expect(globals['__portalListXss']).toBeUndefined();
       expect(host().querySelector('script')).toBeNull();
       expect(host().querySelector('img')).toBeNull();
-      // The payload survives as TEXT, which is the whole point: the name is not silently
-      // dropped, it is simply not interpreted.
+      // The payload survives as TEXT, which is the whole point: the name is not silently dropped, it is
+      // simply not interpreted.
       expect(host().textContent).toContain('<script>');
     });
   });
 
-  // -------------------------------------------------------------------------
   // ACCESSIBILITY
-  // -------------------------------------------------------------------------
   //
-  // Measured baseline: across BOTH legacy trees, `aria-live` appears in 0 files and any
-  // `aria-` attribute in 0 files, so everything below is a NET ADDITION rather than a port.
-  // Each item is achieved with no visual change, which is the condition under which it was
-  // admitted at all.
+  // Each item is achieved with no visual change, which is the condition under which it was admitted at all.
 
   describe('accessibility', () => {
     it('names the row edit affordance with the legacy tooltip wording', () => {
@@ -1787,16 +1740,15 @@ describe('PortalListComponent', () => {
         'a.portal-list__row-command',
       );
 
-      // MIGRATION: THE AFFORDANCE GAINS A ROW-SPECIFIC NAME. The legacy column rendered an
-      //   unlabelled image (`portals.ascx:L21`) whose only name was the tooltip carried by the
-      //   local `Edit.Text` value - "Edit this Portal" - repeating identically down every row.
-      //   The measured wording is retained and qualified with the row's own title, so a
-      //   screen-reader user moving between rows hears which portal each affordance acts on.
+      // MIGRATION: the affordance gains a row-specific name. The legacy column rendered an unlabelled image
+      // whose only name was the tooltip carried by the local `Edit.Text` value - "Edit this Portal" -
+      // repeating identically down every row. The measured wording is retained and qualified with the row's
+      // own title, so a screen-reader user moving between rows hears which portal each affordance acts on.
       const label: string = edit?.getAttribute('aria-label') ?? '';
       expect(label).toContain('Edit this Portal');
       expect(label).toContain('Baseline Portal');
-      // The global `Edit.Text` value is the bare word; the LOCAL value is the phrase, and the
-      // local file wins for a control declared on this screen.
+      // The global `Edit.Text` value is the bare word; the LOCAL value is the phrase, and the local file
+      // wins for a control declared on this screen.
       expect(label).not.toBe('Edit');
     });
 
@@ -1807,10 +1759,9 @@ describe('PortalListComponent', () => {
         'button.portal-list__row-command--danger',
       );
 
-      // There is no `Delete.Text` entry in `Portals.ascx.resx` at all, so the legacy image
-      // column's own localisation by command name (`Portals.ascx.vb:L314-L316`) fell through
-      // to the global `cmdDelete.Text` value - the bare word "Delete". That word is the
-      // visible label, and the accessible name qualifies it with the row.
+      // There is no `Delete.Text` entry in `Portals.ascx.resx` at all, so the legacy image column's own
+      // localisation by command name fell through to the global `cmdDelete.Text` value - the bare word
+      // "Delete". That word is the visible label, and the accessible name qualifies it with the row.
       expect(remove?.textContent?.trim()).toBe('Delete');
       const label: string = remove?.getAttribute('aria-label') ?? '';
       expect(label).toContain('Delete');
@@ -1822,9 +1773,9 @@ describe('PortalListComponent', () => {
 
       const caption: HTMLElement | null = host().querySelector<HTMLElement>('table caption');
 
-      // A caption rather than a heading association, because a caption is the element the
-      // table role expects; it is clipped rather than hidden, so it costs nothing visually
-      // and still reaches the accessibility tree.
+      // A caption rather than a heading association, because a caption is the element the table role
+      // expects; it is clipped rather than hidden, so it costs nothing visually and still reaches the
+      // accessibility tree.
       expect(caption).not.toBeNull();
       expect(caption?.textContent?.trim().length).toBeGreaterThan(0);
       expect(caption?.hasAttribute('data-visually-hidden')).toBeTrue();
@@ -1842,8 +1793,8 @@ describe('PortalListComponent', () => {
       const live: HTMLElement | null = host().querySelector<HTMLElement>('[aria-live]');
 
       expect(live).not.toBeNull();
-      // Assertive, because the operator is not necessarily looking at this region: the
-      // failure may have arrived from the initial read rather than from an action.
+      // Assertive, because the operator is not necessarily looking at this region: the failure may have
+      // arrived from the initial read rather than from an action.
       expect(live?.getAttribute('aria-live')).toBe('assertive');
       expect(live?.getAttribute('role')).toBe('alert');
       expect(host().querySelector('app-error-banner [aria-live]')).not.toBeNull();
@@ -1859,8 +1810,8 @@ describe('PortalListComponent', () => {
         .flush(
           {
             ...problemOf(400, 'request.validation_failed', 'One or more fields are invalid.'),
-            // Bracket access below, not property access: the field-error map is an index
-            // signature and the workspace forbids reading one as a property.
+            // Bracket access below, not property access: the field-error map is an index signature and the
+            // workspace forbids reading one as a property.
             errors: { PortalName: ['Portal Name is required.'] },
           },
           { status: 400, statusText: 'Bad Request' },
@@ -1887,24 +1838,36 @@ describe('PortalListComponent', () => {
 
       expect(controls.length).toBeGreaterThan(0);
       for (const control of controls) {
-        // Natively focusable elements only - a real anchor with an address, or a real
-        // button - so Tab, Enter and Space all work with no key handling written anywhere.
+        // Natively focusable elements only - a real anchor with an address, or a real button - so Tab, Enter
+        // and Space all work with no key handling written anywhere.
         const name: string = control.tagName.toLowerCase();
         expect(['a', 'button']).toContain(name);
         if (name === 'a') {
           expect(control.getAttribute('href')).toBeTruthy();
         }
-        // Nothing is removed from the tab order, which is how a control becomes unreachable
-        // while still looking operable.
+        // Nothing is removed from the tab order, which is how a control becomes unreachable while still
+        // looking operable.
         expect(control.getAttribute('tabindex')).not.toBe('-1');
       }
 
-      // No element is made operable by a handler on a non-interactive tag: the shared grid's
-      // own rows are the only elements it puts in the tab order, and it does so by declaring a
-      // zero tab index rather than a negative one.
+      // ⚠ THE ROWS ARE NOT TAB STOPS, AND THIS CASE USED TO REQUIRE THAT THEY WERE. The shared
+      // grid gave every row a zero tab index unconditionally, so a page of forty portals put
+      // forty inert stops between the filter strip and the first row command — a reader
+      // reaching the last row's Delete had to pass through every row above it to get there,
+      // and none of those stops did anything when activated, this screen binding no
+      // `rowSelect`. The grid now offers the row affordance only where something is listening,
+      // so the correct expectation here is that no row is in the tab order and no row announces
+      // a selection state it cannot enter.
       for (const row of queryAll<HTMLElement>('tbody tr')) {
-        expect(row.getAttribute('tabindex')).toBe('0');
+        expect(row.getAttribute('tabindex'))
+          .withContext('a row nothing listens to must not be a tab stop')
+          .toBeNull();
+        expect(row.hasAttribute('aria-selected'))
+          .withContext('nor announce a selection state')
+          .toBeFalse();
       }
+
+      // No element is made operable by a handler on a non-interactive tag either.
       expect(queryAll<Element>('table div[tabindex], table span[tabindex]').length).toBe(0);
 
       // The filter strip is keyboard-operable on the same terms.
@@ -1919,9 +1882,8 @@ describe('PortalListComponent', () => {
 
       const strip: HTMLElement | null = host().querySelector<HTMLElement>('.portal-list__letters');
 
-      // The legacy strip was a centred panel of hyperlinks with no grouping and no name
-      // (`portals.ascx:L4-L11`), so twenty-seven adjacent single-letter links were announced
-      // with nothing to say what they filtered.
+      // The legacy strip was a centred panel of hyperlinks with no grouping and no name, so twenty-seven
+      // adjacent single-letter links were announced with nothing to say what they filtered.
       expect(strip?.getAttribute('role')).toBe('group');
       expect(strip?.getAttribute('aria-label')).toBe('Filter portals by first letter');
     });

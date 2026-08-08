@@ -8,6 +8,7 @@ import { ModuleStore } from './module.store';
 import { PortalStore } from './portal.store';
 import { RoleStore } from './role.store';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { SessionTeardownService } from './session-teardown.service';
 import { UserStore } from './user.store';
 import { AUTH_ENDPOINTS } from '../config/api-endpoints';
 import { authInterceptor } from '../interceptors/auth.interceptor';
@@ -67,12 +68,13 @@ function sessionFor(user: CurrentUser): AuthSession {
  * THE CROSS-SESSION ISOLATION PROPERTY.
  *
  * ⚠ WHAT THIS FILE ASSERTS THAT NO OTHER FILE DOES. Each store's own specification proves
- * that its `reset()` clears every slice it owns, and the coordinator's specification proves
- * that ending a session calls all four and cancels the work in flight. Neither of those
- * stages a SECOND OPERATOR. This file does: it loads one operator's records, ends the session
- * the way the application really ends it — a terminal refusal arriving through the live
- * interceptor chain, and separately an explicit sign-out — then signs a DIFFERENT operator in
- * for real and asserts that nothing the first operator could see is legible to the second.
+ * that its `reset()` clears every slice it owns, and `session-lifecycle.service.spec.ts` and
+ * `session-teardown.service.spec.ts` prove that ending a session calls all four and cancels
+ * the work in flight. Not one of those stages a SECOND OPERATOR. This file does: it loads one
+ * operator's records, ends the session the way the application really ends it — a terminal
+ * refusal arriving through the live interceptor chain, and separately an explicit sign-out —
+ * then signs a DIFFERENT operator in for real and asserts that nothing the first operator
+ * could see is legible to the second.
  *
  * ⚠ WHY THAT IS A DISCLOSURE RATHER THAN UNTIDINESS. The four domain stores are
  * root-provided, so they outlive any component and any session. A single-page application
@@ -82,9 +84,9 @@ function sessionFor(user: CurrentUser): AuthSession {
  *
  * ⚠ THE INTERCEPTOR CHAIN IS REAL HERE, deliberately. The terminal path is not invoked
  * directly: a store read is refused, the interceptor attempts the one renewal it is allowed,
- * the renewal is refused, and the coordinator runs as a consequence. That is the only way to
- * assert that the production wiring — not merely the coordinator — actually isolates the two
- * sessions.
+ * the renewal is refused, and `SessionTeardownService` runs as a consequence — reached from
+ * the transport layer, not from this file. That is the only way to assert that the production
+ * wiring, rather than a purge called by hand, actually isolates the two sessions.
  */
 describe('cross-session isolation', () => {
   let httpMock: HttpTestingController;
@@ -96,6 +98,7 @@ describe('cross-session isolation', () => {
   let modules: ModuleStore;
   let notifications: NotificationService;
   let session: SessionLifecycleService;
+  let teardown: SessionTeardownService;
   let navigate: jasmine.Spy;
 
   beforeEach(() => {
@@ -119,6 +122,7 @@ describe('cross-session isolation', () => {
     modules = TestBed.inject(ModuleStore);
     notifications = TestBed.inject(NotificationService);
     session = TestBed.inject(SessionLifecycleService);
+    teardown = TestBed.inject(SessionTeardownService);
 
     // The interceptor routes to the sign-in screen when it ends a session. Spied before
     // anything runs so no navigation escapes into the empty route table, and resolved
@@ -204,6 +208,7 @@ describe('cross-session isolation', () => {
           isOnline: false,
           isSuperUser: false,
           isLockedOut: false,
+          canDelete: true,
         },
       ]),
     );
@@ -274,8 +279,8 @@ describe('cross-session isolation', () => {
    * Ends the session the way the application really ends it.
    *
    * A store read is refused, the interceptor spends its single renewal, the renewal is
-   * refused, and the coordinator runs as a consequence. The refused read's own failure is
-   * absorbed by the store, which records it rather than rethrowing.
+   * refused, and `SessionTeardownService` runs as a consequence. The refused read's own
+   * failure is absorbed by the store, which records it rather than rethrowing.
    */
   function sufferTerminalRefusal(): void {
     portals.reloadPortals();
@@ -510,6 +515,122 @@ describe('cross-session isolation', () => {
 
       expect(moduleRead.request.params.has('query')).toBeFalse();
       moduleRead.flush(page([]));
+    });
+  });
+
+  // =====================================================================================
+  // ONE OWNER, AND EVERY TERMINATION PATH REACHES IT
+  // =====================================================================================
+  //
+  // ⚠ THE GROUP THAT EXISTS BECAUSE THERE WERE BRIEFLY THREE OWNERS FOR ONE BOUNDARY. Two were
+  // live and performed the same fan-out in two places — the bearer interceptor's terminal path
+  // through `SessionTeardownService`, and the shell's sign-out through `SessionLifecycleService`
+  // — and they had already drifted: one cleared the queued notices and the other did not, so an
+  // identical session ending left the application in two different states depending on which
+  // path reached it. A third, `session.coordinator.ts`, was written to own the boundary properly
+  // and had ZERO production importers, so its session GENERATION never advanced and its reason
+  // was never recorded.
+  //
+  // The fan-out is now owned once and the coordinator's two useful ideas were folded into it.
+  // What this group asserts is the property that consolidation is FOR: that every path which
+  // ends a session reaches that one owner, and that the owner records WHICH path it was. The
+  // fan-out's own effects are asserted throughout the rest of this file; these cases are about
+  // the owner being single and being reached.
+  describe('the one session-boundary owner', () => {
+    it('advances the generation once per boundary, whichever path crossed it', () => {
+      const start: number = teardown.generation();
+
+      holdSessionFor(OPERATOR_A);
+      loadRecordsFor('Ann');
+
+      session.signOut().subscribe({ error: () => undefined });
+      httpMock
+        .expectOne(AUTH_ENDPOINTS.logout)
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      // ⚠ ASSERTED AS AN INCREASE RATHER THAN AS AN EXACT COUNT, deliberately. The sign-out path
+      // legitimately reaches the owner more than once — the lifecycle service purges, and the
+      // authentication store's own discard purges again — and the purge is idempotent by
+      // construction, so the number of calls is not a contract. What IS a contract is that the
+      // generation is MONOTONIC, so a captured value can always tell a boundary has been crossed.
+      const afterSignOut: number = teardown.generation();
+
+      expect(afterSignOut).toBeGreaterThan(start);
+      expect(teardown.hasEndedASession()).toBeTrue();
+
+      signIn(OPERATOR_B);
+
+      expect(teardown.generation()).toBeGreaterThan(afterSignOut);
+    });
+
+    it('records a deliberate sign-out and an involuntary ending as DIFFERENT boundaries', () => {
+      // The reason is the one thing the discard does not change and the one thing a consumer
+      // cannot reconstruct: a purge looks identical whether the operator asked to leave or a
+      // renewal was refused underneath them. Recording it is what makes the two distinguishable
+      // without inventing a second mechanism to report it.
+      holdSessionFor(OPERATOR_A);
+
+      session.signOut().subscribe({ error: () => undefined });
+      httpMock
+        .expectOne(AUTH_ENDPOINTS.logout)
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(teardown.lastReason()).toBe('signedOut');
+
+      // The terminal path, driven through the REAL interceptor chain rather than invoked
+      // directly: a store read is refused, no renewal is possible, and the boundary is crossed
+      // as a consequence — which is the only way to prove the production wiring reaches the one
+      // owner rather than merely that the owner works when called.
+      signIn(OPERATOR_A);
+      portals.loadPortals();
+      expectOne(PORTALS_URL).flush(null, { status: 401, statusText: 'Unauthorized' });
+      expectOne(AUTH_ENDPOINTS.refresh).flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      expect(teardown.lastReason()).toBe('renewalRefused');
+      expect(tokens.session()).toBeNull();
+    });
+
+    it('records an identity REPLACEMENT as its own boundary, before the new session exists', () => {
+      // The third termination path, and the one that is easiest to overlook because no session
+      // ends in the ordinary sense: the credentials that arrive are valid, they simply describe
+      // somebody else. The store purges BEFORE the attempt is issued rather than after it
+      // succeeds, so a refused attempt cannot leave the previous operator's records in memory
+      // for its duration.
+      holdSessionFor(OPERATOR_A);
+      loadRecordsFor('Ann');
+
+      signIn(OPERATOR_B);
+
+      expect(teardown.lastReason()).toBe('signedIn');
+      expect(visibleRecordCounts()).toEqual({
+        portals: 0,
+        users: 0,
+        roles: 0,
+        modules: 0,
+        notifications: 0,
+      });
+    });
+
+    it('publishes the generation and the reason read-only, so no consumer can rewind them', () => {
+      // A consumer that could move the generation could declare its own stale work current, and
+      // one that could write the reason could misattribute a boundary. Only the purge moves
+      // either.
+      expect('set' in teardown.generation).toBeFalse();
+      expect('update' in teardown.generation).toBeFalse();
+      expect('set' in teardown.lastReason).toBeFalse();
+      expect('update' in teardown.lastReason).toBeFalse();
+    });
+
+    it('answers a captured generation correctly across a boundary', () => {
+      holdSessionFor(OPERATOR_A);
+
+      const captured: number = teardown.generation();
+
+      expect(teardown.isCurrent(captured)).toBeTrue();
+
+      session.endSession();
+
+      expect(teardown.isCurrent(captured)).toBeFalse();
     });
   });
 });

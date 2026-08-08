@@ -1,40 +1,34 @@
 @use '../../../../styles/mixins' as mx;
 
-// The host must contribute no box of its own. The dialog it contains is hidden by
-// the user agent while closed and lifted into the top layer while open, so in
-// neither state should an intermediate box affect the surrounding page.
+// The host must contribute no box of its own. The dialog it contains is hidden by the user agent while
+// closed and lifted into the top layer while open, so in neither state should an intermediate box affect the
+// surrounding page.
 :host {
   display: contents;
 }
 
-// The dialog frame. Overrides the user-agent defaults that would otherwise bypass
-// the token vocabulary: the default border, the default inner padding, and the
-// system canvas background and text colour. Setting the colour also gives
-// currentColor a defined basis for any projected content.
+// The dialog frame. Overrides the user-agent defaults that would otherwise bypass the token vocabulary: the
+// default border, the default inner padding, and the system canvas background and text colour. Setting the
+// colour also gives currentColor a defined basis for any projected content.
 //
-// MIGRATION: the user-agent padding is zeroed here rather than replaced here, and
-// the visible inset is carried by `.confirm-dialog__panel` instead. That split is
-// functional, not stylistic. A modal `<dialog>` paints its `::backdrop` as its own
-// pseudo-element, so the platform attributes a click on the backdrop to the
-// `<dialog>` element - and it attributes a click on any part of the dialog's own box
-// that no child covers to exactly the same element. Padding on this element would
-// therefore be a strip that reports an identical event target to the backdrop,
-// making the empty space beside the title dismiss a destructive confirmation. With
-// the inset moved to a child, the dialog's content box is fully covered and only the
-// border remains, which the class's pointer-geometry test resolves. The legacy
-// confirmation was a full page postback with no dismissible overlay, so this
-// structure diverges from no measured legacy behaviour.
+// MIGRATION: the user-agent padding is zeroed here rather than replaced here, and the visible inset is
+// carried by `.confirm-dialog__panel` instead. That split is functional, not stylistic. A modal `<dialog>`
+// paints its `::backdrop` as its own pseudo-element, so the platform attributes a click on the backdrop to
+// the `<dialog>` element - and it attributes a click on any part of the dialog's own box that no child
+// covers to exactly the same element. Padding on this element would therefore be a strip that reports an
+// identical event target to the backdrop, making the empty space beside the title dismiss a destructive
+// confirmation. With the inset moved to a child, the dialog's content box is fully covered and only the
+// border remains, which the class's pointer-geometry test resolves. The legacy confirmation was a full page
+// postback with no dismissible overlay, so this structure diverges from no measured legacy behaviour.
 //
-// The two viewport caps are the whole responsive story and need no breakpoint;
-// border-box sizing is required for them to hold, since this element carries a
-// border and bounds a padded child. Nothing here positions the dialog or declares a
-// stacking index: showModal() promotes it to the top layer, which paints above every
-// positioned element regardless of index, and the user agent supplies the modal with
-// fixed positioning, a full-viewport inset and centring margins already.
+// The two viewport caps are the whole responsive story and need no breakpoint; border-box sizing is required
+// for them to hold, since this element carries a border and bounds a padded child. Nothing here positions
+// the dialog or declares a stacking index: showModal() promotes it to the top layer, which paints above
+// every positioned element regardless of index, and the user agent supplies the modal with fixed
+// positioning, a full-viewport inset and centring margins already.
 //
-// The border resolves to the brand colour rather than to either border token,
-// because both of those fall below the contrast threshold for a boundary that has
-// to be perceivable rather than decorative.
+// The border resolves to the brand colour rather than to either border token, because both of those fall
+// below the contrast threshold for a boundary that has to be perceivable rather than decorative.
 .confirm-dialog {
   box-sizing: border-box;
   max-inline-size: var(--dialog-max-inline-size);
@@ -47,29 +41,26 @@
   color: inherit;
   font-family: var(--font-family-base);
 
-  // The flex container is scoped to the open state deliberately. A closed dialog
-  // is hidden by the user-agent rule `dialog:not([open])`. Any author `display`
-  // declaration outranks a user-agent one outright, whatever its specificity, so an
-  // unconditional `display` here would defeat the platform's own hiding and leave
-  // the dialog rendered while closed. Attaching it to `[open]` also makes it stop
-  // matching the moment the dialog closes.
+  // The flex container is scoped to the open state deliberately. A closed dialog is hidden by the user-agent
+  // rule `dialog:not([open])`. Any author `display` declaration outranks a user-agent one outright, whatever
+  // its specificity, so an unconditional `display` here would defeat the platform's own hiding and leave the
+  // dialog rendered while closed. Attaching it to `[open]` also makes it stop matching the moment the dialog
+  // closes.
   //
-  // No gap is declared: this container now has exactly one child, so a gap could
-  // never apply. The rhythm between the title, message and action row belongs to
-  // the panel, which is the element that actually has siblings to separate.
+  // No gap is declared: this container now has exactly one child, so a gap could never apply. The rhythm
+  // between the title, message and action row belongs to the panel, which is the element that actually has
+  // siblings to separate.
   &[open] {
     display: flex;
     flex-direction: column;
   }
 }
 
-// The padded interior, and the element that makes the frame above click-safe. It is
-// a flex column so the message can be the single scrolling region while the action
-// row stays pinned below it, and it owns the vertical rhythm between the three
-// regions. The flexible basis paired with a zero block minimum is what lets it be
-// bounded by the frame's height cap instead of overflowing it; without the explicit
-// minimum a flex child refuses to shrink below its content size, and the message's
-// own scrolling would never engage.
+// The padded interior, and the element that makes the frame above click-safe. It is a flex column so the
+// message can be the single scrolling region while the action row stays pinned below it, and it owns the
+// vertical rhythm between the three regions. The flexible basis paired with a zero block minimum is what
+// lets it be bounded by the frame's height cap instead of overflowing it; without the explicit minimum a
+// flex child refuses to shrink below its content size, and the message's own scrolling would never engage.
 .confirm-dialog__panel {
   display: flex;
   flex: var(--flex-fill);
@@ -79,12 +70,11 @@
   padding: var(--space-6);
 }
 
-// The heading margin is zeroed because the panel's gap owns the vertical rhythm.
-// Breaking long words is not a precaution: a confirmation title names the thing
-// being deleted, and in this domain that name is operator-supplied data such as a
-// portal alias, which is a host and path with no break opportunity at all. Without
-// the break the heading overflows its own box and is clipped mid-glyph; ordinary
-// titles already have break opportunities and render identically.
+// The heading margin is zeroed because the panel's gap owns the vertical rhythm. Breaking long words is not
+// a precaution: a confirmation title names the thing being deleted, and in this domain that name is
+// operator-supplied data such as a portal alias, which is a host and path with no break opportunity at all.
+// Without the break the heading overflows its own box and is clipped mid-glyph; ordinary titles already have
+// break opportunities and render identically.
 .confirm-dialog__title {
   margin: 0;
   overflow-wrap: break-word;
@@ -94,17 +84,15 @@
   line-height: var(--line-height-tight);
 }
 
-// The message is the region that scrolls. Scrolling lives here rather than on the
-// panel so that a long message can never push the action row out of view, and the
-// frame's height cap is what ultimately bounds it - the cap constrains the panel,
-// and the panel constrains this. A flex child will not shrink below its content size
-// without an explicit zero minimum in the block axis, so that is set alongside the
-// flexible basis, at both levels of the chain. The user agent's own overflow
-// handling on the dialog element is left untouched as a last-resort fallback rather
-// than suppressed.
+// The message is the region that scrolls. Scrolling lives here rather than on the panel so that a long
+// message can never push the action row out of view, and the frame's height cap is what ultimately bounds it
+// - the cap constrains the panel, and the panel constrains this. A flex child will not shrink below its
+// content size without an explicit zero minimum in the block axis, so that is set alongside the flexible
+// basis, at both levels of the chain. The user agent's own overflow handling on the dialog element is left
+// untouched as a last-resort fallback rather than suppressed.
 //
-// Contained scroll chaining stops a completed scroll gesture inside the modal from
-// scrolling the page behind it.
+// Contained scroll chaining stops a completed scroll gesture inside the modal from scrolling the page behind
+// it.
 .confirm-dialog__message {
   flex: var(--flex-fill);
   min-block-size: 0;
@@ -118,10 +106,9 @@
   line-height: var(--line-height-base);
 }
 
-// Wrapping rather than overflowing is the entire narrow-screen behaviour of the
-// action row. End alignment places the confirming action nearest the reading
-// terminus; it does not reorder anything, so the cancelling affordance stays first
-// in the DOM and keyboard traversal still reaches the non-destructive action first.
+// Wrapping rather than overflowing is the entire narrow-screen behaviour of the action row. End alignment
+// places the confirming action nearest the reading terminus; it does not reorder anything, so the cancelling
+// affordance stays first in the DOM and keyboard traversal still reaches the non-destructive action first.
 .confirm-dialog__actions {
   display: flex;
   flex-wrap: wrap;
@@ -129,14 +116,13 @@
   gap: var(--space-2);
 }
 
-// Real button styling rather than a link imitation: no underline is declared,
-// because an underline on a button element signals a link the control is not.
-// Padding is logical so the control stays correct under a right-to-left or
-// vertical writing mode.
+// Real button styling rather than a link imitation: no underline is declared, because an underline on a
+// button element signals a link the control is not. Padding is logical so the control stays correct under a
+// right-to-left or vertical writing mode.
 //
-// The focus ring is included inside this selector rather than beside it, because
-// the mixin attaches a focus-visible pseudo-class to whichever selector includes
-// it. No focus indicator is suppressed anywhere in this file.
+// The focus ring is included inside this selector rather than beside it, because the mixin attaches a
+// focus-visible pseudo-class to whichever selector includes it. No focus indicator is suppressed anywhere in
+// this file.
 .confirm-dialog__button {
   padding-block: var(--space-2);
   padding-inline: var(--space-4);
@@ -152,29 +138,25 @@
 
   @include mx.focus-ring;
 
-  // Pointer and keyboard hover. Enabled only: `:hover` is excluded on a disabled
-  // button by the `:enabled` qualifier, so a disabled control gives no hover
-  // feedback that would imply it can be actioned.
+  // Pointer and keyboard hover. Enabled only: `:hover` is excluded on a disabled button by the `:enabled`
+  // qualifier, so a disabled control gives no hover feedback that would imply it can be actioned.
   &:enabled:hover {
     background-color: var(--color-surface);
     color: var(--color-primary-hover);
   }
 
-  // Press state. The ink returns to the brand colour exactly as the legacy
-  // active rule did, which is what distinguishes press from hover here, while the
-  // hover background is retained so the control does not appear to leave hover
-  // mid-press.
+  // Press state. The ink returns to the brand colour exactly as the legacy active rule did, which is what
+  // distinguishes press from hover here, while the hover background is retained so the control does not
+  // appear to leave hover mid-press.
   &:enabled:active {
     background-color: var(--color-surface);
     color: var(--color-primary);
   }
 
-  // The component sets this while a decision is being applied, so that neither
-  // affordance can be actioned twice. The muted ink measures 4.73 to 1 against
-  // the surface it sits on, so the disabled label stays legible rather than
-  // relying on the WCAG inactive-control exemption. `not-allowed` is the cue a
-  // pointer user gets, and it is precisely the declaration the global rule was
-  // losing the specificity contest to.
+  // The component sets this while a decision is being applied, so that neither affordance can be actioned
+  // twice. The muted ink measures 4.73 to 1 against the surface it sits on, so the disabled label stays
+  // legible rather than relying on the WCAG inactive-control exemption. `not-allowed` is the cue a pointer
+  // user gets, and it is precisely the declaration the global rule was losing the specificity contest to.
   &:disabled {
     border-color: var(--color-border);
     background-color: var(--color-surface);
@@ -183,13 +165,12 @@
   }
 }
 
-// Equal in specificity to the base rule and declared after it, so it wins on
-// source order without a compound selector or an importance flag.
+// Equal in specificity to the base rule and declared after it, so it wins on source order without a compound
+// selector or an importance flag.
 //
-// The ink is used exactly as the token declares it and is never darkened here.
-// Severity is therefore carried by the bold weight and by the label text as well,
-// so it never depends on hue alone. The legacy error rule's larger font size is
-// deliberately not carried across: sizing one member of a button row differently
+// The ink is used exactly as the token declares it and is never darkened here. Severity is therefore carried
+// by the bold weight and by the label text as well, so it never depends on hue alone. The legacy error
+// rule's larger font size is deliberately not carried across: sizing one member of a button row differently
 // from its neighbour reads as a layout defect rather than as emphasis.
 .confirm-dialog__button--danger {
   border-color: var(--color-danger);

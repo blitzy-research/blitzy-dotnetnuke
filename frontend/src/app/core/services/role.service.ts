@@ -48,6 +48,17 @@ const ROLE_GROUP_LIST_RESPONSE: Decoder<ApiResponse<readonly RoleGroup[]>> = res
 );
 
 /**
+ * The roles one account holds, which is an UNPAGED sequence rather than a page.
+ *
+ * Decoded with the same row decoder the paged listing uses, because the server returns the same
+ * row contract from both — so a screen can put either answer through the same grid without a
+ * second shape to reconcile.
+ */
+const USER_ROLE_LIST_RESPONSE: Decoder<ApiResponse<readonly RoleListItem[]>> = responseOf(
+  arrayOf(decodeRoleListItem),
+);
+
+/**
  * The application's only client for the role resource, its groupings, and the
  * assignment that joins an account to a role.
  *
@@ -568,6 +579,35 @@ export class RoleService {
         context: presentedInContext(),
       })
       .pipe(map((body) => decodeResponse(ROLE_GROUP_LIST_RESPONSE, body)));
+  }
+
+  /**
+   * `GET /api/v1/users/{userId}/roles` — the roles one account holds in the resolved tenant.
+   *
+   * UNPAGED, and no page, size, sort or filter parameter is sent, because the server accepts
+   * none: it declares the read unpaged on the grounds that the legacy reader it replaces returned
+   * every role an account held with no pager at all. An empty payload is a SUCCESSFUL answer
+   * meaning the account holds no role, and is not the same fact as an unresolvable account, which
+   * the server refuses with `404`.
+   *
+   * The tenant is not an argument. The server resolves it from the request, as it does for every
+   * other read in this service, so no portal identifier is composed here.
+   *
+   * MIGRATION: this one member replaces six near-identical readers of an account's roles on the
+   * legacy static controller, the closest being
+   * `GetUserRolesByUsername(PortalId, User.Username, Null.NullString)` at
+   * `SecurityRoles.ascx.vb:L253` — keyed by NAME and carrying an empty-string sentinel as its
+   * third argument. This is keyed by identifier and carries no sentinel argument at all.
+   *
+   * @param userId The account whose roles to read. Forwarded exactly as supplied.
+   * @returns The roles the account holds, inside the shared success envelope.
+   */
+  listRolesHeldByUser(userId: number): Observable<ApiResponse<readonly RoleListItem[]>> {
+    return this.http
+      .get<unknown>(API_ENDPOINTS.roles.forCurrentPortal.heldByUser(userId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(USER_ROLE_LIST_RESPONSE, body)));
   }
 
   /**

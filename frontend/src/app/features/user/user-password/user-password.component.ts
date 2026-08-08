@@ -303,22 +303,6 @@ const PASSWORD_CHANGED_TEXT = 'The password has been reset.';
  */
 const MANAGE_PASSWORD_TITLE = 'Manage Password';
 
-/**
- * The role that confers tenant administration, measured from `PortalController.vb`
- * L1390, where the role is created with the name 'Administrators'.
- *
- * PLURAL. It is compared as an exact string because that is what the legacy
- * `UserModuleBase.IsAdmin` did through `UserInfo.IsInRole`, and because the role name
- * is data rather than a policy name.
- *
- * ⚠ NOT an authorisation policy name. The API's policy vocabulary is closed at
- * `ModuleView`, `ModuleEdit`, `TabView`, `TabEdit` and `PortalAdministrator`, and the
- * persisted permission keys are a third, separate vocabulary. Nothing here conflates
- * them, and nothing here decides access: the server re-authorises every request
- * against stored state and answers 403.
- */
-const ADMINISTRATOR_ROLE_NAME = 'Administrators';
-
 // ---------------------------------------------------------------------------
 // THE TWO OPERATIONS, AND THE FAILURES THIS SCREEN OWNS
 // ---------------------------------------------------------------------------
@@ -758,26 +742,39 @@ export class UserPasswordComponent {
   /**
    * Whether the CALLER administers this tenant or is a host account.
    *
-   * Reproduces `UserModuleBase.IsAdmin` (L287-L291) member for member: the legacy
-   * predicate was `UserInfo.IsInRole(PortalSettings.AdministratorRoleName) Or
-   * UserInfo.IsSuperUser`, and the administrator role name is the plural
-   * 'Administrators' created at `PortalController.vb` L1390.
+   * ⚠ READ FROM THE ONE AUTHORITY, NEVER FROM A ROLE NAME.
+   * `AuthStore.administersCurrentPortal` answers this for the whole application from the
+   * fact the SERVER derived — the tenant's own `Portals.AdministratorRoleId` designation
+   * evaluated against the caller's live role assignments — plus the host-account arm the
+   * enforcing policy also takes.
    *
-   * MIGRATION: THIS IS REDUNDANT WITH THE ROUTE GUARD, AND IT IS DERIVED ANYWAY. The
-   * route that reaches this screen carries a tenant-administration permission and is
-   * guarded, so in practice every caller who gets here satisfies this predicate. It is
-   * still derived rather than assumed true, for two reasons: the guard is advisory —
-   * the server is the authority and answers 403 — and the predicate also has to be
-   * false-able for the gates below to be testable at all. Assuming it true would make
-   * the self-service arm of this screen unreachable and untested.
+   * MIGRATION: the legacy predicate `UserModuleBase.IsAdmin` (L287-L291) was
+   * `UserInfo.IsInRole(PortalSettings.AdministratorRoleName) Or UserInfo.IsSuperUser`, and
+   * this screen previously reproduced it by comparing the caller's role list against the
+   * literal name 'Administrators'. That is NOT what the legacy did, and the difference is
+   * the defect: the legacy read the tenant's own `AdministratorRoleName`, so it followed
+   * the designation, whereas a hardcoded name follows nothing. An administrator of a tenant
+   * whose administrator role carries any other name — the name is an ordinary updatable
+   * column — was shown the self-service wording and asked for a credential they do not
+   * hold. The role name no longer appears in this file.
+   *
+   * ⚠ THIS IS NOT REDUNDANT WITH THE ROUTE GUARD, AND AN EARLIER NOTE HERE CLAIMED IT WAS.
+   * The route that reaches this screen declares `AccountOwner` — matching
+   * `UsersController.cs:L576`, the change endpoint's own policy, which has no
+   * administrator arm at all — so the caller who gets here is the ACCOUNT HOLDER and this
+   * predicate is normally FALSE, not "true in practice". The earlier note described a
+   * route declaring tenant administration, which was itself the defect: it refused every
+   * account holder the one screen this predicate's self-service arm exists to serve.
+   *
+   * It remains derived rather than assumed either way, because the guard is advisory — the
+   * server is the authority and answers 403 — and because both arms of the gates below have
+   * to be reachable for either to be testable.
    *
    * Defaults to FALSE while the caller's identity is unresolved, which is the safe
    * posture: an unresolved caller is asked for the credential in force rather than
    * excused from it.
    */
-  readonly isAdmin: Signal<boolean> = computed(
-    () => this.auth.isSuperUser() || this.auth.roles().includes(ADMINISTRATOR_ROLE_NAME),
-  );
+  readonly isAdmin: Signal<boolean> = this.auth.administersCurrentPortal;
 
   /**
    * Whether the CALLER is the account on the screen.
@@ -1038,6 +1035,30 @@ export class UserPasswordComponent {
     }
 
     return OWNED_OPERATIONS.includes(failure.operation) ? failure.problem : null;
+  });
+
+  /**
+   * The sentence to show when a failure this screen owns carried NO problem document.
+   *
+   * ⚠ THE FAILURE THIS MAKES VISIBLE WAS COMPLETELY SILENT, AND ON THIS SCREEN IT LEFT THE FORM
+   * UNUSABLE. The runtime decoders that check each response against its published contract run inside
+   * the service's own mapping, which is DOWNSTREAM of the interceptor's error handling — so a `200`
+   * whose body does not match its contract throws a plain error with no document, no status and no
+   * support reference. {@link problem} is `null` for it, so the banner rendered nothing while the
+   * account read had not committed, and the operator was left looking at a credential form that would
+   * not submit and gave no reason.
+   *
+   * The store's own authored summary is read out rather than a second sentence being invented here.
+   * Null whenever a document IS present, so the server's own explanation always wins.
+   */
+  readonly failureSummary: Signal<string | null> = computed(() => {
+    const failure = this.store.failure();
+
+    if (failure === null || failure.problem !== null) {
+      return null;
+    }
+
+    return OWNED_OPERATIONS.includes(failure.operation) ? failure.summary.message : null;
   });
 
   /** Whether the administrative-reset confirmation is mounted. */

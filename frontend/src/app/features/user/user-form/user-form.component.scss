@@ -302,18 +302,22 @@ p {
 // (`User.ascx.vb` L164) and there is no mail endpoint here, so this region is the only way
 // the value reaches the operator who just created the account.
 //
-// It is painted with `--color-surface-hint`, the measured pale yellow of the legacy `.Help`
-// rule (`default.css` L438) — the only surface in the legacy stylesheet that marks a region
-// as advisory rather than as content, which is precisely what this region is. Inherited text
-// measures 20.02:1 on it. The border uses `--color-border-strong` rather than the decorative
-// hairline so the boundary of a region holding a secret is actually perceivable.
+// ⚠ It is painted with `--color-surface`, NOT the legacy pale yellow. The legacy `.Help`
+// rule (`default.css` L438) is the only surface in that stylesheet marking a region as
+// advisory rather than as content, which is precisely what this region is — but `#ffff99`
+// is absent from the design specification's nine-colour table, so it is not tokenised and
+// may not be written as a literal. A recorded visible divergence; inherited text measures
+// 18.10:1 on the secondary surface against 20.02:1 on the legacy yellow, so nothing about
+// legibility changes. The border uses `--color-border-strong` rather than the decorative
+// hairline so the boundary of a region holding a secret is actually perceivable, and it is
+// what now carries the region's distinction from the page.
 .user-form__credential {
   display: grid;
   gap: var(--space-2);
   padding: var(--space-4);
   border: var(--border-width) var(--border-style) var(--color-border-strong);
   border-radius: var(--radius-sm);
-  background-color: var(--color-surface-hint);
+  background-color: var(--color-surface);
 }
 
 // Type is inherited from the global `h2` rule; only the flow margin is removed so the
@@ -322,11 +326,14 @@ p {
   margin-block: 0;
 }
 
-// The line that tells the operator this value is shown once. `--color-danger-text` is the
-// accessible danger colour and measures 6.86:1 on this surface; the wording itself carries
-// the meaning, so colour is not the sole indicator.
+// The line that tells the operator this value is shown once. `--color-danger` is the measured
+// legacy red and measures 3.45:1 on this surface — below the 4.5:1 minimum for normal text,
+// a ratio recorded rather than repaired with a colour the closed vocabulary does not hold.
+// THE WORDING ITSELF CARRIES THE MEANING, in a sentence rather than a signal, and the bold
+// weight repeats the emphasis without depending on hue — so a reader who perceives no red is
+// still told, in words, that the value is shown once.
 .user-form__credential-advisory {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   font-weight: var(--font-weight-bold);
 }
 

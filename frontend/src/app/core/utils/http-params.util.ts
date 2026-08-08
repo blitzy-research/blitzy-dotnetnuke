@@ -666,6 +666,121 @@ export function userListParams(
 }
 
 /**
+ * Whether a filter carries a value that identifies a person, and therefore must not travel
+ * in a request target.
+ *
+ * ⚠ THE PREDICATE IS ABSENCE, NOT EMPTINESS, AND THAT IS DELIBERATE. Testing for a
+ * NON-EMPTY string would make the transport flip on the content of the term, and it would
+ * flip for exactly the one input an operator produces by clearing the box — so the
+ * cleared-box case, and only that case, would take a different route from every other
+ * keystroke. Absence is the one property of a filter that says nothing about the person
+ * being looked for, so it is the only safe thing to switch on.
+ *
+ * ⚠ THE SERVER TREATS A BLANK MEMBER AS NO FILTER, WHICH IS WHY SENDING ONE IS SAFE RATHER
+ * THAN MERELY TIDY. `POST api/v1/users/search` normalises a blank filter member to absent
+ * before the application service sees it, reproducing the conversion the framework's query
+ * binder already performs on a blank query value — measured for the empty string and for
+ * whitespace alike. So a cleared box answers the unfiltered page through either transport
+ * rather than being refused through one of them, and this predicate does not have to know
+ * about blankness at all. That parity was a REGRESSION when the body-bound endpoint was
+ * introduced without it: clearing the search box posted `{"userName":""}`, met the service's
+ * blank-filter rule, and put an error banner on the account listing.
+ *
+ * The approval state is deliberately NOT among the four. It is one of two values, holds
+ * for a whole population and identifies nobody, so a listing restricted by it alone stays
+ * on the cacheable `GET`.
+ *
+ * @param filter The filter to inspect, or omitted or `null` for an unfiltered listing.
+ * @returns True when at least one identifying member was supplied.
+ */
+export function identifiesAPerson(filter?: UserListFilter | null): boolean {
+  if (filter === undefined || filter === null) {
+    return false;
+  }
+
+  return (
+    filter.userName !== undefined && filter.userName !== null
+    || filter.email !== undefined && filter.email !== null
+    || filter.profilePropertyName !== undefined && filter.profilePropertyName !== null
+    || filter.profilePropertyValue !== undefined && filter.profilePropertyValue !== null
+  );
+}
+
+/**
+ * The body `POST /api/v1/users/search` binds: the paging contract and the search filters
+ * together, as one JSON object.
+ *
+ * Every member is optional and `null` is admitted alongside `undefined`, exactly as on
+ * {@link PagedRequestParams} and {@link UserListFilter}, so a caller holding either passes
+ * it straight in. The server's contract declares the same members with the same spellings,
+ * so the object below IS the wire shape and nothing renames anything on the way out.
+ */
+export type UserSearchBody = PagedRequestParams & UserListFilter;
+
+/**
+ * Builds the request body for a portal's account search.
+ *
+ * ⚠ THE COUNTERPART OF {@link userListParams}, AND THE ONE TO USE WHENEVER
+ * {@link identifiesAPerson} HOLDS. The two functions carry the same information to the same
+ * server capability; the only difference is that this one puts it somewhere that is not
+ * logged. A request target is written to the browser's history, to every forward and reverse
+ * proxy access log, to the server access log and to any telemetry that samples URLs — all of
+ * which sit at an END of the encrypted channel, so HTTPS does not address it. That is
+ * CWE-598.
+ *
+ * ⚠ ABSENT MEMBERS ARE OMITTED RATHER THAN SENT AS `null`, so the body says exactly what the
+ * query string would have said. That is not cosmetic: the server reads a supplied `null`
+ * and an omitted member identically today, but a body that carried `profilePropertyName:
+ * null` would state a restriction the caller never asked for if that ever stopped being
+ * true, and it would make an unfiltered search indistinguishable from a filtered one in a
+ * request log kept for debugging.
+ *
+ * @param request The page of records to return, the size of the page, the ordering and the
+ * paging contract's own filter.
+ * @param filter The search mode and approval restriction, or omitted or `null` to search
+ * every account in the portal.
+ * @returns The body to send, carrying only the members that were supplied.
+ */
+export function userSearchBody(
+  request: PagedRequestParams,
+  filter?: UserListFilter | null,
+): UserSearchBody {
+  const supplied = filter ?? {};
+
+  // Built by conditional spread rather than by writing into an index-signature object and
+  // asserting its type at the end. The spread form keeps the return value structurally checked
+  // against the declared contract at every step, so a member misspelled here is a compilation
+  // error — which is the only mechanism that catches it, since a body member the server does not
+  // recognise is silently ignored and yields a quietly unfiltered result rather than a failure.
+  return {
+    ...(request.pageIndex === undefined || request.pageIndex === null
+      ? {}
+      : { pageIndex: request.pageIndex }),
+    ...(request.pageSize === undefined || request.pageSize === null
+      ? {}
+      : { pageSize: request.pageSize }),
+    ...(request.sortBy === undefined || request.sortBy === null ? {} : { sortBy: request.sortBy }),
+    ...(request.sortDir === undefined || request.sortDir === null
+      ? {}
+      : { sortDir: request.sortDir }),
+    ...(request.query === undefined || request.query === null ? {} : { query: request.query }),
+    ...(supplied.userName === undefined || supplied.userName === null
+      ? {}
+      : { userName: supplied.userName }),
+    ...(supplied.email === undefined || supplied.email === null ? {} : { email: supplied.email }),
+    ...(supplied.profilePropertyName === undefined || supplied.profilePropertyName === null
+      ? {}
+      : { profilePropertyName: supplied.profilePropertyName }),
+    ...(supplied.profilePropertyValue === undefined || supplied.profilePropertyValue === null
+      ? {}
+      : { profilePropertyValue: supplied.profilePropertyValue }),
+    ...(supplied.isApproved === undefined || supplied.isApproved === null
+      ? {}
+      : { isApproved: supplied.isApproved }),
+  };
+}
+
+/**
  * Builds the query parameter that sets an account's approval state.
  *
  * The state is a REQUIRED argument, not an optional one, and `false` is transmitted as

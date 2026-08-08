@@ -19,6 +19,16 @@ import { environment } from '../../../environments/environment';
 const BRAND_LINK = '/';
 
 /**
+ * The caption of the account affordance.
+ *
+ * `cmdServices.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, the
+ * caption of the legacy tab whose replacement this affordance reaches. Recovered from the
+ * resource file rather than invented, because the migration plan makes those files the
+ * authoritative source of wording so that labels stay recognisable to existing operators.
+ */
+const ACCOUNT_SERVICES_LABEL = 'Manage Services';
+
+/**
  * The application shell's single `banner` landmark.
  *
  * Renders the band's two clusters — the identity affordance at the leading edge
@@ -240,6 +250,30 @@ export class HeaderComponent {
   @Input() userName?: string;
 
   /**
+   * The address of the signed-in account's own subscriptions screen, or `undefined` when
+   * there is none to offer.
+   *
+   * ⚠ SUPPLIED WHOLE BY THE CONTAINER, NEVER COMPOSED HERE. This band is given a caption
+   * rather than an account (see {@link HeaderComponent.userName}), so it holds no account
+   * key and could not build an address even if it wanted to. Composing one here would put
+   * a second opinion about route shape in a component whose only navigational knowledge is
+   * the application root.
+   *
+   * MIGRATION: this is the one ACCOUNT-SCOPED affordance in the console's chrome, and it
+   * exists because the screen it reaches is the only one an ordinary account holder
+   * operates on its own behalf. `Website/admin/Users/MemberServices.ascx` was a tab in the
+   * account container that an administrator never saw
+   * (`ManageUsers.ascx.vb:L61-L66`), reached by the signed-in account from the portal's own
+   * user affordance — a skin object, and skinning is out of scope — so the console's banner
+   * is the target's equivalent surface. Its caption is the measured legacy tab caption
+   * `cmdServices.Text` = "Manage Services" rather than invented wording.
+   *
+   * Rendered only alongside a signed-in session, because an address to one account's
+   * subscriptions is meaningless without the account that holds them.
+   */
+  @Input() accountServicesLink?: string;
+
+  /**
    * Whether a sign-out is currently in flight.
    *
    * Declared with `booleanAttribute` so that the bare attribute form
@@ -271,6 +305,16 @@ export class HeaderComponent {
   readonly brandLink: string = BRAND_LINK;
 
   /**
+   * The caption of the account affordance.
+   *
+   * `cmdServices.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`,
+   * which is the caption of the tab the screen it reaches replaces. Held as a field so the
+   * template introduces no wording of its own and a specification asserts against the same
+   * string the band renders.
+   */
+  readonly accountServicesLabel: string = ACCOUNT_SERVICES_LABEL;
+
+  /**
    * Whether an account is signed in, and therefore whether the session cluster
    * has anything to render.
    *
@@ -284,6 +328,24 @@ export class HeaderComponent {
    */
   protected get hasSignedInUser(): boolean {
     return this.userName !== undefined && this.userName.trim().length > 0;
+  }
+
+  /**
+   * Whether the account affordance has an address to navigate to.
+   *
+   * Presence is decided by an explicit comparison against `undefined` followed by a length
+   * test on the trimmed value, on exactly the terms {@link hasSignedInUser} applies to the
+   * caption: an empty address would render a link that navigates to the current page.
+   *
+   * The session test is repeated rather than assumed, so the affordance cannot appear beside
+   * an absent identity if a container ever supplied one without the other.
+   */
+  protected get hasAccountServicesLink(): boolean {
+    return (
+      this.hasSignedInUser &&
+      this.accountServicesLink !== undefined &&
+      this.accountServicesLink.trim().length > 0
+    );
   }
 
   /**

@@ -1,8 +1,11 @@
 import type { HttpInterceptorFn } from '@angular/common/http';
 
+import { isApiRequest } from '../config/api-endpoints';
+
 /**
- * Stamps every outbound request with a correlation identifier so that one
- * identifier spans the browser, the API and every log line either of them writes.
+ * Stamps every outbound request TO THIS APPLICATION'S OWN API with a correlation
+ * identifier, so that one identifier spans the browser, the API and every log line
+ * either of them writes.
  *
  * ## Position in the chain
  *
@@ -11,9 +14,35 @@ import type { HttpInterceptorFn } from '@angular/common/http';
  * interceptor is registered as `A`, the outermost one, and that placement is
  * behaviour rather than style: the identifier is attached before the auth
  * interceptor adds `Authorization` and before anything downstream can
- * short-circuit, retry or fail the request. Every request that leaves this
+ * short-circuit, retry or fail the request. Every API request that leaves this
  * application therefore carries an identifier, including the ones that never
  * reach the network.
+ *
+ * ## Which requests are stamped, and why the boundary is drawn here
+ *
+ * ⚠ THE API'S OWN ADDRESSES ONLY, plus the three health probes. The boundary is decided
+ * by {@link isApiRequest} — the same predicate the bearer interceptor gates the
+ * `Authorization` header on — so the two headers this application adds share ONE
+ * definition of "our API" rather than holding two that can disagree.
+ *
+ * MIGRATION: this interceptor previously stamped, or preserved, the header on EVERY
+ * request `HttpClient` issued, and that was wrong in two distinct ways rather than
+ * merely broad:
+ *
+ * - It LEAKED. A caller-supplied identifier was forwarded to whatever host the request
+ *   addressed, so a value accepted from this application's own caller could be carried
+ *   to a foreign origin. Nothing in the loop this header exists to close needs that:
+ *   only this API reads the header, echoes it, and joins it to a log scope.
+ * - It BROKE REQUESTS IT HAD NOTHING TO DO WITH. `X-Correlation-Id` is not a
+ *   CORS-safelisted request header, so adding it turns an otherwise simple cross-origin
+ *   `GET` into one requiring a preflight — and a third-party endpoint that does not list
+ *   the name in `Access-Control-Allow-Headers` then fails that preflight outright.
+ *   Stamping a header is meant to be an observability act with no bearing on whether the
+ *   request succeeds; unscoped, it was not.
+ *
+ * The exclusion is a PASS-THROUGH rather than a strip: a non-API request is forwarded on
+ * the original, un-cloned request object carrying whatever headers its caller set. This
+ * interceptor removes nothing it did not add.
  *
  * ## The other half of the loop
  *
@@ -238,11 +267,78 @@ function isUsableCorrelationId(candidate: string): boolean {
 }
 
 /**
- * Attaches {@link CORRELATION_ID_HEADER} to every outbound request that does not
- * already carry a usable identifier.
+ * The health-probe paths, which this application's API publishes at the HOST ROOT rather
+ * than beneath its versioned prefix.
+ *
+ * THE ONE EXPLICIT EXCEPTION to the API-address test, and it is stated here rather than
+ * inherited. All three are this API's own endpoints and the server's correlation middleware
+ * runs for them exactly as it does for everything else, so a probe SHOULD carry an
+ * identifier — but they sit outside the configured base path, so {@link isApiRequest}
+ * answers false for them and the endpoint catalogue cannot describe them either, because it
+ * composes paths beneath that base.
+ *
+ * ⚠ THE LIST IS DELIBERATELY DUPLICATED from `core/interceptors/auth.interceptor.ts` rather
+ * than shared, and the two lists mean OPPOSITE things: that interceptor excludes these paths
+ * so a probe never carries a credential or spends a rate-limit budget, whereas this one
+ * INCLUDES them so a probe is still traceable. Sharing one constant between an exclusion and
+ * an inclusion would invite a future editor to change the membership for one purpose and
+ * silently change it for the other.
+ *
+ * Compared against the resolved path with any single trailing separator removed, so
+ * `/health/` is recognised as `/health`.
+ */
+const HEALTH_PROBE_PATHS: readonly string[] = Object.freeze([
+  '/health',
+  '/health/ready',
+  '/health/live',
+]);
+
+/**
+ * Whether a request addresses one of THIS ORIGIN'S root-published health probes.
+ *
+ * Resolved against the document base so that a relative path and the equivalent absolute
+ * URL on this origin are classified alike, and FAILS CLOSED — a value that cannot be parsed
+ * as a URL is simply not a probe, which is the same reading the API-address test applies.
+ *
+ * ⚠ THE ORIGIN IS COMPARED AS WELL AS THE PATH, and that clause is load-bearing here in a
+ * way it is not in the bearer interceptor's own probe test. There, the list is an EXCLUSION:
+ * matching a foreign `/health` merely declines to attach a credential, which is harmless.
+ * Here the list is an INCLUSION, so a path-only test would stamp the correlation header on
+ * `https://third-party.example/health` — reintroducing, for three paths, exactly the
+ * cross-origin leak and the preflight breakage that scoping this interceptor exists to
+ * close. A specification asserts that case directly.
+ *
+ * @param url The request target, relative or absolute.
+ * @returns True when the request is one of the three probes on this origin.
+ */
+function isHealthProbe(url: string): boolean {
+  let resolved: URL;
+  let base: URL;
+
+  try {
+    base = new URL(document.baseURI);
+    resolved = new URL(url, base);
+  } catch {
+    return false;
+  }
+
+  if (resolved.origin !== base.origin) {
+    return false;
+  }
+
+  const path = resolved.pathname;
+  const normalised = path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+
+  return HEALTH_PROBE_PATHS.includes(normalised);
+}
+
+/**
+ * Attaches {@link CORRELATION_ID_HEADER} to every outbound request TO THIS API that does
+ * not already carry a usable identifier, and forwards every other request untouched.
  *
  * Registered first in the interceptor chain. See the file header for why that
- * position is load-bearing and for how the identifier travels back.
+ * position is load-bearing, which requests are in scope, and how the identifier travels
+ * back.
  */
 export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
   // MIGRATION: a cross-cutting concern with no legacy predecessor, and the
@@ -285,6 +381,22 @@ export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
   // usable one. Every value the pass-through is actually meant to protect - a single
   // printable identifier within the bound, such as the one a retry re-sends - still
   // takes this branch and is still forwarded on the original, un-cloned request.
+
+  // ⚠ THE SCOPE TEST COMES FIRST, BEFORE THE HEADER IS EVEN READ, and it is the whole of
+  // the fix for the unscoped stamping described in the file header. A request that does not
+  // address this API is forwarded EXACTLY as it arrived: not stamped, and not stripped
+  // either - whatever the caller set is that caller's business.
+  //
+  // The probe test is asked FIRST among the two, deliberately, for the same reason the
+  // bearer interceptor asks its own probe test first: a probe path is not beneath the
+  // configured API base, so the address test alone would exclude it - but only for as long
+  // as that remains true. Asking the probe question in its own right means the guarantee
+  // survives a future widening of the base rather than depending on a test that exists for
+  // a different purpose.
+  if (!isHealthProbe(req.url) && !isApiRequest(req.url)) {
+    return next(req);
+  }
+
   const inbound = req.headers.getAll(CORRELATION_ID_HEADER);
 
   if (inbound !== null && inbound.length === 1 && isUsableCorrelationId(inbound[0])) {

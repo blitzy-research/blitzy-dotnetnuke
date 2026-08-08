@@ -105,6 +105,9 @@ import { environment } from '../../../environments/environment';
  * this module exists to prevent.
  */
 const SEGMENT = {
+  /** Accounts eligible to administer one portal. */
+  administrators: 'administrators',
+
   /** Alias sub-collection of one portal. */
   aliases: 'aliases',
 
@@ -156,6 +159,9 @@ const SEGMENT = {
   /** Profile property definitions of one portal. */
   profileDefinitions: 'profile-definitions',
 
+  /** Roles an invitation code admits an account to. */
+  redemptions: 'redemptions',
+
   /** Access-token renewal. */
   refresh: 'refresh',
 
@@ -168,11 +174,27 @@ const SEGMENT = {
   /** Role collection. */
   roles: 'roles',
 
+  /**
+   * Body-bound account search.
+   *
+   * A child of the account collection rather than a verb on it, because it reads and creates
+   * nothing. See {@link API_ENDPOINTS.users.search} for why the search is a `POST`.
+   */
+  search: 'search',
+  /** Subscribable services offered to one account. */
+  services: 'services',
+
   /** Configuration projection of one portal. */
   settings: 'settings',
 
+  /** One account's assignment to one service. */
+  subscription: 'subscription',
+
   /** Page collection. */
   tabs: 'tabs',
+
+  /** A service's trial period, taken once by an account. */
+  trial: 'trial',
 
   /** Release of a locked-out account. */
   unlock: 'unlock',
@@ -268,9 +290,11 @@ export interface RoleMemberScope {
  * Login, refresh and logout are anonymous on the server: they authenticate the
  * credentials or the refresh token they carry, not a bearer token. That is what
  * allows a refresh to succeed after the access token has already expired, and it is
- * why the authentication interceptor must leave them alone. The whole resource is
- * rate limited by originating address, and only this resource is — a rejected
- * request is answered `429` rather than being queued.
+ * why the authentication interceptor must leave them alone. The whole resource is rate
+ * limited by originating address, and it is NOT the only one: the server classifies a
+ * request as credential-bearing from the `[CredentialEndpoint]` marker on the action, and
+ * the account-creation and password actions carry it too. A request beyond the window's
+ * allowance is answered `429`.
  *
  * Held as ready strings rather than as functions because none of the four takes a
  * path parameter, and because they are compared against outbound request URLs by
@@ -549,6 +573,20 @@ export const API_ENDPOINTS = {
      */
     settings: (portalId: number): string =>
       apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.settings}`),
+
+    /**
+     * `GET` the accounts one portal may designate as its administrator.
+     *
+     * MIGRATION: this lives under the PORTAL resource rather than under a role one because
+     * the portal has to come from the path. Every role read resolves its tenant from the
+     * caller's own context, so none of them can enumerate the administrators of the portal
+     * a settings screen happens to be addressing — which is what left the administrator
+     * displayable and not reassignable. The server answers the members of the portal's own
+     * administrator role, reproducing
+     * `Website/admin/Portal/SiteSettings.ascx.vb:L331-L336`.
+     */
+    administrators: (portalId: number): string =>
+      apiUrl(`${SEGMENT.portals}/${portalId}/${SEGMENT.administrators}`),
   },
 
   /**
@@ -667,8 +705,39 @@ export const API_ENDPOINTS = {
    * tracking and a scheduled purge job that this migration does not reproduce.
    */
   users: {
-    /** `GET` the resolved tenant's paged accounts; `POST` to create one. */
+    /**
+     * `GET` the resolved tenant's paged accounts; `POST` to create one.
+     *
+     * ⚠ THE `GET` IS FOR A LISTING THAT NAMES NOBODY. It carries a page index, a page size, an
+     * ordering and an approval state, none of which identifies a person. A search by user name,
+     * email address or profile property must go to {@link API_ENDPOINTS.users.search} instead —
+     * see the note there.
+     */
     collection: (): string => apiUrl(SEGMENT.users),
+
+    /**
+     * `POST` an account search whose filters travel in the REQUEST BODY.
+     *
+     * ⚠ THIS EXISTS FOR A PRIVACY REASON, NOT AN ERGONOMIC ONE, AND MUST NOT BE COLLAPSED BACK
+     * INTO A QUERY STRING. The account listing filters on a user name, an email address and an
+     * arbitrary profile-property name paired with the value to match. Sent as query parameters
+     * those four end up in the REQUEST TARGET, which is the most widely recorded part of an HTTP
+     * exchange: the browser's own history, every forward and reverse proxy's access log, the
+     * server's access log, and any telemetry that samples URLs. Every one of those recorders sits
+     * at an END of the encrypted channel rather than in the middle of it, so HTTPS does not
+     * address the exposure — this is CWE-598, "Use of GET Request Method With Sensitive Query
+     * Strings". A body is written to none of them by default.
+     *
+     * The profile pair is the sharpest case: a tenant defines whatever properties it likes, so the
+     * value being matched is arbitrary personal data whose meaning neither side knows.
+     *
+     * A `POST` that reads is deliberate. Nothing is created, so the answer is `200` with the page
+     * and never `201` with a location; what is given up is cacheability, which is exactly the
+     * property that would otherwise store personal data in a shared cache. The server applies the
+     * same authorisation policy and the same paging bounds as the listing, so moving a request here
+     * changes where data travels and nothing else.
+     */
+    search: (): string => apiUrl(`${SEGMENT.users}/${SEGMENT.search}`),
 
     /** `GET`, `PUT` or `DELETE` one account. */
     byId: (userId: number): string => apiUrl(`${SEGMENT.users}/${userId}`),
@@ -720,6 +789,65 @@ export const API_ENDPOINTS = {
      * individual account, so it is the `settings` child of the account collection.
      */
     membershipSettings: (): string => apiUrl(`${SEGMENT.users}/${SEGMENT.settings}`),
+
+    /**
+     * `GET` the subscribable services offered to one account, with whatever that account
+     * already holds against each of them.
+     *
+     * The legacy screen this replaces is `Website/admin/Users/MemberServices.ascx`, whose
+     * whole surface was SELF-SERVICE: every operation it performed passed
+     * `UserInfo.UserID` — the SIGNED-IN account (`PortalModuleBase.vb:L319-L323`) — even
+     * though its container assigned it a user identifier (`manageusers.ascx.vb:L517`), and
+     * its container hid the tab outright whenever an administrator reached the screen
+     * (`:L61-L66`). All five templates below therefore address an account the CALLER owns,
+     * and the API gates each of them on ownership alone.
+     */
+    services: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.services}`),
+
+    /**
+     * `POST` to subscribe to one service or renew a lapsed subscription; `DELETE` to
+     * cancel one.
+     *
+     * ONE address for both directions, named for the thing rather than for the verb, which
+     * is what the legacy screen's own dispatch could not be: it bound the link's caption to
+     * its `CommandName` (`MemberServices.ascx:L34-L35`) and then compared that caption
+     * against three localised strings to decide which branch to run.
+     *
+     * ⚠ A SERVICE THAT CHARGES A FEE IS REFUSED IN BOTH DIRECTIONS. The legacy paths handed
+     * a fee-bearing role to `~/admin/Sales/PayPalSubscription.aspx`; sales administration is
+     * out of scope, so the API answers 403 with a distinct reason instead. The catalogue
+     * reports which rows those are before a caller reaches this address.
+     */
+    serviceSubscription: (userId: number, roleId: number): string =>
+      apiUrl(
+        `${SEGMENT.users}/${userId}/${SEGMENT.services}/${roleId}/${SEGMENT.subscription}`,
+      ),
+
+    /**
+     * `POST` to take one service's trial period.
+     *
+     * Separate from the subscription above because the legacy screen offered it as a second,
+     * independently-gated command with its own visibility rule (`ShowTrial`,
+     * `MemberServices.ascx.vb:L325-L342`): a trial is offered only for a role that charges a
+     * service fee, charges nothing for the trial, and has not already been tried by this
+     * account. Folding it into the subscription address would have needed a flag to choose
+     * between two rules that share no gate.
+     */
+    serviceTrial: (userId: number, roleId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.services}/${roleId}/${SEGMENT.trial}`),
+
+    /**
+     * `POST` an invitation code, joining the account to every role recorded against it.
+     *
+     * A CREATION on a collection of redemptions rather than a command verb, because one
+     * submission may create SEVERAL assignments: the legacy walk had no early exit
+     * (`MemberServices.ascx.vb:L397-L433`), so a code recorded against three roles joined
+     * all three. The answer names what was joined; a code that matched nothing is a refusal
+     * rather than an empty success.
+     */
+    serviceRedemptions: (userId: number): string =>
+      apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.services}/${SEGMENT.redemptions}`),
   },
 
   /**
@@ -772,14 +900,31 @@ export const API_ENDPOINTS = {
       member: ({ roleId, userId }: RoleMemberScope): string =>
         apiUrl(`${SEGMENT.roles}/${roleId}/${SEGMENT.users}/${userId}`),
 
-      // ⚠ THE ROLES-HELD-BY-ONE-ACCOUNT READ IS DELIBERATELY NOT DECLARED HERE, and its absence is the
-      // resolution rather than an omission. The endpoint exists — `GET /api/v1/users/{userId}/roles` — but
-      // no screen in this application reads it: the account editor shows an account's roles from the
-      // `roles` member the account's own detail contract already carries, and no per-account role route is
-      // declared anywhere in the route table. A template with no consumer is a claim about the wire that
-      // nothing exercises, so it can drift from its controller silently — which is exactly the failure this
-      // file's own preamble warns about. Declaring it belongs with the screen that needs it, on the day one
-      // does.
+      /**
+       * `GET` the roles ONE ACCOUNT holds in the resolved tenant. Unpaged.
+       *
+       * ⚠ THIS TEMPLATE WAS PREVIOUSLY WITHHELD ON PURPOSE, and it is declared now because the
+       * condition its own withdrawal note set has been met. That note read: "no screen in this
+       * application reads it … Declaring it belongs with the screen that needs it, on the day one
+       * does." The account listing's roles command is that screen. It used to navigate to the bare
+       * role listing, DISCARDING the row's account — the legacy command carried it
+       * (`Users.ascx.vb:L542` built `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD")`) and the
+       * legacy screen served two modes from one page, keyed by either role or account
+       * (`SecurityRoles.ascx.vb:L413-L418`). The account now travels on the link and the role
+       * listing narrows to that account's memberships, so this read has a consumer.
+       *
+       * Addressed under the ACCOUNT because the account is what is being described, while the
+       * controller that serves it is the role controller because roles are what it returns — the
+       * server states that reasoning itself. Nested under the `roles` family here for the same
+       * reason: this file groups by the resource returned.
+       *
+       * No page, size or sort parameter is accepted. The server declares the read unpaged, because
+       * the legacy reader it replaces returned every role an account held with no pager at all.
+       *
+       * @param userId The account whose roles to read.
+       */
+      heldByUser: (userId: number): string =>
+        apiUrl(`${SEGMENT.users}/${userId}/${SEGMENT.roles}`),
     },
   },
 
